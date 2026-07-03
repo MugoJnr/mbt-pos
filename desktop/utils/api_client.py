@@ -288,6 +288,7 @@ def _ensure_schema(conn: sqlite3.Connection):
             'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
             'auto_report_daily': '1', 'auto_report_weekly': '0',
             'auto_report_interval_hours': '4', 'auto_report_weekday': '0',
+            'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
             'mpesa_mode': 'manual', 'mpesa_till': '', 'mpesa_paybill': '',
             'mpesa_business_name': '',
         }

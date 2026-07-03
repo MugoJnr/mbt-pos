@@ -56,6 +56,8 @@ def shop_settings_defaults() -> dict:
         'auto_report_weekly': '0',
         'auto_report_interval_hours': '4',
         'auto_report_weekday': '0',
+        'auto_db_backup': '1',
+        'auto_db_backup_interval_hours': '24',
         # M-Pesa (manual — each shop enters Till/Paybill; no buyer accounts)
         'mpesa_mode': 'manual',
         'mpesa_till': '',

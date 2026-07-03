@@ -1,6 +1,0 @@
-FAIL mbt_paths: No module named 'mbt_paths'
-FAIL license_engine: No module named 'licensing'
-FAIL api create_product: No module named 'desktop'
-FAIL activation_ui: No module named 'licensing'
-FAIL launcher: No module named 'launcher'
-errors=5

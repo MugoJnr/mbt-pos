@@ -275,6 +275,27 @@ def _execute_command(cmd: str, args: str, engine, store,
         except Exception as e:
             return f"❌ push_config_update error: {e}"
 
+    # ── /backup [device_prefix] ───────────────────────────────────────────────
+    elif cmd == '/backup':
+        matches, _clean = _device_matches(engine, args)
+        if not matches:
+            return _device_skip_reply(engine, args, shop_name)
+        try:
+            from backend.db_backup import send_db_backup_now
+
+            def on_done(ok, msg):
+                reply_fn(f"{'✅' if ok else '❌'} DB backup: {msg[:200]}")
+
+            send_db_backup_now(
+                config_getter,
+                reason='telegram_admin',
+                on_done=on_done,
+            )
+            store.log('REMOTE_CMD', '/backup queued')
+            return '📤 Database backup started — file will arrive shortly.'
+        except Exception as e:
+            return f'❌ backup error: {e}'
+
     # ── /logs ─────────────────────────────────────────────────────────────────
     elif cmd == '/logs':
         logs = store.get_logs(10)
@@ -303,6 +324,7 @@ def _execute_command(cmd: str, args: str, engine, store,
             "/send_key &lt;key&gt;\n"
             "/notify_customer &lt;msg&gt;\n\n"
             "<b>System:</b>\n"
+            "/backup [device] — send database zip to Telegram\n"
             "/push_config_update {json}\n"
             "/logs\n\n"
             "<b>Example:</b>\n"

@@ -326,6 +326,7 @@ class ReportScheduler:
         self._reconnect_pending = False
         self._last_sent_at     = None
         self._last_weekly      = None
+        self._last_db_backup_at = None
         self._sending          = False
         self._send_lock        = threading.Lock()
 
@@ -399,15 +400,44 @@ class ReportScheduler:
                 self._reconnect_pending = False
                 self._send_daily(cfg, 'internet_reconnect')
                 self._maybe_send_weekly(cfg, now)
+                self._maybe_send_db_backup(cfg, 'internet_reconnect')
                 return
 
         if self._last_sent_at is None:
             if self._online_since and (now - self._online_since).total_seconds() >= interval:
                 self._send_daily(cfg, 'online_interval')
                 self._maybe_send_weekly(cfg, now)
+                self._maybe_send_db_backup(cfg, 'online_interval')
         elif (now - self._last_sent_at).total_seconds() >= interval:
             self._send_daily(cfg, 'online_interval')
             self._maybe_send_weekly(cfg, now)
+            self._maybe_send_db_backup(cfg, 'online_interval')
+
+    def _maybe_send_db_backup(self, cfg: dict, reason: str):
+        from backend.db_backup import (
+            parse_last_backup_at, send_db_backup_now, should_send_scheduled_backup,
+        )
+        if not should_send_scheduled_backup(cfg, self._last_db_backup_at):
+            return
+        if self._last_db_backup_at is None:
+            self._last_db_backup_at = parse_last_backup_at(cfg)
+        if not should_send_scheduled_backup(cfg, self._last_db_backup_at):
+            return
+        with self._send_lock:
+            if self._sending:
+                return
+            self._sending = True
+
+        logger.info('ReportScheduler: sending database backup (%s)', reason)
+
+        def on_done(ok, msg):
+            with self._send_lock:
+                self._sending = False
+            if ok:
+                self._last_db_backup_at = datetime.now()
+            logger.info('Auto DB backup (%s): ok=%s %s', reason, ok, str(msg)[:80])
+
+        send_db_backup_now(self.config_getter, api=self.api, on_done=on_done, reason=reason)
 
     def _send_daily(self, cfg: dict, reason: str):
         if cfg.get('auto_report_daily', '0') != '1':

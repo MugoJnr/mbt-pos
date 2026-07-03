@@ -88,17 +88,25 @@ class SettingsTab(QWidget):
         self.auto_report_daily.setMinimumHeight(36)
         self.auto_report_weekly = QCheckBox('Also send weekly summary (last 7 days)')
         self.auto_report_weekly.setMinimumHeight(36)
+        self.auto_db_backup = QCheckBox(
+            'Send daily database backup to Telegram (disaster recovery)')
+        self.auto_db_backup.setMinimumHeight(36)
         rep_hint = QLabel(
-            'Requires Telegram connected below. Sends when internet comes back '
-            '(about 1 minute after reconnect), then every 4 hours while the PC stays online.')
+            'Requires Telegram connected below. Sales reports send when internet comes back '
+            '(about 1 minute after reconnect), then every 4 hours while online. '
+            'Database backups go to your Telegram and the developer copy once every 24 hours.')
         rep_hint.setWordWrap(True)
         rep_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         FormRow('', self.auto_report_daily, rf)
         FormRow('', self.auto_report_weekly, rf)
+        FormRow('', self.auto_db_backup, rf)
         rf.addRow(rep_hint)
         self._send_report_now_btn = SecondaryBtn('Send Today\'s Report Now', 40)
         self._send_report_now_btn.clicked.connect(self._send_report_now)
         rf.addRow(QLabel(''), self._send_report_now_btn)
+        self._send_backup_now_btn = SecondaryBtn('Send Database Backup Now', 40)
+        self._send_backup_now_btn.clicked.connect(self._send_backup_now)
+        rf.addRow(QLabel(''), self._send_backup_now_btn)
         lay.addWidget(rg)
 
         # ── Telegram notifications ─────────────────────────────────────────────
@@ -381,6 +389,7 @@ class SettingsTab(QWidget):
         self.mpesa_mode.setCurrentIndex(1 if mode == 'stk' else 0)
         self.auto_report_daily.setChecked(cfg.get('auto_report_daily', '1') == '1')
         self.auto_report_weekly.setChecked(cfg.get('auto_report_weekly', '0') == '1')
+        self.auto_db_backup.setChecked(cfg.get('auto_db_backup', '1') == '1')
         self._refresh_tg_status()
         self._refresh_cf_status()
 
@@ -743,6 +752,8 @@ class SettingsTab(QWidget):
             'mpesa_business_name': self.mpesa_business.text().strip(),
             'auto_report_daily':   '1' if self.auto_report_daily.isChecked() else '0',
             'auto_report_weekly':  '1' if self.auto_report_weekly.isChecked() else '0',
+            'auto_db_backup':      '1' if self.auto_db_backup.isChecked() else '0',
+            'auto_db_backup_interval_hours': '24',
             'auto_report_interval_hours': '4',
         }
 
@@ -795,6 +806,28 @@ class SettingsTab(QWidget):
             QTimer.singleShot(0, _ui)
 
         send_report_now(self.api, self.config_getter, on_done=on_done)
+
+    def _send_backup_now(self):
+        chat = self.tg_chat.text().strip()
+        if not chat:
+            QMessageBox.warning(self, 'Telegram Required',
+                'Connect Telegram first to receive database backups.')
+            return
+        self._send_backup_now_btn.setEnabled(False)
+        self._send_backup_now_btn.setText('Backing up…')
+        from backend.db_backup import send_db_backup_now
+
+        def on_done(ok, msg):
+            def _ui():
+                self._send_backup_now_btn.setEnabled(True)
+                self._send_backup_now_btn.setText('Send Database Backup Now')
+                if ok:
+                    QMessageBox.information(self, 'Backup Sent', msg)
+                else:
+                    QMessageBox.warning(self, 'Backup', msg)
+            QTimer.singleShot(0, _ui)
+
+        send_db_backup_now(self.config_getter, api=self.api, on_done=on_done, reason='manual')
 
     def _test_tg(self):
         try:

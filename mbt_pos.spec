@@ -60,6 +60,7 @@ a = Analysis(
         'backend.cloudflare_setup',
         'backend.telegram_hub',
         'backend.updater',
+        'backend.db_backup',
         'web', 'web.web_routes',
     ],
     hookspath=[],
