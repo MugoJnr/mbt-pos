@@ -1,8 +1,8 @@
 {
-  "version": "2.3.2",
-  "build": "PROD-2026-07-03-v2.3.2",
+  "version": "2.3.3",
+  "build": "PROD-2026-07-03-v2.3.3",
   "build_date": "2026-07-03",
-  "release_notes": "Auto-update reliability fix (GitHub SSL/retries), Admin vs Super Admin roles, install and Cloudflare fixes.",
+  "release_notes": "Test release for auto-update verification.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
