@@ -40,8 +40,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-03-v2.3.1"
-APP_VERSION   = "2.3.1"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-03-v2.3.2"
+APP_VERSION   = "2.3.2"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -370,6 +370,13 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         self._pending_update_notes = notes or ''
         log.info(f"Update available: v{version}")
+
+        def _show():
+            btn = getattr(self, '_update_btn', None)
+            if btn:
+                btn.setText(f"  Downloading v{version}…  ")
+                btn.show()
+        QTimer.singleShot(0, _show)
 
     def _on_update_ready(self, installer_path, version):
         self._pending_installer_path = installer_path

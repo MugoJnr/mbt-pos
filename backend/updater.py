@@ -36,9 +36,22 @@ ASSET_NAME      = "MBT_POS_Setup.exe"
 
 # ── Retry / interval settings ─────────────────────────────────────────────────
 FIRST_CHECK_DELAY = 60          # seconds after startup
-RECHECK_INTERVAL  = 24 * 3600  # recheck every 24 hours
+RECHECK_INTERVAL  = 24 * 3600  # recheck every 24 hours on success
+RETRY_INTERVAL    = 15 * 60    # retry sooner after a failed check
 DOWNLOAD_TIMEOUT  = 300         # 5 min max download time
-REQUEST_TIMEOUT   = 10          # API call timeout
+REQUEST_TIMEOUT   = 15          # API call timeout
+FETCH_RETRIES     = 3
+
+
+def _ensure_ssl_certs():
+    """PyInstaller builds need certifi path for HTTPS (GitHub API)."""
+    try:
+        import certifi
+        bundle = certifi.where()
+        os.environ.setdefault('SSL_CERT_FILE', bundle)
+        os.environ.setdefault('REQUESTS_CA_BUNDLE', bundle)
+    except Exception:
+        pass
 
 
 # ── Version comparison helper (no external dep needed) ────────────────────────
@@ -91,9 +104,18 @@ class UpdateChecker:
         self.on_error            = None   # (msg) optional
 
     def start(self):
+        logger.info(
+            f"UpdateChecker started (v{self.current_version}); "
+            f"first check in {FIRST_CHECK_DELAY}s")
         self._thread = threading.Thread(
             target=self._run, daemon=True, name='UpdateChecker')
         self._thread.start()
+
+    def check_now(self):
+        """Manual / on-demand check (e.g. from Settings)."""
+        threading.Thread(
+            target=self._check, daemon=True, name='UpdateCheckerNow'
+        ).start()
 
     def stop(self):
         self._stop.set()
@@ -104,14 +126,18 @@ class UpdateChecker:
         # Wait before first check so app has fully loaded
         self._stop.wait(FIRST_CHECK_DELAY)
         while not self._stop.is_set():
-            self._check()
-            self._stop.wait(RECHECK_INTERVAL)
+            ok = self._check()
+            delay = RECHECK_INTERVAL if ok else RETRY_INTERVAL
+            self._stop.wait(delay)
 
-    def _check(self):
+    def _check(self) -> bool:
+        """Return True when GitHub was reached (even if already up to date)."""
         try:
+            logger.info(f"Update check starting (current=v{self.current_version})")
             info = self._fetch_release_info()
             if not info:
-                return
+                logger.warning("Update check failed — could not reach GitHub releases API")
+                return False
             remote_version = info['version']
             min_version    = info.get('min_required_version', '0.0.0')
             notes          = info.get('notes', '')
@@ -132,7 +158,7 @@ class UpdateChecker:
                 # Still download the update
                 if asset_url and _version_gt(remote_version, self.current_version):
                     self._start_download(asset_url, remote_version)
-                return
+                return True
 
             # Normal update available
             if _version_gt(remote_version, self.current_version):
@@ -141,6 +167,12 @@ class UpdateChecker:
                     self.on_update_available(remote_version, notes, asset_url)
                 if asset_url:
                     self._start_download(asset_url, remote_version)
+                else:
+                    logger.warning(
+                        f"Release v{remote_version} has no {ASSET_NAME} asset")
+            else:
+                logger.info("No newer release — app is up to date")
+            return True
 
         except Exception as e:
             logger.warning(f"UpdateChecker._check: {e}")
@@ -149,58 +181,74 @@ class UpdateChecker:
                     self.on_error(str(e))
                 except Exception:
                     pass
+            return False
 
     def _fetch_release_info(self) -> dict:
         """
         Fetch latest release from GitHub API.
         Returns dict with keys: version, notes, asset_url, min_required_version
         """
-        try:
-            req = urllib.request.Request(
-                GITHUB_API,
-                headers={
-                    'Accept':     'application/vnd.github+json',
-                    'User-Agent': f'MBT-POS/{self.current_version}',
+        _ensure_ssl_certs()
+        headers = {
+            'Accept':     'application/vnd.github+json',
+            'User-Agent': f'MBT-POS/{self.current_version}',
+        }
+        last_err = None
+        for attempt in range(1, FETCH_RETRIES + 1):
+            try:
+                data = self._http_get_json(GITHUB_API, headers)
+                if not data:
+                    continue
+                tag     = data.get('tag_name', '0.0.0')
+                version = tag.lstrip('v')
+                notes   = data.get('body', '')[:2000]
+
+                asset_url = ''
+                for asset in data.get('assets', []):
+                    if asset.get('name', '').lower() == ASSET_NAME.lower():
+                        asset_url = asset.get('browser_download_url', '')
+                        break
+
+                min_version = '0.0.0'
+                if '[min_version:' in notes:
+                    try:
+                        start = notes.index('[min_version:') + len('[min_version:')
+                        end   = notes.index(']', start)
+                        min_version = notes[start:end].strip()
+                    except Exception:
+                        pass
+
+                if not asset_url:
+                    logger.warning(
+                        f"GitHub release v{version} missing asset {ASSET_NAME}")
+
+                return {
+                    'version':              version,
+                    'notes':                notes,
+                    'asset_url':            asset_url,
+                    'min_required_version': min_version,
                 }
-            )
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-                data = json.loads(resp.read())
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    f"Update API attempt {attempt}/{FETCH_RETRIES} failed: {e}")
+                time.sleep(min(attempt * 2, 6))
+        if last_err:
+            logger.warning(f"Update check gave up: {last_err}")
+        return {}
 
-            tag     = data.get('tag_name', '0.0.0')
-            version = tag.lstrip('v')
-            notes   = data.get('body', '')[:2000]   # cap release notes
-
-            # Find the setup exe asset
-            asset_url = ''
-            for asset in data.get('assets', []):
-                if asset.get('name', '').lower() == ASSET_NAME.lower():
-                    asset_url = asset.get('browser_download_url', '')
-                    break
-
-            # Check if release notes contain a min version directive
-            # Format in release notes: [min_version: 1.2.0]
-            min_version = '0.0.0'
-            if '[min_version:' in notes:
-                try:
-                    start = notes.index('[min_version:') + len('[min_version:')
-                    end   = notes.index(']', start)
-                    min_version = notes[start:end].strip()
-                except Exception:
-                    pass
-
-            return {
-                'version':              version,
-                'notes':                notes,
-                'asset_url':            asset_url,
-                'min_required_version': min_version,
-            }
-
-        except urllib.error.URLError as e:
-            logger.debug(f"Update check network error: {e}")
-            return {}
-        except Exception as e:
-            logger.warning(f"_fetch_release_info: {e}")
-            return {}
+    def _http_get_json(self, url: str, headers: dict) -> dict:
+        """HTTPS GET returning parsed JSON — requests first, urllib fallback."""
+        try:
+            import requests
+            resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as req_err:
+            logger.debug(f"requests GET failed, trying urllib: {req_err}")
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            return json.loads(resp.read())
 
     # ── Download ───────────────────────────────────────────────────────────────
 
@@ -240,13 +288,22 @@ class UpdateChecker:
 
         logger.info(f"Downloading update v{version} from {url}")
         try:
-            req = urllib.request.Request(
-                url,
-                headers={'User-Agent': f'MBT-POS/{self.current_version}'}
-            )
-            with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
-                with open(dest, 'wb') as f:
-                    shutil.copyfileobj(resp, f, length=65536)
+            _ensure_ssl_certs()
+            headers = {'User-Agent': f'MBT-POS/{self.current_version}'}
+            try:
+                import requests
+                with requests.get(url, headers=headers, stream=True,
+                                  timeout=DOWNLOAD_TIMEOUT) as resp:
+                    resp.raise_for_status()
+                    with open(dest, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+            except Exception:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
+                    with open(dest, 'wb') as f:
+                        shutil.copyfileobj(resp, f, length=65536)
 
             size = os.path.getsize(dest)
             if size < 1_000_000:
