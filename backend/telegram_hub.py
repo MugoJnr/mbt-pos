@@ -40,6 +40,12 @@ def resolve_bot_token(cfg: dict | None = None) -> str:
         from config.deploy import load_deploy_config
         return (load_deploy_config().get('telegram_bot_token') or '').strip()
     except Exception:
+        pass
+    # Last resort when config.deploy is missing from a bad installer build
+    try:
+        from config.deploy import _DEFAULT_BOT  # type: ignore[attr-defined]
+        return (_DEFAULT_BOT or '').strip()
+    except Exception:
         return ''
 
 
@@ -272,7 +278,7 @@ def wait_for_chat_message(
     cfg = config_getter() or {}
     token = resolve_bot_token(cfg)
     if not token:
-        on_error('Bot token not configured. Contact MugoByte Technologies.')
+        on_error('Telegram is not ready in this install. Finish setup, restart MBT POS, then try Connect again in Settings.')
         return
 
     api = f'https://api.telegram.org/bot{token}'

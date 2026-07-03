@@ -87,6 +87,8 @@ class SetupWizard(QDialog):
         self._data   = {}
         self._pages  = []
         self._step_btns = []
+        self._cf_setup_running = False
+        self._tg_polling = False
 
         self._build_ui()
         self._center()
@@ -550,7 +552,9 @@ class SetupWizard(QDialog):
     def _page_telegram(self):
         w, lay = self._page_container()
         lay.addWidget(_label("Remote Monitoring  (Optional)", 22, bold=True))
-        lay.addWidget(_label("Connect Telegram for remote alerts, license management, and sync.", 14, color=C['text2']))
+        lay.addWidget(_label(
+            "Get sales reports and license updates on your phone. You can skip this and set it up later in Settings.",
+            14, color=C['text2']))
         lay.addSpacing(8)
 
         try:
@@ -563,61 +567,85 @@ class SetupWizard(QDialog):
         info.setStyleSheet(f"background:{C['card']}; border:1px solid {C['border']}; border-radius:8px;")
         il = QVBoxLayout(info)
         il.setContentsMargins(16, 12, 16, 12)
-        il.addWidget(_label(f"Bot: @{bot_user}  is pre-configured", 13, color=C['ok']))
-        il.addWidget(_label("Send any message to the bot to link your account.", 13, color=C['text2']))
+        il.addWidget(_label(
+            f"1. Open Telegram and message  @{bot_user}\n"
+            f"2. Send any message (e.g. Hello)\n"
+            f"3. Click Connect My Telegram below",
+            13, color=C['text2']))
         lay.addWidget(info)
         lay.addSpacing(8)
 
-        form = QFormLayout()
-        form.setSpacing(14)
-        self.w_tg_chat_id = _field("Your Telegram Chat ID  (run SETUP TELEGRAM.bat to get it)")
+        self.w_tg_chat_id = _field("")
+        self.w_tg_chat_id.hide()
 
-        find_btn = SecondaryBtn("🔍  Find My Chat ID", 40)
-        find_btn.setFixedWidth(180)
-        find_btn.clicked.connect(self._find_chat_id)
+        connect_btn = PrimaryBtn("Connect My Telegram", 44)
+        connect_btn.clicked.connect(self._start_tg_connect)
+        lay.addWidget(connect_btn)
 
-        fl = QLabel("Your Chat ID"); fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
-        form.addRow(fl, self.w_tg_chat_id)
-        lay.addLayout(form)
-        lay.addWidget(find_btn)
-
-        self.w_tg_status = QLabel("")
+        self.w_tg_status = QLabel("Optional — connect now or skip to the next step.")
+        self.w_tg_status.setWordWrap(True)
         self.w_tg_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         lay.addWidget(self.w_tg_status)
         lay.addStretch()
         return w
 
-    def _find_chat_id(self):
+    def _start_tg_connect(self):
+        if self._tg_polling:
+            return
         from config.deploy import load_deploy_config
-        from backend.telegram_hub import resolve_bot_username, wait_for_chat_message
+        from backend.telegram_hub import resolve_bot_token, resolve_bot_username, wait_for_chat_message
 
-        deploy = load_deploy_config()
-        bot_user = (deploy.get('telegram_bot_username') or 'mbt_admin1_bot').lstrip('@')
-        self.w_tg_status.setText(f"⏳ Waiting — send any message to @{bot_user}...")
+        bot_user = resolve_bot_username({})
+        token = resolve_bot_token({})
+        if not token:
+            self.w_tg_status.setText(
+                "Telegram is not ready yet. Click Continue, finish setup, then use Settings → Connect.")
+            self.w_tg_status.setStyleSheet(f"color:{C['warn']}; font-size:13px;")
+            return
+
+        import requests
+        try:
+            r = requests.get(f'https://api.telegram.org/bot{token}/getMe', timeout=12)
+            if not r.ok:
+                self.w_tg_status.setText("Could not reach Telegram. Check internet and try again.")
+                self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
+                return
+        except Exception:
+            self.w_tg_status.setText(
+                "Telegram is blocked on this network. Turn on VPN on this PC, then try again.")
+            self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
+            return
+
+        self._tg_polling = True
+        self.w_tg_status.setText(f"Waiting — send any message to @{bot_user} on Telegram…")
         self.w_tg_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         QApplication.processEvents()
 
         def config_getter():
             return {
-                'telegram_bot_token': deploy.get('telegram_bot_token', ''),
-                'shop_name': self._data.get('shop_name', 'My Shop'),
+                'telegram_bot_token': resolve_bot_token({}),
+                'shop_name': self._data.get('shop_name') or self.w_shop_name.text().strip() or 'My Shop',
             }
 
         def on_chat(chat_id, _msg):
+            self._tg_polling = False
             self.w_tg_chat_id.setText(str(chat_id))
-            self.w_tg_status.setText(f"✓ Chat ID found: {chat_id}")
+            self.w_tg_status.setText(f"Connected! Chat ID saved.")
             self.w_tg_status.setStyleSheet(f"color:{C['ok']}; font-size:13px;")
 
         def on_err(msg):
-            self.w_tg_status.setText(f"✗ {msg}")
+            self._tg_polling = False
+            self.w_tg_status.setText(msg)
+            self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
 
         def on_to():
-            self.w_tg_status.setText("Timed out. You can configure Telegram later in Settings.")
+            self._tg_polling = False
+            self.w_tg_status.setText("Timed out. You can connect later in Settings → Telegram.")
 
         import threading
         threading.Thread(
             target=wait_for_chat_message,
-            args=(config_getter, on_chat, on_to, on_err, 30),
+            args=(config_getter, on_chat, on_to, on_err, 60),
             daemon=True,
         ).start()
 
@@ -648,11 +676,22 @@ class SetupWizard(QDialog):
 
         form = QFormLayout()
         form.setSpacing(10)
-        self.w_cf_subdomain = _field("e.g. doe-supermarket")
-        self.w_cf_subdomain.textChanged.connect(self._update_cf_preview)
-        fl = QLabel("Subdomain"); fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
-        form.addRow(fl, self.w_cf_subdomain)
+        self.w_cf_subdomain_lbl = QLabel("—")
+        self.w_cf_subdomain_lbl.setStyleSheet(
+            f"color:{C['text']}; font-size:14px; font-weight:600; background:transparent;")
+        fl = QLabel("Your web link (from shop name)")
+        fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
+        form.addRow(fl, self.w_cf_subdomain_lbl)
         rbl.addLayout(form)
+
+        cf_note = QLabel(
+            "After setup, your link may take up to 5 minutes to work. "
+            "MBT POS fixes slow shop-router DNS on this PC automatically. "
+            "Windows may show Allow once — click Yes. "
+            "Click Set Up Cloudflare once and wait.")
+        cf_note.setWordWrap(True)
+        cf_note.setStyleSheet(f"color:{C['text3']}; font-size:11px; background:transparent;")
+        rbl.addWidget(cf_note)
 
         self.w_cf_preview = QLabel("https://….mugobyte.com")
         self.w_cf_preview.setStyleSheet(
@@ -695,20 +734,24 @@ class SetupWizard(QDialog):
         if remote:
             self._refresh_cf_subdomain()
 
-    def _refresh_cf_subdomain(self):
+    def _wizard_subdomain(self) -> str:
         try:
             from backend.cloudflare_setup import shop_to_subdomain
             shop = self._data.get('shop_name') or self.w_shop_name.text().strip()
-            if shop and not self.w_cf_subdomain.text().strip():
-                self.w_cf_subdomain.setText(shop_to_subdomain(shop))
-            self._update_cf_preview()
+            return shop_to_subdomain(shop) if shop else ''
         except Exception:
-            pass
+            return ''
+
+    def _refresh_cf_subdomain(self):
+        sub = self._wizard_subdomain()
+        if hasattr(self, 'w_cf_subdomain_lbl'):
+            self.w_cf_subdomain_lbl.setText(sub or '—')
+        self._update_cf_preview()
 
     def _update_cf_preview(self, *_):
         try:
             from backend.cloudflare_setup import full_domain
-            sub = self.w_cf_subdomain.text().strip()
+            sub = self._wizard_subdomain()
             dom = full_domain(sub) if sub else '….mugobyte.com'
             self.w_cf_preview.setText(f'https://{dom}')
         except Exception:
@@ -722,6 +765,8 @@ class SetupWizard(QDialog):
             self.w_cf_log.verticalScrollBar().maximum())
 
     def _run_cloudflare_setup(self):
+        if self._cf_setup_running:
+            return
         if not self._cf_mode_remote.isChecked():
             self._show_err("Select “Remote access” first.")
             return
@@ -729,14 +774,15 @@ class SetupWizard(QDialog):
         if not shop:
             self._show_err("Enter shop name on step 2 first.")
             return
-        sub = self.w_cf_subdomain.text().strip()
+        sub = self._wizard_subdomain()
         if not sub:
-            self._show_err("Enter a subdomain slug.")
+            self._show_err("Shop name could not be converted to a web link.")
             return
 
+        self._cf_setup_running = True
         self._cf_setup_btn.setEnabled(False)
         self._cf_test_btn.setEnabled(False)
-        self.w_cf_status.setText("⏳ Setting up Cloudflare tunnel…")
+        self.w_cf_status.setText("⏳ Setting up your web link… This can take 1–3 minutes.")
         self.w_cf_log.clear()
         self._data['cloudflare_setup_ok'] = False
 
@@ -759,20 +805,26 @@ class SetupWizard(QDialog):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_cf_setup_done(self, result: dict):
+        self._cf_setup_running = False
         self._cf_setup_btn.setEnabled(True)
         self._cf_test_btn.setEnabled(True)
         self._data['cloudflare_setup_ok'] = bool(result.get('ok'))
         self._data['remote_domain'] = result.get('domain', '')
         if result.get('ok'):
-            remote_ok = result.get('remote_ok', True)
-            self.w_cf_status.setText(
-                "✓ Cloudflare configured. "
-                + ("Remote URL is live." if remote_ok else
-                   "DNS may take a few minutes — use Test Connection."))
+            if result.get('remote_pending_dns'):
+                self.w_cf_status.setText(
+                    "✓ Setup finished. Your link may take up to 5 minutes to work. "
+                    "Keep MBT POS open, then click Test Connection.")
+            elif result.get('remote_ok', True):
+                self.w_cf_status.setText("✓ Your web link is ready.")
+            else:
+                self.w_cf_status.setText(
+                    "✓ Setup finished. Click Test Connection — DNS may need a few minutes.")
             self.w_cf_status.setStyleSheet(f"color:{C['ok']}; font-size:13px; font-weight:600;")
         else:
             errs = '; '.join(result.get('errors', [])[:2]) or 'Setup failed'
-            self.w_cf_status.setText(f"✗ {errs}")
+            self.w_cf_status.setText(
+                f"✗ {errs}\n\nTry again once. If it keeps failing, choose LAN only and contact MugoByte.")
             self.w_cf_status.setStyleSheet(f"color:{C['err']}; font-size:13px; font-weight:600;")
             log_path = result.get('log_path', '')
             if log_path:
@@ -937,7 +989,7 @@ class SetupWizard(QDialog):
             self._data['telegram_chat_id'] = self.w_tg_chat_id.text().strip()
         elif step == 6:
             remote = self._cf_mode_remote.isChecked()
-            sub = self.w_cf_subdomain.text().strip()
+            sub = self._wizard_subdomain()
             self._data['remote_web'] = remote
             self._data['tunnel_subdomain'] = sub
             try:
@@ -1012,7 +1064,10 @@ class SetupWizard(QDialog):
             except Exception:
                 deploy = {}
                 extra  = {}
-            bot_token = deploy.get('telegram_bot_token', '') or extra.get('telegram_bot_token', '')
+            from backend.telegram_hub import resolve_bot_token
+            bot_token = resolve_bot_token({
+                'telegram_bot_token': deploy.get('telegram_bot_token', '') or extra.get('telegram_bot_token', ''),
+            })
             settings = {
                 'shop_name':            self._data.get('shop_name', 'My Shop'),
                 'shop_address':         self._data.get('shop_address', ''),
@@ -1034,19 +1089,18 @@ class SetupWizard(QDialog):
                 db.execute(
                     "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?,?)", (k, v))
 
-            # Create/update admin user
+            # Create/update admin user (same hash format as login API)
             admin_user = self._data.get('admin_user', 'admin')
             admin_pw   = self._data.get('admin_pw', 'admin123')
 
-            # Use same hash_pw from backend
-            import hashlib
-            salt = os.urandom(16).hex()
-            pw_hash = salt + ':' + hashlib.sha256((salt + admin_pw).encode()).hexdigest()
+            from desktop.utils.api_client import _hash_pw
+            from roles import default_tab_permissions
+            import json as _json
+            pw_hash = _hash_pw(admin_pw)
 
             existing = db.execute(
                 "SELECT id FROM users WHERE username=?", (admin_user,)).fetchone()
-            perms = ('["dashboard","sales","inventory","reports","notes","settings",'
-                     '"admin","users","license","diagnostics","security"]')
+            perms = _json.dumps(default_tab_permissions('superadmin'))
             if existing:
                 db.execute(
                     "UPDATE users SET password_hash=?, role=?, tab_permissions=? WHERE username=?",

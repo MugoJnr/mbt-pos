@@ -248,14 +248,15 @@ def init_db():
     );
     """)
 
-    # Default admin
+    # Default shop owner (wizard normally creates this; fallback for API-only init)
     existing = cur.execute("SELECT id FROM users WHERE username='admin'").fetchone()
     if not existing:
+        from roles import default_tab_permissions
         pw_hash = hash_pw('admin123')
         cur.execute("""INSERT INTO users (username, password_hash, role, full_name, tab_permissions)
                        VALUES (?, ?, ?, ?, ?)""",
-                    ('admin', pw_hash, 'admin', 'System Administrator',
-                     '["dashboard","sales","inventory","reports","notes","settings","admin","users","license","diagnostics"]'))
+                    ('admin', pw_hash, 'superadmin', 'Shop Owner',
+                     json.dumps(default_tab_permissions('superadmin'))))
 
     # Default settings
     defaults = {
@@ -321,6 +322,26 @@ def admin_required(f):
     return token_required(decorated)
 
 
+def _role_is(*roles: str) -> bool:
+    return g.current_user.get('role') in roles
+
+
+def _actor_role() -> str:
+    return g.current_user.get('role', 'cashier')
+
+
+def _user_role_guard(target_role: str):
+    from roles import can_assign_role
+    if not can_assign_role(_actor_role(), target_role):
+        return jsonify({'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}), 403
+    return None
+
+
+def _load_user(db, uid: int):
+    row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    return dict(row) if row else None
+
+
 def log_action(action, module='system', details=''):
     try:
         db = get_db()
@@ -384,7 +405,7 @@ def me():
 @app.route('/api/users', methods=['GET'])
 @token_required
 def list_users():
-    if g.current_user['role'] not in ('admin', 'manager'):
+    if not _role_is('admin', 'superadmin', 'manager'):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     users = db.execute("""SELECT id, username, full_name, role, email, is_active,
@@ -395,16 +416,25 @@ def list_users():
 @app.route('/api/users', methods=['POST'])
 @token_required
 def create_user():
-    if g.current_user['role'] != 'admin':
+    if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
+    from roles import default_tab_permissions, sanitize_tab_permissions
     data = request.json or {}
+    new_role = data.get('role', 'cashier')
+    err = _user_role_guard(new_role)
+    if err:
+        return err
     pw_hash = hash_pw(data['password'])
     db = get_db()
-    perms = json.dumps(data.get('tab_permissions', ['dashboard', 'sales']))
+    raw_perms = data.get('tab_permissions')
+    if raw_perms is None:
+        perms = default_tab_permissions(new_role)
+    else:
+        perms = sanitize_tab_permissions(new_role, raw_perms)
     db.execute("""INSERT INTO users (username, password_hash, role, full_name, email, tab_permissions)
                   VALUES (?, ?, ?, ?, ?, ?)""",
-               (data['username'], pw_hash, data.get('role', 'cashier'),
-                data.get('full_name'), data.get('email'), perms))
+               (data['username'], pw_hash, new_role,
+                data.get('full_name'), data.get('email'), json.dumps(perms)))
     db.commit()
     log_action('CREATE_USER', 'admin', f"Created user: {data['username']}")
     return jsonify({'success': True})
@@ -413,10 +443,26 @@ def create_user():
 @app.route('/api/users/<int:uid>', methods=['PUT'])
 @token_required
 def update_user(uid):
-    if g.current_user['role'] != 'admin':
+    if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
+    from roles import sanitize_tab_permissions, is_superadmin_role
     data = request.json or {}
     db = get_db()
+    target = _load_user(db, uid)
+    if not target:
+        return jsonify({'error': 'User not found'}), 404
+    new_role = data.get('role', target['role'])
+    err = _user_role_guard(new_role)
+    if err:
+        return err
+    actor = _actor_role()
+    if not is_superadmin_role(actor) and is_superadmin_role(target['role']):
+        if new_role != target['role']:
+            return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
+        if 'tab_permissions' in data:
+            return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
+        if data.get('is_active') == 0:
+            return jsonify({'error': 'Only the shop owner can deactivate a Super Admin account.'}), 403
     fields = []
     values = []
     for field in ('role', 'full_name', 'email', 'is_active'):
@@ -425,7 +471,9 @@ def update_user(uid):
             values.append(data[field])
     if 'tab_permissions' in data:
         fields.append("tab_permissions=?")
-        values.append(json.dumps(data['tab_permissions']))
+        values.append(json.dumps(
+            sanitize_tab_permissions(new_role, data['tab_permissions'])
+        ))
     if 'password' in data:
         pw_hash = hash_pw(data['password'])
         fields.append("password_hash=?")
@@ -441,9 +489,12 @@ def update_user(uid):
 @app.route('/api/users/<int:uid>', methods=['DELETE'])
 @token_required
 def delete_user(uid):
-    if g.current_user['role'] != 'admin':
-        return jsonify({'error': 'Admin only'}), 403
+    if not _role_is('superadmin'):
+        return jsonify({'error': 'Super Admin only'}), 403
     db = get_db()
+    target = _load_user(db, uid)
+    if target and target.get('id') == g.current_user.get('id'):
+        return jsonify({'error': 'You cannot deactivate your own account.'}), 400
     db.execute("UPDATE users SET is_active=0 WHERE id=?", (uid,))
     db.commit()
     log_action('DELETE_USER', 'admin', f"Deactivated user id={uid}")
@@ -693,7 +744,7 @@ def get_settings():
 @app.route('/api/settings', methods=['PUT'])
 @token_required
 def update_settings():
-    if g.current_user['role'] != 'admin':
+    if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
     data = request.json or {}
     db = get_db()
@@ -710,7 +761,7 @@ def update_settings():
 @app.route('/api/audit', methods=['GET'])
 @token_required
 def get_audit():
-    if g.current_user['role'] not in ('admin', 'manager'):
+    if not _role_is('admin', 'superadmin', 'manager'):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     logs = db.execute("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500").fetchall()

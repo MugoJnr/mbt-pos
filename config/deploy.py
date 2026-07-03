@@ -8,12 +8,34 @@ import os
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _LOCAL = os.path.join(_DIR, 'deploy.local.json')
 
+
+def _appdata_deploy_local() -> str:
+    """Installed .exe: optional overrides in %LOCALAPPDATA%\\MugoByte\\MBT POS\\config\\."""
+    try:
+        from mbt_paths import get_project_root
+        return os.path.join(get_project_root(), 'config', 'deploy.local.json')
+    except Exception:
+        return ''
+
+
+def _load_deploy_local_files() -> dict:
+    merged = {}
+    for path in (_LOCAL, _appdata_deploy_local()):
+        if path and os.path.isfile(path):
+            try:
+                with open(path, encoding='utf-8') as f:
+                    merged.update(json.load(f))
+            except Exception:
+                pass
+    return merged
+
 # Shop-facing Telegram bot (@mbt_admin1_bot) — override per build via deploy.local.json
 _DEFAULT_BOT = '8342651179:AAE_JPNBUxWz9dkz49Ldr9sySwsabpx1IwQ'
 _DEFAULT_DEVELOPER_CHAT = '8293620725'
 
 
 def load_deploy_config() -> dict:
+    """Build-time + install defaults. Shipped inside every MBT_POS_Setup.exe."""
     cfg = {
         'telegram_bot_token': os.environ.get('MBT_BOT_TOKEN', '').strip() or _DEFAULT_BOT,
         'telegram_bot_username': 'mbt_admin1_bot',
@@ -21,13 +43,23 @@ def load_deploy_config() -> dict:
             or _DEFAULT_DEVELOPER_CHAT,
         'cloudflare_api_token': os.environ.get('CLOUDFLARE_API_TOKEN', '').strip(),
     }
-    if os.path.isfile(_LOCAL):
-        try:
-            with open(_LOCAL, encoding='utf-8') as f:
-                cfg.update(json.load(f))
-        except Exception:
-            pass
+    cfg.update(_load_deploy_local_files())
     return cfg
+
+
+def verify_installer_bundle() -> tuple[bool, str]:
+    """Called from BUILD.bat — fail the build if Telegram bot is not embedded."""
+    try:
+        c = load_deploy_config()
+        token = (c.get('telegram_bot_token') or '').strip()
+        user = (c.get('telegram_bot_username') or 'mbt_admin1_bot').lstrip('@')
+        if not token:
+            return False, 'telegram_bot_token is empty in config/deploy.py'
+        if not os.path.isfile(os.path.join(_DIR, 'deploy.py')):
+            return False, 'config/deploy.py missing from project'
+        return True, f'@{user}'
+    except Exception as e:
+        return False, str(e)
 
 
 def shop_settings_defaults() -> dict:

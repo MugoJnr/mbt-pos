@@ -185,6 +185,19 @@ echo  [OK] tools\cloudflared.exe ready.
 echo.
 
 :: ════════════════════════════════════════════════════════════════
+:: STEP 2c — Verify Telegram + config ship inside installer
+:: ════════════════════════════════════════════════════════════════
+echo  [2c/5] Verifying Telegram bot and config folder...
+cd /d "%SOURCE_DIR%"
+"%PY_EXE%" -c "import sys; sys.path.insert(0,'.'); from config.deploy import verify_installer_bundle; ok,msg=verify_installer_bundle(); print('  [OK] Telegram',msg) if ok else sys.exit(msg)"
+if errorlevel 1 (
+    echo  [ERROR] Installer bundle check failed.
+    echo  Ensure config\deploy.py exists and has telegram_bot_token set.
+    pause & exit /b 1
+)
+echo.
+
+:: ════════════════════════════════════════════════════════════════
 :: STEP 3 — PyInstaller
 :: ════════════════════════════════════════════════════════════════
 echo  [3/5] Building MBT_POS.exe (5-10 minutes^)...

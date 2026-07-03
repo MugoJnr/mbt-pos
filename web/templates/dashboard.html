@@ -403,13 +403,44 @@ function logout() {
   document.getElementById('login-error').style.display = 'none';
 }
 
-// ── INIT ───────────────────────────────────────────────────────────────────
+const ROLE_LABELS = {
+  superadmin: 'Super Admin (shop owner)',
+  admin: 'Admin (manager)',
+  manager: 'Manager',
+  cashier: 'Cashier',
+  viewer: 'Viewer',
+};
+
+function webNavAllowed(page) {
+  const role = USER?.role || 'cashier';
+  const perms = USER?.tab_permissions;
+  const tabMap = {
+    dashboard: 'dashboard', pos: 'sales', inventory: 'inventory',
+    debt: 'debt', reports: 'reports', users: 'admin', settings: 'settings',
+  };
+  const tab = tabMap[page];
+  if (!tab) return true;
+  if (Array.isArray(perms) && perms.length) return perms.includes(tab);
+  if (role === 'superadmin' || role === 'admin') return true;
+  if (role === 'manager') return tab !== 'admin';
+  if (role === 'viewer') return tab === 'dashboard' || tab === 'reports';
+  return tab === 'dashboard' || tab === 'sales';
+}
+
+function applyNavForRole() {
+  ['dashboard','pos','inventory','debt','reports','users','settings'].forEach(p => {
+    const el = document.getElementById('nav-' + p);
+    if (el) el.style.display = webNavAllowed(p) ? '' : 'none';
+  });
+}
+
 async function initApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('sb-username').textContent = USER?.full_name || USER?.username || 'Admin';
-  document.getElementById('sb-role').textContent = (USER?.role || 'admin').replace('_',' ').toUpperCase();
+  document.getElementById('sb-role').textContent = ROLE_LABELS[USER?.role] || (USER?.role || 'admin').replace('_',' ').toUpperCase();
   document.getElementById('sb-avatar').textContent = (USER?.full_name || USER?.username || 'A')[0].toUpperCase();
+  applyNavForRole();
   CFG = await GET('/settings') || {};
   CURRENCY = CFG.currency_symbol || 'KES';
   startClock();
@@ -1331,7 +1362,7 @@ async function users() {
     data.map(u=>`<tr>
       <td><strong>${esc(u.full_name||u.username)}</strong></td>
       <td style="color:var(--text2)">${esc(u.username)}</td>
-      <td><span class="badge badge-${u.role==='superadmin'?'err':u.role==='admin'?'info':'gray'}">${esc(u.role)}</span></td>
+      <td><span class="badge badge-${u.role==='superadmin'?'err':u.role==='admin'?'info':'gray'}">${esc(ROLE_LABELS[u.role]||u.role)}</span></td>
       <td>${u.is_active?'<span class="badge badge-ok">Active</span>':'<span class="badge badge-err">Inactive</span>'}</td>
       <td style="font-size:12px;color:var(--text3)">${(u.last_login||'Never').slice(0,16)}</td>
       <td><button class="btn btn-sm btn-secondary" onclick="userModal(${u.id})">Edit</button></td>
@@ -1342,6 +1373,16 @@ async function users() {
 
 function userModal(uid) {
   const u = uid ? (window._users||[]).find(x=>x.id===uid) : null;
+  const isOwner = USER?.role === 'superadmin';
+  const roleOpts = [
+    ['cashier','Cashier — POS only'],
+    ['manager','Manager — sales & stock'],
+    ['admin','Admin — users & settings (no Security)'],
+  ];
+  if (isOwner) roleOpts.push(['superadmin','Super Admin — shop owner, full access']);
+  const roleSelect = roleOpts.map(([v,l]) =>
+    `<option value="${v}" ${u?.role===v?'selected':''}>${l}</option>`
+  ).join('');
   openModal(u?'Edit User':'Add User', `
     <div class="form-row">
       <div class="form-group"><label class="form-label">Full Name</label><input type="text" id="um-name" value="${esc(u?.full_name||'')}"></div>
@@ -1350,7 +1391,7 @@ function userModal(uid) {
     <div class="form-row">
       <div class="form-group"><label class="form-label">Password ${u?'(leave blank to keep)':''}</label><input type="password" id="um-pass" placeholder="••••••••"></div>
       <div class="form-group"><label class="form-label">Role</label>
-        <select id="um-role"><option value="cashier" ${u?.role==='cashier'?'selected':''}>Cashier</option><option value="admin" ${u?.role==='admin'?'selected':''}>Admin</option><option value="superadmin" ${u?.role==='superadmin'?'selected':''}>Super Admin</option></select>
+        <select id="um-role">${roleSelect}</select>
       </div>
     </div>
     ${u?`<div class="form-group"><label class="form-label">Status</label><select id="um-active"><option value="1" ${u.is_active?'selected':''}>Active</option><option value="0" ${!u.is_active?'selected':''}>Inactive</option></select></div>`:''}`,

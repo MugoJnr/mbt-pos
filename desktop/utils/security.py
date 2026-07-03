@@ -11,11 +11,12 @@ import hashlib, os, json, logging
 logger = logging.getLogger('security')
 
 # ── Roles ──────────────────────────────────────────────────────────────────────
-ROLE_CASHIER    = 'cashier'
-ROLE_VIEWER     = 'viewer'
-ROLE_MANAGER    = 'manager'
-ROLE_ADMIN      = 'admin'
-ROLE_SUPERADMIN = 'superadmin'
+from roles import (
+    ROLE_CASHIER, ROLE_VIEWER, ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPERADMIN,
+    ALL_DESKTOP_TABS, TAB_PERMISSIONS_BY_ROLE,
+    default_tab_permissions, is_superadmin_role, is_shop_admin_role,
+    can_assign_role, sanitize_tab_permissions, role_display_name,
+)
 
 # What each role can do — granular action flags
 _PERMISSIONS = {

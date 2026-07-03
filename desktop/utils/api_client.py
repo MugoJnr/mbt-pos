@@ -279,19 +279,23 @@ def _ensure_schema(conn: sqlite3.Connection):
         from config.deploy import shop_settings_defaults
         defaults = shop_settings_defaults()
     except Exception:
-        defaults = {
-            'shop_name': 'My Shop', 'shop_address': '', 'shop_phone': '',
-            'shop_email': '', 'telegram_bot_token': '', 'telegram_chat_id': '',
-            'developer_chat_id': '', 'currency_symbol': 'KES', 'tax_rate': '0',
-            'receipt_footer': 'Thank you for shopping with us!',
-            'theme': 'dark', 'sync_interval': '30',
-            'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
-            'auto_report_daily': '1', 'auto_report_weekly': '0',
-            'auto_report_interval_hours': '4', 'auto_report_weekday': '0',
-            'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
-            'mpesa_mode': 'manual', 'mpesa_till': '', 'mpesa_paybill': '',
-            'mpesa_business_name': '',
-        }
+        try:
+            from config.deploy import shop_settings_defaults
+            defaults = shop_settings_defaults()
+        except Exception:
+            defaults = {
+                'shop_name': 'My Shop', 'shop_address': '', 'shop_phone': '',
+                'shop_email': '', 'telegram_bot_token': '', 'telegram_chat_id': '',
+                'developer_chat_id': '', 'currency_symbol': 'KES', 'tax_rate': '0',
+                'receipt_footer': 'Thank you for shopping with us!',
+                'theme': 'dark', 'sync_interval': '30',
+                'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
+                'auto_report_daily': '1', 'auto_report_weekly': '0',
+                'auto_report_interval_hours': '4', 'auto_report_weekday': '0',
+                'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
+                'mpesa_mode': 'manual', 'mpesa_till': '', 'mpesa_paybill': '',
+                'mpesa_business_name': '',
+            }
     for k, v in defaults.items():
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     # Upgrade path: fill empty Telegram fields from build-time deploy config
@@ -310,7 +314,23 @@ def _ensure_schema(conn: sqlite3.Connection):
                         (key, val),
                     )
     except Exception:
-        pass
+        deploy = {}
+        try:
+            from config.deploy import load_deploy_config
+            deploy = load_deploy_config()
+        except Exception:
+            pass
+        for key in ('telegram_bot_token', 'developer_chat_id'):
+            row = conn.execute(
+                "SELECT value FROM system_settings WHERE key=?", (key,)
+            ).fetchone()
+            if not row or not str(row[0] or '').strip():
+                val = str(deploy.get(key, '') or '').strip()
+                if val:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+                        (key, val),
+                    )
     conn.commit()
 
 
@@ -328,6 +348,22 @@ def _migrate_columns(conn: sqlite3.Connection):
     conn.execute(
         "UPDATE users SET role='superadmin' WHERE username='admin' AND role='admin'"
     )
+    # Admin role must not keep owner-only tabs (security / license)
+    for row in conn.execute(
+        "SELECT id, role, tab_permissions FROM users WHERE role IN ('admin','manager','cashier','viewer')"
+    ).fetchall():
+        try:
+            from roles import sanitize_tab_permissions
+            import json as _json
+            perms = _json.loads(row['tab_permissions'] or '[]')
+            fixed = sanitize_tab_permissions(row['role'], perms)
+            if fixed != perms:
+                conn.execute(
+                    "UPDATE users SET tab_permissions=? WHERE id=?",
+                    (_json.dumps(fixed), row['id']),
+                )
+        except Exception:
+            pass
     conn.commit()
 
 
@@ -538,15 +574,25 @@ class APIClient:
             db.close()
 
     def create_user(self, data: dict) -> dict:
+        from roles import default_tab_permissions, can_assign_role, sanitize_tab_permissions
+        actor_role = (self._role or 'cashier')
+        new_role = data.get('role', 'cashier')
+        if not can_assign_role(actor_role, new_role):
+            return {'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}
         db = _db()
         try:
             pw_hash = _hash_pw(data['password'])
-            perms   = json.dumps(data.get('tab_permissions', ['dashboard','sales']))
+            raw_perms = data.get('tab_permissions')
+            if raw_perms is None:
+                perms = default_tab_permissions(new_role)
+            else:
+                perms = sanitize_tab_permissions(new_role, raw_perms)
+            perms_json = json.dumps(perms)
             db.execute(
                 "INSERT INTO users (username,password_hash,role,full_name,email,tab_permissions)"
                 " VALUES (?,?,?,?,?,?)",
-                (data['username'], pw_hash, data.get('role','cashier'),
-                 data.get('full_name'), data.get('email'), perms)
+                (data['username'], pw_hash, new_role,
+                 data.get('full_name'), data.get('email'), perms_json)
             )
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_USER', 'admin',
@@ -558,15 +604,34 @@ class APIClient:
             db.close()
 
     def update_user(self, uid: int, data: dict) -> dict:
+        from roles import can_assign_role, sanitize_tab_permissions, is_superadmin_role
         db = _db()
         try:
+            target = db.execute(
+                "SELECT id, role FROM users WHERE id=?", (uid,)
+            ).fetchone()
+            if not target:
+                return {'error': 'User not found'}
+            actor_role = (self._role or 'cashier')
+            new_role = data.get('role', target['role'])
+            if not can_assign_role(actor_role, new_role):
+                return {'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}
+            if not is_superadmin_role(actor_role) and is_superadmin_role(target['role']):
+                if new_role != target['role']:
+                    return {'error': 'Only the shop owner can change a Super Admin account.'}
+                if 'tab_permissions' in data:
+                    return {'error': 'Only the shop owner can change a Super Admin account.'}
+                if data.get('is_active') == 0:
+                    return {'error': 'Only the shop owner can deactivate a Super Admin account.'}
             fields, values = [], []
             for field in ('role','full_name','email','is_active'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
             if 'tab_permissions' in data:
                 fields.append("tab_permissions=?")
-                values.append(json.dumps(data['tab_permissions']))
+                values.append(json.dumps(
+                    sanitize_tab_permissions(new_role, data['tab_permissions'])
+                ))
             if 'password' in data:
                 fields.append("password_hash=?")
                 values.append(_hash_pw(data['password']))
@@ -580,6 +645,11 @@ class APIClient:
             db.close()
 
     def delete_user(self, uid: int) -> dict:
+        from roles import is_superadmin_role
+        if not is_superadmin_role(self._role or ''):
+            return {'error': 'Super Admin only'}
+        if uid == self._user_id:
+            return {'error': 'You cannot deactivate your own account.'}
         db = _db()
         try:
             db.execute("UPDATE users SET is_active=0 WHERE id=?", (uid,))

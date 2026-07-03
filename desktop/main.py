@@ -40,8 +40,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-03-FINAL"
-APP_VERSION   = "2.3.0"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-03-v2.3.1"
+APP_VERSION   = "2.3.1"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -495,7 +495,7 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(0, 0, 0, 0)
         nv.setSpacing(2)
         for tid, icon, lbl in tabs:
-            if tid == 'security' and role != 'superadmin':
+            if tid in ('security', 'license') and role != 'superadmin':
                 continue
             if role != 'admin' and role != 'superadmin' and tid not in perms:
                 continue
@@ -684,8 +684,9 @@ def _start_web_dashboard():
         return True
     try:
         try:
-            from backend.cloudflare_setup import bootstrap_cloudflared
+            from backend.cloudflare_setup import bootstrap_cloudflared, refresh_remote_setup_status
             bootstrap_cloudflared()
+            refresh_remote_setup_status()
         except Exception:
             pass
         from backend.web_service import WebDashboardService

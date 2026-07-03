@@ -22,6 +22,7 @@ a = Analysis(
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
         (os.path.join(HERE, 'web'),         'web'),
         (os.path.join(HERE, 'version.json'), '.'),
+        (os.path.join(HERE, 'config'),       'config'),
     ] + ([(os.path.join(HERE, 'web_launcher.py'), '.')]
          if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []),
     hiddenimports=[
@@ -40,6 +41,7 @@ a = Analysis(
         'logging', 'logging.handlers',
         'email', 'email.mime', 'email.mime.text',
         'mbt_paths',
+        'roles',
         'licensing.activation_ui',
         'licensing.license_engine',
         'licensing.license_service',
@@ -60,6 +62,7 @@ a = Analysis(
         'backend.cloudflare_setup',
         'backend.telegram_hub',
         'backend.updater',
+        'config.deploy',
         'backend.db_backup',
         'web', 'web.web_routes',
     ],

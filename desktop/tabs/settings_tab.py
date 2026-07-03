@@ -21,6 +21,7 @@ class SettingsTab(QWidget):
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
         self._polling = False
+        self._cf_setup_running = False
         self._chat_found.connect(self._on_chat_found)
         self._chat_timeout.connect(self._on_chat_timeout)
         self._chat_error.connect(self._on_chat_error)
@@ -229,7 +230,9 @@ class SettingsTab(QWidget):
 
         hint = QLabel(
             'Local access on the same Wi‑Fi works without setup: '
-            '<b>http://&lt;shop-pc-ip&gt;:5050</b>')
+            '<b>http://&lt;shop-pc-ip&gt;:5050</b><br>'
+            'Remote URL is set once at install from the <b>shop name</b> '
+            '(e.g. “Edmus” → <b>edmus.mugobyte.com</b>). Do not change after go-live.')
         hint.setTextFormat(Qt.RichText)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
@@ -251,17 +254,26 @@ class SettingsTab(QWidget):
 
         sub_form = QFormLayout()
         sub_form.setSpacing(10)
-        self._cf_subdomain = Field('e.g. doe-supermarket')
-        self._cf_subdomain.textChanged.connect(self._update_cf_preview)
-        sub_lbl = QLabel('Subdomain')
+        self._cf_subdomain = QLabel('—')
+        self._cf_subdomain.setStyleSheet(
+            f"color:{C['text']}; font-size:14px; font-weight:600; background:transparent;")
+        sub_lbl = QLabel('Remote URL (from shop name)')
         sub_lbl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
         sub_form.addRow(sub_lbl, self._cf_subdomain)
+        prod_note = QLabel(
+            'Set during first install. Each shop gets one permanent link. '
+            'MBT POS sets fast DNS on this PC automatically during Cloudflare setup.')
+        prod_note.setWordWrap(True)
+        prod_note.setStyleSheet(f"color:{C['text3']}; font-size:11px; background:transparent;")
+        rbl.addWidget(prod_note)
         rbl.addLayout(sub_form)
 
         self._cf_preview = QLabel('https://….mugobyte.com')
         self._cf_preview.setStyleSheet(
             f"color:{C['gold']}; font-size:15px; font-weight:700; font-family:Consolas;")
         rbl.addWidget(self._cf_preview)
+
+        self.shop_name.textChanged.connect(self._update_cf_preview)
 
         cf_btn_row = QHBoxLayout()
         self._cf_setup_btn = PrimaryBtn('Set Up Cloudflare', 40)
@@ -276,7 +288,7 @@ class SettingsTab(QWidget):
         cf_btn_row.addStretch()
         rbl.addLayout(cf_btn_row)
 
-        self._cf_status = QLabel('Select remote access, then click Set Up Cloudflare.')
+        self._cf_status = QLabel('Select remote access, then click Set Up Cloudflare once and wait.')
         self._cf_status.setWordWrap(True)
         self._cf_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         rbl.addWidget(self._cf_status)
@@ -395,7 +407,11 @@ class SettingsTab(QWidget):
 
     def _refresh_cf_status(self):
         try:
-            from backend.cloudflare_setup import load_web_config, shop_to_subdomain, full_domain
+            from backend.cloudflare_setup import (
+                load_web_config, shop_to_subdomain, full_domain,
+                refresh_remote_setup_status,
+            )
+            refresh_remote_setup_status()
             wcfg = load_web_config()
         except Exception:
             wcfg = {}
@@ -405,15 +421,11 @@ class SettingsTab(QWidget):
         self._cf_mode_remote.setChecked(remote)
         self._cf_mode_lan.setChecked(not remote)
         sub = wcfg.get('tunnel_subdomain', '')
-        if sub and not self._cf_subdomain.text().strip():
+        shop_slug = self._production_subdomain()
+        if shop_slug:
+            self._cf_subdomain.setText(shop_slug)
+        elif sub:
             self._cf_subdomain.setText(sub)
-        elif not self._cf_subdomain.text().strip():
-            shop = self.shop_name.text().strip()
-            if shop:
-                try:
-                    self._cf_subdomain.setText(shop_to_subdomain(shop))
-                except Exception:
-                    pass
         self._toggle_cf_remote_box()
         self._update_cf_preview()
         if remote and domain and setup_ok:
@@ -456,12 +468,25 @@ class SettingsTab(QWidget):
         if remote:
             self._update_cf_preview()
 
-    def _update_cf_preview(self):
-        sub = self._cf_subdomain.text().strip()
+    def _production_subdomain(self) -> str:
+        """DNS slug always derived from shop name — one shop, one URL."""
         try:
-            from backend.cloudflare_setup import full_domain, shop_to_subdomain
+            from backend.cloudflare_setup import shop_to_subdomain, load_web_config
+            shop = self.shop_name.text().strip()
+            if shop:
+                return shop_to_subdomain(shop)
+            wcfg = load_web_config()
+            return (wcfg.get('tunnel_subdomain') or '').strip()
+        except Exception:
+            return ''
+
+    def _update_cf_preview(self):
+        sub = self._production_subdomain()
+        self._cf_subdomain.setText(sub or '—')
+        try:
+            from backend.cloudflare_setup import full_domain
             if sub:
-                dom = full_domain(shop_to_subdomain(sub))
+                dom = full_domain(sub)
                 self._cf_preview.setText(f'https://{dom}')
             else:
                 self._cf_preview.setText('https://….mugobyte.com')
@@ -481,7 +506,7 @@ class SettingsTab(QWidget):
                 full_domain, save_web_config, shop_to_subdomain,
             )
             remote = self._cf_mode_remote.isChecked()
-            sub = self._cf_subdomain.text().strip()
+            sub = self._production_subdomain()
             if remote and sub:
                 slug = shop_to_subdomain(sub)
                 payload = {
@@ -506,6 +531,8 @@ class SettingsTab(QWidget):
         return True
 
     def _run_cloudflare_setup(self, force_relogin=False):
+        if self._cf_setup_running:
+            return
         if force_relogin:
             reply = QMessageBox.question(
                 self, 'Re-login to Cloudflare',
@@ -524,10 +551,31 @@ class SettingsTab(QWidget):
         if not shop:
             QMessageBox.warning(self, 'Required', 'Enter shop name first.')
             return
-        sub = self._cf_subdomain.text().strip()
+        sub = self._production_subdomain()
         if not sub:
-            QMessageBox.warning(self, 'Required', 'Enter a subdomain slug.')
+            QMessageBox.warning(self, 'Required', 'Shop name could not be converted to a URL.')
             return
+        wcfg = {}
+        try:
+            from backend.cloudflare_setup import load_web_config
+            wcfg = load_web_config()
+        except Exception:
+            pass
+        live_sub = (wcfg.get('tunnel_subdomain') or '').strip()
+        if live_sub and live_sub != sub and wcfg.get('remote_setup_ok'):
+            reply = QMessageBox.warning(
+                self, 'Change Remote URL?',
+                f'This shop is already live at:\n'
+                f'  https://{live_sub}.mugobyte.com\n\n'
+                f'Shop name would create:\n'
+                f'  https://{sub}.mugobyte.com\n\n'
+                f'In production, keep the original URL unless MugoByte approves a change.\n'
+                f'Continue and run full setup?',
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._cf_setup_running = True
         self._save_web_remote_config(remote_setup_ok=False)
         self._cf_setup_btn.setEnabled(False)
         self._cf_test_btn.setEnabled(False)
@@ -554,11 +602,17 @@ class SettingsTab(QWidget):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_cf_setup_done(self, result: dict):
+        self._cf_setup_running = False
         self._cf_setup_btn.setEnabled(True)
         self._cf_test_btn.setEnabled(True)
         self._cf_relogin_btn.setEnabled(True)
         if result.get('ok'):
             self._save_web_remote_config(remote_setup_ok=True)
+            try:
+                from backend.cloudflare_setup import refresh_remote_setup_status
+                refresh_remote_setup_status()
+            except Exception:
+                pass
             remote_ok = result.get('remote_ok', True)
             self._cf_status.setText(
                 '✓ Cloudflare configured. '
@@ -652,8 +706,28 @@ class SettingsTab(QWidget):
         if token and not self.tg_token.text().strip():
             self.tg_token.setText(token)
         if not token:
-            QMessageBox.warning(self, 'Not Ready',
-                'Bot token is missing. Contact MugoByte Technologies.')
+            QMessageBox.warning(
+                self, 'Telegram Not Ready',
+                'Telegram could not start.\n\n'
+                'Close MBT POS completely, open it again, then click Connect.\n'
+                'If this continues, reinstall from the latest MBT_POS_Setup.exe.')
+            return
+
+        import requests
+        try:
+            r = requests.get(f'https://api.telegram.org/bot{token}/getMe', timeout=12)
+            if not r.ok:
+                QMessageBox.warning(
+                    self, 'Telegram Error',
+                    'Could not reach the MugoByte Telegram bot.\n\n'
+                    'Check your internet connection and try again.')
+                return
+        except Exception:
+            QMessageBox.warning(
+                self, 'Telegram Blocked',
+                'This PC cannot reach Telegram (api.telegram.org).\n\n'
+                'Your internet may work, but Telegram is blocked on this network.\n'
+                'Turn on VPN on this computer, then try Connect again.')
             return
 
         bot = getattr(self, '_bot_username', 'mbt_admin1_bot')

@@ -557,6 +557,7 @@ def sync_tunnel_config_from_web(log: Optional[_SetupLog] = None) -> bool:
         return False
     port = int(cfg.get('flask_port', DEFAULT_PORT))
     _write_cloudflared_config(tname, tid, domain, port, log)
+    save_web_config({'tunnel_id': tid})
     return True
 
 
@@ -569,6 +570,21 @@ def _config_yml_hostname() -> str:
         for line in yml.read_text(encoding='utf-8').splitlines():
             line = line.strip()
             if line.startswith('hostname:'):
+                return line.split(':', 1)[1].strip()
+    except Exception:
+        pass
+    return ''
+
+
+def _config_yml_tunnel_id() -> str:
+    """Read tunnel UUID from existing config.yml if present."""
+    try:
+        yml = get_cloudflared_dir() / 'config.yml'
+        if not yml.is_file():
+            return ''
+        for line in yml.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line.startswith('tunnel:'):
                 return line.split(':', 1)[1].strip()
     except Exception:
         pass
@@ -657,6 +673,10 @@ class CloudflareSetup:
                 self.tunnel_name, tunnel_id, self.domain, port, self.log)
             self._step('Write cloudflared config', True)
 
+            # Subdomain change leaves an old cloudflared serving the previous tunnel → HTTP 530
+            stop_all_cloudflared()
+            time.sleep(1)
+
             r = _run(
                 [str(cf), 'tunnel', 'route', 'dns', self.tunnel_name, self.domain],
                 timeout=120,
@@ -679,9 +699,11 @@ class CloudflareSetup:
             verify = verify_remote_setup(
                 self.domain, self.log, start_tunnel=True, wait_dns=90)
 
+            pub_ok, _ = _dns_resolves_via(self.domain, '1.1.1.1')
+
             if verify.get('remote_https_ok'):
                 self._step('Verify remote URL', True, verify.get('remote_detail', ''))
-            elif verify.get('pending_dns'):
+            elif verify.get('pending_dns') or pub_ok:
                 self._step('Verify remote URL', True,
                            'DNS propagating — remote URL will work in a few minutes')
                 self.log.info(
@@ -692,39 +714,40 @@ class CloudflareSetup:
             else:
                 self._step('Verify remote URL', False, verify.get('detail', ''))
 
-            setup_complete = (
-                verify.get('tunnel_ok')
-                or verify.get('remote_https_ok')
-                or verify.get('pending_dns')
-            )
+            # Tunnel + DNS route succeeded → setup is complete (phones/other networks work).
+            setup_complete = bool(tunnel_id) and bool(self.domain)
 
             save_web_config({
                 'remote_enabled': True,
                 'remote_setup_ok': setup_complete,
                 'remote_setup_at': datetime.now().isoformat(),
                 'cloudflared_exe': str(cf),
+                'tunnel_id': tunnel_id,
             })
 
             self.result['ok'] = True
-            self.result['remote_ok'] = verify.get('remote_https_ok', False)
-            self.result['remote_pending_dns'] = verify.get('pending_dns', False)
+            self.result['remote_ok'] = verify.get('remote_https_ok', False) or pub_ok
+            self.result['remote_pending_dns'] = (
+                verify.get('pending_dns', False) or (pub_ok and not verify.get('dns_ok'))
+            )
             self.result['tunnel_running'] = verify.get('tunnel_ok', False)
             self.log.ok('Setup complete')
             self.log.info(f'Local:  http://127.0.0.1:{port}')
             self.log.info(f'Remote: https://{self.domain}')
             if verify.get('pending_dns'):
                 self.log.info(
-                    'Next: wait 2–5 min, then open https://%s or run DIAGNOSE CLOUDFLARE.bat',
-                    self.domain)
+                    f'Next: wait 2–5 min, then open https://{self.domain} '
+                    f'or run DIAGNOSE CLOUDFLARE.bat')
             elif not verify.get('remote_https_ok'):
                 self.log.info('Restart MBT POS to keep the tunnel running automatically.')
 
         except Exception as e:
             self.log.error(str(e))
             self._step('Setup', False, str(e))
+            cfg_now = load_web_config()
             save_web_config({
                 'remote_enabled': True,
-                'remote_setup_ok': False,
+                'remote_setup_ok': bool(cfg_now.get('tunnel_id') and cfg_now.get('tunnel_domain')),
                 'remote_setup_at': datetime.now().isoformat(),
             })
 
@@ -735,7 +758,7 @@ class CloudflareSetup:
 # ── Verification & diagnostics ────────────────────────────────────────────────
 
 def _dns_resolves(hostname: str) -> tuple[bool, str]:
-    """Return True if hostname resolves (Windows errno 11001 = not yet propagated)."""
+    """Return True if hostname resolves via this PC's default DNS."""
     try:
         socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
         return True, 'DNS resolves'
@@ -743,6 +766,166 @@ def _dns_resolves(hostname: str) -> tuple[bool, str]:
         return False, f'DNS not ready ({e})'
     except Exception as e:
         return False, str(e)
+
+
+def _dns_resolves_via(hostname: str, resolver: str = '1.1.1.1') -> tuple[bool, str]:
+    """Check a public resolver (Cloudflare 1.1.1.1) — catches slow shop-router DNS."""
+    if sys.platform == 'win32':
+        try:
+            r = subprocess.run(
+                ['nslookup', hostname, resolver],
+                capture_output=True, text=True, timeout=15,
+                creationflags=_hide_flags(),
+            )
+            out = ((r.stdout or '') + (r.stderr or '')).lower()
+            if 'non-existent domain' in out or "can't find" in out:
+                return False, f'not on {resolver} yet'
+            if hostname.lower() in out and 'address' in out:
+                return True, f'resolves on {resolver}'
+        except Exception as e:
+            return False, str(e)
+    return _dns_resolves(hostname)
+
+
+ROUTER_DNS_FIX = (
+    'Shop-router DNS is slow. MBT POS sets this PC to 1.1.1.1 automatically during setup. '
+    'If the browser still fails, click Allow when Windows asks, then run Test Connection again.'
+)
+
+
+def _active_net_interface() -> str:
+    """Name of the connected network adapter (Windows)."""
+    if sys.platform != 'win32':
+        return ''
+    try:
+        r = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             "(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
+             "Sort-Object InterfaceMetric | Select-Object -First 1 -ExpandProperty Name)"],
+            capture_output=True, text=True, timeout=25,
+            creationflags=_hide_flags(),
+        )
+        name = (r.stdout or '').strip().splitlines()[0].strip() if r.stdout else ''
+        if name:
+            return name
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(
+            ['netsh', 'interface', 'show', 'interface'],
+            capture_output=True, text=True, timeout=15,
+            creationflags=_hide_flags(),
+        )
+        for line in (r.stdout or '').splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] == 'Connected':
+                return ' '.join(parts[3:])
+    except Exception:
+        pass
+    return ''
+
+
+def _try_set_windows_dns(
+    iface: str,
+    primary: str = '1.1.1.1',
+    secondary: str = '8.8.8.8',
+) -> tuple[bool, str]:
+    """Set DNS on one adapter. Needs admin on most shop PCs."""
+    r1 = subprocess.run(
+        ['netsh', 'interface', 'ip', 'set', 'dns', f'name={iface}', 'static', primary],
+        capture_output=True, text=True, timeout=30,
+        creationflags=_hide_flags(),
+    )
+    if r1.returncode != 0:
+        err = ((r1.stderr or '') + (r1.stdout or '')).lower()
+        if 'denied' in err or 'administrator' in err or 'elevation' in err:
+            return False, 'needs_admin'
+        return False, (r1.stderr or r1.stdout or 'netsh set dns failed').strip()
+    subprocess.run(
+        ['netsh', 'interface', 'ip', 'add', 'dns', f'name={iface}', secondary, 'index=2'],
+        capture_output=True, text=True, timeout=30,
+        creationflags=_hide_flags(),
+    )
+    subprocess.run(
+        ['ipconfig', '/flushdns'],
+        capture_output=True, timeout=15,
+        creationflags=_hide_flags(),
+    )
+    return True, iface
+
+
+def _elevate_dns_fix(iface: str, primary: str, secondary: str) -> bool:
+    """One UAC prompt — sets DNS then exits."""
+    import tempfile
+    bat = os.path.join(tempfile.gettempdir(), 'mbt_pos_dns_fix.bat')
+    try:
+        with open(bat, 'w', encoding='utf-8') as f:
+            f.write('\n'.join([
+                '@echo off',
+                f'netsh interface ip set dns name="{iface}" static {primary}',
+                f'netsh interface ip add dns name="{iface}" {secondary} index=2 2>nul',
+                'ipconfig /flushdns >nul',
+                f'del "%~f0" 2>nul',
+            ]))
+        import ctypes
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, 'runas', 'cmd.exe', f'/c "{bat}"', None, 0)
+        return int(rc) > 32
+    except Exception as e:
+        logger.warning('elevate dns fix: %s', e)
+        return False
+
+
+def apply_shop_pc_dns_fix(
+    log: Optional[_SetupLog] = None,
+    primary: str = '1.1.1.1',
+    secondary: str = '8.8.8.8',
+) -> tuple[bool, str]:
+    """
+    Point the shop PC at fast public DNS when the router DNS lags behind Cloudflare.
+    Runs during Cloudflare setup — shop staff do not configure DNS manually.
+    """
+    if sys.platform != 'win32':
+        return False, 'not Windows'
+    iface = _active_net_interface()
+    if not iface:
+        msg = 'Could not detect active network adapter'
+        if log:
+            log.warn(msg)
+        return False, msg
+
+    if log:
+        log.info(f'Updating PC DNS on "{iface}" → {primary} / {secondary}…')
+
+    ok, detail = _try_set_windows_dns(iface, primary, secondary)
+    if ok:
+        if log:
+            log.ok('PC DNS updated for this shop link')
+        return True, iface
+
+    if detail == 'needs_admin':
+        if log:
+            log.info(
+                'Windows security — click Allow once so MBT POS can fix DNS on this PC')
+        if _elevate_dns_fix(iface, primary, secondary):
+            time.sleep(8)
+            subprocess.run(
+                ['ipconfig', '/flushdns'],
+                capture_output=True, timeout=15,
+                creationflags=_hide_flags(),
+            )
+            ok2, _ = _dns_resolves('cloudflare.com')
+            if ok2:
+                if log:
+                    log.ok('PC DNS updated (after Allow)')
+                return True, iface
+        if log:
+            log.warn('DNS fix needs Allow on the Windows prompt, or run setup as administrator')
+        return False, 'needs_admin'
+
+    if log:
+        log.warn(f'DNS update failed: {detail}')
+    return False, detail
 
 
 def _wait_for_dns(
@@ -761,6 +944,23 @@ def _wait_for_dns(
         if i == 0 and log:
             log.info(f'Waiting for DNS ({hostname}) — up to {max_wait}s…')
         time.sleep(5)
+    public_ok, public_detail = _dns_resolves_via(hostname, '1.1.1.1')
+    if public_ok:
+        if log:
+            log.ok(f'DNS live on internet ({public_detail})')
+            log.info('Fixing this PC DNS automatically…')
+        fixed, _ = apply_shop_pc_dns_fix(log)
+        if fixed:
+            ok, detail = _dns_resolves(hostname)
+            if ok:
+                if log:
+                    log.ok(f'DNS ready on this PC: {hostname}')
+                return True, detail
+        if log:
+            log.warn(ROUTER_DNS_FIX)
+        return False, (
+            'Link works on phones — this PC DNS was updated or needs Allow on Windows prompt.'
+        )
     return False, (
         f'DNS not resolving yet on this PC (normal for 2–5 min after setup). '
         f'Run DIAGNOSE CLOUDFLARE.bat later.'
@@ -809,6 +1009,8 @@ def verify_remote_setup(
 
     tunnel_ok = False
     if start_tunnel and cfg.get('remote_enabled'):
+        stop_all_cloudflared()
+        time.sleep(1)
         tunnel_ok = CloudflareTunnelService().start()
         if log:
             if tunnel_ok:
@@ -857,8 +1059,39 @@ def verify_remote_setup(
         'remote_detail': remote_detail if dns_ok else dns_detail,
         'domain': domain,
         'detail': remote_detail if remote_ok else (dns_detail if not dns_ok else remote_detail),
-        'pending_dns': bool(domain) and not dns_ok,
+        'pending_dns': bool(domain) and not dns_ok and not remote_ok,
+        'public_dns_ok': _dns_resolves_via(domain, '1.1.1.1')[0] if domain else False,
     }
+
+
+def refresh_remote_setup_status(save: bool = True) -> bool:
+    """
+    Mark remote_setup_ok when the tunnel is clearly working.
+    Fixes UI stuck on 'setup in progress' after a good install.
+    """
+    cfg = load_web_config()
+    if not cfg.get('remote_enabled'):
+        return False
+    if cfg.get('remote_setup_ok'):
+        return True
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    tunnel_id = (cfg.get('tunnel_id') or '').strip()
+    if not domain or not tunnel_id:
+        return False
+
+    live = (
+        _cloudflared_running()
+        or _dns_resolves_via(domain, '1.1.1.1')[0]
+        or _dns_resolves(domain)[0]
+    )
+    if live and save:
+        save_web_config({
+            'remote_setup_ok': True,
+            'remote_setup_at': datetime.now().isoformat(),
+        })
+        logger.info('remote_setup_ok refreshed — %s is live', domain)
+        return True
+    return bool(live)
 
 
 def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
@@ -921,8 +1154,18 @@ def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
 
     if cfg.get('remote_enabled') and domain:
         v = verify_remote_setup(domain, log, start_tunnel=True, wait_dns=30)
-        add('DNS resolves', v.get('dns_ok', False), v.get('dns_detail', ''),
-            'Wait 2–5 min after setup, or check CNAME in Cloudflare dashboard')
+        pub_ok, _ = _dns_resolves_via(domain, '1.1.1.1')
+        dns_fix = ROUTER_DNS_FIX if pub_ok and not v.get('dns_ok') else (
+            'Wait 2–5 min after setup, or click Set Up Cloudflare again')
+        if pub_ok and not v.get('dns_ok'):
+            apply_shop_pc_dns_fix(log)
+            pub_recheck, _ = _dns_resolves(domain)
+            if pub_recheck:
+                add('DNS resolves', True, 'fixed automatically on this PC', '')
+            else:
+                add('DNS resolves', False, v.get('dns_detail', ''), dns_fix)
+        else:
+            add('DNS resolves', v.get('dns_ok', False), v.get('dns_detail', ''), dns_fix)
         add('cloudflared tunnel', v.get('tunnel_ok', False),
             'running' if v.get('tunnel_ok') else 'not running',
             'Restart MBT POS or run setup again')
@@ -1048,9 +1291,18 @@ class CloudflareTunnelService:
             logger.warning('cloudflared config.yml missing')
             return False
         with self._lock:
+            yml_tid = _config_yml_tunnel_id()
+            cfg_tid = (cfg.get('tunnel_id') or '').strip()
             if _cloudflared_running():
-                logger.info('cloudflared already running')
-                ok = True
+                if yml_tid and cfg_tid and yml_tid == cfg_tid:
+                    logger.info('cloudflared already running')
+                    ok = True
+                else:
+                    logger.warning(
+                        'cloudflared running with stale tunnel — restarting')
+                    stop_all_cloudflared()
+                    time.sleep(1)
+                    ok = self._launch()
             else:
                 sync_tunnel_config_from_web()
                 ok = self._launch()
