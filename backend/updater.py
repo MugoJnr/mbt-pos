@@ -30,7 +30,7 @@ import urllib.error
 logger = logging.getLogger(__name__)
 
 # ── GitHub repo — change to your actual repo ──────────────────────────────────
-GITHUB_REPO     = "mugojnr/mbt-pos"
+GITHUB_REPO     = "MugoJnr/mbt-pos"
 GITHUB_API      = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ASSET_NAME      = "MBT_POS_Setup.exe"
 
