@@ -1,6 +1,6 @@
 {
-  "version": "2.3.3",
-  "build": "PROD-2026-07-03-v2.3.3",
+  "version": "2.3.4",
+  "build": "PROD-2026-07-03-v2.3.4",
   "build_date": "2026-07-03",
   "release_notes": "Test release for auto-update verification.",
   "github_repo": "MugoJnr/mbt-pos",

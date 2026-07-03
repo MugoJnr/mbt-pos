@@ -8,6 +8,7 @@ import sys
 import os
 import threading
 import time
+import tempfile
 import logging
 from datetime import datetime
 
@@ -40,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-03-v2.3.3"
-APP_VERSION   = "2.3.3"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-03-v2.3.4"
+APP_VERSION   = "2.3.4"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -106,6 +107,9 @@ def _load_icon() -> QIcon:
 class AppSignals(QObject):
     connection_changed = pyqtSignal(bool)
     sync_status        = pyqtSignal(str)
+    update_available   = pyqtSignal(str, str)   # version, notes
+    update_ready       = pyqtSignal(str, str)   # installer_path, version
+    force_update       = pyqtSignal(str, str)   # version, reason
 
 
 # ── Login Dialog ───────────────────────────────────────────────────────────────
@@ -237,6 +241,9 @@ class MainWindow(QMainWindow):
 
         self.signals.connection_changed.connect(self._on_conn)
         self.signals.sync_status.connect(self._on_sync)
+        self.signals.update_available.connect(self._ui_update_available)
+        self.signals.update_ready.connect(self._ui_update_ready)
+        self.signals.force_update.connect(self._ui_force_update)
 
         first = next(iter(self._nav), 'dashboard')
         self._goto(first)
@@ -259,6 +266,7 @@ class MainWindow(QMainWindow):
         # Start services after a short delay so UI paints immediately
         QTimer.singleShot(500, self._start_services)
         QTimer.singleShot(1500, self._initial_conn_check)
+        QTimer.singleShot(2000, self._restore_pending_update)
 
     # ── Config ─────────────────────────────────────────────────────────────────
     def _cfg(self) -> dict:
@@ -370,35 +378,68 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         self._pending_update_notes = notes or ''
         log.info(f"Update available: v{version}")
-
-        def _show():
-            btn = getattr(self, '_update_btn', None)
-            if btn:
-                btn.setText(f"  Downloading v{version}…  ")
-                btn.show()
-        QTimer.singleShot(0, _show)
+        self.signals.update_available.emit(version, notes or '')
 
     def _on_update_ready(self, installer_path, version):
         self._pending_installer_path = installer_path
         self._pending_update_version = version
         log.info(f"Update downloaded: v{version}")
-
-        def _show():
-            btn = getattr(self, '_update_btn', None)
-            if btn:
-                btn.setText(f"  Update v{version}  ")
-                btn.show()
-        QTimer.singleShot(0, _show)
+        self.signals.update_ready.emit(installer_path, version)
 
     def _on_force_update(self, version, reason):
         self._pending_update_version = version
         log.warning(f"Force update required: v{version}")
+        self.signals.force_update.emit(version, reason or '')
 
-        def _warn():
-            QMessageBox.warning(
-                self, 'Update Required',
-                reason or f'Please update to v{version} to continue using MBT POS.')
-        QTimer.singleShot(0, _warn)
+    def _ui_update_available(self, version, notes):
+        self._pending_update_version = version
+        self._pending_update_notes = notes
+        btn = getattr(self, '_update_btn', None)
+        if btn:
+            btn.setText(f"  ↓ Downloading v{version}…  ")
+            btn.show()
+            btn.raise_()
+
+    def _ui_update_ready(self, installer_path, version):
+        self._pending_installer_path = installer_path
+        self._pending_update_version = version
+        btn = getattr(self, '_update_btn', None)
+        if btn:
+            btn.setText(f"  ⬆ Update v{version}  ")
+            btn.show()
+            btn.raise_()
+
+    def _ui_force_update(self, version, reason):
+        QMessageBox.warning(
+            self, 'Update Required',
+            reason or f'Please update to v{version} to continue using MBT POS.')
+
+    def _restore_pending_update(self):
+        """If a update was downloaded while UI was not ready, show the button."""
+        import glob
+        import re
+        if self._pending_installer_path and os.path.isfile(self._pending_installer_path):
+            ver = self._pending_update_version or '?'
+            self._ui_update_ready(self._pending_installer_path, ver)
+            return
+        pattern = os.path.join(tempfile.gettempdir(), 'MBT_POS_Setup_v*.exe')
+        best = None
+        best_ver = ''
+        for path in glob.glob(pattern):
+            m = re.search(r'_v([\d.]+)\.exe$', path, re.I)
+            if not m:
+                continue
+            ver = m.group(1)
+            try:
+                from backend.updater import _version_gt
+                if _version_gt(ver, APP_VERSION) and os.path.getsize(path) > 1_000_000:
+                    if not best_ver or _version_gt(ver, best_ver):
+                        best, best_ver = path, ver
+            except Exception:
+                pass
+        if best:
+            self._ui_update_ready(best, best_ver)
+
 
     def _on_update_btn_clicked(self):
         version = self._pending_update_version or '?'
@@ -549,8 +590,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._sync_lbl)
 
         self._update_btn = QPushButton("  Update  ")
-        self._update_btn.setObjectName("refreshBtn")
+        self._update_btn.setObjectName("updateBtn")
         self._update_btn.setCursor(Qt.PointingHandCursor)
+        self._update_btn.setStyleSheet(
+            f"QPushButton#updateBtn {{ background:{C['gold']}; color:#1a1a1a;"
+            f" font-weight:700; font-size:13px; border:none; border-radius:6px;"
+            f" padding:6px 14px; }}"
+            f"QPushButton#updateBtn:hover {{ background:#e6c200; }}"
+        )
         self._update_btn.clicked.connect(self._on_update_btn_clicked)
         self._update_btn.hide()
         lay.addWidget(self._update_btn)
