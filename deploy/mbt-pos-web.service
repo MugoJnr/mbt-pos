@@ -1,0 +1,20 @@
+[Unit]
+Description=MBT POS Web Dashboard (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mbt
+Group=mbt
+WorkingDirectory=/opt/mbt-pos
+Environment=PYTHONPATH=/opt/mbt-pos
+Environment=PATH=/opt/mbt-pos/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/mbt-pos/venv/bin/python /opt/mbt-pos/backend/app.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/mbt-pos/logs/flask.log
+StandardError=append:/opt/mbt-pos/logs/flask.log
+
+[Install]
+WantedBy=multi-user.target

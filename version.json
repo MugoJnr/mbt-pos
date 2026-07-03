@@ -1,0 +1,11 @@
+{
+  "version": "2.2.0",
+  "build": "PROD-2026-07-03-v2",
+  "build_date": "2026-07-03",
+  "release_notes": "Auto-update from GitHub, unified Telegram hub, per-shop Cloudflare, stable licensing, production hardening.",
+  "github_repo": "mugojnr/mbt-pos",
+  "asset_name": "MBT_POS_Setup.exe",
+  "download_url": "https://github.com/mugojnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+  "min_required_version": "1.0.0",
+  "force_update": false
+}

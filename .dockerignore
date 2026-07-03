@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+build/
+dist/
+.git/
+cloudflared.exe
+logs/
+exports/
+*.db

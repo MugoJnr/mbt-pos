@@ -1,0 +1,35 @@
+# MBT POS — Python Dependencies
+# Compatible with Python 3.10, 3.11, 3.12
+# DO NOT install on Python 3.13 or 3.14 — PyQt5 is not supported there
+
+# GUI — let pip pick the best available wheel for your Python version
+PyQt5>=5.15
+PyQt5-sip>=12.11
+
+# Auth & security
+pyjwt>=2.8
+bcrypt>=4.0
+cffi>=1.15
+
+# HTTP & networking
+requests>=2.31
+urllib3>=2.0
+certifi
+charset-normalizer>=3.0
+idna>=3.4
+
+# Excel export
+openpyxl>=3.1
+et_xmlfile>=1.1
+
+# Hardware (receipt printer)
+pyserial>=3.5
+
+# Web framework — desktop uses it for DB init; the optional web dashboard
+# (web_launcher.py + backend/app.py) runs a local Flask server for remote access.
+werkzeug>=2.3
+flask>=2.3
+flask-cors>=4.0
+click>=8.1
+# Optional: enables websocket support for the web dashboard (imported lazily)
+flask-sock>=0.7

@@ -1,0 +1,14 @@
+{
+  "flask_port": 5050,
+  "flask_host": "0.0.0.0",
+  "base_domain": "mugobyte.com",
+  "tunnel_domain": "",
+  "tunnel_name": "",
+  "tunnel_subdomain": "",
+  "remote_enabled": false,
+  "remote_setup_ok": false,
+  "remote_setup_at": "",
+  "cloudflared_exe": "",
+  "check_interval": 30,
+  "max_restarts": 50
+}

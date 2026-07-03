@@ -1,0 +1,32 @@
+MBT POS SOFTWARE LICENSE AGREEMENT
+MugoByte Technologies | mugobyte.com
+admin@mugobyte.com | +254 112 863 252
+
+This software is licensed, not sold. By installing MBT POS you agree to
+the following terms:
+
+1. LICENSE GRANT
+   MugoByte Technologies grants you a non-exclusive, non-transferable
+   license to use MBT POS on one (1) computer. The license is bound to
+   the hardware it is activated on.
+
+2. RESTRICTIONS
+   You may not copy, share, sell, or redistribute this software. You may
+   not reverse-engineer, decompile, or tamper with any part of this
+   software. You may not install or use the software on more than one
+   computer without a separate license for each.
+
+3. OWNERSHIP
+   MBT POS and all its components remain the intellectual property of
+   MugoByte Technologies at all times.
+
+4. SUPPORT
+   Support is provided during the active license period via Telegram
+   (@mbt_admin1_bot), WhatsApp and phone (+254 112 863 252), and email
+   (admin@mugobyte.com).
+
+5. LIMITATION OF LIABILITY
+   MugoByte Technologies shall not be liable for any indirect or
+   consequential loss arising from use of this software.
+
+© 2026 MugoByte Technologies. All rights reserved.

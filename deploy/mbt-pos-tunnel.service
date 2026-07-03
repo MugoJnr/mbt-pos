@@ -1,0 +1,19 @@
+[Unit]
+Description=MBT POS Cloudflare Tunnel
+After=network-online.target mbt-pos-web.service
+Wants=network-online.target
+Requires=mbt-pos-web.service
+
+[Service]
+Type=simple
+User=mbt
+Group=mbt
+WorkingDirectory=/opt/mbt-pos
+ExecStart=/bin/bash -c 'exec "$(test -x /opt/mbt-pos/cloudflared && echo /opt/mbt-pos/cloudflared || echo /usr/local/bin/cloudflared)" tunnel --config /home/mbt/.cloudflared/config.yml run'
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/mbt-pos/logs/cloudflared.log
+StandardError=append:/opt/mbt-pos/logs/cloudflared.log
+
+[Install]
+WantedBy=multi-user.target
