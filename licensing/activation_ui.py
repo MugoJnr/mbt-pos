@@ -19,17 +19,18 @@ from PyQt5.QtWidgets import (
     QPushButton, QFrame, QScrollArea, QWidget, QMessageBox, QSizePolicy,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QPixmap, QIcon
 
 try:
     from desktop.utils.theme import C
 except Exception:
     C = {
-        'gold': '#F0A500', 'gold_lt': '#FFBE3A', 'gold_dk': '#D4880A',
-        'ok': '#00D68F', 'err': '#FF4757', 'warn': '#FFAA00',
-        'text': '#F0F4FC', 'text2': '#6E8FA8', 'muted': '#374F66',
-        'app': '#070C14', 'card': '#111F33', 'card2': '#162540',
-        'border2': '#1A2D44', 'hover': '#192D48', 'input': '#0F1C30',
+        'gold': '#F2A800', 'gold_lt': '#FFBE3A', 'gold_dk': '#C07800',
+        'ok': '#00C97E', 'err': '#FF3D50', 'warn': '#F0A500',
+        'text': '#EEF2FC', 'text2': '#6880A0', 'muted': '#334D68',
+        'app': '#05080F', 'card': '#0F1A2E', 'card2': '#132034',
+        'border2': '#18283E', 'hover': '#162A44', 'input': '#0C1626',
+        'gold_fg': '#0A0F1A',
     }
 
 # Footer must fit 3 full-size buttons on 125–150 % Windows scaling
@@ -191,6 +192,25 @@ class ActivationDialog(QDialog):
         content.setContentsMargins(20, 16, 20, 20)
         content.setSpacing(12)
 
+        # Exact HD logo (transparent — no black/white plate)
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setStyleSheet("background:transparent; border:none;")
+        _assets = os.path.join(PROJECT_ROOT, 'assets')
+        if getattr(sys, 'frozen', False):
+            _assets = os.path.join(sys._MEIPASS, 'assets')
+        for _name in ('mbt_logo_hd.png', 'mbt_icon_256.png', 'mbt_icon.png'):
+            _p = os.path.join(_assets, _name)
+            if os.path.exists(_p):
+                _pm = QPixmap(_p)
+                if not _pm.isNull():
+                    logo.setPixmap(
+                        _pm.scaled(260, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    break
+        ico = os.path.join(_assets, 'mbt_icon.ico')
+        if os.path.exists(ico):
+            self.setWindowIcon(QIcon(ico))
+
         eye = QLabel("MUGOBYTE TECHNOLOGIES")
         eye.setAlignment(Qt.AlignCenter)
         eye.setStyleSheet(
@@ -209,6 +229,7 @@ class ActivationDialog(QDialog):
         sub.setStyleSheet(
             f"color:{C['text2']}; font-size:12px; background:transparent;")
 
+        content.addWidget(logo)
         content.addWidget(eye)
         content.addWidget(title)
         content.addWidget(sub)

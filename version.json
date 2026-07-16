@@ -1,8 +1,8 @@
 {
-  "version": "2.3.4",
-  "build": "PROD-2026-07-03-v2.3.4",
-  "build_date": "2026-07-03",
-  "release_notes": "Test release for auto-update verification.",
+  "version": "2.3.22",
+  "build": "PROD-2026-07-16-v2.3.22",
+  "build_date": "2026-07-16",
+  "release_notes": "Lovable UI port: Manrope fonts, refined AppShell (sidebar/topbar/footer), gold design tokens dark+light, POS card layout with payment toggles, inventory card table + ghost actions, GhostBtn/Badge upgrades, Cloudflare token sync.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

@@ -54,19 +54,25 @@ else:
         r.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
         return r
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Share the exact same database the desktop app uses (AppData when frozen,
-# project data/ in development) so the web dashboard reflects live shop data.
+BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = BUNDLE_DIR  # PyInstaller bundle root (_internal when frozen onedir)
 try:
-    if BASE_DIR not in sys.path:
-        sys.path.insert(0, BASE_DIR)
-    from mbt_paths import get_db_path as _get_db_path, ensure_data_dirs as _ensure_dirs, configure_sqlite_connection
-    _ensure_dirs()
+    if BUNDLE_DIR not in sys.path:
+        sys.path.insert(0, BUNDLE_DIR)
+    from mbt_paths import (
+        get_db_path as _get_db_path,
+        ensure_data_dirs as _ensure_dirs,
+        configure_sqlite_connection,
+    )
+    DATA_ROOT = _ensure_dirs()
     DB_PATH = _get_db_path()
+    CONFIG_PATH = os.path.join(DATA_ROOT, 'config', 'settings.json')
+    LOG_PATH = os.path.join(DATA_ROOT, 'logs', 'backend.log')
 except Exception:
-    DB_PATH = os.path.join(BASE_DIR, 'data', 'mbt_pos.db')
-CONFIG_PATH = os.path.join(BASE_DIR, 'config', 'settings.json')
-LOG_PATH = os.path.join(BASE_DIR, 'logs', 'backend.log')
+    DATA_ROOT = BUNDLE_DIR
+    DB_PATH = os.path.join(BUNDLE_DIR, 'data', 'mbt_pos.db')
+    CONFIG_PATH = os.path.join(BUNDLE_DIR, 'config', 'settings.json')
+    LOG_PATH = os.path.join(BUNDLE_DIR, 'logs', 'backend.log')
 SECRET_KEY = "MBT_POS_SECRET_2024_MUGOBYTE"
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)

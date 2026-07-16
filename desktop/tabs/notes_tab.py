@@ -1,9 +1,10 @@
-"""MBT POS - Notes | MugoByte Technologies"""
+"""MBT POS - Notes | MugoByte Technologies (Lovable two-pane layout)"""
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C
-from desktop.utils.widgets import H2, Caption, PrimaryBtn, DangerBtn, SecondaryBtn, SearchBar
+from desktop.utils.theme   import C, RADIUS
+from desktop.utils.widgets import H2, Caption, PrimaryBtn, DangerBtn, GhostBtn, SearchBar, Card
+
 
 class NotesTab(QWidget):
     def __init__(self, api, user, db_path, config_getter):
@@ -12,40 +13,70 @@ class NotesTab(QWidget):
         self.notes=[]; self._nid=None; self._build()
 
     def _build(self):
-        root=QHBoxLayout(self); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
-        left=QWidget(); left.setFixedWidth(280)
-        left.setStyleSheet(f"background:{C['panel']}; border-right:1px solid {C['border']};")
-        ll=QVBoxLayout(left); ll.setContentsMargins(16,18,16,16); ll.setSpacing(12)
-        hdr=QHBoxLayout(); hdr.addWidget(H2('Notes')); hdr.addStretch()
-        add=PrimaryBtn('+', 34); add.setFixedWidth(34); add.clicked.connect(self._new); hdr.addWidget(add)
-        ll.addLayout(hdr)
-        self._search=SearchBar('Search...'); self._search.textChanged.connect(self._filter); ll.addWidget(self._search)
-        self._list=QListWidget()
+        root = QHBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(14)
+
+        # ── Left list card (Lovable) ──────────────────────────────────────────
+        left = Card()
+        left.setFixedWidth(300)
+        ll = left.layout_v(margins=(0, 0, 0, 0), spacing=0)
+
+        toolbar = QWidget()
+        toolbar.setStyleSheet(f"border-bottom:1px solid {C['border']};")
+        tl = QHBoxLayout(toolbar)
+        tl.setContentsMargins(12, 10, 12, 10); tl.setSpacing(8)
+        self._search = SearchBar('Search notes…')
+        self._search.textChanged.connect(self._filter)
+        tl.addWidget(self._search, 1)
+        add = PrimaryBtn('+', 34); add.setFixedWidth(34)
+        add.clicked.connect(self._new)
+        tl.addWidget(add)
+        ll.addWidget(toolbar)
+
+        self._list = QListWidget()
+        r = RADIUS['md']
         self._list.setStyleSheet(
             f"QListWidget {{ background:transparent; border:none; outline:none; }}"
-            f"QListWidget::item {{ background:{C['card']}; border-radius:8px; "
-            f"padding:12px 14px; margin-bottom:4px; color:{C['text']}; font-size:13px; border:1px solid {C['border']}; }}"
-            f"QListWidget::item:selected {{ background:{C['selected']}; color:{C['gold']}; border-color:{C['selected']}; }}"
-            f"QListWidget::item:hover:!selected {{ background:{C['hover']}; }}")
-        self._list.currentRowChanged.connect(self._select); ll.addWidget(self._list)
+            f"QListWidget::item {{ background:transparent; border:none; "
+            f"border-bottom:1px solid {C['border']}; border-radius:0; "
+            f"padding:12px 14px; margin:0; color:{C['text']}; }}"
+            f"QListWidget::item:selected {{ background:{C['hover']}; "
+            f"color:{C['text']}; border-left:3px solid {C['gold']}; }}"
+            f"QListWidget::item:hover:!selected {{ background:{C['hover']}88; }}")
+        self._list.currentRowChanged.connect(self._select)
+        ll.addWidget(self._list, 1)
         root.addWidget(left)
-        right=QWidget(); right.setStyleSheet(f"background:{C['surface']};")
-        rl=QVBoxLayout(right); rl.setContentsMargins(28,22,28,22); rl.setSpacing(14)
-        hdr2=QHBoxLayout()
-        self._tin=QLineEdit(); self._tin.setPlaceholderText('Note title...')
-        self._tin.setMinimumHeight(44)
+
+        # ── Right editor card ─────────────────────────────────────────────────
+        right = Card()
+        rl = right.layout_v(margins=(0, 0, 0, 0), spacing=0)
+
+        hdr = QWidget()
+        hdr.setStyleSheet(f"border-bottom:1px solid {C['border']};")
+        hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 12, 12, 12); hl.setSpacing(8)
+        self._tin = QLineEdit(); self._tin.setPlaceholderText('Note title...')
+        self._tin.setMinimumHeight(40)
         self._tin.setStyleSheet(
-            f"QLineEdit {{ font-size:18px; font-weight:700; background:transparent; "
-            f"border:none; border-bottom:2px solid {C['border2']}; border-radius:0; padding:4px 0; color:{C['text']}; }}"
-            f"QLineEdit:focus {{ border-bottom-color:{C['gold']}; }}")
-        hdr2.addWidget(self._tin, 1)
-        sv=PrimaryBtn('Save', 40); sv.setFixedWidth(90); sv.clicked.connect(self._save)
-        dl=DangerBtn('🗑', 40); dl.setFixedWidth(42); dl.clicked.connect(self._delete)
-        hdr2.addWidget(sv); hdr2.addWidget(dl); rl.addLayout(hdr2)
-        self._body=QTextEdit(); self._body.setPlaceholderText('Write your note here...')
-        self._body.setStyleSheet(f"font-size:14px; background:transparent; border:none; color:{C['text']}; line-height:1.6;")
-        rl.addWidget(self._body)
-        self._meta=Caption(''); rl.addWidget(self._meta)
+            f"QLineEdit {{ font-size:17px; font-weight:600; background:transparent; "
+            f"border:none; padding:4px 0; color:{C['text']}; }}"
+            f"QLineEdit:focus {{ border:none; }}")
+        hl.addWidget(self._tin, 1)
+        sv = PrimaryBtn('Save', 36); sv.setFixedWidth(84); sv.clicked.connect(self._save)
+        dl = GhostBtn('🗑', 36); dl.setFixedWidth(40); dl.clicked.connect(self._delete)
+        hl.addWidget(sv); hl.addWidget(dl)
+        rl.addWidget(hdr)
+
+        body = QWidget()
+        bl = QVBoxLayout(body); bl.setContentsMargins(20, 16, 20, 16); bl.setSpacing(8)
+        self._body = QTextEdit(); self._body.setPlaceholderText('Start writing…')
+        self._body.setStyleSheet(
+            f"font-size:15px; background:transparent; border:none; "
+            f"color:{C['text']}; line-height:1.6; padding:0;")
+        bl.addWidget(self._body, 1)
+        self._meta = Caption('')
+        bl.addWidget(self._meta)
+        rl.addWidget(body, 1)
         root.addWidget(right, 1)
 
     def on_show(self): self.refresh()
@@ -56,8 +87,11 @@ class NotesTab(QWidget):
     def _populate(self, notes):
         self._list.clear()
         for n in notes:
-            item=QListWidgetItem(n.get('title') or 'Untitled')
-            item.setData(Qt.UserRole, n['id']); self._list.addItem(item)
+            title = n.get('title') or 'Untitled'
+            preview = ((n.get('content') or '').split('\n')[0] or 'Empty note')[:60]
+            item = QListWidgetItem(f"{title}\n{preview}")
+            item.setData(Qt.UserRole, n['id'])
+            self._list.addItem(item)
     def _select(self, row):
         if row<0: return
         item=self._list.item(row)

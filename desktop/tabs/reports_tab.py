@@ -6,9 +6,10 @@ from PyQt5.QtGui     import *
 from datetime import date, timedelta
 from desktop.utils.theme   import C
 from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
-                                    SecondaryBtn, DangerBtn, SuccessBtn,
+                                    SecondaryBtn, DangerBtn, SuccessBtn, GhostBtn,
                                     make_table, tbl_item, tbl_right,
-                                    tbl_center, page_layout, Badge)
+                                    tbl_center, page_layout, Badge, lovable_tab_qss,
+                                    wrap_table_card, page_intro)
 
 _log = logging.getLogger(__name__)
 _PR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,28 +45,39 @@ class ReportsTab(QWidget):
     # ── UI ─────────────────────────────────────────────────────────────────────
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28,24,28,28), spacing=18)
+        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=16)
+
+        # Lovable-style top actions
+        actions = QWidget()
+        ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
+        self._exp_btn = PrimaryBtn('⬇  Export Excel', 40)
+        self._exp_btn.clicked.connect(self._export)
+        self._tg_btn = SecondaryBtn('✈  Telegram', 40)
+        self._tg_btn.clicked.connect(self._send_telegram)
+        ar.addWidget(self._tg_btn); ar.addWidget(self._exp_btn)
+        intro, _ = page_intro('Reports', 'Sales, line items, products and payment breakdown.', actions)
+        lay.addLayout(intro)
 
         # ── Filter bar ────────────────────────────────────────────────────────
-        fc = Card(); fl = fc.layout_h((20,12,20,12), 10)
+        fc = Card(); fl = fc.layout_h((16, 12, 16, 12), 8)
         fl.addWidget(self._lbl('From:'))
         self._s = QDateEdit(date.today()); self._s.setCalendarPopup(True)
-        self._s.setDisplayFormat('yyyy-MM-dd'); self._s.setMinimumHeight(40)
+        self._s.setDisplayFormat('yyyy-MM-dd'); self._s.setMinimumHeight(36)
         fl.addWidget(self._s)
         fl.addWidget(self._lbl('To:'))
         self._e = QDateEdit(date.today()); self._e.setCalendarPopup(True)
-        self._e.setDisplayFormat('yyyy-MM-dd'); self._e.setMinimumHeight(40)
+        self._e.setDisplayFormat('yyyy-MM-dd'); self._e.setMinimumHeight(36)
         fl.addWidget(self._e)
         for lbl, days in [('Today',0),('7 Days',7),('30 Days',30),('Month',-1)]:
-            b = SecondaryBtn(lbl, 40); b.clicked.connect(lambda _,d=days: self._quick(d))
+            b = SecondaryBtn(lbl, 36); b.clicked.connect(lambda _,d=days: self._quick(d))
             fl.addWidget(b)
         fl.addStretch()
-        run = PrimaryBtn('▶  Run', 40); run.setFixedWidth(110)
+        run = PrimaryBtn('▶  Run', 36); run.setFixedWidth(100)
         run.clicked.connect(self.refresh); fl.addWidget(run)
         lay.addWidget(fc)
 
         # ── KPIs ──────────────────────────────────────────────────────────────
-        kr = QHBoxLayout(); kr.setSpacing(14)
+        kr = QHBoxLayout(); kr.setSpacing(12)
         self._k_txn  = KPICard('Transactions', '0',  '', C['gold'])
         self._k_rev  = KPICard('Revenue',      '—',  '', C['ok'])
         self._k_avg  = KPICard('Avg Sale',     '—',  '', C['info'])
@@ -73,31 +85,20 @@ class ReportsTab(QWidget):
         for k in (self._k_txn,self._k_rev,self._k_avg,self._k_disc): kr.addWidget(k)
         lay.addLayout(kr)
 
-        # ── Action bar ────────────────────────────────────────────────────────
-        ac = Card(); al = ac.layout_h((18,10,18,10), 10)
-
-        self._exp_btn = SecondaryBtn('⬇  Export Excel', 40)
-        self._exp_btn.clicked.connect(self._export)
-
-        self._tg_btn = SuccessBtn('✈  Send via Telegram', 40)
-        self._tg_btn.clicked.connect(self._send_telegram)
-
-        self._open_btn = SecondaryBtn('📂  Open Folder', 40)
+        # ── Status / open folder ──────────────────────────────────────────────
+        ac = Card(); al = ac.layout_h((16, 10, 16, 10), 8)
+        self._open_btn = GhostBtn('📂  Open Folder', 36)
         self._open_btn.clicked.connect(self._open_folder)
-
         self._status_lbl = QLabel('')
         self._status_lbl.setWordWrap(True)
         self._status_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:11.5px; background:transparent;")
-
-        al.addWidget(self._exp_btn)
-        al.addWidget(self._tg_btn)
+            f"color:{C['text2']}; font-size:12px; background:transparent;")
         al.addWidget(self._open_btn)
         al.addWidget(self._status_lbl, 1)
         lay.addWidget(ac)
 
         # ── Auto-schedule row ─────────────────────────────────────────────────
-        sc = Card(); sl = sc.layout_h((18,10,18,10), 14)
+        sc = Card(); sl = sc.layout_h((16, 10, 16, 10), 12)
         sl.addWidget(self._lbl('Auto-send:'))
         self._sched_daily = QCheckBox('Daily when online (reconnect + every 4 hrs)')
         self._sched_daily.setStyleSheet("color:{0}; background:transparent;".format(C['text']))
@@ -115,8 +116,9 @@ class ReportsTab(QWidget):
         sl.addStretch()
         lay.addWidget(sc)
 
-        # ── Data tabs ─────────────────────────────────────────────────────────
-        tabs = QTabWidget(); tabs.setMinimumHeight(340)
+        # ── Data tabs in card (Lovable) ───────────────────────────────────────
+        tabs = QTabWidget(); tabs.setMinimumHeight(320)
+        tabs.setStyleSheet(lovable_tab_qss())
         self._stbl = make_table(
             ['Receipt','Date / Time','Cashier','Items','Discount','Tax','Total','Payment'],
             stretch_col=0, row_height=40)
@@ -130,7 +132,6 @@ class ReportsTab(QWidget):
             ['Payment Method','Count','% Count',f'Revenue','% Revenue'],
             stretch_col=0, row_height=40)
 
-        # Set fixed widths for non-stretch cols
         for tbl, specs in [
             (self._stbl,  [(1,140),(2,120),(3,80),(4,90),(5,70),(6,110),(7,90)]),
             (self._ptbl,  [(1,90),(2,100),(3,110),(4,90)]),
@@ -141,11 +142,11 @@ class ReportsTab(QWidget):
                 tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
                 tbl.setColumnWidth(col, w)
 
-        tabs.addTab(self._stbl,  '  Sales List  ')
-        tabs.addTab(self._litbl, '  Line Items (Products)  ')
-        tabs.addTab(self._ptbl,  '  Top Products  ')
-        tabs.addTab(self._mtbl,  '  By Payment  ')
-        lay.addWidget(tabs)
+        tabs.addTab(self._stbl,  'Sales List')
+        tabs.addTab(self._litbl, 'Line Items')
+        tabs.addTab(self._ptbl,  'Top Products')
+        tabs.addTab(self._mtbl,  'By Payment')
+        lay.addWidget(wrap_table_card(tabs), 1)
 
     def _lbl(self, t):
         l = QLabel(t)

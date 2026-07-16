@@ -135,6 +135,14 @@ class WebDashboardService:
                     log.warning('Remote enabled but tunnel_domain is not set')
             else:
                 log.warning('Cloudflare tunnel did not start — check logs/cloudflared.log')
+                try:
+                    from backend.cloudflare_setup import (
+                        _get_cloudflare_api_token, start_auto_cloudflare,
+                    )
+                    if _get_cloudflare_api_token():
+                        start_auto_cloudflare()
+                except Exception:
+                    pass
         except Exception as e:
             log.warning('Cloudflare tunnel: %s', e)
 

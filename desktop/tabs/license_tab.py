@@ -17,8 +17,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from desktop.utils.theme import COLORS
-from desktop.utils.widgets import PrimaryBtn, SecondaryBtn, SuccessBtn, DangerBtn, page_layout
+from desktop.utils.theme import C, RADIUS
+from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerBtn,
+                                    page_layout, Card, H2, Badge, GhostBtn)
 
 
 # ── State styling map ──────────────────────────────────────────────────────────
@@ -35,29 +36,35 @@ _STATE_STYLE = {
 
 
 class _LicCard(QFrame):
-    """Compact info card for the license dashboard."""
+    """Compact info card for the license dashboard (Lovable Info tile)."""
     def __init__(self, icon, label, value='—', accent=None):
         super().__init__()
-        accent = accent or COLORS['accent']
+        accent = accent or C['gold']
+        r = RADIUS['md']
         self.setStyleSheet(
-            f"QFrame {{ background:{COLORS['bg_card']}; border:1px solid {COLORS['border']};"
-            f"border-left:3px solid {accent}; border-radius:6px; }}"
+            f"QFrame {{ background:{C['card2']}; border:1px solid {C['border']};"
+            f"border-radius:{r}px; }}"
         )
-        self.setFixedHeight(74)
+        self.setMinimumHeight(72)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 8)
-        lay.setSpacing(2)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(4)
         lbl = QLabel(f"{icon}  {label.upper()}")
-        lbl.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:1px; font-weight:600;")
+        lbl.setStyleSheet(
+            f"color:{C['text2']}; font-size:10px; letter-spacing:1.4px; "
+            f"font-weight:700; background:transparent;")
         self._val = QLabel(str(value))
-        self._val.setStyleSheet(f"color:{accent}; font-size:16px; font-weight:800;")
+        self._val.setStyleSheet(
+            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
+        self._val.setWordWrap(True)
         lay.addWidget(lbl)
         lay.addWidget(self._val)
 
     def set_value(self, v, color=None):
         self._val.setText(str(v))
-        if color:
-            self._val.setStyleSheet(f"color:{color}; font-size:16px; font-weight:800;")
+        col = color or C['text']
+        self._val.setStyleSheet(
+            f"color:{col}; font-size:14px; font-weight:700; background:transparent;")
 
 
 class LicenseTab(QWidget):
@@ -77,57 +84,55 @@ class LicenseTab(QWidget):
         QTimer.singleShot(500, self.refresh)
 
     def _setup_ui(self):
-        root, _ = page_layout(self, margins=(22, 18, 22, 16), spacing=16)
+        root, _ = page_layout(self, margins=(24, 20, 24, 20), spacing=16)
 
-        # ── Header ────────────────────────────────────────────────────────────
+        # ── Header (Lovable) ──────────────────────────────────────────────────
         hdr_row = QHBoxLayout()
         hdr_col = QVBoxLayout()
         hdr_col.setSpacing(2)
-        eye = QLabel("MUGOBYTE TECHNOLOGIES")
-        eye.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:2px;")
+        eye = QLabel("CURRENT PLAN")
+        eye.setStyleSheet(
+            f"color:{C['text2']}; font-size:10px; letter-spacing:2px; font-weight:700;")
         ttl = QLabel("License & Subscription")
-        ttl.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:18px; font-weight:700;")
+        ttl.setStyleSheet(f"color:{C['text']}; font-size:20px; font-weight:700;")
         sub = QLabel("Manage your MBT POS license, subscription, and device binding")
-        sub.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:11.5px;")
+        sub.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         hdr_col.addWidget(eye)
         hdr_col.addWidget(ttl)
         hdr_col.addWidget(sub)
         hdr_row.addLayout(hdr_col)
         hdr_row.addStretch()
 
-        ref_btn = SecondaryBtn("↺  Refresh", 38)
-        ref_btn.setObjectName("refreshBtn")
-        ref_btn.setCursor(Qt.PointingHandCursor)
+        ref_btn = GhostBtn("↺  Refresh", 36)
         ref_btn.clicked.connect(self.refresh)
         hdr_row.addWidget(ref_btn)
 
-        sync_btn = SecondaryBtn("⟳  Sync Now", 38)
-        sync_btn.setCursor(Qt.PointingHandCursor)
+        sync_btn = SecondaryBtn("⟳  Sync Now", 36)
         sync_btn.clicked.connect(self._force_sync)
         hdr_row.addWidget(sync_btn)
         root.addLayout(hdr_row)
 
         # ── Status banner ─────────────────────────────────────────────────────
         self.status_banner = QFrame()
-        self.status_banner.setFixedHeight(64)
+        self.status_banner.setMinimumHeight(64)
         self.status_banner.setStyleSheet(
-            f"QFrame {{ background:{COLORS['bg_card']}; border:1px solid {COLORS['border']};"
-            f"border-radius:8px; }}"
+            f"QFrame {{ background:{C['card']}; border:1px solid {C['border']};"
+            f"border-radius:12px; }}"
         )
         bl = QHBoxLayout(self.status_banner)
-        bl.setContentsMargins(20, 0, 20, 0)
+        bl.setContentsMargins(20, 10, 20, 10)
 
         self.state_icon = QLabel("○")
-        self.state_icon.setStyleSheet("font-size:26px;")
+        self.state_icon.setStyleSheet("font-size:26px; background:transparent;")
         bl.addWidget(self.state_icon)
 
         state_col = QVBoxLayout()
         state_col.setSpacing(1)
         self.state_label = QLabel("Checking license…")
         self.state_label.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:15px; font-weight:700;")
+            f"color:{C['text']}; font-size:15px; font-weight:700; background:transparent;")
         self.state_sub = QLabel("Please wait…")
-        self.state_sub.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:11.5px;")
+        self.state_sub.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         state_col.addWidget(self.state_label)
         state_col.addWidget(self.state_sub)
         bl.addLayout(state_col)
@@ -135,8 +140,8 @@ class LicenseTab(QWidget):
 
         self.days_badge = QLabel("")
         self.days_badge.setStyleSheet(
-            f"color:{COLORS['bg_sidebar']}; background:{COLORS['accent']};"
-            f"border-radius:14px; font-size:13px; font-weight:800; padding:4px 16px;"
+            f"color:{C.get('gold_fg','#0A0F1A')}; background:{C['gold']};"
+            f"border-radius:8px; font-size:12px; font-weight:700; padding:4px 14px;"
         )
         bl.addWidget(self.days_badge)
         root.addWidget(self.status_banner)
@@ -150,7 +155,7 @@ class LicenseTab(QWidget):
         self.warn_icon = QLabel("⚠")
         self.warn_icon.setStyleSheet("font-size:16px;")
         self.warn_text = QLabel("")
-        self.warn_text.setStyleSheet(f"color:{COLORS['warning']}; font-size:12px; font-weight:600;")
+        self.warn_text.setStyleSheet(f"color:{C['warn']}; font-size:12px; font-weight:600;")
         wl.addWidget(self.warn_icon)
         wl.addWidget(self.warn_text)
         wl.addStretch()
@@ -164,10 +169,10 @@ class LicenseTab(QWidget):
         # ── KPI cards row ─────────────────────────────────────────────────────
         kpi_row = QHBoxLayout()
         kpi_row.setSpacing(12)
-        self.card_plan    = _LicCard('📦', 'Subscription Plan', '—',         COLORS['accent'])
-        self.card_days    = _LicCard('⏳', 'Days Remaining',    '—',         COLORS['info'])
-        self.card_expiry  = _LicCard('📅', 'Expiry Date',       '—',         COLORS['text_secondary'])
-        self.card_sync    = _LicCard('🔄', 'Last Sync',         'Never',     COLORS['success'])
+        self.card_plan    = _LicCard('📦', 'Subscription Plan', '—',         C['gold'])
+        self.card_days    = _LicCard('⏳', 'Days Remaining',    '—',         C['info'])
+        self.card_expiry  = _LicCard('📅', 'Expiry Date',       '—',         C['text2'])
+        self.card_sync    = _LicCard('🔄', 'Last Sync',         'Never',     C['ok'])
         for c in (self.card_plan, self.card_days, self.card_expiry, self.card_sync):
             kpi_row.addWidget(c)
         root.addLayout(kpi_row)
@@ -179,7 +184,7 @@ class LicenseTab(QWidget):
         # Left: device info panel
         dev_frame = QFrame()
         dev_frame.setStyleSheet(
-            f"QFrame {{ background:{COLORS['bg_card']}; border:1px solid {COLORS['border']};"
+            f"QFrame {{ background:{C['card']}; border:1px solid {C['border']};"
             f"border-radius:8px; }}"
         )
         dl = QVBoxLayout(dev_frame)
@@ -188,16 +193,16 @@ class LicenseTab(QWidget):
 
         dev_hdr = QLabel("DEVICE BINDING")
         dev_hdr.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:2px; font-weight:600;")
+            f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
         dl.addWidget(dev_hdr)
 
         def _info_row(lbl_txt, val_txt='—'):
             rw = QHBoxLayout()
             l  = QLabel(lbl_txt)
-            l.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:12px;")
+            l.setStyleSheet(f"color:{C['text']}; font-size:12px;")
             l.setFixedWidth(120)
             v  = QLabel(val_txt)
-            v.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:12px; font-weight:600;")
+            v.setStyleSheet(f"color:{C['text']}; font-size:12px; font-weight:600;")
             v.setWordWrap(True)
             rw.addWidget(l)
             rw.addWidget(v, 1)
@@ -215,10 +220,10 @@ class LicenseTab(QWidget):
             "Moving to another PC requires reactivation.")
         bind_lbl.setWordWrap(True)
         bind_lbl.setStyleSheet(
-            f"color:{COLORS['text_secondary']}; font-size:10px; background:transparent;")
+            f"color:{C['text2']}; font-size:10px; background:transparent;")
         dl.addWidget(bind_lbl)
         foot_lbl = QLabel("MUGOBYTE TECHNOLOGIES  ·  mugobyte.com")
-        foot_lbl.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:1px;")
+        foot_lbl.setStyleSheet(f"color:{C['text']}; font-size:10px; letter-spacing:1px;")
         foot_lbl.setAlignment(Qt.AlignCenter)
         dl.addWidget(foot_lbl)
         body.addWidget(dev_frame, 3)
@@ -226,7 +231,7 @@ class LicenseTab(QWidget):
         # Right: activation panel (scrollable when window is short)
         act_frame = QFrame()
         act_frame.setStyleSheet(
-            f"QFrame {{ background:{COLORS['bg_card']}; border:1px solid {COLORS['border']};"
+            f"QFrame {{ background:{C['card']}; border:1px solid {C['border']};"
             f"border-radius:8px; }}"
         )
         act_frame.setMinimumWidth(280)
@@ -246,7 +251,7 @@ class LicenseTab(QWidget):
 
         act_hdr = QLabel("ACTIVATE LICENSE")
         act_hdr.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:2px; font-weight:600;")
+            f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
         al.addWidget(act_hdr)
 
         act_info = QLabel(
@@ -254,7 +259,7 @@ class LicenseTab(QWidget):
             "MugoByte Technologies to activate\n"
             "or renew your subscription."
         )
-        act_info.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:12px; line-height:1.5;")
+        act_info.setStyleSheet(f"color:{C['text']}; font-size:12px; line-height:1.5;")
         al.addWidget(act_info)
 
         self.key_input = QLineEdit()
@@ -273,23 +278,23 @@ class LicenseTab(QWidget):
 
         self.act_result = QLabel("")
         self.act_result.setWordWrap(True)
-        self.act_result.setStyleSheet(f"font-size:12px; color:{COLORS['text_primary']};")
+        self.act_result.setStyleSheet(f"font-size:12px; color:{C['text']};")
         al.addWidget(self.act_result)
 
         al.addSpacing(8)
         sep = QFrame(); sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet(f"color:{COLORS['border']};")
+        sep.setStyleSheet(f"color:{C['border']};")
         al.addWidget(sep)
 
         # Copy device ID button (for sending to MugoByte to get a key)
         dev_id_lbl = QLabel("Your Device ID (share with MugoByte to get a key):")
-        dev_id_lbl.setStyleSheet(f"color:{COLORS['text_primary']}; font-size:10px;")
+        dev_id_lbl.setStyleSheet(f"color:{C['text']}; font-size:10px;")
         al.addWidget(dev_id_lbl)
 
         copy_row = QHBoxLayout()
         self.short_dev_id = QLabel("Loading…")
         self.short_dev_id.setStyleSheet(
-            f"color:{COLORS['accent']}; font-size:11px; font-family:Consolas;")
+            f"color:{C['gold']}; font-size:11px; font-family:Consolas;")
         copy_row.addWidget(self.short_dev_id, 1)
         copy_btn = SecondaryBtn("Copy", 36)
         copy_btn.setMinimumWidth(64)
@@ -303,12 +308,12 @@ class LicenseTab(QWidget):
         # ── Telegram key-push status ──────────────────────────────────────────
         tg_hdr = QLabel("ACTIVATION VIA TELEGRAM")
         tg_hdr.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:2px; font-weight:600;")
+            f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
         al.addWidget(tg_hdr)
 
         self.tg_status_lbl = QLabel("Waiting for key from MugoByte Technologies…")
         self.tg_status_lbl.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:11px;")
+            f"color:{C['text']}; font-size:11px;")
         self.tg_status_lbl.setWordWrap(True)
         al.addWidget(self.tg_status_lbl)
 
@@ -332,7 +337,7 @@ class LicenseTab(QWidget):
         # ── Event log ─────────────────────────────────────────────────────────
         log_hdr = QLabel("LICENSE EVENT LOG")
         log_hdr.setStyleSheet(
-            f"color:{COLORS['text_primary']}; font-size:10px; letter-spacing:2px; font-weight:600;")
+            f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
         root.addWidget(log_hdr)
 
         self.log_table = QTableWidget(0, 3)
@@ -375,7 +380,7 @@ class LicenseTab(QWidget):
         self.state_label.setStyleSheet(f"color:{color}; font-size:15px; font-weight:700;")
         self.state_sub.setText(sub_txt)
         self.status_banner.setStyleSheet(
-            f"QFrame {{ background:{COLORS['bg_card']}; border:1px solid {color}40;"
+            f"QFrame {{ background:{C['card']}; border:1px solid {color}40;"
             f"border-left:4px solid {color}; border-radius:8px; }}"
         )
 
@@ -383,7 +388,7 @@ class LicenseTab(QWidget):
         if state in ('active', 'expiring', 'warning', 'critical'):
             self.days_badge.setText(f"{days} days left")
             self.days_badge.setStyleSheet(
-                f"color:{COLORS['bg_sidebar']}; background:{color};"
+                f"color:{C.get('gold_fg','#0A0F1A')}; background:{color};"
                 f"border-radius:14px; font-size:13px; font-weight:800; padding:4px 16px;"
             )
             self.days_badge.show()
@@ -401,16 +406,16 @@ class LicenseTab(QWidget):
             self.warn_bar.show()
         elif state == 'expired':
             self.warn_text.setText("Your subscription has expired. Read-only mode active.")
-            self.warn_text.setStyleSheet(f"color:{COLORS['danger']}; font-size:12px; font-weight:600;")
+            self.warn_text.setStyleSheet(f"color:{C['err']}; font-size:12px; font-weight:600;")
             self.warn_bar.show()
         else:
             self.warn_bar.hide()
 
         # KPI cards
-        self.card_plan.set_value(s.get('plan_name', '—'), COLORS['accent'])
+        self.card_plan.set_value(s.get('plan_name', '—'), C['gold'])
         self.card_days.set_value(
             str(days) if days > 0 else 'Expired',
-            color if state != 'active' else COLORS['info']
+            color if state != 'active' else C['info']
         )
         self.card_expiry.set_value(s.get('expiry_date') or '—')
 
@@ -452,9 +457,9 @@ class LicenseTab(QWidget):
                 item = QTableWidgetItem(val)
                 if j == 1:
                     # Color-code events
-                    color = COLORS['danger'] if 'TAMPER' in val or 'FAIL' in val or 'REVOKE' in val \
-                            else COLORS['success'] if 'ACTIVATE' in val \
-                            else COLORS['text_primary']
+                    color = C['err'] if 'TAMPER' in val or 'FAIL' in val or 'REVOKE' in val \
+                            else C['ok'] if 'ACTIVATE' in val \
+                            else C['text']
                     item.setForeground(QColor(color))
                 self.log_table.setItem(i, j, item)
 
@@ -487,7 +492,7 @@ class LicenseTab(QWidget):
             self.activate_btn.setText("ACTIVATE LICENSE")
 
     def _set_result(self, msg: str, error: bool = False):
-        color = COLORS['danger'] if error else COLORS['success']
+        color = C['err'] if error else C['ok']
         self.act_result.setText(msg)
         self.act_result.setStyleSheet(f"font-size:12px; color:{color}; font-weight:600;")
 
@@ -521,7 +526,7 @@ class LicenseTab(QWidget):
         self.tg_listen_btn.setEnabled(False)
         self.tg_listen_btn.setText('Listening for key…')
         self.tg_status_lbl.setText('⏳  Listening — developer will send key within 5 minutes…')
-        self.tg_status_lbl.setStyleSheet(f"color:{COLORS['warning']}; font-size:11px;")
+        self.tg_status_lbl.setStyleSheet(f"color:{C['warn']}; font-size:11px;")
 
         def _poll():
             deadline = time.time() + 300   # 5 minutes
@@ -576,7 +581,7 @@ class LicenseTab(QWidget):
         self.tg_listen_btn.setEnabled(True)
         self.tg_listen_btn.setText('Wait for Key via Telegram')
         self.tg_status_lbl.setText(f'✓  Key received via Telegram — activating…')
-        self.tg_status_lbl.setStyleSheet(f"color:{COLORS['success']}; font-size:11px;")
+        self.tg_status_lbl.setStyleSheet(f"color:{C['ok']}; font-size:11px;")
         self.key_input.setText(key)
         # Auto-trigger activation
         self._activate()
@@ -585,5 +590,5 @@ class LicenseTab(QWidget):
         self.tg_listen_btn.setEnabled(True)
         self.tg_listen_btn.setText('Wait for Key via Telegram')
         self.tg_status_lbl.setText('⏰  Timed out. Ask MugoByte to send the key and try again.')
-        self.tg_status_lbl.setStyleSheet(f"color:{COLORS['danger']}; font-size:11px;")
+        self.tg_status_lbl.setStyleSheet(f"color:{C['err']}; font-size:11px;")
 

@@ -15,8 +15,13 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-DIAG_LOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                         'logs', 'diagnostics.log')
+try:
+    from mbt_paths import get_project_root, ensure_data_dirs
+    _LOG_ROOT = ensure_data_dirs(get_project_root())
+except Exception:
+    _LOG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+DIAG_LOG = os.path.join(_LOG_ROOT, 'logs', 'diagnostics.log')
 os.makedirs(os.path.dirname(DIAG_LOG), exist_ok=True)
 
 diag_logger = logging.getLogger('diagnostics')

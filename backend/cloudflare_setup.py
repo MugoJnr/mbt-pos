@@ -372,22 +372,32 @@ def ensure_cloudflare_auth(
     log: _SetupLog,
     force_relogin: bool = False,
 ) -> None:
-    """Browser login + verify API, or API token only. Raises on failure."""
+    """API token (automatic) or browser login (manual). Raises on failure."""
     if force_relogin:
         clear_cloudflare_login(log)
 
     has_token = bool(_get_cloudflare_api_token())
 
-    if not has_token:
+    if has_token:
         ok, detail = verify_tunnel_api(cf, log)
         if ok:
-            log.ok('Cloudflare API auth verified')
+            log.ok('Cloudflare API token verified')
             return
-        if has_cloudflare_login():
-            log.warn(f'Existing cert.pem rejected by Cloudflare: {detail[:200]}')
-            clear_cloudflare_login(log)
+        raise RuntimeError(
+            f'Cloudflare API token was rejected:\n{detail}\n\n'
+            'Fix deploy.local.json (or AppData config/deploy.local.json):\n'
+            '  Permissions: Account → Cloudflare Tunnel → Edit\n'
+            '               Zone → DNS → Edit (mugobyte.com)')
 
-    if not has_token and not has_cloudflare_login():
+    ok, detail = verify_tunnel_api(cf, log)
+    if ok:
+        log.ok('Cloudflare API auth verified')
+        return
+    if has_cloudflare_login():
+        log.warn(f'Existing cert.pem rejected by Cloudflare: {detail[:200]}')
+        clear_cloudflare_login(log)
+
+    if not has_cloudflare_login():
         log.info(
             'Opening browser — log into the MugoByte Cloudflare account, '
             f'then authorize zone {BASE_DOMAIN}')
@@ -402,17 +412,16 @@ def ensure_cloudflare_auth(
         log.ok('Cloudflare API auth verified')
         return
 
-    if not has_token:
-        log.warn('Auth failed — retrying with fresh browser login…')
-        clear_cloudflare_login(log)
-        r = _run([str(cf), 'tunnel', 'login'], timeout=300, visible=True)
-        if r.returncode != 0 or not has_cloudflare_login():
-            raise RuntimeError(
-                'Cloudflare re-login failed.\n\n' + AUTH_HELP)
-        ok, detail = verify_tunnel_api(cf, log)
-        if ok:
-            log.ok('Cloudflare API auth verified after re-login')
-            return
+    log.warn('Auth failed — retrying with fresh browser login…')
+    clear_cloudflare_login(log)
+    r = _run([str(cf), 'tunnel', 'login'], timeout=300, visible=True)
+    if r.returncode != 0 or not has_cloudflare_login():
+        raise RuntimeError(
+            'Cloudflare re-login failed.\n\n' + AUTH_HELP)
+    ok, detail = verify_tunnel_api(cf, log)
+    if ok:
+        log.ok('Cloudflare API auth verified after re-login')
+        return
 
     raise RuntimeError(
         f'Cloudflare tunnel API still unauthorized:\n{detail}\n\n{AUTH_HELP}')
@@ -683,7 +692,7 @@ class CloudflareSetup:
             )
             route_out = (r.stdout or '') + (r.stderr or '')
             if r.returncode != 0 and 'already exists' in route_out.lower():
-                log.info('DNS record exists — overwriting with tunnel CNAME…')
+                self.log.info('DNS record exists — overwriting with tunnel CNAME…')
                 r = _run(
                     [str(cf), 'tunnel', 'route', 'dns', '--overwrite-dns',
                      self.tunnel_name, self.domain],
@@ -1325,6 +1334,198 @@ class CloudflareTunnelService:
                 except Exception:
                     pass
         self._proc = None
+
+
+# ── Automatic provisioning (shop PCs — no browser login) ─────────────────────
+
+AUTO_CF_FIRST_DELAY = 15          # seconds after app start
+AUTO_CF_RETRY_INTERVAL = 30 * 60   # retry failed setup every 30 min
+
+_auto_cf_lock = threading.Lock()
+_auto_cf_running = False
+_auto_cf_stop = threading.Event()
+_auto_cf_thread: Optional[threading.Thread] = None
+_auto_cf_callbacks: dict = {}
+
+
+def _shop_ready_for_remote() -> tuple[bool, str]:
+    shop = _read_shop_name_from_db()
+    if not shop or shop.strip().lower() in ('', 'my shop'):
+        return False, 'shop_name_not_set'
+    return True, shop
+
+
+def _remote_infra_ready() -> bool:
+    cfg = load_web_config()
+    if not (cfg.get('tunnel_id') or '').strip():
+        return False
+    if not (cfg.get('tunnel_domain') or '').strip():
+        return False
+    return (get_cloudflared_dir() / 'config.yml').is_file()
+
+
+def needs_auto_cloudflare_setup() -> tuple[bool, str]:
+    """
+    Return (should_act, reason).
+    reason: full_setup | start_tunnel | repair | no_api_token | offline | shop_name_not_set | running | ok
+    """
+    if not _get_cloudflare_api_token():
+        return False, 'no_api_token'
+    if not is_online():
+        return False, 'offline'
+    ready, shop_or_reason = _shop_ready_for_remote()
+    if not ready:
+        return False, shop_or_reason
+
+    cfg = load_web_config()
+    if _remote_infra_ready():
+        if _cloudflared_running():
+            if not cfg.get('remote_setup_ok'):
+                return True, 'repair'
+            return False, 'running'
+        return True, 'start_tunnel'
+    return True, 'full_setup'
+
+
+def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dict:
+    """Run tunnel setup or restart using API token — no browser."""
+    global _auto_cf_running
+    with _auto_cf_lock:
+        if _auto_cf_running:
+            return {'ok': False, 'skipped': True, 'reason': 'already_running'}
+        _auto_cf_running = True
+
+    log = _SetupLog(log_callback)
+    try:
+        need, reason = needs_auto_cloudflare_setup()
+        if not need and reason == 'running':
+            return {'ok': True, 'skipped': True, 'reason': 'running'}
+
+        tok = _get_cloudflare_api_token()
+        if not tok:
+            return {
+                'ok': False,
+                'error': (
+                    'Cloudflare API token missing from installer.\n'
+                    'Add cloudflare_api_token to config/deploy.local.json before BUILD.'),
+            }
+
+        save_web_config({
+            'cloudflare_api_token': tok,
+            'remote_enabled': True,
+        })
+        bootstrap_cloudflared()
+
+        if reason == 'start_tunnel':
+            log.info('Starting existing Cloudflare tunnel…')
+            sync_tunnel_config_from_web(log)
+            apply_shop_pc_dns_fix(log)
+            ok = CloudflareTunnelService().start()
+            refresh_remote_setup_status()
+            return {
+                'ok': ok,
+                'action': 'start_tunnel',
+                'domain': load_web_config().get('tunnel_domain', ''),
+            }
+
+        if reason == 'repair':
+            log.info('Repairing Cloudflare tunnel status…')
+            sync_tunnel_config_from_web(log)
+            ok = CloudflareTunnelService().start()
+            refresh_remote_setup_status()
+            return {
+                'ok': ok or bool(load_web_config().get('remote_setup_ok')),
+                'action': 'repair',
+                'domain': load_web_config().get('tunnel_domain', ''),
+            }
+
+        if reason != 'full_setup':
+            return {'ok': False, 'skipped': True, 'reason': reason}
+
+        ready, shop = _shop_ready_for_remote()
+        if not ready:
+            return {'ok': False, 'error': 'Set shop name in Settings first'}
+
+        log.info(f'Automatic Cloudflare setup for {shop}…')
+        apply_shop_pc_dns_fix(log)
+        cfg = load_web_config()
+        sub = (cfg.get('tunnel_subdomain') or '').strip() or shop_to_subdomain(shop)
+        result = CloudflareSetup(
+            shop, subdomain=sub, log_callback=log_callback,
+        ).run()
+        if result.get('ok'):
+            CloudflareTunnelService().start()
+            refresh_remote_setup_status()
+        result['action'] = 'full_setup'
+        return result
+    except Exception as e:
+        logger.exception('run_auto_cloudflare_setup: %s', e)
+        return {'ok': False, 'error': str(e)}
+    finally:
+        with _auto_cf_lock:
+            _auto_cf_running = False
+
+
+def _auto_cf_worker():
+    """Background loop — provisions tunnel on shop PCs without admin action."""
+    _auto_cf_stop.wait(AUTO_CF_FIRST_DELAY)
+    warned_no_token = False
+    while not _auto_cf_stop.is_set():
+        need, reason = needs_auto_cloudflare_setup()
+        if reason == 'no_api_token':
+            if not warned_no_token:
+                logger.warning(
+                    'Auto Cloudflare disabled — no API token in installer '
+                    '(add cloudflare_api_token to deploy.local.json before BUILD)')
+                warned_no_token = True
+            return
+        if not need:
+            wait = AUTO_CF_RETRY_INTERVAL if reason == 'running' else 60
+            _auto_cf_stop.wait(wait)
+            continue
+
+        result = run_auto_cloudflare_setup()
+        cb_ok = _auto_cf_callbacks.get('on_done')
+        cb_fail = _auto_cf_callbacks.get('on_failed')
+        if result.get('ok'):
+            dom = result.get('domain', '')
+            logger.info('Auto Cloudflare OK — %s', dom or result.get('action', 'ok'))
+            if cb_ok:
+                try:
+                    cb_ok(result)
+                except Exception:
+                    pass
+        elif not result.get('skipped'):
+            err = result.get('error') or result.get('errors', ['unknown'])
+            if isinstance(err, list):
+                err = '; '.join(str(x) for x in err[:3])
+            logger.warning('Auto Cloudflare failed: %s', err)
+            if cb_fail:
+                try:
+                    cb_fail(result)
+                except Exception:
+                    pass
+
+        _auto_cf_stop.wait(AUTO_CF_RETRY_INTERVAL)
+
+
+def start_auto_cloudflare(on_done=None, on_failed=None):
+    """Start background auto-provisioning (once per app session)."""
+    global _auto_cf_thread
+    _auto_cf_callbacks['on_done'] = on_done
+    _auto_cf_callbacks['on_failed'] = on_failed
+    with _auto_cf_lock:
+        if _auto_cf_thread and _auto_cf_thread.is_alive():
+            return
+        _auto_cf_stop.clear()
+        _auto_cf_thread = threading.Thread(
+            target=_auto_cf_worker, name='AutoCloudflare', daemon=True)
+        _auto_cf_thread.start()
+        logger.info('Auto Cloudflare provisioner started')
+
+
+def stop_auto_cloudflare():
+    _auto_cf_stop.set()
 
 
 # ── CLI (SETUP CLOUDFLARE.bat) ────────────────────────────────────────────────

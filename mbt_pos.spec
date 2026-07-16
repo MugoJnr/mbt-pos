@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# MBT POS - PyInstaller Spec
+# MBT POS - PyInstaller Spec (onedir — reliable updates, no python DLL extract errors)
 # MugoByte Technologies | mugobyte.com
 # Build with: python -m PyInstaller mbt_pos.spec
 
@@ -81,23 +81,30 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='MBT_POS',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    upx_exclude=[],
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version_file=None,
     icon=os.path.join(HERE, 'assets', 'mbt_icon.ico')
          if os.path.exists(os.path.join(HERE, 'assets', 'mbt_icon.ico'))
          else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='MBT_POS',
 )

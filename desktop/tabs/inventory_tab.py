@@ -8,8 +8,8 @@ from PyQt5.QtGui     import *
 _log = logging.getLogger('inventory')
 from desktop.utils.theme   import C
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
-                                    DangerBtn, SearchBar, make_table, tbl_item,
-                                    tbl_right, tbl_center, page_layout)
+                                    DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
+                                    tbl_right, tbl_center, page_layout, IconBtn)
 from desktop.utils.security import (has_permission, require_permission,
                                      ask_superadmin_pin, ROLE_SUPERADMIN)
 
@@ -51,37 +51,40 @@ class InventoryTab(QWidget):
         return (self.user.get('user') or self.user).get('role', 'cashier')
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 28), spacing=18)
+        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=16)
 
-        # ── Toolbar ───────────────────────────────────────────────────────────
-        tb = QHBoxLayout(); tb.setSpacing(10)
-        self._search = SearchBar('Search products...')
+        # ── Toolbar (Lovable: search + primary + secondary + ghost) ───────────
+        tb = QHBoxLayout(); tb.setSpacing(8)
+        self._search = SearchBar('Search by name or SKU…')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)
 
         if has_permission(self.user, 'inventory.create'):
-            add = PrimaryBtn('+ Add Product', 44)
+            add = PrimaryBtn('+ Add Product', 40)
             add.clicked.connect(self._add)
             tb.addWidget(add)
 
         if self._role() == ROLE_SUPERADMIN:
-            adj = SecondaryBtn('⚖  Adjust Stock', 44)
+            adj = SecondaryBtn('⚖  Adjust Stock', 40)
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
 
-        ref = SecondaryBtn('↺  Refresh', 44)
+        ref = GhostBtn('↺  Refresh', 40)
         ref.clicked.connect(self.refresh)
         tb.addWidget(ref)
         lay.addLayout(tb)
 
-        # ── Table ─────────────────────────────────────────────────────────────
+        # ── Table in card ─────────────────────────────────────────────────────
+        wrap = Card()
+        wl = wrap.layout_v(margins=(0, 0, 0, 0), spacing=0)
         self._tbl = make_table(
             ['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Unit', 'Actions'],
-            stretch_col=0, row_height=56)
-        for col, w in [(1,90),(2,120),(3,110),(4,100),(5,80),(6,70),(7,180)]:
+            stretch_col=0, row_height=52)
+        for col, w in [(1,90),(2,120),(3,110),(4,100),(5,80),(6,70),(7,120)]:
             self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._tbl.setColumnWidth(col, w)
-        lay.addWidget(self._tbl)
+        wl.addWidget(self._tbl)
+        lay.addWidget(wrap, 1)
         self._stats = Caption('')
         lay.addWidget(self._stats)
 
@@ -146,10 +149,10 @@ class InventoryTab(QWidget):
         self._tbl.setItem(i, 0, tbl_item(p.get('name', '') or ''))
         self._tbl.setItem(i, 1, tbl_item(p.get('sku', '') or ''))
         self._tbl.setItem(i, 2, tbl_item(p.get('category', '') or ''))
-        self._tbl.setItem(i, 3, tbl_right(f"{cur} {_safe_float(p.get('price')):,.2f}"))
+        self._tbl.setItem(i, 3, tbl_right(f"{cur} {_safe_float(p.get('price')):,.2f}", C['gold']))
         self._tbl.setItem(i, 4, tbl_right(f"{cur} {_safe_float(p.get('cost_price')):,.2f}"))
 
-        stk_color = C['err'] if is_zero else (C['warn'] if is_low else C['ok'])
+        stk_color = C['err'] if is_zero else (C['warn'] if is_low else C['text2'])
         stk_item  = tbl_center(_fmt_stock(stock), stk_color)
         if is_low:
             f = stk_item.font(); f.setBold(True); stk_item.setFont(f)
@@ -159,40 +162,23 @@ class InventoryTab(QWidget):
         cell = QWidget()
         cell.setStyleSheet('background: transparent;')
         cl   = QHBoxLayout(cell)
-        cl.setContentsMargins(8, 4, 8, 4)
-        cl.setSpacing(8)
+        cl.setContentsMargins(6, 4, 6, 4)
+        cl.setSpacing(4)
 
         if can_edit:
-            eb = QPushButton('✏  Edit')
-            eb.setMinimumHeight(40)
-            eb.setMinimumWidth(88)
-            eb.setCursor(Qt.PointingHandCursor)
-            eb.setStyleSheet(
-                f"QPushButton{{"
-                f"  background:#1565C0; color:#FFFFFF;"
-                f"  border:none; border-radius:7px;"
-                f"  font-size:14px; font-weight:700;"
-                f"  padding:6px 12px;"
-                f"}}"
-                f"QPushButton:hover{{background:#1976D2;}}"
-                f"QPushButton:pressed{{background:#0D47A1;}}")
+            eb = IconBtn('✏', 28, 28)
+            eb.setToolTip('Edit')
             eb.clicked.connect(lambda _, pid=p['id']: self._edit(pid))
             cl.addWidget(eb)
 
         if can_delete:
-            db_b = QPushButton('🗑  Delete')
-            db_b.setMinimumHeight(40)
-            db_b.setMinimumWidth(96)
-            db_b.setCursor(Qt.PointingHandCursor)
+            db_b = IconBtn('🗑', 28, 28)
+            db_b.setToolTip('Delete')
             db_b.setStyleSheet(
-                f"QPushButton{{"
-                f"  background:#C62828; color:#FFFFFF;"
-                f"  border:none; border-radius:7px;"
-                f"  font-size:14px; font-weight:700;"
-                f"  padding:6px 12px;"
-                f"}}"
-                f"QPushButton:hover{{background:#E53935;}}"
-                f"QPushButton:pressed{{background:#B71C1C;}}")
+                f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; "
+                f"border:1px solid {C['border']}; border-radius:8px; font-size:12px; }}"
+                f"QPushButton:hover {{ color:{C['err']}; border-color:{C['err']}66; "
+                f"background:{C['err']}18; }}")
             db_b.clicked.connect(lambda _, pid=p['id']: self._delete(pid))
             cl.addWidget(db_b)
 

@@ -135,18 +135,30 @@ class SetupWizard(QDialog):
         sl.setContentsMargins(0, 0, 0, 0)
         sl.setSpacing(0)
 
-        # Logo area
+        # Logo area — exact HD mark (transparent)
         logo_w = QWidget()
-        logo_w.setFixedHeight(100)
+        logo_w.setFixedHeight(110)
         logo_w.setStyleSheet(f"background:{C['app']}; border-bottom:2px solid {C['gold']};")
         ll = QVBoxLayout(logo_w)
         ll.setAlignment(Qt.AlignCenter)
-        lt = QLabel("MBT")
+        ll.setContentsMargins(8, 8, 8, 4)
+        lt = QLabel()
         lt.setAlignment(Qt.AlignCenter)
-        lt.setStyleSheet(f"color:{C['gold']}; font-size:32px; font-weight:900; letter-spacing:6px;")
+        lt.setStyleSheet("background:transparent; border:none;")
+        _assets = os.path.join(PROJECT_ROOT, 'assets')
+        if getattr(sys, 'frozen', False):
+            _assets = os.path.join(sys._MEIPASS, 'assets')
+        for _name in ('mbt_logo_hd.png', 'mbt_icon_256.png', 'mbt_icon.png'):
+            _p = os.path.join(_assets, _name)
+            if os.path.exists(_p):
+                _pm = QPixmap(_p)
+                if not _pm.isNull():
+                    lt.setPixmap(
+                        _pm.scaled(200, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    break
         ls = QLabel("SETUP WIZARD")
         ls.setAlignment(Qt.AlignCenter)
-        ls.setStyleSheet(f"color:{C['muted']}; font-size:10px; letter-spacing:3px;")
+        ls.setStyleSheet(f"color:{C['muted']}; font-size:10px; letter-spacing:3px; background:transparent;")
         ll.addWidget(lt); ll.addWidget(ls)
         sl.addWidget(logo_w)
 
@@ -282,9 +294,20 @@ class SetupWizard(QDialog):
         w, lay = self._page_container()
         lay.addStretch()
 
-        logo = QLabel("MBT")
+        logo = QLabel()
         logo.setAlignment(Qt.AlignCenter)
-        logo.setStyleSheet(f"color:{C['gold']}; font-size:72px; font-weight:900; letter-spacing:12px; background:transparent;")
+        logo.setStyleSheet("background:transparent; border:none;")
+        _assets = os.path.join(PROJECT_ROOT, 'assets')
+        if getattr(sys, 'frozen', False):
+            _assets = os.path.join(sys._MEIPASS, 'assets')
+        for _name in ('mbt_logo_hd.png', 'mbt_icon_256.png', 'mbt_icon.png'):
+            _p = os.path.join(_assets, _name)
+            if os.path.exists(_p):
+                _pm = QPixmap(_p)
+                if not _pm.isNull():
+                    logo.setPixmap(
+                        _pm.scaled(360, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    break
 
         t1 = QLabel("Welcome to MBT POS System")
         t1.setAlignment(Qt.AlignCenter)
@@ -690,7 +713,7 @@ class SetupWizard(QDialog):
             "Windows may show Allow once — click Yes. "
             "Click Set Up Cloudflare once and wait.")
         cf_note.setWordWrap(True)
-        cf_note.setStyleSheet(f"color:{C['text3']}; font-size:11px; background:transparent;")
+        cf_note.setStyleSheet(f"color:{C['muted']}; font-size:11px; background:transparent;")
         rbl.addWidget(cf_note)
 
         self.w_cf_preview = QLabel("https://….mugobyte.com")

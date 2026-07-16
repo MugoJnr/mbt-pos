@@ -153,8 +153,13 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
     """
     Show PIN entry dialog and verify.
     Returns True if correct PIN entered.
+
+    Automation: set env MBT_AUTO_SUPERADMIN_PIN (e.g. 1110) to skip the dialog.
     """
     from PyQt5.QtWidgets import QInputDialog, QLineEdit
+    auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
+    if auto:
+        return verify_superadmin_pin(auto, api, parent_widget, log_attempt=True)
     prompt = 'Enter Super-Admin PIN'
     if reason:
         prompt += f'\n({reason})'

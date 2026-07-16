@@ -198,6 +198,14 @@ if errorlevel 1 (
 echo.
 
 :: ════════════════════════════════════════════════════════════════
+:: STEP 2d — Cloudflare API token (automatic remote on shop PCs)
+:: ════════════════════════════════════════════════════════════════
+echo  [2d/5] Cloudflare API token for auto remote dashboard...
+cd /d "%SOURCE_DIR%"
+"%PY_EXE%" config\write_deploy_local.py
+echo.
+
+:: ════════════════════════════════════════════════════════════════
 :: STEP 3 — PyInstaller
 :: ════════════════════════════════════════════════════════════════
 echo  [3/5] Building MBT_POS.exe (5-10 minutes^)...
@@ -216,11 +224,11 @@ if errorlevel 1 (
     echo  [ERROR] PyInstaller failed. Read the error above.
     pause & exit /b 1
 )
-if not exist "dist\MBT_POS.exe" (
-    echo  [ERROR] dist\MBT_POS.exe not created.
+if not exist "dist\MBT_POS\MBT_POS.exe" (
+    echo  [ERROR] dist\MBT_POS\MBT_POS.exe not created.
     pause & exit /b 1
 )
-echo  [OK] dist\MBT_POS.exe ready.
+echo  [OK] dist\MBT_POS\MBT_POS.exe ready.
 echo.
 
 :: ════════════════════════════════════════════════════════════════

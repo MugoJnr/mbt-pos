@@ -30,9 +30,7 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 
-; Finish page - launch app after install
-!define MUI_FINISHPAGE_RUN "$INSTDIR\MBT_POS.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Launch MBT POS now"
+; Finish page — no auto-launch (update launcher restarts the app)
 !define MUI_FINISHPAGE_SHOWREADME ""
 !define MUI_FINISHPAGE_LINK "mugobyte.com"
 !define MUI_FINISHPAGE_LINK_LOCATION "https://mugobyte.com"
@@ -49,6 +47,12 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+; Kill running POS before install — prevents corrupted exe / python DLL errors
+Function .onInit
+    ExecWait 'taskkill /F /IM MBT_POS.exe' $0
+    Sleep 3000
+FunctionEnd
 
 ;=============================================================================
 ; Version Info (shows in file properties)
@@ -70,12 +74,8 @@ Section "MBT POS" SecMain
     SetOutPath "$INSTDIR"
     SetOverwrite on
 
-    ; Copy the main executable (built by PyInstaller)
-    File "dist\MBT_POS.exe"
-
-    ; cloudflared tunnel client (also embedded in .exe; copy for direct use)
-    IfFileExists "tools\cloudflared.exe" 0 +2
-    File "tools\cloudflared.exe"
+    ; Onedir build: MBT_POS.exe + python311.dll + libs (reliable silent updates)
+    File /r "dist\MBT_POS\*.*"
 
     ; Write install location to registry
     WriteRegStr HKLM "Software\MugoByte\MBT POS" "InstallDir" "$INSTDIR"
@@ -141,10 +141,7 @@ Section "Uninstall"
     ExecWait 'taskkill /F /IM MBT_POS.exe' $0
 
     ; Remove files
-    Delete "$INSTDIR\MBT_POS.exe"
-    Delete "$INSTDIR\cloudflared.exe"
-    Delete "$INSTDIR\Uninstall.exe"
-    RMDir  "$INSTDIR"
+    RMDir /r "$INSTDIR"
 
     ; Remove shortcuts
     Delete "$DESKTOP\MBT POS.lnk"

@@ -3,13 +3,14 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from datetime        import datetime
-from desktop.utils.theme   import C
+from desktop.utils.theme   import C, ThemeManager
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, IconBtn, SearchBar,
                                     make_table, tbl_item, tbl_right)
 
 class SalesTab(QWidget):
     sale_completed = pyqtSignal()
+    theme_changed = pyqtSignal(bool)
 
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
@@ -29,15 +30,21 @@ class SalesTab(QWidget):
 
     def _build(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
+        root.setContentsMargins(16, 16, 16, 16); root.setSpacing(14)
 
-        # ── LEFT: product browser ─────────────────────────────────────────────
-        self._left_panel = QWidget()
-        self._left_panel.setStyleSheet(f"background:{C['surface']};")
+        # ── LEFT: product browser (Lovable Card panel) ────────────────────────
+        self._left_panel = QFrame()
+        self._left_panel.setObjectName('posProductPanel')
+        self._left_panel.setStyleSheet(
+            f"QFrame#posProductPanel {{ background:{C['card']}; "
+            f"border:1px solid {C['border']}; border-radius:12px; }}")
         ll = QVBoxLayout(self._left_panel)
-        ll.setContentsMargins(22, 18, 12, 18); ll.setSpacing(14)
+        ll.setContentsMargins(0, 0, 0, 0); ll.setSpacing(0)
 
-        sf = QHBoxLayout(); sf.setSpacing(10)
+        search_bar = QWidget()
+        search_bar.setStyleSheet(
+            f"background:transparent; border-bottom:1px solid {C['border']};")
+        sf = QHBoxLayout(search_bar); sf.setContentsMargins(12, 10, 12, 10); sf.setSpacing(8)
         self._search = SearchBar('Search products…')
         self._search.textChanged.connect(self._filter)
         sf.addWidget(self._search, 1)
@@ -45,44 +52,46 @@ class SalesTab(QWidget):
         self._cat.addItem('All Categories')
         self._cat.currentTextChanged.connect(self._filter)
         sf.addWidget(self._cat)
-        ref = IconBtn('↺', 40); ref.clicked.connect(self.refresh); sf.addWidget(ref)
+        ref = IconBtn('↺', 40, 40); ref.clicked.connect(self.refresh); sf.addWidget(ref)
 
-        # ☀ Light / 🌙 Dark toggle — top right of search bar
+        # Theme toggle kept for shop-floor convenience (also in topbar)
         self._theme_btn = QPushButton('☀  Light')
-        self._theme_btn.setFixedHeight(44)
-        self._theme_btn.setMinimumWidth(100)
+        self._theme_btn.setFixedHeight(40)
+        self._theme_btn.setMinimumWidth(96)
         self._theme_btn.setCursor(Qt.PointingHandCursor)
         self._theme_btn.setStyleSheet(
-            f"QPushButton{{background:transparent; color:{C['text2']};"
-            f"border:1px solid {C['border2']}; border-radius:16px;"
-            f"font-size:12px; font-weight:600; padding:4px 14px;}}"
+            f"QPushButton{{background:{C['card2']}; color:{C['text2']};"
+            f"border:1px solid {C['border']}; border-radius:8px;"
+            f"font-size:12px; font-weight:500; padding:4px 10px;}}"
             f"QPushButton:hover{{background:{C['hover']}; color:{C['text']};}}")
         self._theme_btn.clicked.connect(self._toggle_theme)
         sf.addWidget(self._theme_btn)
-        ll.addLayout(sf)
+        ll.addWidget(search_bar)
 
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        self._gw = QWidget(); self._gw.setStyleSheet(f"background:{C['surface']};")
+        self._gw = QWidget(); self._gw.setStyleSheet(f"background:transparent;")
         self._grid = QGridLayout(self._gw)
-        self._grid.setSpacing(12); self._grid.setContentsMargins(0, 4, 0, 4)
+        self._grid.setSpacing(10); self._grid.setContentsMargins(12, 12, 12, 12)
         self._grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         scroll.setWidget(self._gw)
         ll.addWidget(scroll)
 
         self._empty = QLabel('No products.\nAdd products in Inventory.')
         self._empty.setAlignment(Qt.AlignCenter)
-        self._empty.setStyleSheet(f"color:{C['muted']};font-size:15px;background:transparent;")
+        self._empty.setStyleSheet(f"color:{C['muted']};font-size:14px;background:transparent;")
         self._empty.hide(); ll.addWidget(self._empty)
-        root.addWidget(self._left_panel, 3)
+        root.addWidget(self._left_panel, 1)
 
-        # ── RIGHT: checkout (scrollable so M-Pesa + totals stay visible) ───────
-        self._right_panel = QWidget()
-        self._right_panel.setFixedWidth(600)
+        # ── RIGHT: checkout cart (Lovable ~420–460px panel) ───────────────────
+        self._right_panel = QFrame()
+        self._right_panel.setObjectName('posCartPanel')
+        self._right_panel.setFixedWidth(440)
         self._right_panel.setStyleSheet(
-            f"background:{C['panel']};border-left:1px solid {C['border']};")
+            f"QFrame#posCartPanel {{ background:{C['card']}; "
+            f"border:1px solid {C['border']}; border-radius:12px; }}")
         rp_outer = QVBoxLayout(self._right_panel)
         rp_outer.setContentsMargins(0, 0, 0, 0)
         rp_outer.setSpacing(0)
@@ -94,53 +103,45 @@ class SalesTab(QWidget):
         self._checkout_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
 
         checkout = QWidget()
-        checkout.setStyleSheet(f"background:{C['panel']};")
+        checkout.setStyleSheet("background:transparent;")
         rl = QVBoxLayout(checkout)
-        rl.setContentsMargins(18, 18, 18, 18); rl.setSpacing(12)
+        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
 
-        ch = QHBoxLayout()
+        hdr = QWidget()
+        hdr.setStyleSheet(f"border-bottom:1px solid {C['border']};")
+        ch = QHBoxLayout(hdr); ch.setContentsMargins(16, 14, 16, 14)
         self._sale_hdr = H2('Current Sale')
         ch.addWidget(self._sale_hdr); ch.addStretch()
         self._cnt = Caption('0 items'); ch.addWidget(self._cnt)
-        rl.addLayout(ch)
+        rl.addWidget(hdr)
+
+        cart_body = QWidget()
+        cbl = QVBoxLayout(cart_body); cbl.setContentsMargins(12, 8, 12, 8); cbl.setSpacing(8)
 
         self._ctbl = make_table(['Item', 'Qty', 'Price', 'Total', ''],
-                                stretch_col=0, row_height=64)
-        # Wider Qty/Price/Total columns so quantity editor and values stay visible.
-        # Rebalance fixed columns so Item column gets more breathing room.
-        for ci, w in [(1, 170), (2, 96), (3, 108), (4, 46)]:
+                                stretch_col=0, row_height=56)
+        for ci, w in [(1, 140), (2, 80), (3, 88), (4, 40)]:
             self._ctbl.horizontalHeader().setSectionResizeMode(ci, QHeaderView.Fixed)
             self._ctbl.setColumnWidth(ci, w)
         self._ctbl.setAlternatingRowColors(True)
-        self._ctbl.setMinimumHeight(220)
-        self._ctbl.setMaximumHeight(320)
-        self._ctbl.setStyleSheet(
-            f"QTableWidget{{"
-            f"background:{C['card']};alternate-background-color:{C['card2']};"
-            f"border:1px solid {C['border']};border-radius:10px;color:{C['text']};"
-            f"font-size:13.5px;gridline-color:transparent;}}"
-            f"QTableWidget::item{{color:{C['text']};}}"
-            f"QHeaderView::section{{"
-            f"background:{C['card']};color:{C['text2']};font-size:11px;font-weight:700;"
-            f"padding:8px 10px;border:none;border-bottom:1px solid {C['border2']};}}"
-            f"QScrollBar:vertical{{width:6px;background:transparent;}}"
-            f"QScrollBar::handle:vertical{{background:{C['border2']};border-radius:3px;}}")
-        rl.addWidget(self._ctbl)
+        self._ctbl.setMinimumHeight(180)
+        self._ctbl.setMaximumHeight(280)
+        cbl.addWidget(self._ctbl)
 
         # Totals
         self._tot_frame = QFrame()
         self._tot_frame.setStyleSheet(
-            f"QFrame{{background:{C['card']};border:1px solid {C['border']};border-radius:10px;}}")
+            f"QFrame{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;}}")
         tl = QVBoxLayout(self._tot_frame)
-        tl.setContentsMargins(16, 14, 16, 14); tl.setSpacing(9)
+        tl.setContentsMargins(14, 12, 14, 12); tl.setSpacing(8)
         self._sub_lbl = self._tot_row(tl, 'Subtotal')
 
         disc_row = QHBoxLayout(); disc_row.setContentsMargins(0, 0, 0, 0)
         self._disc_lbl = QLabel('Discount')
         self._disc_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:14px;background:transparent;")
+            f"color:{C['text2']};font-size:13px;background:transparent;")
         self._disc = QDoubleSpinBox(); self._disc.setRange(0, 9999999)
-        self._disc.setDecimals(2); self._disc.setFixedWidth(128); self._disc.setMinimumHeight(40)
+        self._disc.setDecimals(2); self._disc.setFixedWidth(120); self._disc.setMinimumHeight(36)
         self._disc.setPrefix('- '); self._disc.valueChanged.connect(self._recalc)
         disc_row.addWidget(self._disc_lbl); disc_row.addStretch(); disc_row.addWidget(self._disc)
         tl.addLayout(disc_row)
@@ -153,38 +154,53 @@ class SalesTab(QWidget):
         tot_row = QHBoxLayout()
         self._total_hdr = QLabel('TOTAL')
         self._total_hdr.setStyleSheet(
-            f"color:{C['text']};font-size:15px;font-weight:700;background:transparent;")
+            f"color:{C['text']};font-size:13px;font-weight:600;background:transparent;")
         self._tot_lbl = QLabel('KES 0.00')
         self._tot_lbl.setStyleSheet(
-            f"color:{C['gold']};font-size:28px;font-weight:900;background:transparent;")
+            f"color:{C['gold']};font-size:24px;font-weight:800;background:transparent;")
         tot_row.addWidget(self._total_hdr); tot_row.addStretch(); tot_row.addWidget(self._tot_lbl)
         tl.addLayout(tot_row)
-        rl.addWidget(self._tot_frame)
+        cbl.addWidget(self._tot_frame)
 
-        pay = QHBoxLayout(); pay.setSpacing(10)
-        self._pay_lbl = QLabel('Payment')
+        # Payment method toggles (Cash / M-Pesa / Card) + full combo for other methods
+        pay_tog = QHBoxLayout(); pay_tog.setSpacing(6)
+        self._pay_btns = {}
+        for key, label in (('Cash', '💵 Cash'), ('M-Pesa', '📱 M-Pesa'), ('Card', '💳 Card')):
+            b = QPushButton(label)
+            b.setObjectName('posPayToggle')
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumHeight(40)
+            b.clicked.connect(lambda _, k=key: self._select_pay_method(k))
+            pay_tog.addWidget(b)
+            self._pay_btns[key] = b
+        self._pay_btns['Cash'].setChecked(True)
+        cbl.addLayout(pay_tog)
+
+        pay = QHBoxLayout(); pay.setSpacing(8)
+        self._pay_lbl = QLabel('Method')
         self._pay_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:14px;background:transparent;")
+            f"color:{C['text2']};font-size:13px;background:transparent;")
         self._pay = QComboBox()
         self._pay.addItems(['Cash', 'M-Pesa', 'Card', 'Cheque',
                             'Part Payment', 'Credit Sale'])
-        self._pay.setMinimumHeight(44); self._pay.setMinimumWidth(120)
+        self._pay.setMinimumHeight(40); self._pay.setMinimumWidth(120)
         self._pay.currentTextChanged.connect(self._on_payment_changed)
         self._paid = QDoubleSpinBox(); self._paid.setRange(0, 99999999)
-        self._paid.setDecimals(2); self._paid.setMinimumHeight(44)
+        self._paid.setDecimals(2); self._paid.setMinimumHeight(40)
         self._paid.valueChanged.connect(self._calc_change)
         pay.addWidget(self._pay_lbl); pay.addWidget(self._pay); pay.addWidget(self._paid, 1)
-        rl.addLayout(pay)
+        cbl.addLayout(pay)
 
         chg = QHBoxLayout()
         self._chg_lbl = QLabel('Change')
         self._chg_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:14px;background:transparent;")
+            f"color:{C['text2']};font-size:13px;background:transparent;")
         self._chg = QLabel('KES 0.00')
         self._chg.setStyleSheet(
-            f"color:{C['ok']};font-size:16px;font-weight:700;background:transparent;")
+            f"color:{C['ok']};font-size:15px;font-weight:700;background:transparent;")
         chg.addWidget(self._chg_lbl); chg.addWidget(self._chg); chg.addStretch()
-        rl.addLayout(chg)
+        cbl.addLayout(chg)
 
         self._mpesa_frame = QFrame()
         self._mpesa_frame.setStyleSheet(
@@ -197,42 +213,46 @@ class SalesTab(QWidget):
             f"color:{C['gold']};font-size:12px;font-weight:600;background:transparent;")
         self._mpesa_ref = QLineEdit()
         self._mpesa_ref.setPlaceholderText('M-Pesa confirmation code (optional)')
-        self._mpesa_ref.setMinimumHeight(42)
+        self._mpesa_ref.setMinimumHeight(40)
         mfl.addWidget(self._mpesa_info); mfl.addWidget(self._mpesa_ref)
         self._mpesa_frame.hide()
-        rl.addWidget(self._mpesa_frame)
+        cbl.addWidget(self._mpesa_frame)
 
         self._note = QLineEdit(); self._note.setPlaceholderText('Note (optional)…')
-        self._note.setMinimumHeight(42); rl.addWidget(self._note)
+        self._note.setMinimumHeight(40); cbl.addWidget(self._note)
 
         br = QHBoxLayout(); br.setSpacing(8)
-        self._clr_btn = DangerBtn('🗑', 42); self._clr_btn.setFixedWidth(46)
+        self._clr_btn = DangerBtn('🗑', 40); self._clr_btn.setFixedWidth(44)
         self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
-        self._prv_btn = SecondaryBtn('🖨  Preview', 42)
+        self._prv_btn = SecondaryBtn('🖨  Preview', 40)
         self._prv_btn.clicked.connect(self._preview)
-        self._reprint_btn = SecondaryBtn('🖨  Reprint', 42)
+        self._reprint_btn = SecondaryBtn('🖨  Reprint', 40)
         self._reprint_btn.setToolTip('Reprint a completed receipt')
         self._reprint_btn.clicked.connect(self._reprint_receipt)
         br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
         br.addWidget(self._reprint_btn)
-        rl.addLayout(br)
+        cbl.addLayout(br)
 
-        self._charge_btn = PrimaryBtn('✓   CHARGE', 56)
+        self._charge_btn = PrimaryBtn('✓   Checkout', 52)
         self._charge_btn.clicked.connect(self._process)
-        rl.addWidget(self._charge_btn)
+        cbl.addWidget(self._charge_btn)
 
+        rl.addWidget(cart_body, 1)
         self._checkout_scroll.setWidget(checkout)
         rp_outer.addWidget(self._checkout_scroll)
         root.addWidget(self._right_panel)
 
+    def _select_pay_method(self, method: str):
+        for k, b in self._pay_btns.items():
+            b.setChecked(k == method)
+        idx = self._pay.findText(method)
+        if idx >= 0:
+            self._pay.setCurrentIndex(idx)
+
     # ── Theme toggle ──────────────────────────────────────────────────────────
 
     def _toggle_theme(self):
-        from desktop.utils.pos_light_theme import apply_light, apply_dark
-        if self._is_light:
-            apply_dark(self)
-        else:
-            apply_light(self)
+        self.theme_changed.emit(not ThemeManager.is_light())
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -250,6 +270,11 @@ class SalesTab(QWidget):
         self._on_payment_changed(self._pay.currentText())
 
     def _on_payment_changed(self, method: str):
+        if hasattr(self, '_pay_btns'):
+            for k, b in self._pay_btns.items():
+                b.blockSignals(True)
+                b.setChecked(k == method)
+                b.blockSignals(False)
         is_mpesa = method == 'M-Pesa'
         self._mpesa_frame.setVisible(is_mpesa)
         if is_mpesa:
@@ -313,37 +338,47 @@ class SalesTab(QWidget):
 
     def _prod_btn(self, p):
         from desktop.utils.pos_light_theme import PROD_BTN_SIZE
-        w, h = PROD_BTN_SIZE if self._is_light else (182, 132)
+        w, h = PROD_BTN_SIZE if self._is_light else (168, 110)
         btn = QPushButton(); btn.setFixedSize(w, h)
         btn.setCursor(Qt.PointingHandCursor)
         name  = (p.get('name') or '').strip()
         price = p.get('price', 0)
-        stock = p.get('stock', 0)
+        stock = p.get('stock', 0) or 0
+        unit  = p.get('unit', 'pcs') or 'pcs'
+        try:
+            stock_n = float(stock)
+        except (TypeError, ValueError):
+            stock_n = 0
+        oos = stock_n <= 0
+        low = 0 < stock_n < 10
         name_display = self._display_name(name, 30)
-        btn.setText(f'{name_display}\n\n{self._currency} {price:,.2f}')
-        btn.setToolTip(f"{name}\nStock: {stock} {p.get('unit','pcs')}")
+        stock_lbl = 'Out' if oos else f'{stock_n:g} {unit}'
+        btn.setText(f'{name_display}\n\n{self._currency} {price:,.2f}\n{stock_lbl}')
+        btn.setToolTip(f"{name}\nStock: {stock} {unit}")
         if self._is_light:
             from desktop.utils.pos_light_theme import fmt, PROD_BTN_ACTIVE, PROD_BTN_EMPTY
-            if stock > 0:
+            if not oos:
                 btn.setStyleSheet(fmt(PROD_BTN_ACTIVE))
                 btn.clicked.connect(lambda _, pr=p: self._add(pr))
             else:
                 btn.setStyleSheet(fmt(PROD_BTN_EMPTY))
                 btn.setEnabled(False); btn.setToolTip('Out of stock')
         else:
-            if stock > 0:
+            stock_color = C['err'] if oos else (C['warn'] if low else C['text2'])
+            if not oos:
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{C['card']};border:1px solid {C['border2']};"
-                    f"border-radius:10px;color:{C['text']};font-size:13px;"
-                    f"font-weight:600;padding:10px;}}"
+                    f"QPushButton{{background:{C['card2']};border:1px solid {C['border']};"
+                    f"border-radius:10px;color:{C['text']};font-size:12px;"
+                    f"font-weight:600;padding:10px;text-align:left;}}"
                     f"QPushButton:hover{{background:{C['hover']};border-color:{C['gold']};"
                     f"color:{C['gold']};}}"
                     f"QPushButton:pressed{{background:{C['app']};}}")
                 btn.clicked.connect(lambda _, pr=p: self._add(pr))
             else:
                 btn.setStyleSheet(
-                    f"QPushButton{{background:{C['card']};border:1px solid {C['border']};"
-                    f"border-radius:10px;color:{C['text2']};font-size:13px;font-weight:600;padding:10px;}}")
+                    f"QPushButton{{background:{C['panel']};border:1px solid {C['border']};"
+                    f"border-radius:10px;color:{stock_color};font-size:12px;"
+                    f"font-weight:600;padding:10px;opacity:0.7;}}")
                 btn.setEnabled(False)
                 btn.setToolTip('Out of stock')
         return btn

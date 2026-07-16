@@ -7,33 +7,33 @@ All other tabs remain dark. Toggle button sits inside the POS panel header.
 High contrast white, larger fonts, clean layout — optimised for shop floor use.
 """
 
-# Light palette
+# Light palette — aligned with ThemeManager LIGHT / Lovable .light
 L = {
-    'bg':        '#F4F6FB',
+    'bg':        '#F0F4FA',
     'surface':   '#FFFFFF',
-    'panel':     '#EDF0F7',
+    'panel':     '#E8EDF6',
     'card':      '#FFFFFF',
-    'card2':     '#F0F3F9',
+    'card2':     '#F4F7FC',
     'input':     '#FFFFFF',
-    'border':    '#CDD5E0',
-    'border2':   '#B0BCCC',
-    'hover':     '#E2E8F4',
-    'selected':  '#D0DAEA',
-    'text':      '#0D1B2A',
-    'text2':     '#3D5272',
-    'muted':     '#7A8FA6',
-    'disabled':  '#B0BFCC',
-    'gold':      '#C47E00',
-    'gold_lt':   '#E89A00',
-    'gold_dk':   '#A06600',
-    'ok':        '#007A52',
+    'border':    '#CDD8E8',
+    'border2':   '#B8C8DC',
+    'hover':     '#DDE6F2',
+    'selected':  '#CDDAEE',
+    'text':      '#0C1828',
+    'text2':     '#3C5270',
+    'muted':     '#7890AA',
+    'disabled':  '#C0CCD8',
+    'gold':      '#B87000',
+    'gold_lt':   '#D48800',
+    'gold_dk':   '#8C5400',
+    'ok':        '#006B48',
     'ok_dim':    '#E6F5EF',
-    'err':       '#C0202F',
+    'err':       '#B81C2C',
     'err_dim':   '#FDECEA',
-    'warn':      '#B35A00',
-    'info':      '#1A5FAD',
-    'sep':       '#E4E9F2',
-    'app':       '#F4F6FB',
+    'warn':      '#A05800',
+    'info':      '#1850A8',
+    'sep':       '#E0E8F0',
+    'app':       '#F0F4FA',
 }
 
 # Larger fonts for shop-floor / touch use (light mode)
@@ -221,17 +221,22 @@ def apply_light(sales_tab) -> None:
     t = sales_tab
 
     t.setStyleSheet(f"background:{L['bg']};")
-    t._left_panel.setStyleSheet(f"background:{L['bg']};")
+    t._left_panel.setStyleSheet(
+        f"QFrame#posProductPanel {{ background:{L['card']}; "
+        f"border:1px solid {L['border']}; border-radius:12px; }}")
     t._right_panel.setStyleSheet(
-        f"background:{L['panel']}; border-left:2px solid {L['border2']};")
+        f"QFrame#posCartPanel {{ background:{L['card']}; "
+        f"border:1px solid {L['border']}; border-radius:12px; }}")
     if getattr(t, '_checkout_scroll', None):
         t._checkout_scroll.setStyleSheet(
             "QScrollArea{border:none;background:transparent;}")
-        t._checkout_scroll.widget().setStyleSheet(f"background:{L['panel']};")
+        w = t._checkout_scroll.widget()
+        if w:
+            w.setStyleSheet("background:transparent;")
 
     t._search.setStyleSheet(fmt(SEARCH_INPUT))
     t._cat.setStyleSheet(fmt(COMBO))
-    t._gw.setStyleSheet(f"background:{L['bg']};")
+    t._gw.setStyleSheet("background:transparent;")
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(_label_style('text', 'heading', '700'))
@@ -272,6 +277,16 @@ def apply_light(sales_tab) -> None:
     t._charge_btn.setStyleSheet(fmt(CHARGE_BTN))
     t._prv_btn.setStyleSheet(fmt(SECONDARY_BTN))
     t._clr_btn.setStyleSheet(fmt(DANGER_BTN))
+    if getattr(t, '_reprint_btn', None):
+        t._reprint_btn.setStyleSheet(fmt(SECONDARY_BTN))
+
+    for b in getattr(t, '_pay_btns', {}).values():
+        b.setStyleSheet(
+            f"QPushButton{{background:{L['card2']};color:{L['text2']};"
+            f"border:1px solid {L['border']};border-radius:8px;"
+            f"font-size:12px;font-weight:600;min-height:40px;}}"
+            f"QPushButton:checked{{background:{L['gold']}22;color:{L['gold']};"
+            f"border-color:{L['gold']};}}")
 
     t._theme_btn.setText('🌙  Dark')
     t._theme_btn.setStyleSheet(fmt(TOGGLE_BTN_LIGHT))
@@ -289,79 +304,86 @@ def apply_dark(sales_tab) -> None:
 
     t = sales_tab
     t.setStyleSheet("")
-    t._left_panel.setStyleSheet(f"background:{C['surface']};")
+    t._left_panel.setStyleSheet(
+        f"QFrame#posProductPanel {{ background:{C['card']}; "
+        f"border:1px solid {C['border']}; border-radius:12px; }}")
     t._right_panel.setStyleSheet(
-        f"background:{C['panel']}; border-left:1px solid {C['border']};")
+        f"QFrame#posCartPanel {{ background:{C['card']}; "
+        f"border:1px solid {C['border']}; border-radius:12px; }}")
     if getattr(t, '_checkout_scroll', None):
         t._checkout_scroll.setStyleSheet(
             "QScrollArea{border:none;background:transparent;}")
-        t._checkout_scroll.widget().setStyleSheet(f"background:{C['panel']};")
+        w = t._checkout_scroll.widget()
+        if w:
+            w.setStyleSheet("background:transparent;")
 
     t._search.setStyleSheet("")
     t._cat.setStyleSheet("")
-    t._gw.setStyleSheet(f"background:{C['surface']};")
+    t._gw.setStyleSheet("background:transparent;")
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:16px; font-weight:700; background:transparent;")
+            f"color:{C['text']}; font-size:15px; font-weight:600; background:transparent;")
     if getattr(t, '_cnt', None):
         t._cnt.setStyleSheet(
             f"color:{C['muted']}; font-size:12px; background:transparent;")
 
-    t._ctbl.setStyleSheet(
-        f"QTableWidget{{background:{C['card']};border:1px solid {C['border']};"
-        f"border-radius:10px;color:{C['text']};font-size:14px;}}"
-        f"QTableWidget::item{{color:{C['text']};}}"
-        f"QHeaderView::section{{background:{C['card']};padding:8px 10px;font-size:11px;}}")
+    t._ctbl.setStyleSheet("")
     t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
 
     t._tot_frame.setStyleSheet(
-        f"QFrame{{background:{C['card']};border:1px solid {C['border']};border-radius:10px;}}")
+        f"QFrame{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;}}")
     for lbl in (getattr(t, '_sub_lbl', None), getattr(t, '_tax_lbl', None)):
         if lbl:
             lbl.setStyleSheet(
-                f"color:{C['text2']}; font-size:14px; background:transparent;")
+                f"color:{C['text2']}; font-size:13px; background:transparent;")
     if getattr(t, '_disc_lbl', None):
         t._disc_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; background:transparent;")
+            f"color:{C['text2']}; font-size:13px; background:transparent;")
     if getattr(t, '_total_hdr', None):
         t._total_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
+            f"color:{C['text']}; font-size:13px; font-weight:600; background:transparent;")
     t._tot_lbl.setStyleSheet(
-        f"color:{C['gold']}; font-size:28px; font-weight:900; background:transparent;")
+        f"color:{C['gold']}; font-size:24px; font-weight:800; background:transparent;")
 
     t._disc.setStyleSheet("")
     t._pay.setStyleSheet("")
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; background:transparent;")
+            f"color:{C['text2']}; font-size:13px; background:transparent;")
     t._paid.setStyleSheet("")
     if getattr(t, '_chg_lbl', None):
         t._chg_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; background:transparent;")
+            f"color:{C['text2']}; font-size:13px; background:transparent;")
     t._chg.setStyleSheet(
-        f"color:{C['ok']}; font-size:16px; font-weight:700; background:transparent;")
+        f"color:{C['ok']}; font-size:15px; font-weight:700; background:transparent;")
 
     t._mpesa_frame.setStyleSheet(
         f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
     t._mpesa_info.setStyleSheet(
-        f"color:{C['gold']}; font-size:13px; font-weight:600; background:transparent;")
+        f"color:{C['gold']}; font-size:12px; font-weight:600; background:transparent;")
     t._mpesa_ref.setStyleSheet("")
 
     t._note.setStyleSheet("")
+    t._charge_btn.setObjectName('primaryBtn')
     t._charge_btn.setStyleSheet("")
     t._prv_btn.setStyleSheet("")
     t._clr_btn.setStyleSheet("")
+    if getattr(t, '_reprint_btn', None):
+        t._reprint_btn.setStyleSheet("")
+
+    for b in getattr(t, '_pay_btns', {}).values():
+        b.setStyleSheet("")
 
     t._theme_btn.setText('☀  Light')
     t._theme_btn.setStyleSheet(
-        f"QPushButton{{background:transparent; color:{C['text2']};"
-        f"border:1px solid {C['border2']}; border-radius:16px;"
-        f"font-size:13px; font-weight:600; padding:6px 14px; min-height:40px;}}"
+        f"QPushButton{{background:{C['card2']}; color:{C['text2']};"
+        f"border:1px solid {C['border']}; border-radius:8px;"
+        f"font-size:12px; font-weight:500; padding:4px 10px;}}"
         f"QPushButton:hover{{background:{C['hover']}; color:{C['text']};}}")
 
     t._empty.setStyleSheet(
-        f"color:{C['muted']}; font-size:16px; background:transparent;")
+        f"color:{C['muted']}; font-size:14px; background:transparent;")
 
     t._is_light = False
     t._filter()

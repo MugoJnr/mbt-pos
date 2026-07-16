@@ -1,38 +1,158 @@
 """
-MBT POS - Premium Enterprise Theme v4
+MBT POS — Design System v6  (Lovable / Design System port)
 MugoByte Technologies | mugobyte.com
-"""
 
-C = {
-    'app':      '#070C14',
-    'surface':  '#0A1220',
-    'panel':    '#0D1828',
-    'card':     '#111F33',
-    'card2':    '#162540',
-    'sidebar':  '#080E1C',
-    'input':    '#0F1C30',
-    'hover':    '#192D48',
-    'selected': '#1B3560',
-    'gold':     '#F0A500',
-    'gold_lt':  '#FFBE3A',
-    'gold_dk':  '#C07800',
-    'gold_dim': '#F0A50018',
-    'text':     '#F0F4FC',
-    'text2':    '#6E8FA8',
-    'muted':    '#374F66',
-    'disabled': '#222E3C',
-    'ok':       '#00D68F',
-    'ok_dim':   '#00D68F18',
-    'warn':     '#FFAA00',
-    'warn_dim': '#FFAA0018',
-    'err':      '#FF4757',
-    'err_dim':  '#FF475718',
-    'info':     '#4E90FF',
-    'info_dim': '#4E90FF18',
-    'border':   '#141E2E',
-    'border2':  '#1A2D44',
-    'sep':      '#0D1620',
+Two complete themes: DARK (default) + LIGHT
+Tokens mirror lovable_export/src/styles.css
+Global switch via ThemeManager.apply(is_light)
+Font: Manrope when available, Segoe UI fallback
+"""
+import os
+import sys
+
+# ── DARK PALETTE (Lovable :root / .dark) ──────────────────────────────────────
+DARK = {
+    'app':       '#05080F',
+    'surface':   '#080D18',
+    'panel':     '#0B1220',
+    'card':      '#0F1A2E',
+    'card2':     '#132034',
+    'sidebar':   '#060A14',
+    'input':     '#0C1626',
+    'hover':     '#162A44',
+    'selected':  '#1A3560',
+    'gold':      '#F2A800',
+    'gold_lt':   '#FFBE3A',
+    'gold_dk':   '#C07800',
+    'gold_fg':   '#0A0F1A',
+    'gold_dim':  '#F2A80015',
+    'text':      '#EEF2FC',
+    'text2':     '#6880A0',
+    'muted':     '#334D68',
+    'disabled':  '#1C2A3A',
+    'ok':        '#00C97E',
+    'ok_dim':    '#00C97E15',
+    'warn':      '#F0A500',
+    'warn_dim':  '#F0A50015',
+    'err':       '#FF3D50',
+    'err_dim':   '#FF3D5015',
+    'info':      '#4A8FFF',
+    'info_dim':  '#4A8FFF15',
+    'border':    '#10192C',
+    'border2':   '#18283E',
+    'sep':       '#0A1018',
 }
+
+# ── LIGHT PALETTE (Lovable .light) ────────────────────────────────────────────
+LIGHT = {
+    'app':       '#F0F4FA',
+    'surface':   '#FFFFFF',
+    'panel':     '#E8EDF6',
+    'card':      '#FFFFFF',
+    'card2':     '#F4F7FC',
+    'sidebar':   '#E2E8F2',
+    'input':     '#FFFFFF',
+    'hover':     '#DDE6F2',
+    'selected':  '#CDDAEE',
+    'gold':      '#B87000',
+    'gold_lt':   '#D48800',
+    'gold_dk':   '#8C5400',
+    'gold_fg':   '#FFFFFF',
+    'gold_dim':  '#B8700015',
+    'text':      '#0C1828',
+    'text2':     '#3C5270',
+    'muted':     '#7890AA',
+    'disabled':  '#C0CCD8',
+    'ok':        '#006B48',
+    'ok_dim':    '#006B4815',
+    'warn':      '#A05800',
+    'warn_dim':  '#A0580015',
+    'err':       '#B81C2C',
+    'err_dim':   '#B81C2C15',
+    'info':      '#1850A8',
+    'info_dim':  '#1850A815',
+    'border':    '#CDD8E8',
+    'border2':   '#B8C8DC',
+    'sep':       '#E0E8F0',
+}
+
+# Radius scale (Lovable --radius-*)
+RADIUS = {
+    'sm': 6,
+    'md': 8,
+    'lg': 12,
+    'xl': 14,
+    '2xl': 18,
+}
+
+_FONT_LOADED = False
+_FONT_FAMILY = "'Segoe UI', 'Inter', Arial, sans-serif"
+
+
+def _assets_root():
+    """Resolve bundled assets/ next to project root or PyInstaller MEIPASS."""
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        for cand in (
+            os.path.join(base, 'assets'),
+            os.path.join(base, 'desktop', 'assets'),
+            os.path.join(os.path.dirname(sys.executable), 'assets'),
+        ):
+            if os.path.isdir(cand):
+                return cand
+    here = os.path.dirname(os.path.abspath(__file__))
+    # desktop/utils → mbt_pos/assets
+    root = os.path.dirname(os.path.dirname(here))
+    return os.path.join(root, 'assets')
+
+
+def ensure_fonts():
+    """
+    Load Manrope from assets/fonts when present.
+    Safe no-op if files missing or Qt not ready — callers fall back to Segoe UI.
+    Retries once QApplication exists if first attempt was too early.
+    """
+    global _FONT_LOADED, _FONT_FAMILY
+    if _FONT_LOADED:
+        return _FONT_FAMILY
+    try:
+        from PyQt5.QtGui import QFontDatabase, QFont
+        from PyQt5.QtWidgets import QApplication
+        # Prefer loading after QApplication exists (more reliable on Windows)
+        if QApplication.instance() is None:
+            return _FONT_FAMILY
+        fonts_dir = os.path.join(_assets_root(), 'fonts')
+        loaded = []
+        if os.path.isdir(fonts_dir):
+            for name in (
+                'Manrope-Regular.ttf', 'Manrope-Medium.ttf',
+                'Manrope-SemiBold.ttf', 'Manrope-Bold.ttf',
+                'Manrope-ExtraBold.ttf',
+            ):
+                path = os.path.join(fonts_dir, name)
+                if os.path.isfile(path):
+                    fid = QFontDatabase.addApplicationFont(path)
+                    if fid >= 0:
+                        families = QFontDatabase.applicationFontFamilies(fid)
+                        if families:
+                            loaded.append(families[0])
+        _FONT_LOADED = True
+        if loaded:
+            fam = loaded[0]
+            _FONT_FAMILY = f"'{fam}', 'Segoe UI', 'Inter', Arial, sans-serif"
+            QApplication.instance().setFont(QFont(fam, 13))
+    except Exception:
+        _FONT_LOADED = True
+    return _FONT_FAMILY
+
+
+def font_stack():
+    """CSS font-family string for QSS (Manrope if loaded)."""
+    ensure_fonts()
+    return _FONT_FAMILY
+
+# Active palette — starts dark, toggled by ThemeManager
+C = dict(DARK)
 
 COLORS = {
     'accent': C['gold'], 'success': C['ok'], 'danger': C['err'],
@@ -43,230 +163,537 @@ COLORS = {
     'border_strong': C['border2'],
 }
 
-def _ss():
+
+def _build_stylesheet(p):
+    """Build the full QSS stylesheet from palette p (Lovable-aligned)."""
+    ff = font_stack()
+    r_md, r_lg, r_xl = RADIUS['md'], RADIUS['lg'], RADIUS['xl']
+    gold_fg = p.get('gold_fg', '#0A0F1A')
     return f"""
 * {{
-    font-family: 'Segoe UI', 'Inter', 'Ubuntu', Arial, sans-serif;
+    font-family: {ff};
     font-size: 14px;
-    color: {C['text']};
+    color: {p['text']};
     outline: none;
 }}
-QMainWindow, QWidget, QDialog {{ background: {C['surface']}; border: none; }}
+QMainWindow, QWidget, QDialog {{ background: {p['surface']}; border: none; }}
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 QFrame {{ border: none; }}
 
-#sidebar {{ background: {C['sidebar']}; border-right: 1px solid {C['border']}; min-width:220px; max-width:220px; }}
-#sidebarLogo {{ background: {C['app']}; min-height:78px; max-height:78px; border-bottom:1px solid {C['border']}; }}
-#sidebarLogoText {{ color:{C['gold']}; font-size:24px; font-weight:900; letter-spacing:10px; background:transparent; }}
-#sidebarLogoSub  {{ color:{C['muted']}; font-size:9px; letter-spacing:4px; font-weight:600; background:transparent; }}
-
+/* ── SIDEBAR (AppShell) ── */
+#sidebar {{
+    background: {p['sidebar']};
+    border-right: 1px solid {p['border']};
+    min-width: 228px; max-width: 228px;
+}}
+#sidebarLogo {{
+    background: {p['sidebar']};
+    min-height: 76px; max-height: 76px;
+    border-bottom: 1px solid {p['border']};
+}}
+#sidebarLogoText {{
+    color: {p['gold']};
+    font-size: 18px; font-weight: 800; letter-spacing: 1px;
+    background: transparent;
+}}
+#sidebarLogoSub {{
+    color: {p['text2']};
+    font-size: 10px; letter-spacing: 3px; font-weight: 600;
+    background: transparent;
+}}
 #navBtn {{
-    background: transparent; color: {C['text2']}; border: none;
-    padding: 12px 14px 12px 16px; text-align: left;
-    font-size: 14px; font-weight: 600; border-radius: 8px;
-    margin: 2px 8px; min-height: 46px;
+    background: transparent;
+    color: {p['text2']};
+    border: none;
+    padding: 10px 12px 10px 16px;
+    text-align: left;
+    font-size: 13px; font-weight: 500;
+    border-radius: {r_md}px;
+    margin: 2px 8px;
+    min-height: 40px;
 }}
-#navBtn:hover {{ background:{C['hover']}; color:{C['text']}; }}
-#navBtn:checked {{ background:{C['selected']}; color:{C['gold']}; font-weight:700; }}
-
-#sidebarUser {{ background:{C['app']}; border-top:1px solid {C['border']}; min-height:72px; }}
-#sidebarUserName {{ color:{C['text']}; font-size:14px; font-weight:700; background:transparent; }}
-#sidebarUserRole {{ color:{C['gold']}; font-size:10px; letter-spacing:2.5px; font-weight:600; background:transparent; }}
+#navBtn:hover {{
+    background: {p['hover']};
+    color: {p['text']};
+}}
+#navBtn:checked {{
+    background: {p['hover']};
+    color: {p['gold']};
+    font-weight: 600;
+    border-left: 3px solid {p['gold']};
+}}
+#sidebarUser {{
+    background: {p['panel']};
+    border-top: 1px solid {p['border']};
+    min-height: 88px;
+}}
+#sidebarUserName {{
+    color: {p['text']};
+    font-size: 13px; font-weight: 600;
+    background: transparent;
+}}
+#sidebarUserRole {{
+    color: {p['gold']};
+    font-size: 10px; letter-spacing: 2px; font-weight: 700;
+    background: transparent;
+}}
 #logoutBtn {{
-    background:transparent; color:{C['muted']}; border:1px solid {C['border2']};
-    border-radius:6px; padding:4px 12px; font-size:11px; margin-top:4px; min-height:0;
+    background: {p['card']};
+    color: {p['text']};
+    border: 1px solid {p['border']};
+    border-radius: {r_md}px;
+    padding: 6px 12px;
+    font-size: 13px;
+    margin-top: 6px;
+    min-height: 0;
 }}
-#logoutBtn:hover {{ color:{C['err']}; border-color:{C['err']}; background:{C['err_dim']}; }}
+#logoutBtn:hover {{
+    color: {p['err']};
+    border-color: {p['err']};
+    background: {p['err_dim']};
+}}
 
-#topbar {{ background:{C['panel']}; border-bottom:1px solid {C['border']}; min-height:56px; max-height:56px; }}
-#pageTitle {{ color:{C['text']}; font-size:18px; font-weight:700; background:transparent; }}
-#connBadge {{ font-size:12px; font-weight:600; padding:3px 10px; border-radius:20px; background:transparent; }}
-#syncLbl   {{ color:{C['text2']}; font-size:12px; background:transparent; }}
-#clockLbl  {{ color:{C['text2']}; font-size:12px; font-family:'Consolas','Courier New',monospace; background:transparent; padding:0 4px; }}
-#refreshBtn {{ background:transparent; color:{C['text2']}; border:1px solid {C['border2']}; border-radius:7px; padding:5px 14px; font-size:12px; min-height:0; }}
-#refreshBtn:hover {{ color:{C['text']}; background:{C['hover']}; }}
+/* ── TOPBAR ── */
+#topbar {{
+    background: {p['panel']};
+    border-bottom: 1px solid {p['border']};
+    min-height: 56px; max-height: 56px;
+}}
+#pageTitle {{
+    color: {p['text']};
+    font-size: 15px; font-weight: 600;
+    background: transparent;
+}}
+#connBadge {{
+    font-size: 12px; font-weight: 600;
+    padding: 4px 10px;
+    border-radius: {r_md}px;
+    background: transparent;
+}}
+#syncLbl  {{ color: {p['text2']}; font-size: 12px; background: transparent; }}
+#clockLbl {{
+    color: {p['text2']};
+    font-size: 12px;
+    font-family: 'Consolas', 'JetBrains Mono', 'Courier New', monospace;
+    background: transparent; padding: 0 8px;
+    border-left: 1px solid {p['border']};
+}}
+#refreshBtn {{
+    background: {p['card']};
+    color: {p['text']};
+    border: 1px solid {p['border']};
+    border-radius: {r_md}px;
+    padding: 6px 12px;
+    font-size: 13px; font-weight: 500;
+    min-height: 0;
+}}
+#refreshBtn:hover {{ color: {p['text']}; background: {p['hover']}; border-color: {p['gold']}60; }}
+#themeBtn {{
+    background: {p['card']};
+    color: {p['text']};
+    border: 1px solid {p['border']};
+    border-radius: {r_md}px;
+    font-size: 12px; font-weight: 500;
+}}
+#themeBtn:hover {{ border-color: {p['gold']}; color: {p['gold']}; }}
 
-#statusBar {{ background:{C['app']}; border-top:1px solid {C['border']}; min-height:24px; max-height:24px; }}
-#statusLeft  {{ color:{C['muted']}; font-size:11px; background:transparent; }}
-#statusRight {{ color:{C['muted']}; font-size:11px; background:transparent; }}
-#pageStack {{ background:{C['surface']}; }}
-#content  {{ background:{C['surface']}; }}
+/* ── STATUSBAR / FOOTER ── */
+#statusBar {{
+    background: {p['panel']};
+    border-top: 1px solid {p['border']};
+    min-height: 36px; max-height: 36px;
+}}
+#statusLeft  {{ color: {p['text2']}; font-size: 11px; background: transparent; }}
+#statusRight {{
+    color: {p['text2']}; font-size: 11px; background: transparent;
+    font-family: 'Consolas', 'JetBrains Mono', 'Courier New', monospace;
+}}
+#pageStack   {{ background: {p['surface']}; }}
+#content     {{ background: {p['surface']}; }}
 
+/* ── BUTTONS ── */
 QPushButton {{
-    background:{C['card2']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px;
-    padding:10px 18px; font-size:14px; font-weight:600; min-height:40px;
+    background: {p['card2']};
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    padding: 8px 16px;
+    font-size: 13px; font-weight: 500;
+    min-height: 36px;
 }}
-QPushButton:hover {{ background:{C['hover']}; color:{C['text']}; }}
-QPushButton:pressed {{ background:{C['app']}; color:{C['text']}; }}
-QPushButton:disabled {{ background:{C['panel']}; color:{C['text2']}; border-color:{C['border2']}; }}
+QPushButton:hover   {{ background: {p['hover']}; color: {p['text']}; border-color: {p['gold']}50; }}
+QPushButton:pressed {{ background: {p['app']}; color: {p['text']}; }}
+QPushButton:disabled {{ background: {p['panel']}; color: {p['muted']}; border-color: {p['border2']}; }}
 
 QPushButton[objectName="primaryBtn"] {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {C['gold_lt']}, stop:1 {C['gold']});
-    color:{C['app']}; border:none; font-weight:800; font-size:14.5px; border-radius:8px;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {p['gold_lt']}, stop:1 {p['gold']});
+    color: {gold_fg};
+    border: none;
+    font-weight: 700; font-size: 13px;
+    border-radius: {r_md}px;
+    letter-spacing: 0.2px;
 }}
-QPushButton[objectName="primaryBtn"]:hover {{ background:{C['gold_lt']}; }}
-QPushButton[objectName="primaryBtn"]:pressed {{ background:{C['gold_dk']}; }}
-QPushButton[objectName="successBtn"] {{ background:{C['ok']}; color:#000; border:none; font-weight:700; border-radius:8px; }}
-QPushButton[objectName="successBtn"]:hover {{ background:#1DFAA0; }}
-QPushButton[objectName="dangerBtn"]  {{ background:{C['err']}; color:#fff; border:none; font-weight:700; border-radius:8px; }}
-QPushButton[objectName="dangerBtn"]:hover {{ background:#FF6B78; }}
+QPushButton[objectName="primaryBtn"]:hover   {{ background: {p['gold_lt']}; }}
+QPushButton[objectName="primaryBtn"]:pressed {{ background: {p['gold_dk']}; }}
+QPushButton[objectName="successBtn"] {{
+    background: {p['ok']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
+}}
+QPushButton[objectName="dangerBtn"]  {{
+    background: {p['err']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
+}}
+QPushButton[objectName="dangerBtn"]:hover {{ background: #FF6070; }}
+QPushButton[objectName="ghostBtn"] {{
+    background: transparent; color: {p['text2']};
+    border: none; border-radius: {r_md}px; font-weight: 500;
+}}
+QPushButton[objectName="ghostBtn"]:hover {{
+    background: {p['hover']}; color: {p['text']};
+}}
+QPushButton[objectName="outlineBtn"] {{
+    background: transparent; color: {p['text']};
+    border: 1px solid {p['border2']}; border-radius: {r_md}px; font-weight: 500;
+}}
+QPushButton[objectName="outlineBtn"]:hover {{
+    background: {p['hover']}; border-color: {p['gold']}60;
+}}
 
+/* ── INPUTS ── */
 QLineEdit, QTextEdit, QPlainTextEdit {{
-    background:{C['input']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px;
-    padding:9px 14px; font-size:14px;
-    selection-background-color:{C['gold']}; selection-color:{C['app']};
+    background: {p['input']};
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    padding: 8px 12px;
+    font-size: 14px;
+    selection-background-color: {p['gold']};
+    selection-color: {gold_fg};
 }}
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{ border-color:{C['gold']}; background:{C['hover']}; }}
-QLineEdit[readOnly="true"] {{ color:{C['text2']}; border-color:{C['border2']}; background:{C['panel']}; }}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+    border-color: {p['gold']};
+    background: {p['input']};
+}}
+QLineEdit[readOnly="true"] {{
+    color: {p['text2']};
+    border-color: {p['border2']};
+    background: {p['panel']};
+}}
 
 QSpinBox, QDoubleSpinBox {{
-    background:{C['input']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px; padding:8px 10px; font-size:14px;
+    background: {p['input']};
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    padding: 6px 10px;
+    font-size: 14px;
 }}
-QSpinBox:focus, QDoubleSpinBox:focus {{ border-color:{C['gold']}; }}
+QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {p['gold']}; }}
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-    background:{C['border2']}; border:none; width:22px; border-radius:3px;
+    background: {p['border2']}; border: none; width: 22px; border-radius: 4px;
 }}
 QSpinBox::up-button:hover, QSpinBox::down-button:hover,
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{ background:{C['gold']}; }}
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {p['gold']};
+}}
 
 QComboBox {{
-    background:{C['input']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px; padding:8px 14px; font-size:14px;
+    background: {p['input']};
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    padding: 6px 12px;
+    font-size: 14px;
 }}
-QComboBox:focus {{ border-color:{C['gold']}; }}
-QComboBox::drop-down {{ border:none; width:30px; }}
+QComboBox:focus {{ border-color: {p['gold']}; }}
+QComboBox::drop-down {{ border: none; width: 28px; }}
 QComboBox QAbstractItemView {{
-    background:{C['card2']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px;
-    selection-background-color:{C['selected']}; selection-color:{C['gold']}; padding:4px;
+    background: {p['card2']};
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    selection-background-color: {p['selected']};
+    selection-color: {p['gold']};
+    padding: 4px;
 }}
-QComboBox QAbstractItemView::item {{ padding:8px 12px; min-height:32px; }}
+QComboBox QAbstractItemView::item {{ padding: 8px 12px; min-height: 32px; }}
 
+/* ── TABLES ── */
 QTableWidget, QTableView {{
-    background:{C['card']}; color:{C['text']};
-    gridline-color:transparent; border:none; border-radius:10px;
-    font-size:14.5px; alternate-background-color:{C['card2']};
-    selection-background-color:{C['selected']}; selection-color:{C['gold']};
-    show-decoration-selected:1;
+    background: {p['card']};
+    color: {p['text']};
+    gridline-color: transparent;
+    border: none;
+    border-radius: {r_lg}px;
+    font-size: 13px;
+    alternate-background-color: {p['card2']};
+    selection-background-color: {p['selected']};
+    selection-color: {p['gold']};
+    show-decoration-selected: 1;
 }}
-QTableWidget::item, QTableView::item {{ padding:11px 14px; border:none; }}
-QTableWidget::item:selected, QTableView::item:selected {{ color:{C['gold']}; }}
+QTableWidget::item, QTableView::item {{
+    padding: 10px 14px;
+    border: none;
+    border-bottom: 1px solid {p['border']};
+}}
+QTableWidget::item:selected, QTableView::item:selected {{
+    color: {p['gold']};
+    background: {p['selected']};
+}}
+QTableWidget::item:hover:!selected, QTableView::item:hover:!selected {{
+    background: {p['hover']};
+}}
 QHeaderView::section {{
-    background:{C['panel']}; color:{C['text2']};
-    font-size:11.5px; font-weight:800; letter-spacing:0.8px;
-    padding:12px 14px; border:none; border-bottom:1px solid {C['border2']};
-    text-transform:uppercase;
+    background: {p['panel']};
+    color: {p['text2']};
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 1.2px;
+    padding: 12px 14px;
+    border: none;
+    border-bottom: 1px solid {p['border']};
+    text-transform: uppercase;
 }}
-QHeaderView {{ border:none; background:transparent; }}
-QTableCornerButton::section {{ background:{C['panel']}; border:none; }}
+QHeaderView {{ border: none; background: transparent; }}
+QTableCornerButton::section {{ background: {p['panel']}; border: none; }}
 
-QTabWidget::pane {{ background:{C['card']}; border:1px solid {C['border']}; border-radius:10px; border-top-left-radius:0; }}
-QTabBar {{ background:transparent; }}
+/* ── TABS ── */
+QTabWidget::pane {{
+    background: {p['card']};
+    border: 1px solid {p['border']};
+    border-radius: {r_lg}px;
+    border-top-left-radius: 0;
+}}
+QTabBar {{ background: transparent; }}
 QTabBar::tab {{
-    background:transparent; color:{C['text2']}; border:none;
-    border-bottom:2px solid transparent; padding:10px 24px;
-    margin-right:2px; font-size:13px; font-weight:500;
+    background: transparent;
+    color: {p['text2']};
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 20px;
+    margin-right: 2px;
+    font-size: 13px; font-weight: 600;
 }}
-QTabBar::tab:selected {{ color:{C['gold']}; border-bottom:2px solid {C['gold']}; font-weight:700; }}
-QTabBar::tab:hover:!selected {{ color:{C['text']}; background:{C['hover']}20; }}
+QTabBar::tab:selected {{
+    color: {p['gold']};
+    border-bottom: 2px solid {p['gold']};
+    font-weight: 700;
+}}
+QTabBar::tab:hover:!selected {{ color: {p['text']}; }}
 
-QScrollBar:vertical {{ background:transparent; width:5px; border-radius:3px; margin:0; }}
-QScrollBar::handle:vertical {{ background:{C['border2']}; border-radius:3px; min-height:30px; }}
-QScrollBar::handle:vertical:hover {{ background:{C['gold']}; }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
-QScrollBar:horizontal {{ background:transparent; height:5px; border-radius:3px; }}
-QScrollBar::handle:horizontal {{ background:{C['border2']}; border-radius:3px; }}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width:0; }}
+/* ── SCROLLBARS ── */
+QScrollBar:vertical {{
+    background: transparent; width: 8px; border-radius: 4px; margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {p['border2']}; border-radius: 4px; min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {p['gold']}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{
+    background: transparent; height: 8px; border-radius: 4px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {p['border2']}; border-radius: 4px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
+/* ── GROUPBOX ── */
 QGroupBox {{
-    border:1px solid {C['border2']}; border-radius:12px;
-    margin-top:20px; padding:20px 18px 16px 18px;
-    background:{C['card']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_lg}px;
+    margin-top: 20px;
+    padding: 18px 16px 14px 16px;
+    background: {p['card']};
+    font-size: 13px;
 }}
 QGroupBox::title {{
-    subcontrol-origin:margin; left:18px; padding:0 8px;
-    color:{C['gold']}; font-size:10px; font-weight:700; letter-spacing:1.5px;
+    subcontrol-origin: margin; left: 16px; padding: 0 8px;
+    color: {p['gold']};
+    font-size: 10px; font-weight: 800; letter-spacing: 1.5px;
 }}
 
-QCheckBox, QRadioButton {{ color:{C['text']}; font-size:14px; spacing:10px; background:transparent; }}
+/* ── CHECKBOXES / RADIO ── */
+QCheckBox, QRadioButton {{
+    color: {p['text']}; font-size: 14px; spacing: 10px; background: transparent;
+}}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width:17px; height:17px;
-    border:2px solid {C['border2']}; border-radius:4px; background:{C['input']};
+    width: 16px; height: 16px;
+    border: 2px solid {p['border2']};
+    border-radius: 4px;
+    background: {p['input']};
 }}
-QCheckBox::indicator:checked {{ background:{C['gold']}; border-color:{C['gold']}; }}
-QRadioButton::indicator {{ border-radius:9px; }}
-QRadioButton::indicator:checked {{ background:{C['gold']}; border-color:{C['gold']}; }}
+QCheckBox::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
+QRadioButton::indicator {{ border-radius: 8px; }}
+QRadioButton::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
 
-QProgressBar {{ background:{C['border2']}; border:none; border-radius:4px; height:5px; text-align:center; color:transparent; }}
-QProgressBar::chunk {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {C['gold']}, stop:1 {C['gold_lt']}); border-radius:4px; }}
+/* ── PROGRESS ── */
+QProgressBar {{
+    background: {p['border2']};
+    border: none; border-radius: 4px;
+    height: 5px; text-align: center; color: transparent;
+}}
+QProgressBar::chunk {{
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 {p['gold']}, stop:1 {p['gold_lt']});
+    border-radius: 4px;
+}}
 
-QMessageBox {{ background:{C['card2']}; border:1px solid {C['border2']}; border-radius:12px; }}
-QMessageBox QLabel {{ color:{C['text']}; font-size:14px; background:transparent; }}
-QMessageBox QPushButton {{ min-width:90px; color:{C['text']}; }}
+/* ── DIALOGS ── */
+QMessageBox {{
+    background: {p['card2']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_xl}px;
+}}
+QMessageBox QLabel {{
+    color: {p['text']}; font-size: 14px; background: transparent;
+}}
+QMessageBox QPushButton {{ min-width: 90px; color: {p['text']}; }}
 
 QDialogButtonBox QPushButton {{
-    background:{C['card2']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px;
-    padding:8px 22px; font-size:13px; font-weight:500; min-height:34px; min-width:80px;
+    background: {p['card2']}; color: {p['text']};
+    border: 1px solid {p['border2']}; border-radius: {r_md}px;
+    padding: 8px 20px; font-size: 13px; font-weight: 600;
+    min-height: 34px; min-width: 84px;
 }}
-QDialogButtonBox QPushButton:hover {{ background:{C['hover']}; color:{C['text']}; }}
-QDialogButtonBox QPushButton:pressed {{ background:{C['app']}; }}
-QDialogButtonBox QPushButton[text="OK"], QDialogButtonBox QPushButton[text="Save"] {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {C['gold_lt']}, stop:1 {C['gold']});
-    color:{C['app']}; border:none; font-weight:800;
+QDialogButtonBox QPushButton:hover {{
+    background: {p['hover']}; color: {p['text']};
+}}
+QDialogButtonBox QPushButton[text="OK"],
+QDialogButtonBox QPushButton[text="Save"] {{
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {p['gold_lt']}, stop:1 {p['gold']});
+    color: {gold_fg}; border: none; font-weight: 700;
 }}
 
-QSplitter::handle {{ background:{C['border']}; width:1px; height:1px; }}
+/* ── MISC ── */
+QSplitter::handle {{ background: {p['border']}; width: 1px; height: 1px; }}
 
 QListWidget {{
-    background:{C['card']}; color:{C['text']};
-    border:none; border-radius:10px; outline:none;
+    background: {p['card']}; color: {p['text']};
+    border: none; border-radius: {r_lg}px; outline: none;
 }}
 QListWidget::item {{
-    padding:10px 14px; border:none; border-radius:6px; margin:1px 4px;
+    padding: 10px 12px; border: none; border-radius: {r_md}px; margin: 1px 4px;
 }}
-QListWidget::item:selected {{ background:{C['selected']}; color:{C['gold']}; }}
-QListWidget::item:hover:!selected {{ background:{C['hover']}; }}
+QListWidget::item:selected {{ background: {p['selected']}; color: {p['gold']}; }}
+QListWidget::item:hover:!selected {{ background: {p['hover']}; }}
 
 QDateEdit {{
-    background:{C['input']}; color:{C['text']};
-    border:1px solid {C['border2']}; border-radius:8px; padding:8px 12px; font-size:13px;
+    background: {p['input']}; color: {p['text']};
+    border: 1px solid {p['border2']}; border-radius: {r_md}px;
+    padding: 6px 10px; font-size: 13px;
 }}
-QDateEdit:focus {{ border-color:{C['gold']}; }}
-QDateEdit::drop-down {{ border:none; width:26px; }}
-QCalendarWidget {{ background:{C['card2']}; color:{C['text']}; }}
+QDateEdit:focus {{ border-color: {p['gold']}; }}
+QDateEdit::drop-down {{ border: none; width: 26px; }}
+QCalendarWidget {{ background: {p['card2']}; color: {p['text']}; }}
 
+/* ── LOGIN ── */
 #loginBrand {{
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {C['app']}, stop:0.5 {C['sidebar']}, stop:1 {C['card']});
-    border-bottom:1px solid {C['border2']};
+        stop:0 {p['app']}, stop:0.5 {p['sidebar']}, stop:1 {p['card']});
+    border-bottom: 2px solid {p['gold']};
 }}
 #logoText {{
-    color:{C['gold']}; font-size:46px; font-weight:900;
-    letter-spacing:12px; background:transparent;
+    color: {p['gold']};
+    font-size: 48px; font-weight: 800;
+    letter-spacing: 12px; background: transparent;
 }}
-#loginTitle    {{ color:{C['text']};  font-size:11px; font-weight:700; letter-spacing:5px; background:transparent; }}
-#loginSubtitle {{ color:{C['muted']}; font-size:11px; letter-spacing:1px; background:transparent; }}
-#loginForm     {{ background:{C['surface']}; }}
-#loginStatus   {{ font-size:13px; color:{C['text2']}; min-height:28px; background:transparent; }}
-#loginInput    {{ font-size:15px; padding:13px 16px; border-radius:9px; }}
+#loginTitle    {{ color: {p['text']};  font-size: 11px; font-weight: 800; letter-spacing: 5px; background: transparent; }}
+#loginSubtitle {{ color: {p['muted']}; font-size: 11px; letter-spacing: 1px; background: transparent; }}
+#loginForm     {{ background: {p['surface']}; }}
+#loginStatus   {{ font-size: 13px; color: {p['text2']}; min-height: 30px; background: transparent; }}
+#loginInput    {{ font-size: 15px; padding: 12px 14px; border-radius: {r_md}px; }}
 #loginBtn {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 {C['gold_lt']}, stop:1 {C['gold']});
-    color:{C['app']}; font-size:14px; font-weight:900; letter-spacing:2px;
-    padding:14px; border:none; border-radius:9px; min-height:46px;
+    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+        stop:0 {p['gold_lt']}, stop:1 {p['gold']});
+    color: {gold_fg};
+    font-size: 14px; font-weight: 800; letter-spacing: 2px;
+    padding: 12px; border: none; border-radius: {r_md}px; min-height: 48px;
 }}
-#loginBtn:hover  {{ background:{C['gold_lt']}; }}
-#loginBtn:pressed {{ background:{C['gold_dk']}; }}
-#loginFooter {{ font-size:11px; color:{C['muted']}; background:transparent; }}
+#loginBtn:hover   {{ background: {p['gold_lt']}; }}
+#loginBtn:pressed {{ background: {p['gold_dk']}; }}
+#loginFooter {{ font-size: 11px; color: {p['muted']}; background: transparent; }}
 
-#kpiLabel {{ color:{C['muted']}; font-size:10px; font-weight:700; letter-spacing:1px; background:transparent; }}
-#kpiSub   {{ color:{C['text2']}; font-size:12px; background:transparent; }}
-#sectionEyebrow {{ color:{C['muted']}; font-size:10px; font-weight:700; letter-spacing:2px; background:transparent; }}
-#sectionTitle   {{ color:{C['text']}; font-size:18px; font-weight:700; background:transparent; }}
+/* ── LABELS ── */
+#kpiLabel {{ color: {p['muted']}; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; background: transparent; }}
+#kpiSub   {{ color: {p['text2']}; font-size: 12px; background: transparent; }}
+#sectionEyebrow {{ color: {p['muted']}; font-size: 10px; font-weight: 800; letter-spacing: 2px; background: transparent; }}
+#sectionTitle   {{ color: {p['text']}; font-size: 15px; font-weight: 600; background: transparent; }}
+
+/* ── POS product / shell cards ── */
+#posProductPanel, #posCartPanel {{
+    background: {p['card']};
+    border: 1px solid {p['border']};
+    border-radius: {r_lg}px;
+}}
+#posPayToggle {{
+    background: {p['card2']};
+    color: {p['text2']};
+    border: 1px solid {p['border']};
+    border-radius: {r_md}px;
+    font-size: 12px; font-weight: 600;
+    min-height: 40px;
+}}
+#posPayToggle:checked {{
+    background: {p['gold']}22;
+    color: {p['gold']};
+    border-color: {p['gold']};
+}}
 """
 
-MBT_STYLESHEET = _ss()
+
+MBT_STYLESHEET = _build_stylesheet(DARK)
+
+
+class ThemeManager:
+    """
+    Toggle between DARK and LIGHT globally.
+    Call ThemeManager.apply(is_light) from any widget.
+    The QApplication stylesheet is updated — all widgets repaint.
+    """
+    _is_light = False
+
+    @classmethod
+    def is_light(cls):
+        return cls._is_light
+
+    @classmethod
+    def apply(cls, is_light: bool):
+        global MBT_STYLESHEET
+        from PyQt5.QtWidgets import QApplication
+        ensure_fonts()
+        cls._is_light = bool(is_light)
+        p = LIGHT if cls._is_light else DARK
+        # Update global C in-place so all existing widget references stay valid
+        C.clear()
+        C.update(p)
+        COLORS.update({
+            'accent': C['gold'], 'success': C['ok'], 'danger': C['err'],
+            'warning': C['warn'], 'info': C['info'],
+            'text_primary': C['text'], 'text_secondary': C['text2'],
+            'text_muted': C['muted'], 'bg_card': C['card'],
+            'bg_sidebar': C['sidebar'], 'border': C['border'],
+            'border_strong': C['border2'],
+        })
+        MBT_STYLESHEET = _build_stylesheet(p)
+        app = QApplication.instance()
+        if app:
+            app.setStyleSheet(MBT_STYLESHEET)
+        return MBT_STYLESHEET
+
+    @classmethod
+    def toggle(cls):
+        return cls.apply(not cls._is_light)
+
+    @classmethod
+    def palette(cls):
+        return LIGHT if cls._is_light else DARK
+
+
+def is_light_mode() -> bool:
+    return ThemeManager.is_light()
+
+
+def set_light_mode(enabled: bool) -> str:
+    """Compatibility wrapper — prefer ThemeManager.apply()."""
+    return ThemeManager.apply(enabled)

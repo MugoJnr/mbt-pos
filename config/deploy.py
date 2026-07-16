@@ -62,6 +62,17 @@ def verify_installer_bundle() -> tuple[bool, str]:
         return False, str(e)
 
 
+def verify_cloudflare_token() -> tuple[bool, str]:
+    """BUILD.bat — auto Cloudflare needs an API token in the installer bundle."""
+    tok = (load_deploy_config().get('cloudflare_api_token') or '').strip()
+    if tok:
+        return True, 'API token present in deploy config'
+    return False, (
+        'cloudflare_api_token missing — remote dashboard will NOT auto-setup on shop PCs.\n'
+        '  Create config/deploy.local.json with your Cloudflare API token, or set\n'
+        '  CLOUDFLARE_API_TOKEN before running BUILD.bat')
+
+
 def shop_settings_defaults() -> dict:
     """Inserted into system_settings for new installs (INSERT OR IGNORE)."""
     d = load_deploy_config()

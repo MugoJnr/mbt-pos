@@ -17,7 +17,14 @@ from pathlib import Path
 from datetime import datetime
 
 # ── Paths ──────────────────────────────────────────────────────────────────
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+if getattr(sys, 'frozen', False):
+    try:
+        from mbt_paths import get_project_root, ensure_data_dirs
+        BASE_DIR = Path(ensure_data_dirs(get_project_root()))
+    except Exception:
+        BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / 'logs'
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 (BASE_DIR / 'data').mkdir(exist_ok=True)

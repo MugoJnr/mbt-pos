@@ -15,9 +15,10 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C
-from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn,
+from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     make_table, tbl_item, tbl_right,
-                                    tbl_center, page_layout, H2, Caption)
+                                    tbl_center, page_layout, H2, Caption,
+                                    lovable_tab_qss, Badge, section_card)
 from desktop.utils.security import ask_superadmin_pin, set_superadmin_pin, verify_superadmin_pin
 
 
@@ -30,12 +31,40 @@ class SecurityTab(QWidget):
 
     # ── Build ─────────────────────────────────────────────────────────────────
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 22, 28, 28), spacing=20)
+        lay, _ = page_layout(self, margins=(24, 22, 24, 24), spacing=16)
+
+        # Lovable status KPI strip
+        kpi = QHBoxLayout(); kpi.setSpacing(12)
+        for label, value, tone in (
+            ('PIN Policy', 'Strong', C['ok']),
+            ('Auto-Lock', 'Session', C['info']),
+            ('Audit Log', 'Enabled', C['ok']),
+        ):
+            c = Card(); cl = c.layout_h((16, 14, 16, 14), 12)
+            ic = QLabel('🔐')
+            ic.setFixedSize(40, 40); ic.setAlignment(Qt.AlignCenter)
+            ic.setStyleSheet(
+                f"background:{C['gold']}22; color:{C['gold']}; border-radius:8px; "
+                f"font-size:16px; border:none;")
+            cl.addWidget(ic)
+            col = QVBoxLayout(); col.setSpacing(2)
+            l = QLabel(label.upper())
+            l.setStyleSheet(
+                f"color:{C['text2']}; font-size:10px; font-weight:700; "
+                f"letter-spacing:1.5px; background:transparent;")
+            v = QLabel(value)
+            v.setStyleSheet(
+                f"color:{C['text']}; font-size:18px; font-weight:700; background:transparent;")
+            col.addWidget(l); col.addWidget(v)
+            cl.addLayout(col, 1)
+            cl.addWidget(Badge('OK', color=tone))
+            kpi.addWidget(c)
+        lay.addLayout(kpi)
 
         # Header warning
         warn = QFrame()
         warn.setStyleSheet(
-            f"QFrame{{background:#1A0A00;border:1px solid {C['gold']}40;"
+            f"QFrame{{background:{C['gold']}12;border:1px solid {C['gold']}40;"
             f"border-radius:10px;}}")
         wl = QHBoxLayout(warn); wl.setContentsMargins(18, 12, 18, 12)
         wl.addWidget(QLabel('🔐'))
@@ -47,14 +76,15 @@ class SecurityTab(QWidget):
         wl.addWidget(info, 1)
         lay.addWidget(warn)
 
-        # Tabs inside this tab
+        # Tabs — Lovable gold pills
         tabs = QTabWidget()
-        tabs.addTab(self._build_pin_tab(),        '🔑  PIN Setup')
-        tabs.addTab(self._build_stock_adj_tab(),  '⚖  Stock Adjust')
-        tabs.addTab(self._build_stock_log_tab(),  '📦  Stock Log')
-        tabs.addTab(self._build_sales_edit_tab(), '📋  Sale Edits / Voids')
-        tabs.addTab(self._build_audit_tab(),      '🔍  Full Audit Log')
-        lay.addWidget(tabs)
+        tabs.setStyleSheet(lovable_tab_qss())
+        tabs.addTab(self._build_pin_tab(),        'PIN Setup')
+        tabs.addTab(self._build_stock_adj_tab(),  'Stock Adjust')
+        tabs.addTab(self._build_stock_log_tab(),  'Stock Log')
+        tabs.addTab(self._build_sales_edit_tab(), 'Sale Edits / Voids')
+        tabs.addTab(self._build_audit_tab(),      'Full Audit Log')
+        lay.addWidget(tabs, 1)
 
     # ── PIN Setup ─────────────────────────────────────────────────────────────
     def _build_pin_tab(self):

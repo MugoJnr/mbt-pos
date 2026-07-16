@@ -5,8 +5,9 @@ from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
-                                    DangerBtn, SearchBar, make_table, tbl_item,
-                                    tbl_center, page_layout)
+                                    DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
+                                    tbl_center, page_layout, page_intro, wrap_table_card,
+                                    Badge)
 from desktop.utils.security import (
     ALL_DESKTOP_TABS, default_tab_permissions, can_assign_role,
     is_superadmin_role, is_shop_admin_role, role_display_name,
@@ -29,24 +30,33 @@ class AdminTab(QWidget):
             lay=QVBoxLayout(self); lay.setAlignment(Qt.AlignCenter)
             lbl=QLabel('Administrator access required.'); lbl.setStyleSheet(f"color:{C['text2']}; font-size:16px;")
             lay.addWidget(lbl); return
-        lay, _ = page_layout(self, margins=(28,24,28,28), spacing=18)
-        tb=QHBoxLayout(); tb.setSpacing(12)
-        self._search=SearchBar('Search users...')
+        lay, _ = page_layout(self, margins=(24,24,24,24), spacing=16)
+
+        add=PrimaryBtn('+ New User', 40); add.setFixedWidth(130); add.clicked.connect(self._add)
+        intro, _ = page_intro(
+            'Users & Access',
+            'Manage staff accounts, roles, and per-tab access.',
+            add)
+        lay.addLayout(intro)
+
+        tb=QHBoxLayout(); tb.setSpacing(8)
+        self._search=SearchBar('Search users…')
         self._search.textChanged.connect(self._filter); tb.addWidget(self._search, 1)
-        add=PrimaryBtn('+ New User', 42); add.setFixedWidth(140); add.clicked.connect(self._add)
-        ref=SecondaryBtn('↺ Refresh', 42); ref.clicked.connect(self.refresh)
-        tb.addWidget(add); tb.addWidget(ref); lay.addLayout(tb)
+        ref=GhostBtn('↺ Refresh', 40); ref.clicked.connect(self.refresh)
+        tb.addWidget(ref); lay.addLayout(tb)
+
         split=QSplitter(Qt.Horizontal)
-        lw=QWidget(); ll=QVBoxLayout(lw); ll.setContentsMargins(0,0,0,0); ll.setSpacing(12)
-        ll.addWidget(H2('All Users'))
-        self._tbl=make_table(['Username','Full Name','Role','Status','Last Login'], stretch_col=1, row_height=40)
+        lw=QWidget(); ll=QVBoxLayout(lw); ll.setContentsMargins(0,0,0,0); ll.setSpacing(10)
+        self._tbl=make_table(['Username','Full Name','Role','Status','Last Login'], stretch_col=1, row_height=44)
         self._tbl.horizontalHeader().setSectionResizeMode(0,QHeaderView.Fixed); self._tbl.setColumnWidth(0,110)
-        self._tbl.horizontalHeader().setSectionResizeMode(2,QHeaderView.Fixed); self._tbl.setColumnWidth(2,88)
-        self._tbl.horizontalHeader().setSectionResizeMode(3,QHeaderView.Fixed); self._tbl.setColumnWidth(3,80)
+        self._tbl.horizontalHeader().setSectionResizeMode(2,QHeaderView.Fixed); self._tbl.setColumnWidth(2,100)
+        self._tbl.horizontalHeader().setSectionResizeMode(3,QHeaderView.Fixed); self._tbl.setColumnWidth(3,90)
         self._tbl.horizontalHeader().setSectionResizeMode(4,QHeaderView.Fixed); self._tbl.setColumnWidth(4,130)
-        self._tbl.clicked.connect(self._on_sel); ll.addWidget(self._tbl); split.addWidget(lw)
+        self._tbl.clicked.connect(self._on_sel)
+        ll.addWidget(wrap_table_card(self._tbl, 'All Users')); split.addWidget(lw)
+
         rw=QWidget(); rw.setMinimumWidth(280); rw.setMaximumWidth(340)
-        rl=QVBoxLayout(rw); rl.setContentsMargins(16,0,0,0); rl.setSpacing(12)
+        rl=QVBoxLayout(rw); rl.setContentsMargins(12,0,0,0); rl.setSpacing(12)
         rl.addWidget(H2('Permissions'))
         pc=Card(); pl=pc.layout_v()
         self._sel_lbl=Caption('Select a user')
@@ -68,10 +78,11 @@ class AdminTab(QWidget):
         self._pw_btn=SecondaryBtn('Reset Password', 40); self._pw_btn.setEnabled(False); self._pw_btn.clicked.connect(self._reset_pw)
         self._tog_btn=DangerBtn('Deactivate', 40); self._tog_btn.setEnabled(False); self._tog_btn.clicked.connect(self._toggle)
         rl.addWidget(self._save_btn); rl.addWidget(self._pw_btn); rl.addWidget(self._tog_btn); rl.addStretch()
-        split.addWidget(rw); lay.addWidget(split)
+        split.addWidget(rw); lay.addWidget(split, 1)
         lay.addWidget(H2('Audit Log'))
         self._audit=make_table(['Time','User','Action','Module','Detail'], stretch_col=4, row_height=32)
-        self._audit.setMaximumHeight(160); lay.addWidget(self._audit)
+        self._audit.setMaximumHeight(160)
+        lay.addWidget(wrap_table_card(self._audit))
 
     def on_show(self): self.refresh()
     def refresh(self):
@@ -144,8 +155,11 @@ class AdminTab(QWidget):
         dlg=_NewUserDlg(self)
         if dlg.exec_()==QDialog.Accepted:
             res=self.api.create_user(dlg.data())
-            if res and res.get('success'): self.refresh()
-            else: QMessageBox.critical(self,'Error','Failed. Username may exist.')
+            if res and res.get('success'):
+                self.refresh()
+            else:
+                err = (res or {}).get('error') or 'Failed. Username may already exist.'
+                QMessageBox.critical(self, 'Error', err)
     def _load_audit(self):
         try:
             logs=self.api.get_audit_log() or []; self._audit.setRowCount(0)
@@ -174,7 +188,7 @@ class _NewUserDlg(QDialog):
         self.role.currentTextChanged.connect(self._show_role_hint)
         self._hint = QLabel('')
         self._hint.setWordWrap(True)
-        self._hint.setStyleSheet(f"color:{C['text3']}; font-size:11px;")
+        self._hint.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
         for lbl,w in [('Username *',self.uname),('Full Name',self.fname),('Password *',self.pw),('Role',self.role)]:
             l=QLabel(lbl); l.setStyleSheet(f"color:{C['text2']}; font-size:13.5px;"); lay.addRow(l,w)
         lay.addRow(self._hint)

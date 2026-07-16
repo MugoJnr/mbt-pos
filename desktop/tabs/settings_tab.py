@@ -5,7 +5,8 @@ from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C, MBT_STYLESHEET
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
-                                    DangerBtn, make_form, FormRow, Field, page_layout)
+                                    DangerBtn, make_form, FormRow, Field, page_layout,
+                                    section_card, page_intro, GhostBtn)
 
 _PR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,26 +31,37 @@ class SettingsTab(QWidget):
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 28), spacing=22)
+        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=18)
 
-        # ── Shop information ──────────────────────────────────────────────────
-        sg = QGroupBox('SHOP INFORMATION'); sf = make_form(); sg.setLayout(sf)
+        save_top = PrimaryBtn('💾  Save Changes', 40)
+        save_top.clicked.connect(self._save)
+        intro, _ = page_intro(
+            'Settings',
+            'Configure your shop, receipts, sync and integrations.',
+            save_top)
+        lay.addLayout(intro)
+
+        # ── Shop information (Lovable section card) ───────────────────────────
+        sg, sf_body = section_card('🏪', 'Shop Information', 'Displayed on receipts and reports')
+        sf = make_form(); sf_w = QWidget(); sf_w.setLayout(sf)
         self.shop_name    = Field('Required — shown on receipts and reports')
         self.shop_address = Field('Street or area (optional)')
         self.shop_phone   = Field('+254 700 000 000')
-        self.currency     = QComboBox(); self.currency.setMinimumHeight(42)
+        self.currency     = QComboBox(); self.currency.setMinimumHeight(40)
         for c in ['KES','USD','EUR','GBP','TZS','UGX','ZAR']: self.currency.addItem(c)
         self.tax_rate = QDoubleSpinBox()
         self.tax_rate.setRange(0, 100); self.tax_rate.setDecimals(1)
-        self.tax_rate.setSuffix(' %'); self.tax_rate.setMinimumHeight(42)
+        self.tax_rate.setSuffix(' %'); self.tax_rate.setMinimumHeight(40)
         for lbl, w in [('Shop Name *', self.shop_name), ('Address', self.shop_address),
                        ('Phone', self.shop_phone), ('Currency', self.currency),
                        ('Tax Rate', self.tax_rate)]:
             FormRow(lbl, w, sf)
+        sf_body.addWidget(sf_w)
         lay.addWidget(sg)
 
         # ── Receipt & printing ────────────────────────────────────────────────
-        pg = QGroupBox('RECEIPT & PRINTING'); pf = make_form(); pg.setLayout(pf)
+        pg, pf_body = section_card('🖨', 'Receipt Printing', 'Thermal printer and receipt layout')
+        pf = make_form(); pf_w = QWidget(); pf_w.setLayout(pf)
         self.receipt_footer = Field('Thank you for shopping with us!')
         self.auto_print = QCheckBox('Auto-print receipt after each sale')
         self.auto_print.setMinimumHeight(36)
@@ -60,10 +72,12 @@ class SettingsTab(QWidget):
         test_btn = SecondaryBtn('Print Test Page', 40)
         test_btn.setFixedWidth(180); test_btn.clicked.connect(self._test_print)
         pf.addRow(QLabel(''), test_btn)
+        pf_body.addWidget(pf_w)
         lay.addWidget(pg)
 
         # ── M-Pesa (per shop — no customer accounts) ───────────────────────────
-        mg = QGroupBox('M-PESA PAYMENTS'); mf = make_form(); mg.setLayout(mf)
+        mg, mf_body = section_card('📱', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
+        mf = make_form(); mf_w = QWidget(); mf_w.setLayout(mf)
         self.mpesa_mode = QComboBox()
         self.mpesa_mode.setMinimumHeight(42)
         self.mpesa_mode.setMinimumWidth(320)
@@ -81,10 +95,12 @@ class SettingsTab(QWidget):
                        ('Paybill (optional)', self.mpesa_paybill), ('Business Name', self.mpesa_business)]:
             FormRow(lbl, w, mf)
         mf.addRow(mpesa_hint)
+        mf_body.addWidget(mf_w)
         lay.addWidget(mg)
 
         # ── Automatic reports ─────────────────────────────────────────────────
-        rg = QGroupBox('AUTOMATIC TELEGRAM REPORTS'); rf = make_form(); rg.setLayout(rf)
+        rg, rf_body = section_card('📊', 'Automatic Telegram Reports', 'Auto-schedule daily reports')
+        rf = make_form(); rf_w = QWidget(); rf_w.setLayout(rf)
         self.auto_report_daily = QCheckBox('Send daily sales report (Excel) to Telegram')
         self.auto_report_daily.setMinimumHeight(36)
         self.auto_report_weekly = QCheckBox('Also send weekly summary (last 7 days)')
@@ -108,11 +124,12 @@ class SettingsTab(QWidget):
         self._send_backup_now_btn = SecondaryBtn('Send Database Backup Now', 40)
         self._send_backup_now_btn.clicked.connect(self._send_backup_now)
         rf.addRow(QLabel(''), self._send_backup_now_btn)
+        rf_body.addWidget(rf_w)
         lay.addWidget(rg)
 
         # ── Telegram notifications ─────────────────────────────────────────────
-        tg = QGroupBox('TELEGRAM NOTIFICATIONS'); tg.setLayout(QVBoxLayout())
-        tg.layout().setContentsMargins(20, 16, 20, 16); tg.layout().setSpacing(14)
+        tg, tg_body = section_card('💬', 'Telegram Notifications', 'Connect bot for reports and keys')
+        _tg_lay = QVBoxLayout(); _tg_lay.setContentsMargins(0, 0, 0, 0); _tg_lay.setSpacing(14)
 
         # Status row — shows whether Telegram is connected or not
         self._tg_status_row = QFrame()
@@ -132,7 +149,7 @@ class SettingsTab(QWidget):
         sc = QVBoxLayout(); sc.setSpacing(2)
         sc.addWidget(self._tg_title); sc.addWidget(self._tg_sub)
         sr.addWidget(self._tg_icon); sr.addLayout(sc, 1)
-        tg.layout().addWidget(self._tg_status_row)
+        _tg_lay.addWidget(self._tg_status_row)
 
         # Step card — how to connect
         step_card = QFrame()
@@ -186,24 +203,23 @@ class SettingsTab(QWidget):
         self._tg_progress.hide()
         sl.addWidget(self._tg_progress)
 
-        tg.layout().addWidget(step_card)
+        _tg_lay.addWidget(step_card)
 
         # Hidden field — stores the chat ID internally, not shown to user
         self.tg_chat     = QLineEdit(); self.tg_chat.hide()
         self.dev_chat    = QLineEdit(); self.dev_chat.hide()
         self.tg_token    = QLineEdit(); self.tg_token.hide()
         self.sync_interval = QSpinBox(); self.sync_interval.hide()
-        tg.layout().addWidget(self.tg_chat)
-        tg.layout().addWidget(self.dev_chat)
-        tg.layout().addWidget(self.tg_token)
-        tg.layout().addWidget(self.sync_interval)
+        _tg_lay.addWidget(self.tg_chat)
+        _tg_lay.addWidget(self.dev_chat)
+        _tg_lay.addWidget(self.tg_token)
+        _tg_lay.addWidget(self.sync_interval)
+        tg_body.addLayout(_tg_lay)
         lay.addWidget(tg)
 
         # ── Remote web dashboard (Cloudflare) ─────────────────────────────────
-        wg = QGroupBox('REMOTE WEB DASHBOARD')
-        wg.setLayout(QVBoxLayout())
-        wg.layout().setContentsMargins(20, 16, 20, 16)
-        wg.layout().setSpacing(14)
+        wg, wg_body = section_card('☁', 'Remote Web Dashboard', 'Sync sales and inventory to the cloud')
+        _wg_lay = QVBoxLayout(); _wg_lay.setContentsMargins(0, 0, 0, 0); _wg_lay.setSpacing(14)
 
         self._cf_status_row = QFrame()
         self._cf_status_row.setStyleSheet(
@@ -226,7 +242,7 @@ class SettingsTab(QWidget):
         csc.addWidget(self._cf_sub)
         csr.addWidget(self._cf_icon)
         csr.addLayout(csc, 1)
-        wg.layout().addWidget(self._cf_status_row)
+        _wg_lay.addWidget(self._cf_status_row)
 
         hint = QLabel(
             'Local access on the same Wi‑Fi works without setup: '
@@ -236,14 +252,14 @@ class SettingsTab(QWidget):
         hint.setTextFormat(Qt.RichText)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
-        wg.layout().addWidget(hint)
+        _wg_lay.addWidget(hint)
 
         self._cf_mode_lan = QRadioButton('LAN only — no Cloudflare setup needed')
         self._cf_mode_remote = QRadioButton('Remote access — https://<shop>.mugobyte.com')
         self._cf_mode_lan.setChecked(True)
         for rb in (self._cf_mode_lan, self._cf_mode_remote):
             rb.setStyleSheet(f"color:{C['text']}; font-size:14px;")
-            wg.layout().addWidget(rb)
+            _wg_lay.addWidget(rb)
 
         remote_box = QFrame()
         remote_box.setStyleSheet(
@@ -264,7 +280,7 @@ class SettingsTab(QWidget):
             'Set during first install. Each shop gets one permanent link. '
             'MBT POS sets fast DNS on this PC automatically during Cloudflare setup.')
         prod_note.setWordWrap(True)
-        prod_note.setStyleSheet(f"color:{C['text3']}; font-size:11px; background:transparent;")
+        prod_note.setStyleSheet(f"color:{C['muted']}; font-size:11px; background:transparent;")
         rbl.addWidget(prod_note)
         rbl.addLayout(sub_form)
 
@@ -301,26 +317,24 @@ class SettingsTab(QWidget):
             f"background:{C['surface']}; color:{C['text2']}; font-family:Consolas; font-size:11px;")
         rbl.addWidget(self._cf_log)
 
-        wg.layout().addWidget(remote_box)
+        _wg_lay.addWidget(remote_box)
         self._cf_remote_box = remote_box
         self._cf_mode_lan.toggled.connect(self._toggle_cf_remote_box)
         self._cf_mode_remote.toggled.connect(self._toggle_cf_remote_box)
+        wg_body.addLayout(_wg_lay)
         lay.addWidget(wg)
 
         role = self.user.get('user', {}).get('role', '')
         if role in ('admin', 'superadmin'):
             lay.addWidget(SecuritySettingsTab(self.api, self.user, self.config_getter))
-            vg = QGroupBox('VOID COMPLETED SALE')
-            vg.setLayout(QVBoxLayout())
-            vg.layout().setContentsMargins(20, 16, 20, 16)
-            vg.layout().setSpacing(10)
+            vg, vg_body = section_card('🚫', 'Void Completed Sale', 'Cancel a sale by receipt number')
             vinfo = QLabel(
                 'Cancel a completed sale by receipt number. Stock is restored automatically.\n'
                 'Requires Super-Admin PIN. Superadmins can also use Security → Sale Edits / Voids.')
             vinfo.setWordWrap(True)
             vinfo.setStyleSheet(
                 f"color:{C['text2']}; font-size:13px; background:transparent;")
-            vg.layout().addWidget(vinfo)
+            vg_body.addWidget(vinfo)
             vrow = QHBoxLayout()
             self._void_receipt = Field('Receipt number  e.g. RCP-20260605-0089')
             self._void_receipt.setMinimumHeight(42)
@@ -328,7 +342,7 @@ class SettingsTab(QWidget):
             void_btn.clicked.connect(self._void_sale)
             vrow.addWidget(self._void_receipt, 1)
             vrow.addWidget(void_btn)
-            vg.layout().addLayout(vrow)
+            vg_body.addLayout(vrow)
             lay.addWidget(vg)
 
         # ── Save ──────────────────────────────────────────────────────────────
@@ -352,18 +366,19 @@ class SettingsTab(QWidget):
 
     def refresh(self):
         cfg = self.api.get_settings() or {}
+        deploy = {}
+        bot_user = 'mbt_admin1_bot'
+        tok = cfg.get('telegram_bot_token', '')
         try:
             from config.deploy import load_deploy_config
             from backend.telegram_hub import resolve_bot_token, resolve_bot_username
             deploy = load_deploy_config()
             bot_user = resolve_bot_username(cfg)
             self._bot_username = bot_user
+            tok = resolve_bot_token(cfg) or tok
         except Exception:
-            deploy = {}
-            bot_user = 'mbt_admin1_bot'
             self._bot_username = bot_user
 
-        tok = resolve_bot_token(cfg) or cfg.get('telegram_bot_token', '')
         if tok and not cfg.get('telegram_bot_token'):
             self.tg_token.setText(tok)
         elif cfg.get('telegram_bot_token'):
@@ -411,7 +426,14 @@ class SettingsTab(QWidget):
                 load_web_config, shop_to_subdomain, full_domain,
                 refresh_remote_setup_status,
             )
-            refresh_remote_setup_status()
+            # Never block the UI thread on network/DNS during tab show
+            try:
+                import threading
+                threading.Thread(
+                    target=refresh_remote_setup_status, daemon=True,
+                    name='CFStatusRefresh').start()
+            except Exception:
+                pass
             wcfg = load_web_config()
         except Exception:
             wcfg = {}
@@ -960,11 +982,11 @@ class SecuritySettingsTab(QWidget):
         self._build()
 
     def _build(self):
-        from desktop.utils.widgets import page_layout
-        lay, _ = page_layout(self, margins=(28,24,28,28), spacing=20)
-        from PyQt5.QtWidgets import QGroupBox, QFormLayout
-        grp = QGroupBox('SUPER-ADMIN PIN')
-        fl  = QFormLayout(); grp.setLayout(fl)
+        from desktop.utils.widgets import page_layout, section_card
+        lay, _ = page_layout(self, margins=(0, 0, 0, 0), spacing=12)
+        from PyQt5.QtWidgets import QFormLayout
+        grp, body = section_card('🔐', 'Super-Admin PIN', 'Required for stock adjust, voids, and overrides')
+        fl  = QFormLayout(); fl_w = QWidget(); fl_w.setLayout(fl)
 
         info = QLabel(
             'The Super-Admin PIN is required to:\n'
@@ -992,6 +1014,7 @@ class SecuritySettingsTab(QWidget):
 
         save = PrimaryBtn('Set Super-Admin PIN', 44)
         save.clicked.connect(self._save_pin); fl.addRow(save)
+        body.addWidget(fl_w)
         lay.addWidget(grp)
 
     def _save_pin(self):

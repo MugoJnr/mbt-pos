@@ -19,7 +19,8 @@ from PyQt5.QtGui     import *
 from desktop.utils.theme   import C
 from desktop.utils.widgets import (
     KPICard, Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn,
-    SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout
+    SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
+    lovable_tab_qss, GhostBtn, Badge, wrap_table_card,
 )
 
 _log = logging.getLogger(__name__)
@@ -82,17 +83,10 @@ class DebtTab(QWidget):
     def _build(self):
         lay, _ = page_layout(self, margins=(0, 0, 0, 0), spacing=0)
 
-        # Sub-tabs
+        # Lovable segmented gold pill tabs
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
-        self._tabs.setStyleSheet(f"""
-            QTabWidget::pane  {{ border: none; background: {C['app']}; }}
-            QTabBar::tab      {{ padding: 10px 22px; font-size: 13px; font-weight: 600;
-                                 color: {C['text2']}; background: {C['surface']};
-                                 border: none; border-bottom: 3px solid transparent; }}
-            QTabBar::tab:selected {{ color: {C['gold']}; border-bottom: 3px solid {C['gold']}; }}
-            QTabBar::tab:hover    {{ color: {C['text']}; }}
-        """)
+        self._tabs.setStyleSheet(lovable_tab_qss())
 
         self._overview_tab    = _OverviewTab(self)
         self._invoices_tab    = _InvoicesTab(self)
@@ -100,11 +94,11 @@ class DebtTab(QWidget):
         self._payments_tab    = _PaymentsTab(self)
         self._aging_tab       = _AgingTab(self)
 
-        self._tabs.addTab(self._overview_tab,  '⊞  Overview')
-        self._tabs.addTab(self._invoices_tab,  '📄  Invoices')
-        self._tabs.addTab(self._customers_tab, '👥  Customers')
-        self._tabs.addTab(self._payments_tab,  '💳  Payments')
-        self._tabs.addTab(self._aging_tab,     '📊  Aging Report')
+        self._tabs.addTab(self._overview_tab,  'Overview')
+        self._tabs.addTab(self._invoices_tab,  'Invoices')
+        self._tabs.addTab(self._customers_tab, 'Customers')
+        self._tabs.addTab(self._payments_tab,  'Payments')
+        self._tabs.addTab(self._aging_tab,     'Aging Report')
 
         self._tabs.currentChanged.connect(self._on_tab_change)
         lay.addWidget(self._tabs)
@@ -142,10 +136,10 @@ class _OverviewTab(QWidget):
         hrow = QHBoxLayout()
         hrow.addWidget(H2('Debt Overview'))
         hrow.addStretch()
-        col_btn = PrimaryBtn('+ Collect Payment', 42)
+        col_btn = PrimaryBtn('+ Collect Payment', 40)
         col_btn.clicked.connect(lambda: self.p._invoices_tab._collect_payment_dialog())
         hrow.addWidget(col_btn)
-        new_inv = SecondaryBtn('+ Credit Sale', 42)
+        new_inv = PrimaryBtn('+ New Credit Sale', 40)
         new_inv.clicked.connect(lambda: self.p._invoices_tab._new_invoice_dialog())
         hrow.addWidget(new_inv)
         lay.addLayout(hrow)
