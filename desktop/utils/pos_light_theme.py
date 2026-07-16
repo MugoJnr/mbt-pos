@@ -6,6 +6,7 @@ Applied ONLY to the SalesTab widget.
 All other tabs remain dark. Toggle button sits inside the POS panel header.
 High contrast white, larger fonts, clean layout — optimised for shop floor use.
 """
+from desktop.utils.theme import qss_alpha
 
 # Light palette — aligned with ThemeManager LIGHT / Lovable .light
 L = {
@@ -35,6 +36,9 @@ L = {
     'sep':       '#E0E8F0',
     'app':       '#F0F4FA',
 }
+# Qt-safe translucent accents (never append hex alpha to #RRGGBB)
+L['err_border'] = qss_alpha(L['err'], 0.40)
+L['gold_tint'] = qss_alpha(L['gold'], 0.13)
 
 # Larger fonts for shop-floor / touch use (light mode)
 FS = {
@@ -93,7 +97,7 @@ CART_TABLE = (
 
 REMOVE_BTN = (
     "QPushButton{{"
-    "  background:{err_dim}; color:{err}; border:2px solid {err}66;"
+    "  background:{err_dim}; color:{err}; border:2px solid {err_border};"
     "  border-radius:8px; font-weight:800; font-size:{font_btn};"
     "  min-width:34px; min-height:34px; padding:2px 8px;"
     "}}"
@@ -174,7 +178,7 @@ SECONDARY_BTN = (
 DANGER_BTN = (
     "QPushButton{{"
     "  background:{err_dim}; color:{err};"
-    "  border:2px solid {err}66; border-radius:8px;"
+    "  border:2px solid {err_border}; border-radius:8px;"
     "  font-size:{font_btn}; font-weight:700; padding:9px 14px; min-height:42px;"
     "}}"
     "QPushButton:hover{{ background:{err}; color:#fff; }}"
@@ -285,7 +289,7 @@ def apply_light(sales_tab) -> None:
             f"QPushButton{{background:{L['card2']};color:{L['text2']};"
             f"border:1px solid {L['border']};border-radius:8px;"
             f"font-size:12px;font-weight:600;min-height:40px;}}"
-            f"QPushButton:checked{{background:{L['gold']}22;color:{L['gold']};"
+            f"QPushButton:checked{{background:{L['gold_tint']};color:{L['gold']};"
             f"border-color:{L['gold']};}}")
 
     t._theme_btn.setText('🌙  Dark')

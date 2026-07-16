@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from datetime        import datetime
-from desktop.utils.theme   import C, ThemeManager
+from desktop.utils.theme   import C, ThemeManager, qss_alpha
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, IconBtn, SearchBar,
                                     make_table, tbl_item, tbl_right)
@@ -480,7 +480,7 @@ class SalesTab(QWidget):
             plus.setFixedSize(42, 42)
             for b in (minus, plus):
                 b.setCursor(Qt.PointingHandCursor)
-                b.setFont(QFont('Segoe UI', 18, QFont.DemiBold))
+                b.setFont(QFont('Manrope', 18, QFont.DemiBold))
 
             sp = QDoubleSpinBox()
             sp.setObjectName("qtyInput")
@@ -490,56 +490,56 @@ class SalesTab(QWidget):
             sp.setValue(float(item['quantity']))
             sp.setButtonSymbols(QAbstractSpinBox.NoButtons)
             sp.setFixedSize(70, 42)
-            sp.setFont(QFont('Segoe UI', 16, QFont.Bold))
+            sp.setFont(QFont('Manrope', 16, QFont.Bold))
             sp.setAlignment(Qt.AlignCenter)
             le = sp.lineEdit()
             if le:
                 le.setAlignment(Qt.AlignCenter)
-                le.setFont(QFont('Segoe UI', 16, QFont.Bold))
+                le.setFont(QFont('Manrope', 16, QFont.Bold))
             sp.valueChanged.connect(lambda v, idx=i: self._qty(idx, v))
             minus.clicked.connect(lambda _, idx=i: self._change_qty(idx, -0.25))
             plus.clicked.connect(lambda _, idx=i: self._change_qty(idx, 0.25))
 
+            # Theme-aware qty chrome (was hardcoded dark — broke light mode)
             qty_w.setStyleSheet(
-                "QWidget#qtyControl{"
-                "background:#0f1b2d;"
-                "border:1px solid rgba(255,255,255,0.08);"
-                "border-radius:12px;"
-                "}"
-                "QPushButton#qtyBtn{"
-                "background:#132238;"
-                "color:#ffffff;"
-                "border:none;"
-                "font-size:18px;"
-                "font-weight:600;"
-                "padding:0px;"
-                "}"
-                "QPushButton#qtyBtn:hover{background:#1b3150;}"
-                # Qt stylesheets don't support CSS transform; emulate pressed feedback.
-                "QPushButton#qtyBtn:pressed{"
-                "background:#274569;"
-                "padding-top:1px;"
-                "padding-left:1px;"
-                "}"
-                "QPushButton#qtyBtn[seg=\"left\"]{"
-                "border-top-left-radius:12px;"
-                "border-bottom-left-radius:12px;"
-                "border-right:1px solid rgba(255,255,255,0.06);"
-                "}"
-                "QPushButton#qtyBtn[seg=\"right\"]{"
-                "border-top-right-radius:12px;"
-                "border-bottom-right-radius:12px;"
-                "border-left:1px solid rgba(255,255,255,0.06);"
-                "}"
-                "QDoubleSpinBox#qtyInput{"
-                "background:#1a2d47;"
-                "color:#ffffff;"
-                "border:none;"
-                "padding:0px;"
-                "font-size:16px;"
-                "font-weight:700;"
-                "}"
-                "QDoubleSpinBox#qtyInput:focus{background:#233a5a;}"
+                f"QWidget#qtyControl{{"
+                f"background:{C['input']};"
+                f"border:1px solid {C['border2']};"
+                f"border-radius:12px;"
+                f"}}"
+                f"QPushButton#qtyBtn{{"
+                f"background:{C['card2']};"
+                f"color:{C['text']};"
+                f"border:none;"
+                f"font-size:18px;"
+                f"font-weight:600;"
+                f"padding:0px;"
+                f"}}"
+                f"QPushButton#qtyBtn:hover{{background:{C['hover']}; color:{C['gold']};}}"
+                f"QPushButton#qtyBtn:pressed{{"
+                f"background:{C['selected']};"
+                f"padding-top:1px;"
+                f"padding-left:1px;"
+                f"}}"
+                f"QPushButton#qtyBtn[seg=\"left\"]{{"
+                f"border-top-left-radius:12px;"
+                f"border-bottom-left-radius:12px;"
+                f"border-right:1px solid {C['border']};"
+                f"}}"
+                f"QPushButton#qtyBtn[seg=\"right\"]{{"
+                f"border-top-right-radius:12px;"
+                f"border-bottom-right-radius:12px;"
+                f"border-left:1px solid {C['border']};"
+                f"}}"
+                f"QDoubleSpinBox#qtyInput{{"
+                f"background:{C['card']};"
+                f"color:{C['text']};"
+                f"border:none;"
+                f"padding:0px;"
+                f"font-size:16px;"
+                f"font-weight:700;"
+                f"}}"
+                f"QDoubleSpinBox#qtyInput:focus{{background:{C['hover']};}}"
             )
             ql.addWidget(minus)
             ql.addWidget(sp, 1)
@@ -558,7 +558,7 @@ class SalesTab(QWidget):
             else:
                 rm.setStyleSheet(
                     f"QPushButton{{background:{C['err_dim']};color:{C['err']};"
-                    f"border:1px solid {C['err']}66;border-radius:6px;"
+                    f"border:1px solid {qss_alpha(C['err'], 0.40)};border-radius:6px;"
                     f"font-weight:800;font-size:14px;min-width:32px;min-height:30px;padding:2px 6px;}}"
                     f"QPushButton:hover{{background:{C['err']};color:#fff;}}")
             rm.setCursor(Qt.PointingHandCursor)

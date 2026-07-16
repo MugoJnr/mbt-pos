@@ -16,7 +16,7 @@ from datetime import date
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C
+from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (
     KPICard, Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn,
     SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
@@ -376,8 +376,8 @@ class _InvoicesTab(QWidget):
                 pay_btn.setMinimumHeight(32)
                 pay_btn.setCursor(Qt.PointingHandCursor)
                 pay_btn.setStyleSheet(
-                    f"QPushButton{{background:{C['ok']}22;color:{C['ok']};"
-                    f"border:1px solid {C['ok']}66;border-radius:6px;"
+                    f"QPushButton{{background:{qss_alpha(C['ok'], 0.13)};color:{C['ok']};"
+                    f"border:1px solid {qss_alpha(C['ok'], 0.40)};border-radius:6px;"
                     f"font-size:12px;font-weight:700;padding:2px 10px;}}"
                     f"QPushButton:hover{{background:{C['ok']};color:#fff;}}")
                 pay_btn.clicked.connect(
@@ -390,8 +390,8 @@ class _InvoicesTab(QWidget):
             view_btn.setMinimumHeight(32)
             view_btn.setCursor(Qt.PointingHandCursor)
             view_btn.setStyleSheet(
-                f"QPushButton{{background:{C['info']}22;color:{C['info']};"
-                f"border:1px solid {C['info']}66;border-radius:6px;"
+                f"QPushButton{{background:{qss_alpha(C['info'], 0.13)};color:{C['info']};"
+                f"border:1px solid {qss_alpha(C['info'], 0.40)};border-radius:6px;"
                 f"font-size:12px;font-weight:700;padding:2px 10px;}}"
                 f"QPushButton:hover{{background:{C['info']};color:#fff;}}")
             view_btn.clicked.connect(
@@ -499,8 +499,8 @@ class _CustomersTab(QWidget):
             ledger_btn.setMinimumHeight(32)
             ledger_btn.setCursor(Qt.PointingHandCursor)
             ledger_btn.setStyleSheet(
-                f"QPushButton{{background:{C['info']}22;color:{C['info']};"
-                f"border:1px solid {C['info']}66;border-radius:6px;"
+                f"QPushButton{{background:{qss_alpha(C['info'], 0.13)};color:{C['info']};"
+                f"border:1px solid {qss_alpha(C['info'], 0.40)};border-radius:6px;"
                 f"font-size:12px;font-weight:700;padding:2px 10px;}}"
                 f"QPushButton:hover{{background:{C['info']};color:#fff;}}")
             ledger_btn.clicked.connect(

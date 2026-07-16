@@ -9,7 +9,7 @@ no per-widget repaint needed.
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme import C, COLORS, MBT_STYLESHEET, RADIUS
+from desktop.utils.theme import C, COLORS, MBT_STYLESHEET, RADIUS, qss_alpha
 
 
 # ── TYPOGRAPHY ────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ class KPICard(QFrame):
             f"border-left:3px solid {self._accent}; border-radius:{r}px; }}")
         if self._ic is not None:
             self._ic.setStyleSheet(
-                f"background:{self._accent}20; border-radius:10px; "
+                f"background:{qss_alpha(self._accent, 0.12)}; border-radius:10px; "
                 f"color:{self._accent}; font-size:18px; border:none;")
         self._lbl.setStyleSheet(
             f"color:{C['muted']}; font-size:10px; font-weight:700; "
@@ -230,7 +230,7 @@ def IconBtn(text, height=32, width=32):
     b.setStyleSheet(
         f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; "
         f"border:1px solid {C['border']}; border-radius:{r}px; font-size:13px; }}"
-        f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}60; "
+        f"QPushButton:hover {{ color:{C['gold']}; border-color:{qss_alpha(C['gold'], 0.45)}; "
         f"background:{C['hover']}; }}")
     return b
 
@@ -354,7 +354,7 @@ def Badge(text, color=None, tone=None):
     r = RADIUS['md']
     l.setStyleSheet(
         f"QLabel {{ color:{color}; font-size:11px; font-weight:600; "
-        f"background:{color}18; border:1px solid {color}44; "
+        f"background:{qss_alpha(color, 0.10)}; border:1px solid {qss_alpha(color, 0.28)}; "
         f"border-radius:{r}px; padding:2px 10px; }}")
     return l
 
@@ -477,10 +477,10 @@ def section_card(icon_text, title, desc=''):
     ic = QLabel(glyph)
     ic.setFixedSize(40, 40)
     ic.setAlignment(Qt.AlignCenter)
-    # Lovable: bg-gold/15 text-gold — keep tint amber/gold, never emoji red
+    # Lovable: bg-gold/15 text-gold
     gold = C['gold']
     ic.setStyleSheet(
-        f"QLabel {{ background-color: {gold}; color: {C.get('gold_fg', '#0A0F1A')}; "
+        f"QLabel {{ background-color: {qss_alpha(gold, 0.15)}; color: {gold}; "
         f"border-radius:8px; font-size:14px; font-weight:800; border:none; }}")
     ic.setProperty('mbtSectionIcon', True)
     hdr.addWidget(ic)

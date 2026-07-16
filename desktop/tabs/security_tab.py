@@ -14,7 +14,7 @@ Provides:
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C
+from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, H2, Caption,
@@ -44,7 +44,7 @@ class SecurityTab(QWidget):
             ic = QLabel('🔐')
             ic.setFixedSize(40, 40); ic.setAlignment(Qt.AlignCenter)
             ic.setStyleSheet(
-                f"background:{C['gold']}22; color:{C['gold']}; border-radius:8px; "
+                f"background:{qss_alpha(C['gold'], 0.13)}; color:{C['gold']}; border-radius:8px; "
                 f"font-size:16px; border:none;")
             cl.addWidget(ic)
             col = QVBoxLayout(); col.setSpacing(2)
@@ -64,7 +64,7 @@ class SecurityTab(QWidget):
         # Header warning
         warn = QFrame()
         warn.setStyleSheet(
-            f"QFrame{{background:{C['gold']}12;border:1px solid {C['gold']}40;"
+            f"QFrame{{background:{qss_alpha(C['gold'], 0.07)};border:1px solid {qss_alpha(C['gold'], 0.25)};"
             f"border-radius:10px;}}")
         wl = QHBoxLayout(warn); wl.setContentsMargins(18, 12, 18, 12)
         wl.addWidget(QLabel('🔐'))

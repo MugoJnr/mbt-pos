@@ -3,7 +3,7 @@ import sys, os, threading, time
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C, MBT_STYLESHEET
+from desktop.utils.theme   import C, MBT_STYLESHEET, qss_alpha
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, make_form, FormRow, Field, page_layout,
                                     section_card, page_intro, GhostBtn)
@@ -458,7 +458,7 @@ class SettingsTab(QWidget):
                 f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
             self._cf_sub.setText(f'https://{domain}  ·  Keep MBT POS running for remote access.')
             self._cf_status_row.setStyleSheet(
-                f"QFrame{{background:{C['ok_dim']};border:1px solid {C['ok']}40;border-radius:10px;}}")
+                f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
         elif remote and domain:
             self._cf_icon.setText('◐')
             self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
@@ -697,7 +697,7 @@ class SettingsTab(QWidget):
             self._tg_sub.setText(
                 f'Chat ID: {chat_id}  ·  Reports and keys will be sent to your Telegram.')
             self._tg_status_row.setStyleSheet(
-                f"QFrame{{background:{C['ok_dim']};border:1px solid {C['ok']}40;"
+                f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};"
                 f"border-radius:10px;}}")
             self._connect_btn.hide()
             self._test_tg_btn.show()

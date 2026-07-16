@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-16-v2.3.22"
-APP_VERSION   = "2.3.22"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-16-v2.3.23"
+APP_VERSION   = "2.3.23"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -1098,6 +1098,11 @@ def main():
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    # Fusion makes QSS colors/borders reliable on Windows (native style ignores many rules)
+    try:
+        app.setStyle('Fusion')
+    except Exception:
+        pass
     install_crash_handler()
     app.setApplicationName("MBT POS")
     app.setOrganizationName("MugoByte Technologies")

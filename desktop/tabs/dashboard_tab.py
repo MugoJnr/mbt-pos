@@ -11,7 +11,7 @@ from datetime import date
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C, ThemeManager, is_light_mode
+from desktop.utils.theme   import C, ThemeManager, is_light_mode, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, make_table,
                                     tbl_item, tbl_right, tbl_center, page_layout)
 from desktop.utils.security import can_void_sales, prompt_void_sale
@@ -57,7 +57,7 @@ class _KPI(QFrame):
         icon_lbl.setFixedSize(44, 44)
         icon_lbl.setAlignment(Qt.AlignCenter)
         icon_lbl.setStyleSheet(
-            f"background:{a}22; border-radius:22px; "
+            f"background:{qss_alpha(a, 0.14)}; border-radius:22px; "
             f"color:{a}; font-size:20px; border:none;")
         root.addWidget(icon_lbl)
 
@@ -197,10 +197,10 @@ def _qa_btn(icon, label, accent, bg_dim, is_light=False):
 
     btn.setText('')
     btn.setStyleSheet(
-        f"QPushButton {{ background:{bg_dim}; border:1px solid {accent}44; "
+        f"QPushButton {{ background:{bg_dim}; border:1px solid {qss_alpha(accent, 0.28)}; "
         f"border-radius:12px; }}"
-        f"QPushButton:hover {{ background:{accent}33; border:1px solid {accent}; }}"
-        f"QPushButton:pressed {{ background:{accent}22; }}")
+        f"QPushButton:hover {{ background:{qss_alpha(accent, 0.20)}; border:1px solid {accent}; }}"
+        f"QPushButton:pressed {{ background:{qss_alpha(accent, 0.14)}; }}")
 
     content = QWidget(); content.setStyleSheet("background:transparent;")
     cl = QVBoxLayout(content); cl.setContentsMargins(10, 10, 10, 10); cl.setSpacing(4)
@@ -331,13 +331,12 @@ class DashboardTab(QWidget):
         right_row.addWidget(self._theme_btn)
 
         ns_btn = QPushButton('＋  New Sale')
+        ns_btn.setObjectName('primaryBtn')
         ns_btn.setMinimumHeight(38)
         ns_btn.setFixedWidth(130)
         ns_btn.setCursor(Qt.PointingHandCursor)
-        ns_btn.setStyleSheet(
-            f"QPushButton {{ background:{p['gold']}; color:#0A0F18; "
-            f"border:none; border-radius:8px; font-size:13px; font-weight:700; }}"
-            f"QPushButton:hover {{ background:{p['gold_lt'] if hasattr(p,'gold_lt') else p['gold']}; }}")
+        self._ns_btn = ns_btn
+        self._style_new_sale_btn()
         ns_btn.clicked.connect(lambda: self.navigate.emit('sales'))
         right_row.addWidget(ns_btn)
 
@@ -386,8 +385,8 @@ class DashboardTab(QWidget):
             self._void_btn.setFixedWidth(90)
             self._void_btn.setCursor(Qt.PointingHandCursor)
             self._void_btn.setStyleSheet(
-                f"QPushButton {{ background:{p['err']}22; color:{p['err']}; "
-                f"border:1px solid {p['err']}66; border-radius:7px; "
+                f"QPushButton {{ background:{qss_alpha(p['err'], 0.12)}; color:{p['err']}; "
+                f"border:1px solid {qss_alpha(p['err'], 0.40)}; border-radius:7px; "
                 f"font-size:12px; font-weight:700; }}"
                 f"QPushButton:hover {{ background:{p['err']}; color:#fff; }}")
             self._void_btn.clicked.connect(self._void_selected_sale)
@@ -469,16 +468,20 @@ class DashboardTab(QWidget):
         g2 = QHBoxLayout(); g2.setSpacing(10)
 
         actions = [
-            ('🛒', 'New Sale',     p['gold'],  p['gold_dim'] if 'gold_dim' in p else p['card2'],  'sales'),
-            ('📦', 'Inventory',    p['info'],  p['info_dim'] if 'info_dim' in p else p['card2'],  'inventory'),
-            ('💳', 'Debt',         p['ok'],    p['ok_dim']   if 'ok_dim'   in p else p['card2'],  'debt'),
-            ('📊', 'Reports',      p['warn'],  p['warn_dim'] if 'warn_dim' in p else p['card2'],  'reports'),
+            # Lovable Quick Actions lean primary/gold + muted card tints (not opaque rainbow)
+            ('🛒', 'New Sale',     'gold',  'sales'),
+            ('📦', 'Inventory',    'ok',    'inventory'),
+            ('💳', 'Debt',         'info',  'debt'),
+            ('📊', 'Reports',      'warn',  'reports'),
         ]
-        for i, (ico, lbl, acc, dim, tid) in enumerate(actions):
-            # compute dim
-            dim_color = acc + '18'
-            btn = _qa_btn(ico, lbl, acc, dim_color, self._is_light)
+        self._qa_btns = []
+        for i, (ico, lbl, acc_key, tid) in enumerate(actions):
+            acc = p[acc_key]
+            dim = p.get(f'{acc_key}_dim', p['card2'])
+            btn = _qa_btn(ico, lbl, acc, dim, self._is_light)
+            btn.setProperty('mbtQaAccent', acc_key)
             btn.clicked.connect(lambda _, t=tid: self.navigate.emit(t))
+            self._qa_btns.append(btn)
             (g1 if i < 2 else g2).addWidget(btn)
         qcl.addLayout(g1); qcl.addLayout(g2)
         rcol.addWidget(self._qa_card)
@@ -517,6 +520,47 @@ class DashboardTab(QWidget):
 
     # ── Theme toggle ──────────────────────────────────────────────────────────
 
+    def _style_new_sale_btn(self):
+        p = _palette()
+        gold_fg = p.get('gold_fg', '#0A0F1A')
+        gold_lt = p.get('gold_lt', p['gold'])
+        self._ns_btn.setStyleSheet(
+            f"QPushButton {{ background:{p['gold']}; color:{gold_fg}; "
+            f"border:none; border-radius:8px; font-size:13px; font-weight:700; }}"
+            f"QPushButton:hover {{ background:{gold_lt}; color:{gold_fg}; }}")
+
+    def _style_void_btn(self):
+        if not getattr(self, '_void_btn', None):
+            return
+        p = _palette()
+        self._void_btn.setStyleSheet(
+            f"QPushButton {{ background:{qss_alpha(p['err'], 0.12)}; color:{p['err']}; "
+            f"border:1px solid {qss_alpha(p['err'], 0.40)}; border-radius:7px; "
+            f"font-size:12px; font-weight:700; }}"
+            f"QPushButton:hover {{ background:{p['err']}; color:#fff; }}")
+
+    def _style_qa_btns(self):
+        p = _palette()
+        for btn in getattr(self, '_qa_btns', []):
+            key = btn.property('mbtQaAccent') or 'gold'
+            acc = p.get(key, p['gold'])
+            dim = p.get(f'{key}_dim', p['card2'])
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{dim}; border:1px solid {qss_alpha(acc, 0.28)}; "
+                f"border-radius:12px; }}"
+                f"QPushButton:hover {{ background:{qss_alpha(acc, 0.20)}; border:1px solid {acc}; }}"
+                f"QPushButton:pressed {{ background:{qss_alpha(acc, 0.14)}; }}")
+            # retint nested labels
+            for child in btn.findChildren(QLabel):
+                txt = child.text() or ''
+                if len(txt) <= 3:  # icon-ish
+                    child.setStyleSheet(
+                        f"color:{acc}; font-size:22px; background:transparent; border:none;")
+                else:
+                    child.setStyleSheet(
+                        f"color:{p['text']}; font-size:12px; font-weight:600; "
+                        f"background:transparent; border:none;")
+
     def set_light_mode(self, is_light: bool):
         self._is_light = bool(is_light)
         self._apply_theme()
@@ -540,6 +584,10 @@ class DashboardTab(QWidget):
             f"border:1px solid {p['border2']}; border-radius:8px; "
             f"font-size:13px; font-weight:600; }}"
             f"QPushButton:hover {{ border-color:{p['gold']}; color:{p['gold']}; }}")
+
+        self._style_new_sale_btn()
+        self._style_void_btn()
+        self._style_qa_btns()
 
         # Header labels
         today = date.today()

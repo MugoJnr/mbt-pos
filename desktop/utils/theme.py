@@ -1,14 +1,51 @@
 """
-MBT POS — Design System v6  (Lovable / Design System port)
+MBT POS — Design System v7  (Lovable / Design System port)
 MugoByte Technologies | mugobyte.com
 
 Two complete themes: DARK (default) + LIGHT
 Tokens mirror lovable_export/src/styles.css
 Global switch via ThemeManager.apply(is_light)
 Font: Manrope when available, Segoe UI fallback
+
+CRITICAL Qt QSS rule:
+  CSS 8-digit hex (#RRGGBBAA) is WRONG in Qt — Qt uses #AARRGGBB.
+  Appending alpha like f\"{{C['err']}}22\" becomes opaque olive, not translucent red.
+  Always use qss_alpha() / rgba() helpers below.
 """
 import os
 import sys
+
+
+def _parse_hex(color: str):
+    """Return (r, g, b) from #RGB / #RRGGBB / #AARRGGBB / #RRGGBBAA-ish input."""
+    h = (color or '').strip().lstrip('#')
+    if len(h) == 3:
+        h = ''.join(ch * 2 for ch in h)
+    if len(h) == 8:
+        # Prefer treating full 8 as AARRGGBB when alpha nibble looks like alpha
+        # Callers should pass 6-digit brand tokens; strip leading AA if present.
+        h = h[2:]
+    if len(h) != 6:
+        return 0, 0, 0
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def qss_alpha(color: str, alpha: float = 0.13) -> str:
+    """
+    Qt-safe translucent color for QSS.
+    alpha: 0.0–1.0  →  rgba(r,g,b,0–255)
+    """
+    r, g, b = _parse_hex(color)
+    a = max(0, min(255, int(round(float(alpha) * 255))))
+    return f'rgba({r}, {g}, {b}, {a})'
+
+
+def qss_hex_aa(color: str, alpha: float = 0.13) -> str:
+    """Same as qss_alpha but as #AARRGGBB (also Qt-valid)."""
+    r, g, b = _parse_hex(color)
+    a = max(0, min(255, int(round(float(alpha) * 255))))
+    return f'#{a:02X}{r:02X}{g:02X}{b:02X}'
+
 
 # ── DARK PALETTE (Lovable :root / .dark) ──────────────────────────────────────
 DARK = {
@@ -25,19 +62,20 @@ DARK = {
     'gold_lt':   '#FFBE3A',
     'gold_dk':   '#C07800',
     'gold_fg':   '#0A0F1A',
-    'gold_dim':  '#F2A80015',
+    # dim tokens are solid-ish panel mixes (NOT CSS #RRGGBBAA — Qt misreads those)
+    'gold_dim':  '#1A1508',
     'text':      '#EEF2FC',
     'text2':     '#6880A0',
     'muted':     '#334D68',
     'disabled':  '#1C2A3A',
     'ok':        '#00C97E',
-    'ok_dim':    '#00C97E15',
+    'ok_dim':    '#0A1F18',
     'warn':      '#F0A500',
-    'warn_dim':  '#F0A50015',
+    'warn_dim':  '#1A1508',
     'err':       '#FF3D50',
-    'err_dim':   '#FF3D5015',
+    'err_dim':   '#1A0C10',
     'info':      '#4A8FFF',
-    'info_dim':  '#4A8FFF15',
+    'info_dim':  '#0C1424',
     'border':    '#10192C',
     'border2':   '#18283E',
     'sep':       '#0A1018',
@@ -58,19 +96,19 @@ LIGHT = {
     'gold_lt':   '#D48800',
     'gold_dk':   '#8C5400',
     'gold_fg':   '#FFFFFF',
-    'gold_dim':  '#B8700015',
+    'gold_dim':  '#F7EED9',
     'text':      '#0C1828',
     'text2':     '#3C5270',
     'muted':     '#7890AA',
     'disabled':  '#C0CCD8',
     'ok':        '#006B48',
-    'ok_dim':    '#006B4815',
+    'ok_dim':    '#E6F5EF',
     'warn':      '#A05800',
-    'warn_dim':  '#A0580015',
+    'warn_dim':  '#F7EED9',
     'err':       '#B81C2C',
-    'err_dim':   '#B81C2C15',
+    'err_dim':   '#FDECEA',
     'info':      '#1850A8',
-    'info_dim':  '#1850A815',
+    'info_dim':  '#E8EEF8',
     'border':    '#CDD8E8',
     'border2':   '#B8C8DC',
     'sep':       '#E0E8F0',
@@ -168,7 +206,12 @@ def _build_stylesheet(p):
     """Build the full QSS stylesheet from palette p (Lovable-aligned)."""
     ff = font_stack()
     r_md, r_lg, r_xl = RADIUS['md'], RADIUS['lg'], RADIUS['xl']
+    # Lovable cards use rounded-xl (14px)
+    r_card = RADIUS['xl']
     gold_fg = p.get('gold_fg', '#0A0F1A')
+    gold_border_hover = qss_alpha(p['gold'], 0.45)
+    gold_border_soft = qss_alpha(p['gold'], 0.35)
+    gold_tint = qss_alpha(p['gold'], 0.14)
     return f"""
 * {{
     font-family: {ff};
@@ -176,7 +219,10 @@ def _build_stylesheet(p):
     color: {p['text']};
     outline: none;
 }}
-QMainWindow, QWidget, QDialog {{ background: {p['surface']}; border: none; }}
+QMainWindow {{ background: {p['app']}; border: none; }}
+QDialog {{ background: {p['surface']}; border: none; }}
+/* Base fill — objectNames (#sidebar, #pageStack) and Cards override */
+QWidget {{ background: {p['surface']}; border: none; }}
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 QFrame {{ border: none; }}
 
@@ -287,7 +333,7 @@ QFrame {{ border: none; }}
     font-size: 13px; font-weight: 500;
     min-height: 0;
 }}
-#refreshBtn:hover {{ color: {p['text']}; background: {p['hover']}; border-color: {p['gold']}60; }}
+#refreshBtn:hover {{ color: {p['text']}; background: {p['hover']}; border-color: {gold_border_hover}; }}
 #themeBtn {{
     background: {p['card']};
     color: {p['text']};
@@ -321,7 +367,7 @@ QPushButton {{
     font-size: 13px; font-weight: 500;
     min-height: 36px;
 }}
-QPushButton:hover   {{ background: {p['hover']}; color: {p['text']}; border-color: {p['gold']}50; }}
+QPushButton:hover   {{ background: {p['hover']}; color: {p['text']}; border-color: {gold_border_soft}; }}
 QPushButton:pressed {{ background: {p['app']}; color: {p['text']}; }}
 QPushButton:disabled {{ background: {p['panel']}; color: {p['muted']}; border-color: {p['border2']}; }}
 
@@ -334,15 +380,15 @@ QPushButton[objectName="primaryBtn"] {{
     border-radius: {r_md}px;
     letter-spacing: 0.2px;
 }}
-QPushButton[objectName="primaryBtn"]:hover   {{ background: {p['gold_lt']}; }}
-QPushButton[objectName="primaryBtn"]:pressed {{ background: {p['gold_dk']}; }}
+QPushButton[objectName="primaryBtn"]:hover   {{ background: {p['gold_lt']}; color: {gold_fg}; }}
+QPushButton[objectName="primaryBtn"]:pressed {{ background: {p['gold_dk']}; color: {gold_fg}; }}
 QPushButton[objectName="successBtn"] {{
     background: {p['ok']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
 }}
 QPushButton[objectName="dangerBtn"]  {{
     background: {p['err']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
 }}
-QPushButton[objectName="dangerBtn"]:hover {{ background: #FF6070; }}
+QPushButton[objectName="dangerBtn"]:hover {{ background: {p['err']}; }}
 QPushButton[objectName="ghostBtn"] {{
     background: transparent; color: {p['text2']};
     border: none; border-radius: {r_md}px; font-weight: 500;
@@ -355,7 +401,7 @@ QPushButton[objectName="outlineBtn"] {{
     border: 1px solid {p['border2']}; border-radius: {r_md}px; font-weight: 500;
 }}
 QPushButton[objectName="outlineBtn"]:hover {{
-    background: {p['hover']}; border-color: {p['gold']}60;
+    background: {p['hover']}; border-color: {gold_border_hover};
 }}
 
 /* ── INPUTS ── */
@@ -424,7 +470,7 @@ QTableWidget, QTableView {{
     color: {p['text']};
     gridline-color: transparent;
     border: none;
-    border-radius: {r_lg}px;
+    border-radius: {r_card}px;
     font-size: 13px;
     alternate-background-color: {p['card2']};
     selection-background-color: {p['selected']};
@@ -460,7 +506,7 @@ QTableCornerButton::section {{ background: {p['panel']}; border: none; }}
 QTabWidget::pane {{
     background: {p['card']};
     border: 1px solid {p['border']};
-    border-radius: {r_lg}px;
+    border-radius: {r_card}px;
     border-top-left-radius: 0;
 }}
 QTabBar {{ background: transparent; }}
@@ -500,7 +546,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 /* ── GROUPBOX ── */
 QGroupBox {{
     border: 1px solid {p['border2']};
-    border-radius: {r_lg}px;
+    border-radius: {r_card}px;
     margin-top: 20px;
     padding: 18px 16px 14px 16px;
     background: {p['card']};
@@ -570,7 +616,7 @@ QSplitter::handle {{ background: {p['border']}; width: 1px; height: 1px; }}
 
 QListWidget {{
     background: {p['card']}; color: {p['text']};
-    border: none; border-radius: {r_lg}px; outline: none;
+    border: none; border-radius: {r_card}px; outline: none;
 }}
 QListWidget::item {{
     padding: 10px 12px; border: none; border-radius: {r_md}px; margin: 1px 4px;
@@ -624,7 +670,7 @@ QCalendarWidget {{ background: {p['card2']}; color: {p['text']}; }}
 #posProductPanel, #posCartPanel {{
     background: {p['card']};
     border: 1px solid {p['border']};
-    border-radius: {r_lg}px;
+    border-radius: {r_card}px;
 }}
 #posPayToggle {{
     background: {p['card2']};
@@ -635,7 +681,7 @@ QCalendarWidget {{ background: {p['card2']}; color: {p['text']}; }}
     min-height: 40px;
 }}
 #posPayToggle:checked {{
-    background: {p['gold']}22;
+    background: {gold_tint};
     color: {p['gold']};
     border-color: {p['gold']};
 }}

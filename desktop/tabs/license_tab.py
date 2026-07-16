@@ -17,7 +17,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from desktop.utils.theme import C, RADIUS
+from desktop.utils.theme import C, RADIUS, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerBtn,
                                     page_layout, Card, H2, Badge, GhostBtn)
 
@@ -380,7 +380,7 @@ class LicenseTab(QWidget):
         self.state_label.setStyleSheet(f"color:{color}; font-size:15px; font-weight:700;")
         self.state_sub.setText(sub_txt)
         self.status_banner.setStyleSheet(
-            f"QFrame {{ background:{C['card']}; border:1px solid {color}40;"
+            f"QFrame {{ background:{C['card']}; border:1px solid {qss_alpha(color, 0.25)};"
             f"border-left:4px solid {color}; border-radius:8px; }}"
         )
 

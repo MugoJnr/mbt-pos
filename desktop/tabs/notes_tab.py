@@ -2,7 +2,7 @@
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C, RADIUS
+from desktop.utils.theme   import C, RADIUS, qss_alpha
 from desktop.utils.widgets import H2, Caption, PrimaryBtn, DangerBtn, GhostBtn, SearchBar, Card
 
 
@@ -43,7 +43,7 @@ class NotesTab(QWidget):
             f"padding:12px 14px; margin:0; color:{C['text']}; }}"
             f"QListWidget::item:selected {{ background:{C['hover']}; "
             f"color:{C['text']}; border-left:3px solid {C['gold']}; }}"
-            f"QListWidget::item:hover:!selected {{ background:{C['hover']}88; }}")
+            f"QListWidget::item:hover:!selected {{ background:{C['hover']}; }}")
         self._list.currentRowChanged.connect(self._select)
         ll.addWidget(self._list, 1)
         root.addWidget(left)

@@ -6,7 +6,7 @@ from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 
 _log = logging.getLogger('inventory')
-from desktop.utils.theme   import C
+from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
                                     tbl_right, tbl_center, page_layout, IconBtn)
@@ -177,8 +177,8 @@ class InventoryTab(QWidget):
             db_b.setStyleSheet(
                 f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; "
                 f"border:1px solid {C['border']}; border-radius:8px; font-size:12px; }}"
-                f"QPushButton:hover {{ color:{C['err']}; border-color:{C['err']}66; "
-                f"background:{C['err']}18; }}")
+                f"QPushButton:hover {{ color:{C['err']}; border-color:{qss_alpha(C['err'], 0.40)}; "
+                f"background:{qss_alpha(C['err'], 0.10)}; }}")
             db_b.clicked.connect(lambda _, pid=p['id']: self._delete(pid))
             cl.addWidget(db_b)
 
