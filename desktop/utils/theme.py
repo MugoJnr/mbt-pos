@@ -381,17 +381,23 @@ QPushButton:hover   {{ background: {p['hover']}; color: {p['text']}; border-colo
 QPushButton:pressed {{ background: {p['app']}; color: {p['text']}; }}
 QPushButton:disabled {{ background: {p['panel']}; color: {p['muted']}; border-color: {p['border2']}; }}
 
-QPushButton[objectName="primaryBtn"] {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {p['gold_lt']}, stop:1 {p['gold']});
+QPushButton#primaryBtn, QPushButton[objectName="primaryBtn"] {{
+    background: {p['gold']};
     color: {gold_fg};
     border: none;
     font-weight: 700; font-size: 13px;
     border-radius: {r_md}px;
     letter-spacing: 0.2px;
 }}
-QPushButton[objectName="primaryBtn"]:hover   {{ background: {p['gold_lt']}; color: {gold_fg}; }}
-QPushButton[objectName="primaryBtn"]:pressed {{ background: {p['gold_dk']}; color: {gold_fg}; }}
+QPushButton#primaryBtn:hover, QPushButton[objectName="primaryBtn"]:hover {{
+    background: {p['gold_lt']}; color: {gold_fg};
+}}
+QPushButton#primaryBtn:pressed, QPushButton[objectName="primaryBtn"]:pressed {{
+    background: {p['gold_dk']}; color: {gold_fg};
+}}
+QPushButton#primaryBtn:disabled, QPushButton[objectName="primaryBtn"]:disabled {{
+    background: {p['border2']}; color: {p['muted']};
+}}
 QPushButton[objectName="successBtn"] {{
     background: {p['ok']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
 }}
@@ -481,10 +487,10 @@ QTableWidget, QTableView {{
     gridline-color: transparent;
     border: none;
     border-radius: {r_card}px;
-    font-size: 13px;
+    font-size: 14px;
     alternate-background-color: {p['card2']};
     selection-background-color: {p['selected']};
-    selection-color: {p['gold']};
+    selection-color: {p['text']};
     show-decoration-selected: 1;
 }}
 QTableWidget::item, QTableView::item {{
@@ -493,16 +499,17 @@ QTableWidget::item, QTableView::item {{
     border-bottom: 1px solid {p['border']};
 }}
 QTableWidget::item:selected, QTableView::item:selected {{
-    color: {p['gold']};
+    color: {p['text']};
     background: {p['selected']};
 }}
 QTableWidget::item:hover:!selected, QTableView::item:hover:!selected {{
     background: {p['hover']};
+    color: {p['text']};
 }}
 QHeaderView::section {{
     background: {p['panel']};
     color: {p['text2']};
-    font-size: 10px; font-weight: 700;
+    font-size: 11px; font-weight: 800;
     letter-spacing: 1.2px;
     padding: 12px 14px;
     border: none;
@@ -655,20 +662,31 @@ QCalendarWidget {{ background: {p['card2']}; color: {p['text']}; }}
     letter-spacing: 12px; background: transparent;
 }}
 #loginTitle    {{ color: {p['text']};  font-size: 11px; font-weight: 800; letter-spacing: 5px; background: transparent; }}
-#loginSubtitle {{ color: {p['muted']}; font-size: 11px; letter-spacing: 1px; background: transparent; }}
+#loginSubtitle {{ color: {p['gold']}; font-size: 12px; font-weight: 600; letter-spacing: 1px; background: transparent; }}
 #loginForm     {{ background: {p['surface']}; }}
 #loginStatus   {{ font-size: 13px; color: {p['text2']}; min-height: 30px; background: transparent; }}
-#loginInput    {{ font-size: 15px; padding: 12px 14px; border-radius: {r_md}px; }}
-#loginBtn {{
-    background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
-        stop:0 {p['gold_lt']}, stop:1 {p['gold']});
+QLineEdit#loginInput {{
+    font-size: 15px; padding: 12px 14px; border-radius: {r_md}px;
+    background: {p['input']}; color: {p['text']};
+    border: 1px solid {p['border2']};
+}}
+QLineEdit#loginInput:focus {{ border-color: {p['gold']}; }}
+QPushButton#loginBtn {{
+    background: {p['gold']};
     color: {gold_fg};
     font-size: 14px; font-weight: 800; letter-spacing: 2px;
     padding: 12px; border: none; border-radius: {r_md}px; min-height: 48px;
 }}
-#loginBtn:hover   {{ background: {p['gold_lt']}; }}
-#loginBtn:pressed {{ background: {p['gold_dk']}; }}
-#loginFooter {{ font-size: 11px; color: {p['muted']}; background: transparent; }}
+QPushButton#loginBtn:hover   {{ background: {p['gold_lt']}; color: {gold_fg}; }}
+QPushButton#loginBtn:pressed {{ background: {p['gold_dk']}; color: {gold_fg}; }}
+QPushButton#loginBtn:disabled {{ background: {p['border2']}; color: {p['muted']}; }}
+QPushButton#loginEyeBtn {{
+    background: {p['card2']}; color: {p['text2']};
+    border: 1px solid {p['border2']}; border-radius: {r_md}px;
+    font-size: 16px; min-width: 44px; max-width: 44px; min-height: 48px;
+}}
+QPushButton#loginEyeBtn:hover {{ color: {p['gold']}; border-color: {p['gold']}; }}
+#loginFooter {{ font-size: 11px; color: {p['text2']}; background: transparent; }}
 
 /* ── LABELS ── */
 #kpiLabel {{ color: {p['muted']}; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; background: transparent; }}

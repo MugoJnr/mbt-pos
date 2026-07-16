@@ -1,8 +1,8 @@
-"""
-MBT POS — Main Application Entry Point
+﻿"""
+MBT POS â€” Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
-All services run as internal threads — no terminal or CMD windows.
+All services run as internal threads â€” no terminal or CMD windows.
 """
 import sys
 import os
@@ -12,7 +12,7 @@ import tempfile
 import logging
 from datetime import datetime
 
-# ── Path setup (single source: mbt_paths) ─────────────────────────────────────
+# â”€â”€ Path setup (single source: mbt_paths) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 from mbt_paths import get_project_root, get_db_path, ensure_data_dirs
 
 if getattr(sys, 'frozen', False):
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-16-v2.3.25"
-APP_VERSION   = "2.3.25"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-16-v2.3.36"
+APP_VERSION   = "2.3.36"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -59,7 +59,7 @@ def install_crash_handler():
             app = QApplication.instance()
             if app:
                 QMessageBox.critical(
-                    None, 'MBT POS — Unexpected Error',
+                    None, 'MBT POS - Unexpected Error',
                     'Something went wrong.\n\n'
                     f'{exc}\n\n'
                     'The app will keep running. Details were written to the log file.')
@@ -92,11 +92,11 @@ from desktop.tabs.license_tab       import LicenseTab
 from desktop.tabs.security_tab      import SecurityTab
 
 BACKEND_URL  = "http://127.0.0.1:5050"
-_main_window = None   # global ref — prevents GC
+_main_window = None   # global ref â€” prevents GC
 _web_svc     = None   # embedded Flask dashboard (app lifetime)
 
 
-# ── Icon / logo loaders ────────────────────────────────────────────────────────
+# â”€â”€ Icon / logo loaders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def _load_icon() -> QIcon:
     # Prefer multi-size ICO, then transparent PNG icons (no black/white plate)
     for name in ('mbt_icon.ico', 'mbt_icon.png', 'mbt_icon_256.png', 'mbt_icon_64.png'):
@@ -132,7 +132,7 @@ def _make_logo_label(max_w: int = 280, max_h: int = 140) -> QLabel:
     return lbl
 
 
-# ── Signals ────────────────────────────────────────────────────────────────────
+# â”€â”€ Signals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class AppSignals(QObject):
     connection_changed = pyqtSignal(bool)
     sync_status        = pyqtSignal(str)
@@ -141,7 +141,7 @@ class AppSignals(QObject):
     force_update       = pyqtSignal(str, str)   # version, reason
 
 
-# ── Login Dialog ───────────────────────────────────────────────────────────────
+# â”€â”€ Login Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class LoginDialog(QDialog):
     def __init__(self, api: APIClient, icon: QIcon):
         super().__init__()
@@ -161,7 +161,7 @@ class LoginDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Banner — exact HD logo (transparent, no black/white plate)
+        # Banner â€” exact HD logo (transparent, no black/white plate)
         banner = QWidget()
         banner.setObjectName("loginBrand")
         banner.setFixedHeight(210)
@@ -178,6 +178,9 @@ class LoginDialog(QDialog):
         brand = QLabel("MugoByte Technologies")
         brand.setObjectName("loginSubtitle")
         brand.setAlignment(Qt.AlignCenter)
+        brand.setStyleSheet(
+            f"color:{C['gold']}; font-size:12px; font-weight:600; "
+            f"letter-spacing:1px; background:transparent;")
         bl.addWidget(logo)
         bl.addWidget(brand)
         root.addWidget(banner)
@@ -194,32 +197,78 @@ class LoginDialog(QDialog):
         self._msg.setObjectName("loginStatus")
         self._msg.setAlignment(Qt.AlignCenter)
         self._msg.setWordWrap(True)
+        self._msg.setStyleSheet(
+            f"color:{C['text2']}; font-size:13px; background:transparent;")
 
-        self._u = QLineEdit(); self._u.setObjectName("loginInput"); self._u.setPlaceholderText("Username")
-        self._p = QLineEdit(); self._p.setObjectName("loginInput"); self._p.setPlaceholderText("Password")
+        self._u = QLineEdit(); self._u.setObjectName("loginInput")
+        self._u.setPlaceholderText("Username")
+        self._u.setMinimumHeight(48)
+
+        self._p = QLineEdit(); self._p.setObjectName("loginInput")
+        self._p.setPlaceholderText("Password")
         self._p.setEchoMode(QLineEdit.Password)
+        self._p.setMinimumHeight(48)
         self._p.returnPressed.connect(self._login)
+        self._u.returnPressed.connect(self._p.setFocus)
+
+        # Password visibility toggle (eye)
+        self._eye = QPushButton("Show")
+        self._eye.setObjectName("loginEyeBtn")
+        self._eye.setFixedSize(56, 48)
+        self._eye.setCursor(Qt.PointingHandCursor)
+        self._eye.setToolTip("Show / hide password")
+        self._eye.setCheckable(True)
+        self._eye.toggled.connect(self._toggle_password)
+        self._eye.setStyleSheet(
+            f"QPushButton#loginEyeBtn {{ background:{C['card2']}; color:{C['text2']};"
+            f" border:1px solid {C['border2']}; border-radius:8px; font-size:16px; }}"
+            f"QPushButton#loginEyeBtn:hover {{ color:{C['gold']}; border-color:{C['gold']}; }}"
+            f"QPushButton#loginEyeBtn:checked {{ color:{C['gold']}; border-color:{C['gold']}; }}")
+
+        pw_row = QHBoxLayout(); pw_row.setSpacing(8); pw_row.setContentsMargins(0, 0, 0, 0)
+        pw_row.addWidget(self._p, 1)
+        pw_row.addWidget(self._eye)
 
         self._btn = QPushButton("SIGN IN")
         self._btn.setObjectName("loginBtn")
-        self._btn.setFixedHeight(48)
+        self._btn.setFixedHeight(52)
+        self._btn.setMinimumWidth(200)
         self._btn.setCursor(Qt.PointingHandCursor)
         self._btn.clicked.connect(self._login)
+        # Force visible gold button (QSS alone can fail under Fusion + transparent parents)
+        gold_fg = C.get('gold_fg', '#0A0F1A')
+        self._btn.setStyleSheet(
+            f"QPushButton#loginBtn {{ background:{C['gold']}; color:{gold_fg};"
+            f" border:none; border-radius:8px; font-size:15px; font-weight:800;"
+            f" letter-spacing:2px; padding:12px; min-height:48px; }}"
+            f"QPushButton#loginBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
+            f"QPushButton#loginBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
+            f"QPushButton#loginBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
 
-        foot = QLabel("Powered by MugoByte Technologies  ·  mugobyte.com")
+        foot = QLabel("Powered by MugoByte Technologies  \u00b7  mugobyte.com")
         foot.setObjectName("loginFooter")
         foot.setAlignment(Qt.AlignCenter)
+        foot.setStyleSheet(
+            f"color:{C['text2']}; font-size:11px; background:transparent;")
 
-        fl.addWidget(self._msg); fl.addWidget(self._u); fl.addWidget(self._p)
-        fl.addWidget(self._btn); fl.addStretch(); fl.addWidget(foot)
+        fl.addWidget(self._msg)
+        fl.addWidget(self._u)
+        fl.addLayout(pw_row)
+        fl.addWidget(self._btn)
+        fl.addStretch()
+        fl.addWidget(foot)
         root.addWidget(form)
 
+    def _toggle_password(self, show: bool):
+        self._p.setEchoMode(QLineEdit.Normal if show else QLineEdit.Password)
+        self._eye.setText("Hide" if show else "Show")
     def _login(self):
+        # Username is case-insensitive (normalized in API / backend)
         u, p = self._u.text().strip(), self._p.text()
         if not u or not p:
             self._set_msg("Enter username and password", err=True); return
 
-        self._btn.setText("Signing in…"); self._btn.setEnabled(False)
+        self._btn.setText("Signing in\u2026"); self._btn.setEnabled(False)
         QApplication.processEvents()
 
         try:
@@ -249,7 +298,7 @@ class LoginDialog(QDialog):
             self.move(e.globalPos() - self._drag_pos)
 
 
-# ── Main Window ────────────────────────────────────────────────────────────────
+# â”€â”€ Main Window â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 class MainWindow(QMainWindow):
     def __init__(self, user_data: dict, api: APIClient, icon: QIcon):
         super().__init__()
@@ -268,7 +317,7 @@ class MainWindow(QMainWindow):
         self._pending_installer_path = None
         self._pending_update_notes = ''
 
-        self.setWindowTitle("MBT POS — MugoByte Technologies")
+        self.setWindowTitle("MBT POS - MugoByte Technologies")
         self.setWindowIcon(icon)
         self.setMinimumSize(1200, 720)
         self.setStyleSheet(MBT_STYLESHEET)
@@ -276,7 +325,7 @@ class MainWindow(QMainWindow):
 
         self._db_path = get_db_path()
 
-        # UI first — services second (never block render)
+        # UI first â€” services second (never block render)
         self._build_ui()
         self._build_tabs()
 
@@ -297,7 +346,7 @@ class MainWindow(QMainWindow):
             if hasattr(dash, 'theme_changed'):
                 dash.theme_changed.connect(self._apply_app_theme)
 
-        # Wire sale_completed → refresh dashboard + reports immediately
+        # Wire sale_completed â†’ refresh dashboard + reports immediately
         if 'sales' in self._tabs:
             sales_tab = self._tabs['sales']
             if hasattr(sales_tab, 'sale_completed'):
@@ -315,14 +364,14 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self._initial_conn_check)
         QTimer.singleShot(2000, self._restore_pending_update)
 
-    # ── Config ─────────────────────────────────────────────────────────────────
+    # â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _cfg(self) -> dict:
         try:
             return self.api.get('/api/settings') or {}
         except Exception:
             return {}
 
-    # ── Background services ────────────────────────────────────────────────────
+    # â”€â”€ Background services â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _start_services(self):
         try:
             from backend.internet_monitor import InternetMonitor
@@ -395,9 +444,9 @@ class MainWindow(QMainWindow):
 
     def _on_license_state(self, state: str, data: dict):
         """
-        Called immediately when LicenseService detects a state change —
+        Called immediately when LicenseService detects a state change â€”
         including from remote commands (revoke, extend, activate).
-        Runs on the license service thread → must use QTimer to touch UI.
+        Runs on the license service thread â†’ must use QTimer to touch UI.
         """
         from licensing.license_engine import (
             STATE_TAMPERED, STATE_EXPIRED, STATE_INACTIVE, STATE_UNACTIVATED
@@ -414,15 +463,15 @@ class MainWindow(QMainWindow):
             # 2. Lock the app if revoked / tampered / expired
             if state in (STATE_TAMPERED, STATE_INACTIVE, STATE_EXPIRED):
                 reason = {
-                    STATE_TAMPERED:  "⚠  License Tampered\n\nThis license has been flagged. The application will now close.",
-                    STATE_INACTIVE:  "🔒  License Revoked\n\nYour license has been revoked by MugoByte Technologies.\nPlease contact support to renew.",
-                    STATE_EXPIRED:   "⏰  License Expired\n\nYour subscription has expired.\nPlease contact MugoByte Technologies to renew.",
+                    STATE_TAMPERED:  "WARNING: License Tampered\n\nThis license has been flagged. The application will now close.",
+                    STATE_INACTIVE:  "License Revoked\n\nYour license has been revoked by MugoByte Technologies.\nPlease contact support to renew.",
+                    STATE_EXPIRED:   "License Expired\n\nYour subscription has expired.\nPlease contact MugoByte Technologies to renew.",
                 }.get(state, "License invalid.")
 
-                QMessageBox.critical(self, 'MBT POS — License', reason)
+                QMessageBox.critical(self, 'MBT POS - License', reason)
 
                 if state in (STATE_TAMPERED, STATE_INACTIVE):
-                    # Hard close — no way to continue
+                    # Hard close â€” no way to continue
                     QApplication.quit()
 
             # 3. Warn on tamper
@@ -469,7 +518,7 @@ class MainWindow(QMainWindow):
         def _show():
             btn = getattr(self, '_update_btn', None)
             if btn:
-                btn.setText(f"  ↓ Downloading v{version}…  ")
+                btn.setText(f"  Downloading v{version}...  ")
                 btn.show()
             QMessageBox.warning(
                 self, title or 'Update Download',
@@ -481,7 +530,7 @@ class MainWindow(QMainWindow):
         self._pending_update_notes = notes
         btn = getattr(self, '_update_btn', None)
         if btn:
-            btn.setText(f"  ↓ Downloading v{version}…  ")
+            btn.setText(f"  Downloading v{version}...  ")
             btn.show()
             btn.raise_()
 
@@ -490,7 +539,7 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         btn = getattr(self, '_update_btn', None)
         if btn:
-            btn.setText(f"  ⬆ Update v{version}  ")
+            btn.setText(f"  Update v{version}  ")
             btn.show()
             btn.raise_()
 
@@ -575,7 +624,7 @@ class MainWindow(QMainWindow):
         dlg.setText(
             f'<b>Version {version} is ready to install.</b><br><br>'
             'The app will close for about 30 seconds, then reopen automatically.<br>'
-            '<b>Windows will ask for permission — click Yes.</b><br>'
+            '<b>Windows will ask for permission - click Yes.</b><br>'
             'If you see "Windows protected your PC", click <b>More info</b> '
             'then <b>Run anyway</b>.<br>'
             'Do not start MBT POS manually during the update.<br><br>'
@@ -614,7 +663,7 @@ class MainWindow(QMainWindow):
                 try: svc.stop()
                 except Exception: pass
 
-    # ── UI ─────────────────────────────────────────────────────────────────────
+    # â”€â”€ UI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _build_ui(self):
         central = QWidget()
         central.setObjectName("appRoot")
@@ -634,11 +683,11 @@ class MainWindow(QMainWindow):
         root.addWidget(right, 1)
 
     def _build_sidebar(self):
-        # Lovable AppShell sidebar — 228px, logo + brand, gold active rail
+        # Lovable AppShell sidebar â€” 228px, logo + brand, gold active rail
         sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(228)
         sl = QVBoxLayout(sb); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
 
-        # Logo block — HD mark + MBT / POS SYSTEM text (Lovable)
+        # Logo block â€” HD mark + MBT / POS SYSTEM text (Lovable)
         lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(76)
         ll = QHBoxLayout(lw)
         ll.setContentsMargins(14, 10, 14, 10); ll.setSpacing(10)
@@ -654,22 +703,22 @@ class MainWindow(QMainWindow):
 
         sl.addSpacing(6)
 
-        # Navigation — scrollable when many tabs / short displays
+        # Navigation â€” scrollable when many tabs / short displays
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
         tabs  = [
-            ('dashboard',   '⊞',  'Dashboard'),
-            ('sales',       '⊕',  'Point of Sale'),
-            ('inventory',   '▤',  'Inventory'),
-            ('debt',        '💰', 'Debt Management'),
-            ('reports',     '▦',  'Reports'),
-            ('notes',       '≡',  'Notes'),
-            ('admin',       '⊛',  'Users & Access'),
-            ('settings',    '⚙',  'Settings'),
-            ('security',    '🔐', 'Security'),
-            ('license',     '◈',  'License'),
-            ('diagnostics', '⚒',  'Diagnostics'),
+            ('dashboard',   '\u229e',  'Dashboard'),
+            ('sales',       '\u2295',  'Point of Sale'),
+            ('inventory',   '\u25a4',  'Inventory'),
+            ('debt',        '\U0001f4b0', 'Debt Management'),
+            ('reports',     '\u25a6',  'Reports'),
+            ('notes',       '\u2261',  'Notes'),
+            ('admin',       '\u229b',  'Users && Access'),
+            ('settings',    '\u2699',  'Settings'),
+            ('security',    '\U0001f510', 'Security'),
+            ('license',     '\u25c8',  'License'),
+            ('diagnostics', '\u2692',  'Diagnostics'),
         ]
         nav_scroll = QScrollArea()
         nav_scroll.setWidgetResizable(True)
@@ -719,7 +768,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._page_title); lay.addStretch()
 
         # Connection badge
-        self._conn_lbl = QLabel("● Online")
+        self._conn_lbl = QLabel("\u25cf Online")
         self._conn_lbl.setObjectName("connBadge")
         self._conn_lbl.setStyleSheet(
             f"color:{C['ok']}; font-size:12px; font-weight:600; background:transparent;")
@@ -742,7 +791,7 @@ class MainWindow(QMainWindow):
         self._update_btn.hide()
         lay.addWidget(self._update_btn)
 
-        ref_btn = QPushButton("↺  Refresh"); ref_btn.setObjectName("refreshBtn")
+        ref_btn = QPushButton("\u21bb  Refresh"); ref_btn.setObjectName("refreshBtn")
         ref_btn.setCursor(Qt.PointingHandCursor); ref_btn.clicked.connect(self._manual_refresh)
         lay.addWidget(ref_btn)
 
@@ -759,10 +808,10 @@ class MainWindow(QMainWindow):
     def _build_statusbar(self):
         bar = QWidget(); bar.setObjectName("statusBar"); bar.setFixedHeight(36)
         lay = QHBoxLayout(bar); lay.setContentsMargins(24, 0, 24, 0)
-        l = QLabel("MBT POS · MugoByte Technologies"); l.setObjectName("statusLeft")
+        l = QLabel("MBT POS \u00b7 MugoByte Technologies"); l.setObjectName("statusLeft")
         runtime = "EXE" if getattr(sys, 'frozen', False) else "DEV"
         exe_name = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else "python"
-        r = QLabel(f"v{APP_VERSION} · {APP_BUILD_TAG} · {runtime}:{exe_name}")
+        r = QLabel(f"v{APP_VERSION} \u00b7 {APP_BUILD_TAG} \u00b7 {runtime}:{exe_name}")
         r.setObjectName("statusRight")
         r.setToolTip(
             f"Version: {APP_VERSION}\n"
@@ -805,7 +854,7 @@ class MainWindow(QMainWindow):
             self._tabs[tid] = w
             self._stack.addWidget(w)
 
-    # ── Navigation ──────────────────────────────────────────────────────────────
+    # â”€â”€ Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _TAB_LABELS = {
         'dashboard':'Dashboard', 'sales':'Point of Sale', 'inventory':'Inventory',
         'debt':'Debt Management',
@@ -825,7 +874,7 @@ class MainWindow(QMainWindow):
                 try: tab.on_show()
                 except Exception as e: log.warning(f"on_show {tid}: {e}")
 
-    # ── Theme ───────────────────────────────────────────────────────────────────
+    # â”€â”€ Theme â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _on_theme_change(self, is_light: bool):
         """Called after ThemeToggleBtn already applied ThemeManager.toggle()."""
         self._sync_theme_ui(is_light, persist=True)
@@ -843,57 +892,159 @@ class MainWindow(QMainWindow):
         """Apply theme from dashboard / sales / saved preference."""
         self._sync_theme_ui(is_light, persist=persist)
 
-    def _sync_theme_ui(self, is_light: bool, persist: bool = True):
-        # Keep module MBT_STYLESHEET + app QSS + window QSS aligned
-        ss = ThemeManager.apply(is_light)
-        self.setStyleSheet(ss)
+    def _theme_overlay_show(self):
+        """Blocking-feel-free progress cover while theme QSS + tabs retint."""
+        if getattr(self, '_theme_overlay', None) is None:
+            ov = QWidget(self)
+            ov.setObjectName('mbtThemeOverlay')
+            ov.setStyleSheet(
+                "QWidget#mbtThemeOverlay { background: rgba(8, 13, 24, 160); }"
+                "QLabel#mbtThemeOverlayLbl { color: #EEF2FC; font-size: 15px; font-weight: 700;"
+                " background: transparent; }"
+                "QProgressBar#mbtThemeOverlayBar { background: #0F1A2E; border: 1px solid #18283E;"
+                " border-radius: 6px; height: 10px; text-align: center; }"
+                "QProgressBar#mbtThemeOverlayBar::chunk { background: #F2A800; border-radius: 5px; }")
+            lay = QVBoxLayout(ov)
+            lay.setAlignment(Qt.AlignCenter)
+            box = QWidget(); box.setFixedWidth(320)
+            bl = QVBoxLayout(box); bl.setSpacing(12)
+            lbl = QLabel('Switching theme...'); lbl.setObjectName('mbtThemeOverlayLbl')
+            lbl.setAlignment(Qt.AlignCenter)
+            bar = QProgressBar(); bar.setObjectName('mbtThemeOverlayBar')
+            bar.setRange(0, 0)  # indeterminate — never looks frozen
+            bar.setTextVisible(False)
+            bar.setFixedHeight(12)
+            bl.addWidget(lbl); bl.addWidget(bar)
+            lay.addWidget(box)
+            self._theme_overlay = ov
+            self._theme_overlay_lbl = lbl
+            self._theme_overlay_bar = bar
+        self._theme_overlay.setGeometry(self.rect())
+        self._theme_overlay.raise_()
+        self._theme_overlay.show()
+        QApplication.processEvents()
+        return self._theme_overlay
 
-        if hasattr(self, '_theme_btn') and hasattr(self._theme_btn, '_refresh_theme'):
-            self._theme_btn._refresh_theme()
-        elif hasattr(self, '_theme_btn'):
-            self._theme_btn.setText('🌙  Dark' if is_light else '☀  Light')
+    def _theme_overlay_hide(self):
+        ov = getattr(self, '_theme_overlay', None)
+        if ov is not None:
+            ov.hide()
 
-        self._refresh_chrome_styles()
-
-        # Re-tint Card/KPICard widgets that bake palette into inline QSS
+    def resizeEvent(self, event):
         try:
-            from desktop.utils.widgets import refresh_themed_widgets
-            refresh_themed_widgets(self)
-        except Exception as e:
-            log.warning(f'theme widget refresh: {e}')
+            super().resizeEvent(event)
+        except Exception:
+            pass
+        ov = getattr(self, '_theme_overlay', None)
+        if ov is not None and ov.isVisible():
+            ov.setGeometry(self.rect())
 
-        if 'dashboard' in self._tabs and hasattr(self._tabs['dashboard'], 'set_light_mode'):
-            self._tabs['dashboard'].set_light_mode(is_light)
+    def _sync_theme_ui(self, is_light: bool, persist: bool = True):
+        """
+        Fast theme switch:
+        - show indeterminate progress overlay (no deadlock feel)
+        - apply global QSS once
+        - retint visible chrome + current tab only first
+        - defer other tabs; never call tab.refresh() (data reload was the lag)
+        """
+        if getattr(self, '_theme_switching', False):
+            return
+        self._theme_switching = True
+        try:
+            self._theme_overlay_show()
+            if hasattr(self, '_theme_overlay_lbl'):
+                self._theme_overlay_lbl.setText(
+                    'Switching to light...' if is_light else 'Switching to dark...')
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QApplication.processEvents()
 
-        if 'sales' in self._tabs:
-            self._apply_sales_theme(is_light)
+            ss = ThemeManager.apply(is_light)
+            self.setStyleSheet(ss)
+            QApplication.processEvents()
 
-        for tid, tab in getattr(self, '_tabs', {}).items():
-            if hasattr(tab, 'apply_theme'):
-                try:
-                    tab.apply_theme(is_light)
-                except Exception:
-                    pass
-            elif hasattr(tab, 'set_light_mode') and tid != 'dashboard':
-                try:
-                    tab.set_light_mode(is_light)
-                except Exception:
-                    pass
+            if hasattr(self, '_theme_btn') and hasattr(self._theme_btn, '_refresh_theme'):
+                self._theme_btn._refresh_theme()
+            elif hasattr(self, '_theme_btn'):
+                self._theme_btn.setText('Dark' if is_light else 'Light')
 
-        cur = self._stack.currentWidget()
-        if cur and hasattr(cur, 'refresh'):
+            self._refresh_chrome_styles()
             try:
-                cur.refresh()
+                from desktop.utils.widgets import refresh_themed_widgets
+                refresh_themed_widgets(self)
+            except Exception as e:
+                log.warning(f'theme widget refresh: {e}')
+            QApplication.processEvents()
+
+            # Current tab first (what the user sees)
+            cur = self._stack.currentWidget() if hasattr(self, '_stack') else None
+            cur_tid = None
+            for tid, tab in getattr(self, '_tabs', {}).items():
+                if tab is cur:
+                    cur_tid = tid
+                    break
+            if cur_tid == 'dashboard' and hasattr(cur, 'set_light_mode'):
+                cur.set_light_mode(is_light)
+            elif cur_tid == 'sales':
+                self._apply_sales_theme(is_light)
+            elif cur is not None:
+                if hasattr(cur, 'apply_theme'):
+                    try: cur.apply_theme(is_light)
+                    except Exception: pass
+                elif hasattr(cur, 'set_light_mode'):
+                    try: cur.set_light_mode(is_light)
+                    except Exception: pass
+            QApplication.processEvents()
+
+            # Defer non-visible tabs so UI unlocks quickly
+            pending = [
+                (tid, tab) for tid, tab in getattr(self, '_tabs', {}).items()
+                if tab is not cur
+            ]
+            self._theme_pending = pending
+            self._theme_pending_light = is_light
+            self._theme_persist = persist
+            QTimer.singleShot(0, self._theme_apply_pending_tabs)
+        except Exception as e:
+            log.warning(f'theme sync: {e}')
+            self._theme_switching = False
+            QApplication.restoreOverrideCursor()
+            self._theme_overlay_hide()
+
+    def _theme_apply_pending_tabs(self):
+        is_light = getattr(self, '_theme_pending_light', False)
+        pending = getattr(self, '_theme_pending', []) or []
+        # Apply a few tabs per tick to keep UI responsive
+        batch = pending[:3]
+        self._theme_pending = pending[3:]
+        for tid, tab in batch:
+            try:
+                if tid == 'dashboard' and hasattr(tab, 'set_light_mode'):
+                    tab.set_light_mode(is_light)
+                elif tid == 'sales':
+                    self._apply_sales_theme(is_light)
+                elif hasattr(tab, 'apply_theme'):
+                    tab.apply_theme(is_light)
+                elif hasattr(tab, 'set_light_mode'):
+                    tab.set_light_mode(is_light)
             except Exception:
                 pass
+            QApplication.processEvents()
 
-        if persist:
+        if self._theme_pending:
+            QTimer.singleShot(0, self._theme_apply_pending_tabs)
+            return
+
+        # Done — do NOT call tab.refresh() (was reloading DB and freezing UI)
+        if getattr(self, '_theme_persist', False):
             threading.Thread(
                 target=self._save_theme_pref,
                 args=(is_light,),
                 daemon=True,
                 name='SaveTheme',
             ).start()
+        QApplication.restoreOverrideCursor()
+        self._theme_overlay_hide()
+        self._theme_switching = False
 
     def _save_theme_pref(self, is_light: bool):
         try:
@@ -910,13 +1061,14 @@ class MainWindow(QMainWindow):
             return
         try:
             from desktop.utils.pos_light_theme import apply_light, apply_dark
-            already = bool(getattr(sales, '_is_light', False))
-            if is_light and not already:
+            if is_light:
                 apply_light(sales)
-            elif not is_light and already:
+            else:
                 apply_dark(sales)
-            elif hasattr(sales, '_theme_btn'):
-                sales._theme_btn.setText('🌙  Dark' if is_light else '☀  Light')
+            if hasattr(sales, '_theme_btn'):
+                sales._theme_btn.setText('Dark' if is_light else 'Light')
+            if getattr(sales, 'cart', None) is not None:
+                sales._refresh_cart()
         except Exception as e:
             log.warning(f'Sales theme: {e}')
 
@@ -933,10 +1085,10 @@ class MainWindow(QMainWindow):
                 f" padding:6px 14px; }}"
                 f"QPushButton#updateBtn:hover {{ background:{C['gold_lt']}; }}")
 
-    # ── Status slots ────────────────────────────────────────────────────────────
+    # â”€â”€ Status slots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _on_conn(self, ok: bool):
         self._conn_ok = ok
-        self._conn_lbl.setText("● Online" if ok else "● Offline")
+        self._conn_lbl.setText("\u25cf Online" if ok else "\u25cf Offline")
         self._conn_lbl.setStyleSheet(
             f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:700;")
         if ok:
@@ -978,12 +1130,12 @@ class MainWindow(QMainWindow):
                 self, 'Remote Dashboard Setup',
                 'MBT POS could not set up the remote dashboard automatically.\n\n'
                 f'{err}\n\n'
-                'It will retry every 30 minutes. Check Settings → Remote Web Dashboard.')
+                'It will retry every 30 minutes. Check Settings -> Remote Web Dashboard.')
         QTimer.singleShot(0, _show)
 
     def _on_sync(self, s: str):
         self._sync_lbl.setText(
-            {'syncing':'⟳ Syncing', 'synced':'✓ Synced', 'failed':'⚠ Failed', 'idle':''}.get(s, s))
+            {'syncing':'Syncing', 'synced':'Synced', 'failed':'Failed', 'idle':'Idle'}.get(s, s))
 
     def _tick(self):
         now = datetime.now()
@@ -991,7 +1143,7 @@ class MainWindow(QMainWindow):
             f"{now.strftime('%a %d %b')}   {now.strftime('%H:%M:%S')}")
 
     def _manual_refresh(self):
-        self._sync_lbl.setText("⟳ Checking…")
+        self._sync_lbl.setText("Checking...")
         QTimer.singleShot(80, self._do_refresh)
 
     def _do_refresh(self):
@@ -1013,7 +1165,7 @@ class MainWindow(QMainWindow):
         ok = self._svc_net.is_connected if self._svc_net else False
         self._on_conn(ok)
 
-    # ── Auth ────────────────────────────────────────────────────────────────────
+    # â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _logout(self):
         if QMessageBox.question(self, "Sign Out", "Sign out of MBT POS?",
                 QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
@@ -1025,7 +1177,7 @@ class MainWindow(QMainWindow):
         self._stop_services(); event.accept()
 
 
-# ── Bootstrap ──────────────────────────────────────────────────────────────────
+# â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _start_web_dashboard():
     """Start embedded web dashboard (runs for entire app session)."""
@@ -1045,7 +1197,7 @@ def _start_web_dashboard():
         if ok:
             log.info(f"Web dashboard: {_web_svc.url}")
         else:
-            log.warning("Web dashboard could not start — desktop POS still works")
+            log.warning("Web dashboard could not start â€” desktop POS still works")
         return ok
     except Exception as e:
         log.warning(f"Web dashboard: {e}")
@@ -1084,7 +1236,7 @@ def _show_login(api: APIClient = None):
 
 
 def main():
-    # Single instance — prevent duplicate POS during update restart
+    # Single instance â€” prevent duplicate POS during update restart
     try:
         from backend.updater import acquire_single_instance
         if not acquire_single_instance():
@@ -1116,7 +1268,7 @@ def main():
     install_crash_handler()
     app.setApplicationName("MBT POS")
     app.setOrganizationName("MugoByte Technologies")
-    # Manrope when bundled; Segoe UI fallback — never crash if missing
+    # Manrope when bundled; Segoe UI fallback â€” never crash if missing
     fam = ensure_fonts()
     try:
         # Prefer first quoted family from font_stack
@@ -1134,12 +1286,12 @@ def main():
     # Splash screen
     splash = SplashScreen()
     splash.show()
-    splash.set_status("Starting MBT POS…", 5)
+    splash.set_status("Starting MBT POS...", 5)
     QApplication.processEvents()
 
-    splash.set_status("Initialising database…", 30)
+    splash.set_status("Initialising database...", 30)
     QApplication.processEvents()
-    # Init DB directly — no HTTP server needed
+    # Init DB directly â€” no HTTP server needed
     try:
         from backend.app import init_db
         init_db()
@@ -1152,11 +1304,11 @@ def main():
     except Exception as e:
         log.warning(f"Telegram hub: {e}")
 
-    splash.set_status("Starting web dashboard…", 55)
+    splash.set_status("Starting web dashboard...", 55)
     QApplication.processEvents()
     _start_web_dashboard()
 
-    splash.set_status("Loading interface…", 80)
+    splash.set_status("Loading interface...", 80)
     QApplication.processEvents()
 
     splash.set_status("Ready", 100)

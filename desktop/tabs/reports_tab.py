@@ -10,6 +10,7 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, Badge, lovable_tab_qss,
                                     wrap_table_card, page_intro)
+from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
 
 _log = logging.getLogger(__name__)
 _PR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -84,6 +85,16 @@ class ReportsTab(QWidget):
         self._k_disc = KPICard('Discounts',    '—',  '', C['warn'])
         for k in (self._k_txn,self._k_rev,self._k_avg,self._k_disc): kr.addWidget(k)
         lay.addLayout(kr)
+
+        # ── Charts (Lovable MiniBar + By Payment) ─────────────────────────────
+        charts = QHBoxLayout(); charts.setSpacing(14)
+        self._trend_chart = GoldBarChart(height=132)
+        self._trend_card = ChartCard('Sales · Last 7 Days', self._trend_chart)
+        self._pay_chart = PaymentBars()
+        self._pay_card = ChartCard('By Payment', self._pay_chart)
+        charts.addWidget(self._trend_card, 3)
+        charts.addWidget(self._pay_card, 2)
+        lay.addLayout(charts)
 
         # ── Status / open folder ──────────────────────────────────────────────
         ac = Card(); al = ac.layout_h((16, 10, 16, 10), 8)
@@ -183,6 +194,32 @@ class ReportsTab(QWidget):
         self._k_rev.set_value(f"{cur} {s.get('total_revenue', 0):,.2f}")
         self._k_avg.set_value(f"{cur} {s.get('avg_transaction', 0):,.2f}")
         self._k_disc.set_value(f"{cur} {s.get('total_discounts', 0):,.2f}")
+
+        # Charts — 7-day trend always; payment bars use selected range
+        try:
+            trend = self.api.get_sales_trend(7) or []
+            self._trend_chart.set_data(
+                [t.get('revenue', 0) for t in trend],
+                [t.get('label', '') for t in trend],
+            )
+            total_7 = sum(float(t.get('revenue') or 0) for t in trend)
+            self._trend_card.set_title(
+                f"Sales · Last 7 Days  ·  {cur} {total_7:,.0f}")
+        except Exception as e:
+            _log.warning(f"Reports trend chart: {e}")
+
+        try:
+            by_pay = data.get('by_payment') or []
+            self._pay_chart.set_data([
+                {
+                    'label': (r.get('payment_method') or 'Other').title(),
+                    'value': float(r.get('total') or 0),
+                }
+                for r in by_pay
+            ])
+            self._pay_card.set_title(f'By Payment  ·  {start} → {end}')
+        except Exception as e:
+            _log.warning(f"Reports payment chart: {e}")
 
         # Sales list tab
         try:
@@ -422,3 +459,13 @@ class ReportsTab(QWidget):
             QMessageBox.information(self, 'Saved', 'Report schedule saved.')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
+
+    def apply_theme(self, is_light=None):
+        """Refresh chart cards + labels when app theme toggles."""
+        for card in (getattr(self, '_trend_card', None), getattr(self, '_pay_card', None)):
+            if card is not None:
+                card.refresh_theme()
+        self._status_lbl.setStyleSheet(
+            f"color:{C['text2']}; font-size:12px; background:transparent;")
+        for cb in (self._sched_daily, self._sched_weekly):
+            cb.setStyleSheet(f"color:{C['text']}; background:transparent;")

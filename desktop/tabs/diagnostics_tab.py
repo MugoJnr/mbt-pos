@@ -32,15 +32,17 @@ class DiagnosticsTab(QWidget):
             f"background:transparent; border:none;")
         hdr.addWidget(title); hdr.addStretch()
         run=PrimaryBtn('▶  Run Check', 40); run.clicked.connect(self.run_check)
+        copy=SecondaryBtn('📋  Copy Errors', 40); copy.clicked.connect(self._copy_errors)
         exp=SecondaryBtn('⬇  Export', 40); exp.clicked.connect(self._export)
         rot=GhostBtn('↺  Rotate Logs', 40); rot.clicked.connect(self._rotate)
-        hdr.addWidget(run); hdr.addWidget(exp); hdr.addWidget(rot)
+        hdr.addWidget(run); hdr.addWidget(copy); hdr.addWidget(exp); hdr.addWidget(rot)
         lay.addLayout(hdr)
 
+        # Row 1: core health
         cr=QHBoxLayout(); cr.setSpacing(12); self._cards={}
         for name, label in [
             ('database','Database'), ('disk_space','Disk Space'),
-            ('log_files','Log Files'), ('backend_process','Backend Process')
+            ('log_files','Log Files'), ('backend_process','Backend'),
         ]:
             card=Card(); cl=card.layout_v((16,14,16,14),6)
             tl=QLabel(label.upper())
@@ -55,6 +57,23 @@ class DiagnosticsTab(QWidget):
             cl.addWidget(tl); cl.addWidget(st); cl.addWidget(ms)
             self._cards[name]=(card,st,ms); cr.addWidget(card)
         lay.addLayout(cr)
+
+        # Row 2: shop connectivity (Telegram + Cloudflare tunnel)
+        cr2=QHBoxLayout(); cr2.setSpacing(12)
+        for name, label in [('telegram','Telegram'), ('tunnel','Cloudflare Tunnel')]:
+            card=Card(); cl=card.layout_v((16,14,16,14),6)
+            tl=QLabel(label.upper())
+            tl.setStyleSheet(
+                f"color:{C['text2']}; font-size:10px; font-weight:700; "
+                f"letter-spacing:1.5px; background:transparent; border:none;")
+            st=QLabel('—'); st.setStyleSheet(
+                f"color:{C['text2']}; font-size:14px; font-weight:700; background:transparent;")
+            ms=QLabel(''); ms.setStyleSheet(
+                f"color:{C['muted']}; font-size:12px; background:transparent;")
+            ms.setWordWrap(True)
+            cl.addWidget(tl); cl.addWidget(st); cl.addWidget(ms)
+            self._cards[name]=(card,st,ms); cr2.addWidget(card)
+        lay.addLayout(cr2)
 
         self._overall=QLabel('Not checked yet')
         self._overall.setStyleSheet(
@@ -139,8 +158,12 @@ class DiagnosticsTab(QWidget):
         self._overall.setStyleSheet(f"color:{C['text2']}; font-size:14px; font-weight:700; background:transparent;")
 
     def _load_blog(self):
-        pr=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        lp=os.path.join(pr,'logs','app.log')
+        try:
+            from mbt_paths import ensure_data_dirs, get_project_root
+            lp = os.path.join(ensure_data_dirs(get_project_root()), 'logs', 'app.log')
+        except Exception:
+            pr=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            lp=os.path.join(pr,'logs','app.log')
         try:
             if os.path.exists(lp):
                 with open(lp,'r',errors='replace') as f: lines=f.readlines()
@@ -161,6 +184,38 @@ class DiagnosticsTab(QWidget):
             self._slog.setPlainText('\n'.join(lines) if len(lines)>2 else 'Queue empty.')
         except Exception as e:
             self._slog.setPlainText(f'No sync queue / {e}')
+
+    def _copy_errors(self):
+        """One-click copy of recent ERROR/EXCEPTION lines from AppData logs."""
+        try:
+            from mbt_paths import ensure_data_dirs, get_project_root
+            log_dir = os.path.join(ensure_data_dirs(get_project_root()), 'logs')
+        except Exception:
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(self.db_path)), 'logs')
+        lines = []
+        for name in ('app.log', 'backend.log', 'diagnostics.log', 'cloudflare_setup.log'):
+            path = os.path.join(log_dir, name)
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, 'r', errors='replace') as f:
+                    for ln in f.readlines()[-400:]:
+                        u = ln.upper()
+                        if 'ERROR' in u or 'EXCEPTION' in u or 'CRITICAL' in u or 'TRACEBACK' in u:
+                            # Redact likely tokens
+                            safe = ln
+                            if 'bot' in ln.lower() and ':' in ln:
+                                safe = '[redacted telegram line]\n'
+                            if 'cfut_' in ln or 'cfat_' in ln:
+                                safe = '[redacted cloudflare token line]\n'
+                            lines.append(f'[{name}] {safe.rstrip()}')
+            except Exception as e:
+                lines.append(f'[{name}] read error: {e}')
+        text = '\n'.join(lines[-80:]) if lines else 'No recent ERROR/EXCEPTION lines found.'
+        QApplication.clipboard().setText(text)
+        self._log(f'[OK] Copied {min(len(lines), 80)} error lines to clipboard')
+        QMessageBox.information(self, 'Copied',
+                                f'Copied {min(len(lines), 80)} recent error line(s) to clipboard.')
 
     def _export(self):
         path,_=QFileDialog.getSaveFileName(self,'Export Diagnostics','mbt_diagnostics.txt','Text (*.txt)')

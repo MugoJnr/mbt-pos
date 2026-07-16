@@ -366,12 +366,15 @@ def log_action(action, module='system', details=''):
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.json or {}
-    username = data.get('username', '').strip()
+    username = (data.get('username') or '').strip()
     password = data.get('password', '').encode()
 
     db = get_db()
-    user = db.execute("SELECT * FROM users WHERE username=? AND is_active=1",
-                      (username,)).fetchone()
+    # Case-insensitive username (Admin == admin == ADMIN)
+    user = db.execute(
+        "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND is_active=1",
+        (username,),
+    ).fetchone()
 
     if not user or not check_pw(password.decode() if isinstance(password,bytes) else data.get('password',''), user['password_hash']):
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -581,6 +584,9 @@ def list_sales():
 @token_required
 def create_sale():
     data = request.json or {}
+    items = data.get('items') or []
+    if not items:
+        return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
     db = get_db()
     user = g.current_user
     try:
@@ -609,7 +615,7 @@ def create_sale():
 
         sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-        for item in data.get('items', []):
+        for item in items:
             pid = item.get('product_id')
             db.execute("""INSERT INTO sale_items (sale_id, product_id, product_name, sku, quantity, unit_price, discount, total)
                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",

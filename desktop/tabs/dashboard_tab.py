@@ -7,13 +7,14 @@ Larger, readable KPI values. Debt summary. Top products mini-bar.
 Recent sales with status badges. 2×2 quick action grid.
 """
 import logging
-from datetime import date
+from datetime import date, timedelta
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C, ThemeManager, is_light_mode, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, make_table,
                                     tbl_item, tbl_right, tbl_center, page_layout)
+from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
 from desktop.utils.security import can_void_sales, prompt_void_sale
 
 log = logging.getLogger(__name__)
@@ -185,36 +186,20 @@ class _BarRow(QWidget):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _qa_btn(icon, label, accent, bg_dim, is_light=False):
+    """Flat quick-action button — fixed size so grid rows never overlap."""
     p = _palette(is_light)
-    btn = QPushButton()
+    btn = QPushButton(label)
     btn.setCursor(Qt.PointingHandCursor)
-    btn.setMinimumHeight(72)
-
-    inner = QVBoxLayout(btn)
-    inner.setContentsMargins(0, 0, 0, 0)
-    inner.setSpacing(0)
-    btn.setLayout(inner)
-
-    btn.setText('')
+    btn.setFixedHeight(44)
+    btn.setMinimumWidth(110)
+    btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     btn.setStyleSheet(
-        f"QPushButton {{ background:{bg_dim}; border:1px solid {qss_alpha(accent, 0.28)}; "
-        f"border-radius:12px; }}"
-        f"QPushButton:hover {{ background:{qss_alpha(accent, 0.20)}; border:1px solid {accent}; }}"
+        f"QPushButton {{ background:{bg_dim}; color:{p['text']}; "
+        f"border:1px solid {qss_alpha(accent, 0.28)}; border-radius:10px; "
+        f"font-size:13px; font-weight:700; padding:8px; }}"
+        f"QPushButton:hover {{ background:{qss_alpha(accent, 0.20)}; border:1px solid {accent}; "
+        f"color:{accent}; }}"
         f"QPushButton:pressed {{ background:{qss_alpha(accent, 0.14)}; }}")
-
-    content = QWidget(); content.setStyleSheet("background:transparent;")
-    cl = QVBoxLayout(content); cl.setContentsMargins(10, 10, 10, 10); cl.setSpacing(4)
-
-    ic = QLabel(icon); ic.setAlignment(Qt.AlignCenter)
-    ic.setStyleSheet(
-        f"color:{accent}; font-size:22px; background:transparent; border:none;")
-    lb = QLabel(label); lb.setAlignment(Qt.AlignCenter)
-    lb.setStyleSheet(
-        f"color:{p['text']}; font-size:12px; font-weight:600; "
-        f"background:transparent; border:none;")
-    cl.addWidget(ic); cl.addWidget(lb)
-
-    inner.addWidget(content)
     return btn
 
 
@@ -277,9 +262,22 @@ class DashboardTab(QWidget):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self):
-        self._root_lay = QVBoxLayout(self)
+        # Page scrolls as a whole — never clip Quick Actions under the window edge
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._page_scroll = QScrollArea()
+        self._page_scroll.setWidgetResizable(True)
+        self._page_scroll.setFrameShape(QFrame.NoFrame)
+        self._page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._page_scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
+        self._page = QWidget()
+        self._page.setStyleSheet('background:transparent;')
+        self._root_lay = QVBoxLayout(self._page)
         self._root_lay.setContentsMargins(28, 24, 28, 24)
         self._root_lay.setSpacing(20)
+        self._page_scroll.setWidget(self._page)
+        outer.addWidget(self._page_scroll)
         self._build_content()
 
     def _build_content(self):
@@ -363,6 +361,44 @@ class DashboardTab(QWidget):
             kr2.addWidget(k)
         self._root_lay.addLayout(kr2)
 
+        # ── CHARTS ROW (Lovable-style) ───────────────────────────────────────
+        charts = QHBoxLayout(); charts.setSpacing(14)
+        self._trend_chart = GoldBarChart(height=148)
+        self._trend_card = ChartCard('Sales · Last 7 Days', self._trend_chart)
+        self._pay_chart = PaymentBars()
+        self._pay_card = ChartCard('By Payment · 7 Days', self._pay_chart)
+        charts.addWidget(self._trend_card, 3)
+        charts.addWidget(self._pay_card, 2)
+        self._root_lay.addLayout(charts)
+
+        # ── Quick Actions (full width — never crushed in the side rail) ───────
+        self._qa_card = _Card(self._is_light)
+        self._qa_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        qcl = self._qa_card.body(margins=(16, 14, 16, 14), spacing=10)
+        self._qa_title = QLabel('Quick Actions')
+        self._qa_title.setStyleSheet(
+            f"color:{p['text']}; font-size:15px; font-weight:700; "
+            f"background:transparent; border:none;")
+        qcl.addWidget(self._qa_title)
+        qa_row = QHBoxLayout(); qa_row.setSpacing(10)
+        actions = [
+            ('New Sale',   'gold',  'sales'),
+            ('Inventory',  'ok',    'inventory'),
+            ('Debt',       'info',  'debt'),
+            ('Reports',    'warn',  'reports'),
+        ]
+        self._qa_btns = []
+        for lbl, acc_key, tid in actions:
+            acc = p[acc_key]
+            dim = p.get(f'{acc_key}_dim', p['card2'])
+            btn = _qa_btn('', lbl, acc, dim, self._is_light)
+            btn.setProperty('mbtQaAccent', acc_key)
+            btn.clicked.connect(lambda _, t=tid: self.navigate.emit(t))
+            self._qa_btns.append(btn)
+            qa_row.addWidget(btn)
+        qcl.addLayout(qa_row)
+        self._root_lay.addWidget(self._qa_card)
+
         # ── BODY ROW ─────────────────────────────────────────────────────────
         body = QHBoxLayout(); body.setSpacing(16)
 
@@ -412,7 +448,7 @@ class DashboardTab(QWidget):
             stretch_col=0, row_height=42)
         for ci, w in [(1, 130), (2, 110), (3, 110), (4, 90)]:
             self._tbl.setColumnWidth(ci, w)
-        self._tbl.setMinimumHeight(280)
+        self._tbl.setMinimumHeight(220)
         self._tbl.setStyleSheet(
             f"QTableWidget {{ background:{p['card']}; border:none; "
             f"color:{p['text']}; font-size:13px; gridline-color:{p['border']}; }}"
@@ -438,6 +474,7 @@ class DashboardTab(QWidget):
 
         # ── Top Products ──────────────────────────────────────────────────────
         self._top_card = _Card(self._is_light)
+        self._top_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         tcl = self._top_card.body()
         self._top_title = QLabel('Top Products Today')
         self._top_title.setStyleSheet(
@@ -455,39 +492,9 @@ class DashboardTab(QWidget):
         self._top_container.addWidget(self._no_top)
         rcol.addWidget(self._top_card)
 
-        # ── Quick Actions ─────────────────────────────────────────────────────
-        self._qa_card = _Card(self._is_light)
-        qcl = self._qa_card.body()
-        self._qa_title = QLabel('Quick Actions')
-        self._qa_title.setStyleSheet(
-            f"color:{p['text']}; font-size:15px; font-weight:700; "
-            f"background:transparent; border:none;")
-        qcl.addWidget(self._qa_title)
-
-        g1 = QHBoxLayout(); g1.setSpacing(10)
-        g2 = QHBoxLayout(); g2.setSpacing(10)
-
-        actions = [
-            # Lovable Quick Actions lean primary/gold + muted card tints (not opaque rainbow)
-            ('🛒', 'New Sale',     'gold',  'sales'),
-            ('📦', 'Inventory',    'ok',    'inventory'),
-            ('💳', 'Debt',         'info',  'debt'),
-            ('📊', 'Reports',      'warn',  'reports'),
-        ]
-        self._qa_btns = []
-        for i, (ico, lbl, acc_key, tid) in enumerate(actions):
-            acc = p[acc_key]
-            dim = p.get(f'{acc_key}_dim', p['card2'])
-            btn = _qa_btn(ico, lbl, acc, dim, self._is_light)
-            btn.setProperty('mbtQaAccent', acc_key)
-            btn.clicked.connect(lambda _, t=tid: self.navigate.emit(t))
-            self._qa_btns.append(btn)
-            (g1 if i < 2 else g2).addWidget(btn)
-        qcl.addLayout(g1); qcl.addLayout(g2)
-        rcol.addWidget(self._qa_card)
-
-        # ── System Status ─────────────────────────────────────────────────────
+        # ── System Status (side rail only — Quick Actions moved full-width) ───
         self._st_card = _Card(self._is_light)
+        self._st_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         stcl = self._st_card.body(spacing=2)
         self._st_title = QLabel('System Status')
         self._st_title.setStyleSheet(
@@ -496,17 +503,19 @@ class DashboardTab(QWidget):
         stcl.addWidget(self._st_title)
         stcl.addWidget(_sep(self._is_light))
 
-        self._st_db_w,   self._st_db,   self._st_db_dot   = _status_row('Database',     '● OK',      p['ok'],   self._is_light)
-        self._st_api_w,  self._st_api,  self._st_api_dot  = _status_row('API',           '● Online',  p['ok'],   self._is_light)
-        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Last Sync',     '—',         p['muted'],self._is_light)
-        self._st_ver_w,  self._st_ver,  self._st_ver_dot  = _status_row('Version',       'v2.3',      p['info'], self._is_light)
+        self._st_db_w,   self._st_db,   self._st_db_dot   = _status_row('Database',     'OK',      p['ok'],   self._is_light)
+        self._st_api_w,  self._st_api,  self._st_api_dot  = _status_row('API',           'Online',  p['ok'],   self._is_light)
+        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Last Sync',     '—',       p['muted'],self._is_light)
+        self._st_ver_w,  self._st_ver,  self._st_ver_dot  = _status_row('Version',       'v2.3',    p['info'], self._is_light)
         for w in (self._st_db_w, self._st_api_w, self._st_sync_w, self._st_ver_w):
             stcl.addWidget(w)
         rcol.addWidget(self._st_card)
-        rcol.addStretch()
+        rcol.addStretch(1)
 
         rw = QWidget(); rw.setStyleSheet('background:transparent;')
-        rw.setLayout(rcol); rw.setMinimumWidth(300); rw.setMaximumWidth(360)
+        rw.setLayout(rcol)
+        rw.setMinimumWidth(300)
+        rw.setMaximumWidth(360)
         body.addWidget(rw, 4)
         self._root_lay.addLayout(body, 1)
 
@@ -546,20 +555,12 @@ class DashboardTab(QWidget):
             acc = p.get(key, p['gold'])
             dim = p.get(f'{key}_dim', p['card2'])
             btn.setStyleSheet(
-                f"QPushButton {{ background:{dim}; border:1px solid {qss_alpha(acc, 0.28)}; "
-                f"border-radius:12px; }}"
-                f"QPushButton:hover {{ background:{qss_alpha(acc, 0.20)}; border:1px solid {acc}; }}"
+                f"QPushButton {{ background:{dim}; color:{p['text']}; "
+                f"border:1px solid {qss_alpha(acc, 0.28)}; border-radius:10px; "
+                f"font-size:13px; font-weight:700; padding:10px 8px; }}"
+                f"QPushButton:hover {{ background:{qss_alpha(acc, 0.20)}; border:1px solid {acc}; "
+                f"color:{acc}; }}"
                 f"QPushButton:pressed {{ background:{qss_alpha(acc, 0.14)}; }}")
-            # retint nested labels
-            for child in btn.findChildren(QLabel):
-                txt = child.text() or ''
-                if len(txt) <= 3:  # icon-ish
-                    child.setStyleSheet(
-                        f"color:{acc}; font-size:22px; background:transparent; border:none;")
-                else:
-                    child.setStyleSheet(
-                        f"color:{p['text']}; font-size:12px; font-weight:600; "
-                        f"background:transparent; border:none;")
 
     def set_light_mode(self, is_light: bool):
         self._is_light = bool(is_light)
@@ -576,7 +577,7 @@ class DashboardTab(QWidget):
         self.setStyleSheet(f"background:{p['surface']};")
 
         # Theme button
-        self._theme_btn.setText('🌙 Dark' if self._is_light else '☀ Light')
+        self._theme_btn.setText('Dark' if self._is_light else 'Light')
         self._theme_btn.setStyleSheet(
             f"QPushButton {{ background:{p['card2']}; color:{p['text']}; "
             f"border:1px solid {p['border2']}; border-radius:8px; "
@@ -622,6 +623,10 @@ class DashboardTab(QWidget):
         for card in (self._sales_card, self._top_card, self._qa_card, self._st_card):
             card.apply_mode(self._is_light)
 
+        for chart_card in (getattr(self, '_trend_card', None), getattr(self, '_pay_card', None)):
+            if chart_card is not None:
+                chart_card.refresh_theme()
+
         # Section titles
         for lbl in (self._sales_title, self._top_title, self._qa_title, self._st_title):
             lbl.setStyleSheet(
@@ -644,12 +649,30 @@ class DashboardTab(QWidget):
             f"color:{p['muted']}; font-size:11px; "
             f"background:transparent; border:none; padding:6px 0;")
 
-        # Status rows
+        # Status rows — style only; do not reload product data during theme switch
         for w, val, dot in ((self._st_db_w, self._st_db, self._st_db_dot),
                              (self._st_api_w, self._st_api, self._st_api_dot)):
             w.setStyleSheet("background:transparent;")
+        # Restyle existing top-product rows if present (no DB hit)
+        try:
+            self._restyle_top_products()
+        except Exception:
+            pass
 
-        self._reload_top_products()
+    def _restyle_top_products(self):
+        """Theme-only restyle for top products list (no API)."""
+        p = _palette()
+        for i in range(self._top_container.count()):
+            item = self._top_container.itemAt(i)
+            w = item.widget() if item else None
+            if w is None:
+                continue
+            for child in w.findChildren(QLabel):
+                # keep structure; only nudge common text colors when unmarked
+                pass
+        if getattr(self, '_no_top', None):
+            self._no_top.setStyleSheet(
+                f"color:{p['muted']}; font-size:13px; background:transparent; border:none;")
 
     # ── Data loading ──────────────────────────────────────────────────────────
 
@@ -750,6 +773,33 @@ class DashboardTab(QWidget):
             self._reload_top_products()
         except Exception as e:
             log.warning(f"Dashboard top products: {e}")
+
+        # ── Charts (7-day trend + payment mix) ───────────────────────────────
+        try:
+            trend = self.api.get_sales_trend(7) or []
+            self._trend_chart.set_data(
+                [t.get('revenue', 0) for t in trend],
+                [t.get('label', '') for t in trend],
+            )
+            total_7 = sum(float(t.get('revenue') or 0) for t in trend)
+            self._trend_card.set_title(
+                f"Sales · Last 7 Days  ·  {cur} {total_7:,.0f}")
+        except Exception as e:
+            log.warning(f"Dashboard sales trend: {e}")
+
+        try:
+            start_7 = (date.today() - timedelta(days=6)).isoformat()
+            pay_data = self.api.get_report_summary(start_7, today) or {}
+            by_pay = pay_data.get('by_payment') or []
+            self._pay_chart.set_data([
+                {
+                    'label': (r.get('payment_method') or 'Other').title(),
+                    'value': float(r.get('total') or 0),
+                }
+                for r in by_pay
+            ])
+        except Exception as e:
+            log.warning(f"Dashboard payment chart: {e}")
 
         # ── System status ─────────────────────────────────────────────────────
         p2 = _palette(self._is_light)

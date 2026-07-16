@@ -148,6 +148,9 @@ class ReceiptBuilder:
             self._line(row[:PAPER_CHARS])
             for cont in chunks[1:3]:
                 self._line(f"{cont:<20}")
+            disc = float(item.get('discount') or 0)
+            if disc > 0:
+                self._line(f"  Disc: -{disc:,.2f}")
         self.divider()
         return self
 

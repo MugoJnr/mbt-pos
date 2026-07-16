@@ -24,8 +24,9 @@ def H1(text, color=None):
 def H2(text, color=None):
     l = QLabel(text)
     l.setObjectName('sectionTitle')
+    l.setProperty('mbtTitleSize', 16)
     l.setStyleSheet(
-        f"color:{color or C['text']}; font-size:15px; font-weight:600; "
+        f"color:{color or C['text']}; font-size:16px; font-weight:700; "
         f"background:transparent; border:none;")
     return l
 
@@ -51,7 +52,7 @@ def Body(text, muted=False):
 def Caption(text):
     l = QLabel(text)
     l.setStyleSheet(
-        f"color:{C['muted']}; font-size:12px; background:transparent; border:none;")
+        f"color:{C['muted']}; font-size:13px; font-weight:600; background:transparent; border:none;")
     return l
 
 
@@ -196,7 +197,18 @@ def refresh_themed_widgets(root):
             pass
     for w in root.findChildren(QLabel):
         try:
-            if w.property('mbtSectionIcon'):
+            if w.objectName() == 'sectionTitle':
+                # Inline H2/page_intro colors bake at build time — retint on theme change
+                # so light mode never keeps dark-mode near-white text (invisible titles).
+                fs = int(w.property('mbtTitleSize') or 15)
+                weight = 700 if fs >= 20 else 600
+                w.setStyleSheet(
+                    f"color:{C['text']}; font-size:{fs}px; font-weight:{weight}; "
+                    f"background:transparent; border:none;")
+            elif w.objectName() == 'sectionSubtitle':
+                w.setStyleSheet(
+                    f"color:{C['text2']}; font-size:13px; background:transparent; border:none;")
+            elif w.property('mbtSectionIcon'):
                 _refresh_section_icon(w)
             elif w.property('mbtBadgeTone'):
                 _refresh_badge(w)
@@ -230,11 +242,19 @@ def refresh_themed_widgets(root):
 # ── BUTTONS ───────────────────────────────────────────────────────────────────
 
 def PrimaryBtn(text, height=40):
-    """Gold gradient — main action (Lovable primary). Styled via global QSS."""
+    """Gold primary action — inline QSS so Fusion/transparent parents can't hide it."""
     b = QPushButton(text)
     b.setObjectName('primaryBtn')
     b.setMinimumHeight(height)
     b.setCursor(Qt.PointingHandCursor)
+    gold_fg = C.get('gold_fg', '#0A0F1A')
+    b.setStyleSheet(
+        f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
+        f" border:none; border-radius:{RADIUS['md']}px; font-weight:700;"
+        f" font-size:14px; padding:8px 16px; }}"
+        f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
     return b
 
 
@@ -280,9 +300,9 @@ def IconBtn(text, height=32, width=32):
     b.setCursor(Qt.PointingHandCursor)
     r = RADIUS['md']
     b.setStyleSheet(
-        f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; "
-        f"border:1px solid {C['border']}; border-radius:{r}px; font-size:13px; }}"
-        f"QPushButton:hover {{ color:{C['gold']}; border-color:{qss_alpha(C['gold'], 0.45)}; "
+        f"QPushButton {{ background:{C['card']}; color:{C['text']}; "
+        f"border:1px solid {C['border2']}; border-radius:{r}px; font-size:14px; font-weight:600; }}"
+        f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
         f"background:{C['hover']}; }}")
     return b
 
@@ -470,12 +490,14 @@ def page_intro(title, subtitle='', action_widget=None):
     col = QVBoxLayout(); col.setSpacing(2); col.setContentsMargins(0, 0, 0, 0)
     t = QLabel(title)
     t.setObjectName('sectionTitle')
+    t.setProperty('mbtTitleSize', 20)
     t.setStyleSheet(
         f"color:{C['text']}; font-size:20px; font-weight:700; "
         f"background:transparent; border:none;")
     col.addWidget(t)
     if subtitle:
         s = QLabel(subtitle)
+        s.setObjectName('sectionSubtitle')
         s.setWordWrap(True)
         s.setStyleSheet(
             f"color:{C['text2']}; font-size:13px; background:transparent; border:none;")

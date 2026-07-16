@@ -24,57 +24,78 @@ def _light_tokens():
     L['gold_tint'] = qss_alpha(L['gold'], 0.13)
     return L
 
-# Larger fonts for shop-floor / touch use (light mode)
+# Larger / bolder fonts for shop-floor readability (light mode priority)
 FS = {
-    'label':      '15px',
-    'heading':    '18px',
-    'caption':    '13px',
-    'cart':       '15px',
-    'cart_head':  '12px',
-    'total':      '32px',
-    'total_lbl':  '15px',
-    'change':     '17px',
-    'charge':     '18px',
-    'product':    '15px',
-    'mpesa':      '14px',
-    'empty':      '17px',
-    'toggle':     '13px',
-    'btn':        '14px',
+    'label':      '16px',
+    'heading':    '20px',
+    'caption':    '14px',
+    'cart':       '16px',
+    'cart_head':  '13px',
+    'total':      '34px',
+    'total_lbl':  '16px',
+    'change':     '18px',
+    'charge':     '19px',
+    'product':    '17px',
+    'mpesa':      '15px',
+    'empty':      '18px',
+    'toggle':     '14px',
+    'btn':        '15px',
 }
 
-PROD_BTN_SIZE = (172, 118)
+PROD_BTN_SIZE = (220, 150)
 # Keep qty segmented control fully visible in both themes.
 CART_ROW_H = 64
 
-PROD_BTN_ACTIVE = (
-    "QPushButton{{"
-    "  background:#FFFFFF; border:2px solid {border2};"
-    "  border-radius:12px; color:{text};"
-    "  font-size:{font_product}; font-weight:700; padding:12px;"
+
+class _LivePalette:
+    """Dict-like proxy so sales_tab can `from ... import L` and always get current tokens."""
+    def __getitem__(self, key):
+        return _light_tokens()[key]
+
+    def get(self, key, default=None):
+        return _light_tokens().get(key, default)
+
+    def __contains__(self, key):
+        return key in _light_tokens()
+
+    def keys(self):
+        return _light_tokens().keys()
+
+
+# Back-compat for sales_tab imports (was a static LIGHT dict in older builds)
+L = _LivePalette()
+
+PROD_CARD_ACTIVE = (
+    "QFrame#posProdCard{{"
+    "  background:{card2}; border:1px solid {border2};"
+    "  border-radius:14px;"
     "}}"
-    "QPushButton:hover{{"
-    "  background:{hover}; border-color:{gold}; color:{gold};"
+    "QFrame#posProdCard:hover{{"
+    "  background:{hover}; border-color:{gold};"
     "}}"
-    "QPushButton:pressed{{ background:{selected}; }}"
 )
 
-PROD_BTN_EMPTY = (
-    "QPushButton{{"
-    "  background:#F4F6FB; border:2px solid {border};"
-    "  border-radius:12px; color:{text2};"
-    "  font-size:{font_product}; font-weight:600; padding:12px;"
+PROD_CARD_EMPTY = (
+    "QFrame#posProdCard{{"
+    "  background:{panel}; border:1px solid {border};"
+    "  border-radius:14px; opacity:0.75;"
     "}}"
 )
+
+# Legacy aliases (light theme helpers)
+PROD_BTN_ACTIVE = PROD_CARD_ACTIVE
+PROD_BTN_EMPTY = PROD_CARD_EMPTY
 
 CART_TABLE = (
     "QTableWidget{{"
     "  background:#FFFFFF; border:2px solid {border2};"
     "  border-radius:10px; color:{text}; font-size:{font_cart};"
+    "  font-weight:600;"
     "}}"
-    "QTableWidget::item {{ padding:10px 12px; }}"
+    "QTableWidget::item {{ padding:10px 10px; }}"
     "QHeaderView::section{{"
-    "  background:{card2}; color:{text2}; font-size:{font_cart_head};"
-    "  font-weight:700; letter-spacing:0.8px; padding:10px 12px;"
+    "  background:{card2}; color:{text}; font-size:{font_cart_head};"
+    "  font-weight:800; letter-spacing:0.6px; padding:10px 8px;"
     "  border:none; border-bottom:2px solid {border2};"
     "}}"
 )
@@ -102,7 +123,7 @@ SPINBOX = (
 )
 
 TOTALS_FRAME = (
-    "QFrame{{ background:#FFFFFF; border:2px solid {border2}; border-radius:12px; }}"
+    "QFrame#posTotFrame{{ background:#FFFFFF; border:2px solid {border2}; border-radius:12px; }}"
 )
 
 MPESA_FRAME = (
@@ -232,7 +253,7 @@ def apply_light(sales_tab) -> None:
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(_label_style('text', 'heading', '700'))
     if getattr(t, '_cnt', None):
-        t._cnt.setStyleSheet(_label_style('muted', 'caption'))
+        t._cnt.setStyleSheet(_label_style('muted', 'caption') + ' font-weight:600;')
 
     t._ctbl.setStyleSheet(fmt(CART_TABLE))
     t._ctbl.setAlternatingRowColors(True)
@@ -241,23 +262,23 @@ def apply_light(sales_tab) -> None:
     t._tot_frame.setStyleSheet(fmt(TOTALS_FRAME))
     for lbl in (getattr(t, '_sub_lbl', None), getattr(t, '_tax_lbl', None)):
         if lbl:
-            lbl.setStyleSheet(_label_style('text2', 'label'))
+            lbl.setStyleSheet(_label_style('text2', 'label', '600'))
     if getattr(t, '_disc_lbl', None):
-        t._disc_lbl.setStyleSheet(_label_style('text2', 'label'))
+        t._disc_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
     if getattr(t, '_total_hdr', None):
-        t._total_hdr.setStyleSheet(_label_style('text', 'total_lbl', '700'))
+        t._total_hdr.setStyleSheet(_label_style('text', 'total_lbl', '800'))
     t._tot_lbl.setStyleSheet(
         f"color:{L['gold']}; font-size:{FS['total']}; font-weight:900; background:transparent;")
 
-    t._disc.setStyleSheet(fmt(SPINBOX))
+    t._disc.setStyleSheet(_label_style('text', 'label', '700'))
     t._pay.setStyleSheet(fmt(COMBO))
     if getattr(t, '_pay_lbl', None):
-        t._pay_lbl.setStyleSheet(_label_style('text2', 'label'))
+        t._pay_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
     t._paid.setStyleSheet(fmt(SPINBOX))
     if getattr(t, '_chg_lbl', None):
-        t._chg_lbl.setStyleSheet(_label_style('text2', 'label'))
+        t._chg_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
     t._chg.setStyleSheet(
-        f"color:{L['ok']}; font-size:{FS['change']}; font-weight:700; background:transparent;")
+        f"color:{L['ok']}; font-size:{FS['change']}; font-weight:800; background:transparent;")
 
     t._mpesa_frame.setStyleSheet(fmt(MPESA_FRAME))
     t._mpesa_info.setStyleSheet(
@@ -273,19 +294,21 @@ def apply_light(sales_tab) -> None:
 
     for b in getattr(t, '_pay_btns', {}).values():
         b.setStyleSheet(
-            f"QPushButton{{background:{L['card2']};color:{L['text2']};"
-            f"border:1px solid {L['border']};border-radius:8px;"
-            f"font-size:12px;font-weight:600;min-height:40px;}}"
+            f"QPushButton{{background:{L['card2']};color:{L['text']};"
+            f"border:1px solid {L['border2']};border-radius:8px;"
+            f"font-size:14px;font-weight:700;min-height:42px;padding:6px 10px;}}"
             f"QPushButton:checked{{background:{L['gold_tint']};color:{L['gold']};"
-            f"border-color:{L['gold']};}}")
+            f"border-color:{L['gold']};font-weight:800;}}")
 
-    t._theme_btn.setText('🌙  Dark')
+    t._theme_btn.setText('\u263e  Dark')
     t._theme_btn.setStyleSheet(fmt(TOGGLE_BTN_LIGHT))
 
     t._empty.setStyleSheet(
         f"color:{L['muted']}; font-size:{FS['empty']}; background:transparent;")
 
     t._is_light = True
+    if getattr(t, 'cart', None):
+        t._refresh_cart()
     t._filter()
 
 
@@ -314,12 +337,20 @@ def apply_dark(sales_tab) -> None:
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:15px; font-weight:600; background:transparent;")
+            f"color:{C['text']}; font-size:17px; font-weight:700; background:transparent;")
     if getattr(t, '_cnt', None):
         t._cnt.setStyleSheet(
-            f"color:{C['muted']}; font-size:12px; background:transparent;")
+            f"color:{C['muted']}; font-size:13px; font-weight:600; background:transparent;")
 
-    t._ctbl.setStyleSheet("")
+    t._ctbl.setStyleSheet(
+        f"QTableWidget{{background:{C.get('card', '#0F1A2E')};border:1px solid {C.get('border2', '#18283E')};"
+        f"border-radius:10px;color:#EEF2FC;font-size:15px;font-weight:700;"
+        f"alternate-background-color:{C.get('card2', '#132034')};gridline-color:transparent;}}"
+        f"QTableWidget::item{{color:#EEF2FC;padding:10px 10px;}}"
+        f"QHeaderView::section{{background:{C.get('panel', '#0B1220')};color:#A8B8D0;"
+        f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
+        f"border:none;border-bottom:1px solid {C.get('border2', '#18283E')};}}"
+    )
     t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
 
     t._tot_frame.setStyleSheet(
@@ -327,54 +358,68 @@ def apply_dark(sales_tab) -> None:
     for lbl in (getattr(t, '_sub_lbl', None), getattr(t, '_tax_lbl', None)):
         if lbl:
             lbl.setStyleSheet(
-                f"color:{C['text2']}; font-size:13px; background:transparent;")
+                f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
     if getattr(t, '_disc_lbl', None):
         t._disc_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; background:transparent;")
+            f"color:{C['text2']}; font-size:14px; font-weight:700; background:transparent;")
     if getattr(t, '_total_hdr', None):
         t._total_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:13px; font-weight:600; background:transparent;")
+            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
     t._tot_lbl.setStyleSheet(
-        f"color:{C['gold']}; font-size:24px; font-weight:800; background:transparent;")
+        f"color:{C['gold']}; font-size:28px; font-weight:900; background:transparent;")
 
-    t._disc.setStyleSheet("")
+    t._disc.setStyleSheet(
+        f"color:{C['text']}; font-size:15px; font-weight:700; background:transparent;")
     t._pay.setStyleSheet("")
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; background:transparent;")
+            f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
     t._paid.setStyleSheet("")
     if getattr(t, '_chg_lbl', None):
         t._chg_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; background:transparent;")
+            f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
     t._chg.setStyleSheet(
-        f"color:{C['ok']}; font-size:15px; font-weight:700; background:transparent;")
+        f"color:{C['ok']}; font-size:16px; font-weight:800; background:transparent;")
 
     t._mpesa_frame.setStyleSheet(
         f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
     t._mpesa_info.setStyleSheet(
-        f"color:{C['gold']}; font-size:12px; font-weight:600; background:transparent;")
+        f"color:{C['gold']}; font-size:13px; font-weight:700; background:transparent;")
     t._mpesa_ref.setStyleSheet("")
 
     t._note.setStyleSheet("")
     t._charge_btn.setObjectName('primaryBtn')
-    t._charge_btn.setStyleSheet("")
+    gold_fg = C.get('gold_fg', '#0A0F1A')
+    t._charge_btn.setStyleSheet(
+        f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
+        f" border:none; border-radius:8px; font-weight:800; font-size:16px;"
+        f" padding:12px 16px; min-height:52px; }}"
+        f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}")
     t._prv_btn.setStyleSheet("")
     t._clr_btn.setStyleSheet("")
     if getattr(t, '_reprint_btn', None):
         t._reprint_btn.setStyleSheet("")
 
     for b in getattr(t, '_pay_btns', {}).values():
-        b.setStyleSheet("")
+        b.setStyleSheet(
+            f"QPushButton{{background:{C['card2']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:8px;"
+            f"font-size:13px;font-weight:700;min-height:40px;padding:6px 8px;}}"
+            f"QPushButton:checked{{background:{C['selected']};color:{C['gold']};"
+            f"border-color:{C['gold']};font-weight:800;}}")
 
-    t._theme_btn.setText('☀  Light')
+    t._theme_btn.setText('\u2600  Light')
     t._theme_btn.setStyleSheet(
-        f"QPushButton{{background:{C['card2']}; color:{C['text2']};"
+        f"QPushButton{{background:{C['card2']}; color:{C['text']};"
         f"border:1px solid {C['border']}; border-radius:8px;"
-        f"font-size:12px; font-weight:500; padding:4px 10px;}}"
+        f"font-size:13px; font-weight:600; padding:6px 12px; min-height:36px;}}"
         f"QPushButton:hover{{background:{C['hover']}; color:{C['text']};}}")
 
     t._empty.setStyleSheet(
-        f"color:{C['muted']}; font-size:14px; background:transparent;")
+        f"color:{C['muted']}; font-size:15px; font-weight:600; background:transparent;")
 
     t._is_light = False
+    if getattr(t, 'cart', None):
+        t._refresh_cart()
     t._filter()

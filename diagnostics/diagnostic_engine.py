@@ -69,7 +69,9 @@ class DiagnosticEngine(threading.Thread):
             ('database', self._check_database),
             ('disk_space', self._check_disk_space),
             ('log_files', self._check_log_files),
-            ('telegram_reports', self._check_telegram_reports),
+            ('telegram', self._check_telegram),
+            ('tunnel', self._check_tunnel),
+            ('backend_process', self._check_backend),
         ]
 
         overall = 'healthy'
@@ -132,24 +134,60 @@ class DiagnosticEngine(threading.Thread):
         except Exception as e:
             return {'status': 'warning', 'message': str(e)}
 
-    def _check_telegram_reports(self):
-        """Auto-reports need Telegram linked when daily/weekly schedule is on."""
+    def _check_telegram(self):
+        """Bot token + chat readiness (does not expose secrets)."""
         try:
             cfg = self.config_getter() or {}
-            daily = cfg.get('auto_report_daily', '0') == '1'
-            weekly = cfg.get('auto_report_weekly', '0') == '1'
-            if not daily and not weekly:
-                return {'status': 'healthy', 'message': 'Auto-reports off'}
             token = (cfg.get('telegram_bot_token') or '').strip()
-            chat = (cfg.get('telegram_chat_id') or '').strip()
-            if token and chat:
-                hrs = cfg.get('auto_report_interval_hours', '4')
-                return {'status': 'healthy',
-                        'message': f'Auto-reports on — on reconnect + every {hrs}h online'}
-            return {'status': 'warning',
-                    'message': 'Auto-reports enabled but Telegram not connected (Settings)'}
+            chat = (cfg.get('telegram_chat_id') or cfg.get('developer_chat_id') or '').strip()
+            if not token:
+                try:
+                    from config.deploy import load_deploy_config
+                    token = (load_deploy_config().get('telegram_bot_token') or '').strip()
+                    chat = chat or (load_deploy_config().get('developer_chat_id') or '').strip()
+                except Exception:
+                    pass
+            if not token:
+                return {'status': 'warning', 'message': 'Telegram bot token missing'}
+            if not chat:
+                return {'status': 'warning', 'message': 'Bot token set — shop chat ID not linked'}
+            return {'status': 'healthy', 'message': 'Telegram configured (token + chat)'}
         except Exception as e:
             return {'status': 'warning', 'message': str(e)}
+
+    def _check_tunnel(self):
+        """Cloudflare tunnel / remote dashboard readiness."""
+        try:
+            root = os.path.dirname(os.path.dirname(self.db_path))
+            cfg_path = os.path.join(root, 'config', 'web_config.json')
+            domain = '—'
+            remote_ok = False
+            if os.path.exists(cfg_path):
+                with open(cfg_path, 'r', encoding='utf-8-sig') as f:
+                    w = json.load(f)
+                domain = w.get('tunnel_domain') or '—'
+                remote_ok = bool(w.get('remote_setup_ok'))
+            cert = os.path.join(os.path.expanduser('~'), '.cloudflared', 'cert.pem')
+            has_cert = os.path.exists(cert)
+            if remote_ok and has_cert:
+                return {'status': 'healthy', 'message': f'Tunnel ready — {domain}'}
+            if not has_cert:
+                return {'status': 'warning',
+                        'message': f'Need cloudflared login (cert.pem) — {domain}'}
+            return {'status': 'warning',
+                    'message': f'Remote setup incomplete — {domain}'}
+        except Exception as e:
+            return {'status': 'warning', 'message': str(e)}
+
+    def _check_backend(self):
+        try:
+            import urllib.request
+            with urllib.request.urlopen('http://127.0.0.1:5050/api/health', timeout=2) as r:
+                if r.status == 200:
+                    return {'status': 'healthy', 'message': 'Backend :5050 OK'}
+            return {'status': 'warning', 'message': 'Backend health unexpected'}
+        except Exception:
+            return {'status': 'warning', 'message': 'Backend not reachable on :5050'}
 
     def _handle_critical(self, check_name, result):
         key = f"critical_{check_name}"

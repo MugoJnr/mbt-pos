@@ -504,8 +504,11 @@ class APIClient:
     def login(self, username: str, password: str) -> dict:
         db = _db()
         try:
+            # Case-insensitive username match (Admin == admin == ADMIN)
+            uname = (username or '').strip()
             user = _row(db.execute(
-                "SELECT * FROM users WHERE username=? AND is_active=1", (username,)
+                "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND is_active=1",
+                (uname,),
             ))
             if not user or not _check_pw(password, user['password_hash']):
                 return {'error': 'Invalid credentials'}
@@ -847,6 +850,9 @@ class APIClient:
             db.close()
 
     def create_sale(self, data: dict) -> dict:
+        items = data.get('items') or []
+        if not items:
+            return {'error': 'Cart is empty — add at least one product before charging.'}
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
@@ -1074,6 +1080,36 @@ class APIClient:
         finally:
             db.close()
 
+    def get_product_history(self, product_id: int, limit: int = 300) -> dict:
+        """Full product timeline: profile + stock adjustments + sales lines."""
+        db = _db()
+        try:
+            prod = _row(db.execute("SELECT * FROM products WHERE id=?", (product_id,)))
+            if not prod:
+                return {'product': None, 'movements': [], 'sales': []}
+            movements = _rows(db.execute(
+                "SELECT * FROM stock_movements WHERE product_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (product_id, limit)
+            ))
+            sales = _rows(db.execute("""
+                SELECT si.id as line_id, si.quantity, si.unit_price, si.discount, si.total,
+                       s.id as sale_id, s.receipt_number, s.created_at, s.cashier_name,
+                       s.payment_method, s.status
+                FROM sale_items si
+                JOIN sales s ON s.id = si.sale_id
+                WHERE si.product_id=?
+                ORDER BY s.created_at DESC
+                LIMIT ?
+            """, (product_id, limit)))
+            return {
+                'product': prod,
+                'movements': movements,
+                'sales': sales,
+            }
+        finally:
+            db.close()
+
     def get_sale_edits(self, sale_id=None) -> list:
         db = _db()
         try:
@@ -1125,6 +1161,42 @@ class APIClient:
                 'top_products': top_products,
                 'by_payment':   by_payment,
             }
+        finally:
+            db.close()
+
+    def get_sales_trend(self, days: int = 7) -> list:
+        """Daily completed revenue for the last N days (inclusive of today)."""
+        from datetime import date, timedelta
+        days = max(1, min(int(days or 7), 31))
+        end = date.today()
+        start = end - timedelta(days=days - 1)
+        db = _db()
+        try:
+            rows = _rows(db.execute("""
+                SELECT date(created_at) as d,
+                       COUNT(*) as txn_count,
+                       COALESCE(SUM(total), 0) as revenue
+                FROM sales
+                WHERE date(created_at) BETWEEN ? AND ?
+                  AND LOWER(COALESCE(status,'')) IN ('completed','paid','')
+                GROUP BY date(created_at)
+            """, (start.isoformat(), end.isoformat())))
+            by_day = {r['d']: r for r in rows}
+            out = []
+            cur = start
+            while cur <= end:
+                key = cur.isoformat()
+                r = by_day.get(key) or {}
+                out.append({
+                    'date': key,
+                    'label': cur.strftime('%a'),
+                    'revenue': float(r.get('revenue') or 0),
+                    'count': int(r.get('txn_count') or 0),
+                })
+                cur += timedelta(days=1)
+            return out
+        except Exception:
+            return []
         finally:
             db.close()
 
