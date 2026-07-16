@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-16-v2.3.23"
-APP_VERSION   = "2.3.23"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-16-v2.3.24"
+APP_VERSION   = "2.3.24"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -260,6 +260,13 @@ class MainWindow(QMainWindow):
         self._svc_lic  = None
         self._svc_diag = None
         self._conn_ok  = True
+        # Updater state must exist before any timer/callback reads it.
+        # _start_services runs at 500ms and can take >1.5s; _restore_pending_update
+        # fires at 2000ms and previously raced before these attrs were set.
+        self._updater = None
+        self._pending_update_version = ''
+        self._pending_installer_path = None
+        self._pending_update_notes = ''
 
         self.setWindowTitle("MBT POS — MugoByte Technologies")
         self.setWindowIcon(icon)
@@ -354,7 +361,7 @@ class MainWindow(QMainWindow):
 
         self._updater = None
         self._pending_update_version = ''
-        self._pending_installer_path = ''
+        self._pending_installer_path = None
         self._pending_update_notes = ''
         try:
             from backend.updater import UpdateChecker
@@ -504,14 +511,15 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        if self._pending_installer_path and os.path.isfile(self._pending_installer_path):
-            ver = self._pending_update_version or '?'
+        pending = getattr(self, '_pending_installer_path', None)
+        if pending and os.path.isfile(pending):
+            ver = getattr(self, '_pending_update_version', None) or '?'
             try:
                 if ver not in BLOCKED_VERSIONS and _version_gt(ver, APP_VERSION):
-                    self._ui_update_ready(self._pending_installer_path, ver)
+                    self._ui_update_ready(pending, ver)
                 else:
                     try:
-                        os.remove(self._pending_installer_path)
+                        os.remove(pending)
                     except Exception:
                         pass
             except Exception:
@@ -554,9 +562,9 @@ class MainWindow(QMainWindow):
 
 
     def _on_update_btn_clicked(self):
-        version = self._pending_update_version or '?'
-        path    = self._pending_installer_path or ''
-        notes   = self._pending_update_notes or ''
+        version = getattr(self, '_pending_update_version', None) or '?'
+        path    = getattr(self, '_pending_installer_path', None) or ''
+        notes   = getattr(self, '_pending_update_notes', None) or ''
         if not path or not os.path.isfile(path):
             QMessageBox.warning(
                 self, 'Update',

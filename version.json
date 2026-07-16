@@ -1,8 +1,8 @@
 {
-  "version": "2.3.23",
-  "build": "PROD-2026-07-16-v2.3.23",
+  "version": "2.3.24",
+  "build": "PROD-2026-07-16-v2.3.24",
   "build_date": "2026-07-16",
-  "release_notes": "Theme fix: Qt-safe alpha colors (void/olive bug), Fusion style, Manrope, Lovable gold surfaces dark+light, theme-aware POS qty chrome.",
+  "release_notes": "Fix crash: MainWindow missing _pending_installer_path when restore-pending-update raced service startup (2.3.22/23 updater path).",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
