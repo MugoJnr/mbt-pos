@@ -64,7 +64,8 @@ class DiagnosticsTab(QWidget):
 
         log_card = Card()
         lcl = log_card.layout_v(margins=(0,0,0,0), spacing=0)
-        tabs=QTabWidget(); tabs.setStyleSheet(lovable_tab_qss())
+        tabs=QTabWidget(); tabs.setProperty('mbtLovableTabs', True)
+        tabs.setStyleSheet(lovable_tab_qss())
         self._dlog=self._lv(); tabs.addTab(self._dlog,'Diagnostic Log')
         self._blog=self._lv(); tabs.addTab(self._blog,'App Log')
         self._slog=self._lv(); tabs.addTab(self._slog,'Sync Queue')

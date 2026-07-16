@@ -118,6 +118,7 @@ class ReportsTab(QWidget):
 
         # ── Data tabs in card (Lovable) ───────────────────────────────────────
         tabs = QTabWidget(); tabs.setMinimumHeight(320)
+        tabs.setProperty('mbtLovableTabs', True)
         tabs.setStyleSheet(lovable_tab_qss())
         self._stbl = make_table(
             ['Receipt','Date / Time','Cashier','Items','Discount','Tax','Total','Payment'],

@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-16-v2.3.24"
-APP_VERSION   = "2.3.24"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-16-v2.3.25"
+APP_VERSION   = "2.3.25"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -617,6 +617,7 @@ class MainWindow(QMainWindow):
     # ── UI ─────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         central = QWidget()
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -925,8 +926,9 @@ class MainWindow(QMainWindow):
                 f"color:{C['ok'] if self._conn_ok else C['err']}; "
                 f"font-size:13px; font-weight:700; background:transparent;")
         if hasattr(self, '_update_btn'):
+            gold_fg = C.get('gold_fg', '#0A0F1A')
             self._update_btn.setStyleSheet(
-                f"QPushButton#updateBtn {{ background:{C['gold']}; color:#1a1a1a;"
+                f"QPushButton#updateBtn {{ background:{C['gold']}; color:{gold_fg};"
                 f" font-weight:700; font-size:13px; border:none; border-radius:6px;"
                 f" padding:6px 14px; }}"
                 f"QPushButton#updateBtn:hover {{ background:{C['gold_lt']}; }}")

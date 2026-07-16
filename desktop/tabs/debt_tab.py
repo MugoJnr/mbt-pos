@@ -86,6 +86,7 @@ class DebtTab(QWidget):
         # Lovable segmented gold pill tabs
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
+        self._tabs.setProperty('mbtLovableTabs', True)
         self._tabs.setStyleSheet(lovable_tab_qss())
 
         self._overview_tab    = _OverviewTab(self)

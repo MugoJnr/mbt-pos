@@ -572,10 +572,8 @@ class DashboardTab(QWidget):
         self._is_light = ThemeManager.is_light()
         p = _palette()
 
-        # Root background
-        self.setStyleSheet(
-            f"background:{p['app']};" if self._is_light
-            else "background:transparent;")
+        # Root background — Lovable main column is surface, not app tint
+        self.setStyleSheet(f"background:{p['surface']};")
 
         # Theme button
         self._theme_btn.setText('🌙 Dark' if self._is_light else '☀ Light')

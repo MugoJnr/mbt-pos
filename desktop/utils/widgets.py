@@ -66,7 +66,7 @@ class Card(QFrame):
         self.refresh_theme()
 
     def refresh_theme(self):
-        r = RADIUS['lg']
+        r = RADIUS['xl']
         if self._flat:
             self.setStyleSheet(
                 f"QFrame {{ background:{C['card2']}; border:none; border-radius:{r}px; }}")
@@ -131,7 +131,7 @@ class KPICard(QFrame):
         self.refresh_theme()
 
     def refresh_theme(self):
-        r = RADIUS['lg']
+        r = RADIUS['xl']
         self.setStyleSheet(
             f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
             f"border-left:3px solid {self._accent}; border-radius:{r}px; }}")
@@ -159,8 +159,29 @@ class KPICard(QFrame):
         self._sub.setText(str(s))
 
 
+def _refresh_section_icon(lbl):
+    gold = C['gold']
+    lbl.setStyleSheet(
+        f"QLabel {{ background-color: {qss_alpha(gold, 0.15)}; color: {gold}; "
+        f"border-radius:8px; font-size:14px; font-weight:800; border:none; }}")
+
+
+def _refresh_badge(lbl):
+    tone = lbl.property('mbtBadgeTone') or 'ok'
+    tone_map = {
+        'ok': C['ok'], 'warn': C['warn'], 'err': C['err'],
+        'info': C['info'], 'muted': C['text2'], 'gold': C['gold'],
+    }
+    color = tone_map.get(str(tone), C['ok'])
+    r = RADIUS['md']
+    lbl.setStyleSheet(
+        f"QLabel {{ color:{color}; font-size:11px; font-weight:600; "
+        f"background:{qss_alpha(color, 0.10)}; border:1px solid {qss_alpha(color, 0.28)}; "
+        f"border-radius:{r}px; padding:2px 10px; }}")
+
+
 def refresh_themed_widgets(root):
-    """Re-apply Card/KPICard styles after ThemeManager.apply (light/dark)."""
+    """Re-apply theme-bound inline styles after ThemeManager.apply (light/dark)."""
     if root is None:
         return
     for w in root.findChildren(Card):
@@ -171,6 +192,37 @@ def refresh_themed_widgets(root):
     for w in root.findChildren(KPICard):
         try:
             w.refresh_theme()
+        except Exception:
+            pass
+    for w in root.findChildren(QLabel):
+        try:
+            if w.property('mbtSectionIcon'):
+                _refresh_section_icon(w)
+            elif w.property('mbtBadgeTone'):
+                _refresh_badge(w)
+        except Exception:
+            pass
+    for w in root.findChildren(QLineEdit):
+        try:
+            if w.objectName() == 'mbtSearchBar':
+                r = RADIUS['md']
+                w.setStyleSheet(
+                    f"QLineEdit {{ background:{C['input']}; color:{C['text']}; "
+                    f"border:1px solid {C['border']}; border-radius:{r}px; "
+                    f"padding:0 12px 0 14px; font-size:13px; }}"
+                    f"QLineEdit:focus {{ border-color:{C['gold']}; }}")
+        except Exception:
+            pass
+    for w in root.findChildren(QTabWidget):
+        try:
+            if w.property('mbtLovableTabs'):
+                w.setStyleSheet(lovable_tab_qss())
+        except Exception:
+            pass
+    for w in root.findChildren(QWidget):
+        try:
+            if w.objectName() == 'mbtPageInner':
+                w.setStyleSheet(f"background:{C['surface']};")
         except Exception:
             pass
 
@@ -251,6 +303,7 @@ def Field(placeholder='', password=False, mono=False, height=40):
 def SearchBar(placeholder='Search...'):
     """Lovable-style search input (rounded-md, not pill)."""
     f = QLineEdit()
+    f.setObjectName('mbtSearchBar')
     f.setPlaceholderText(placeholder)
     f.setMinimumHeight(40)
     r = RADIUS['md']
@@ -325,6 +378,7 @@ def page_layout(parent=None, margins=(24, 24, 24, 24), spacing=18):
     scroll.setFrameShape(QFrame.NoFrame)
     scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
     inner = QWidget()
+    inner.setObjectName('mbtPageInner')
     inner.setStyleSheet(f"background:{C['surface']};")
     lay = QVBoxLayout(inner)
     lay.setContentsMargins(*margins)
@@ -350,6 +404,7 @@ def Badge(text, color=None, tone=None):
     }
     color = color or tone_map.get(tone, C['ok'])
     l = QLabel(str(text))
+    l.setProperty('mbtBadgeTone', tone or 'ok')
     l.setAlignment(Qt.AlignCenter)
     r = RADIUS['md']
     l.setStyleSheet(

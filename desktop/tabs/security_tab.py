@@ -78,6 +78,7 @@ class SecurityTab(QWidget):
 
         # Tabs — Lovable gold pills
         tabs = QTabWidget()
+        tabs.setProperty('mbtLovableTabs', True)
         tabs.setStyleSheet(lovable_tab_qss())
         tabs.addTab(self._build_pin_tab(),        'PIN Setup')
         tabs.addTab(self._build_stock_adj_tab(),  'Stock Adjust')

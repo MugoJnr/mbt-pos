@@ -6,39 +6,23 @@ Applied ONLY to the SalesTab widget.
 All other tabs remain dark. Toggle button sits inside the POS panel header.
 High contrast white, larger fonts, clean layout — optimised for shop floor use.
 """
-from desktop.utils.theme import qss_alpha
+from desktop.utils.theme import qss_alpha, LIGHT, DARK, ThemeManager
 
-# Light palette — aligned with ThemeManager LIGHT / Lovable .light
-L = {
-    'bg':        '#F0F4FA',
-    'surface':   '#FFFFFF',
-    'panel':     '#E8EDF6',
-    'card':      '#FFFFFF',
-    'card2':     '#F4F7FC',
-    'input':     '#FFFFFF',
-    'border':    '#CDD8E8',
-    'border2':   '#B8C8DC',
-    'hover':     '#DDE6F2',
-    'selected':  '#CDDAEE',
-    'text':      '#0C1828',
-    'text2':     '#3C5270',
-    'muted':     '#7890AA',
-    'disabled':  '#C0CCD8',
-    'gold':      '#B87000',
-    'gold_lt':   '#D48800',
-    'gold_dk':   '#8C5400',
-    'ok':        '#006B48',
-    'ok_dim':    '#E6F5EF',
-    'err':       '#B81C2C',
-    'err_dim':   '#FDECEA',
-    'warn':      '#A05800',
-    'info':      '#1850A8',
-    'sep':       '#E0E8F0',
-    'app':       '#F0F4FA',
-}
-# Qt-safe translucent accents (never append hex alpha to #RRGGBB)
-L['err_border'] = qss_alpha(L['err'], 0.40)
-L['gold_tint'] = qss_alpha(L['gold'], 0.13)
+def _active_palette():
+    """POS panel palette — always from live ThemeManager tokens."""
+    return dict(LIGHT if ThemeManager.is_light() else DARK)
+
+
+def _light_tokens():
+    """Light-mode POS extras (translucent accents)."""
+    L = _active_palette()
+    if not ThemeManager.is_light():
+        return L
+    L = dict(L)
+    L['bg'] = L['surface']
+    L['err_border'] = qss_alpha(L['err'], 0.40)
+    L['gold_tint'] = qss_alpha(L['gold'], 0.13)
+    return L
 
 # Larger fonts for shop-floor / touch use (light mode)
 FS = {
@@ -159,11 +143,11 @@ CHARGE_BTN = (
     "QPushButton{{"
     "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
     "    stop:0 {gold_lt}, stop:1 {gold});"
-    "  color: #0A0F18; border: none; border-radius: 10px;"
+    "  color: {gold_fg}; border: none; border-radius: 10px;"
     "  font-size: {font_charge}; font-weight: 900; padding: 12px 24px; min-height:52px;"
     "}}"
-    "QPushButton:hover{{ background:{gold_lt}; color:#000; }}"
-    "QPushButton:pressed{{ background:{gold_dk}; }}"
+    "QPushButton:hover{{ background:{gold_lt}; color:{gold_fg}; }}"
+    "QPushButton:pressed{{ background:{gold_dk}; color:{gold_fg}; }}"
 )
 
 SECONDARY_BTN = (
@@ -196,6 +180,7 @@ TOGGLE_BTN_LIGHT = (
 
 def fmt(template: str) -> str:
     """Fill a style template with light palette + font sizes."""
+    L = _light_tokens()
     return template.format(**L, **{f'font_{k}': v for k, v in (
         ('label', FS['label']),
         ('heading', FS['heading']),
@@ -215,6 +200,7 @@ def fmt(template: str) -> str:
 
 
 def _label_style(color_key='text2', size_key='label', weight=''):
+    L = _light_tokens()
     w = f" font-weight:{weight};" if weight else ''
     return (
         f"color:{L[color_key]}; font-size:{FS[size_key]}; background:transparent;{w}")
@@ -222,6 +208,7 @@ def _label_style(color_key='text2', size_key='label', weight=''):
 
 def apply_light(sales_tab) -> None:
     """Apply light mode to every widget inside SalesTab."""
+    L = _light_tokens()
     t = sales_tab
 
     t.setStyleSheet(f"background:{L['bg']};")

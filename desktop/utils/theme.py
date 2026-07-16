@@ -212,6 +212,7 @@ def _build_stylesheet(p):
     gold_border_hover = qss_alpha(p['gold'], 0.45)
     gold_border_soft = qss_alpha(p['gold'], 0.35)
     gold_tint = qss_alpha(p['gold'], 0.14)
+    nav_hover_soft = qss_alpha(p['hover'], 0.55)
     return f"""
 * {{
     font-family: {ff};
@@ -221,8 +222,12 @@ def _build_stylesheet(p):
 }}
 QMainWindow {{ background: {p['app']}; border: none; }}
 QDialog {{ background: {p['surface']}; border: none; }}
-/* Base fill — objectNames (#sidebar, #pageStack) and Cards override */
-QWidget {{ background: {p['surface']}; border: none; }}
+/* Lovable: app shell outer = --app, main column = --surface */
+QWidget {{ background: transparent; border: none; }}
+#appRoot {{ background: {p['app']}; }}
+#content, #pageStack, #mbtPageInner {{
+    background: {p['surface']};
+}}
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 QFrame {{ border: none; }}
 
@@ -259,7 +264,7 @@ QFrame {{ border: none; }}
     min-height: 40px;
 }}
 #navBtn:hover {{
-    background: {p['hover']};
+    background: {nav_hover_soft};
     color: {p['text']};
 }}
 #navBtn:checked {{
@@ -267,6 +272,11 @@ QFrame {{ border: none; }}
     color: {p['gold']};
     font-weight: 600;
     border-left: 3px solid {p['gold']};
+    padding-left: 13px;
+}}
+#navBtn:checked:hover {{
+    background: {p['hover']};
+    color: {p['gold']};
 }}
 #sidebarUser {{
     background: {p['panel']};

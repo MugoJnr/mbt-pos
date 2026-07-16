@@ -22,49 +22,55 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerB
                                     page_layout, Card, H2, Badge, GhostBtn)
 
 
-# ── State styling map ──────────────────────────────────────────────────────────
-_STATE_STYLE = {
-    'active':       ('#2E9D5C', '✓  ACTIVE',       'License is valid and active.'),
-    'expiring':     ('#E8A317', '⚠  EXPIRING SOON', 'Subscription expires in less than 14 days.'),
-    'warning':      ('#E8A317', '⚠  WARNING',       'Subscription expires in 7 days or less.'),
-    'critical':     ('#D64545', '⚠  CRITICAL',      'Subscription expires in 3 days or less!'),
-    'expired':      ('#D64545', '✗  EXPIRED',        'Your subscription has expired. Renew to continue.'),
-    'inactive':     ('#5B7896', '○  INACTIVE',       'License has been deactivated.'),
-    'tampered':     ('#D64545', '✗  TAMPERED',       'License integrity check failed. Contact support.'),
-    'unactivated':  ('#5B7896', '○  NOT ACTIVATED',  'Activate your license to use MBT POS.'),
-}
+# ── State styling map (Lovable semantic tokens — read C at render time) ────────
+def _state_style(state: str):
+    styles = {
+        'active':       (C['ok'],    '✓  ACTIVE',       'License is valid and active.'),
+        'expiring':     (C['warn'],  '⚠  EXPIRING SOON', 'Subscription expires in less than 14 days.'),
+        'warning':      (C['warn'],  '⚠  WARNING',       'Subscription expires in 7 days or less.'),
+        'critical':     (C['err'],   '⚠  CRITICAL',      'Subscription expires in 3 days or less!'),
+        'expired':      (C['err'],   '✗  EXPIRED',        'Your subscription has expired. Renew to continue.'),
+        'inactive':     (C['muted'], '○  INACTIVE',       'License has been deactivated.'),
+        'tampered':     (C['err'],   '✗  TAMPERED',       'License integrity check failed. Contact support.'),
+        'unactivated':  (C['muted'], '○  NOT ACTIVATED',  'Activate your license to use MBT POS.'),
+    }
+    return styles.get(state, (C['muted'], state.upper(), ''))
 
 
 class _LicCard(QFrame):
     """Compact info card for the license dashboard (Lovable Info tile)."""
     def __init__(self, icon, label, value='—', accent=None):
         super().__init__()
-        accent = accent or C['gold']
-        r = RADIUS['md']
-        self.setStyleSheet(
-            f"QFrame {{ background:{C['card2']}; border:1px solid {C['border']};"
-            f"border-radius:{r}px; }}"
-        )
+        self._accent = accent or C['gold']
+        self._icon = icon
+        self._label = label
         self.setMinimumHeight(72)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(4)
-        lbl = QLabel(f"{icon}  {label.upper()}")
-        lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:10px; letter-spacing:1.4px; "
-            f"font-weight:700; background:transparent;")
+        self._lbl = QLabel(f"{icon}  {label.upper()}")
         self._val = QLabel(str(value))
-        self._val.setStyleSheet(
-            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
         self._val.setWordWrap(True)
-        lay.addWidget(lbl)
+        lay.addWidget(self._lbl)
         lay.addWidget(self._val)
+        self.refresh_theme()
+        self.set_value(value)
 
     def set_value(self, v, color=None):
         self._val.setText(str(v))
         col = color or C['text']
         self._val.setStyleSheet(
             f"color:{col}; font-size:14px; font-weight:700; background:transparent;")
+
+    def refresh_theme(self):
+        r = RADIUS['md']
+        self.setStyleSheet(
+            f"QFrame {{ background:{C['card2']}; border:1px solid {C['border']};"
+            f"border-radius:{r}px; }}"
+        )
+        self._lbl.setStyleSheet(
+            f"color:{C['text2']}; font-size:10px; letter-spacing:1.4px; "
+            f"font-weight:700; background:transparent;")
 
 
 class LicenseTab(QWidget):
@@ -368,10 +374,26 @@ class LicenseTab(QWidget):
     def on_show(self):
         self.refresh()
 
+    def apply_theme(self, is_light=None):
+        from desktop.utils.widgets import refresh_themed_widgets
+        refresh_themed_widgets(self)
+        for card in (
+            getattr(self, 'card_plan', None),
+            getattr(self, 'card_days', None),
+            getattr(self, 'card_expiry', None),
+            getattr(self, 'card_sync', None),
+        ):
+            if card and hasattr(card, 'refresh_theme'):
+                card.refresh_theme()
+        if self.license_service:
+            try:
+                self._render_status(self.license_service.get_status())
+            except Exception:
+                pass
+
     def _render_status(self, s: dict):
         state      = s.get('state', 'unactivated')
-        color, label_txt, sub_txt = _STATE_STYLE.get(
-            state, ('#5B7896', state.upper(), ''))
+        color, label_txt, sub_txt = _state_style(state)
 
         # Banner
         self.state_icon.setText('✓' if state == 'active' else ('✗' if state in ('expired','tampered') else '⚠'))
