@@ -626,8 +626,8 @@ class SalesTab(QWidget):
         """High-contrast cart text — never inherit a stale light-mode dark fg on dark bg."""
         from desktop.utils.theme import DARK, LIGHT, ThemeManager
         light = bool(getattr(self, '_is_light', False) or ThemeManager.is_light())
-        # Explicit tokens (not live C) so theme-desync cannot paint dark-on-dark
-        return LIGHT['text'] if light else DARK['text']
+        # Bright near-white in dark mode for WCAG-friendly cart rows
+        return LIGHT['text'] if light else '#F5F7FA'
 
     def _refresh_cart(self):
         from desktop.utils.pos_light_theme import fmt, SPINBOX, REMOVE_BTN, L
@@ -648,11 +648,11 @@ class SalesTab(QWidget):
         else:
             self._ctbl.setStyleSheet(
                 f"QTableWidget{{background:{DARK['card']};border:1px solid {DARK['border2']};"
-                f"border-radius:10px;color:{DARK['text']};font-size:15px;font-weight:700;"
+                f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
                 f"alternate-background-color:{DARK['card2']};"
                 f"gridline-color:transparent;}}"
-                f"QTableWidget::item{{color:{DARK['text']};padding:10px 10px;}}"
-                f"QHeaderView::section{{background:{DARK['panel']};color:{DARK['text2']};"
+                f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;}}"
+                f"QHeaderView::section{{background:{DARK['panel']};color:#C5D0E0;"
                 f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
                 f"border:none;border-bottom:1px solid {DARK['border2']};}}"
             )
@@ -719,46 +719,55 @@ class SalesTab(QWidget):
             minus.clicked.connect(lambda _, idx=i: self._change_qty(idx, -0.25))
             plus.clicked.connect(lambda _, idx=i: self._change_qty(idx, 0.25))
 
-            # Theme-aware qty chrome (was hardcoded dark — broke light mode)
+            # Theme-aware qty chrome — dark uses navy inputs (never white)
+            q_bg = LIGHT['input'] if light else DARK['input']
+            q_card = LIGHT['card2'] if light else DARK['card2']
+            q_fg = item_color
+            q_bd = LIGHT['border2'] if light else DARK['border2']
+            q_bd1 = LIGHT['border'] if light else DARK['border']
+            q_hover = LIGHT['hover'] if light else DARK['hover']
+            q_gold = LIGHT['gold'] if light else DARK['gold']
+            q_sel = LIGHT['selected'] if light else DARK['selected']
+            q_spin_bg = LIGHT['card'] if light else DARK['card']
             qty_w.setStyleSheet(
                 f"QWidget#qtyControl{{"
-                f"background:{C['input']};"
-                f"border:1px solid {C['border2']};"
+                f"background:{q_bg};"
+                f"border:1px solid {q_bd};"
                 f"border-radius:12px;"
                 f"}}"
                 f"QPushButton#qtyBtn{{"
-                f"background:{C['card2']};"
-                f"color:{C['text']};"
+                f"background:{q_card};"
+                f"color:{q_fg};"
                 f"border:none;"
                 f"font-size:18px;"
                 f"font-weight:600;"
                 f"padding:0px;"
                 f"}}"
-                f"QPushButton#qtyBtn:hover{{background:{C['hover']}; color:{C['gold']};}}"
+                f"QPushButton#qtyBtn:hover{{background:{q_hover}; color:{q_gold};}}"
                 f"QPushButton#qtyBtn:pressed{{"
-                f"background:{C['selected']};"
+                f"background:{q_sel};"
                 f"padding-top:1px;"
                 f"padding-left:1px;"
                 f"}}"
                 f"QPushButton#qtyBtn[seg=\"left\"]{{"
                 f"border-top-left-radius:12px;"
                 f"border-bottom-left-radius:12px;"
-                f"border-right:1px solid {C['border']};"
+                f"border-right:1px solid {q_bd1};"
                 f"}}"
                 f"QPushButton#qtyBtn[seg=\"right\"]{{"
                 f"border-top-right-radius:12px;"
                 f"border-bottom-right-radius:12px;"
-                f"border-left:1px solid {C['border']};"
+                f"border-left:1px solid {q_bd1};"
                 f"}}"
                 f"QDoubleSpinBox#qtyInput{{"
-                f"background:{C['card']};"
-                f"color:{C['text']};"
+                f"background:{q_spin_bg};"
+                f"color:{q_fg};"
                 f"border:none;"
                 f"padding:0px;"
                 f"font-size:16px;"
                 f"font-weight:700;"
                 f"}}"
-                f"QDoubleSpinBox#qtyInput:focus{{background:{C['hover']};}}"
+                f"QDoubleSpinBox#qtyInput:focus{{background:{q_hover};}}"
             )
             ql.addWidget(minus)
             ql.addWidget(sp, 1)

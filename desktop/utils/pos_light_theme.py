@@ -313,111 +313,141 @@ def apply_light(sales_tab) -> None:
 
 
 def apply_dark(sales_tab) -> None:
-    """Restore dark mode on SalesTab."""
-    from desktop.utils.theme import C
+    """Restore dark mode on SalesTab — explicit DARK tokens (no leftover #FFFFFF)."""
+    from desktop.utils.theme import C, DARK
+
+    # Prefer immutable DARK tokens so a desynced live C cannot leave white panels
+    D = dict(DARK)
+    # If ThemeManager already restored dark into C, prefer those live values
+    if (C.get('text') or '').upper() in ('#EEF2FC', '#F5F7FA', '#FFFFFF'):
+        D.update({k: C[k] for k in DARK.keys() if k in C})
 
     t = sales_tab
-    t.setStyleSheet("")
+    t.setStyleSheet(f"background:{D['surface']};")
     t._left_panel.setStyleSheet(
-        f"QFrame#posProductPanel {{ background:{C['card']}; "
-        f"border:1px solid {C['border']}; border-radius:12px; }}")
+        f"QFrame#posProductPanel {{ background:{D['card']}; "
+        f"border:1px solid {D['border']}; border-radius:12px; }}")
     t._right_panel.setStyleSheet(
-        f"QFrame#posCartPanel {{ background:{C['card']}; "
-        f"border:1px solid {C['border']}; border-radius:12px; }}")
+        f"QFrame#posCartPanel {{ background:{D['card']}; "
+        f"border:1px solid {D['border']}; border-radius:12px; }}")
     if getattr(t, '_checkout_scroll', None):
         t._checkout_scroll.setStyleSheet(
-            "QScrollArea{border:none;background:transparent;}")
+            f"QScrollArea{{border:none;background:{D['card']};}}"
+            f"QScrollArea > QWidget > QWidget{{background:{D['card']};}}")
         w = t._checkout_scroll.widget()
         if w:
-            w.setStyleSheet("background:transparent;")
+            w.setStyleSheet(f"background:{D['card']};")
 
-    t._search.setStyleSheet("")
-    t._cat.setStyleSheet("")
-    t._gw.setStyleSheet("background:transparent;")
+    # Explicit dark inputs — never leave light-mode #FFFFFF stylesheets
+    _dark_input = (
+        f"background:{D['input']}; color:{D['text']}; "
+        f"border:1px solid {D['border2']}; border-radius:8px; "
+        f"padding:8px 12px; font-size:14px; min-height:40px;"
+    )
+    t._search.setStyleSheet(f"QLineEdit{{{_dark_input} border-radius:22px;}}")
+    t._cat.setStyleSheet(
+        f"QComboBox{{{_dark_input}}}"
+        f"QComboBox::drop-down{{border:none;width:28px;}}"
+        f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};"
+        f"selection-background-color:{D['selected']};selection-color:{D['text']};}}")
+    t._gw.setStyleSheet(f"background:{D['card']};")
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:17px; font-weight:700; background:transparent;")
+            f"color:{D['text']}; font-size:17px; font-weight:700; background:transparent;")
     if getattr(t, '_cnt', None):
         t._cnt.setStyleSheet(
-            f"color:{C['muted']}; font-size:13px; font-weight:600; background:transparent;")
+            f"color:{D['muted']}; font-size:13px; font-weight:600; background:transparent;")
 
     t._ctbl.setStyleSheet(
-        f"QTableWidget{{background:{C.get('card', '#0F1A2E')};border:1px solid {C.get('border2', '#18283E')};"
-        f"border-radius:10px;color:#EEF2FC;font-size:15px;font-weight:700;"
-        f"alternate-background-color:{C.get('card2', '#132034')};gridline-color:transparent;}}"
-        f"QTableWidget::item{{color:#EEF2FC;padding:10px 10px;}}"
-        f"QHeaderView::section{{background:{C.get('panel', '#0B1220')};color:#A8B8D0;"
+        f"QTableWidget{{background:{D['card']};border:1px solid {D['border2']};"
+        f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
+        f"alternate-background-color:{D['card2']};gridline-color:transparent;}}"
+        f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;}}"
+        f"QHeaderView::section{{background:{D['panel']};color:#C5D0E0;"
         f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
-        f"border:none;border-bottom:1px solid {C.get('border2', '#18283E')};}}"
+        f"border:none;border-bottom:1px solid {D['border2']};}}"
     )
     t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
 
     t._tot_frame.setStyleSheet(
-        f"QFrame{{background:{C['panel']};border:1px solid {C['border']};border-radius:8px;}}")
+        f"QFrame#posTotFrame{{background:{D['panel']};border:1px solid {D['border2']};"
+        f"border-radius:8px;}}")
     for lbl in (getattr(t, '_sub_lbl', None), getattr(t, '_tax_lbl', None)):
         if lbl:
             lbl.setStyleSheet(
-                f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
+                f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")
     if getattr(t, '_disc_lbl', None):
         t._disc_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; font-weight:700; background:transparent;")
+            f"color:{D['text2']}; font-size:14px; font-weight:700; background:transparent;")
     if getattr(t, '_total_hdr', None):
         t._total_hdr.setStyleSheet(
-            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
+            f"color:{D['text']}; font-size:14px; font-weight:700; background:transparent;")
     t._tot_lbl.setStyleSheet(
-        f"color:{C['gold']}; font-size:28px; font-weight:900; background:transparent;")
+        f"color:{D['gold']}; font-size:28px; font-weight:900; background:transparent;")
 
     t._disc.setStyleSheet(
-        f"color:{C['text']}; font-size:15px; font-weight:700; background:transparent;")
-    t._pay.setStyleSheet("")
+        f"color:{D['text']}; font-size:15px; font-weight:700; background:transparent;")
+    t._pay.setStyleSheet(
+        f"QComboBox{{{_dark_input}}}"
+        f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};}}")
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
-    t._paid.setStyleSheet("")
+            f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")
+    t._paid.setStyleSheet(f"QDoubleSpinBox{{{_dark_input}}}")
     if getattr(t, '_chg_lbl', None):
         t._chg_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:14px; font-weight:600; background:transparent;")
+            f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")
     t._chg.setStyleSheet(
-        f"color:{C['ok']}; font-size:16px; font-weight:800; background:transparent;")
+        f"color:{D['ok']}; font-size:16px; font-weight:800; background:transparent;")
 
     t._mpesa_frame.setStyleSheet(
-        f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
+        f"QFrame{{background:{D['card2']};border:1px solid {D['border2']};border-radius:8px;}}")
     t._mpesa_info.setStyleSheet(
-        f"color:{C['gold']}; font-size:13px; font-weight:700; background:transparent;")
-    t._mpesa_ref.setStyleSheet("")
+        f"color:{D['gold']}; font-size:13px; font-weight:700; background:transparent;")
+    t._mpesa_ref.setStyleSheet(f"QLineEdit{{{_dark_input}}}")
 
-    t._note.setStyleSheet("")
+    t._note.setStyleSheet(f"QLineEdit{{{_dark_input}}}")
     t._charge_btn.setObjectName('primaryBtn')
-    gold_fg = C.get('gold_fg', '#0A0F1A')
+    gold_fg = D.get('gold_fg', '#0A0F1A')
     t._charge_btn.setStyleSheet(
-        f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
+        f"QPushButton#primaryBtn {{ background:{D['gold']}; color:{gold_fg};"
         f" border:none; border-radius:8px; font-weight:800; font-size:16px;"
         f" padding:12px 16px; min-height:52px; }}"
-        f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
-        f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}")
-    t._prv_btn.setStyleSheet("")
-    t._clr_btn.setStyleSheet("")
+        f"QPushButton#primaryBtn:hover {{ background:{D['gold_lt']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:pressed {{ background:{D['gold_dk']}; color:{gold_fg}; }}")
+    _sec = (
+        f"QPushButton{{background:{D['card2']};color:{D['text']};"
+        f"border:1px solid {D['border2']};border-radius:8px;"
+        f"font-size:13px;font-weight:600;padding:9px 14px;min-height:42px;}}"
+        f"QPushButton:hover{{background:{D['hover']};border-color:{D['gold']};}}"
+    )
+    t._prv_btn.setStyleSheet(_sec)
+    t._clr_btn.setStyleSheet(
+        f"QPushButton{{background:{D['err_dim']};color:{D['err']};"
+        f"border:1px solid {D['border2']};border-radius:8px;"
+        f"font-size:13px;font-weight:700;padding:9px 14px;min-height:42px;}}"
+        f"QPushButton:hover{{background:{D['err']};color:#fff;}}")
     if getattr(t, '_reprint_btn', None):
-        t._reprint_btn.setStyleSheet("")
+        t._reprint_btn.setStyleSheet(_sec)
 
     for b in getattr(t, '_pay_btns', {}).values():
         b.setStyleSheet(
-            f"QPushButton{{background:{C['card2']};color:{C['text2']};"
-            f"border:1px solid {C['border']};border-radius:8px;"
+            f"QPushButton{{background:{D['card2']};color:{D['text2']};"
+            f"border:1px solid {D['border']};border-radius:8px;"
             f"font-size:13px;font-weight:700;min-height:40px;padding:6px 8px;}}"
-            f"QPushButton:checked{{background:{C['selected']};color:{C['gold']};"
-            f"border-color:{C['gold']};font-weight:800;}}")
+            f"QPushButton:checked{{background:{D['selected']};color:{D['gold']};"
+            f"border-color:{D['gold']};font-weight:800;}}")
 
     t._theme_btn.setText('\u2600  Light')
     t._theme_btn.setStyleSheet(
-        f"QPushButton{{background:{C['card2']}; color:{C['text']};"
-        f"border:1px solid {C['border']}; border-radius:8px;"
+        f"QPushButton{{background:{D['card2']}; color:{D['text']};"
+        f"border:1px solid {D['border']}; border-radius:8px;"
         f"font-size:13px; font-weight:600; padding:6px 12px; min-height:36px;}}"
-        f"QPushButton:hover{{background:{C['hover']}; color:{C['text']};}}")
+        f"QPushButton:hover{{background:{D['hover']}; color:{D['text']};}}")
 
     t._empty.setStyleSheet(
-        f"color:{C['muted']}; font-size:15px; font-weight:600; background:transparent;")
+        f"color:{D['muted']}; font-size:15px; font-weight:600; background:transparent;")
 
     t._is_light = False
     if getattr(t, 'cart', None):
