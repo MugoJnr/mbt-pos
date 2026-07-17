@@ -186,6 +186,7 @@ def init_db():
         user_id INTEGER,
         title TEXT,
         content TEXT,
+        pinned INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -416,6 +417,10 @@ def init_db():
         cur.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
     if 'electronic_paid' not in sales_cols:
         cur.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+
+    note_cols = {r[1] for r in cur.execute("PRAGMA table_info(notes)").fetchall()}
+    if 'pinned' not in note_cols:
+        cur.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER DEFAULT 0")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS cash_rounding_adjustments (
@@ -970,7 +975,9 @@ def mark_synced():
 @token_required
 def list_notes():
     db = get_db()
-    notes = db.execute("SELECT * FROM notes ORDER BY updated_at DESC").fetchall()
+    notes = db.execute(
+        "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+    ).fetchall()
     return jsonify([dict(n) for n in notes])
 
 
@@ -979,10 +986,12 @@ def list_notes():
 def create_note():
     data = request.json or {}
     db = get_db()
-    db.execute("INSERT INTO notes (user_id, title, content) VALUES (?, ?, ?)",
-               (g.current_user['id'], data.get('title', ''), data.get('content', '')))
+    pinned = 1 if data.get('pinned') else 0
+    cur = db.execute(
+        "INSERT INTO notes (user_id, title, content, pinned) VALUES (?, ?, ?, ?)",
+        (g.current_user['id'], data.get('title', ''), data.get('content', ''), pinned))
     db.commit()
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'id': cur.lastrowid})
 
 
 @app.route('/api/notes/<int:nid>', methods=['PUT'])
@@ -990,9 +999,17 @@ def create_note():
 def update_note(nid):
     data = request.json or {}
     db = get_db()
-    db.execute("UPDATE notes SET title=?, content=?, updated_at=? WHERE id=?",
-               (data.get('title', ''), data.get('content', ''),
-                datetime.now().isoformat(), nid))
+    if 'pinned' in data:
+        db.execute(
+            "UPDATE notes SET title=?, content=?, pinned=?, updated_at=? WHERE id=?",
+            (data.get('title', ''), data.get('content', ''),
+             1 if data.get('pinned') else 0,
+             datetime.now().isoformat(), nid))
+    else:
+        db.execute(
+            "UPDATE notes SET title=?, content=?, updated_at=? WHERE id=?",
+            (data.get('title', ''), data.get('content', ''),
+             datetime.now().isoformat(), nid))
     db.commit()
     return jsonify({'success': True})
 

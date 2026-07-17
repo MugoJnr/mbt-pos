@@ -185,6 +185,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         user_id INTEGER,
         title TEXT,
         content TEXT,
+        pinned INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -662,6 +663,13 @@ def _migrate_columns(conn: sqlite3.Connection):
         dp_cols = {r[1] for r in conn.execute("PRAGMA table_info(debt_payments)").fetchall()}
         if 'payment_reference' not in dp_cols:
             conn.execute("ALTER TABLE debt_payments ADD COLUMN payment_reference TEXT")
+    except Exception:
+        pass
+    # Notes: pin support
+    try:
+        note_cols = {r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()}
+        if 'pinned' not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER DEFAULT 0")
     except Exception:
         pass
     conn.commit()
@@ -1578,12 +1586,12 @@ class APIClient:
 
     def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False) -> dict:
         """
-        Void a completed sale. Only admin/superadmin.
+        Void a completed sale. Manager / admin / superadmin.
         Restores stock for all items. Full audit trail.
         Credit sales with debt payments already collected require force_with_payments=True
         (UI confirms special handling).
         """
-        if self._role not in ('admin', 'superadmin'):
+        if self._role not in ('admin', 'superadmin', 'manager'):
             _audit(self._user_id, self._username,
                    'VOID_SALE_DENIED', 'sales',
                    f"sale_id={sale_id} role={self._role}")
@@ -1924,30 +1932,41 @@ class APIClient:
     def get_notes(self) -> list:
         db = _db()
         try:
-            return _rows(db.execute("SELECT * FROM notes ORDER BY updated_at DESC"))
+            return _rows(db.execute(
+                "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+            ))
         finally:
             db.close()
 
     def create_note(self, data: dict) -> dict:
         db = _db()
         try:
-            db.execute(
-                "INSERT INTO notes (user_id,title,content) VALUES (?,?,?)",
-                (self._user_id, data.get('title',''), data.get('content',''))
+            pinned = 1 if data.get('pinned') else 0
+            cur = db.execute(
+                "INSERT INTO notes (user_id,title,content,pinned) VALUES (?,?,?,?)",
+                (self._user_id, data.get('title', ''), data.get('content', ''), pinned)
             )
             db.commit()
-            return {'success': True}
+            return {'success': True, 'id': cur.lastrowid}
         finally:
             db.close()
 
     def update_note(self, nid: int, data: dict) -> dict:
         db = _db()
         try:
-            db.execute(
-                "UPDATE notes SET title=?,content=?,updated_at=? WHERE id=?",
-                (data.get('title',''), data.get('content',''),
-                 datetime.now().isoformat(), nid)
-            )
+            if 'pinned' in data:
+                db.execute(
+                    "UPDATE notes SET title=?,content=?,pinned=?,updated_at=? WHERE id=?",
+                    (data.get('title', ''), data.get('content', ''),
+                     1 if data.get('pinned') else 0,
+                     datetime.now().isoformat(), nid)
+                )
+            else:
+                db.execute(
+                    "UPDATE notes SET title=?,content=?,updated_at=? WHERE id=?",
+                    (data.get('title', ''), data.get('content', ''),
+                     datetime.now().isoformat(), nid)
+                )
             db.commit()
             return {'success': True}
         finally:
