@@ -627,15 +627,62 @@ class CustomerSelector(QComboBox):
         finally:
             self.blockSignals(False)
 
+    def showPopup(self):
+        self.refresh_theme()
+        super().showPopup()
+        try:
+            from desktop.utils.pos_light_theme import _fit_combo_popup
+            from PyQt5.QtCore import QTimer
+            bg, fg, bd = C['card'], C['text'], C['border']
+            _fit_combo_popup(self, bg=bg, fg=fg, border=bd, max_items=12)
+            QTimer.singleShot(
+                0, lambda: _fit_combo_popup(
+                    self, bg=C['card'], fg=C['text'], border=C['border'],
+                    max_items=12))
+        except Exception:
+            pass
+
     def refresh_theme(self):
+        bg = C['card']
+        fg = C['text']
+        sel = C.get('selected', C['hover'])
         self.setStyleSheet(
-            f"QComboBox#posCustomer{{background:{C['input']};color:{C['text']};"
+            f"QComboBox#posCustomer{{background:{C['input']};color:{fg};"
             f"border:1px solid {C['border2']};border-radius:{RADIUS['md']}px;"
             f"padding:6px 10px;font-size:13px;min-height:{TOUCH_MIN - 4}px;}}"
             f"QComboBox#posCustomer:focus{{border-color:{C['gold']};}}"
-            f"QComboBox#posCustomer QAbstractItemView{{background:{C['card']};"
-            f"color:{C['text']};selection-background-color:{C['hover']};}}"
+            f"QComboBox#posCustomer QAbstractItemView{{background:{bg};"
+            f"color:{fg};border:1px solid {C['border']};outline:0;"
+            f"selection-background-color:{sel};selection-color:{fg};}}"
+            f"QComboBox#posCustomer QAbstractItemView::item{{"
+            f"color:{fg};background:{bg};min-height:30px;padding:4px 10px;}}"
+            f"QComboBox#posCustomer QAbstractItemView::item:selected{{"
+            f"background:{sel};color:{fg};}}"
+            f"QComboBox#posCustomer QAbstractItemView::item:hover{{"
+            f"background:{C['hover']};color:{fg};}}"
         )
+        view = self.view()
+        if view is not None:
+            view.setAttribute(Qt.WA_StyledBackground, True)
+            view.setAutoFillBackground(True)
+            from PyQt5.QtGui import QColor, QPalette
+            pal = view.palette()
+            pal.setColor(QPalette.Base, QColor(bg))
+            pal.setColor(QPalette.Text, QColor(fg))
+            pal.setColor(QPalette.Window, QColor(bg))
+            pal.setColor(QPalette.WindowText, QColor(fg))
+            pal.setColor(QPalette.Highlight, QColor(sel))
+            pal.setColor(QPalette.HighlightedText, QColor(fg))
+            view.setPalette(pal)
+            view.setStyleSheet(
+                f"QAbstractItemView{{background:{bg};color:{fg};outline:0;}}"
+                f"QAbstractItemView::item{{color:{fg};background:{bg};"
+                f"min-height:30px;padding:4px 10px;}}")
+        le = self.lineEdit()
+        if le is not None:
+            le.setStyleSheet(
+                f"QLineEdit{{background:transparent;color:{fg};"
+                f"border:none;padding:0;font-size:13px;}}")
 
 
 # ── PosSearchBar ──────────────────────────────────────────────────────────────

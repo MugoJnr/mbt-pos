@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-17-v2.3.60"
-APP_VERSION   = "2.3.60"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-18-v2.3.62"
+APP_VERSION   = "2.3.62"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -1528,7 +1528,11 @@ class MainWindow(QMainWindow):
         self._on_conn(ok)
 
     def _open_web_dashboard(self):
-        """Ensure embedded Flask is up, then open local (prefer) or remote URL."""
+        """Ensure embedded Flask is up, then open local (prefer) or remote URL.
+
+        Handles the race where the button is clicked before the background
+        WebDashStart thread finishes binding :5050.
+        """
         import urllib.request
         import webbrowser
 
@@ -1536,37 +1540,54 @@ class MainWindow(QMainWindow):
 
         local_url = BACKEND_URL
         local_ok = False
-        try:
-            with urllib.request.urlopen(f'{local_url}/api/health', timeout=3) as r:
-                local_ok = getattr(r, 'status', 200) == 200
-        except Exception:
-            local_ok = False
+        # Poll health up to ~10s while keeping the UI responsive
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f'{local_url}/api/health', timeout=1.5) as r:
+                    if getattr(r, 'status', 200) == 200:
+                        local_ok = True
+                        break
+            except Exception:
+                pass
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+            time.sleep(0.35)
 
         remote_url = ''
         try:
             from backend.cloudflare_setup import load_web_config
             wcfg = load_web_config() or {}
             domain = (wcfg.get('tunnel_domain') or '').strip()
-            if (
-                domain
-                and wcfg.get('remote_enabled')
-                and wcfg.get('remote_setup_ok')
-            ):
+            # Open remote if domain known (even when last config write failed)
+            if domain:
                 remote_url = f'https://{domain}'
         except Exception:
             pass
 
-        # Prefer local when the embedded web service is healthy; else remote.
         if local_ok:
             webbrowser.open(local_url)
             log.info('Opened web dashboard: %s', local_url)
             return
         if remote_url:
             webbrowser.open(remote_url)
-            log.info('Opened remote web dashboard: %s', remote_url)
+            log.info('Opened remote web dashboard (local down): %s', remote_url)
             return
-        webbrowser.open(local_url)
-        log.info('Opened web dashboard (fallback): %s', local_url)
+
+        log.warning('Web dashboard unavailable (local + remote)')
+        QMessageBox.warning(
+            self,
+            'Web Dashboard',
+            'Could not open the web dashboard.\n\n'
+            f'Local URL ({local_url}) is not responding yet.\n\n'
+            'Try again in a few seconds. If it still fails:\n'
+            '• Allow MBT POS through Windows Firewall (port 5050)\n'
+            '• Wait for Cloudflare remote setup in Settings, then use your\n'
+            '  shop URL (https://yourshop.mugobyte.com)\n'
+            '• Desktop POS sales still work without the web dashboard',
+        )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
     def _logout(self):

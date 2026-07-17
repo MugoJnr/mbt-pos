@@ -13,8 +13,190 @@ from desktop.utils.theme import qss_alpha, LIGHT, DARK, ThemeManager
 # Category popup: compact scroll list (not full-screen), always re-applied on theme switch
 _CAT_POPUP_MAX_H = 280
 _CAT_MAX_VISIBLE = 10
+_CAT_ITEM_H = 32
 _CAT_ITEM_FG_DARK = '#F5F7FA'
 _CAT_POPUP_BG_DARK = '#121C30'  # dark card — readable vs transparent/global wipe
+
+
+def _fit_combo_popup(combo, *, bg: str, fg: str, border: str,
+                     max_items: int = _CAT_MAX_VISIBLE,
+                     item_h: int = _CAT_ITEM_H) -> None:
+    """
+    Kill the tall white QComboBoxPrivateContainer sheet.
+
+    Qt paints an outer popup frame (often white / oversized) around the list
+    view. We theme that container to match the list and force height to hug
+    visible items — no empty white column above/below.
+    """
+    from PyQt5.QtGui import QColor, QPalette
+    view = combo.view()
+    if view is None:
+        return
+    n = max(1, min(int(combo.count()), int(max_items)))
+    # Frame chrome + scrollbar padding
+    h = min(_CAT_POPUP_MAX_H, n * item_h + 10)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.setFixedHeight(h)
+    view.setMinimumHeight(h)
+    view.setMaximumHeight(h)
+    view.setAutoFillBackground(True)
+    view.setAttribute(Qt.WA_StyledBackground, True)
+    vpal = view.palette()
+    for role in (QPalette.Base, QPalette.Window, QPalette.Button,
+                 QPalette.AlternateBase):
+        vpal.setColor(role, QColor(bg))
+    for role in (QPalette.Text, QPalette.WindowText, QPalette.ButtonText):
+        vpal.setColor(role, QColor(fg))
+    view.setPalette(vpal)
+    view.setStyleSheet(
+        f"QAbstractItemView{{background:{bg};color:{fg};border:none;outline:0;}}"
+        f"QAbstractItemView::item{{color:{fg};background:{bg};"
+        f"min-height:{item_h - 2}px;padding:4px 10px;}}"
+    )
+
+    # Outer container (QComboBoxPrivateContainer) — the white tall sheet
+    container = view.parentWidget()
+    if container is None:
+        return
+    container.setAttribute(Qt.WA_StyledBackground, True)
+    container.setAutoFillBackground(True)
+    container.setFixedHeight(h + 4)
+    container.setMinimumHeight(h + 4)
+    container.setMaximumHeight(h + 4)
+    # Match combo width — avoid a skinny white skyscraper
+    try:
+        w = max(combo.width(), 180)
+        container.setFixedWidth(w)
+        view.setFixedWidth(max(40, w - 4))
+    except Exception:
+        pass
+    cpal = container.palette()
+    for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+        cpal.setColor(role, QColor(bg))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        cpal.setColor(role, QColor(fg))
+    container.setPalette(cpal)
+    # Object-name agnostic — Qt private container class name varies
+    container.setStyleSheet(
+        f"*{{background:{bg};color:{fg};border:1px solid {border};}}"
+        f"QFrame{{background:{bg};color:{fg};border:1px solid {border};"
+        f"border-radius:0px;}}"
+        f"QScrollBar:vertical{{background:{bg};width:10px;margin:0;}}"
+        f"QScrollBar::handle:vertical{{background:{border};min-height:24px;"
+        f"border-radius:4px;}}"
+        f"QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{{height:0;}}"
+    )
+
+
+def style_cat_combo(combo, is_light: bool = False) -> None:
+    """Sales category QComboBox — compact themed popup (no tall white sheet).
+
+    Must be called from apply_light / apply_dark so theme switches do not leave
+    invisible dark-on-dark (or wiped) popup styles.
+    """
+    if combo is None:
+        return
+    from PyQt5.QtGui import QColor, QPalette
+    combo.setObjectName('posCatCombo')
+    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
+    view = combo.view()
+    if view is not None:
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    if is_light:
+        L = _light_tokens()
+        bg = L.get('card') or L.get('input') or L['surface']
+        fg = L['text']
+        sel = L['selected']
+        sel_fg = L['text']
+        hover = L['hover']
+        border = L['border2']
+        inp = L.get('input') or bg
+        gold = L['gold']
+    else:
+        D = dict(DARK)
+        bg = _CAT_POPUP_BG_DARK
+        fg = _CAT_ITEM_FG_DARK
+        sel = D.get('selected', '#1A3560')
+        sel_fg = fg
+        hover = D.get('hover', '#162A44')
+        border = D.get('border2', '#18283E')
+        inp = D.get('input', '#0C1626')
+        gold = D.get('gold', '#F2A800')
+
+    # Combo closed state — NO border-radius / max-height on QAbstractItemView
+    # (those cause the outer white skyscraper container).
+    combo.setStyleSheet(
+        f"QComboBox#posCatCombo{{"
+        f"background:{inp};color:{fg};border:1px solid {border};"
+        f"border-radius:8px;padding:6px 10px;"
+        f"font-size:14px;min-height:40px;}}"
+        f"QComboBox#posCatCombo:focus{{border-color:{gold};}}"
+        f"QComboBox#posCatCombo::drop-down{{border:none;width:28px;}}"
+        f"QComboBox#posCatCombo QAbstractItemView{{"
+        f"background:{bg};color:{fg};border:none;outline:0;"
+        f"selection-background-color:{sel};selection-color:{sel_fg};}}"
+        f"QComboBox#posCatCombo QAbstractItemView::item{{"
+        f"color:{fg};background:{bg};min-height:{_CAT_ITEM_H - 2}px;"
+        f"padding:4px 10px;}}"
+        f"QComboBox#posCatCombo QAbstractItemView::item:selected{{"
+        f"background:{sel};color:{sel_fg};}}"
+        f"QComboBox#posCatCombo QAbstractItemView::item:hover{{"
+        f"background:{hover};color:{fg};}}"
+    )
+
+    if view is not None:
+        pal = view.palette()
+        pal.setColor(QPalette.Base, QColor(bg))
+        pal.setColor(QPalette.Text, QColor(fg))
+        pal.setColor(QPalette.WindowText, QColor(fg))
+        pal.setColor(QPalette.ButtonText, QColor(fg))
+        pal.setColor(QPalette.Highlight, QColor(sel))
+        pal.setColor(QPalette.HighlightedText, QColor(sel_fg))
+        pal.setColor(QPalette.Window, QColor(bg))
+        view.setPalette(pal)
+        view.setStyleSheet(
+            f"QAbstractItemView{{background:{bg};color:{fg};outline:0;border:none;}}"
+            f"QAbstractItemView::item{{color:{fg};background:{bg};"
+            f"min-height:{_CAT_ITEM_H - 2}px;}}"
+            f"QAbstractItemView::item:selected{{background:{sel};color:{sel_fg};}}"
+        )
+
+    # Install showPopup hook once — fit + paint container every open
+    if not getattr(combo, '_mbt_popup_hooked', False):
+        _orig = combo.showPopup
+
+        def _show_popup(_c=combo, _bg=None, _fg=None, _bd=None, _orig=_orig):
+            # Re-read live tokens at open time (theme may have toggled)
+            light = bool(getattr(_c, '_mbt_is_light', is_light))
+            if light:
+                tok = _light_tokens()
+                p_bg = tok.get('card') or tok.get('input') or tok['surface']
+                p_fg = tok['text']
+                p_bd = tok['border2']
+            else:
+                p_bg = _CAT_POPUP_BG_DARK
+                p_fg = _CAT_ITEM_FG_DARK
+                p_bd = DARK.get('border2', '#18283E')
+            try:
+                _orig()
+            finally:
+                try:
+                    _fit_combo_popup(_c, bg=p_bg, fg=p_fg, border=p_bd)
+                    from PyQt5.QtCore import QTimer
+                    QTimer.singleShot(
+                        0, lambda c=_c, b=p_bg, f=p_fg, d=p_bd: _fit_combo_popup(
+                            c, bg=b, fg=f, border=d))
+                except Exception:
+                    pass
+
+        combo.showPopup = _show_popup  # type: ignore[method-assign]
+        combo._mbt_popup_hooked = True
+    combo._mbt_is_light = bool(is_light)
+    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
+
 
 def _active_palette():
     """POS panel palette — always from live ThemeManager tokens."""
@@ -32,6 +214,7 @@ def _light_tokens():
     L['err_border'] = qss_alpha(L['err'], 0.40)
     L['gold_tint'] = qss_alpha(L['gold'], 0.13)
     return L
+
 
 # Larger / bolder fonts for shop-floor readability (light mode priority)
 FS = {
@@ -52,7 +235,6 @@ FS = {
 }
 
 PROD_BTN_SIZE = (220, 150)
-# Keep qty segmented control fully visible in both themes.
 CART_ROW_H = 64
 
 
@@ -71,7 +253,6 @@ class _LivePalette:
         return _light_tokens().keys()
 
 
-# Back-compat for sales_tab imports (was a static LIGHT dict in older builds)
 L = _LivePalette()
 
 PROD_CARD_ACTIVE = (
@@ -91,7 +272,6 @@ PROD_CARD_EMPTY = (
     "}}"
 )
 
-# Legacy aliases (light theme helpers)
 PROD_BTN_ACTIVE = PROD_CARD_ACTIVE
 PROD_BTN_EMPTY = PROD_CARD_EMPTY
 
@@ -155,97 +335,11 @@ COMBO = (
     "QComboBox:focus {{ border-color:{gold}; }}"
     "QComboBox::drop-down {{ border:none; width:32px; }}"
     "QComboBox QAbstractItemView{{"
-    "  background:{card}; color:{text}; border:2px solid {border2};"
-    "  font-size:{font_label}; max-height:280px;"
+    "  background:{card}; color:{text}; border:1px solid {border2};"
+    "  font-size:{font_label};"
     "  selection-background-color:{selected}; selection-color:{text};"
     "}}"
 )
-
-
-def style_cat_combo(combo, is_light: bool = False) -> None:
-    """Sales category QComboBox — scrollable popup + high-contrast items.
-
-    Must be called from apply_light / apply_dark so theme switches do not leave
-    invisible dark-on-dark (or wiped) popup styles.
-    """
-    if combo is None:
-        return
-    combo.setObjectName('posCatCombo')
-    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
-    view = combo.view()
-    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-    if is_light:
-        L = _light_tokens()
-        bg = L.get('input') or L.get('card') or L['surface']
-        fg = L['text']
-        sel = L['selected']
-        sel_fg = L['text']
-        hover = L['hover']
-        border = L['border2']
-        combo.setStyleSheet(
-            f"QComboBox#posCatCombo{{"
-            f"background:{bg};color:{fg};border:2px solid {border};"
-            f"border-radius:8px;padding:10px 14px;font-size:{FS['label']};min-height:40px;}}"
-            f"QComboBox#posCatCombo:focus{{border-color:{L['gold']};}}"
-            f"QComboBox#posCatCombo::drop-down{{border:none;width:32px;}}"
-            f"QComboBox#posCatCombo QAbstractItemView{{"
-            f"background:{bg};color:{fg};border:2px solid {border};"
-            f"outline:0;font-size:{FS['label']};max-height:{_CAT_POPUP_MAX_H}px;"
-            f"selection-background-color:{sel};selection-color:{sel_fg};}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item{{"
-            f"color:{fg};min-height:30px;padding:4px 10px;}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item:selected{{"
-            f"background:{sel};color:{sel_fg};}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item:hover{{"
-            f"background:{hover};color:{fg};}}"
-        )
-    else:
-        D = dict(DARK)
-        bg = _CAT_POPUP_BG_DARK  # #121C30 — distinct dark card
-        fg = _CAT_ITEM_FG_DARK   # #F5F7FA
-        sel = D.get('selected', '#1A3560')
-        sel_fg = fg
-        hover = D.get('hover', '#162A44')
-        border = D.get('border2', '#18283E')
-        inp = D.get('input', '#0C1626')
-        combo.setStyleSheet(
-            f"QComboBox#posCatCombo{{"
-            f"background:{inp};color:{fg};"
-            f"border:1px solid {border};border-radius:8px;padding:6px 10px;"
-            f"font-size:14px;min-height:40px;}}"
-            f"QComboBox#posCatCombo:focus{{border-color:{D.get('gold', '#F2A800')};}}"
-            f"QComboBox#posCatCombo::drop-down{{border:none;width:28px;}}"
-            f"QComboBox#posCatCombo QAbstractItemView{{"
-            f"background:{bg};color:{fg};border:1px solid {border};"
-            f"outline:0;font-size:14px;max-height:{_CAT_POPUP_MAX_H}px;"
-            f"selection-background-color:{sel};selection-color:{sel_fg};}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item{{"
-            f"color:{fg};background:{bg};min-height:30px;padding:4px 10px;}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item:selected{{"
-            f"background:{sel};color:{sel_fg};}}"
-            f"QComboBox#posCatCombo QAbstractItemView::item:hover{{"
-            f"background:{hover};color:{fg};}}"
-        )
-
-    # Palette on the list view — Qt popup often ignores QSS color alone
-    pal = view.palette()
-    pal.setColor(QPalette.Base, QColor(bg))
-    pal.setColor(QPalette.Text, QColor(fg))
-    pal.setColor(QPalette.WindowText, QColor(fg))
-    pal.setColor(QPalette.ButtonText, QColor(fg))
-    pal.setColor(QPalette.Highlight, QColor(sel))
-    pal.setColor(QPalette.HighlightedText, QColor(sel_fg))
-    pal.setColor(QPalette.Window, QColor(bg))
-    view.setPalette(pal)
-    view.setStyleSheet(
-        f"QAbstractItemView{{background:{bg};color:{fg};"
-        f"outline:0;max-height:{_CAT_POPUP_MAX_H}px;}}"
-        f"QAbstractItemView::item{{color:{fg};min-height:30px;}}"
-        f"QAbstractItemView::item:selected{{background:{sel};color:{sel_fg};}}"
-    )
-    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
 
 SEARCH_INPUT = (
     "QLineEdit{{"
@@ -406,7 +500,10 @@ def apply_light(sales_tab) -> None:
         f"color:{L['gold']}; font-size:{FS['total']}; font-weight:900; background:transparent;")
 
     t._disc.setStyleSheet(fmt(NOTE_INPUT))
-    t._pay.setStyleSheet(fmt(COMBO))
+    if hasattr(t._pay, 'refresh_theme'):
+        t._pay.refresh_theme()
+    else:
+        t._pay.setStyleSheet(fmt(COMBO))
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
     t._paid.setStyleSheet(fmt(SPINBOX))
@@ -556,9 +653,13 @@ def apply_dark(sales_tab) -> None:
         f"color:{D['gold']}; font-size:28px; font-weight:900; background:transparent;")
 
     t._disc.setStyleSheet(f"QLineEdit{{{_dark_input}}}")
-    t._pay.setStyleSheet(
-        f"QComboBox{{{_dark_input}}}"
-        f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};}}")
+    if hasattr(t._pay, 'refresh_theme'):
+        t._pay.refresh_theme()
+    else:
+        t._pay.setStyleSheet(
+            f"QComboBox{{{_dark_input}}}"
+            f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};}}"
+            f"QComboBox QAbstractItemView::item{{color:{D['text']};background:{D['card']};}}")
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(
             f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")

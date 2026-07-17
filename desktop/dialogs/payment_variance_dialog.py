@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QLineEdit, QTextEdit, QFrame, QMessageBox, QWidget,
 )
 from PyQt5.QtCore import Qt
-from desktop.utils.theme import C
+from desktop.utils.theme import apply_themed_dialog,  C
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
 
 

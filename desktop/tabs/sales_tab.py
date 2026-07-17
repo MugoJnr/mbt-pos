@@ -349,18 +349,7 @@ class SalesTab(QWidget):
         self._note = QLineEdit(); self._note.setPlaceholderText('Note (optional)…')
         self._note.setMinimumHeight(40); cbl.addWidget(self._note)
 
-        br = QHBoxLayout(); br.setSpacing(10)
-        self._clr_btn = DangerBtn('🗑', 40); self._clr_btn.setFixedWidth(44)
-        self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
-        self._prv_btn = SecondaryBtn('🖨  Preview', 40)
-        self._prv_btn.clicked.connect(self._preview)
-        self._reprint_btn = SecondaryBtn('🖨  Reprint', 40)
-        self._reprint_btn.setToolTip('Reprint a completed receipt')
-        self._reprint_btn.clicked.connect(self._reprint_receipt)
-        br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
-        br.addWidget(self._reprint_btn)
-        cbl.addLayout(br)
-
+        # Preview/Reprint live in sticky footer (not under Complete Sale).
         # Note: Checkout is pinned below the scroll area so it is always visible.
         rl.addWidget(cart_body, 1)
         self._checkout_scroll.setWidget(checkout)
@@ -374,8 +363,21 @@ class SalesTab(QWidget):
             f"border-top:1px solid {C['border']}; }}")
         self._checkout_foot = foot
         fl = QVBoxLayout(foot)
-        fl.setContentsMargins(16, 12, 16, 14)
-        fl.setSpacing(10)
+        fl.setContentsMargins(16, 10, 16, 12)
+        fl.setSpacing(8)
+
+        br = QHBoxLayout(); br.setSpacing(10)
+        self._clr_btn = DangerBtn('🗑', 40); self._clr_btn.setFixedWidth(44)
+        self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
+        self._prv_btn = SecondaryBtn('🖨  Preview', 40)
+        self._prv_btn.clicked.connect(self._preview)
+        self._reprint_btn = SecondaryBtn('🖨  Reprint', 40)
+        self._reprint_btn.setToolTip('Reprint a completed receipt')
+        self._reprint_btn.clicked.connect(self._reprint_receipt)
+        br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
+        br.addWidget(self._reprint_btn)
+        fl.addLayout(br)
+
         self._charge_btn = PrimaryBtn('🛒  Complete Sale', 56)
         self._charge_btn.setMinimumHeight(56)
         self._charge_btn.clicked.connect(self._process)
@@ -1661,6 +1663,7 @@ class SalesTab(QWidget):
                 'Contact an admin — do not create orphan debts from Debt Management.')
             return
         try:
+            from datetime import date as _date, timedelta as _td
             res = self.api.create_debt_invoice({
                 'customer_id': cust_id,
                 'sale_id': sale_id,
@@ -1668,6 +1671,7 @@ class SalesTab(QWidget):
                 'total_amount': total,
                 'amount_paid': paid,
                 'payment_method': (method or 'credit sale').lower(),
+                'due_date': (_date.today() + _td(days=30)).isoformat(),
                 'notes': f'Auto from POS {method}',
             })
             if res and res.get('success'):

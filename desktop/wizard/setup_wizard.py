@@ -16,7 +16,7 @@ PROJECT_ROOT = ensure_data_dirs(get_project_root())
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from desktop.utils.theme import MBT_STYLESHEET, C
+from desktop.utils.theme import apply_themed_dialog,  MBT_STYLESHEET, C
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn, SuccessBtn, DangerBtn
 
 INIT_FLAG = get_init_flag_path()
@@ -81,7 +81,7 @@ class SetupWizard(QDialog):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self.setMinimumSize(960, 640)
         self.resize(980, 660)
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
 
         self._step   = 0
         self._data   = {}

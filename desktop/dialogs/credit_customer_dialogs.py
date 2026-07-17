@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QTextEdit,
 )
 
-from desktop.utils.theme import C, MBT_STYLESHEET, qss_alpha
+from desktop.utils.theme import C, apply_themed_dialog, qss_alpha
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn, H2, Caption
 
 
@@ -44,7 +44,7 @@ class CreditCustomerChoiceDialog(QDialog):
         self.choice = None
         self.setWindowTitle('Customer Required for Credit')
         self.setMinimumWidth(420)
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(14)
@@ -89,7 +89,7 @@ class QuickCustomerDialog(QDialog):
         self.customer_id = None
         self.setWindowTitle('Create New Customer')
         self.setMinimumWidth(480)
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         lay = QFormLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(12)
@@ -183,7 +183,7 @@ class CustomerPickerDialog(QDialog):
         self._customers = []
         self.setWindowTitle('Select Customer')
         self.setMinimumSize(520, 480)
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)

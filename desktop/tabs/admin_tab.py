@@ -178,8 +178,8 @@ class AdminTab(QWidget):
 class _NewUserDlg(QDialog):
     def __init__(self, parent):
         super().__init__(parent); self.setWindowTitle('New User'); self.setFixedWidth(400)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        from desktop.utils.theme import apply_themed_dialog,  MBT_STYLESHEET
+        apply_themed_dialog(self)
         lay=QFormLayout(self); lay.setContentsMargins(22,20,22,20); lay.setSpacing(14)
         self.uname=QLineEdit(); self.uname.setMinimumHeight(40)
         self.fname=QLineEdit(); self.fname.setMinimumHeight(40)

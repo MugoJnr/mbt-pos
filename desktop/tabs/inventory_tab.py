@@ -74,6 +74,11 @@ class InventoryTab(QWidget):
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
 
+        exp = SecondaryBtn('⬇  Export', 40)
+        exp.setToolTip('Export inventory snapshot and stock movements to Excel')
+        exp.clicked.connect(self._export_inventory)
+        tb.addWidget(exp)
+
         ref = GhostBtn('\u21bb  Refresh', 40)
         ref.clicked.connect(self.refresh)
         tb.addWidget(ref)
@@ -157,6 +162,34 @@ class InventoryTab(QWidget):
             self.products = []
             self._tbl.setRowCount(0)
             self._stats.setText(f"  Could not load inventory: {e}")
+
+    def _export_inventory(self):
+        """Export inventory snapshot + recent stock movements (shared formatter)."""
+        try:
+            from backend.report_export_service import export_inventory_full
+            cfg = self.config_getter() or {}
+            shop = cfg.get('shop_name', 'My Shop')
+            cur = cfg.get('currency_symbol', 'KES') or 'KES'
+            user = self.user.get('user') or self.user
+            who = user.get('full_name') or user.get('username') or 'admin'
+            products = self.products or self.api.get_products() or []
+            moves = self.api.get_stock_movements(limit=5000) or []
+            path = export_inventory_full(
+                products, moves,
+                shop_name=shop, currency=cur, generated_by=who,
+            )
+            QMessageBox.information(
+                self, 'Exported',
+                f'Inventory report saved:\n{path}\n\n'
+                f'Sheets: Inventory · Stock Movements')
+            try:
+                import os
+                os.startfile(path)
+            except Exception:
+                pass
+        except Exception as e:
+            _log.exception('Inventory export failed')
+            QMessageBox.critical(self, 'Export Failed', str(e))
 
     def _filter(self):
         q = self._search.text().lower()
@@ -317,8 +350,8 @@ class InventoryTab(QWidget):
             dlg = QDialog(self)
             dlg.setWindowTitle('Adjust Stock')
             dlg.setMinimumWidth(460)
-            from desktop.utils.theme import MBT_STYLESHEET
-            dlg.setStyleSheet(MBT_STYLESHEET)
+            from desktop.utils.theme import apply_themed_dialog
+            apply_themed_dialog(dlg)
             form = QFormLayout(dlg)
             form.setContentsMargins(24, 20, 24, 20)
             form.setSpacing(12)
@@ -470,8 +503,7 @@ class _ProdDlg(QDialog):
         super().__init__(parent)
         self.setWindowTitle('Add New Product' if not prod else 'Edit Product')
         self.setMinimumWidth(500)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
 
         self._is_new = prod is None
         self._role   = role
@@ -618,8 +650,7 @@ class _ProductHistoryDlg(QDialog):
         self.setWindowTitle('Product History')
         self.setMinimumSize(820, 560)
         self.resize(900, 620)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)

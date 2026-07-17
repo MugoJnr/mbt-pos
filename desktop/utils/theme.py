@@ -499,16 +499,25 @@ QComboBox {{
 QComboBox:focus {{ border-color: {p['gold']}; }}
 QComboBox::drop-down {{ border: none; width: 28px; }}
 QComboBox QAbstractItemView {{
-    background: {p['card2']};
+    background: {p['card']};
     color: {p['text']};
     border: 1px solid {p['border2']};
-    border-radius: {r_md}px;
     selection-background-color: {p['selected']};
-    selection-color: {p['gold']};
+    selection-color: {p['text']};
     padding: 4px;
     max-height: 280px;
+    outline: 0;
 }}
-QComboBox QAbstractItemView::item {{ padding: 8px 12px; min-height: 32px; }}
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px; min-height: 32px;
+    color: {p['text']}; background: {p['card']};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background: {p['selected']}; color: {p['text']};
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background: {p['hover']}; color: {p['text']};
+}}
 
 /* ── TABLES ── */
 QTableWidget, QTableView {{
@@ -846,3 +855,68 @@ def is_light_mode() -> bool:
 def set_light_mode(enabled: bool) -> str:
     """Compatibility wrapper — prefer ThemeManager.apply()."""
     return ThemeManager.apply(enabled)
+
+
+def apply_themed_dialog(dialog) -> None:
+    """
+    Paint a QDialog from the live C palette (light + dark).
+
+    Do NOT paste full MBT_STYLESHEET onto dialogs: that sheet sets
+    QWidget{background:transparent}, and without WA_StyledBackground the
+    native frame shows black behind light-mode dark labels (hybrid theme).
+    """
+    try:
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QColor, QPalette
+        dialog.setAttribute(Qt.WA_StyledBackground, True)
+        dialog.setAutoFillBackground(True)
+        # Clear any frozen dark sheet first
+        dialog.setStyleSheet('')
+        pal = dialog.palette()
+        pal.setColor(QPalette.Window, QColor(C['surface']))
+        pal.setColor(QPalette.WindowText, QColor(C['text']))
+        pal.setColor(QPalette.Base, QColor(C['input']))
+        pal.setColor(QPalette.Text, QColor(C['text']))
+        pal.setColor(QPalette.Button, QColor(C['card2']))
+        pal.setColor(QPalette.ButtonText, QColor(C['text']))
+        pal.setColor(QPalette.Highlight, QColor(C['selected']))
+        pal.setColor(QPalette.HighlightedText, QColor(C['text']))
+        pal.setColor(QPalette.PlaceholderText, QColor(C['muted']))
+        dialog.setPalette(pal)
+        r = RADIUS['md']
+        dialog.setStyleSheet(
+            f"QDialog{{background:{C['surface']};color:{C['text']};}}"
+            f"QLabel{{color:{C['text2']};background:transparent;}}"
+            f"QLineEdit,QTextEdit,QPlainTextEdit,QSpinBox,QDoubleSpinBox,"
+            f"QDateEdit,QComboBox,QAbstractSpinBox{{"
+            f"background:{C['input']};color:{C['text']};"
+            f"border:1px solid {C['border2']};border-radius:{r}px;"
+            f"padding:6px 10px;}}"
+            f"QLineEdit:focus,QTextEdit:focus,QSpinBox:focus,QDoubleSpinBox:focus,"
+            f"QDateEdit:focus,QComboBox:focus{{border-color:{C['gold']};}}"
+            f"QComboBox QAbstractItemView{{"
+            f"background:{C['card']};color:{C['text']};"
+            f"border:1px solid {C['border']};outline:0;}}"
+            f"QComboBox QAbstractItemView::item{{"
+            f"color:{C['text']};background:{C['card']};min-height:28px;}}"
+            f"QCheckBox{{color:{C['text']};background:transparent;}}"
+            f"QFrame{{background:transparent;}}"
+            f"QDialogButtonBox QPushButton{{"
+            f"background:{C['card2']};color:{C['text']};"
+            f"border:1px solid {C['border2']};border-radius:{r}px;"
+            f"min-height:36px;padding:6px 16px;font-weight:700;}}"
+            f"QDialogButtonBox QPushButton:hover{{border-color:{C['gold']};"
+            f"color:{C['gold']};}}"
+            f"QDialogButtonBox QPushButton[text='OK'],"
+            f"QDialogButtonBox QPushButton[text='Save']{{"
+            f"background:{C['gold']};color:{C.get('gold_fg', '#0B1220')};"
+            f"border:none;}}"
+        )
+        # Retheme nested Select / SearchableSelect if present
+        try:
+            from desktop.utils.select_controls import refresh_select_controls
+            refresh_select_controls(dialog)
+        except Exception:
+            pass
+    except Exception:
+        pass

@@ -18,17 +18,72 @@ from PyQt5.QtWidgets import (
     QStyledItemDelegate,
 )
 
-from desktop.utils.theme import C, RADIUS, TOUCH_MIN, qss_alpha
+from desktop.utils.theme import apply_themed_dialog,  C, RADIUS, TOUCH_MIN, qss_alpha
 
 CONTROL_HEIGHT = max(40, TOUCH_MIN - 4)
 OTHER_TOKEN = 'Other'
 
 
+def _popup_view_qss() -> str:
+    """Popup list QSS — no border-radius (Qt paints black corner artifacts)."""
+    bg = C['card']
+    fg = C['text']
+    return (
+        f"QAbstractItemView{{"
+        f"background:{bg};color:{fg};"
+        f"border:1px solid {C['border']};"
+        f"selection-background-color:{qss_alpha(C['gold'], 0.18)};"
+        f"selection-color:{fg};outline:0;padding:4px;}}"
+        f"QAbstractItemView::item{{"
+        f"min-height:32px;padding:6px 10px;color:{fg};background:{bg};}}"
+        f"QAbstractItemView::item:selected{{"
+        f"background:{C.get('selected', C['hover'])};color:{fg};}}"
+        f"QAbstractItemView::item:hover{{"
+        f"background:{C['hover']};color:{fg};}}"
+    )
+
+
+def _style_combo_popup(combo: QComboBox) -> None:
+    """Force popup palette + QSS so dark mode never shows empty white sheets."""
+    view = combo.view()
+    if view is None:
+        return
+    bg = C['card']
+    fg = C['text']
+    sel = C.get('selected', C['hover'])
+    view.setAttribute(Qt.WA_StyledBackground, True)
+    view.setAutoFillBackground(True)
+    from PyQt5.QtGui import QColor, QPalette
+    pal = view.palette()
+    pal.setColor(QPalette.Base, QColor(bg))
+    pal.setColor(QPalette.Text, QColor(fg))
+    pal.setColor(QPalette.Window, QColor(bg))
+    pal.setColor(QPalette.WindowText, QColor(fg))
+    pal.setColor(QPalette.ButtonText, QColor(fg))
+    pal.setColor(QPalette.Highlight, QColor(sel))
+    pal.setColor(QPalette.HighlightedText, QColor(fg))
+    view.setPalette(pal)
+    view.setStyleSheet(_popup_view_qss())
+    # Completer popup (SearchableSelect) — same treatment
+    try:
+        comp = combo.completer()
+        if comp is not None and comp.popup() is not None:
+            pop = comp.popup()
+            pop.setAttribute(Qt.WA_StyledBackground, True)
+            pop.setAutoFillBackground(True)
+            pop.setPalette(pal)
+            pop.setStyleSheet(_popup_view_qss())
+    except Exception:
+        pass
+
+
 def _select_qss(object_name: str = 'mbtSelect') -> str:
     r = RADIUS['md']
+    bg = C['card']
+    fg = C['text']
     return (
         f"QComboBox#{object_name}{{"
-        f"background:{C['input']};color:{C['text']};"
+        f"background:{C['input']};color:{fg};"
         f"border:1px solid {C['border']};border-radius:{r}px;"
         f"padding:4px 12px;font-size:13px;font-weight:600;"
         f"min-height:{CONTROL_HEIGHT - 8}px;}}"
@@ -43,15 +98,18 @@ def _select_qss(object_name: str = 'mbtSelect') -> str:
         f"border-right:5px solid transparent;"
         f"border-top:6px solid {C['muted']};width:0;height:0;"
         f"margin-right:10px;}}"
+        # No border-radius on popup — avoids black corner triangles / empty white sheet
         f"QComboBox#{object_name} QAbstractItemView{{"
-        f"background:{C['card']};color:{C['text']};"
-        f"border:1px solid {C['border']};border-radius:{r}px;"
+        f"background:{bg};color:{fg};"
+        f"border:1px solid {C['border']};"
         f"selection-background-color:{qss_alpha(C['gold'], 0.18)};"
-        f"selection-color:{C['text']};outline:0;padding:4px;}}"
+        f"selection-color:{fg};outline:0;padding:4px;}}"
         f"QComboBox#{object_name} QAbstractItemView::item{{"
-        f"min-height:32px;padding:6px 10px;border-radius:6px;}}"
+        f"min-height:32px;padding:6px 10px;color:{fg};background:{bg};}}"
+        f"QComboBox#{object_name} QAbstractItemView::item:selected{{"
+        f"background:{C.get('selected', C['hover'])};color:{fg};}}"
         f"QComboBox#{object_name} QAbstractItemView::item:hover{{"
-        f"background:{C['hover']};}}"
+        f"background:{C['hover']};color:{fg};}}"
     )
 
 
@@ -219,8 +277,25 @@ class Select(QComboBox):
             return
         super().keyPressEvent(event)
 
+    def showPopup(self):
+        self.refresh_theme()
+        _style_combo_popup(self)
+        super().showPopup()
+        # Fit outer QComboBoxPrivateContainer — kills tall white sheet
+        try:
+            from desktop.utils.pos_light_theme import _fit_combo_popup
+            bg, fg, bd = C['card'], C['text'], C['border']
+            _fit_combo_popup(self, bg=bg, fg=fg, border=bd, max_items=14)
+            QTimer.singleShot(
+                0, lambda: _fit_combo_popup(
+                    self, bg=C['card'], fg=C['text'], border=C['border'],
+                    max_items=14))
+        except Exception:
+            pass
+
     def refresh_theme(self):
         self.setStyleSheet(_select_qss(self.objectName() or 'mbtSelect'))
+        _style_combo_popup(self)
         if self._searchable and self.lineEdit():
             self.lineEdit().setStyleSheet(
                 f"QLineEdit{{background:transparent;color:{C['text']};"
@@ -498,8 +573,7 @@ class ReasonDialog(QDialog):
         self.setWindowTitle(title)
         self.setMinimumWidth(420)
         self._require = require_reason
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)

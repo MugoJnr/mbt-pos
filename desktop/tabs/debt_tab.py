@@ -16,7 +16,7 @@ from datetime import date
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme   import C, qss_alpha
+from desktop.utils.theme   import C, qss_alpha, apply_themed_dialog
 from desktop.utils.widgets import (
     KPICard, Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn,
     SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
@@ -41,6 +41,28 @@ def _fmt(n, cur='KES'):
         return f"{cur} 0.00"
 
 
+def _due_display(inv) -> str:
+    """Human due date; fall back to sale_date + 30d when DB due_date is null."""
+    due = (inv.get('due_date') or '').strip()
+    if due:
+        return due[:10]
+    base = (inv.get('sale_date') or inv.get('created_at') or '')[:10]
+    if not base:
+        return '\u2014'
+    try:
+        d = date.fromisoformat(base)
+        from datetime import timedelta
+        return (d + timedelta(days=30)).isoformat()
+    except Exception:
+        return '\u2014'
+
+
+def _cell_tip(item, text: str):
+    if item is not None and text:
+        item.setToolTip(str(text))
+    return item
+
+
 def _status_color(s):
     return {
         'pending':   C['warn'],
@@ -53,11 +75,11 @@ def _status_color(s):
 
 def _status_label(s):
     return {
-        'pending':   '? Pending',
-        'partial':   '? Partial',
-        'paid':      '? Paid',
-        'overdue':   '? Overdue',
-        'cancelled': '? Cancelled',
+        'pending':   'Pending',
+        'partial':   'Partial',
+        'paid':      'Paid',
+        'overdue':   'Overdue',
+        'cancelled': 'Cancelled',
     }.get(s, s.title())
 
 
@@ -123,6 +145,43 @@ class DebtTab(QWidget):
     def refresh(self):
         self.on_show()
 
+    def _export_debt(self):
+        """Export debt invoices, aging, and payments via shared formatter."""
+        try:
+            from backend.report_export_service import export_debt_report
+            cfg = self._cfg() or {}
+            shop = cfg.get('shop_name', 'My Shop')
+            cur = cfg.get('currency_symbol', 'KES') or 'KES'
+            user = self.user.get('user') or self.user
+            who = user.get('full_name') or user.get('username') or 'admin'
+            invoices = self.api.get_debt_invoices() or []
+            payments = self.api.get_debt_payments() or []
+            aging = self.api.get_aging_report() or {}
+            summary = self.api.get_debt_summary() or {}
+            path = export_debt_report(
+                invoices=invoices,
+                payments=payments,
+                aging=aging,
+                summary=summary,
+                shop_name=shop,
+                currency=cur,
+                generated_by=who,
+                filters='All open invoices · full payment history',
+                period=f"As at {date.today().isoformat()}",
+            )
+            QMessageBox.information(
+                self, 'Exported',
+                f'Debt report saved:\n{path}\n\n'
+                f'Sheets: Debt Invoices · Aging · Payments')
+            try:
+                import os
+                os.startfile(path)
+            except Exception:
+                pass
+        except Exception as e:
+            _log.error('Debt export failed: %s', e, exc_info=True)
+            QMessageBox.critical(self, 'Export Failed', str(e))
+
 
 # ?????????????????????????????????????????????????????????????????????????????
 # Overview sub-tab
@@ -141,11 +200,15 @@ class _OverviewTab(QWidget):
         hrow = QHBoxLayout()
         hrow.addWidget(H2('Debt Overview'))
         hrow.addStretch()
+        exp_btn = SecondaryBtn('?  Export Excel', 40)
+        exp_btn.setToolTip('Export invoices, aging bands, and payments to Excel')
+        exp_btn.clicked.connect(self.p._export_debt)
+        hrow.addWidget(exp_btn)
         col_btn = PrimaryBtn('+ Collect Payment', 40)
         col_btn.clicked.connect(lambda: self.p._invoices_tab._collect_payment_dialog())
         hrow.addWidget(col_btn)
         # Debts must originate from a completed POS sale ? no orphan create
-        pos_hint = SecondaryBtn('Credit via POS ?', 40)
+        pos_hint = SecondaryBtn('Credit via POS', 40)
         pos_hint.setToolTip(
             'Create credit / part-payment sales on the POS tab. '
             'Debts cannot be created here without a sale.')
@@ -153,7 +216,7 @@ class _OverviewTab(QWidget):
         hrow.addWidget(pos_hint)
         lay.addLayout(hrow)
 
-        # KPI row
+        # KPI row ? use em-dash placeholders (never leave literal "?")
         kr = QHBoxLayout(); kr.setSpacing(16)
         self._k_out   = KPICard('Outstanding',     '?',  'total debt',       C['err'])
         self._k_over  = KPICard('Overdue',          '?',  'past due date',    C['warn'])
@@ -191,11 +254,11 @@ class _OverviewTab(QWidget):
 
         # Overdue list
         od = Card(); odl = od.layout_v((20, 16, 20, 16), 12)
-        odl.addWidget(H3('?  Overdue Accounts'))
+        odl.addWidget(H3('Overdue Accounts'))
         self._overdue_tbl = make_table(
             ['Invoice', 'Customer', 'Phone', 'Balance', 'Due Date', 'Days Overdue'],
             stretch_col=1, row_height=38)
-        for ci, w in [(0, 130), (2, 110), (3, 120), (4, 100), (5, 110)]:
+        for ci, w in [(0, 130), (2, 110), (3, 120), (4, 100), (5, 130)]:
             self._overdue_tbl.setColumnWidth(ci, w)
         self._overdue_tbl.setMinimumHeight(180)
         odl.addWidget(self._overdue_tbl)
@@ -326,11 +389,13 @@ class _InvoicesTab(QWidget):
         tb.addWidget(ref_btn)
         lay.addLayout(tb)
 
-        # Table: Invoice, Customer, Sale Date, Original, Paid, Balance, Status
+        # Table: Invoice, Customer, Sale Date, Original, Paid, Balance, Status, Due, Actions
         self._tbl = make_table(
-            ['Invoice', 'Customer', 'Sale Date', 'Original', 'Paid', 'Balance', 'Status', 'Actions'],
-            stretch_col=1, row_height=44)
-        for ci, w in [(0, 130), (2, 130), (3, 110), (4, 110), (5, 110), (6, 100), (7, 200)]:
+            ['Invoice', 'Customer', 'Sale Date', 'Original', 'Paid', 'Balance',
+             'Status', 'Due Date', 'Actions'],
+            stretch_col=1, row_height=52)
+        for ci, w in [(0, 140), (2, 130), (3, 110), (4, 110), (5, 110),
+                      (6, 110), (7, 110), (8, 230)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.cellClicked.connect(self._on_row_clicked)
         lay.addWidget(self._tbl)
@@ -371,24 +436,38 @@ class _InvoicesTab(QWidget):
             total_balance += bal
             status = inv.get('status', 'pending')
 
-            due = inv.get('due_date', '')
+            due = inv.get('due_date', '') or ''
+            due_disp = _due_display(inv)
             if status not in ('paid', 'cancelled') and due:
                 try:
-                    if date.fromisoformat(due) < date.today():
+                    if date.fromisoformat(due[:10]) < date.today():
+                        status = 'overdue'
+                except Exception:
+                    pass
+            elif status not in ('paid', 'cancelled') and due_disp not in ('', '\u2014', '?'):
+                try:
+                    if date.fromisoformat(due_disp) < date.today():
                         status = 'overdue'
                 except Exception:
                     pass
 
-            sale_date = (inv.get('sale_date') or inv.get('created_at') or '')[:16] or '?'
-            self._tbl.setItem(i, 0, tbl_item(inv.get('invoice_number', '')))
-            self._tbl.setItem(i, 1, tbl_item(inv.get('customer_name', '')))
+            sale_date = (inv.get('sale_date') or inv.get('created_at') or '')[:16] or '\u2014'
+            inv_num = inv.get('invoice_number', '') or ''
+            cust_name = inv.get('customer_name', '') or ''
+            self._tbl.setItem(i, 0, _cell_tip(tbl_item(inv_num), inv_num))
+            self._tbl.setItem(i, 1, _cell_tip(tbl_item(cust_name), cust_name))
             self._tbl.setItem(i, 2, tbl_center(sale_date))
             self._tbl.setItem(i, 3, tbl_right(_fmt(inv.get('total_amount', 0), cur)))
             self._tbl.setItem(i, 4, tbl_right(_fmt(inv.get('amount_paid', 0), cur), C['ok']))
             self._tbl.setItem(i, 5, tbl_right(_fmt(bal, cur),
                                               C['err'] if bal > 0 else C['ok']))
-            s_item = tbl_center(_status_label(status), _status_color(status))
+            status_txt = _status_label(status)
+            s_item = tbl_center(status_txt, _status_color(status))
+            _cell_tip(s_item, status_txt)
             self._tbl.setItem(i, 6, s_item)
+            due_item = tbl_center(due_disp)
+            _cell_tip(due_item, due_disp if due_disp not in ('\u2014', '?') else 'No due date set')
+            self._tbl.setItem(i, 7, due_item)
             # Store invoice id on first column for row click
             self._tbl.item(i, 0).setData(Qt.UserRole, inv.get('id'))
             self._tbl.item(i, 0).setData(Qt.UserRole + 1, inv.get('sale_id'))
@@ -396,16 +475,18 @@ class _InvoicesTab(QWidget):
 
             # Actions
             cell = QWidget(); cell.setStyleSheet('background:transparent;')
-            cl   = QHBoxLayout(cell); cl.setContentsMargins(6, 4, 6, 4); cl.setSpacing(6)
+            cl   = QHBoxLayout(cell); cl.setContentsMargins(4, 2, 4, 2); cl.setSpacing(6)
 
             if status not in ('paid', 'cancelled'):
-                pay_btn = QPushButton('?? Collect')
-                pay_btn.setMinimumHeight(32)
+                pay_btn = QPushButton('Collect')
+                pay_btn.setMinimumHeight(34)
+                pay_btn.setMinimumWidth(78)
                 pay_btn.setCursor(Qt.PointingHandCursor)
+                pay_btn.setToolTip('Collect payment on this invoice')
                 pay_btn.setStyleSheet(
                     f"QPushButton{{background:{qss_alpha(C['ok'], 0.13)};color:{C['ok']};"
                     f"border:1px solid {qss_alpha(C['ok'], 0.40)};border-radius:6px;"
-                    f"font-size:12px;font-weight:700;padding:2px 10px;}}"
+                    f"font-size:12px;font-weight:700;padding:4px 12px;}}"
                     f"QPushButton:hover{{background:{C['ok']};color:#fff;}}")
                 pay_btn.clicked.connect(
                     lambda _, inv_id=inv['id'], inv_num=inv.get('invoice_number',''),
@@ -413,20 +494,22 @@ class _InvoicesTab(QWidget):
                     self._collect_payment_dialog(inv_id, inv_num, cname, b))
                 cl.addWidget(pay_btn)
 
-            view_btn = QPushButton('?? History')
-            view_btn.setMinimumHeight(32)
+            view_btn = QPushButton('History')
+            view_btn.setMinimumHeight(34)
+            view_btn.setMinimumWidth(78)
             view_btn.setCursor(Qt.PointingHandCursor)
+            view_btn.setToolTip('View payment history')
             view_btn.setStyleSheet(
                 f"QPushButton{{background:{qss_alpha(C['info'], 0.13)};color:{C['info']};"
                 f"border:1px solid {qss_alpha(C['info'], 0.40)};border-radius:6px;"
-                f"font-size:12px;font-weight:700;padding:2px 10px;}}"
+                f"font-size:12px;font-weight:700;padding:4px 12px;}}"
                 f"QPushButton:hover{{background:{C['info']};color:#fff;}}")
             view_btn.clicked.connect(
                 lambda _, inv_id=inv['id']: self._view_history(inv_id))
             cl.addWidget(view_btn)
 
             cl.addStretch()
-            self._tbl.setCellWidget(i, 7, cell)
+            self._tbl.setCellWidget(i, 8, cell)
 
         n_out = sum(1 for inv in invs if inv.get('status') not in ('paid', 'cancelled'))
         self._stats.setText(
@@ -507,9 +590,9 @@ class _CustomersTab(QWidget):
         lay.addLayout(tb)
 
         self._tbl = make_table(
-            ['Name', 'Phone', 'Email', 'Outstanding', 'Open Invoices', 'Actions'],
-            stretch_col=0, row_height=44)
-        for ci, w in [(1, 120), (2, 160), (3, 130), (4, 110), (5, 180)]:
+            ['Name', 'Phone', 'Email', 'Outstanding', 'Open Inv.', 'Actions'],
+            stretch_col=0, row_height=52)
+        for ci, w in [(1, 120), (2, 160), (3, 130), (4, 90), (5, 220)]:
             self._tbl.setColumnWidth(ci, w)
         lay.addWidget(self._tbl)
 
@@ -543,27 +626,31 @@ class _CustomersTab(QWidget):
 
             # Actions
             cell = QWidget(); cell.setStyleSheet('background:transparent;')
-            cl   = QHBoxLayout(cell); cl.setContentsMargins(6, 4, 6, 4); cl.setSpacing(6)
+            cl   = QHBoxLayout(cell); cl.setContentsMargins(4, 2, 4, 2); cl.setSpacing(6)
 
-            ledger_btn = QPushButton('?? Ledger')
-            ledger_btn.setMinimumHeight(32)
+            ledger_btn = QPushButton('Ledger')
+            ledger_btn.setMinimumHeight(34)
+            ledger_btn.setMinimumWidth(78)
             ledger_btn.setCursor(Qt.PointingHandCursor)
+            ledger_btn.setToolTip('Open customer ledger')
             ledger_btn.setStyleSheet(
                 f"QPushButton{{background:{qss_alpha(C['info'], 0.13)};color:{C['info']};"
                 f"border:1px solid {qss_alpha(C['info'], 0.40)};border-radius:6px;"
-                f"font-size:12px;font-weight:700;padding:2px 10px;}}"
+                f"font-size:12px;font-weight:700;padding:4px 12px;}}"
                 f"QPushButton:hover{{background:{C['info']};color:#fff;}}")
             ledger_btn.clicked.connect(
                 lambda _, cid=c['id']: self._open_ledger(cid))
             cl.addWidget(ledger_btn)
 
-            edit_btn = QPushButton('? Edit')
-            edit_btn.setMinimumHeight(32)
+            edit_btn = QPushButton('Edit')
+            edit_btn.setMinimumHeight(34)
+            edit_btn.setMinimumWidth(64)
             edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setToolTip('Edit customer')
             edit_btn.setStyleSheet(
                 f"QPushButton{{background:{C['card2']};color:{C['text']};"
                 f"border:1px solid {C['border2']};border-radius:6px;"
-                f"font-size:12px;font-weight:700;padding:2px 10px;}}"
+                f"font-size:12px;font-weight:700;padding:4px 12px;}}"
                 f"QPushButton:hover{{background:{C['hover']};color:{C['gold']};}}")
             edit_btn.clicked.connect(
                 lambda _, cid=c['id']: self._edit_customer(cid))
@@ -632,8 +719,8 @@ class _PaymentsTab(QWidget):
         self._tbl = make_table(
             ['Payment Receipt', 'Invoice #', 'Customer', 'Amount', 'Method',
              'Balance After', 'Cashier', 'Date / Time'],
-            stretch_col=2, row_height=40)
-        for ci, w in [(0, 130), (1, 130), (3, 120), (4, 90), (5, 120), (6, 100), (7, 140)]:
+            stretch_col=2, row_height=44)
+        for ci, w in [(0, 170), (1, 160), (3, 120), (4, 90), (5, 120), (6, 110), (7, 160)]:
             self._tbl.setColumnWidth(ci, w)
         lay.addWidget(self._tbl)
         self._stats = Caption('')
@@ -665,14 +752,18 @@ class _PaymentsTab(QWidget):
         for i, p in enumerate(payments):
             self._tbl.insertRow(i)
             amt = float(p.get('amount', 0)); total += amt
-            self._tbl.setItem(i, 0, tbl_item(p.get('payment_receipt', '')))
-            self._tbl.setItem(i, 1, tbl_item(p.get('invoice_number', '') or ''))
-            self._tbl.setItem(i, 2, tbl_item(p.get('customer_name', '')))
+            receipt = p.get('payment_receipt', '') or ''
+            inv_n = p.get('invoice_number', '') or ''
+            cust = p.get('customer_name', '') or ''
+            when = (p.get('created_at', '') or '')[:19]
+            self._tbl.setItem(i, 0, _cell_tip(tbl_item(receipt), receipt))
+            self._tbl.setItem(i, 1, _cell_tip(tbl_item(inv_n), inv_n))
+            self._tbl.setItem(i, 2, _cell_tip(tbl_item(cust), cust))
             self._tbl.setItem(i, 3, tbl_right(_fmt(amt, cur), C['ok']))
             self._tbl.setItem(i, 4, tbl_center(p.get('payment_method', 'cash').title()))
             self._tbl.setItem(i, 5, tbl_right(_fmt(p.get('balance_after', 0), cur)))
             self._tbl.setItem(i, 6, tbl_item(p.get('cashier_name', '') or ''))
-            self._tbl.setItem(i, 7, tbl_item((p.get('created_at', '') or '')[:16]))
+            self._tbl.setItem(i, 7, _cell_tip(tbl_item(when), when))
         self._stats.setText(
             f"  {len(payments)} payments  ?  Total collected: {_fmt(total, cur)}")
 
@@ -744,7 +835,7 @@ class _AgingTab(QWidget):
                 self._tbl.setItem(i, 3, tbl_right(_fmt(inv.get('total_amount', 0), cur)))
                 self._tbl.setItem(i, 4, tbl_right(
                     _fmt(inv.get('balance', 0), cur), C['err']))
-                self._tbl.setItem(i, 5, tbl_center(due or '?'))
+                self._tbl.setItem(i, 5, tbl_center(_due_display(inv)))
                 color = C['err'] if delta > 30 else (C['warn'] if delta > 0 else C['ok'])
                 self._tbl.setItem(i, 6, tbl_center(
                     f"{delta}d overdue" if delta > 0 else 'On time', color))
@@ -763,8 +854,7 @@ class _CustomerDialog(QDialog):
         self._cust  = customer
         self.setWindowTitle('Edit Customer' if customer else 'New Customer')
         self.setMinimumWidth(460)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         self._build()
         from desktop.utils.state_reset import StateResetManager
         if not customer:
@@ -867,8 +957,8 @@ class _CustomerDialog(QDialog):
 
 class _NewInvoiceDialog(QDialog):
     """
-    Legacy dialog ? only allowed when prefilled with a completed sale.
-    Orphan create (no sale_id / receipt) is blocked.
+    Hard-disabled orphan create path.
+    Debts are created only from POS Credit Sale / Part Payment checkout.
     """
 
     def __init__(self, parent_tab: DebtTab, parent_widget,
@@ -876,179 +966,31 @@ class _NewInvoiceDialog(QDialog):
                  prefill_sale_id=None, prefill_receipt=''):
         super().__init__(parent_widget)
         self.p = parent_tab
-        self.setWindowTitle('Credit Sale / Part Payment')
-        self.setMinimumWidth(520)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
-        self._prefill_total   = prefill_total
-        self._prefill_paid    = prefill_paid
-        self._prefill_sale_id = prefill_sale_id
-        self._prefill_receipt = prefill_receipt
-        self._customers = []
-        if not prefill_sale_id or not (prefill_receipt or '').strip():
-            lay = QVBoxLayout(self)
-            lay.setContentsMargins(28, 24, 28, 24)
-            lay.addWidget(H2('Sale Required'))
-            msg = QLabel(
-                'Debts must link to a completed POS sale.\n\n'
-                'Use Credit Sale / Part Payment on the POS tab.\n'
-                'Manual debt create without a sale is disabled.')
-            msg.setWordWrap(True)
-            msg.setStyleSheet(f"color:{C['text']};font-size:14px;")
-            lay.addWidget(msg)
-            close = PrimaryBtn('OK', 42)
-            close.clicked.connect(self.reject)
-            lay.addWidget(close)
-            return
-        self._build()
-        self._load_customers()
-
-    def _build(self):
-        lay = QFormLayout(self)
+        self.setWindowTitle('Credit Sales via POS')
+        self.setMinimumWidth(480)
+        apply_themed_dialog(self)
+        lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
         lay.setSpacing(14)
-
-        def lbl(t):
-            l = QLabel(t)
-            l.setStyleSheet(f"color:{C['text']};font-size:14px;font-weight:600;")
-            return l
-
-        # Customer
-        cust_row = QHBoxLayout()
-        self.cust_combo = SearchableSelect(placeholder='Select or search customer?')
-        self.cust_combo.setMinimumHeight(42)
-        cust_row.addWidget(self.cust_combo, 1)
-        new_cust = SecondaryBtn('+ New', 42)
-        new_cust.setFixedWidth(70)
-        new_cust.clicked.connect(self._add_new_customer)
-        cust_row.addWidget(new_cust)
-        lay.addRow(lbl('Customer *'), cust_row)
-
-        # Receipt / Invoice reference
-        self.receipt = QLineEdit()
-        self.receipt.setMinimumHeight(40)
-        self.receipt.setPlaceholderText('e.g. RCP-20260629-0001 (optional)')
-        self.receipt.setText(self._prefill_receipt)
-        lay.addRow(lbl('Sale Receipt'), self.receipt)
-
-        # Amounts
-        cur = self.p._currency
-        self.total = QDoubleSpinBox()
-        self.total.setRange(0.01, 9999999); self.total.setDecimals(2)
-        self.total.setMinimumHeight(42); self.total.setPrefix(f'{cur} ')
-        self.total.setValue(self._prefill_total)
-        self.total.valueChanged.connect(self._update_balance)
-        lay.addRow(lbl('Total Amount *'), self.total)
-
-        self.paid = QDoubleSpinBox()
-        self.paid.setRange(0, 9999999); self.paid.setDecimals(2)
-        self.paid.setMinimumHeight(42); self.paid.setPrefix(f'{cur} ')
-        self.paid.setValue(self._prefill_paid)
-        self.paid.valueChanged.connect(self._update_balance)
-        lay.addRow(lbl('Amount Paid Now'), self.paid)
-
-        self.balance_lbl = QLabel(f'{cur} 0.00')
-        self.balance_lbl.setStyleSheet(
-            f"color:{C['err']};font-size:18px;font-weight:800;"
-            f"background:transparent;")
-        lay.addRow(lbl('Outstanding Balance'), self.balance_lbl)
-
-        # Payment method
-        self.method = Select(items=list(DEBT_PAYMENT_METHODS))
-        self.method.setMinimumHeight(40)
-        self.method.setMinimumHeight(40)
-        lay.addRow(lbl('Payment Method'), self.method)
-
-        # Due date
-        self.due = QDateEdit()
-        self.due.setDate(QDate.currentDate().addDays(30))
-        self.due.setCalendarPopup(True)
-        self.due.setMinimumHeight(40)
-        self.due_check = QCheckBox('Set due date')
-        self.due.setEnabled(False)
-        self.due_check.stateChanged.connect(lambda s: self.due.setEnabled(bool(s)))
-        due_row = QHBoxLayout()
-        due_row.addWidget(self.due_check)
-        due_row.addWidget(self.due)
-        lay.addRow(lbl('Due Date'), due_row)
-
-        self.notes = QLineEdit()
-        self.notes.setMinimumHeight(40)
-        self.notes.setPlaceholderText('Optional notes?')
-        lay.addRow(lbl('Notes'), self.notes)
-
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
-        lay.addRow(sep)
-
-        br = QHBoxLayout()
-        cancel = SecondaryBtn('Cancel', 42); cancel.clicked.connect(self.reject)
-        save   = PrimaryBtn('Create Invoice', 42); save.clicked.connect(self._save)
-        br.addWidget(cancel, 1); br.addWidget(save, 1)
-        lay.addRow(br)
-
-        self._update_balance()
-
-    def _load_customers(self):
-        try:
-            self._customers = self.p.api.get_customers() or []
-        except Exception:
-            self._customers = []
-        items = []
-        for c in self._customers:
-            label = f"{c['name']}"
-            if c.get('phone'):
-                label += f"  ({c['phone']})"
-            items.append((label, c['id']))
-        self.cust_combo.set_items(items)
-
-    def _add_new_customer(self):
-        dlg = _CustomerDialog(self.p, self)
-        if dlg.exec_() == QDialog.Accepted:
-            self._load_customers()
-
-    def _update_balance(self):
-        bal = max(0.0, round(self.total.value() - self.paid.value(), 2))
-        cur = self.p._currency
-        self.balance_lbl.setText(f'{cur} {bal:,.2f}')
-        self.balance_lbl.setStyleSheet(
-            f"color:{C['err'] if bal > 0 else C['ok']};"
-            f"font-size:18px;font-weight:800;background:transparent;")
+        lay.addWidget(H2('Use POS for Credit Sales'))
+        msg = QLabel(
+            'Manual Create Invoice / Credit Sale / Part Payment from Debt '
+            'Management is disabled.\n\n'
+            'Debts must come from a completed POS sale:\n'
+            '1. Go to the POS tab\n'
+            '2. Add items and choose Credit Sale or Part Payment\n'
+            '3. Select a customer and complete checkout\n\n'
+            'Debt Management is for collecting payments and viewing history only.')
+        msg.setWordWrap(True)
+        msg.setStyleSheet(
+            f"color:{C['text']};font-size:14px;background:transparent;")
+        lay.addWidget(msg)
+        close = PrimaryBtn('OK', 42)
+        close.clicked.connect(self.reject)
+        lay.addWidget(close)
 
     def _save(self):
-        cid = self.cust_combo.current_value()
-        if not cid:
-            QMessageBox.warning(self, 'Required', 'Please select a customer.')
-            return
-        if self.total.value() <= 0:
-            QMessageBox.warning(self, 'Required', 'Total amount must be greater than zero.')
-            return
-
-        data = {
-            'customer_id':    cid,
-            'sale_id':        self._prefill_sale_id,
-            'receipt_number': self.receipt.text().strip() or None,
-            'total_amount':   self.total.value(),
-            'amount_paid':    self.paid.value(),
-            'payment_method': self.method.currentText().lower(),
-            'due_date':       self.due.date().toString('yyyy-MM-dd')
-                              if self.due_check.isChecked() else None,
-            'notes':          self.notes.text().strip(),
-        }
-        try:
-            res = self.p.api.create_debt_invoice(data)
-            if res and res.get('success'):
-                cur = self.p._currency
-                bal = res.get('balance', 0)
-                inv = res.get('invoice_number', '')
-                QMessageBox.information(self, 'Invoice Created ?',
-                    f"Invoice: {inv}\n"
-                    f"Outstanding Balance: {_fmt(bal, cur)}\n\n"
-                    f"{'? PAID IN FULL' if bal == 0 else '? Balance due ? remind customer of payment terms.'}")
-                self.accept()
-            else:
-                QMessageBox.critical(self, 'Error', res.get('error', 'Failed to create invoice.'))
-        except Exception as e:
-            QMessageBox.critical(self, 'Error', str(e))
+        self.reject()
 
 
 class _CollectPaymentDialog(QDialog):
@@ -1063,8 +1005,7 @@ class _CollectPaymentDialog(QDialog):
         self._current_balance = current_balance
         self.setWindowTitle('Collect Debt Payment')
         self.setMinimumWidth(480)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         self._invoices = []
         self._build()
         if not invoice_id:
@@ -1209,8 +1150,7 @@ class _InvoiceHistoryDialog(QDialog):
         self.invoice_id = invoice_id
         self.setWindowTitle('Payment History')
         self.setMinimumSize(680, 460)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         self._build()
         self._load()
 
@@ -1271,8 +1211,7 @@ class _CustomerLedgerDialog(QDialog):
         self.cid = customer_id
         self.setWindowTitle('Customer Ledger')
         self.setMinimumSize(800, 560)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         self._build()
         self._load()
 
@@ -1360,8 +1299,7 @@ class _SaleDebtDetailDialog(QDialog):
         self.invoice_id = invoice_id
         self.setWindowTitle("Sale / Debt Details")
         self.setMinimumSize(640, 420)
-        from desktop.utils.theme import MBT_STYLESHEET
-        self.setStyleSheet(MBT_STYLESHEET)
+        apply_themed_dialog(self)
         self._build()
         self._load()
 
