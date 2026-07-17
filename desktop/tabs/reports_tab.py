@@ -225,6 +225,12 @@ class ReportsTab(QWidget):
                 self._preset.set_value('custom')
 
     def on_show(self):
+        try:
+            from desktop.utils.auto_fill import AutoFillService
+            cfg = self.config_getter() or {}
+            AutoFillService.apply_reports_default_dates(self, cfg)
+        except Exception:
+            pass
         self._load_schedule()
         self.refresh()
 

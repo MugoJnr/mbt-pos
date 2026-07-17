@@ -13,6 +13,10 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     apply_table_row_backgrounds, table_row_bg_hex)
 from desktop.utils.security import (has_permission, require_permission,
                                      ask_superadmin_pin, ROLE_SUPERADMIN)
+from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS, PRODUCT_STATUSES
+from desktop.utils.select_controls import (
+    SearchableSelect, ReasonSelect, Select, ReasonDialog,
+)
 
 
 def _safe_int(v, default=0):
@@ -310,46 +314,77 @@ class InventoryTab(QWidget):
                 'Add products first.'); return
 
         try:
-            names = [f"{p['name']}  (current stock: {_fmt_stock(p.get('stock'))})"
-                     for p in self.products]
-            name, ok = QInputDialog.getItem(
-                self, 'Adjust Stock', 'Select product:', names, 0, False)
-            if not ok:
-                return
-            prod = self.products[names.index(name)]
+            dlg = QDialog(self)
+            dlg.setWindowTitle('Adjust Stock')
+            dlg.setMinimumWidth(460)
+            from desktop.utils.theme import MBT_STYLESHEET
+            dlg.setStyleSheet(MBT_STYLESHEET)
+            form = QFormLayout(dlg)
+            form.setContentsMargins(24, 20, 24, 20)
+            form.setSpacing(12)
 
-            cur_stock = _safe_float(prod.get('stock'), 0)
-            new_qty, ok = QInputDialog.getDouble(
-                self, 'New Stock Quantity',
-                f"New quantity for '{prod['name']}':\n"
-                f"Current stock: {_fmt_stock(cur_stock)}",
-                cur_stock, 0, 999999, 4)
-            if not ok:
-                return
-            new_qty = round(float(new_qty), 4)
+            prod_sel = SearchableSelect(placeholder='Search product…')
+            prod_sel.set_items([
+                ("%s  (stock: %s)" % (pr['name'], _fmt_stock(pr.get('stock'))), pr['id'])
+                for pr in self.products
+            ])
+            qty = QDoubleSpinBox()
+            qty.setRange(0, 999999)
+            qty.setDecimals(4)
+            qty.setMinimumHeight(40)
+            if self.products:
+                qty.setValue(_safe_float(self.products[0].get('stock'), 0))
 
-            reason, ok = QInputDialog.getText(
-                self, 'Reason Required',
-                'Reason for stock adjustment (required â€” this is logged):')
-            if not ok or not reason.strip():
-                QMessageBox.warning(self, 'Required',
-                    'A reason is required for all stock adjustments.')
+            def _on_prod(_=None):
+                pid = prod_sel.current_value()
+                prod = next((x for x in self.products if x['id'] == pid), None)
+                if prod:
+                    try:
+                        from desktop.utils.auto_fill import AutoFillService
+                        fields = AutoFillService.product_stock_fields(prod)
+                        qty.setValue(float(fields.get('stock') or 0))
+                        unit = fields.get('unit') or 'pcs'
+                        cost = float(fields.get('cost_price') or 0)
+                        qty.setToolTip(
+                            f"Current stock: {fields.get('stock')} {unit}  ·  "
+                            f"Cost: {cost:,.2f}  ·  (reason never auto-filled)")
+                    except Exception:
+                        qty.setValue(_safe_float(prod.get('stock'), 0))
+
+            prod_sel.currentIndexChanged.connect(_on_prod)
+            reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=40)
+            form.addRow('Product', prod_sel)
+            form.addRow('New quantity', qty)
+            form.addRow('Reason', reason)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dlg.accept)
+            buttons.rejected.connect(dlg.reject)
+            form.addRow(buttons)
+
+            if dlg.exec_() != QDialog.Accepted:
                 return
+            pid = prod_sel.current_value()
+            prod = next((x for x in self.products if x['id'] == pid), None)
+            if not prod:
+                QMessageBox.warning(self, 'Required', 'Select a product.')
+                return
+            if not reason.is_valid():
+                QMessageBox.warning(self, 'Required', reason.validation_error())
+                return
+            new_qty = round(float(qty.value()), 4)
 
             if not ask_superadmin_pin(self.api, self,
-                    reason=f"Adjust '{prod['name']}' stock"):
+                    reason="Adjust '%s' stock" % prod['name']):
                 return
 
-            res = self.api.adjust_stock(prod['id'], new_qty, reason.strip())
+            res = self.api.adjust_stock(prod['id'], new_qty, reason.value())
             if res and res.get('success'):
                 old_s = _safe_float(res.get('old_stock'))
                 new_s = _safe_float(res.get('new_stock'))
                 chg   = round(new_s - old_s, 4)
-                QMessageBox.information(self, 'Stock Adjusted âœ“',
-                    f"'{prod['name']}'\n"
-                    f"  Before: {_fmt_stock(old_s)}\n"
-                    f"  After:  {_fmt_stock(new_s)}\n"
-                    f"  Change: {chg:+g}")
+                QMessageBox.information(self, 'Stock Adjusted',
+                    "'%s'\n  Before: %s\n  After:  %s\n  Change: %+g" % (
+                        prod['name'], _fmt_stock(old_s), _fmt_stock(new_s), chg))
                 self.refresh()
             else:
                 QMessageBox.critical(self, 'Error',
@@ -358,14 +393,14 @@ class InventoryTab(QWidget):
             _log.exception('Adjust stock dialog error')
             QMessageBox.critical(
                 self, 'Adjust Stock',
-                f'Could not complete stock adjustment:\n\n{e}\n\n'
-                f'You can still add or edit products.')
+                'Could not complete stock adjustment:\n\n%s\n\n'
+                'You can still add or edit products.' % e)
 
     def _add(self):
         if not require_permission(self.user, 'inventory.create', self):
             return
         try:
-            dlg = _ProdDlg(self, role=self._role())
+            dlg = _ProdDlg(self, role=self._role(), config_getter=self.config_getter)
             if dlg.exec_() != QDialog.Accepted:
                 return
             res = self.api.create_product(dlg.data())
@@ -431,7 +466,7 @@ class InventoryTab(QWidget):
 # â”€â”€ Product Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _ProdDlg(QDialog):
-    def __init__(self, parent, prod=None, role='cashier'):
+    def __init__(self, parent, prod=None, role='cashier', config_getter=None):
         super().__init__(parent)
         self.setWindowTitle('Add New Product' if not prod else 'Edit Product')
         self.setMinimumWidth(500)
@@ -440,6 +475,7 @@ class _ProdDlg(QDialog):
 
         self._is_new = prod is None
         self._role   = role
+        self._config_getter = config_getter
 
         lay = QFormLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
@@ -458,6 +494,8 @@ class _ProdDlg(QDialog):
         self.cost  = QDoubleSpinBox(); self.cost.setRange(0, 9999999);  self.cost.setDecimals(2); self.cost.setMinimumHeight(42)
         self.mins  = QSpinBox();       self.mins.setRange(0, 999999);   self.mins.setValue(5);    self.mins.setMinimumHeight(42)
         self.unit  = QLineEdit();      self.unit.setMinimumHeight(42);  self.unit.setText('pcs')
+        self.status = Select(items=list(PRODUCT_STATUSES))
+        self.status.setMinimumHeight(42)
 
         if prod:
             self.name.setText(prod.get('name') or '')
@@ -467,6 +505,23 @@ class _ProdDlg(QDialog):
             self.cost.setValue(_safe_float(prod.get('cost_price')))
             self.mins.setValue(_safe_int(prod.get('min_stock'), 5))
             self.unit.setText(prod.get('unit') or 'pcs')
+            st = prod.get('product_status') or (
+                'Active' if int(prod.get('is_active', 1) or 0) == 1 else 'Inactive')
+            self.status.set_value(st)
+        elif self._is_new:
+            try:
+                from desktop.utils.auto_fill import AutoFillService
+                cfg = {}
+                if callable(self._config_getter):
+                    cfg = self._config_getter() or {}
+                elif parent is not None and hasattr(parent, 'config_getter'):
+                    cfg = parent.config_getter() or {}
+                AutoFillService.apply_product_create_defaults(self, cfg)
+                defaults = AutoFillService.product_create_defaults(cfg)
+                if defaults.get('status') and hasattr(self, 'status'):
+                    self.status.set_value(defaults['status'])
+            except Exception:
+                pass
 
         lay.addRow(lbl('Name *'),           self.name)
         lay.addRow(lbl('SKU / Code'),        self.sku)
@@ -475,6 +530,7 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Cost Price'),        self.cost)
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
         lay.addRow(lbl('Unit'),              self.unit)
+        lay.addRow(lbl('Status'),            self.status)
 
         # Stock field â€” only when adding a NEW product
         if self._is_new:
@@ -511,6 +567,13 @@ class _ProdDlg(QDialog):
         btn_wrap.setLayout(btn_row)
         lay.addRow(btn_wrap)
 
+        from desktop.utils.state_reset import StateResetManager
+        if self._is_new:
+            StateResetManager.clear_modal_on_close(
+                self, wipe=lambda: StateResetManager.reset_product_form(self))
+        else:
+            StateResetManager.clear_modal_on_close(self)
+
     def _val(self):
         if not self.name.text().strip():
             QMessageBox.warning(self, 'Required', 'Product name is required.')
@@ -518,6 +581,7 @@ class _ProdDlg(QDialog):
         self.accept()
 
     def data(self):
+        status = self.status.current_label() or 'Active'
         d = {
             'name':       self.name.text().strip(),
             'sku':        self.sku.text().strip() or None,
@@ -526,6 +590,8 @@ class _ProdDlg(QDialog):
             'cost_price': self.cost.value(),
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
+            'is_active':  1 if status == 'Active' else 0,
+            'product_status': status,
         }
         if self._is_new:
             d['stock'] = self.stock.value()

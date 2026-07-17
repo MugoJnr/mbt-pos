@@ -72,6 +72,9 @@ class CreditCustomerChoiceDialog(QDialog):
         cancel.clicked.connect(self.reject)
         lay.addWidget(cancel)
 
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.clear_modal_on_close(self)
+
     def _pick(self, action: str):
         self.choice = action
         self.accept()
@@ -128,6 +131,10 @@ class QuickCustomerDialog(QDialog):
         br.addWidget(save, 1)
         lay.addRow(br)
 
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.clear_modal_on_close(
+            self, wipe=lambda: StateResetManager.reset_customer_form(self))
+
     def _save(self):
         name = self.name.text().strip()
         phone = self.phone.text().strip()
@@ -146,6 +153,15 @@ class QuickCustomerDialog(QDialog):
             'notes': self.notes.toPlainText().strip(),
         }
         try:
+            from desktop.utils.auto_fill import AutoFillService
+            existing = AutoFillService.prompt_use_existing_customer(
+                self, self.api, phone)
+            if existing == -1:
+                return
+            if existing is not None:
+                self.customer_id = int(existing)
+                self.accept()
+                return
             res = self.api.create_customer(data)
             if res and res.get('success'):
                 self.customer_id = int(res['customer_id'])
@@ -206,6 +222,9 @@ class CustomerPickerDialog(QDialog):
 
         self._load()
         self.search.setFocus()
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.clear_modal_on_close(
+            self, wipe=lambda: StateResetManager.clear_search(self.search))
 
     def _load(self):
         try:

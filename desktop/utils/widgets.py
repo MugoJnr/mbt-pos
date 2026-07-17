@@ -52,7 +52,7 @@ def Body(text, muted=False):
 def Caption(text):
     l = QLabel(text)
     l.setStyleSheet(
-        f"color:{C['muted']}; font-size:13px; font-weight:600; background:transparent; border:none;")
+        f"color:{C['text2']}; font-size:13px; font-weight:600; background:transparent; border:none;")
     return l
 
 
@@ -223,6 +223,10 @@ def refresh_themed_widgets(root):
             elif w.objectName() == 'sectionSubtitle':
                 w.setStyleSheet(
                     f"color:{C['text2']}; font-size:13px; background:transparent; border:none;")
+            elif w.objectName() == 'formLabel':
+                w.setStyleSheet(
+                    f"color:{C['text2']}; font-size:13px; font-weight:600; "
+                    f"background:transparent; border:none;")
             elif w.objectName() == 'invStatsCaption':
                 # Inventory footer — must follow theme (no dark strip under light table)
                 w.setStyleSheet(
@@ -278,6 +282,11 @@ def refresh_themed_widgets(root):
     try:
         from desktop.utils.pos_components import refresh_pos_components
         refresh_pos_components(root)
+    except Exception:
+        pass
+    try:
+        from desktop.utils.select_controls import refresh_select_controls
+        refresh_select_controls(root)
     except Exception:
         pass
 
@@ -384,9 +393,10 @@ def make_form(spacing=16):
 def FormRow(label_text, widget, form_layout):
     if label_text:
         lbl = QLabel(label_text)
+        lbl.setObjectName('formLabel')
         lbl.setMinimumWidth(140)
         lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; "
+            f"color:{C['text2']}; font-size:13px; font-weight:600; "
             f"background:transparent; border:none;")
         form_layout.addRow(lbl, widget)
     else:

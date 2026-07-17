@@ -149,6 +149,9 @@ class PaymentVarianceDialog(QDialog):
         btns.addWidget(ok)
         lay.addLayout(btns)
 
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.clear_modal_on_close(self)
+
     def _on_option(self, checked=False):
         self._misc_box.setVisible(self._radios['miscellaneous'].isChecked())
 

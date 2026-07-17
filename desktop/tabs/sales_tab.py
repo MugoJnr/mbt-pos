@@ -44,6 +44,10 @@ class SalesTab(QWidget):
         self._printer_mgr = None
         self._credit_to_apply = 0.0
         self._wallet_by_customer = {}
+        # Cash Paid smart auto-fill: once cashier edits, do not overwrite
+        # until payment method change or sale reset.
+        self._cash_paid_dirty = False
+        self._paid_programmatic = False
         self._build()
         # Defer product grid load so MainWindow can paint first (avoids hang)
         QTimer.singleShot(400, self.refresh)
@@ -248,8 +252,14 @@ class SalesTab(QWidget):
         self._paid = QDoubleSpinBox(); self._paid.setRange(0, 99999999)
         self._paid.setDecimals(2); self._paid.setMinimumHeight(40)
         self._paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._paid.valueChanged.connect(self._calc_change)
-        pay.addWidget(self._pay_lbl); pay.addWidget(self._pay); pay.addWidget(self._paid, 1)
+        self._paid.setToolTip('Cash Paid')
+        self._paid.valueChanged.connect(self._on_paid_changed)
+        self._cash_paid_lbl = QLabel('Cash Paid')
+        self._cash_paid_lbl.setStyleSheet(
+            f"color:{C['text2']};font-size:12px;background:transparent;")
+        pay.addWidget(self._pay_lbl); pay.addWidget(self._pay)
+        pay.addWidget(self._cash_paid_lbl)
+        pay.addWidget(self._paid, 1)
         cbl.addLayout(pay)
 
         # Expected / Received / Difference (M-Pesa Till variance)
@@ -339,7 +349,7 @@ class SalesTab(QWidget):
         self._note = QLineEdit(); self._note.setPlaceholderText('Note (optional)…')
         self._note.setMinimumHeight(40); cbl.addWidget(self._note)
 
-        br = QHBoxLayout(); br.setSpacing(8)
+        br = QHBoxLayout(); br.setSpacing(10)
         self._clr_btn = DangerBtn('🗑', 40); self._clr_btn.setFixedWidth(44)
         self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
         self._prv_btn = SecondaryBtn('🖨  Preview', 40)
@@ -365,7 +375,7 @@ class SalesTab(QWidget):
         self._checkout_foot = foot
         fl = QVBoxLayout(foot)
         fl.setContentsMargins(16, 12, 16, 14)
-        fl.setSpacing(0)
+        fl.setSpacing(10)
         self._charge_btn = PrimaryBtn('🛒  Complete Sale', 56)
         self._charge_btn.setMinimumHeight(56)
         self._charge_btn.clicked.connect(self._process)
@@ -430,7 +440,90 @@ class SalesTab(QWidget):
         return round(float(self._elec_paid.value() or 0), 2)
 
     def _on_elec_paid_changed(self, *_args):
+        # Split tender: remaining cash due re-fills Cash Paid when not dirty
         self._recalc()
+
+    def _cfg(self) -> dict:
+        try:
+            return self.config_getter() or {}
+        except Exception:
+            return {}
+
+    def _set_paid_value(self, value: float, *, mark_clean: bool = False):
+        """Programmatic Cash Paid / Received update (does not set dirty)."""
+        self._paid_programmatic = True
+        try:
+            self._paid.blockSignals(True)
+            self._paid.setValue(round(float(value or 0), 2))
+        except Exception:
+            pass
+        finally:
+            try:
+                self._paid.blockSignals(False)
+            except Exception:
+                pass
+            self._paid_programmatic = False
+        if mark_clean:
+            self._cash_paid_dirty = False
+
+    def _on_paid_changed(self, *_args):
+        if not self._paid_programmatic:
+            method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+            # Only Cash / Mixed use the dirty flag for auto-fill
+            try:
+                from desktop.utils.auto_fill import AutoFillService
+                if AutoFillService.is_cash_like(method):
+                    self._cash_paid_dirty = True
+            except Exception:
+                if method in ('Cash', 'Mixed'):
+                    self._cash_paid_dirty = True
+        self._calc_change()
+
+    def _focus_cash_paid(self):
+        """Auto-focus Cash Paid and select-all for quick overwrite."""
+        def _do():
+            try:
+                self._paid.setFocus(Qt.OtherFocusReason)
+                le = self._paid.lineEdit() if hasattr(self._paid, 'lineEdit') else None
+                if le is not None:
+                    le.selectAll()
+                elif hasattr(self._paid, 'selectAll'):
+                    self._paid.selectAll()
+            except Exception:
+                pass
+        QTimer.singleShot(0, _do)
+
+    def _set_cash_paid_ui_visible(self, visible: bool):
+        if hasattr(self, '_paid'):
+            self._paid.setVisible(visible)
+        if hasattr(self, '_cash_paid_lbl'):
+            self._cash_paid_lbl.setVisible(visible)
+        if hasattr(self, '_chg_lbl'):
+            self._chg_lbl.setVisible(visible)
+        if hasattr(self, '_chg'):
+            self._chg.setVisible(visible)
+
+    def _maybe_autofill_cash_paid(self, *, focus: bool = False):
+        """Fill Cash Paid = Amount Due (post rounding) when allowed."""
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        cfg = self._cfg()
+        try:
+            from desktop.utils.auto_fill import AutoFillService
+            ok = AutoFillService.should_autofill_cash_paid(
+                method, dirty=bool(self._cash_paid_dirty), cfg=cfg)
+        except Exception:
+            ok = (
+                method in ('Cash', 'Mixed')
+                and not self._cash_paid_dirty
+                and cfg.get('autofill_cash_paid', '1') != '0'
+            )
+        if not ok:
+            return False
+        due = self._amount_due()
+        self._set_paid_value(due, mark_clean=True)
+        if focus and due > 0.009:
+            self._focus_cash_paid()
+        return True
 
     def _compute_rounding(self) -> dict:
         """Recompute cash rounding for current cart / payment method."""
@@ -504,6 +597,28 @@ class SalesTab(QWidget):
     def _on_customer_changed(self, *_args):
         cust_id = self._customer.selected_id() if hasattr(self, '_customer') else None
         bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
+        # Credit customer summary tooltip (balance / limit / outstanding)
+        try:
+            from desktop.utils.auto_fill import AutoFillService
+            cfg = self._cfg() if hasattr(self, '_cfg') else (self.config_getter() or {})
+            if cust_id and AutoFillService.enabled(cfg, 'autofill_credit_customer_info'):
+                cust = None
+                try:
+                    for c in (self.api.get_customers() or []):
+                        if c.get('id') == cust_id:
+                            cust = c
+                            break
+                except Exception:
+                    cust = None
+                summary = AutoFillService.credit_customer_summary(cust, cfg)
+                hint = AutoFillService.format_credit_customer_hint(
+                    summary, self._currency)
+                if hasattr(self, '_customer'):
+                    self._customer.setToolTip(hint or '')
+            elif hasattr(self, '_customer'):
+                self._customer.setToolTip('')
+        except Exception:
+            pass
         if cust_id and bal > 0.009:
             self._credit_frame.show()
             self._credit_info.setText(
@@ -525,12 +640,11 @@ class SalesTab(QWidget):
 
     def _on_credit_apply_changed(self, val):
         self._credit_to_apply = round(float(val or 0), 2)
-        if self._is_till_method() or self._pay.currentText() == 'Cash':
-            due = self._amount_due()
-            if abs(self._paid.value() - due) < 0.01 or self._is_till_method():
-                self._paid.blockSignals(True)
-                self._paid.setValue(due)
-                self._paid.blockSignals(False)
+        method = self._pay.currentText()
+        if self._is_till_method():
+            self._set_paid_value(self._amount_due())
+        elif method in ('Cash', 'Mixed'):
+            self._maybe_autofill_cash_paid(focus=False)
         self._calc_change()
 
     def _apply_all_credit(self):
@@ -546,12 +660,20 @@ class SalesTab(QWidget):
                 b.blockSignals(True)
                 b.setChecked(k == method)
                 b.blockSignals(False)
+
+        from desktop.utils.auto_fill import AutoFillService
+
         is_mpesa = method == 'M-Pesa'
         self._mpesa_frame.setVisible(is_mpesa)
         if hasattr(self, '_var_frame'):
             self._var_frame.setVisible(is_mpesa)
+
+        # Switching payment method resets Cash Paid dirty flag for Cash/Mixed
+        if AutoFillService.is_cash_like(method):
+            self._cash_paid_dirty = False
+
         if is_mpesa:
-            cfg = self.config_getter() or {}
+            cfg = self._cfg()
             till = cfg.get('mpesa_till', '').strip()
             pb   = cfg.get('mpesa_paybill', '').strip()
             biz  = cfg.get('mpesa_business_name', '') or cfg.get('shop_name', 'Shop')
@@ -563,25 +685,55 @@ class SalesTab(QWidget):
             if not till and not pb:
                 parts.append('Set Till/Paybill in Settings → M-Pesa')
             self._mpesa_info.setText(' · '.join(parts))
-            # Received Amount is editable for Till variance (Expected = amount due)
+            # Received Amount for Till variance (not Cash Paid auto-fill)
+            self._set_cash_paid_ui_visible(True)
+            if hasattr(self, '_cash_paid_lbl'):
+                self._cash_paid_lbl.setText('Received')
             self._paid.setEnabled(True)
-            self._paid.setValue(self._amount_due())
+            self._set_paid_value(self._amount_due())
             self._paid.setToolTip('Received Amount — enter what customer paid via Till')
             self._pay_lbl.setText('Method')
             self._chg_lbl.setText('Difference')
-        elif method == 'Credit Sale':
-            # Full amount on credit — nothing paid now
-            self._paid.setValue(0.0)
+        elif method in ('Credit Sale', 'Credit Account'):
+            self._set_cash_paid_ui_visible(True)
+            if hasattr(self, '_cash_paid_lbl'):
+                self._cash_paid_lbl.setText('Paid Now')
+            self._set_paid_value(0.0)
             self._paid.setEnabled(False)
             self._mpesa_ref.clear()
             self._paid.setToolTip('')
             self._chg_lbl.setText('Change')
-        else:
-            # Cash / Card / Cheque / Part Payment — cashier enters amount paid
-            self._paid.setEnabled(True)
+        elif AutoFillService.hides_cash_paid_ui(method):
+            # Card / Bank / Cheque / Airtel — hide Cash Paid & Change
+            self._set_cash_paid_ui_visible(False)
+            self._set_paid_value(self._amount_due())
+            self._paid.setEnabled(False)
             self._mpesa_ref.clear()
             self._paid.setToolTip('')
             self._chg_lbl.setText('Change')
+        elif method == 'Part Payment':
+            # Partial pay — never auto-fill amount (intentional credit remainder)
+            self._set_cash_paid_ui_visible(True)
+            if hasattr(self, '_cash_paid_lbl'):
+                self._cash_paid_lbl.setText('Paid Now')
+            self._paid.setEnabled(True)
+            self._mpesa_ref.clear()
+            self._paid.setToolTip('Amount paid now (remainder on credit)')
+            self._chg_lbl.setText('Balance Due')
+            # Leave current paid unless zeroed for a fresh part-payment flow
+            if self._paid.value() <= 0.009:
+                self._set_paid_value(0.0)
+        else:
+            # Cash / Mixed — smart Cash Paid = Amount Due (post rounding)
+            self._set_cash_paid_ui_visible(True)
+            if hasattr(self, '_cash_paid_lbl'):
+                self._cash_paid_lbl.setText('Cash Paid')
+            self._paid.setEnabled(True)
+            self._mpesa_ref.clear()
+            self._paid.setToolTip('Cash Paid — defaults to Amount Due; edit for change')
+            self._chg_lbl.setText('Change')
+            self._maybe_autofill_cash_paid(focus=True)
+        self._update_rounding_ui()
         self._calc_change()
 
     def refresh(self):
@@ -1109,34 +1261,53 @@ class SalesTab(QWidget):
                 self._elec_paid.blockSignals(False)
         self._compute_rounding()
         self._update_rounding_ui()
-        # Keep Cash paid in sync with rounded amount due when it was matching
-        if self._pay.currentText() == 'Cash':
-            due = self._amount_due()
-            if abs(self._paid.value() - due) < 0.01 or self._paid.value() <= 0.009:
-                self._paid.blockSignals(True)
-                self._paid.setValue(due)
-                self._paid.blockSignals(False)
+        method = self._pay.currentText()
+        # Recalc Amount Due → update Cash Paid ONLY if not manually dirty
+        if method in ('Cash', 'Mixed'):
+            self._maybe_autofill_cash_paid(focus=False)
+        elif method == 'M-Pesa':
+            self._set_paid_value(self._amount_due())
+        elif method in ('Card', 'Bank Transfer', 'Cheque', 'Airtel Money'):
+            self._set_paid_value(self._amount_due())
         self._calc_change()
-        if self._pay.currentText() == 'M-Pesa':
-            self._paid.blockSignals(True)
-            self._paid.setValue(self._amount_due())
-            self._paid.blockSignals(False)
-            self._calc_change()
 
     def _calc_change(self):
         due = self._amount_due()
         paid = self._paid.value()
-        chg = max(0.0, paid - due)
-        ok   = paid >= due or due == 0
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
         from desktop.utils.pos_light_theme import L, FS
+        from desktop.utils.auto_fill import AutoFillService
         ok_color = L['ok'] if self._is_light else C['ok']
         err_color = L['err'] if self._is_light else C['err']
-        warn_color = L.get('warn', C.get('warn', '#E8A838')) if self._is_light else C.get('warn', '#E8A838')
+        warn_color = (
+            L.get('warn', C.get('warn', '#E8A838')) if self._is_light
+            else C.get('warn', '#E8A838')
+        )
         chg_sz = FS['change'] if self._is_light else '16px'
-        self._chg.setText(f'{self._currency} {chg:,.2f}')
-        self._chg.setStyleSheet(
-            f"color:{ok_color if ok else err_color};"
-            f"font-size:{chg_sz};font-weight:700;background:transparent;")
+
+        if method == 'Part Payment':
+            rem = max(0.0, round(due - paid, 2))
+            self._chg_lbl.setText('Balance Due')
+            self._chg.setText(f'{self._currency} {rem:,.2f}')
+            tone = ok_color if rem < 0.01 else warn_color
+            self._chg.setStyleSheet(
+                f"color:{tone};font-size:{chg_sz};font-weight:700;background:transparent;")
+        elif AutoFillService.is_cash_like(method) or method in ('Credit Sale', 'Credit Account'):
+            st = AutoFillService.cash_change_state(paid, due)
+            self._chg_lbl.setText(st['label'])
+            self._chg.setText(f"{self._currency} {st['amount']:,.2f}")
+            color = {'ok': ok_color, 'warn': warn_color, 'err': err_color}.get(
+                st['tone'], ok_color)
+            self._chg.setStyleSheet(
+                f"color:{color};font-size:{chg_sz};font-weight:700;background:transparent;")
+        else:
+            # M-Pesa Difference label handled below; keep Change neutral when hidden
+            chg = max(0.0, paid - due)
+            self._chg.setText(f'{self._currency} {chg:,.2f}')
+            self._chg.setStyleSheet(
+                f"color:{ok_color if paid >= due or due == 0 else err_color};"
+                f"font-size:{chg_sz};font-weight:700;background:transparent;")
+
         if hasattr(self, '_var_frame') and self._is_till_method():
             self._expected_lbl.setText(f'Expected Amount: {self._currency} {due:,.2f}')
             self._received_lbl.setText(f'Received Amount: {self._currency} {paid:,.2f}')
@@ -1170,14 +1341,19 @@ class SalesTab(QWidget):
         if not self.cart:
             QMessageBox.warning(self, 'Empty Cart', 'Add items before charging.'); return
         pay_method = self._pay.currentText()
-        is_debt = pay_method in ('Part Payment', 'Credit Sale')
+        is_debt = pay_method in ('Part Payment', 'Credit Sale', 'Credit Account')
         due = self._amount_due()
         credit_applied = round(float(self._credit_to_apply or 0), 2)
         cfg = self.config_getter() or {}
         variance_enabled = cfg.get('variance_enabled', '1') == '1'
 
         if pay_method == 'Cash' and self._paid.value() < due:
-            QMessageBox.warning(self, 'Insufficient', 'Amount paid is less than total.'); return
+            QMessageBox.warning(
+                self, 'Insufficient',
+                'Cash Paid is less than Amount Due.\n\n'
+                'Pay the remainder in cash, record Other paid (M-Pesa/Card split), '
+                'or use Part Payment / Credit Sale for intentional credit.')
+            return
         if pay_method == 'Part Payment' and self._paid.value() >= self._total:
             QMessageBox.information(
                 self, 'No Balance',
@@ -1198,7 +1374,7 @@ class SalesTab(QWidget):
                 return
 
         # Amount actually collected via payment method (Till / cash / card)
-        if pay_method == 'Credit Sale':
+        if pay_method in ('Credit Sale', 'Credit Account'):
             paid_now = 0.0
         else:
             paid_now = self._paid.value()

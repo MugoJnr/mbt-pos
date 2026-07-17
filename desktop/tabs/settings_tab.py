@@ -191,7 +191,8 @@ class SettingsTab(QWidget):
         self.after_sale_default_customer.addItem('Walk-in Customer', 'walk_in')
         self.after_sale_default_payment = QComboBox()
         self.after_sale_default_payment.setMinimumHeight(42)
-        self.after_sale_default_payment.addItems(['Cash', 'M-Pesa', 'Card'])
+        from desktop.utils.option_lists import POS_PAYMENT_METHODS
+        self.after_sale_default_payment.addItems(list(POS_PAYMENT_METHODS))
         self.after_sale_focus_barcode = QCheckBox('Focus barcode / search after each sale')
         self.after_sale_focus_barcode.setMinimumHeight(36)
         self.after_sale_auto_clear_cart = QCheckBox('Auto-clear cart after successful sale')
@@ -200,10 +201,27 @@ class SettingsTab(QWidget):
         self.after_sale_reset_discounts.setMinimumHeight(36)
         self.after_sale_reset_notes = QCheckBox('Reset notes after sale')
         self.after_sale_reset_notes.setMinimumHeight(36)
+        self.autofill_cash_paid = QCheckBox(
+            'Auto-fill Cash Paid = Amount Due (after discount / tax / rounding)')
+        self.autofill_cash_paid.setMinimumHeight(36)
+        self.autofill_product_defaults = QCheckBox(
+            'Product create defaults (unit, min stock alert, Active)')
+        self.autofill_product_defaults.setMinimumHeight(36)
+        self.autofill_reports_today = QCheckBox('Reports default date range: Today')
+        self.autofill_reports_today.setMinimumHeight(36)
+        self.autofill_clear_search_on_leave = QCheckBox(
+            'Clear module search when leaving a tab')
+        self.autofill_clear_search_on_leave.setMinimumHeight(36)
+        self.autofill_credit_customer_info = QCheckBox(
+            'Show credit customer balance / limit when selected')
+        self.autofill_credit_customer_info.setMinimumHeight(36)
         wf_hint = QLabel(
             'After every successful sale (Cash, M-Pesa, Credit, split), POS restores these '
             'defaults. Customer always returns to Walk-in so a credit sale for John Kamau '
-            'never leaves John selected on the next ticket.')
+            'never leaves John selected on the next ticket. '
+            'Cash Paid re-fills on the next sale until the cashier edits it; switching '
+            'back to Cash resets that lock. Notes, void/consumption reasons, and '
+            'discretionary discounts are never auto-filled.')
         wf_hint.setWordWrap(True)
         wf_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         FormRow('Default customer', self.after_sale_default_customer, wform)
@@ -212,6 +230,11 @@ class SettingsTab(QWidget):
         FormRow('', self.after_sale_auto_clear_cart, wform)
         FormRow('', self.after_sale_reset_discounts, wform)
         FormRow('', self.after_sale_reset_notes, wform)
+        FormRow('', self.autofill_cash_paid, wform)
+        FormRow('', self.autofill_product_defaults, wform)
+        FormRow('', self.autofill_reports_today, wform)
+        FormRow('', self.autofill_clear_search_on_leave, wform)
+        FormRow('', self.autofill_credit_customer_info, wform)
         wform.addRow(wf_hint)
         wf_body.addWidget(wf_w)
         lay.addWidget(wg)
@@ -589,6 +612,17 @@ class SettingsTab(QWidget):
                 cfg.get('after_sale_reset_discounts', '1') == '1')
             self.after_sale_reset_notes.setChecked(
                 cfg.get('after_sale_reset_notes', '1') == '1')
+        if hasattr(self, 'autofill_cash_paid'):
+            self.autofill_cash_paid.setChecked(
+                cfg.get('autofill_cash_paid', '1') == '1')
+            self.autofill_product_defaults.setChecked(
+                cfg.get('autofill_product_defaults', '1') == '1')
+            self.autofill_reports_today.setChecked(
+                cfg.get('autofill_reports_today', '1') == '1')
+            self.autofill_clear_search_on_leave.setChecked(
+                cfg.get('autofill_clear_search_on_leave', '1') == '1')
+            self.autofill_credit_customer_info.setChecked(
+                cfg.get('autofill_credit_customer_info', '1') == '1')
         self._refresh_tg_status()
         self._refresh_cf_status()
 
@@ -1170,6 +1204,16 @@ class SettingsTab(QWidget):
                 '1' if self.after_sale_reset_discounts.isChecked() else '0',
             'after_sale_reset_notes':
                 '1' if self.after_sale_reset_notes.isChecked() else '0',
+            'autofill_cash_paid':
+                '1' if self.autofill_cash_paid.isChecked() else '0',
+            'autofill_product_defaults':
+                '1' if self.autofill_product_defaults.isChecked() else '0',
+            'autofill_reports_today':
+                '1' if self.autofill_reports_today.isChecked() else '0',
+            'autofill_clear_search_on_leave':
+                '1' if self.autofill_clear_search_on_leave.isChecked() else '0',
+            'autofill_credit_customer_info':
+                '1' if self.autofill_credit_customer_info.isChecked() else '0',
         }
 
     def _save(self):

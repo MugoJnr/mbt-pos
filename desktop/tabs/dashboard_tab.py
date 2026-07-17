@@ -20,6 +20,8 @@ from desktop.utils.ui_polish import (
     AnimatedKPI, EmptyState, FloatingActionButton, ToastNotification,
     apply_card_shadow, time_greeting,
 )
+from desktop.utils.select_controls import DatePresetSelect
+from desktop.utils.option_lists import date_range_for_preset
 
 log = logging.getLogger(__name__)
 
@@ -256,10 +258,15 @@ class DashboardTab(QWidget):
         left.addWidget(self._shop_lbl)
         hdr.addLayout(left, 1)
 
-        # Header right — New Sale (theme switch is topbar-only)
+        # Header right — period preset + New Sale (theme switch is topbar-only)
         right_row = QHBoxLayout(); right_row.setSpacing(10)
 
         self._theme_btn = None
+        self._period = DatePresetSelect(include_last_month=True)
+        self._period.setMinimumWidth(150)
+        self._period.setFixedHeight(38)
+        self._period.presetChanged.connect(self._on_period)
+        right_row.addWidget(self._period)
 
         ns_btn = QPushButton('＋  New Sale')
         ns_btn.setObjectName('primaryBtn')
@@ -370,10 +377,10 @@ class DashboardTab(QWidget):
             self._void_btn.setFixedWidth(90)
             self._void_btn.setCursor(Qt.PointingHandCursor)
             self._void_btn.setStyleSheet(
-                f"QPushButton {{ background:{qss_alpha(p['err'], 0.12)}; color:{p['err']}; "
-                f"border:1px solid {qss_alpha(p['err'], 0.40)}; border-radius:7px; "
+                f"QPushButton {{ background:{p['err_dim']}; color:{p['err']}; "
+                f"border:1px solid {qss_alpha(p['err'], 0.45)}; border-radius:7px; "
                 f"font-size:12px; font-weight:700; }}"
-                f"QPushButton:hover {{ background:{p['err']}; color:#fff; }}")
+                f"QPushButton:hover {{ background:{p['err']}; color:{p.get('on_danger', '#FFFFFF')}; }}")
             self._void_btn.clicked.connect(self._void_selected_sale)
             sh.addWidget(self._void_btn)
         else:
@@ -398,19 +405,18 @@ class DashboardTab(QWidget):
         for ci, w in [(1, 130), (2, 110), (3, 110), (4, 90)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.setMinimumHeight(240)
-        self._tbl.setAlternatingRowColors(True)
+        self._tbl.setAlternatingRowColors(False)
         self._tbl.setSortingEnabled(False)
         self._tbl.horizontalHeader().setStretchLastSection(True)
         self._tbl.setStyleSheet(
-            f"QTableWidget {{ background:{p['card']}; alternate-background-color:{p['card2']}; "
-            f"border:none; color:{p['text']}; font-size:13px; gridline-color:{p['border']}; "
+            f"QTableWidget {{ background:{p['card']}; "
+            f"border:none; color:{p['text']}; font-size:13px; gridline-color:transparent; "
             f"outline:none; }}"
-            f"QHeaderView::section {{ background:{p['card2']}; color:{p['muted']}; "
+            f"QHeaderView::section {{ background:{p['card2']}; color:{p['text2']}; "
             f"font-size:11px; font-weight:700; letter-spacing:0.8px; "
             f"padding:10px 14px; border:none; border-bottom:1px solid {p['border']}; }}"
-            f"QTableWidget::item {{ padding:0 14px; }}"
-            f"QTableWidget::item:hover {{ background:{p['hover']}; }}"
-            f"QTableWidget::item:selected {{ background:{p['selected']}; color:{p['text']}; }}")
+            f"QTableWidget::item:selected {{ background:{p['selected']}; color:{p['text']}; }}"
+            f"QTableWidget::item:hover:!selected {{ background:{p['hover']}; }}")
         self._tbl.itemSelectionChanged.connect(self._on_sale_selected)
         scl.addWidget(self._tbl)
 
@@ -572,10 +578,10 @@ class DashboardTab(QWidget):
             return
         p = _palette()
         self._void_btn.setStyleSheet(
-            f"QPushButton {{ background:{qss_alpha(p['err'], 0.12)}; color:{p['err']}; "
-            f"border:1px solid {qss_alpha(p['err'], 0.40)}; border-radius:7px; "
+            f"QPushButton {{ background:{p['err_dim']}; color:{p['err']}; "
+            f"border:1px solid {qss_alpha(p['err'], 0.45)}; border-radius:7px; "
             f"font-size:12px; font-weight:700; }}"
-            f"QPushButton:hover {{ background:{p['err']}; color:#fff; }}")
+            f"QPushButton:hover {{ background:{p['err']}; color:{p.get('on_danger', '#FFFFFF')}; }}")
 
     def _style_qa_btns(self):
         p = _palette()
@@ -697,21 +703,21 @@ class DashboardTab(QWidget):
                 f"background:transparent; border:none;")
 
         # Table
+        self._tbl.setAlternatingRowColors(False)
         self._tbl.setStyleSheet(
-            f"QTableWidget {{ background:{p['card']}; alternate-background-color:{p['card2']}; "
-            f"border:none; color:{p['text']}; font-size:13px; gridline-color:{p['border']}; "
+            f"QTableWidget {{ background:{p['card']}; "
+            f"border:none; color:{p['text']}; font-size:13px; gridline-color:transparent; "
             f"outline:none; }}"
-            f"QHeaderView::section {{ background:{p['card2']}; color:{p['muted']}; "
+            f"QHeaderView::section {{ background:{p['card2']}; color:{p['text2']}; "
             f"font-size:11px; font-weight:700; letter-spacing:0.8px; "
             f"padding:10px 14px; border:none; border-bottom:1px solid {p['border']}; }}"
-            f"QTableWidget::item {{ padding:0 14px; }}"
-            f"QTableWidget::item:hover {{ background:{p['hover']}; }}"
-            f"QTableWidget::item:selected {{ background:{p['selected']}; color:{p['text']}; }}")
+            f"QTableWidget::item:selected {{ background:{p['selected']}; color:{p['text']}; }}"
+            f"QTableWidget::item:hover:!selected {{ background:{p['hover']}; }}")
 
         self._tbl_footer.setStyleSheet(
-            f"color:{p['muted']}; font-size:11px; background:transparent; border:none;")
+            f"color:{p['text2']}; font-size:11px; background:transparent; border:none;")
         self._footer.setStyleSheet(
-            f"color:{p['muted']}; font-size:11px; "
+            f"color:{p['text2']}; font-size:11px; "
             f"background:transparent; border:none; padding:6px 0;")
 
         if getattr(self, '_sales_empty', None):
@@ -764,7 +770,20 @@ class DashboardTab(QWidget):
     def refresh(self):
         self._load()
 
+    def _on_period(self, key):
+        self._period_key = key or 'today'
+        self._load()
+
     def _load(self):
+        key = getattr(self, '_period_key', None) or (
+            self._period.current_key() if hasattr(self, '_period') else 'today')
+        if key == 'custom':
+            # Custom keeps last loaded range; default to today
+            start_d, end_d = date.today(), date.today()
+        else:
+            start_d, end_d = date_range_for_preset(key)
+        start = start_d.isoformat()
+        end = end_d.isoformat()
         today = str(date.today())
         p     = _palette(self._is_light)
         cur   = self._currency
@@ -773,7 +792,7 @@ class DashboardTab(QWidget):
         today_tx = 0
         today_rev = 0.0
         try:
-            d = self.api.get_report_summary(today, today)
+            d = self.api.get_report_summary(start, end)
             if d:
                 s = d.get('summary', {})
                 today_tx = int(s.get('total_transactions', 0))
@@ -782,10 +801,12 @@ class DashboardTab(QWidget):
                 self._k_sales.set_value(str(today_tx))
                 self._k_rev.set_value(f"{cur} {today_rev:,.0f}")
                 self._k_avg.set_value(f"{cur} {avg:,.0f}")
+                period_lbl = self._period.current_label() if hasattr(self, '_period') else 'Period'
+                self._k_sales.set_sub(period_lbl or 'Transactions')
         except Exception as e:
             log.warning(f"Dashboard KPI: {e}")
 
-        # Yesterday comparison trends
+        # Yesterday comparison trends (only meaningful for Today preset)
         try:
             yday = str(date.today() - timedelta(days=1))
             yd = self.api.get_report_summary(yday, yday) or {}
@@ -798,13 +819,14 @@ class DashboardTab(QWidget):
                     return 100.0 if cur_v > 0 else 0.0
                 return ((cur_v - prev_v) / prev_v) * 100.0
 
-            self._k_sales.set_trend(_pct(today_tx, y_tx))
-            self._k_rev.set_trend(_pct(today_rev, y_rev))
-            self._k_sales.set_sub('Transactions')
-            self._k_rev.set_sub('vs yesterday')
+            if key == 'today':
+                self._k_sales.set_trend(_pct(today_tx, y_tx))
+                self._k_rev.set_trend(_pct(today_rev, y_rev))
+                self._k_rev.set_sub('vs yesterday')
+            else:
+                self._k_rev.set_sub(self._period.current_label() if hasattr(self, '_period') else '')
         except Exception as e:
             log.warning(f"Dashboard trends: {e}")
-
         # ── Low stock ─────────────────────────────────────────────────────────
         try:
             prods = self.api.get_products() or []

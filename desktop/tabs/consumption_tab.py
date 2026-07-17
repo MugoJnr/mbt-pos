@@ -20,13 +20,14 @@ from desktop.utils.widgets import (
     lovable_tab_qss, wrap_table_card, retint_table_items, apply_table_row_backgrounds,
 )
 from desktop.utils.security import has_permission, require_permission
+from desktop.utils.option_lists import CONSUMPTION_REASONS
+from desktop.utils.select_controls import (
+    Select, SearchableSelect, ReasonSelect, DatePresetSelect, prompt_reason,
+)
 
 _log = logging.getLogger('consumption')
 
-REASONS = (
-    'Production', 'Staff Use', 'Office Use', 'Cleaning', 'Free Samples',
-    'Damaged During Production', 'Testing', 'Charity', 'Other',
-)
+REASONS = CONSUMPTION_REASONS
 
 
 def _safe_float(v, default=0.0):
@@ -164,11 +165,11 @@ class _CreatePane(QWidget):
         fl.addLayout(row1)
 
         row2 = QHBoxLayout(); row2.setSpacing(12)
-        self._dept = QComboBox(); self._dept.setMinimumHeight(36)
+        self._dept = SearchableSelect(placeholder='Select department…')
+        self._dept.setMinimumHeight(36)
         self._taken = QLineEdit(); self._taken.setMinimumHeight(36)
         self._taken.setPlaceholderText('Staff name who took the items')
-        self._reason = QComboBox(); self._reason.setMinimumHeight(36)
-        self._reason.addItems(list(REASONS))
+        self._reason = ReasonSelect(reasons=REASONS, height=36)
         row2.addWidget(self._field('Department', self._dept), 1)
         row2.addWidget(self._field('Taken By', self._taken), 1)
         row2.addWidget(self._field('Reason', self._reason), 1)
@@ -243,14 +244,11 @@ class _CreatePane(QWidget):
             depts = self.p.api.get_departments() or []
         except Exception:
             depts = []
-        cur = self._dept.currentData()
-        self._dept.clear()
-        for d in depts:
-            self._dept.addItem(d.get('name') or '', d.get('id'))
+        cur = self._dept.current_value()
+        items = [(d.get('name') or '', d.get('id')) for d in depts]
+        self._dept.set_items(items)
         if cur is not None:
-            idx = self._dept.findData(cur)
-            if idx >= 0:
-                self._dept.setCurrentIndex(idx)
+            self._dept.set_value(cur)
         try:
             self._products = self.p.api.get_products() or []
         except Exception:
@@ -375,9 +373,12 @@ class _CreatePane(QWidget):
         if not self._lines:
             QMessageBox.warning(self, 'Required', 'Add at least one product line.')
             return
-        dept_id = self._dept.currentData()
+        dept_id = self._dept.current_value()
         if not dept_id:
             QMessageBox.warning(self, 'Required', 'Select a department.')
+            return
+        if not self._reason.is_valid():
+            QMessageBox.warning(self, 'Required', self._reason.validation_error())
             return
         for line in self._lines:
             if float(line['quantity']) <= 0:
@@ -392,7 +393,7 @@ class _CreatePane(QWidget):
         payload = {
             'date': self._date.date().toString('yyyy-MM-dd'),
             'department_id': dept_id,
-            'reason': self._reason.currentText(),
+            'reason': self._reason.value(),
             'notes': self._notes.toPlainText().strip(),
             'taken_by': self._taken.text().strip(),
             'items': [
@@ -419,11 +420,8 @@ class _CreatePane(QWidget):
             self, 'Consumption Saved',
             f"Reference {ref}\nTotal cost: {cur} {float(res.get('total_cost') or 0):,.2f}\n"
             f"Stock has been reduced.")
-        self._lines.clear()
-        self._notes.clear()
-        self._taken.clear()
-        self._date.setDate(QDate.currentDate())
-        self.refresh()
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.reset_consumption(self)
 
 
 # ── History ───────────────────────────────────────────────────────────────────
@@ -506,10 +504,14 @@ class _HistoryPane(QWidget):
     def _void(self, cid):
         if not require_permission(self.p.user, 'consumption.void', self):
             return
-        reason, ok = QInputDialog.getText(
-            self, 'Void Consumption',
-            'Reason for voiding (stock will be restored):')
-        if not ok or not reason.strip():
+        from desktop.utils.option_lists import VOID_REASONS
+        reason = prompt_reason(
+            self,
+            title='Void Consumption',
+            prompt='Reason for voiding (stock will be restored):',
+            reasons=VOID_REASONS,
+        )
+        if not reason or not reason.strip():
             return
         try:
             res = self.p.api.void_consumption(int(cid), reason.strip()) or {}
@@ -540,16 +542,14 @@ class _ReportPane(QWidget):
         filters = Card()
         fl = filters.layout_v((16, 12, 16, 12), 10)
 
-        quick = QHBoxLayout(); quick.setSpacing(6)
-        for lbl, key in (
-            ('Today', 'today'), ('Yesterday', 'yesterday'),
-            ('This Week', 'week'), ('This Month', 'month'), ('Custom', 'custom'),
-        ):
-            b = SecondaryBtn(lbl, 32)
-            b.clicked.connect(lambda _, k=key: self._quick(k))
-            quick.addWidget(b)
-        quick.addStretch()
-        fl.addLayout(quick)
+        preset_row = QHBoxLayout(); preset_row.setSpacing(8)
+        preset_row.addWidget(self._lbl('Period'))
+        self._preset = DatePresetSelect()
+        self._preset.setMinimumWidth(160)
+        self._preset.presetChanged.connect(self._on_preset)
+        preset_row.addWidget(self._preset)
+        preset_row.addStretch()
+        fl.addLayout(preset_row)
 
         row = QHBoxLayout(); row.setSpacing(8)
         self._s = QDateEdit(QDate.currentDate())
@@ -558,13 +558,16 @@ class _ReportPane(QWidget):
         self._e = QDateEdit(QDate.currentDate())
         self._e.setCalendarPopup(True); self._e.setDisplayFormat('yyyy-MM-dd')
         self._e.setMinimumHeight(36)
-        self._dept = QComboBox(); self._dept.setMinimumHeight(36)
-        self._reason = QComboBox(); self._reason.setMinimumHeight(36)
-        self._reason.addItem('All reasons', '')
-        for r in REASONS:
-            self._reason.addItem(r, r)
-        self._user = QComboBox(); self._user.setMinimumHeight(36)
-        self._prod = QComboBox(); self._prod.setMinimumHeight(36)
+        self._dept = SearchableSelect(placeholder='Search department…')
+        self._dept.setMinimumHeight(36)
+        self._reason = Select()
+        self._reason.setMinimumHeight(36)
+        self._reason.set_items(
+            [('All reasons', '')] + [(r, r) for r in REASONS])
+        self._user = SearchableSelect(placeholder='Search user…')
+        self._user.setMinimumHeight(36)
+        self._prod = SearchableSelect(placeholder='Search product…')
+        self._prod.setMinimumHeight(36)
         self._prod.setMinimumWidth(180)
         row.addWidget(self._lbl('From')); row.addWidget(self._s)
         row.addWidget(self._lbl('To')); row.addWidget(self._e)
@@ -605,67 +608,62 @@ class _ReportPane(QWidget):
         l.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         return l
 
-    def _quick(self, key):
-        t = date.today()
-        if key == 'today':
-            self._s.setDate(t); self._e.setDate(t)
-        elif key == 'yesterday':
-            y = t - timedelta(days=1)
-            self._s.setDate(y); self._e.setDate(y)
-        elif key == 'week':
-            start = t - timedelta(days=t.weekday())
-            self._s.setDate(start); self._e.setDate(t)
-        elif key == 'month':
-            self._s.setDate(t.replace(day=1)); self._e.setDate(t)
+    def _on_preset(self, key):
+        from desktop.utils.option_lists import date_range_for_preset
+        if key == 'custom':
+            return
+        start, end = date_range_for_preset(key)
+        self._s.setDate(start)
+        self._e.setDate(end)
         self.refresh()
+
+    def _quick(self, key):
+        self._on_preset(key)
 
     def apply_theme(self):
         retint_table_items(self._tbl)
         apply_table_row_backgrounds(self._tbl)
         self._footer.setStyleSheet(
             f"color:{C['text']}; font-size:13px; font-weight:700; background:transparent;")
+        for w in (self._preset, self._dept, self._reason, self._user, self._prod):
+            if hasattr(w, 'refresh_theme'):
+                w.refresh_theme()
 
     def _load_filter_options(self):
-        cur_dept = self._dept.currentData()
-        self._dept.clear()
-        self._dept.addItem('All departments', None)
+        cur_dept = self._dept.current_value()
+        items = [('All departments', None)]
         try:
             for d in (self.p.api.get_departments() or []):
-                self._dept.addItem(d.get('name') or '', d.get('id'))
+                items.append((d.get('name') or '', d.get('id')))
         except Exception:
             pass
+        self._dept.set_items(items)
         if cur_dept is not None:
-            idx = self._dept.findData(cur_dept)
-            if idx >= 0:
-                self._dept.setCurrentIndex(idx)
+            self._dept.set_value(cur_dept)
 
-        cur_user = self._user.currentData()
-        self._user.clear()
-        self._user.addItem('All users', None)
+        cur_user = self._user.current_value()
+        uitems = [('All users', None)]
         try:
             users = self.p.api.get_users() or []
             for u in users:
                 label = u.get('full_name') or u.get('username') or str(u.get('id'))
-                self._user.addItem(label, u.get('id'))
+                uitems.append((label, u.get('id')))
         except Exception:
             pass
+        self._user.set_items(uitems)
         if cur_user is not None:
-            idx = self._user.findData(cur_user)
-            if idx >= 0:
-                self._user.setCurrentIndex(idx)
+            self._user.set_value(cur_user)
 
-        cur_prod = self._prod.currentData()
-        self._prod.clear()
-        self._prod.addItem('All products', None)
+        cur_prod = self._prod.current_value()
+        pitems = [('All products', None)]
         try:
             for p in (self.p.api.get_products() or []):
-                self._prod.addItem(p.get('name') or '', p.get('id'))
+                pitems.append((p.get('name') or '', p.get('id')))
         except Exception:
             pass
+        self._prod.set_items(pitems)
         if cur_prod is not None:
-            idx = self._prod.findData(cur_prod)
-            if idx >= 0:
-                self._prod.setCurrentIndex(idx)
+            self._prod.set_value(cur_prod)
 
     def refresh(self):
         if not has_permission(self.p.user, 'consumption.view_report'):
@@ -679,10 +677,10 @@ class _ReportPane(QWidget):
         try:
             data = self.p.api.get_consumption_report(
                 start, end,
-                department_id=self._dept.currentData(),
-                user_id=self._user.currentData(),
-                product_id=self._prod.currentData(),
-                reason=self._reason.currentData() or None,
+                department_id=self._dept.current_value(),
+                user_id=self._user.current_value(),
+                product_id=self._prod.current_value(),
+                reason=self._reason.current_value() or None,
                 include_voided=True,
             ) or {}
         except Exception as e:

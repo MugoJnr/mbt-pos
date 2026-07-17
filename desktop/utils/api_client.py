@@ -1030,7 +1030,7 @@ class APIClient:
 
             fields, values = [], []
             for field in ('name','sku','category','price','cost_price',
-                          'min_stock','unit','barcode'):
+                          'min_stock','unit','barcode','is_active'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
 

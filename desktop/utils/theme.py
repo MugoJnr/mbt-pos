@@ -49,6 +49,7 @@ def qss_hex_aa(color: str, alpha: float = 0.13) -> str:
 
 # ── DARK PALETTE (commercial refine — keep MBT gold identity) ─────────────────
 # Aligned with POS redesign tokens: bg #0B1220, surface #16213A, hover #1E2E4A
+# text2/muted bumped for WCAG-ish contrast on card (#16213A) — headers/labels.
 DARK = {
     'app':       '#0B1220',
     'surface':   '#0B1220',
@@ -66,20 +67,24 @@ DARK = {
     # dim tokens are solid-ish panel mixes (NOT CSS #RRGGBBAA — Qt misreads those)
     'gold_dim':  '#1C1808',
     'text':      '#FFFFFF',
-    'text2':     '#94A3B8',
-    'muted':     '#64748B',
+    'text2':     '#B4C2D6',   # secondary / form labels / table headers
+    'muted':     '#8B9BB0',   # captions / placeholders (was #64748B — too low)
     'disabled':  '#1C2A3A',
     'ok':        '#00D084',
     'ok_dim':    '#0A1F18',
     'warn':      '#FFB000',
     'warn_dim':  '#1A1508',
     'err':       '#FF4D6D',
-    'err_dim':   '#1A0C10',
+    'err_dim':   '#2A1018',   # solid danger chip bg (readable vs translucent)
     'info':      '#3B82F6',
     'info_dim':  '#0C1424',
-    'border':    '#243B5A',
-    'border2':   '#2A3B58',
+    'border':    '#2A4060',   # slightly brighter separators
+    'border2':   '#3A5270',   # input borders — visible on card
     'sep':       '#121A2C',
+    'divider':   '#2A4060',
+    'focus':     '#FBBF24',
+    'on_danger': '#FFFFFF',
+    'on_success':'#FFFFFF',
     # Semantic aliases used by POS modular components
     'primary':   '#FBBF24',
     'success':   '#00D084',
@@ -104,8 +109,8 @@ LIGHT = {
     'gold_fg':   '#FFFFFF',
     'gold_dim':  '#F7EED9',
     'text':      '#0C1828',
-    'text2':     '#3C5270',
-    'muted':     '#7890AA',
+    'text2':     '#2E4460',   # stronger secondary for labels
+    'muted':     '#5A7390',   # placeholders still readable on white
     'disabled':  '#C0CCD8',
     'ok':        '#006B48',
     'ok_dim':    '#E6F5EF',
@@ -116,8 +121,12 @@ LIGHT = {
     'info':      '#1850A8',
     'info_dim':  '#E8EEF8',
     'border':    '#CDD8E8',
-    'border2':   '#B8C8DC',
+    'border2':   '#A8BDD4',
     'sep':       '#E0E8F0',
+    'divider':   '#CDD8E8',
+    'focus':     '#B87000',
+    'on_danger': '#FFFFFF',
+    'on_success':'#FFFFFF',
     'primary':   '#B87000',
     'success':   '#006B48',
     'warning':   '#A05800',
@@ -419,12 +428,12 @@ QPushButton#primaryBtn:disabled, QPushButton[objectName="primaryBtn"]:disabled {
     background: {p['border2']}; color: {p['muted']};
 }}
 QPushButton[objectName="successBtn"] {{
-    background: {p['ok']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
+    background: {p['ok']}; color: {p.get('on_success', '#FFFFFF')}; border: none; font-weight: 600; border-radius: {r_md}px;
 }}
 QPushButton[objectName="dangerBtn"]  {{
-    background: {p['err']}; color: #fff; border: none; font-weight: 600; border-radius: {r_md}px;
+    background: {p['err']}; color: {p.get('on_danger', '#FFFFFF')}; border: none; font-weight: 600; border-radius: {r_md}px;
 }}
-QPushButton[objectName="dangerBtn"]:hover {{ background: {p['err']}; }}
+QPushButton[objectName="dangerBtn"]:hover {{ background: {p['err']}; color: {p.get('on_danger', '#FFFFFF')}; }}
 QPushButton[objectName="ghostBtn"] {{
     background: transparent; color: {p['text2']};
     border: none; border-radius: {r_md}px; font-weight: 500;
@@ -542,7 +551,7 @@ QHeaderView::section {{
     border-bottom: 1px solid {p['border']};
     text-transform: uppercase;
 }}
-QHeaderView {{ border: none; background: transparent; }}
+QHeaderView {{ border: none; background: transparent; color: {p['text2']}; }}
 QTableCornerButton::section {{ background: {p['panel']}; border: none; }}
 
 /* ── TABS ── */
@@ -606,14 +615,25 @@ QCheckBox, QRadioButton {{
     color: {p['text']}; font-size: 14px; spacing: 10px; background: transparent;
 }}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width: 16px; height: 16px;
+    width: 18px; height: 18px;
     border: 2px solid {p['border2']};
     border-radius: 4px;
     background: {p['input']};
 }}
+QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+    border-color: {p['gold']};
+}}
 QCheckBox::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
-QRadioButton::indicator {{ border-radius: 8px; }}
+QRadioButton::indicator {{ border-radius: 9px; }}
 QRadioButton::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
+
+/* Form labels — prefer text2 (readable) over inheriting muted/disabled */
+QLabel#formLabel {{
+    color: {p['text2']};
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}}
 
 /* ── PROGRESS ── */
 QProgressBar {{
@@ -789,6 +809,25 @@ class ThemeManager:
         MBT_STYLESHEET = _build_stylesheet(p)
         if app:
             app.setStyleSheet(MBT_STYLESHEET)
+            # Native palette for placeholders / combo popups Fusion may ignore in QSS
+            try:
+                from PyQt5.QtGui import QColor, QPalette
+                pal = app.palette()
+                pal.setColor(QPalette.Window, QColor(p['app']))
+                pal.setColor(QPalette.WindowText, QColor(p['text']))
+                pal.setColor(QPalette.Base, QColor(p['input']))
+                pal.setColor(QPalette.AlternateBase, QColor(p['card2']))
+                pal.setColor(QPalette.Text, QColor(p['text']))
+                pal.setColor(QPalette.Button, QColor(p['card2']))
+                pal.setColor(QPalette.ButtonText, QColor(p['text']))
+                pal.setColor(QPalette.Highlight, QColor(p['selected']))
+                pal.setColor(QPalette.HighlightedText, QColor(p['text']))
+                pal.setColor(QPalette.PlaceholderText, QColor(p['muted']))
+                pal.setColor(QPalette.Disabled, QPalette.Text, QColor(p['muted']))
+                pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(p['muted']))
+                app.setPalette(pal)
+            except Exception:
+                pass
         return MBT_STYLESHEET
 
     @classmethod

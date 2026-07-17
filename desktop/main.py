@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-17-v2.3.53"
-APP_VERSION   = "2.3.53"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-17-v2.3.57"
+APP_VERSION   = "2.3.57"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -1144,6 +1144,14 @@ class MainWindow(QMainWindow):
     }
 
     def _goto(self, tid: str):
+        prev = getattr(self, '_active_tab_id', None)
+        if prev and prev != tid and prev in getattr(self, '_tabs', {}):
+            try:
+                from desktop.utils.auto_fill import AutoFillService
+                AutoFillService.on_module_leave(
+                    prev, self._tabs.get(prev), self._cfg() if hasattr(self, '_cfg') else {})
+            except Exception:
+                pass
         self._ensure_tab(tid)
         for bid, btn in self._nav.items():
             btn.setChecked(bid == tid)
@@ -1151,6 +1159,7 @@ class MainWindow(QMainWindow):
         if tid in self._tabs:
             self._stack.setCurrentWidget(self._tabs[tid])
             tab = self._tabs[tid]
+            self._active_tab_id = tid
             if hasattr(tab, 'on_show'):
                 try: tab.on_show()
                 except Exception as e: log.warning(f"on_show {tid}: {e}")

@@ -20,6 +20,8 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     tbl_center, page_layout, H2, Caption,
                                     lovable_tab_qss, Badge, section_card)
 from desktop.utils.security import ask_superadmin_pin, set_superadmin_pin, verify_superadmin_pin
+from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS
+from desktop.utils.select_controls import SearchableSelect, ReasonSelect
 
 
 class SecurityTab(QWidget):
@@ -166,11 +168,11 @@ class SecurityTab(QWidget):
         desc.setWordWrap(True); lay.addWidget(desc)
 
         form = QFormLayout(); form.setSpacing(12)
-        self._adj_prod = QComboBox(); self._adj_prod.setMinimumHeight(42)
+        self._adj_prod = SearchableSelect(placeholder='Search product…')
+        self._adj_prod.setMinimumHeight(42)
         self._adj_qty  = QDoubleSpinBox(); self._adj_qty.setRange(0, 999999)
         self._adj_qty.setDecimals(4); self._adj_qty.setMinimumHeight(42)
-        self._adj_reason = QLineEdit(); self._adj_reason.setMinimumHeight(42)
-        self._adj_reason.setPlaceholderText('Required — e.g. "Received 50 units from supplier"')
+        self._adj_reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=42)
 
         for lbl, w2 in [('Product:', self._adj_prod),
                          ('New Stock Qty:', self._adj_qty),
@@ -197,21 +199,31 @@ class SecurityTab(QWidget):
     def _load_products_for_adj(self):
         try:
             prods = self.api.get_products() or []
-            self._adj_prod.clear()
-            self._adj_prods = prods
-            for p in prods:
-                self._adj_prod.addItem(f"{p['name']}  (stock: {p['stock']})", p['id'])
+            self._adj_prods = {p['id']: p for p in prods}
+            items = [
+                (f"{p['name']}  (stock: {p['stock']})", p['id'])
+                for p in prods
+            ]
+            self._adj_prod.set_loading(True, 'Loading products…')
+            self._adj_prod.set_loading(False)
+            self._adj_prod.set_items(items)
+            if not items:
+                self._adj_prod.set_empty_label('No products')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
 
     def _apply_adj(self):
         if not hasattr(self, '_adj_prods') or not self._adj_prods:
             QMessageBox.warning(self, 'No Products', 'Load products first.'); return
-        reason = self._adj_reason.text().strip()
-        if not reason:
-            QMessageBox.warning(self, 'Required', 'A reason is required.'); return
-        idx  = self._adj_prod.currentIndex()
-        prod = self._adj_prods[idx]
+        if not self._adj_reason.is_valid():
+            QMessageBox.warning(self, 'Required', self._adj_reason.validation_error()); return
+        reason = self._adj_reason.value()
+        pid = self._adj_prod.current_value()
+        if pid is None:
+            QMessageBox.warning(self, 'Required', 'Select a product.'); return
+        prod = self._adj_prods.get(pid)
+        if not prod:
+            QMessageBox.warning(self, 'Required', 'Select a product.'); return
         new_qty = self._adj_qty.value()
         if QMessageBox.question(self, 'Confirm Adjustment',
                 f"Adjust '{prod['name']}' stock:\n"

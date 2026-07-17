@@ -23,10 +23,11 @@ def _active_palette():
 
 def _light_tokens():
     """Light-mode POS extras (translucent accents)."""
-    L = _active_palette()
+    L = dict(_active_palette())
+    L.setdefault('on_danger', '#FFFFFF')
+    L.setdefault('on_success', '#FFFFFF')
     if not ThemeManager.is_light():
         return L
-    L = dict(L)
     L['bg'] = L['surface']
     L['err_border'] = qss_alpha(L['err'], 0.40)
     L['gold_tint'] = qss_alpha(L['gold'], 0.13)
@@ -96,13 +97,13 @@ PROD_BTN_EMPTY = PROD_CARD_EMPTY
 
 CART_TABLE = (
     "QTableWidget{{"
-    "  background:#FFFFFF; border:2px solid {border2};"
+    "  background:{card}; border:2px solid {border2};"
     "  border-radius:10px; color:{text}; font-size:{font_cart};"
     "  font-weight:600;"
     "}}"
     "QTableWidget::item {{ padding:10px 10px; }}"
     "QHeaderView::section{{"
-    "  background:{card2}; color:{text}; font-size:{font_cart_head};"
+    "  background:{card2}; color:{text2}; font-size:{font_cart_head};"
     "  font-weight:800; letter-spacing:0.6px; padding:10px 8px;"
     "  border:none; border-bottom:2px solid {border2};"
     "}}"
@@ -114,7 +115,7 @@ REMOVE_BTN = (
     "  border-radius:8px; font-weight:800; font-size:{font_btn};"
     "  min-width:34px; min-height:34px; padding:2px 8px;"
     "}}"
-    "QPushButton:hover{{ background:{err}; color:#fff; }}"
+    "QPushButton:hover{{ background:{err}; color:{on_danger}; }}"
 )
 
 SPINBOX = (
@@ -131,7 +132,7 @@ SPINBOX = (
 )
 
 TOTALS_FRAME = (
-    "QFrame#posTotFrame{{ background:#FFFFFF; border:2px solid {border2}; border-radius:12px; }}"
+    "QFrame#posTotFrame{{ background:{card}; border:2px solid {border2}; border-radius:12px; }}"
 )
 
 MPESA_FRAME = (
@@ -140,7 +141,7 @@ MPESA_FRAME = (
 
 NOTE_INPUT = (
     "QLineEdit{{"
-    "  background:#FFFFFF; color:{text}; border:2px solid {border2};"
+    "  background:{input}; color:{text}; border:2px solid {border2};"
     "  border-radius:8px; padding:10px 14px; font-size:{font_label}; min-height:40px;"
     "}}"
     "QLineEdit:focus{{ border-color:{gold}; }}"
@@ -148,13 +149,13 @@ NOTE_INPUT = (
 
 COMBO = (
     "QComboBox{{"
-    "  background:#FFFFFF; color:{text}; border:2px solid {border2};"
+    "  background:{input}; color:{text}; border:2px solid {border2};"
     "  border-radius:8px; padding:10px 14px; font-size:{font_label}; min-height:40px;"
     "}}"
     "QComboBox:focus {{ border-color:{gold}; }}"
     "QComboBox::drop-down {{ border:none; width:32px; }}"
     "QComboBox QAbstractItemView{{"
-    "  background:#FFFFFF; color:{text}; border:2px solid {border2};"
+    "  background:{card}; color:{text}; border:2px solid {border2};"
     "  font-size:{font_label}; max-height:280px;"
     "  selection-background-color:{selected}; selection-color:{text};"
     "}}"
@@ -177,7 +178,7 @@ def style_cat_combo(combo, is_light: bool = False) -> None:
 
     if is_light:
         L = _light_tokens()
-        bg = '#FFFFFF'
+        bg = L.get('input') or L.get('card') or L['surface']
         fg = L['text']
         sel = L['selected']
         sel_fg = L['text']
@@ -248,7 +249,7 @@ def style_cat_combo(combo, is_light: bool = False) -> None:
 
 SEARCH_INPUT = (
     "QLineEdit{{"
-    "  background:#FFFFFF; color:{text}; border:2px solid {border2};"
+    "  background:{input}; color:{text}; border:2px solid {border2};"
     "  border-radius:22px; padding:10px 18px; font-size:{font_label}; min-height:42px;"
     "}}"
     "QLineEdit:focus{{ border-color:{gold}; }}"
@@ -267,7 +268,7 @@ CHARGE_BTN = (
 
 SECONDARY_BTN = (
     "QPushButton{{"
-    "  background:#FFFFFF; color:{text};"
+    "  background:{card}; color:{text};"
     "  border:2px solid {border2}; border-radius:8px;"
     "  font-size:{font_btn}; font-weight:600; padding:9px 18px; min-height:42px;"
     "}}"
@@ -280,12 +281,12 @@ DANGER_BTN = (
     "  border:2px solid {err_border}; border-radius:8px;"
     "  font-size:{font_btn}; font-weight:700; padding:9px 14px; min-height:42px;"
     "}}"
-    "QPushButton:hover{{ background:{err}; color:#fff; }}"
+    "QPushButton:hover{{ background:{err}; color:{on_danger}; }}"
 )
 
 TOGGLE_BTN_LIGHT = (
     "QPushButton{{"
-    "  background:#FFFFFF; color:{text2};"
+    "  background:{card}; color:{text2};"
     "  border:2px solid {border2}; border-radius:18px;"
     "  font-size:{font_toggle}; font-weight:600; padding:6px 14px; min-height:40px;"
     "}}"
