@@ -9,6 +9,7 @@ license push packets, and short-lived "connect" capture windows).
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Callable, Optional
@@ -22,6 +23,18 @@ RETRY_DELAY = 5
 
 _hub_lock = threading.Lock()
 _hub_instance: Optional['TelegramHub'] = None
+
+# api.telegram.org/bot<token>/… — never log the raw token
+_TG_BOT_URL_RE = re.compile(
+    r'(https?://api\.telegram\.org/bot)([^/\s\'\"]+)',
+    re.IGNORECASE,
+)
+
+
+def _redact_telegram_url(text: object) -> str:
+    """Strip bot tokens from exception / URL strings before logging."""
+    s = str(text)
+    return _TG_BOT_URL_RE.sub(r'\1***', s)
 
 
 def _offset_path() -> str:
@@ -158,7 +171,7 @@ class TelegramHub(threading.Thread):
                         self._offset = updates[-1]['update_id'] + 1
                         self._save_offset()
         except Exception as e:
-            logger.debug(f'Backlog skip: {e}')
+            logger.debug('Backlog skip: %s', _redact_telegram_url(e))
 
     def run(self):
         logger.info('Telegram hub started')
@@ -166,7 +179,7 @@ class TelegramHub(threading.Thread):
             try:
                 self._poll_once()
             except Exception as e:
-                logger.warning(f'Telegram hub poll error: {e}')
+                logger.warning('Telegram hub poll error: %s', _redact_telegram_url(e))
                 self._stop.wait(RETRY_DELAY)
 
     def _poll_once(self):
@@ -193,7 +206,7 @@ class TelegramHub(threading.Thread):
         except requests.exceptions.Timeout:
             return
         except Exception as e:
-            logger.warning(f'getUpdates error: {e}')
+            logger.warning('getUpdates error: %s', _redact_telegram_url(e))
             self._stop.wait(RETRY_DELAY)
             return
 

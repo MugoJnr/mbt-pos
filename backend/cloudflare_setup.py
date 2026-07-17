@@ -102,10 +102,158 @@ def get_config_path() -> Path:
     return _project_root() / 'config' / 'web_config.json'
 
 
+def get_config_fallback_path() -> Path:
+    """Sibling fallback when primary web_config.json is locked/read-only."""
+    return _project_root() / 'config' / 'web_config.user.json'
+
+
 def get_log_path() -> Path:
     p = _project_root() / 'logs' / 'cloudflare_setup.log'
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def _ensure_writable_dir(path: Path) -> None:
+    """Create config (or other) dir with user-writable permissions when possible."""
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        if sys.platform == 'win32':
+            # Clear directory read-only if present (FILE_ATTRIBUTE_READONLY = 1)
+            import ctypes
+            FILE_ATTRIBUTE_NORMAL = 0x80
+            ctypes.windll.kernel32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_NORMAL)
+        else:
+            os.chmod(path, 0o755)
+    except Exception:
+        pass
+
+
+def _clear_readonly(path: Path) -> bool:
+    """Clear Windows read-only attribute / Unix write bit. Returns True if cleared."""
+    if not path.exists():
+        return False
+    cleared = False
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            FILE_ATTRIBUTE_READONLY = 0x1
+            FILE_ATTRIBUTE_NORMAL = 0x80
+            attrs = ctypes.windll.kernel32.GetFileAttributesW(str(path))
+            if attrs != -1 and (attrs & FILE_ATTRIBUTE_READONLY):
+                ctypes.windll.kernel32.SetFileAttributesW(
+                    str(path), (attrs & ~FILE_ATTRIBUTE_READONLY) or FILE_ATTRIBUTE_NORMAL)
+                cleared = True
+            # Also via attrib / os.chmod as belt-and-suspenders
+            try:
+                subprocess.run(
+                    ['attrib', '-R', str(path)],
+                    capture_output=True, timeout=10,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW
+                )
+                cleared = True
+            except Exception:
+                pass
+        mode = path.stat().st_mode
+        if not (mode & 0o200):
+            os.chmod(path, mode | 0o200)
+            cleared = True
+    except Exception as e:
+        logger.debug('clear readonly %s: %s', path, e)
+    return cleared
+
+
+def _atomic_write_json(path: Path, data: dict) -> Path:
+    """
+    Atomically write JSON under AppData config with read-only / lock resilience.
+    On hard PermissionError: retry after clearing RO, unlink+rewrite, then sibling
+    fallback web_config.user.json. Never raises — logs WARNING if all paths fail.
+    Returns the path actually written (or the intended path on total failure).
+    """
+    payload = json.dumps(data, indent=2).encode('utf-8') + b'\n'
+    _ensure_writable_dir(path.parent)
+
+    def _try_write(target: Path) -> bool:
+        tmp = target.with_suffix(target.suffix + '.tmp')
+        try:
+            if target.exists():
+                _clear_readonly(target)
+            if tmp.exists():
+                _clear_readonly(tmp)
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+            tmp.write_bytes(payload)
+            os.replace(str(tmp), str(target))
+            return True
+        except PermissionError:
+            # Clean up tmp if replace failed mid-way
+            try:
+                if tmp.is_file():
+                    tmp.unlink()
+            except Exception:
+                pass
+            raise
+        except OSError:
+            try:
+                if tmp.is_file():
+                    tmp.unlink()
+            except Exception:
+                pass
+            raise
+
+    # Attempt 1: normal atomic write
+    try:
+        if _try_write(path):
+            return path
+    except PermissionError as e1:
+        logger.warning('web_config write PermissionError (will retry): %s — %s', path, e1)
+    except OSError as e1:
+        logger.warning('web_config write failed (will retry): %s — %s', path, e1)
+
+    # Attempt 2: clear RO again + retry
+    try:
+        _clear_readonly(path)
+        if _try_write(path):
+            return path
+    except (PermissionError, OSError) as e2:
+        logger.warning('web_config write retry failed: %s — %s', path, e2)
+
+    # Attempt 3: unlink then write (recreate)
+    try:
+        if path.exists():
+            _clear_readonly(path)
+            path.unlink()
+        if _try_write(path):
+            return path
+    except (PermissionError, OSError) as e3:
+        logger.warning('web_config unlink+write failed: %s — %s', path, e3)
+
+    # Attempt 4: sibling fallback (keeps Cloudflare setup working)
+    fallback = get_config_fallback_path() if path.name == 'web_config.json' else (
+        path.with_suffix('.user' + path.suffix)
+    )
+    try:
+        _ensure_writable_dir(fallback.parent)
+        if _try_write(fallback):
+            logger.warning(
+                'Primary config unwritable (%s); wrote fallback %s. '
+                'Clear read-only or take ownership of the primary file so updates merge cleanly.',
+                path, fallback)
+            return fallback
+    except (PermissionError, OSError) as e4:
+        logger.warning(
+            'All config writes failed for %s (and fallback %s): %s. '
+            'Remediation: remove read-only from the file/folder, or delete it and restart MBT POS. '
+            'Path: %s',
+            path, fallback, e4, path)
+        return path
+
+    logger.warning(
+        'Could not persist config to %s. Remediation: clear read-only on '
+        '%%LOCALAPPDATA%%\\MugoByte\\MBT POS\\config\\ and restart MBT POS.',
+        path)
+    return path
 
 
 def get_legacy_cloudflared_dir() -> Path:
@@ -291,13 +439,29 @@ _DEFAULT_CFG = {
 
 def load_web_config() -> dict:
     path = get_config_path()
+    fallback = get_config_fallback_path()
     cfg = dict(_DEFAULT_CFG)
-    if path.is_file():
+    # Load oldest → newest so a newer fallback (written when primary was RO) wins
+    candidates: list[Path] = []
+    for candidate in (path, fallback):
+        if candidate.is_file():
+            candidates.append(candidate)
+    try:
+        candidates.sort(key=lambda p: p.stat().st_mtime)
+    except Exception:
+        pass
+    loaded = False
+    for candidate in candidates:
         try:
-            with open(path, encoding='utf-8-sig') as f:
+            with open(candidate, encoding='utf-8-sig') as f:
                 cfg.update(json.load(f))
+            loaded = True
+            if candidate == fallback and path.is_file():
+                logger.debug('Merged web_config fallback %s', fallback)
         except Exception as e:
-            logger.warning('web_config read failed: %s', e)
+            logger.warning('web_config read failed (%s): %s', candidate, e)
+    if candidates and not loaded:
+        logger.warning('web_config read failed for all candidates')
     # If subdomain empty, derive from shop name in the live database
     if not (cfg.get('tunnel_subdomain') or '').strip():
         shop = _read_shop_name_from_db()
@@ -328,12 +492,10 @@ def _read_shop_name_from_db() -> str:
 
 def save_web_config(updates: dict) -> Path:
     path = get_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     cfg = load_web_config()
     cfg.update(updates)
     # Never write UTF-8 BOM (PowerShell -Encoding UTF8 breaks older readers)
-    path.write_bytes(json.dumps(cfg, indent=2).encode('utf-8') + b'\n')
-    return path
+    return _atomic_write_json(path, cfg)
 
 
 # ── Naming ────────────────────────────────────────────────────────────────────
@@ -523,9 +685,7 @@ def normalize_cloudflare_tokens() -> None:
                     if not (dep.get('cloudflare_tunnel_token') or '').strip():
                         dep['cloudflare_tunnel_token'] = d_api
                     dep['cloudflare_api_token'] = ''
-                    with open(dep_path, 'w', encoding='utf-8') as f:
-                        json.dump(dep, f, indent=2)
-                        f.write('\n')
+                    _atomic_write_json(dep_path, dep)
                     logger.warning('Cleaned cfut_ from AppData deploy.local.json')
         except Exception as e:
             logger.warning('deploy.local token cleanup: %s', e)
