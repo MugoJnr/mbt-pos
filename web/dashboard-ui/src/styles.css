@@ -1,0 +1,172 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark, .dark *));
+
+/* ============================================================
+ * MBT POS — Design System
+ * Dark (default) + Light themes. Gold accent, operational density.
+ * ============================================================ */
+
+@theme inline {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  --color-app: var(--app);
+  --color-surface: var(--surface);
+  --color-panel: var(--panel);
+  --color-card: var(--card);
+  --color-card2: var(--card2);
+  --color-sidebar: var(--sidebar);
+  --color-input: var(--input);
+  --color-hover: var(--hover);
+  --color-selected: var(--selected);
+
+  --color-background: var(--surface);
+  --color-foreground: var(--text);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--text);
+  --color-muted: var(--panel);
+  --color-muted-foreground: var(--text2);
+  --color-accent: var(--selected);
+  --color-accent-foreground: var(--text);
+  --color-border: var(--border);
+  --color-ring: var(--gold);
+
+  --color-gold: var(--gold);
+  --color-gold-light: var(--gold-lt);
+  --color-gold-dark: var(--gold-dk);
+
+  --color-primary: var(--gold);
+  --color-primary-foreground: var(--gold-fg);
+  --color-secondary: var(--card);
+  --color-secondary-foreground: var(--text);
+
+  --color-text: var(--text);
+  --color-text2: var(--text2);
+  --color-muted-fg: var(--muted-fg);
+
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
+  --color-destructive: var(--err);
+  --color-destructive-foreground: #ffffff;
+}
+
+/* -------- Dark (default) -------- */
+:root,
+.dark {
+  --app: #05080f;
+  --surface: #080d18;
+  --panel: #0b1220;
+  --card: #0f1a2e;
+  --card2: #132034;
+  --sidebar: #060a14;
+  --input: #0c1626;
+  --hover: #162a44;
+  --selected: #1a3560;
+
+  --gold: #f2a800;
+  --gold-lt: #ffbe3a;
+  --gold-dk: #c07800;
+  --gold-fg: #0a0f1a;
+
+  --text: #eef2fc;
+  --text2: #6880a0;
+  --muted-fg: #334d68;
+
+  --ok: #00c97e;
+  --warn: #f0a500;
+  --err: #ff3d50;
+  --info: #4a8fff;
+
+  --border: #10192c;
+  --border2: #18283e;
+
+  --shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.02) inset,
+    0 8px 24px -12px rgba(0, 0, 0, 0.6);
+}
+
+/* -------- Light -------- */
+.light {
+  --app: #f0f4fa;
+  --surface: #ffffff;
+  --panel: #e8edf6;
+  --card: #ffffff;
+  --card2: #f4f7fc;
+  --sidebar: #e2e8f2;
+  --input: #ffffff;
+  --hover: #dde6f2;
+  --selected: #cddaee;
+
+  --gold: #b87000;
+  --gold-lt: #d48800;
+  --gold-dk: #8c5400;
+  --gold-fg: #ffffff;
+
+  --text: #0c1828;
+  --text2: #3c5270;
+  --muted-fg: #7890aa;
+
+  --ok: #006b48;
+  --warn: #a05800;
+  --err: #b81c2c;
+  --info: #1850a8;
+
+  --border: #cdd8e8;
+  --border2: #b8c8dc;
+
+  --shadow-card: 0 1px 2px rgba(15, 26, 46, 0.06),
+    0 4px 12px -4px rgba(15, 26, 46, 0.08);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html,
+  body {
+    background-color: var(--surface);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--gold) 40%, transparent);
+    color: var(--text);
+  }
+}
+
+/* ---- Utilities ---- */
+
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}
+
+@utility kpi-accent {
+  position: relative;
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border2) transparent;
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--border2);
+    border-radius: 8px;
+  }
+}

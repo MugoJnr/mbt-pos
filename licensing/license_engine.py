@@ -264,10 +264,15 @@ def generate_license_key(device_id: str, plan: str = 'basic',
                          duration_days: int = 365,
                          issued_by: str = 'MugoByte Technologies') -> str:
     now = int(time.time())
+    days = max(1, int(duration_days))
     payload = {
-        'device_id':  device_id, 'plan': plan,
-        'issued_at':  now, 'expires_at': now + duration_days * 86400,
-        'issued_by':  issued_by, 'version': 2,
+        'device_id':      device_id,
+        'plan':           plan,
+        'issued_at':      now,
+        'expires_at':     now + days * 86400,  # hint / legacy; POS uses duration_days
+        'duration_days':  days,                # authoritative allocation
+        'issued_by':      issued_by,
+        'version':        2,
     }
     raw = json.dumps(payload, separators=(',', ':')).encode()
     sig = _sign(raw)
@@ -285,6 +290,31 @@ def decode_license_key(key_str: str) -> Optional[dict]:
         if not _verify_sig(raw, sig): return None
         return json.loads(raw)
     except Exception: return None
+
+
+def _allocated_days_from_payload(data: dict) -> Optional[int]:
+    """
+    Resolve keygen-allocated days from the signed payload.
+    Prefer explicit duration_days; else derive from expires_at - issued_at.
+    Never invent a hardcoded plan default (365/30).
+    """
+    if not isinstance(data, dict):
+        return None
+    if 'duration_days' in data and data.get('duration_days') is not None:
+        try:
+            days = int(data['duration_days'])
+            return days if days >= 1 else None
+        except (TypeError, ValueError):
+            return None
+    issued = data.get('issued_at')
+    expires = data.get('expires_at')
+    if issued is not None and expires is not None:
+        try:
+            days = int((int(expires) - int(issued)) // 86400)
+            return days if days >= 1 else None
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -422,7 +452,14 @@ class LicenseEngine:
 
         token = self.store.get('license_token')
         if not token:
-            self._state = STATE_UNACTIVATED; return
+            # Revoke must survive revalidate() — empty token alone looks
+            # like "never activated" and would skip the revoked hard-lock UI.
+            if self.store.get('revoked'):
+                self._license_data = {}
+                self._state = STATE_INACTIVE
+            else:
+                self._state = STATE_UNACTIVATED
+            return
 
         data = decrypt_payload(token, self.device_id)
         if not data:
@@ -461,7 +498,8 @@ class LicenseEngine:
 
     def _evaluate_state(self):
         if not self._license_data:
-            self._state = STATE_UNACTIVATED; return
+            self._state = STATE_INACTIVE if self.store.get('revoked') else STATE_UNACTIVATED
+            return
 
         local_now  = int(time.time())
         last_local = self.store.get('last_checked_ts', 0)
@@ -529,19 +567,22 @@ class LicenseEngine:
             return False, "This license key is bound to a different device."
 
         local_now = int(time.time())
-        trusted = _fetch_trusted_time()
-        check_now = max(local_now, trusted) if trusted else local_now
-        if check_now > data.get('expires_at', 0):
-            return False, "This license key has already expired."
+        allocated = _allocated_days_from_payload(data)
+        if not allocated:
+            return False, "License key has no valid duration_days allocation."
+
+        # Expiry is always activate_time + allocated days (never a hardcoded plan length).
+        expires_at = local_now + allocated * 86400
 
         lic = {
-            'device_id':    self.device_id,          # bake THIS device into token
-            'plan':         data.get('plan', 'basic'),
-            'issued_at':    data.get('issued_at', local_now),
-            'expires_at':   data.get('expires_at', local_now + 365 * 86400),
-            'activated_at': local_now,
-            'issued_by':    data.get('issued_by', 'MugoByte Technologies'),
-            'version':      2,
+            'device_id':      self.device_id,          # bake THIS device into token
+            'plan':           data.get('plan', 'basic'),
+            'issued_at':      data.get('issued_at', local_now),
+            'expires_at':     expires_at,
+            'duration_days':  allocated,
+            'activated_at':   local_now,
+            'issued_by':      data.get('issued_by', 'MugoByte Technologies'),
+            'version':        2,
         }
         with self._lock:
             _write_cached_device_id(self.device_id)
@@ -550,14 +591,15 @@ class LicenseEngine:
             self.store.set('last_checked_ts', local_now)
             self.store.set('highest_ts_seen', local_now)
             self.store.set('tampered', False)
+            self.store.set('revoked', False)
             self._license_data = lic
             self._tamper_count = 0
             self._evaluate_state()
             self.store.log('ACTIVATED',
-                f"Plan={lic['plan']} "
+                f"Plan={lic['plan']} Days={allocated} "
                 f"Expires={datetime.fromtimestamp(lic['expires_at']).date()}")
         plan_name = PLANS.get(lic['plan'], {}).get('name', lic['plan'])
-        return True, f"License activated! Plan: {plan_name}"
+        return True, f"License activated! Plan: {plan_name} ({allocated} days)"
 
     def activate_from_remote(self, payload: dict) -> Tuple[bool, str]:
         """Activate via signed remote payload (Telegram command)."""
@@ -569,8 +611,14 @@ class LicenseEngine:
 
         # Always bind to THIS device — prevents replay on other machines
         local_now = int(time.time())
-        payload['device_id']    = self.device_id
-        payload['activated_at'] = local_now
+        allocated = _allocated_days_from_payload(payload)
+        if not allocated:
+            return False, "Remote payload has no valid duration_days allocation."
+
+        payload['device_id']      = self.device_id
+        payload['activated_at']   = local_now
+        payload['duration_days']  = allocated
+        payload['expires_at']     = local_now + allocated * 86400
 
         with self._lock:
             _write_cached_device_id(self.device_id)
@@ -579,12 +627,14 @@ class LicenseEngine:
             self.store.set('last_checked_ts', local_now)
             self.store.set('highest_ts_seen', local_now)
             self.store.set('tampered', False)
+            self.store.set('revoked', False)
             self._license_data = payload
             self._tamper_count = 0
             self._evaluate_state()
             self.store.log('REMOTE_ACTIVATED',
-                f"Plan={payload.get('plan')} Expires={payload.get('expires_at')}")
-        return True, "Remote activation successful."
+                f"Plan={payload.get('plan')} Days={allocated} "
+                f"Expires={payload.get('expires_at')}")
+        return True, f"Remote activation successful ({allocated} days)."
 
     def extend(self, extra_days: int, sig: str) -> Tuple[bool, str]:
         raw = f"extend:{extra_days}:{self.device_id}".encode()
@@ -609,6 +659,7 @@ class LicenseEngine:
         with self._lock:
             self.store.set('license_token', '')
             self.store.set('tampered', False)
+            self.store.set('revoked', True)
             self._license_data = {}
             self._state = STATE_INACTIVE
             self.store.log('REVOKED', 'Revoked by administrator')
@@ -623,6 +674,9 @@ class LicenseEngine:
             if self.store.get('tampered'):
                 self._state = STATE_TAMPERED
                 return STATE_TAMPERED
+            if self.store.get('revoked') and not self._license_data:
+                self._state = STATE_INACTIVE
+                return STATE_INACTIVE
             self._evaluate_state()
             return self._state
 

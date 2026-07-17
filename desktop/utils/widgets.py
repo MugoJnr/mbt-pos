@@ -181,9 +181,24 @@ def _refresh_badge(lbl):
         f"border-radius:{r}px; padding:2px 10px; }}")
 
 
+def _refresh_primary_btn(btn):
+    """PrimaryBtn bakes gold QSS at create — retint so light/dark gold_fg stays correct."""
+    gold_fg = C.get('gold_fg', '#0A0F1A')
+    btn.setStyleSheet(
+        f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
+        f" border:none; border-radius:{RADIUS['md']}px; font-weight:700;"
+        f" font-size:14px; padding:8px 16px; }}"
+        f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
+        f"QPushButton#primaryBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
+
+
 def refresh_themed_widgets(root):
     """Re-apply theme-bound inline styles after ThemeManager.apply (light/dark)."""
     if root is None:
+        return
+    # Guard: callers sometimes pass a dict (e.g. MainWindow._nav) by mistake
+    if not hasattr(root, 'findChildren'):
         return
     for w in root.findChildren(Card):
         try:
@@ -208,6 +223,11 @@ def refresh_themed_widgets(root):
             elif w.objectName() == 'sectionSubtitle':
                 w.setStyleSheet(
                     f"color:{C['text2']}; font-size:13px; background:transparent; border:none;")
+            elif w.objectName() == 'invStatsCaption':
+                # Inventory footer — must follow theme (no dark strip under light table)
+                w.setStyleSheet(
+                    f"color:{C['text2']}; font-size:13px; font-weight:600; "
+                    f"background:transparent; padding:4px 2px;")
             elif w.property('mbtSectionIcon'):
                 _refresh_section_icon(w)
             elif w.property('mbtBadgeTone'):
@@ -225,18 +245,41 @@ def refresh_themed_widgets(root):
                     f"QLineEdit:focus {{ border-color:{C['gold']}; }}")
         except Exception:
             pass
+    for w in root.findChildren(QPushButton):
+        try:
+            if w.objectName() == 'primaryBtn':
+                _refresh_primary_btn(w)
+        except Exception:
+            pass
     for w in root.findChildren(QTabWidget):
         try:
             if w.property('mbtLovableTabs'):
                 w.setStyleSheet(lovable_tab_qss())
         except Exception:
             pass
-    for w in root.findChildren(QWidget):
+    # Prefer named lookups — avoid walking every QWidget in large trees
+    for w in root.findChildren(QWidget, 'mbtPageInner'):
         try:
-            if w.objectName() == 'mbtPageInner':
-                w.setStyleSheet(f"background:{C['surface']};")
+            w.setStyleSheet(f"background:{C['surface']};")
         except Exception:
             pass
+    for w in root.findChildren(QWidget, 'themeSwitchBar'):
+        try:
+            if hasattr(w, '_refresh_theme'):
+                w._refresh_theme()
+        except Exception:
+            pass
+    # QTableWidgetItem foregrounds are frozen RGB — retint tones / clear baked text
+    for w in root.findChildren(QTableWidget):
+        try:
+            retint_table_items(w)
+        except Exception:
+            pass
+    try:
+        from desktop.utils.pos_components import refresh_pos_components
+        refresh_pos_components(root)
+    except Exception:
+        pass
 
 
 # ── BUTTONS ───────────────────────────────────────────────────────────────────
@@ -247,14 +290,7 @@ def PrimaryBtn(text, height=40):
     b.setObjectName('primaryBtn')
     b.setMinimumHeight(height)
     b.setCursor(Qt.PointingHandCursor)
-    gold_fg = C.get('gold_fg', '#0A0F1A')
-    b.setStyleSheet(
-        f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
-        f" border:none; border-radius:{RADIUS['md']}px; font-weight:700;"
-        f" font-size:14px; padding:8px 16px; }}"
-        f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
-        f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
-        f"QPushButton#primaryBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
+    _refresh_primary_btn(b)
     return b
 
 
@@ -359,10 +395,86 @@ def FormRow(label_text, widget, form_layout):
 
 # ── TABLES ────────────────────────────────────────────────────────────────────
 
+# Palette key stored on items so theme toggles can retint without DB reload
+TBL_TONE_ROLE = Qt.UserRole + 41
+_TBL_TONE_KEYS = (
+    'text', 'text2', 'muted', 'gold', 'warn', 'err', 'ok', 'info', 'success',
+)
+
+
+class ThemeTableDelegate(QStyledItemDelegate):
+    """
+    Paint BackgroundRole + ForegroundRole explicitly.
+
+    Global QSS on QTableWidget/::item routinely ignores item roles (and can
+    leave QPalette::Base white on half the zebra). This delegate is the
+    reliable path for theme-correct contrast on every row.
+    """
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
+        bg = index.data(Qt.BackgroundRole)
+        fg = index.data(Qt.ForegroundRole)
+
+        selected = bool(opt.state & QStyle.State_Selected)
+        hovered = bool(opt.state & QStyle.State_MouseOver) and not selected
+
+        painter.save()
+        painter.setPen(Qt.NoPen)
+
+        if selected:
+            fill = QColor(C['selected'])
+        elif hovered:
+            fill = QColor(C['hover'])
+        elif isinstance(bg, QBrush) and bg.style() != Qt.NoBrush:
+            fill = bg.color()
+        elif bg is not None:
+            fill = QColor(bg)
+        else:
+            fill = QColor(
+                table_row_bg_hex(index.row())
+                if (opt.widget and opt.widget.property('mbtZebraViaRoles'))
+                else C['card']
+            )
+        painter.setBrush(fill)
+        painter.drawRect(opt.rect)
+
+        # Bottom hairline
+        painter.setPen(QPen(QColor(C['border']), 1))
+        painter.drawLine(opt.rect.bottomLeft(), opt.rect.bottomRight())
+
+        if isinstance(fg, QBrush):
+            color = fg.color()
+        elif fg is not None:
+            color = QColor(fg)
+        else:
+            color = QColor(C['text'])
+
+        text = opt.text or ''
+        if text:
+            painter.setPen(color)
+            painter.setFont(opt.font)
+            # Match former QSS padding ~10px 14px
+            text_rect = opt.rect.adjusted(14, 0, -14, 0)
+            align = opt.displayAlignment or (Qt.AlignLeft | Qt.AlignVCenter)
+            painter.drawText(
+                text_rect, int(align) | Qt.TextSingleLine,
+                painter.fontMetrics().elidedText(
+                    text, Qt.ElideRight, text_rect.width()))
+        painter.restore()
+
+
 def make_table(headers, stretch_col=0, row_height=44, alt=True):
     t = QTableWidget(0, len(headers))
     t.setHorizontalHeaderLabels(headers)
-    t.setAlternatingRowColors(alt)
+    # Zebra is painted via BackgroundRole + ThemeTableDelegate.
+    # Qt QSS alternate-background-color overrides item roles and historically
+    # leaked light-theme white rows under dark text.
+    t.setAlternatingRowColors(False)
+    t.setProperty('mbtZebraViaRoles', bool(alt))
+    t.setItemDelegate(ThemeTableDelegate(t))
     t.verticalHeader().setVisible(False)
     t.setEditTriggers(QAbstractItemView.NoEditTriggers)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -375,18 +487,137 @@ def make_table(headers, stretch_col=0, row_height=44, alt=True):
     return t
 
 
-def tbl_item(text, align=Qt.AlignLeft | Qt.AlignVCenter, color=None):
+def table_row_bg_hex(row: int) -> str:
+    """Theme-consistent zebra: even=card, odd=card2 (both dark-in-dark / light-in-light)."""
+    return C['card2'] if (int(row) % 2) else C['card']
+
+
+def apply_table_row_backgrounds(table, row=None):
+    """
+    Paint BackgroundRole on every data cell so zebra matches the live palette.
+
+    Critical: setForeground() makes Qt use QPalette::Base (often white) for
+    non-alternate rows, so QSS alternate-background-color alone leaves
+    white-on-white / white-on-light zebra failures. Explicit BackgroundRole
+    keeps every row on-theme with contrasting ForegroundRole tones.
+    """
+    if table is None or not hasattr(table, 'rowCount'):
+        return
+    rows = [int(row)] if row is not None else range(table.rowCount())
+    for r in rows:
+        if r < 0 or r >= table.rowCount():
+            continue
+        bg = QColor(table_row_bg_hex(r))
+        for c in range(table.columnCount()):
+            item = table.item(r, c)
+            if item is not None:
+                item.setBackground(bg)
+            w = table.cellWidget(r, c) if hasattr(table, 'cellWidget') else None
+            if w is not None:
+                w.setAutoFillBackground(True)
+                pal = w.palette()
+                pal.setColor(QPalette.Window, bg)
+                pal.setColor(QPalette.Base, bg)
+                w.setPalette(pal)
+                prev = (w.styleSheet() or '')
+                if 'QPushButton' not in prev:
+                    w.setStyleSheet(f"background:{bg.name()}; border:none;")
+
+
+def _tone_from_color(color):
+    """Map a live palette hex back to its key (for retint after theme toggle)."""
+    if not color:
+        return None
+    if isinstance(color, str) and color in _TBL_TONE_KEYS:
+        return color
+    hex_c = str(color).upper()
+    for k in _TBL_TONE_KEYS:
+        v = C.get(k)
+        if v and str(v).upper() == hex_c:
+            return k
+    return None
+
+
+def tbl_item(text, align=Qt.AlignLeft | Qt.AlignVCenter, color=None, tone=None):
+    """
+    Table cell. Prefer no color for primary text (inherits live QSS).
+    Pass tone='gold'|'warn'|… or color=C['gold'] — both retint on theme change.
+    """
     item = QTableWidgetItem(str(text))
     item.setTextAlignment(align)
-    if color:
+    key = tone or _tone_from_color(color)
+    if key:
+        item.setData(TBL_TONE_ROLE, key)
+        hex_c = C.get(key) or color
+        if hex_c:
+            item.setForeground(QColor(hex_c))
+    elif color:
         item.setForeground(QColor(color))
     return item
 
-def tbl_right(text, color=None):
-    return tbl_item(text, Qt.AlignRight | Qt.AlignVCenter, color)
+def tbl_right(text, color=None, tone=None):
+    return tbl_item(text, Qt.AlignRight | Qt.AlignVCenter, color, tone)
 
-def tbl_center(text, color=None):
-    return tbl_item(text, Qt.AlignCenter, color)
+def tbl_center(text, color=None, tone=None):
+    return tbl_item(text, Qt.AlignCenter, color, tone)
+
+
+def retint_table_items(table):
+    """Re-apply palette tones + zebra backgrounds after ThemeManager.apply."""
+    if table is None or not hasattr(table, 'rowCount'):
+        return
+    from desktop.utils.theme import DARK, LIGHT
+    # Accents that may still be frozen from the opposite palette
+    accent_hex = {}
+    for pal in (DARK, LIGHT):
+        for k in ('gold', 'warn', 'err', 'ok', 'info', 'success', 'text2', 'muted'):
+            v = pal.get(k)
+            if v:
+                accent_hex[str(v).lower()] = k
+    text_hex = {str(DARK.get('text', '')).lower(), str(LIGHT.get('text', '')).lower()}
+
+    for r in range(table.rowCount()):
+        bg = QColor(table_row_bg_hex(r))
+        for c in range(table.columnCount()):
+            item = table.item(r, c)
+            if item is None:
+                continue
+            item.setBackground(bg)
+            key = item.data(TBL_TONE_ROLE)
+            if key:
+                hex_c = C.get(key)
+                if hex_c:
+                    item.setForeground(QColor(hex_c))
+                continue
+            # Legacy: baked ForegroundRole without tone marker
+            if item.data(Qt.ForegroundRole) is None:
+                # Ensure primary text still contrasts with zebra bg
+                item.setData(TBL_TONE_ROLE, 'text')
+                item.setForeground(QColor(C['text']))
+                continue
+            fg = item.foreground().color().name().lower()
+            mapped = accent_hex.get(fg)
+            if mapped:
+                item.setData(TBL_TONE_ROLE, mapped)
+                item.setForeground(QColor(C[mapped]))
+            elif fg in text_hex:
+                # Primary text baked from wrong theme — bind to live 'text' tone
+                item.setData(TBL_TONE_ROLE, 'text')
+                item.setForeground(QColor(C['text']))
+        # Retint cell-widget chrome to the same zebra (action columns, etc.)
+        for c in range(table.columnCount()):
+            w = table.cellWidget(r, c) if hasattr(table, 'cellWidget') else None
+            if w is None:
+                continue
+            w.setAutoFillBackground(True)
+            pal = w.palette()
+            pal.setColor(QPalette.Window, bg)
+            pal.setColor(QPalette.Base, bg)
+            w.setPalette(pal)
+            # Don't clobber shells that embed QPushButton rules; palette is enough.
+            prev = (w.styleSheet() or '')
+            if 'QPushButton' not in prev:
+                w.setStyleSheet(f"background:{bg.name()}; border:none;")
 
 
 # ── PAGE LAYOUT ───────────────────────────────────────────────────────────────
@@ -447,36 +678,97 @@ def HSep():
 # ── THEME TOGGLE BUTTON ───────────────────────────────────────────────────────
 
 def ThemeToggleBtn(on_toggle=None):
-    """A Light/Dark button that calls ThemeManager.toggle() on click."""
-    from desktop.utils.theme import ThemeManager, C as _C, RADIUS as _R
-    btn = QPushButton('☀  Light')
-    btn.setObjectName('themeBtn')
-    btn.setMinimumHeight(34)
-    btn.setFixedWidth(100)
-    btn.setCursor(Qt.PointingHandCursor)
+    """Legacy single button — prefer ThemeSwitchBar for clearer Light/Dark UX."""
+    return ThemeSwitchBar(on_toggle=on_toggle)
 
-    def _style():
+
+class ThemeSwitchBar(QWidget):
+    """
+    Always-visible Dark | Light segmented switch.
+    Active side is gold-filled; click the other side to switch.
+    Icons: Dark = moon (U+263E), Light = sun (U+2600) — ASCII-safe escapes.
+    """
+
+    _DARK_LABEL = '\u263E  Dark'   # ☾
+    _LIGHT_LABEL = '\u2600  Light'  # ☀
+
+    def __init__(self, on_toggle=None, parent=None):
+        super().__init__(parent)
+        self._on_toggle = on_toggle
+        self.setObjectName('themeSwitchBar')
+        self.setFixedHeight(36)
+        self.setMinimumWidth(168)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self._dark_btn = QPushButton(self._DARK_LABEL)
+        self._light_btn = QPushButton(self._LIGHT_LABEL)
+        for b in (self._dark_btn, self._light_btn):
+            b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumHeight(34)
+            b.setMinimumWidth(84)
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+        self._dark_btn.clicked.connect(lambda: self._pick(False))
+        self._light_btn.clicked.connect(lambda: self._pick(True))
+        lay.addWidget(self._dark_btn)
+        lay.addWidget(self._light_btn)
+        self._refresh_theme()
+
+    def _pick(self, want_light: bool):
+        from desktop.utils.theme import ThemeManager
+        if want_light == ThemeManager.is_light():
+            self._refresh_theme()
+            return
+        if self._on_toggle:
+            self._on_toggle(want_light)
+        else:
+            ThemeManager.apply(want_light)
+        self._refresh_theme()
+
+    def _refresh_theme(self):
+        from desktop.utils.theme import ThemeManager, C as _C, RADIUS as _R, qss_alpha
+        is_light = ThemeManager.is_light()
+        # Keep labels/icons correct even if setText was called with wrong copy
+        self._dark_btn.setText(self._DARK_LABEL)
+        self._light_btn.setText(self._LIGHT_LABEL)
+        self._dark_btn.setChecked(not is_light)
+        self._light_btn.setChecked(is_light)
         r = _R['md']
-        btn.setStyleSheet(
-            f"QPushButton#themeBtn {{ background:{_C['card']}; color:{_C['text']}; "
-            f"border:1px solid {_C['border']}; border-radius:{r}px; "
-            f"font-size:12px; font-weight:500; padding:5px 10px; }}"
-            f"QPushButton#themeBtn:hover {{ border-color:{_C['gold']}; color:{_C['gold']}; }}")
+        # Outer shell
+        self.setStyleSheet(
+            f"QWidget#themeSwitchBar {{ background:{_C['card2']}; border:1px solid {_C['border2']}; "
+            f"border-radius:{r}px; }}"
+        )
+        active = (
+            f"background:{_C['gold']}; color:{_C.get('gold_fg', '#0B1120')}; "
+            f"border:none; font-size:12px; font-weight:700; padding:4px 10px;"
+        )
+        idle = (
+            f"background:transparent; color:{_C['text2']}; border:none; "
+            f"font-size:12px; font-weight:600; padding:4px 10px;"
+        )
+        hover = f"color:{_C['gold']};"
+        # Left dark segment
+        self._dark_btn.setStyleSheet(
+            f"QPushButton {{ {active if not is_light else idle} "
+            f"border-top-left-radius:{r}px; border-bottom-left-radius:{r}px; "
+            f"border-top-right-radius:0; border-bottom-right-radius:0; }}"
+            f"QPushButton:hover {{ {hover if is_light else ''} }}"
+        )
+        # Right light segment
+        self._light_btn.setStyleSheet(
+            f"QPushButton {{ {active if is_light else idle} "
+            f"border-top-right-radius:{r}px; border-bottom-right-radius:{r}px; "
+            f"border-top-left-radius:0; border-bottom-left-radius:0; }}"
+            f"QPushButton:hover {{ {hover if not is_light else ''} }}"
+        )
 
-    def _update_label():
-        btn.setText('🌙  Dark' if ThemeManager.is_light() else '☀  Light')
-        _style()
+    # Compat with MainWindow refresh hooks
+    def setText(self, _text):
+        self._refresh_theme()
 
-    def _click():
-        ThemeManager.toggle()
-        _update_label()
-        if on_toggle:
-            on_toggle(ThemeManager.is_light())
-
-    btn._refresh_theme = _update_label
-    btn.clicked.connect(_click)
-    _update_label()
-    return btn
 
 
 # ── LOVABLE CHROME HELPERS ────────────────────────────────────────────────────

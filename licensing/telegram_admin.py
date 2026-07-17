@@ -124,19 +124,20 @@ def _execute_command(cmd: str, args: str, engine, store,
             )
             now     = int(time.time())
             payload = {
-                'device_id':  engine.device_id,
-                'plan':       plan,
-                'issued_at':  now,
-                'expires_at': now + days * 86400,
-                'issued_by':  'MugoByte Technologies (Remote)',
-                'version':    2,
+                'device_id':      engine.device_id,
+                'plan':           plan,
+                'issued_at':      now,
+                'expires_at':     now + days * 86400,
+                'duration_days':  days,
+                'issued_by':      'MugoByte Technologies (Remote)',
+                'version':        2,
             }
             raw = _json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
             payload['sig'] = hmac.new(_MASTER_SECRET, raw, hashlib.sha256).hexdigest()
             ok, msg = engine.activate_from_remote(payload)
             store.log('REMOTE_CMD', f'/activate_license plan={plan} days={days} ok={ok}')
             if ok and on_state_change: on_state_change()
-            exp = datetime.fromtimestamp(payload['expires_at']).strftime('%Y-%m-%d')
+            exp = datetime.fromtimestamp(engine._license_data.get('expires_at', payload['expires_at'])).strftime('%Y-%m-%d')
             return (
                 f"{'✅' if ok else '❌'} {msg}\n"
                 f"Plan: <b>{plan}</b> · {days} days · expires <b>{exp}</b>"

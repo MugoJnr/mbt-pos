@@ -853,12 +853,23 @@ def health():
 
 
 # ── Web Dashboard Blueprint (optional; used by web_launcher.py) ──────────────
+# Load web_routes.py from the filesystem bundle path so HOT_APPLY can update the
+# React SPA routes without a full PyInstaller rebuild (PYZ would otherwise win).
 try:
+    import importlib.util
     if BASE_DIR not in sys.path:
         sys.path.insert(0, BASE_DIR)
-    from web.web_routes import web as web_blueprint
+    _web_routes_py = os.path.join(BASE_DIR, 'web', 'web_routes.py')
+    if os.path.isfile(_web_routes_py):
+        _spec = importlib.util.spec_from_file_location('web.web_routes', _web_routes_py)
+        _mod = importlib.util.module_from_spec(_spec)
+        sys.modules['web.web_routes'] = _mod
+        _spec.loader.exec_module(_mod)
+        web_blueprint = _mod.web
+    else:
+        from web.web_routes import web as web_blueprint
     app.register_blueprint(web_blueprint)
-    logger.info("Web dashboard blueprint registered")
+    logger.info("Web dashboard blueprint registered from %s", _web_routes_py)
 except Exception as _e:
     logger.warning(f"Web blueprint not loaded: {_e}")
 

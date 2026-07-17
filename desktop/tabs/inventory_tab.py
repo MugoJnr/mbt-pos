@@ -9,7 +9,8 @@ _log = logging.getLogger('inventory')
 from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
-                                    tbl_right, tbl_center, page_layout)
+                                    tbl_right, tbl_center, page_layout, retint_table_items,
+                                    apply_table_row_backgrounds, table_row_bg_hex)
 from desktop.utils.security import (has_permission, require_permission,
                                      ask_superadmin_pin, ROLE_SUPERADMIN)
 
@@ -80,6 +81,7 @@ class InventoryTab(QWidget):
         self._tbl = make_table(
             ['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Unit', 'Actions'],
             stretch_col=0, row_height=56)
+        self._tbl.setAlternatingRowColors(False)  # zebra via BackgroundRole only
         hdr = self._tbl.horizontalHeader()
         # Wider fixed columns so Cost/Category/Unit aren't clipped to "KES â€¦"
         widths = {
@@ -102,12 +104,43 @@ class InventoryTab(QWidget):
         wl.addWidget(self._tbl)
         lay.addWidget(wrap, 1)
         self._stats = Caption('')
+        self._stats.setObjectName('invStatsCaption')
+        self._apply_stats_style()
+        lay.addWidget(self._stats)
+
+    def _apply_stats_style(self):
         self._stats.setStyleSheet(
             f"color:{C['text2']}; font-size:13px; font-weight:600; "
             f"background:transparent; padding:4px 2px;")
-        lay.addWidget(self._stats)
 
     def on_show(self): self.refresh()
+
+    def apply_theme(self, is_light=None):
+        """Retint chrome + table after ThemeManager.apply (no DB reload).
+
+        SearchBar / mbtPageInner / PrimaryBtn bake inline QSS at build time —
+        must refresh them here so Light never keeps a dark toolbar/footer strip
+        around an already-light table.
+        """
+        try:
+            from desktop.utils.widgets import refresh_themed_widgets
+            refresh_themed_widgets(self)
+            self._apply_stats_style()
+            # Rebuild visible rows from cached products so accents + buttons use live C
+            q = (self._search.text() or '').lower() if hasattr(self, '_search') else ''
+            if q:
+                prods = [p for p in (self.products or [])
+                         if q in (p.get('name') or '').lower()
+                         or q in (p.get('sku') or '').lower()
+                         or q in (p.get('category') or '').lower()]
+            else:
+                prods = list(self.products or [])
+            if prods:
+                self._populate(prods)
+            else:
+                retint_table_items(self._tbl)
+        except Exception as e:
+            _log.warning('Inventory apply_theme: %s', e)
 
     def refresh(self):
         try:
@@ -157,6 +190,8 @@ class InventoryTab(QWidget):
         self._stats.setText(
             f"  {len(prods)} products  \u00b7  {low} low stock  \u00b7  "
             f"Stock value: {cur} {tot:,.2f}")
+        # Final pass — guarantee every visible row has theme-matched zebra roles
+        apply_table_row_backgrounds(self._tbl)
 
     def _populate_row(self, i, p, cur, can_edit, can_delete):
         self._tbl.insertRow(i)
@@ -172,46 +207,46 @@ class InventoryTab(QWidget):
         price_s = f"{cur} {_safe_float(p.get('price')):,.2f}"
         cost_s = f"{cur} {_safe_float(p.get('cost_price')):,.2f}"
 
-        name_item = tbl_item(name)
+        name_item = tbl_item(name, tone='text')
         name_item.setToolTip(name)
-        name_item.setForeground(QColor(C['text']))
         self._tbl.setItem(i, 0, name_item)
 
-        sku_item = tbl_item(sku)
+        sku_item = tbl_item(sku, tone='text')
         sku_item.setToolTip(sku)
-        sku_item.setForeground(QColor(C['text']))
         self._tbl.setItem(i, 1, sku_item)
 
-        cat_item = tbl_item(cat)
+        cat_item = tbl_item(cat, tone='text')
         cat_item.setToolTip(cat)
-        cat_item.setForeground(QColor(C['text']))
         self._tbl.setItem(i, 2, cat_item)
 
-        price_item = tbl_right(price_s, C['gold'])
+        price_item = tbl_right(price_s, tone='gold')
         price_item.setToolTip(price_s)
         self._tbl.setItem(i, 3, price_item)
 
-        cost_item = tbl_right(cost_s)
+        cost_item = tbl_right(cost_s, tone='text')
         cost_item.setToolTip(cost_s)
-        cost_item.setForeground(QColor(C['text']))
         self._tbl.setItem(i, 4, cost_item)
 
-        stk_color = C['err'] if is_zero else (C['warn'] if is_low else C['text2'])
-        stk_item  = tbl_center(_fmt_stock(stock), stk_color)
+        stk_tone = 'err' if is_zero else ('warn' if is_low else 'text2')
+        stk_item  = tbl_center(_fmt_stock(stock), tone=stk_tone)
         if is_low:
             f = stk_item.font(); f.setBold(True); stk_item.setFont(f)
         self._tbl.setItem(i, 5, stk_item)
 
-        unit_item = tbl_center(unit)
+        unit_item = tbl_center(unit, tone='text2')
         unit_item.setToolTip(unit)
         self._tbl.setItem(i, 6, unit_item)
 
+        row_bg = table_row_bg_hex(i)
         cell = QWidget()
-        cell.setStyleSheet('background: transparent;')
+        cell.setAutoFillBackground(True)
+        cell.setStyleSheet(f'background: {row_bg}; border: none;')
         cl   = QHBoxLayout(cell)
         cl.setContentsMargins(8, 6, 8, 6)
         cl.setSpacing(6)
 
+        # input/hover contrast on both even (card) and odd (card2) zebra rows
+        btn_bg = C['input']
         if can_edit:
             eb = QPushButton('Edit')
             eb.setCursor(Qt.PointingHandCursor)
@@ -219,7 +254,7 @@ class InventoryTab(QWidget):
             eb.setMinimumWidth(54)
             eb.setToolTip('Edit product')
             eb.setStyleSheet(
-                f"QPushButton {{ background:{C['card']}; color:{C['text']}; "
+                f"QPushButton {{ background:{btn_bg}; color:{C['text']}; "
                 f"border:1px solid {C['border2']}; border-radius:8px; "
                 f"font-size:12px; font-weight:700; padding:4px 10px; }}"
                 f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
@@ -234,7 +269,7 @@ class InventoryTab(QWidget):
         hb.setMinimumWidth(68)
         hb.setToolTip('Stock adjustments and sales since this product was added')
         hb.setStyleSheet(
-            f"QPushButton {{ background:{C['card']}; color:{C['text']}; "
+            f"QPushButton {{ background:{btn_bg}; color:{C['text']}; "
             f"border:1px solid {C['border2']}; border-radius:8px; "
             f"font-size:12px; font-weight:700; padding:4px 10px; }}"
             f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
@@ -263,7 +298,7 @@ class InventoryTab(QWidget):
 
         cl.addStretch()
         self._tbl.setCellWidget(i, 7, cell)
-
+        apply_table_row_backgrounds(self._tbl, row=i)
     def _adjust_stock_dialog(self):
         """Superadmin: adjust stock with PIN and reason. Never crashes the app."""
         if self._role() != ROLE_SUPERADMIN:

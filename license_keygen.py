@@ -61,13 +61,15 @@ def generate_remote_activation_payload(device_id: str, plan: str, days: int) -> 
     """Generate a signed payload for remote activation via Telegram."""
     import json, hmac, hashlib
     now = int(time.time())
+    days = max(1, int(days))
     payload = {
-        'device_id':  device_id,
-        'plan':       plan,
-        'issued_at':  now,
-        'expires_at': now + days * 86400,
-        'issued_by':  'MugoByte Technologies',
-        'version':    2,
+        'device_id':      device_id,
+        'plan':           plan,
+        'issued_at':      now,
+        'expires_at':     now + days * 86400,
+        'duration_days':  days,
+        'issued_by':      'MugoByte Technologies',
+        'version':        2,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
     payload['sig'] = hmac.new(_MASTER_SECRET, raw, hashlib.sha256).hexdigest()

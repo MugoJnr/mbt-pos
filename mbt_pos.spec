@@ -9,6 +9,21 @@ HERE = os.path.abspath(SPECPATH)
 _cf_bin = os.path.join(HERE, 'tools', 'cloudflared.exe')
 _extra_binaries = [(_cf_bin, '.')] if os.path.isfile(_cf_bin) else []
 
+def _web_datas_without_node_modules():
+    """Ship web/ for Flask routes + dashboard-ui/dist only (skip node_modules/src)."""
+    web_root = os.path.join(HERE, 'web')
+    out = []
+    skip_dirs = {'node_modules', '.git', '__pycache__', 'src'}
+    for root, dirs, files in os.walk(web_root):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        rel_root = os.path.relpath(root, HERE)
+        for f in files:
+            if f.endswith(('.map', '.ts', '.tsx')) and 'dashboard-ui' in rel_root and 'dist' not in rel_root:
+                continue
+            src = os.path.join(root, f)
+            out.append((src, rel_root))
+    return out
+
 a = Analysis(
     [os.path.join(HERE, 'launcher.py')],
     pathex=[HERE],
@@ -20,11 +35,12 @@ a = Analysis(
         (os.path.join(HERE, 'licensing'),   'licensing'),
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
-        (os.path.join(HERE, 'web'),         'web'),
         (os.path.join(HERE, 'version.json'), '.'),
         (os.path.join(HERE, 'config'),       'config'),
-    ] + ([(os.path.join(HERE, 'web_launcher.py'), '.')]
-         if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []),
+    ] + _web_datas_without_node_modules() + (
+        [(os.path.join(HERE, 'web_launcher.py'), '.')]
+        if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []
+    ),
     hiddenimports=[
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.sip',
         'jwt', 'jwt.algorithms',

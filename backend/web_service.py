@@ -56,11 +56,12 @@ class WebDashboardService:
     def start(self) -> bool:
         with self._lock:
             if self.running:
+                self._schedule_tunnel_start()
                 return True
             if _is_alive(self.port):
                 log.info('Web dashboard already running on port %s', self.port)
                 self.running = True
-                self._start_tunnel_if_configured()
+                self._schedule_tunnel_start()
                 return True
             try:
                 from backend.app import app, init_db
@@ -76,24 +77,26 @@ class WebDashboardService:
                 )
                 self._thread.start()
 
-                for _ in range(24):
-                    time.sleep(0.25)
+                # Short poll only — tunnel work is always backgrounded
+                for _ in range(12):
+                    time.sleep(0.1)
                     if _is_alive(self.port):
                         log.info('Web dashboard live at %s', self.url)
                         self.running = True
-                        self._start_tunnel_if_configured()
+                        self._schedule_tunnel_start()
                         return True
 
                 log.warning(
                     'Web dashboard thread started but health check timed out')
                 self.running = True
-                self._start_tunnel_if_configured()
+                self._schedule_tunnel_start()
                 return True
             except OSError as e:
                 if _is_alive(self.port):
                     log.info('Port %s in use — reusing existing dashboard',
                              self.port)
                     self.running = True
+                    self._schedule_tunnel_start()
                     return True
                 log.error('Failed to bind web dashboard port %s: %s',
                           self.port, e)
@@ -101,6 +104,17 @@ class WebDashboardService:
             except Exception as e:
                 log.error('Failed to start web dashboard: %s', e, exc_info=True)
                 return False
+
+    def _schedule_tunnel_start(self):
+        """Never run tunnel restart / remote HTTPS on the caller thread."""
+        if getattr(self, '_tunnel_start_scheduled', False):
+            return
+        self._tunnel_start_scheduled = True
+        threading.Thread(
+            target=self._start_tunnel_if_configured,
+            daemon=True,
+            name='CF-Tunnel-Start',
+        ).start()
 
     def _start_tunnel_if_configured(self):
         try:
@@ -137,14 +151,20 @@ class WebDashboardService:
                 log.warning('Cloudflare tunnel did not start — check logs/cloudflared.log')
                 try:
                     from backend.cloudflare_setup import (
-                        _get_cloudflare_api_token, start_auto_cloudflare,
+                        needs_auto_cloudflare_setup, start_auto_cloudflare,
                     )
-                    if _get_cloudflare_api_token():
+                    need, reason = needs_auto_cloudflare_setup()
+                    if need or reason in (
+                        'needs_one_time_setup', 'start_tunnel', 'full_setup',
+                        'start_token_tunnel',
+                    ):
                         start_auto_cloudflare()
                 except Exception:
                     pass
         except Exception as e:
             log.warning('Cloudflare tunnel: %s', e)
+        finally:
+            self._tunnel_start_scheduled = False
 
     def stop(self):
         with self._lock:

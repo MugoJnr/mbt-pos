@@ -47,38 +47,44 @@ def qss_hex_aa(color: str, alpha: float = 0.13) -> str:
     return f'#{a:02X}{r:02X}{g:02X}{b:02X}'
 
 
-# ── DARK PALETTE (Lovable :root / .dark) ──────────────────────────────────────
+# ── DARK PALETTE (commercial refine — keep MBT gold identity) ─────────────────
+# Aligned with POS redesign tokens: bg #0B1220, surface #16213A, hover #1E2E4A
 DARK = {
-    'app':       '#05080F',
-    'surface':   '#080D18',
-    'panel':     '#0B1220',
-    'card':      '#0F1A2E',
-    'card2':     '#132034',
-    'sidebar':   '#060A14',
-    'input':     '#0C1626',
-    'hover':     '#162A44',
-    'selected':  '#1A3560',
-    'gold':      '#F2A800',
-    'gold_lt':   '#FFBE3A',
-    'gold_dk':   '#C07800',
-    'gold_fg':   '#0A0F1A',
+    'app':       '#0B1220',
+    'surface':   '#0B1220',
+    'panel':     '#0E1628',
+    'card':      '#16213A',
+    'card2':     '#1B2943',
+    'sidebar':   '#0A101C',
+    'input':     '#101A2E',
+    'hover':     '#1E2E4A',
+    'selected':  '#243554',
+    'gold':      '#FBBF24',
+    'gold_lt':   '#F5B301',
+    'gold_dk':   '#C08A00',
+    'gold_fg':   '#0B1220',
     # dim tokens are solid-ish panel mixes (NOT CSS #RRGGBBAA — Qt misreads those)
-    'gold_dim':  '#1A1508',
-    'text':      '#EEF2FC',
-    'text2':     '#6880A0',
-    'muted':     '#334D68',
+    'gold_dim':  '#1C1808',
+    'text':      '#FFFFFF',
+    'text2':     '#94A3B8',
+    'muted':     '#64748B',
     'disabled':  '#1C2A3A',
-    'ok':        '#00C97E',
+    'ok':        '#00D084',
     'ok_dim':    '#0A1F18',
-    'warn':      '#F0A500',
+    'warn':      '#FFB000',
     'warn_dim':  '#1A1508',
-    'err':       '#FF3D50',
+    'err':       '#FF4D6D',
     'err_dim':   '#1A0C10',
-    'info':      '#4A8FFF',
+    'info':      '#3B82F6',
     'info_dim':  '#0C1424',
-    'border':    '#10192C',
-    'border2':   '#18283E',
-    'sep':       '#0A1018',
+    'border':    '#243B5A',
+    'border2':   '#2A3B58',
+    'sep':       '#121A2C',
+    # Semantic aliases used by POS modular components
+    'primary':   '#FBBF24',
+    'success':   '#00D084',
+    'warning':   '#FFB000',
+    'danger':    '#FF4D6D',
 }
 
 # ── LIGHT PALETTE (Lovable .light) ────────────────────────────────────────────
@@ -112,16 +118,26 @@ LIGHT = {
     'border':    '#CDD8E8',
     'border2':   '#B8C8DC',
     'sep':       '#E0E8F0',
+    'primary':   '#B87000',
+    'success':   '#006B48',
+    'warning':   '#A05800',
+    'danger':    '#B81C2C',
 }
 
-# Radius scale (Lovable --radius-*)
+# Radius scale — commercial cards use 16px
 RADIUS = {
     'sm': 6,
     'md': 8,
     'lg': 12,
-    'xl': 14,
-    '2xl': 18,
+    'xl': 16,
+    '2xl': 20,
 }
+
+# POS layout rhythm (PyQt5 modular redesign)
+PADDING = 20
+GAP = 18
+ANIMATION_MS = 150
+TOUCH_MIN = 44  # touch-friendly control minimum height/width where practical
 
 _FONT_LOADED = False
 _FONT_FAMILY = "'Segoe UI', 'Inter', Arial, sans-serif"
@@ -359,6 +375,10 @@ QFrame {{ border: none; }}
     border-top: 1px solid {p['border']};
     min-height: 36px; max-height: 36px;
 }}
+QWidget#statusBar {{
+    background-color: {p['panel']};
+    border-top: 1px solid {p['border']};
+}}
 #statusLeft  {{ color: {p['text2']}; font-size: 11px; background: transparent; }}
 #statusRight {{
     color: {p['text2']}; font-size: 11px; background: transparent;
@@ -477,6 +497,7 @@ QComboBox QAbstractItemView {{
     selection-background-color: {p['selected']};
     selection-color: {p['gold']};
     padding: 4px;
+    max-height: 280px;
 }}
 QComboBox QAbstractItemView::item {{ padding: 8px 12px; min-height: 32px; }}
 
@@ -488,7 +509,9 @@ QTableWidget, QTableView {{
     border: none;
     border-radius: {r_card}px;
     font-size: 14px;
-    alternate-background-color: {p['card2']};
+    /* Zebra via item BackgroundRole only — do not use alternate-background-color
+       (QSS overrides BackgroundRole and can leak opposite-theme row fills). */
+    alternate-background-color: {p['card']};
     selection-background-color: {p['selected']};
     selection-color: {p['text']};
     show-decoration-selected: 1;
@@ -498,6 +521,9 @@ QTableWidget::item, QTableView::item {{
     border: none;
     border-bottom: 1px solid {p['border']};
 }}
+/* Do not set background/color on ::item — any ::item background (even
+   transparent) makes Qt ignore item BackgroundRole/ForegroundRole.
+   Zebra + text come from apply_table_row_backgrounds / retint_table_items. */
 QTableWidget::item:selected, QTableView::item:selected {{
     color: {p['text']};
     background: {p['selected']};
@@ -732,11 +758,22 @@ class ThemeManager:
         return cls._is_light
 
     @classmethod
-    def apply(cls, is_light: bool):
+    def apply(cls, is_light: bool, force: bool = False):
         global MBT_STYLESHEET
         from PyQt5.QtWidgets import QApplication
         ensure_fonts()
-        cls._is_light = bool(is_light)
+        want = bool(is_light)
+        app = QApplication.instance()
+        # Skip only when already on theme AND app sheet matches (avoid stale MainWindow copy issues)
+        if (
+            not force
+            and cls._is_light == want
+            and MBT_STYLESHEET
+            and app is not None
+            and app.styleSheet() == MBT_STYLESHEET
+        ):
+            return MBT_STYLESHEET
+        cls._is_light = want
         p = LIGHT if cls._is_light else DARK
         # Update global C in-place so all existing widget references stay valid
         C.clear()
@@ -750,7 +787,6 @@ class ThemeManager:
             'border_strong': C['border2'],
         })
         MBT_STYLESHEET = _build_stylesheet(p)
-        app = QApplication.instance()
         if app:
             app.setStyleSheet(MBT_STYLESHEET)
         return MBT_STYLESHEET

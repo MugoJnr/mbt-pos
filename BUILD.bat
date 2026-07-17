@@ -206,6 +206,18 @@ cd /d "%SOURCE_DIR%"
 echo.
 
 :: ════════════════════════════════════════════════════════════════
+:: STEP 2e — React web dashboard (Flask serves dashboard-ui/dist)
+:: ════════════════════════════════════════════════════════════════
+echo  [2e/5] Building React web dashboard...
+cd /d "%SOURCE_DIR%"
+call "%SOURCE_DIR%build_web.bat"
+if errorlevel 1 (
+    echo  [ERROR] Web dashboard build failed. Fix npm/vite errors above.
+    pause & exit /b 1
+)
+echo.
+
+:: ════════════════════════════════════════════════════════════════
 :: STEP 3 — PyInstaller
 :: ════════════════════════════════════════════════════════════════
 echo  [3/5] Building MBT_POS.exe (5-10 minutes^)...

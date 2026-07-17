@@ -293,10 +293,13 @@ class SettingsTab(QWidget):
 
         cf_btn_row = QHBoxLayout()
         self._cf_setup_btn = PrimaryBtn('Set Up Cloudflare', 40)
-        self._cf_setup_btn.clicked.connect(lambda: self._run_cloudflare_setup(False))
+        self._cf_setup_btn.clicked.connect(self._cf_setup_or_fix)
         self._cf_test_btn = SecondaryBtn('Test Connection', 40)
         self._cf_test_btn.clicked.connect(self._test_cloudflare)
-        self._cf_relogin_btn = SecondaryBtn('Re-login', 40)
+        self._cf_relogin_btn = SecondaryBtn('Vendor recovery', 40)
+        self._cf_relogin_btn.setToolTip(
+            'Emergency only — browser login to Cloudflare. '
+            'Normal shops use the central API token automatically.')
         self._cf_relogin_btn.clicked.connect(lambda: self._run_cloudflare_setup(True))
         cf_btn_row.addWidget(self._cf_setup_btn)
         cf_btn_row.addWidget(self._cf_test_btn)
@@ -304,7 +307,8 @@ class SettingsTab(QWidget):
         cf_btn_row.addStretch()
         rbl.addLayout(cf_btn_row)
 
-        self._cf_status = QLabel('Select remote access, then click Set Up Cloudflare once and wait.')
+        self._cf_status = QLabel(
+            'Remote access auto-provisions on launch when the vendor API token is installed.')
         self._cf_status.setWordWrap(True)
         self._cf_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         rbl.addWidget(self._cf_status)
@@ -459,29 +463,98 @@ class SettingsTab(QWidget):
             self._cf_sub.setText(f'https://{domain}  ·  Keep MBT POS running for remote access.')
             self._cf_status_row.setStyleSheet(
                 f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
-        elif remote and domain:
-            self._cf_icon.setText('◐')
-            self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
-            self._cf_title.setText('Remote setup in progress')
-            self._cf_title.setStyleSheet(
-                f"color:{C['warn']}; font-size:14px; font-weight:700; background:transparent;")
-            self._cf_sub.setText(f'https://{domain} — run Test Connection or finish setup.')
-            self._cf_status_row.setStyleSheet(
-                f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+            self._cf_status.setText('Configured — tunnel auto-starts every time you open MBT POS.')
+            self._cf_setup_btn.setText('Set Up Cloudflare')
         else:
-            self._cf_icon.setText('○')
-            self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['muted']}; background:transparent;")
-            self._cf_title.setText('Remote dashboard not configured')
-            self._cf_title.setStyleSheet(
-                f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
-            self._cf_sub.setText(
+            # Prefer live status helper when available
+            st = {}
+            try:
+                from backend.cloudflare_setup import get_remote_dashboard_status
+                st = get_remote_dashboard_status()
+            except Exception:
+                st = {}
+            state = st.get('state') or (
+                'configured' if (remote and domain) else 'needs_setup')
+            detail = st.get('detail') or (
+                f'https://{domain} — finish one-time setup' if domain else
                 'View sales and inventory from anywhere via your mugobyte.com link.')
-            self._cf_status_row.setStyleSheet(
-                f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+            if state == 'running':
+                self._cf_icon.setText('✓')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
+                self._cf_title.setText('Remote dashboard running')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
+                self._cf_status.setText('Tunnel is up. No further setup needed.')
+                self._cf_setup_btn.setText('Set Up Cloudflare')
+            elif state == 'configured':
+                self._cf_icon.setText('✓')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
+                self._cf_title.setText('Remote dashboard configured')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
+                self._cf_status.setText('One-time setup done — tunnel auto-starts on app launch.')
+                self._cf_setup_btn.setText('Set Up Cloudflare')
+            elif state == 'vendor_token_missing':
+                self._cf_icon.setText('!')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['err']}; background:transparent;")
+                self._cf_title.setText('Vendor token required')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['err']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText(
+                    'Contact MugoByte — place management API token in deploy.local.json. '
+                    'Cashiers do not need Cloudflare login.')
+                self._cf_setup_btn.setText('Retry auto-setup')
+            elif state == 'broken':
+                self._cf_icon.setText('!')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['err']}; background:transparent;")
+                self._cf_title.setText('Remote setup needs vendor fix')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['err']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText(
+                    'Vendor: fix central API token, or use Vendor recovery (browser) as last resort.')
+                self._cf_setup_btn.setText('Retry auto-setup')
+            elif remote and domain:
+                self._cf_icon.setText('◐')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
+                self._cf_title.setText('Remote provisioning…')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['warn']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText(
+                    'Automatic — tunnel is created on launch. No Cloudflare browser login needed.')
+                self._cf_setup_btn.setText('Run setup now')
+            else:
+                self._cf_icon.setText('○')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['muted']}; background:transparent;")
+                self._cf_title.setText('Remote dashboard not configured')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(
+                    'View sales and inventory from anywhere via your mugobyte.com link.')
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText(
+                    'Enable remote access — setup is automatic when the vendor API token is present.')
+                self._cf_setup_btn.setText('Set Up Cloudflare')
         is_admin = self.user.get('user', {}).get('role', '') in ('admin', 'superadmin')
         for btn in (self._cf_setup_btn, self._cf_relogin_btn):
             btn.setEnabled(is_admin)
             btn.setVisible(is_admin)
+        # Vendor recovery is emergency-only — keep visible for admin but not primary
         self._cf_test_btn.setEnabled(True)
 
     def _toggle_cf_remote_box(self):
@@ -546,6 +619,28 @@ class SettingsTab(QWidget):
         except Exception:
             pass
 
+    def _cf_setup_or_fix(self):
+        """Primary action: start existing tunnel or API auto-setup (no browser)."""
+        force = False
+        try:
+            from backend.cloudflare_setup import get_remote_dashboard_status
+            st = get_remote_dashboard_status().get('state')
+            # Never force browser from primary button — Vendor recovery only
+            force = False
+            if st == 'vendor_token_missing':
+                QMessageBox.warning(
+                    self, 'Vendor token required',
+                    'Central Cloudflare management API token is missing or wrong type.\n\n'
+                    'MugoByte must place a cfat_… token in:\n'
+                    '  config/deploy.local.json (before BUILD), or\n'
+                    '  %LOCALAPPDATA%\\MugoByte\\MBT POS\\config\\deploy.local.json\n\n'
+                    'Shop staff do not log into Cloudflare.\n'
+                    'Use “Vendor recovery” only as last-resort emergency.')
+                return
+        except Exception:
+            force = False
+        self._run_cloudflare_setup(force)
+
     def _require_cf_admin(self):
         if self.user.get('user', {}).get('role', '') not in ('admin', 'superadmin'):
             QMessageBox.warning(self, 'Permission', 'Admin only.')
@@ -557,9 +652,11 @@ class SettingsTab(QWidget):
             return
         if force_relogin:
             reply = QMessageBox.question(
-                self, 'Re-login to Cloudflare',
-                'This clears the old Cloudflare certificate and opens a fresh login.\n'
-                'Use the MugoByte account that owns mugobyte.com.\n\nContinue?',
+                self, 'Vendor recovery — Cloudflare browser login',
+                'Emergency only. This opens a browser login for the MugoByte '
+                'Cloudflare account that owns mugobyte.com.\n\n'
+                'Normal shop installs must NOT need this — use the central '
+                'management API token in deploy.local.json instead.\n\nContinue?',
                 QMessageBox.Yes | QMessageBox.No)
             if reply != QMessageBox.Yes:
                 return
@@ -597,6 +694,26 @@ class SettingsTab(QWidget):
             )
             if reply != QMessageBox.Yes:
                 return
+        # Already configured with credentials → start only (no re-auth)
+        if not force_relogin:
+            try:
+                from backend.cloudflare_setup import (
+                    _remote_infra_ready, CloudflareTunnelService,
+                    refresh_remote_setup_status,
+                )
+                if _remote_infra_ready():
+                    self._cf_status.setText('Already configured — starting tunnel…')
+                    ok = CloudflareTunnelService().start()
+                    refresh_remote_setup_status()
+                    self._refresh_cf_status()
+                    if ok:
+                        QMessageBox.information(
+                            self, 'Remote Dashboard',
+                            'Tunnel was already configured and is now running.\n'
+                            'No re-login needed.')
+                        return
+            except Exception:
+                pass
         self._cf_setup_running = True
         self._save_web_remote_config(remote_setup_ok=False)
         self._cf_setup_btn.setEnabled(False)
@@ -637,7 +754,7 @@ class SettingsTab(QWidget):
                 pass
             remote_ok = result.get('remote_ok', True)
             self._cf_status.setText(
-                '✓ Cloudflare configured. '
+                '✓ Cloudflare configured — tunnel auto-starts on every launch. '
                 + ('Remote URL is live.' if remote_ok else
                    'DNS may take a few minutes — use Test Connection.'))
             self._cf_status.setStyleSheet(

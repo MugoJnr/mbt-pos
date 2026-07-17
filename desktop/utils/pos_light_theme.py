@@ -6,7 +6,15 @@ Applied ONLY to the SalesTab widget.
 All other tabs remain dark. Toggle button sits inside the POS panel header.
 High contrast white, larger fonts, clean layout — optimised for shop floor use.
 """
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QPalette
 from desktop.utils.theme import qss_alpha, LIGHT, DARK, ThemeManager
+
+# Category popup: compact scroll list (not full-screen), always re-applied on theme switch
+_CAT_POPUP_MAX_H = 280
+_CAT_MAX_VISIBLE = 10
+_CAT_ITEM_FG_DARK = '#F5F7FA'
+_CAT_POPUP_BG_DARK = '#121C30'  # dark card — readable vs transparent/global wipe
 
 def _active_palette():
     """POS panel palette — always from live ThemeManager tokens."""
@@ -147,10 +155,96 @@ COMBO = (
     "QComboBox::drop-down {{ border:none; width:32px; }}"
     "QComboBox QAbstractItemView{{"
     "  background:#FFFFFF; color:{text}; border:2px solid {border2};"
-    "  font-size:{font_label};"
+    "  font-size:{font_label}; max-height:280px;"
     "  selection-background-color:{selected}; selection-color:{text};"
     "}}"
 )
+
+
+def style_cat_combo(combo, is_light: bool = False) -> None:
+    """Sales category QComboBox — scrollable popup + high-contrast items.
+
+    Must be called from apply_light / apply_dark so theme switches do not leave
+    invisible dark-on-dark (or wiped) popup styles.
+    """
+    if combo is None:
+        return
+    combo.setObjectName('posCatCombo')
+    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
+    view = combo.view()
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    if is_light:
+        L = _light_tokens()
+        bg = '#FFFFFF'
+        fg = L['text']
+        sel = L['selected']
+        sel_fg = L['text']
+        hover = L['hover']
+        border = L['border2']
+        combo.setStyleSheet(
+            f"QComboBox#posCatCombo{{"
+            f"background:{bg};color:{fg};border:2px solid {border};"
+            f"border-radius:8px;padding:10px 14px;font-size:{FS['label']};min-height:40px;}}"
+            f"QComboBox#posCatCombo:focus{{border-color:{L['gold']};}}"
+            f"QComboBox#posCatCombo::drop-down{{border:none;width:32px;}}"
+            f"QComboBox#posCatCombo QAbstractItemView{{"
+            f"background:{bg};color:{fg};border:2px solid {border};"
+            f"outline:0;font-size:{FS['label']};max-height:{_CAT_POPUP_MAX_H}px;"
+            f"selection-background-color:{sel};selection-color:{sel_fg};}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item{{"
+            f"color:{fg};min-height:30px;padding:4px 10px;}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item:selected{{"
+            f"background:{sel};color:{sel_fg};}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item:hover{{"
+            f"background:{hover};color:{fg};}}"
+        )
+    else:
+        D = dict(DARK)
+        bg = _CAT_POPUP_BG_DARK  # #121C30 — distinct dark card
+        fg = _CAT_ITEM_FG_DARK   # #F5F7FA
+        sel = D.get('selected', '#1A3560')
+        sel_fg = fg
+        hover = D.get('hover', '#162A44')
+        border = D.get('border2', '#18283E')
+        inp = D.get('input', '#0C1626')
+        combo.setStyleSheet(
+            f"QComboBox#posCatCombo{{"
+            f"background:{inp};color:{fg};"
+            f"border:1px solid {border};border-radius:8px;padding:6px 10px;"
+            f"font-size:14px;min-height:40px;}}"
+            f"QComboBox#posCatCombo:focus{{border-color:{D.get('gold', '#F2A800')};}}"
+            f"QComboBox#posCatCombo::drop-down{{border:none;width:28px;}}"
+            f"QComboBox#posCatCombo QAbstractItemView{{"
+            f"background:{bg};color:{fg};border:1px solid {border};"
+            f"outline:0;font-size:14px;max-height:{_CAT_POPUP_MAX_H}px;"
+            f"selection-background-color:{sel};selection-color:{sel_fg};}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item{{"
+            f"color:{fg};background:{bg};min-height:30px;padding:4px 10px;}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item:selected{{"
+            f"background:{sel};color:{sel_fg};}}"
+            f"QComboBox#posCatCombo QAbstractItemView::item:hover{{"
+            f"background:{hover};color:{fg};}}"
+        )
+
+    # Palette on the list view — Qt popup often ignores QSS color alone
+    pal = view.palette()
+    pal.setColor(QPalette.Base, QColor(bg))
+    pal.setColor(QPalette.Text, QColor(fg))
+    pal.setColor(QPalette.WindowText, QColor(fg))
+    pal.setColor(QPalette.ButtonText, QColor(fg))
+    pal.setColor(QPalette.Highlight, QColor(sel))
+    pal.setColor(QPalette.HighlightedText, QColor(sel_fg))
+    pal.setColor(QPalette.Window, QColor(bg))
+    view.setPalette(pal)
+    view.setStyleSheet(
+        f"QAbstractItemView{{background:{bg};color:{fg};"
+        f"outline:0;max-height:{_CAT_POPUP_MAX_H}px;}}"
+        f"QAbstractItemView::item{{color:{fg};min-height:30px;}}"
+        f"QAbstractItemView::item:selected{{background:{sel};color:{sel_fg};}}"
+    )
+    combo.setMaxVisibleItems(_CAT_MAX_VISIBLE)
 
 SEARCH_INPUT = (
     "QLineEdit{{"
@@ -227,9 +321,34 @@ def _label_style(color_key='text2', size_key='label', weight=''):
         f"color:{L[color_key]}; font-size:{FS[size_key]}; background:transparent;{w}")
 
 
+
+def _tint_checkout_foot(sales_tab, bg: str, border: str) -> None:
+    foot = getattr(sales_tab, '_checkout_foot', None)
+    if foot is None:
+        return
+    foot.setAttribute(Qt.WA_StyledBackground, True)
+    foot.setStyleSheet(
+        f"QWidget#posCheckoutFoot {{ background:{bg}; border-top:1px solid {border}; }}")
+
+
+def _tint_refresh_btn(sales_tab, bg: str, fg: str, border: str, hover: str, gold: str) -> None:
+    btn = getattr(sales_tab, '_refresh_btn', None)
+    if btn is None:
+        return
+    btn.setStyleSheet(
+        f"QPushButton {{ background:{bg}; color:{fg}; "
+        f"border:1px solid {border}; border-radius:8px; font-size:14px; font-weight:600; }}"
+        f"QPushButton:hover {{ color:{gold}; border-color:{gold}; background:{hover}; }}")
+
 def apply_light(sales_tab) -> None:
     """Apply light mode to every widget inside SalesTab."""
+    # Ensure ThemeManager is light so token helpers expose light extras (bg, etc.)
+    if not ThemeManager.is_light():
+        ThemeManager.apply(True)
     L = _light_tokens()
+    if 'bg' not in L:
+        L = dict(L)
+        L['bg'] = L.get('surface', '#FFFFFF')
     t = sales_tab
 
     t.setStyleSheet(f"background:{L['bg']};")
@@ -246,9 +365,24 @@ def apply_light(sales_tab) -> None:
         if w:
             w.setStyleSheet("background:transparent;")
 
-    t._search.setStyleSheet(fmt(SEARCH_INPUT))
-    t._cat.setStyleSheet(fmt(COMBO))
-    t._gw.setStyleSheet("background:transparent;")
+    if hasattr(t._search, 'refresh_theme'):
+        t._search.refresh_theme()
+    else:
+        t._search.setStyleSheet(fmt(SEARCH_INPUT))
+    style_cat_combo(getattr(t, '_cat', None), is_light=True)
+    _tint_checkout_foot(t, L['card'], L['border'])
+    _tint_refresh_btn(t, L['card'], L['text'], L['border2'], L['hover'], L['gold'])
+    sb = getattr(t, '_search_bar', None)
+    if sb is not None:
+        sb.setStyleSheet(
+            f"background:transparent; border-bottom:1px solid {L['border']};")
+    chdr = getattr(t, '_cart_hdr', None)
+    if chdr is not None:
+        chdr.setStyleSheet(f"border-bottom:1px solid {L['border']};")
+    if getattr(t, '_cust_lbl', None):
+        t._cust_lbl.setStyleSheet(_label_style('text2', 'label'))
+    if getattr(t, '_gw', None) is not None:
+        t._gw.setStyleSheet("background:transparent;")
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(_label_style('text', 'heading', '700'))
@@ -270,7 +404,7 @@ def apply_light(sales_tab) -> None:
     t._tot_lbl.setStyleSheet(
         f"color:{L['gold']}; font-size:{FS['total']}; font-weight:900; background:transparent;")
 
-    t._disc.setStyleSheet(_label_style('text', 'label', '700'))
+    t._disc.setStyleSheet(fmt(NOTE_INPUT))
     t._pay.setStyleSheet(fmt(COMBO))
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
@@ -293,23 +427,45 @@ def apply_light(sales_tab) -> None:
         t._reprint_btn.setStyleSheet(fmt(SECONDARY_BTN))
 
     for b in getattr(t, '_pay_btns', {}).values():
-        b.setStyleSheet(
-            f"QPushButton{{background:{L['card2']};color:{L['text']};"
-            f"border:1px solid {L['border2']};border-radius:8px;"
-            f"font-size:14px;font-weight:700;min-height:42px;padding:6px 10px;}}"
-            f"QPushButton:checked{{background:{L['gold_tint']};color:{L['gold']};"
-            f"border-color:{L['gold']};font-weight:800;}}")
+        if hasattr(b, 'refresh_theme'):
+            b.refresh_theme()
+        else:
+            b.setStyleSheet(
+                f"QPushButton{{background:{L['card2']};color:{L['text']};"
+                f"border:1px solid {L['border2']};border-radius:8px;"
+                f"font-size:14px;font-weight:700;min-height:42px;padding:6px 10px;}}"
+                f"QPushButton:checked{{background:{L['gold_tint']};color:{L['gold']};"
+                f"border-color:{L['gold']};font-weight:800;}}")
+    if hasattr(t, '_pay_seg') and hasattr(t._pay_seg, 'refresh_theme'):
+        t._pay_seg.refresh_theme()
+    if hasattr(t, '_customer') and hasattr(t._customer, 'refresh_theme'):
+        t._customer.refresh_theme()
+    if hasattr(t, '_summary') and hasattr(t._summary, 'refresh_theme'):
+        t._summary.refresh_theme()
 
-    t._theme_btn.setText('\u263e  Dark')
-    t._theme_btn.setStyleSheet(fmt(TOGGLE_BTN_LIGHT))
+    tb = getattr(t, '_theme_btn', None)
+    if tb is not None and hasattr(tb, '_refresh_theme'):
+        tb._refresh_theme()
+    elif tb is not None:
+        tb.setText('\u263e  Dark')
+        tb.setStyleSheet(fmt(TOGGLE_BTN_LIGHT))
 
     t._empty.setStyleSheet(
         f"color:{L['muted']}; font-size:{FS['empty']}; background:transparent;")
 
     t._is_light = True
-    if getattr(t, 'cart', None):
-        t._refresh_cart()
-    t._filter()
+    # Fast in-place card colors only — cart rebuild + product grid deferred by MainWindow
+    if hasattr(t, '_retint_prod_grid'):
+        try:
+            t._retint_prod_grid()
+        except Exception:
+            pass
+    # Cart row labels bake colors at build time — rebuild so light mode never keeps white text
+    if getattr(t, 'cart', None) is not None and hasattr(t, '_refresh_cart'):
+        try:
+            t._refresh_cart()
+        except Exception:
+            pass
 
 
 def apply_dark(sales_tab) -> None:
@@ -344,13 +500,25 @@ def apply_dark(sales_tab) -> None:
         f"border:1px solid {D['border2']}; border-radius:8px; "
         f"padding:8px 12px; font-size:14px; min-height:40px;"
     )
-    t._search.setStyleSheet(f"QLineEdit{{{_dark_input} border-radius:22px;}}")
-    t._cat.setStyleSheet(
-        f"QComboBox{{{_dark_input}}}"
-        f"QComboBox::drop-down{{border:none;width:28px;}}"
-        f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};"
-        f"selection-background-color:{D['selected']};selection-color:{D['text']};}}")
-    t._gw.setStyleSheet(f"background:{D['card']};")
+    if hasattr(t._search, 'refresh_theme'):
+        t._search.refresh_theme()
+    else:
+        t._search.setStyleSheet(f"QLineEdit{{{_dark_input} border-radius:22px;}}")
+    style_cat_combo(getattr(t, '_cat', None), is_light=False)
+    _tint_checkout_foot(t, D['card'], D['border'])
+    _tint_refresh_btn(t, D['card'], D['text'], D['border2'], D['hover'], D.get('gold', '#F2A800'))
+    sb = getattr(t, '_search_bar', None)
+    if sb is not None:
+        sb.setStyleSheet(
+            f"background:transparent; border-bottom:1px solid {D['border']};")
+    chdr = getattr(t, '_cart_hdr', None)
+    if chdr is not None:
+        chdr.setStyleSheet(f"border-bottom:1px solid {D['border']};")
+    if getattr(t, '_cust_lbl', None):
+        t._cust_lbl.setStyleSheet(
+            f"color:{D['text2']};font-size:13px;background:transparent;")
+    if getattr(t, '_gw', None) is not None:
+        t._gw.setStyleSheet(f"background:{D['card']};")
 
     if getattr(t, '_sale_hdr', None):
         t._sale_hdr.setStyleSheet(
@@ -386,8 +554,7 @@ def apply_dark(sales_tab) -> None:
     t._tot_lbl.setStyleSheet(
         f"color:{D['gold']}; font-size:28px; font-weight:900; background:transparent;")
 
-    t._disc.setStyleSheet(
-        f"color:{D['text']}; font-size:15px; font-weight:700; background:transparent;")
+    t._disc.setStyleSheet(f"QLineEdit{{{_dark_input}}}")
     t._pay.setStyleSheet(
         f"QComboBox{{{_dark_input}}}"
         f"QComboBox QAbstractItemView{{background:{D['card']};color:{D['text']};}}")
@@ -432,24 +599,45 @@ def apply_dark(sales_tab) -> None:
         t._reprint_btn.setStyleSheet(_sec)
 
     for b in getattr(t, '_pay_btns', {}).values():
-        b.setStyleSheet(
-            f"QPushButton{{background:{D['card2']};color:{D['text2']};"
-            f"border:1px solid {D['border']};border-radius:8px;"
-            f"font-size:13px;font-weight:700;min-height:40px;padding:6px 8px;}}"
-            f"QPushButton:checked{{background:{D['selected']};color:{D['gold']};"
-            f"border-color:{D['gold']};font-weight:800;}}")
+        if hasattr(b, 'refresh_theme'):
+            b.refresh_theme()
+        else:
+            b.setStyleSheet(
+                f"QPushButton{{background:{D['card2']};color:{D['text2']};"
+                f"border:1px solid {D['border']};border-radius:8px;"
+                f"font-size:13px;font-weight:700;min-height:40px;padding:6px 8px;}}"
+                f"QPushButton:checked{{background:{D['selected']};color:{D['gold']};"
+                f"border-color:{D['gold']};font-weight:800;}}")
+    if hasattr(t, '_pay_seg') and hasattr(t._pay_seg, 'refresh_theme'):
+        t._pay_seg.refresh_theme()
+    if hasattr(t, '_customer') and hasattr(t._customer, 'refresh_theme'):
+        t._customer.refresh_theme()
+    if hasattr(t, '_summary') and hasattr(t._summary, 'refresh_theme'):
+        t._summary.refresh_theme()
 
-    t._theme_btn.setText('\u2600  Light')
-    t._theme_btn.setStyleSheet(
-        f"QPushButton{{background:{D['card2']}; color:{D['text']};"
-        f"border:1px solid {D['border']}; border-radius:8px;"
-        f"font-size:13px; font-weight:600; padding:6px 12px; min-height:36px;}}"
-        f"QPushButton:hover{{background:{D['hover']}; color:{D['text']};}}")
+    tb = getattr(t, '_theme_btn', None)
+    if tb is not None and hasattr(tb, '_refresh_theme'):
+        tb._refresh_theme()
+    elif tb is not None:
+        tb.setText('\u2600  Light')
+        tb.setStyleSheet(
+            f"QPushButton{{background:{D['card2']}; color:{D['text']};"
+            f"border:1px solid {D['border']}; border-radius:8px;"
+            f"font-size:13px; font-weight:600; padding:6px 12px; min-height:36px;}}"
+            f"QPushButton:hover{{background:{D['hover']}; color:{D['text']};}}")
 
     t._empty.setStyleSheet(
         f"color:{D['muted']}; font-size:15px; font-weight:600; background:transparent;")
 
     t._is_light = False
-    if getattr(t, 'cart', None):
-        t._refresh_cart()
-    t._filter()
+    # Fast in-place card colors only — cart rebuild + product grid deferred by MainWindow
+    if hasattr(t, '_retint_prod_grid'):
+        try:
+            t._retint_prod_grid()
+        except Exception:
+            pass
+    if getattr(t, 'cart', None) is not None and hasattr(t, '_refresh_cart'):
+        try:
+            t._refresh_cart()
+        except Exception:
+            pass

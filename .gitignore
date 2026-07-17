@@ -21,3 +21,9 @@ _system_test.py
 *.spec.bak
 .env
 .env.*
+
+# Node
+node_modules/
+web/dashboard-ui/node_modules/
+web/dashboard-ui/.tanstack/
+

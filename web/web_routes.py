@@ -3,7 +3,7 @@ MBT POS — Web Dashboard Routes
 MugoByte Technologies | mugobyte.com
 
 Adds to the existing Flask backend:
-  - Serves the web dashboard SPA at /
+  - Serves the React SPA (web/dashboard-ui/dist) at /
   - Adds /api/debt/* routes
   - Adds /api/customers routes
   - Adds /api/products/<id>/adjust route
@@ -13,7 +13,7 @@ import os
 import json
 import sqlite3
 from datetime import datetime, date
-from flask import Blueprint, send_from_directory, jsonify, request, g, current_app
+from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort
 
 web = Blueprint('web', __name__)
 
@@ -22,18 +22,54 @@ _HERE     = os.path.dirname(os.path.abspath(__file__))
 _BASE_DIR = os.path.dirname(_HERE)
 _WEB_DIR  = _HERE
 _TMPL_DIR = os.path.join(_HERE, 'templates')
+_DIST_DIR = os.path.join(_HERE, 'dashboard-ui', 'dist')
+_LEGACY   = os.path.join(_TMPL_DIR, 'dashboard.legacy.html')
+
+
+def _dist_ready():
+    return os.path.isfile(os.path.join(_DIST_DIR, 'index.html'))
 
 
 # ── Serve SPA ─────────────────────────────────────────────────────────────
 
 @web.route('/')
 def index():
-    return send_from_directory(_TMPL_DIR, 'dashboard.html')
+    if _dist_ready():
+        return send_from_directory(_DIST_DIR, 'index.html')
+    # Fallback to legacy single-file SPA if React dist not built yet
+    if os.path.isfile(_LEGACY):
+        return send_from_directory(_TMPL_DIR, 'dashboard.legacy.html')
+    legacy = os.path.join(_TMPL_DIR, 'dashboard.html')
+    if os.path.isfile(legacy):
+        return send_from_directory(_TMPL_DIR, 'dashboard.html')
+    abort(503, description='Web dashboard not built. Run web/dashboard-ui build.')
+
+
+@web.route('/assets/<path:filename>')
+def spa_assets(filename):
+    assets = os.path.join(_DIST_DIR, 'assets')
+    if not os.path.isdir(assets):
+        abort(404)
+    return send_from_directory(assets, filename)
 
 
 @web.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory(os.path.join(_HERE, 'static'), filename)
+
+
+@web.route('/<path:spa_path>')
+def spa_fallback(spa_path):
+    """Client-side routes (pos, inventory, …) — never steal /api/*."""
+    if spa_path.startswith('api/') or spa_path == 'api':
+        abort(404)
+    # Prefer real files from dist (favicon, etc.)
+    candidate = os.path.join(_DIST_DIR, spa_path)
+    if _dist_ready() and os.path.isfile(candidate):
+        return send_from_directory(_DIST_DIR, spa_path)
+    if _dist_ready():
+        return send_from_directory(_DIST_DIR, 'index.html')
+    abort(404)
 
 
 # ══════════════════════════════════════════════════════════════════════════

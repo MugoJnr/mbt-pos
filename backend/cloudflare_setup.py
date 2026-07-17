@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -44,33 +45,41 @@ def _cloudflared_download_url() -> tuple[str, str]:
 LogCallback = Callable[[str, str], None]  # (level, message)
 
 AUTH_HELP = """
-Cloudflare authentication failed (error 10000).
+Cloudflare management auth failed.
 
-The cert.pem on this PC is missing, expired, or from the wrong Cloudflare account.
+PRODUCTION (all shops — no browser on shop PCs):
+  Place ONE central management API token before building the installer:
 
-FIX — try in order:
+  1) dash.cloudflare.com → My Profile → API Tokens → Create Token
+     Permissions: Account → Cloudflare Tunnel → Edit
+                  Zone  → DNS → Edit  (zone: mugobyte.com)
 
-1) Fresh login (recommended)
-   In MBT POS: Settings → Remote Web Dashboard → Re-login to Cloudflare
-   In the browser:
-   • Log into the Cloudflare account that OWNS mugobyte.com
-   • If you see multiple accounts, pick the MugoByte account
-   • Select zone: mugobyte.com  →  click Authorize
+  2) Put it in EITHER (same key name):
+     • Source (bundled into Setup.exe):
+         extracted/mbt_pos/config/deploy.local.json
+         "cloudflare_api_token": "cfat_…"
+     • Or live AppData override (any installed shop):
+         %LOCALAPPDATA%\\MugoByte\\MBT POS\\config\\deploy.local.json
+     • Or env CLOUDFLARE_API_TOKEN when running BUILD.bat
 
-2) API token (best for shop installs — no browser on customer PC)
-   dash.cloudflare.com → My Profile → API Tokens → Create Token
-   Permissions: Account → Cloudflare Tunnel → Edit
-                Zone  → DNS → Edit  (zone: mugobyte.com)
-   Add to config/deploy.local.json:
-     "cloudflare_api_token": "your_token_here"
-   Then run setup again from Settings → Remote Web Dashboard.
+  Do NOT put a tunnel connector token (cfut_… / eyJ…) in cloudflare_api_token.
 
-3) Zero Trust must be active on the account (free tier is fine):
-   dash.cloudflare.com → Zero Trust → Networks → Tunnels
+VENDOR EMERGENCY only (this PC):
+  Settings → Remote Web → Vendor recovery (browser login)
+  Authorize the MugoByte account / mugobyte.com zone.
 
-Delete stale cert manually if needed:
-   %USERPROFILE%\\.cloudflared\\cert.pem
+Zero Trust must be active (free tier is fine).
 """.strip()
+
+VENDOR_TOKEN_MISSING = (
+    'Central Cloudflare management API token is missing or invalid.\n'
+    'This is a MugoByte/vendor configuration problem — not a shop cashier task.\n\n'
+    'Place a real API token (Account Tunnel Edit + Zone DNS Edit) in:\n'
+    '  config/deploy.local.json  (before BUILD), or\n'
+    '  %LOCALAPPDATA%\\MugoByte\\MBT POS\\config\\deploy.local.json\n'
+    'Key: "cloudflare_api_token"  (must NOT start with cfut_)\n\n'
+    'After that, every shop auto-provisions {shop}.mugobyte.com on launch.'
+)
 
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -99,10 +108,96 @@ def get_log_path() -> Path:
     return p
 
 
-def get_cloudflared_dir() -> Path:
+def get_legacy_cloudflared_dir() -> Path:
+    """cloudflared's default home dir (login/create still write here)."""
     d = Path.home() / '.cloudflared'
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_cloudflared_dir() -> Path:
+    """
+    Durable AppData cloudflared state (survives reinstall of Program Files).
+    Path: %LOCALAPPDATA%\\MugoByte\\MBT POS\\cloudflared\\ when installed.
+    """
+    d = _project_root() / 'cloudflared'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _copy_if_missing(src: Path, dst: Path) -> bool:
+    try:
+        if src.is_file() and not dst.is_file():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            return True
+    except Exception as e:
+        logger.warning('cloudflared copy %s → %s failed: %s', src, dst, e)
+    return False
+
+
+def sync_cloudflared_state() -> None:
+    """
+    Keep AppData + ~/.cloudflared in sync so login/create artifacts persist
+    across reinstalls and are found on every launch.
+    """
+    app = get_cloudflared_dir()
+    home = get_legacy_cloudflared_dir()
+    # Pull from home → AppData (source of truth for durability)
+    for name in ('cert.pem', 'config.yml'):
+        _copy_if_missing(home / name, app / name)
+        _copy_if_missing(app / name, home / name)
+    for src in list(home.glob('*.json')) + list(app.glob('*.json')):
+        other = (app if src.parent == home else home) / src.name
+        _copy_if_missing(src, other)
+    # Backup credentials + config into config/ for extra durability
+    # Skip restoring config.yml from backup when connector-token mode is active
+    # (old marker/config would force a broken credentials-file launch).
+    token_mode = False
+    try:
+        token_mode = bool(_get_tunnel_run_token())
+    except Exception:
+        token_mode = False
+    try:
+        backup = _project_root() / 'config' / 'cloudflared_backup'
+        backup.mkdir(parents=True, exist_ok=True)
+        for name in ('cert.pem', 'config.yml'):
+            if name == 'config.yml' and token_mode:
+                continue
+            _copy_if_missing(app / name, backup / name)
+        for src in app.glob('*.json'):
+            _copy_if_missing(src, backup / src.name)
+        # Restore from backup if AppData empty but backup exists
+        for name in ('cert.pem', 'config.yml'):
+            if name == 'config.yml' and token_mode:
+                continue
+            _copy_if_missing(backup / name, app / name)
+            _copy_if_missing(backup / name, home / name)
+        for src in backup.glob('*.json'):
+            _copy_if_missing(src, app / src.name)
+            _copy_if_missing(src, home / src.name)
+    except Exception as e:
+        logger.warning('cloudflared backup sync: %s', e)
+
+
+def _credentials_file_for(tunnel_id: str, tunnel_name: str = '') -> Optional[Path]:
+    """Locate tunnel credentials JSON in AppData, home, or backup."""
+    names = []
+    if tunnel_id:
+        names.append(f'{tunnel_id}.json')
+    if tunnel_name:
+        names.append(f'{tunnel_name}.json')
+    dirs = (
+        get_cloudflared_dir(),
+        get_legacy_cloudflared_dir(),
+        _project_root() / 'config' / 'cloudflared_backup',
+    )
+    for d in dirs:
+        for name in names:
+            p = d / name
+            if p.is_file() and p.stat().st_size > 50:
+                return p
+    return None
 
 
 def _cloudflared_bin() -> Path:
@@ -128,6 +223,8 @@ def _bundled_cloudflared_path() -> Optional[Path]:
 
 def bootstrap_cloudflared() -> Optional[Path]:
     """Copy bundled cloudflared into AppData (no network). Called at app start."""
+    sync_cloudflared_state()
+    normalize_cloudflare_tokens()
     dest = _cloudflared_bin()
     if dest.is_file():
         return dest
@@ -180,10 +277,13 @@ _DEFAULT_CFG = {
     'tunnel_domain': '',
     'tunnel_name': '',
     'tunnel_subdomain': '',
+    'tunnel_id': '',
     'remote_enabled': False,
     'remote_setup_ok': False,
     'remote_setup_at': '',
     'cloudflared_exe': '',
+    'cloudflare_api_token': '',
+    'cloudflare_tunnel_token': '',
     'check_interval': 30,
     'max_restarts': 50,
 }
@@ -194,7 +294,7 @@ def load_web_config() -> dict:
     cfg = dict(_DEFAULT_CFG)
     if path.is_file():
         try:
-            with open(path, encoding='utf-8') as f:
+            with open(path, encoding='utf-8-sig') as f:
                 cfg.update(json.load(f))
         except Exception as e:
             logger.warning('web_config read failed: %s', e)
@@ -231,8 +331,8 @@ def save_web_config(updates: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     cfg = load_web_config()
     cfg.update(updates)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(cfg, f, indent=2)
+    # Never write UTF-8 BOM (PowerShell -Encoding UTF8 breaks older readers)
+    path.write_bytes(json.dumps(cfg, indent=2).encode('utf-8') + b'\n')
     return path
 
 
@@ -303,26 +403,157 @@ def _hide_flags() -> int:
     return 0
 
 
-def _get_cloudflare_api_token() -> str:
-    """API token bypasses stale cert.pem (set in deploy.local.json or env)."""
-    tok = (load_web_config().get('cloudflare_api_token') or '').strip()
-    if tok:
-        return tok
+def _is_tunnel_run_token(tok: str) -> bool:
+    """
+    Connector token for `cloudflared tunnel run --token`.
+    Formats: cfut_… (legacy) or eyJ… JWT from Cloudflare tunnel token API.
+    """
+    t = (tok or '').strip()
+    if not t:
+        return False
+    if t.lower().startswith('cfut_'):
+        return True
+    # GET /accounts/.../cfd_tunnel/{id}/token returns a JWT
+    if t.startswith('eyJ') and len(t) >= 40:
+        return True
+    return False
+
+
+def _looks_like_management_api_token(tok: str) -> bool:
+    """True if token is usable as CLOUDFLARE_API_TOKEN (not a tunnel-run token)."""
+    t = (tok or '').strip()
+    if not t or _is_tunnel_run_token(t):
+        return False
+    return len(t) >= 20
+
+
+def _token_from_sources() -> str:
+    """Raw token from web_config / deploy.local / env (any type). Prefer management."""
+    candidates = []
+    cfg = load_web_config()
+    candidates.append((cfg.get('cloudflare_api_token') or '').strip())
+    candidates.append((cfg.get('cloudflare_management_token') or '').strip())
     try:
         from config.deploy import load_deploy_config
-        tok = (load_deploy_config().get('cloudflare_api_token') or '').strip()
-        if tok:
-            return tok
+        dep = load_deploy_config()
+        candidates.append((dep.get('cloudflare_api_token') or '').strip())
+        candidates.append((dep.get('cloudflare_management_token') or '').strip())
     except Exception:
         pass
-    return os.environ.get('CLOUDFLARE_API_TOKEN', '').strip()
+    candidates.append(os.environ.get('CLOUDFLARE_API_TOKEN', '').strip())
+    # Prefer a real management token if any source has one
+    for tok in candidates:
+        if _looks_like_management_api_token(tok):
+            return tok
+    for tok in candidates:
+        if tok:
+            return tok
+    return ''
+
+
+def _get_cloudflare_api_token() -> str:
+    """Management API token only — never returns tunnel-run tokens (cfut_/JWT)."""
+    candidates = []
+    cfg = load_web_config()
+    candidates.append((cfg.get('cloudflare_api_token') or '').strip())
+    candidates.append((cfg.get('cloudflare_management_token') or '').strip())
+    try:
+        from config.deploy import load_deploy_config
+        dep = load_deploy_config()
+        candidates.append((dep.get('cloudflare_api_token') or '').strip())
+        candidates.append((dep.get('cloudflare_management_token') or '').strip())
+    except Exception:
+        pass
+    candidates.append(os.environ.get('CLOUDFLARE_API_TOKEN', '').strip())
+    for tok in candidates:
+        if _looks_like_management_api_token(tok):
+            return tok
+    return ''
+
+
+def _get_tunnel_run_token() -> str:
+    """Named-tunnel connector token for `cloudflared tunnel run --token`."""
+    cfg = load_web_config()
+    for key in ('cloudflare_tunnel_token', 'cloudflare_api_token'):
+        tok = (cfg.get(key) or '').strip()
+        if _is_tunnel_run_token(tok):
+            return tok
+    try:
+        from config.deploy import load_deploy_config
+        dep = load_deploy_config()
+        for key in ('cloudflare_tunnel_token', 'cloudflare_api_token'):
+            tok = (dep.get(key) or '').strip()
+            if _is_tunnel_run_token(tok):
+                return tok
+    except Exception:
+        pass
+    env = os.environ.get('TUNNEL_TOKEN', '').strip()
+    if _is_tunnel_run_token(env):
+        return env
+    return ''
+
+
+def normalize_cloudflare_tokens() -> None:
+    """
+    One-time cleanup: cfut_ must not live in cloudflare_api_token.
+    That mis-filing caused silent auth loops (tunnel list → cert.pem missing).
+    """
+    try:
+        cfg = load_web_config()
+        api = (cfg.get('cloudflare_api_token') or '').strip()
+        run = (cfg.get('cloudflare_tunnel_token') or '').strip()
+        updates = {}
+        if _is_tunnel_run_token(api):
+            if not _is_tunnel_run_token(run):
+                updates['cloudflare_tunnel_token'] = api
+            updates['cloudflare_api_token'] = ''
+            logger.warning(
+                'Moved cfut_ token out of cloudflare_api_token '
+                '(it is a tunnel-run token, not a management API token)')
+        if updates:
+            save_web_config(updates)
+        # Same cleanup for AppData deploy.local.json
+        try:
+            dep_path = _project_root() / 'config' / 'deploy.local.json'
+            if dep_path.is_file():
+                with open(dep_path, encoding='utf-8-sig') as f:
+                    dep = json.load(f)
+                d_api = (dep.get('cloudflare_api_token') or '').strip()
+                if _is_tunnel_run_token(d_api):
+                    if not (dep.get('cloudflare_tunnel_token') or '').strip():
+                        dep['cloudflare_tunnel_token'] = d_api
+                    dep['cloudflare_api_token'] = ''
+                    with open(dep_path, 'w', encoding='utf-8') as f:
+                        json.dump(dep, f, indent=2)
+                        f.write('\n')
+                    logger.warning('Cleaned cfut_ from AppData deploy.local.json')
+        except Exception as e:
+            logger.warning('deploy.local token cleanup: %s', e)
+    except Exception as e:
+        logger.warning('normalize_cloudflare_tokens: %s', e)
+
+
+# ── Cloudflare REST API (shop auto-provision — no browser / no cert.pem) ──────
+
+_CF_API = 'https://api.cloudflare.com/client/v4'
+_cf_account_cache: str = ''
+_cf_zone_cache: str = ''
 
 
 def _subprocess_env() -> dict:
     env = os.environ.copy()
-    tok = _get_cloudflare_api_token()
-    if tok:
-        env['CLOUDFLARE_API_TOKEN'] = tok
+    # Never pass a tunnel-run token as CLOUDFLARE_API_TOKEN — cloudflared
+    # ignores it and then fails looking for cert.pem.
+    api = _get_cloudflare_api_token()
+    if api:
+        env['CLOUDFLARE_API_TOKEN'] = api
+    else:
+        env.pop('CLOUDFLARE_API_TOKEN', None)
+    cert = get_cloudflared_dir() / 'cert.pem'
+    if not cert.is_file():
+        cert = get_legacy_cloudflared_dir() / 'cert.pem'
+    if cert.is_file():
+        env['TUNNEL_ORIGIN_CERT'] = str(cert)
     return env
 
 
@@ -331,27 +562,328 @@ def _is_auth_error(text: str) -> bool:
     return any(x in t for x in (
         'authentication error', 'unauthorized', 'code: 10000',
         'code":10000', 'rest request failed: unauthorized',
+        'provided tunnel token is not valid',
+        'error locating origin cert',
     ))
+
+
+def _cf_api(
+    method: str,
+    path: str,
+    body: Optional[dict] = None,
+    timeout: int = 45,
+) -> dict:
+    """Call Cloudflare v4 API with the management token. Raises RuntimeError."""
+    token = _get_cloudflare_api_token()
+    if not token:
+        raise RuntimeError(VENDOR_TOKEN_MISSING)
+    url = path if path.startswith('http') else f'{_CF_API}{path}'
+    data = None if body is None else json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'MBT-POS/1.0',
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        err_body = ''
+        try:
+            err_body = e.read().decode('utf-8', errors='replace')
+        except Exception:
+            err_body = str(e)
+        raise RuntimeError(
+            f'Cloudflare API {method} {path}: HTTP {e.code}\n{err_body[:500]}'
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f'Cloudflare API {method} {path}: {e}') from e
+    if not payload.get('success', True):
+        errs = payload.get('errors') or payload.get('messages') or payload
+        raise RuntimeError(f'Cloudflare API {method} {path} failed: {errs}')
+    return payload
+
+
+def _cf_account_id() -> str:
+    global _cf_account_cache
+    if _cf_account_cache:
+        return _cf_account_cache
+    try:
+        from config.deploy import load_deploy_config
+        pinned = (
+            os.environ.get('CLOUDFLARE_ACCOUNT_ID', '').strip()
+            or (load_deploy_config().get('cloudflare_account_id') or '').strip()
+        )
+        if pinned:
+            _cf_account_cache = pinned
+            return pinned
+    except Exception:
+        pass
+    data = _cf_api('GET', '/accounts?per_page=50')
+    accounts = data.get('result') or []
+    if not accounts:
+        raise RuntimeError('Cloudflare API token has no accessible accounts')
+    _cf_account_cache = accounts[0]['id']
+    return _cf_account_cache
+
+
+def _cf_zone_id(zone_name: str = BASE_DOMAIN) -> str:
+    global _cf_zone_cache
+    if _cf_zone_cache:
+        return _cf_zone_cache
+    try:
+        from config.deploy import load_deploy_config
+        pinned = (
+            os.environ.get('CLOUDFLARE_ZONE_ID', '').strip()
+            or (load_deploy_config().get('cloudflare_zone_id') or '').strip()
+        )
+        if pinned:
+            _cf_zone_cache = pinned
+            return pinned
+    except Exception:
+        pass
+    q = urllib.parse.quote(zone_name)
+    data = _cf_api('GET', f'/zones?name={q}')
+    zones = data.get('result') or []
+    if not zones:
+        raise RuntimeError(
+            f'Zone {zone_name} not found — token needs Zone DNS Edit on {zone_name}')
+    _cf_zone_cache = zones[0]['id']
+    return _cf_zone_cache
+
+
+def verify_management_api_token(log: Optional[_SetupLog] = None) -> tuple[bool, str]:
+    """Prove management token works (accounts list) — no cloudflared/cert needed."""
+    if not _get_cloudflare_api_token():
+        raw = _token_from_sources()
+        if _is_tunnel_run_token(raw):
+            msg = (
+                'Stored token is a tunnel-run token (cfut_/JWT), not a management '
+                'API token. Put a cfat_… token in deploy.local.json.')
+            if log:
+                log.warn(msg)
+            return False, msg
+        return False, 'No management API token configured'
+    try:
+        aid = _cf_account_id()
+        msg = f'API auth OK (account {aid[:8]}…)'
+        if log:
+            log.ok(msg)
+        return True, msg
+    except Exception as e:
+        return False, str(e)
+
+
+def _api_find_tunnel(account_id: str, name: str) -> Optional[dict]:
+    q = urllib.parse.quote(name)
+    data = _cf_api(
+        'GET',
+        f'/accounts/{account_id}/cfd_tunnel?name={q}&is_deleted=false',
+    )
+    results = data.get('result') or []
+    for t in results:
+        if t.get('name') == name:
+            return t
+    return results[0] if results else None
+
+
+def _api_create_or_get_tunnel(
+    account_id: str,
+    name: str,
+    log: Optional[_SetupLog] = None,
+) -> dict:
+    existing = _api_find_tunnel(account_id, name)
+    if existing:
+        if log:
+            log.ok(f'Reusing tunnel "{name}" ({existing.get("id", "")[:8]}…)')
+        return existing
+    data = _cf_api(
+        'POST',
+        f'/accounts/{account_id}/cfd_tunnel',
+        {'name': name, 'config_src': 'cloudflare'},
+    )
+    tunnel = data.get('result') or {}
+    if log:
+        log.ok(f'Created tunnel "{name}" ({(tunnel.get("id") or "")[:8]}…)')
+    return tunnel
+
+
+def _api_put_ingress(
+    account_id: str,
+    tunnel_id: str,
+    hostname: str,
+    port: int,
+    log: Optional[_SetupLog] = None,
+) -> None:
+    _cf_api(
+        'PUT',
+        f'/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations',
+        {
+            'config': {
+                'ingress': [
+                    {
+                        'hostname': hostname,
+                        'service': f'http://127.0.0.1:{port}',
+                    },
+                    {'service': 'http_status:404'},
+                ],
+            }
+        },
+    )
+    if log:
+        log.ok(f'Remote ingress → {hostname} → 127.0.0.1:{port}')
+
+
+def _api_ensure_dns_cname(
+    zone_id: str,
+    hostname: str,
+    tunnel_id: str,
+    log: Optional[_SetupLog] = None,
+) -> None:
+    target = f'{tunnel_id}.cfargotunnel.com'
+    q = urllib.parse.quote(hostname)
+    data = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}&type=CNAME')
+    records = data.get('result') or []
+    body = {
+        'type': 'CNAME',
+        'name': hostname,
+        'content': target,
+        'proxied': True,
+        'ttl': 1,
+    }
+    if records:
+        rid = records[0]['id']
+        cur = (records[0].get('content') or '').strip().rstrip('.')
+        if cur.lower() == target.lower() and records[0].get('proxied', True):
+            if log:
+                log.ok(f'DNS already OK → {hostname}')
+            return
+        _cf_api('PUT', f'/zones/{zone_id}/dns_records/{rid}', body)
+        if log:
+            log.ok(f'DNS updated → {hostname} → {target}')
+        return
+    _cf_api('POST', f'/zones/{zone_id}/dns_records', body)
+    if log:
+        log.ok(f'DNS created → {hostname} → {target}')
+
+
+def _api_tunnel_run_token(account_id: str, tunnel_id: str) -> str:
+    data = _cf_api('GET', f'/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token')
+    tok = (data.get('result') or '').strip()
+    if isinstance(data.get('result'), dict):
+        tok = (data['result'].get('token') or '').strip()
+    if not tok:
+        raise RuntimeError('Cloudflare returned empty tunnel connector token')
+    return tok
+
+
+def provision_shop_tunnel_via_api(
+    subdomain: str,
+    port: int = DEFAULT_PORT,
+    log: Optional[_SetupLog] = None,
+) -> dict:
+    """
+    Zero-browser shop provisioning:
+      create/reuse named tunnel → remote ingress → DNS CNAME → connector token.
+    Persists token + tunnel ids in AppData web_config (survives Program Files reinstall).
+    """
+    slug = shop_to_subdomain(subdomain)
+    domain = full_domain(slug)
+    tname = tunnel_name_for(slug)
+    if log:
+        log.info(f'API provision for https://{domain} (tunnel {tname})')
+
+    ok, detail = verify_management_api_token(log)
+    if not ok:
+        raise RuntimeError(f'{detail}\n\n{VENDOR_TOKEN_MISSING}')
+
+    account_id = _cf_account_id()
+    zone_id = _cf_zone_id(BASE_DOMAIN)
+    tunnel = _api_create_or_get_tunnel(account_id, tname, log)
+    tunnel_id = (tunnel.get('id') or '').strip()
+    if not tunnel_id:
+        raise RuntimeError(f'Tunnel create/list returned no id for {tname}')
+
+    _api_put_ingress(account_id, tunnel_id, domain, port, log)
+    _api_ensure_dns_cname(zone_id, domain, tunnel_id, log)
+    run_tok = _api_tunnel_run_token(account_id, tunnel_id)
+
+    # Durable AppData marker so status UI knows tunnel is configured
+    cfdir = get_cloudflared_dir()
+    marker = (
+        f'# Managed by MBT POS API provision — run via connector token\n'
+        f'tunnel: {tunnel_id}\n'
+        f'ingress:\n'
+        f'  - hostname: {domain}\n'
+        f'    service: http://127.0.0.1:{port}\n'
+        f'  - service: http_status:404\n'
+    )
+    (cfdir / 'config.yml').write_text(marker, encoding='utf-8')
+    sync_cloudflared_state()
+
+    save_web_config({
+        'base_domain': BASE_DOMAIN,
+        'tunnel_subdomain': slug,
+        'tunnel_domain': domain,
+        'tunnel_name': tname,
+        'tunnel_id': tunnel_id,
+        'remote_enabled': True,
+        'cloudflare_tunnel_token': run_tok,
+        # Keep management token out of web_config when it lives in deploy.local
+        'remote_setup_ok': True,
+        'remote_setup_at': datetime.now().isoformat(),
+    })
+    if log:
+        log.ok(f'Persisted connector token + config for {domain}')
+    return {
+        'ok': True,
+        'tunnel_id': tunnel_id,
+        'tunnel_name': tname,
+        'domain': domain,
+        'subdomain': slug,
+        'via': 'api',
+    }
 
 
 def clear_cloudflare_login(log: Optional[_SetupLog] = None):
     """Remove stale origin certificate so the next login is fresh."""
-    cert = get_cloudflared_dir() / 'cert.pem'
-    if cert.is_file():
+    for d in (get_cloudflared_dir(), get_legacy_cloudflared_dir()):
+        cert = d / 'cert.pem'
+        if cert.is_file():
+            try:
+                cert.unlink()
+                if log:
+                    log.info(f'Removed stale cert.pem ({cert}) — will re-login')
+            except Exception as e:
+                if log:
+                    log.warn(f'Could not delete cert.pem: {e}')
+    bak = _project_root() / 'config' / 'cloudflared_backup' / 'cert.pem'
+    if bak.is_file():
         try:
-            cert.unlink()
-            if log:
-                log.info('Removed stale cert.pem — will re-login')
-        except Exception as e:
-            if log:
-                log.warn(f'Could not delete cert.pem: {e}')
+            bak.unlink()
+        except Exception:
+            pass
 
 
 def verify_tunnel_api(cf: Path, log: Optional[_SetupLog] = None) -> tuple[bool, str]:
-    """True if cloudflared can list tunnels (proves API auth works)."""
+    """True if management API works (REST first, else cloudflared tunnel list)."""
     if _get_cloudflare_api_token():
+        return verify_management_api_token(log)
+    raw = _token_from_sources()
+    if _is_tunnel_run_token(raw):
+        msg = (
+            'Stored token is a tunnel-run token (cfut_/JWT), not a management API token. '
+            'Put a real API token in deploy.local.json (vendor).')
         if log:
-            log.ok('Using Cloudflare API token from config')
+            log.warn(msg)
+        return False, msg
+    if not cf:
+        return False, 'cloudflared missing'
     r = _run([str(cf), 'tunnel', 'list', '-o', 'json'], timeout=90)
     out = ((r.stdout or '') + (r.stderr or '')).strip()
     if r.returncode == 0:
@@ -371,15 +903,28 @@ def ensure_cloudflare_auth(
     cf: Path,
     log: _SetupLog,
     force_relogin: bool = False,
+    allow_browser: Optional[bool] = None,
 ) -> None:
-    """API token (automatic) or browser login (manual). Raises on failure."""
+    """
+    Prefer management API token (automatic, all shops).
+    Browser login only when allow_browser=True (vendor emergency / --relogin).
+    """
+    if allow_browser is None:
+        allow_browser = bool(force_relogin)
+
     if force_relogin:
         clear_cloudflare_login(log)
 
+    sync_cloudflared_state()
     has_token = bool(_get_cloudflare_api_token())
+    raw = _token_from_sources()
+    if _is_tunnel_run_token(raw) and not has_token:
+        log.warn(
+            'Ignoring tunnel-run token for management auth — need a management '
+            'API token (Account Tunnel Edit + Zone DNS Edit) in deploy.local.json.')
 
     if has_token:
-        ok, detail = verify_tunnel_api(cf, log)
+        ok, detail = verify_management_api_token(log)
         if ok:
             log.ok('Cloudflare API token verified')
             return
@@ -387,21 +932,33 @@ def ensure_cloudflare_auth(
             f'Cloudflare API token was rejected:\n{detail}\n\n'
             'Fix deploy.local.json (or AppData config/deploy.local.json):\n'
             '  Permissions: Account → Cloudflare Tunnel → Edit\n'
-            '               Zone → DNS → Edit (mugobyte.com)')
+            '               Zone → DNS → Edit (mugobyte.com)\n'
+            '  Do NOT use a cfut_… / JWT tunnel connector token here.')
 
-    ok, detail = verify_tunnel_api(cf, log)
-    if ok:
-        log.ok('Cloudflare API auth verified')
-        return
-    if has_cloudflare_login():
-        log.warn(f'Existing cert.pem rejected by Cloudflare: {detail[:200]}')
+    # Existing cert.pem from a prior vendor login — usable without browser
+    if has_cloudflare_login() and not force_relogin:
+        ok, detail = verify_tunnel_api(cf, log)
+        if ok:
+            log.ok('Cloudflare cert.pem auth verified')
+            sync_cloudflared_state()
+            return
+        log.warn(f'Existing cert.pem rejected: {detail[:200]}')
+        if not allow_browser:
+            clear_cloudflare_login(log)
+            raise RuntimeError(VENDOR_TOKEN_MISSING + '\n\n' + AUTH_HELP)
+
+    if not allow_browser:
+        raise RuntimeError(VENDOR_TOKEN_MISSING)
+
+    if has_cloudflare_login() and force_relogin:
         clear_cloudflare_login(log)
 
     if not has_cloudflare_login():
         log.info(
-            'Opening browser — log into the MugoByte Cloudflare account, '
-            f'then authorize zone {BASE_DOMAIN}')
+            'VENDOR recovery — opening browser for MugoByte Cloudflare account / '
+            f'zone {BASE_DOMAIN}')
         r = _run([str(cf), 'tunnel', 'login'], timeout=300, visible=True)
+        sync_cloudflared_state()
         if r.returncode != 0 or not has_cloudflare_login():
             raise RuntimeError(
                 'Cloudflare login failed or was cancelled.\n'
@@ -410,17 +967,7 @@ def ensure_cloudflare_auth(
     ok, detail = verify_tunnel_api(cf, log)
     if ok:
         log.ok('Cloudflare API auth verified')
-        return
-
-    log.warn('Auth failed — retrying with fresh browser login…')
-    clear_cloudflare_login(log)
-    r = _run([str(cf), 'tunnel', 'login'], timeout=300, visible=True)
-    if r.returncode != 0 or not has_cloudflare_login():
-        raise RuntimeError(
-            'Cloudflare re-login failed.\n\n' + AUTH_HELP)
-    ok, detail = verify_tunnel_api(cf, log)
-    if ok:
-        log.ok('Cloudflare API auth verified after re-login')
+        sync_cloudflared_state()
         return
 
     raise RuntimeError(
@@ -456,8 +1003,12 @@ def is_online() -> bool:
 
 
 def has_cloudflare_login() -> bool:
-    cert = get_cloudflared_dir() / 'cert.pem'
-    return cert.is_file() and cert.stat().st_size > 100
+    for d in (get_cloudflared_dir(), get_legacy_cloudflared_dir()):
+        cert = d / 'cert.pem'
+        if cert.is_file() and cert.stat().st_size > 100:
+            return True
+    bak = _project_root() / 'config' / 'cloudflared_backup' / 'cert.pem'
+    return bak.is_file() and bak.stat().st_size > 100
 
 
 def download_cloudflared(log: _SetupLog) -> Path:
@@ -510,16 +1061,29 @@ def _write_cloudflared_config(
     port: int,
     log: Optional[_SetupLog] = None,
 ) -> Path:
+    sync_cloudflared_state()
     cfdir = get_cloudflared_dir()
-    cred = cfdir / f'{tunnel_id}.json'
-    if not cred.is_file():
-        alt = cfdir / f'{tunnel_name}.json'
-        if alt.is_file():
-            cred = alt
-        elif log:
-            log.warn(f'Credentials file not found at {cred} — tunnel may still work if created earlier')
+    cred = _credentials_file_for(tunnel_id, tunnel_name)
+    if cred is None:
+        # Prefer AppData path even if file not yet present (create just wrote to home)
+        sync_cloudflared_state()
+        cred = _credentials_file_for(tunnel_id, tunnel_name)
+    if cred is None:
+        cred = cfdir / f'{tunnel_id}.json'
+        if log:
+            log.warn(
+                f'Credentials file not found at {cred} — '
+                'tunnel may fail until cloudflared creates it')
+    else:
+        # Ensure AppData has a durable copy
+        app_cred = cfdir / f'{tunnel_id}.json'
+        if cred.resolve() != app_cred.resolve():
+            try:
+                shutil.copy2(cred, app_cred)
+                cred = app_cred
+            except Exception:
+                pass
 
-    cfg_path = cfdir / 'config.yml'
     body = (
         f'tunnel: {tunnel_id}\n'
         f'credentials-file: {cred}\n'
@@ -528,17 +1092,53 @@ def _write_cloudflared_config(
         f'    service: http://localhost:{port}\n'
         f'  - service: http_status:404\n'
     )
-    cfg_path.write_text(body, encoding='utf-8')
+    # Write to AppData (primary) and ~/.cloudflared (cloudflared defaults)
+    for dest_dir in (cfdir, get_legacy_cloudflared_dir()):
+        cfg_path = dest_dir / 'config.yml'
+        cfg_path.write_text(body, encoding='utf-8')
+    sync_cloudflared_state()
+    cfg_path = cfdir / 'config.yml'
     if log:
         log.ok(f'Wrote {cfg_path}')
     logger.info('cloudflared config.yml -> %s (%s)', hostname, tunnel_id)
     return cfg_path
 
 
+def ensure_remote_ingress_port(
+    port: Optional[int] = None,
+    log: Optional[_SetupLog] = None,
+) -> bool:
+    """
+    Push Cloudflare remote ingress to http://127.0.0.1:{flask_port}.
+    Critical for token-mode tunnels: connector config is remote; local config.yml
+    is ignored. Without this, a one-off 5051 workaround can leave edmus on 502
+    after the workaround stops.
+    """
+    cfg = load_web_config()
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    tunnel_id = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    if not domain or not tunnel_id:
+        return False
+    if not _get_cloudflare_api_token():
+        return False
+    try:
+        account_id = _cf_account_id()
+        use_port = int(port if port is not None else cfg.get('flask_port', DEFAULT_PORT))
+        _api_put_ingress(account_id, tunnel_id, domain, use_port, log)
+        logger.info('Ensured remote ingress %s → 127.0.0.1:%s', domain, use_port)
+        return True
+    except Exception as e:
+        logger.warning('ensure_remote_ingress_port failed: %s', e)
+        if log:
+            log.warn(f'Could not sync remote ingress: {e}')
+        return False
+
+
 def sync_tunnel_config_from_web(log: Optional[_SetupLog] = None) -> bool:
     """
-    Align ~/.cloudflared/config.yml with web_config.json (tunnel name + hostname).
+    Align AppData cloudflared/config.yml with web_config.json.
     Fixes shops where web_config was updated but config.yml still points elsewhere.
+    Prefer existing local credentials — do not require live API if already configured.
     """
     cfg = load_web_config()
     if not cfg.get('remote_enabled'):
@@ -549,20 +1149,37 @@ def sync_tunnel_config_from_web(log: Optional[_SetupLog] = None) -> bool:
         if log:
             log.warn('Remote enabled but tunnel_domain/tunnel_name missing')
         return False
+    # Connector-token path: still push remote ingress to flask_port (config.yml unused)
+    if _get_tunnel_run_token():
+        ensure_remote_ingress_port(log=log)
+        return True
+    sync_cloudflared_state()
+    tid = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    if tid and _credentials_file_for(tid, tname):
+        port = int(cfg.get('flask_port', DEFAULT_PORT))
+        _write_cloudflared_config(tname, tid, domain, port, log)
+        save_web_config({'tunnel_id': tid})
+        return True
     cf = find_cloudflared_exe()
     if not cf:
         return False
-    tid = _tunnel_id_by_name(cf, tname, log or _SetupLog())
-    if not tid:
-        # Fallback: derive tunnel name from subdomain slug
-        sub = cfg.get('tunnel_subdomain', '')
-        alt_name = tunnel_name_for(sub) if sub else ''
-        if alt_name and alt_name != tname:
-            tid = _tunnel_id_by_name(cf, alt_name, log or _SetupLog())
-            if tid:
-                tname = alt_name
+    # Only hit the API when we lack local credentials
+    if not tid and (_get_cloudflare_api_token() or has_cloudflare_login()):
+        found = _tunnel_id_by_name(cf, tname, log or _SetupLog())
+        if not found:
+            sub = cfg.get('tunnel_subdomain', '')
+            alt_name = tunnel_name_for(sub) if sub else ''
+            if alt_name and alt_name != tname:
+                found = _tunnel_id_by_name(cf, alt_name, log or _SetupLog())
+                if found:
+                    tname = alt_name
+        if found:
+            tid = found
     if not tid:
         logger.warning('Could not resolve tunnel id for %s', tname)
+        return False
+    if not _credentials_file_for(tid, tname):
+        logger.warning('Tunnel id %s known but credentials JSON missing', tid)
         return False
     port = int(cfg.get('flask_port', DEFAULT_PORT))
     _write_cloudflared_config(tname, tid, domain, port, log)
@@ -573,13 +1190,14 @@ def sync_tunnel_config_from_web(log: Optional[_SetupLog] = None) -> bool:
 def _config_yml_hostname() -> str:
     """Read hostname from existing config.yml if present."""
     try:
-        yml = get_cloudflared_dir() / 'config.yml'
-        if not yml.is_file():
-            return ''
-        for line in yml.read_text(encoding='utf-8').splitlines():
-            line = line.strip()
-            if line.startswith('hostname:'):
-                return line.split(':', 1)[1].strip()
+        for d in (get_cloudflared_dir(), get_legacy_cloudflared_dir()):
+            yml = d / 'config.yml'
+            if not yml.is_file():
+                continue
+            for line in yml.read_text(encoding='utf-8').splitlines():
+                line = line.strip().lstrip('-').strip()
+                if line.startswith('hostname:'):
+                    return line.split(':', 1)[1].strip()
     except Exception:
         pass
     return ''
@@ -588,13 +1206,14 @@ def _config_yml_hostname() -> str:
 def _config_yml_tunnel_id() -> str:
     """Read tunnel UUID from existing config.yml if present."""
     try:
-        yml = get_cloudflared_dir() / 'config.yml'
-        if not yml.is_file():
-            return ''
-        for line in yml.read_text(encoding='utf-8').splitlines():
-            line = line.strip()
-            if line.startswith('tunnel:'):
-                return line.split(':', 1)[1].strip()
+        for d in (get_cloudflared_dir(), get_legacy_cloudflared_dir()):
+            yml = d / 'config.yml'
+            if not yml.is_file():
+                continue
+            for line in yml.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('tunnel:'):
+                    return line.split(':', 1)[1].strip()
     except Exception:
         pass
     return ''
@@ -655,55 +1274,77 @@ class CloudflareSetup:
             cf = download_cloudflared(self.log)
             self._step('cloudflared binary', True, str(cf))
 
-            ensure_cloudflare_auth(cf, self.log, force_relogin=self.force_relogin)
-            self._step('Cloudflare login', True)
-
-            r = _run([str(cf), 'tunnel', 'create', self.tunnel_name], timeout=120)
-            out = (r.stdout or '') + (r.stderr or '')
-            if r.returncode != 0 and 'already exists' not in out.lower():
-                if _is_auth_error(out):
-                    raise RuntimeError(f'Tunnel create auth failed:\n{out.strip()}\n\n{AUTH_HELP}')
-                self.log.warn(f'tunnel create: {out.strip()}')
-            else:
-                self.log.ok(f'Tunnel "{self.tunnel_name}" ready')
-
-            tunnel_id = _tunnel_id_by_name(cf, self.tunnel_name, self.log)
-            if not tunnel_id:
-                if _is_auth_error(out):
-                    raise RuntimeError(f'Tunnel API unauthorized:\n{out.strip()}\n\n{AUTH_HELP}')
-                raise RuntimeError(
-                    f'Could not find tunnel "{self.tunnel_name}" after create.\n'
-                    f'Output: {out.strip()}')
-            self._step('Create tunnel', True, tunnel_id)
-            self.log.info(f'Tunnel ID: {tunnel_id}')
-
             port = int(load_web_config().get('flask_port', DEFAULT_PORT))
-            _write_cloudflared_config(
-                self.tunnel_name, tunnel_id, self.domain, port, self.log)
-            self._step('Write cloudflared config', True)
+            tunnel_id = ''
 
-            # Subdomain change leaves an old cloudflared serving the previous tunnel → HTTP 530
-            stop_all_cloudflared()
-            time.sleep(1)
+            # Production path: management API — no browser, no cert.pem
+            if _get_cloudflare_api_token() and not self.force_relogin:
+                self.log.info('Using Cloudflare management API (automatic, no browser)')
+                provisioned = provision_shop_tunnel_via_api(
+                    self.subdomain, port=port, log=self.log)
+                tunnel_id = provisioned['tunnel_id']
+                self._step('Cloudflare API provision', True, tunnel_id)
+            else:
+                # Vendor emergency browser path, or legacy cert.pem
+                ensure_cloudflare_auth(
+                    cf, self.log,
+                    force_relogin=self.force_relogin,
+                    allow_browser=bool(self.force_relogin),
+                )
+                self._step('Cloudflare login', True)
 
-            r = _run(
-                [str(cf), 'tunnel', 'route', 'dns', self.tunnel_name, self.domain],
-                timeout=120,
-            )
-            route_out = (r.stdout or '') + (r.stderr or '')
-            if r.returncode != 0 and 'already exists' in route_out.lower():
-                self.log.info('DNS record exists — overwriting with tunnel CNAME…')
+                r = _run([str(cf), 'tunnel', 'create', self.tunnel_name], timeout=120)
+                out = (r.stdout or '') + (r.stderr or '')
+                if r.returncode != 0 and 'already exists' not in out.lower():
+                    if _is_auth_error(out):
+                        raise RuntimeError(
+                            f'Tunnel create auth failed:\n{out.strip()}\n\n{AUTH_HELP}')
+                    self.log.warn(f'tunnel create: {out.strip()}')
+                else:
+                    self.log.ok(f'Tunnel "{self.tunnel_name}" ready')
+
+                tunnel_id = _tunnel_id_by_name(cf, self.tunnel_name, self.log)
+                if not tunnel_id:
+                    if _is_auth_error(out):
+                        raise RuntimeError(
+                            f'Tunnel API unauthorized:\n{out.strip()}\n\n{AUTH_HELP}')
+                    raise RuntimeError(
+                        f'Could not find tunnel "{self.tunnel_name}" after create.\n'
+                        f'Output: {out.strip()}')
+                self._step('Create tunnel', True, tunnel_id)
+                self.log.info(f'Tunnel ID: {tunnel_id}')
+                sync_cloudflared_state()
+
+                _write_cloudflared_config(
+                    self.tunnel_name, tunnel_id, self.domain, port, self.log)
+                self._step('Write cloudflared config', True)
+
+                stop_all_cloudflared()
+                time.sleep(1)
+
                 r = _run(
-                    [str(cf), 'tunnel', 'route', 'dns', '--overwrite-dns',
+                    [str(cf), 'tunnel', 'route', 'dns',
                      self.tunnel_name, self.domain],
                     timeout=120,
                 )
                 route_out = (r.stdout or '') + (r.stderr or '')
-            if r.returncode != 0 and 'already exists' not in route_out.lower():
-                raise RuntimeError(
-                    f'DNS route failed for {self.domain}:\n{route_out.strip()}')
-            self.log.ok(f'DNS → {self.domain}')
-            self._step('DNS route', True, self.domain)
+                if r.returncode != 0 and 'already exists' in route_out.lower():
+                    self.log.info('DNS record exists — overwriting with tunnel CNAME…')
+                    r = _run(
+                        [str(cf), 'tunnel', 'route', 'dns', '--overwrite-dns',
+                         self.tunnel_name, self.domain],
+                        timeout=120,
+                    )
+                    route_out = (r.stdout or '') + (r.stderr or '')
+                if r.returncode != 0 and 'already exists' not in route_out.lower():
+                    raise RuntimeError(
+                        f'DNS route failed for {self.domain}:\n{route_out.strip()}')
+                self.log.ok(f'DNS → {self.domain}')
+                self._step('DNS route', True, self.domain)
+
+            # Subdomain change leaves an old cloudflared serving the previous tunnel
+            stop_all_cloudflared()
+            time.sleep(1)
 
             verify = verify_remote_setup(
                 self.domain, self.log, start_tunnel=True, wait_dns=90)
@@ -723,7 +1364,6 @@ class CloudflareSetup:
             else:
                 self._step('Verify remote URL', False, verify.get('detail', ''))
 
-            # Tunnel + DNS route succeeded → setup is complete (phones/other networks work).
             setup_complete = bool(tunnel_id) and bool(self.domain)
 
             save_web_config({
@@ -1133,19 +1773,30 @@ def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
     add('cloudflared.exe', cf is not None, str(cf) if cf else 'not found',
         'Reinstall MBT POS or run setup from Settings → Remote Web Dashboard')
 
-    add('Cloudflare login', has_cloudflare_login(),
-        fix='Settings → Remote Web Dashboard → Re-login to Cloudflare')
+    add('Cloudflare login / API',
+        has_cloudflare_login() or bool(_get_cloudflare_api_token()) or bool(_get_tunnel_run_token()),
+        'management token' if _get_cloudflare_api_token() else (
+            'connector token' if _get_tunnel_run_token() else (
+                'cert.pem' if has_cloudflare_login() else 'none')),
+        'Vendor: set cloudflare_api_token in deploy.local.json (not shop Re-login)')
 
-    if cf:
-        api_ok, api_detail = verify_tunnel_api(cf)
+    if cf or _get_cloudflare_api_token():
+        api_ok, api_detail = verify_tunnel_api(cf) if cf else verify_management_api_token()
         add('Cloudflare API auth', api_ok, api_detail[:120],
-            'Settings → Remote Web → Re-login, or set cloudflare_api_token in deploy.local.json')
+            'Vendor: management API token (Account Tunnel Edit + Zone DNS Edit) '
+            'in deploy.local.json — not cfut_/JWT')
     else:
-        add('Cloudflare API auth', False, 'cloudflared missing',
-            'Settings → Remote Web Dashboard → Set Up Cloudflare')
+        add('Cloudflare API auth', False, 'cloudflared missing and no API token',
+            'Reinstall MBT POS or place management token in deploy.local.json')
 
     if _get_cloudflare_api_token():
-        add('API token configured', True, 'deploy.local.json or web_config')
+        add('API token configured', True, 'management token in deploy.local.json or web_config')
+    elif _get_tunnel_run_token():
+        add('API token configured', True,
+            'connector token present (tunnel run) — management token preferred for new shops')
+    else:
+        add('API token configured', False, 'none',
+            'REQUIRED for silent shop installs: cloudflare_api_token in deploy.local.json')
 
     cfg_exists = get_config_path().is_file()
     add('web_config.json', cfg_exists, str(get_config_path()),
@@ -1155,7 +1806,13 @@ def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
         cfg.get('tunnel_domain', 'LAN only'))
 
     yml = get_cloudflared_dir() / 'config.yml'
-    add('cloudflared config.yml', yml.is_file(), str(yml))
+    add('cloudflared config.yml', yml.is_file(), str(yml),
+        'Settings → Set Up Cloudflare (one-time)')
+    tid = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    cred = _credentials_file_for(tid, cfg.get('tunnel_name', '')) if tid else None
+    add('tunnel credentials', cred is not None,
+        str(cred) if cred else 'missing — tunnel cannot start',
+        'Re-run Set Up Cloudflare so tunnel create writes credentials JSON')
 
     local_ok, ld = _http_check(f'http://127.0.0.1:{port}/api/health')
     add('Local web dashboard', local_ok, ld,
@@ -1234,22 +1891,44 @@ class CloudflareTunnelService:
         self._stop = False
         self._lock = threading.Lock()
 
+    def _launch_args(self) -> Optional[list]:
+        """Build cloudflared argv — prefer connector token, else durable config.yml."""
+        sync_cloudflared_state()
+        cf = find_cloudflared_exe()
+        if not cf:
+            return None
+        cfg = load_web_config()
+        tid = _config_yml_tunnel_id() or (cfg.get('tunnel_id') or '').strip()
+        tname = (cfg.get('tunnel_name') or '').strip()
+        cfg_yml = get_cloudflared_dir() / 'config.yml'
+        if not cfg_yml.is_file():
+            cfg_yml = get_legacy_cloudflared_dir() / 'config.yml'
+        # Local credentials JSON → classic named-tunnel config
+        if cfg_yml.is_file() and tid and _credentials_file_for(tid, tname):
+            return [str(cf), 'tunnel', '--config', str(cfg_yml), 'run']
+        # Remotely-managed / API-provisioned → connector token
+        run_tok = _get_tunnel_run_token()
+        if run_tok:
+            return [str(cf), 'tunnel', 'run', '--token', run_tok]
+        # Do NOT run marker config.yml without credentials (causes HTTP 530)
+        return None
+
     def _launch(self) -> bool:
         cfg = load_web_config()
-        cfg_yml = get_cloudflared_dir() / 'config.yml'
-        cf = find_cloudflared_exe()
-        if not cf or not cfg_yml.is_file():
+        args = self._launch_args()
+        if not args:
             return False
         log_file = _project_root() / 'logs' / 'cloudflared.log'
         log_file.parent.mkdir(parents=True, exist_ok=True)
         try:
             log_fh = open(log_file, 'a', encoding='utf-8')
             self._proc = subprocess.Popen(
-                [str(cf), 'tunnel', '--config', str(cfg_yml), 'run'],
+                args,
                 stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 creationflags=_hide_flags(),
                 cwd=str(_exe_dir()),
+                env=_subprocess_env(),
             )
             for _ in range(12):
                 time.sleep(1)
@@ -1281,29 +1960,43 @@ class CloudflareTunnelService:
                         self._launch()
 
     def start(self) -> bool:
+        """
+        Start tunnel if already configured. Does NOT run full setup / re-auth.
+        Safe to call on every app launch.
+        """
         cfg = load_web_config()
         if not cfg.get('remote_enabled'):
             return False
+        bootstrap_cloudflared()
+        sync_cloudflared_state()
         expected = (cfg.get('tunnel_domain') or '').strip()
-        if expected and _config_yml_hostname() != expected:
-            logger.warning(
-                'cloudflared config.yml hostname mismatch — syncing to %s', expected)
-            stop_all_cloudflared()
-            sync_tunnel_config_from_web()
-        cfg_yml = get_cloudflared_dir() / 'config.yml'
-        if not cfg_yml.is_file() and not cfg.get('remote_setup_ok'):
-            return False
+        # Token-managed tunnels do not need config.yml / credentials sync
+        if not _get_tunnel_run_token():
+            yml_host = _config_yml_hostname()
+            if expected and yml_host and yml_host != expected:
+                logger.warning(
+                    'cloudflared config.yml hostname mismatch — syncing to %s', expected)
+                stop_all_cloudflared()
+                sync_tunnel_config_from_web()
+
         if not find_cloudflared_exe():
             logger.warning('cloudflared not found — remote tunnel disabled')
             return False
-        if not cfg_yml.is_file():
-            logger.warning('cloudflared config.yml missing')
+
+        # Already configured locally → start without touching Cloudflare API
+        if _remote_infra_ready() or self._launch_args():
+            pass
+        else:
+            logger.info(
+                'Tunnel not configured yet — waiting for API auto-provision '
+                '(central management token in deploy.local.json)')
             return False
+
         with self._lock:
             yml_tid = _config_yml_tunnel_id()
             cfg_tid = (cfg.get('tunnel_id') or '').strip()
             if _cloudflared_running():
-                if yml_tid and cfg_tid and yml_tid == cfg_tid:
+                if (yml_tid and cfg_tid and yml_tid == cfg_tid) or not cfg_tid:
                     logger.info('cloudflared already running')
                     ok = True
                 else:
@@ -1313,13 +2006,27 @@ class CloudflareTunnelService:
                     time.sleep(1)
                     ok = self._launch()
             else:
-                sync_tunnel_config_from_web()
+                if _remote_infra_ready():
+                    sync_tunnel_config_from_web()
                 ok = self._launch()
             if ok and self._monitor_thread is None:
                 self._stop = False
                 self._monitor_thread = threading.Thread(
                     target=self._monitor_loop, name='CF-Tunnel-Monitor', daemon=True)
                 self._monitor_thread.start()
+            if ok:
+                # Keep remote ingress on flask_port (token tunnels ignore config.yml)
+                try:
+                    ensure_remote_ingress_port()
+                except Exception:
+                    pass
+                # Mark setup OK once tunnel stays up — avoids re-prompt loops
+                if not cfg.get('remote_setup_ok'):
+                    save_web_config({
+                        'remote_setup_ok': True,
+                        'remote_setup_at': datetime.now().isoformat(),
+                        'tunnel_id': cfg_tid or yml_tid or cfg.get('tunnel_id', ''),
+                    })
             return ok or _cloudflared_running()
 
     def stop(self):
@@ -1356,21 +2063,103 @@ def _shop_ready_for_remote() -> tuple[bool, str]:
 
 
 def _remote_infra_ready() -> bool:
+    """True when tunnel can start from local AppData alone (no re-auth)."""
     cfg = load_web_config()
-    if not (cfg.get('tunnel_id') or '').strip():
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    if not domain:
         return False
-    if not (cfg.get('tunnel_domain') or '').strip():
+    # Remotely-managed path: durable connector token is enough
+    if _get_tunnel_run_token():
+        return True
+    tid = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    tname = (cfg.get('tunnel_name') or '').strip()
+    yml = get_cloudflared_dir() / 'config.yml'
+    if not yml.is_file():
+        yml = get_legacy_cloudflared_dir() / 'config.yml'
+    if not yml.is_file() or not tid:
         return False
-    return (get_cloudflared_dir() / 'config.yml').is_file()
+    return _credentials_file_for(tid, tname) is not None
+
+
+def get_remote_dashboard_status() -> dict:
+    """
+    Structured status for Settings UI.
+    state: off | needs_setup | configured | running | vendor_token_missing | broken
+    """
+    cfg = load_web_config()
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    remote = bool(cfg.get('remote_enabled'))
+    running = _cloudflared_running()
+    ready = _remote_infra_ready()
+    has_mgmt = bool(_get_cloudflare_api_token())
+    has_cert = has_cloudflare_login()
+    has_run = bool(_get_tunnel_run_token())
+    raw = _token_from_sources()
+    bad_tok = (
+        _is_tunnel_run_token(raw)
+        and not has_mgmt
+        and not ready
+        and remote
+    )
+
+    if not remote and not has_mgmt:
+        state = 'off'
+        detail = 'LAN only — remote access disabled'
+    elif running and (ready or domain):
+        state = 'running'
+        detail = f'https://{domain}' if domain else 'Tunnel process running'
+    elif ready:
+        state = 'configured'
+        detail = (
+            f'Configured for https://{domain} — tunnel starts with the app'
+            if domain else 'Tunnel configured — will auto-start')
+    elif remote and not has_mgmt and not has_cert and not has_run:
+        state = 'vendor_token_missing'
+        detail = (
+            'Vendor: central Cloudflare API token missing. '
+            'Shops cannot auto-provision until deploy.local.json has a cfat_… token.')
+    elif bad_tok:
+        state = 'vendor_token_missing'
+        detail = (
+            'Wrong token type in cloudflare_api_token (connector token). '
+            'Vendor must place a management API token (cfat_…) in deploy.local.json.')
+    elif has_mgmt:
+        state = 'needs_setup'
+        detail = (
+            f'Will auto-provision https://{domain or "….mugobyte.com"} '
+            'on launch (management API token present)')
+    elif domain and not ready:
+        state = 'needs_setup'
+        detail = (
+            f'https://{domain} waiting for automatic provision '
+            '(management API token required at vendor)')
+    else:
+        state = 'needs_setup'
+        detail = 'Remote dashboard will auto-configure when vendor token is present'
+
+    return {
+        'state': state,
+        'detail': detail,
+        'domain': domain,
+        'remote_enabled': remote,
+        'running': running,
+        'configured': ready,
+        'remote_setup_ok': bool(cfg.get('remote_setup_ok')),
+        'has_management_token': has_mgmt,
+        'has_cert': has_cert,
+        'wrong_token_type': bad_tok,
+        'cloudflared_dir': str(get_cloudflared_dir()),
+    }
 
 
 def needs_auto_cloudflare_setup() -> tuple[bool, str]:
     """
     Return (should_act, reason).
-    reason: full_setup | start_tunnel | repair | no_api_token | offline | shop_name_not_set | running | ok
+    reason: full_setup | start_tunnel | start_token_tunnel | repair |
+            needs_one_time_setup | vendor_token_missing | offline |
+            shop_name_not_set | running | remote_disabled
     """
-    if not _get_cloudflare_api_token():
-        return False, 'no_api_token'
+    normalize_cloudflare_tokens()
     if not is_online():
         return False, 'offline'
     ready, shop_or_reason = _shop_ready_for_remote()
@@ -1378,17 +2167,46 @@ def needs_auto_cloudflare_setup() -> tuple[bool, str]:
         return False, shop_or_reason
 
     cfg = load_web_config()
+
+    # If infra already on disk, always prefer start — never re-run full setup
     if _remote_infra_ready():
+        if not cfg.get('remote_enabled'):
+            save_web_config({'remote_enabled': True})
         if _cloudflared_running():
             if not cfg.get('remote_setup_ok'):
                 return True, 'repair'
             return False, 'running'
         return True, 'start_tunnel'
-    return True, 'full_setup'
+
+    if not cfg.get('remote_enabled'):
+        # Auto-enable remote when we can provision silently for any shop
+        if _get_cloudflare_api_token():
+            save_web_config({
+                'remote_enabled': True,
+                'tunnel_subdomain': shop_to_subdomain(shop_or_reason),
+                'tunnel_domain': full_domain(shop_to_subdomain(shop_or_reason)),
+                'tunnel_name': tunnel_name_for(shop_to_subdomain(shop_or_reason)),
+            })
+        else:
+            return False, 'remote_disabled'
+
+    if _get_cloudflare_api_token():
+        return True, 'full_setup'
+
+    if has_cloudflare_login() and cfg.get('remote_enabled'):
+        return True, 'full_setup'
+
+    # Pre-issued connector token (HQ-provisioned tunnel) — run only, no create
+    if _get_tunnel_run_token() and cfg.get('remote_enabled'):
+        return True, 'start_token_tunnel'
+
+    if cfg.get('remote_enabled'):
+        return False, 'vendor_token_missing'
+    return False, 'remote_disabled'
 
 
 def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dict:
-    """Run tunnel setup or restart using API token — no browser."""
+    """Start existing tunnel or provision once via management API. No shop browser login."""
     global _auto_cf_running
     with _auto_cf_lock:
         if _auto_cf_running:
@@ -1400,47 +2218,62 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
         need, reason = needs_auto_cloudflare_setup()
         if not need and reason == 'running':
             return {'ok': True, 'skipped': True, 'reason': 'running'}
+        if not need:
+            return {'ok': False, 'skipped': True, 'reason': reason}
 
-        tok = _get_cloudflare_api_token()
-        if not tok:
+        bootstrap_cloudflared()
+
+        if reason in ('start_tunnel', 'repair'):
+            log.info(
+                'Starting existing Cloudflare tunnel…'
+                if reason == 'start_tunnel' else 'Repairing Cloudflare tunnel status…')
+            # Start tunnel FIRST — do not block on DNS UAC / tunnel list
+            ok = CloudflareTunnelService().start()
+            if reason == 'start_tunnel':
+                try:
+                    apply_shop_pc_dns_fix(log)
+                except Exception:
+                    pass
+            refresh_remote_setup_status()
+            return {
+                'ok': ok or bool(load_web_config().get('remote_setup_ok')) or _cloudflared_running(),
+                'action': reason,
+                'domain': load_web_config().get('tunnel_domain', ''),
+            }
+
+        if reason == 'start_token_tunnel':
+            log.info('Starting Cloudflare tunnel via connector token…')
+            save_web_config({'remote_enabled': True})
+            apply_shop_pc_dns_fix(log)
+            ok = CloudflareTunnelService().start()
+            if ok:
+                save_web_config({
+                    'remote_setup_ok': True,
+                    'remote_setup_at': datetime.now().isoformat(),
+                })
+                refresh_remote_setup_status()
+                return {
+                    'ok': True,
+                    'action': 'start_token_tunnel',
+                    'domain': load_web_config().get('tunnel_domain', ''),
+                }
             return {
                 'ok': False,
                 'error': (
-                    'Cloudflare API token missing from installer.\n'
-                    'Add cloudflare_api_token to config/deploy.local.json before BUILD.'),
-            }
-
-        save_web_config({
-            'cloudflare_api_token': tok,
-            'remote_enabled': True,
-        })
-        bootstrap_cloudflared()
-
-        if reason == 'start_tunnel':
-            log.info('Starting existing Cloudflare tunnel…')
-            sync_tunnel_config_from_web(log)
-            apply_shop_pc_dns_fix(log)
-            ok = CloudflareTunnelService().start()
-            refresh_remote_setup_status()
-            return {
-                'ok': ok,
-                'action': 'start_tunnel',
-                'domain': load_web_config().get('tunnel_domain', ''),
-            }
-
-        if reason == 'repair':
-            log.info('Repairing Cloudflare tunnel status…')
-            sync_tunnel_config_from_web(log)
-            ok = CloudflareTunnelService().start()
-            refresh_remote_setup_status()
-            return {
-                'ok': ok or bool(load_web_config().get('remote_setup_ok')),
-                'action': 'repair',
-                'domain': load_web_config().get('tunnel_domain', ''),
+                    'Tunnel connector token was rejected. '
+                    'Vendor: refresh management API token and re-provision.'),
+                'reason': 'vendor_token_missing',
             }
 
         if reason != 'full_setup':
             return {'ok': False, 'skipped': True, 'reason': reason}
+
+        if not _get_cloudflare_api_token() and not has_cloudflare_login():
+            return {
+                'ok': False,
+                'error': VENDOR_TOKEN_MISSING,
+                'reason': 'vendor_token_missing',
+            }
 
         ready, shop = _shop_ready_for_remote()
         if not ready:
@@ -1450,10 +2283,13 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
         apply_shop_pc_dns_fix(log)
         cfg = load_web_config()
         sub = (cfg.get('tunnel_subdomain') or '').strip() or shop_to_subdomain(shop)
+        save_web_config({'remote_enabled': True})
         result = CloudflareSetup(
             shop, subdomain=sub, log_callback=log_callback,
+            force_relogin=False,
         ).run()
         if result.get('ok'):
+            sync_cloudflared_state()
             CloudflareTunnelService().start()
             refresh_remote_setup_status()
         result['action'] = 'full_setup'
@@ -1467,18 +2303,28 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
 
 
 def _auto_cf_worker():
-    """Background loop — provisions tunnel on shop PCs without admin action."""
+    """Background loop — starts existing tunnel; provisions via API when possible."""
     _auto_cf_stop.wait(AUTO_CF_FIRST_DELAY)
-    warned_no_token = False
+    warned_vendor = False
     while not _auto_cf_stop.is_set():
         need, reason = needs_auto_cloudflare_setup()
-        if reason == 'no_api_token':
-            if not warned_no_token:
+        if reason in ('needs_one_time_setup', 'vendor_token_missing'):
+            if not warned_vendor:
                 logger.warning(
-                    'Auto Cloudflare disabled — no API token in installer '
-                    '(add cloudflare_api_token to deploy.local.json before BUILD)')
-                warned_no_token = True
+                    'Remote access blocked: central Cloudflare management API token '
+                    'missing/invalid. Vendor must place cfat_… token in deploy.local.json. '
+                    'Shop staff do not need to Re-login.')
+                warned_vendor = True
             return
+        if reason in ('remote_disabled', 'shop_name_not_set', 'no_api_token'):
+            if reason == 'no_api_token' and not warned_vendor:
+                logger.info(
+                    'Auto Cloudflare: no management API token — '
+                    'will only auto-start if AppData tunnel credentials already exist')
+                warned_vendor = True
+            wait = 120
+            _auto_cf_stop.wait(wait)
+            continue
         if not need:
             wait = AUTO_CF_RETRY_INTERVAL if reason == 'running' else 60
             _auto_cf_stop.wait(wait)
@@ -1495,7 +2341,20 @@ def _auto_cf_worker():
                     cb_ok(result)
                 except Exception:
                     pass
-        elif not result.get('skipped'):
+            _auto_cf_stop.wait(AUTO_CF_RETRY_INTERVAL)
+            continue
+        if result.get('reason') in ('needs_one_time_setup', 'vendor_token_missing') or (
+                not result.get('skipped') and 'vendor' in str(result.get('error', '')).lower()):
+            if not warned_vendor:
+                logger.warning('Auto Cloudflare: %s', result.get('error') or reason)
+                warned_vendor = True
+            if cb_fail:
+                try:
+                    cb_fail(result)
+                except Exception:
+                    pass
+            return
+        if not result.get('skipped'):
             err = result.get('error') or result.get('errors', ['unknown'])
             if isinstance(err, list):
                 err = '; '.join(str(x) for x in err[:3])
@@ -1512,6 +2371,9 @@ def _auto_cf_worker():
 def start_auto_cloudflare(on_done=None, on_failed=None):
     """Start background auto-provisioning (once per app session)."""
     global _auto_cf_thread
+    logger.info(
+        'Auto Cloudflare provisioner starting '
+        '(API-auto build: provision_shop_tunnel_via_api)')
     _auto_cf_callbacks['on_done'] = on_done
     _auto_cf_callbacks['on_failed'] = on_failed
     with _auto_cf_lock:

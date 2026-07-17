@@ -20,11 +20,20 @@ def _appdata_deploy_local() -> str:
 
 def _load_deploy_local_files() -> dict:
     merged = {}
+    # AppData overrides bundled file so live shops can fix tokens without rebuild
     for path in (_LOCAL, _appdata_deploy_local()):
         if path and os.path.isfile(path):
             try:
-                with open(path, encoding='utf-8') as f:
-                    merged.update(json.load(f))
+                with open(path, encoding='utf-8-sig') as f:
+                    data = json.load(f)
+                # Skip misfiled connector tokens in cloudflare_api_token
+                api = (data.get('cloudflare_api_token') or '').strip()
+                if api.lower().startswith('cfut_') or api.startswith('eyJ'):
+                    data = dict(data)
+                    if not (data.get('cloudflare_tunnel_token') or '').strip():
+                        data['cloudflare_tunnel_token'] = api
+                    data['cloudflare_api_token'] = ''
+                merged.update(data)
             except Exception:
                 pass
     return merged
@@ -63,14 +72,23 @@ def verify_installer_bundle() -> tuple[bool, str]:
 
 
 def verify_cloudflare_token() -> tuple[bool, str]:
-    """BUILD.bat — auto Cloudflare needs an API token in the installer bundle."""
+    """BUILD.bat — auto Cloudflare needs a real management API token (not cfut_/JWT)."""
     tok = (load_deploy_config().get('cloudflare_api_token') or '').strip()
-    if tok:
-        return True, 'API token present in deploy config'
-    return False, (
-        'cloudflare_api_token missing — remote dashboard will NOT auto-setup on shop PCs.\n'
-        '  Create config/deploy.local.json with your Cloudflare API token, or set\n'
-        '  CLOUDFLARE_API_TOKEN before running BUILD.bat')
+    if not tok:
+        return False, (
+            'cloudflare_api_token missing — remote dashboard will NOT auto-setup on shop PCs.\n'
+            '  Create config/deploy.local.json with your Cloudflare management API token, or set\n'
+            '  CLOUDFLARE_API_TOKEN before running BUILD.bat\n'
+            '  Permissions: Account → Cloudflare Tunnel → Edit; Zone → DNS → Edit (mugobyte.com)')
+    low = tok.lower()
+    if low.startswith('cfut_') or tok.startswith('eyJ'):
+        return False, (
+            'cloudflare_api_token is a tunnel connector token (cfut_/JWT) — wrong type.\n'
+            '  Use a management API token (often cfat_…) with Tunnel Edit + DNS Edit.\n'
+            '  Put connector tokens in cloudflare_tunnel_token only if HQ pre-issues them.')
+    if len(tok) < 20:
+        return False, 'cloudflare_api_token looks too short'
+    return True, 'Management API token present in deploy config'
 
 
 def shop_settings_defaults() -> dict:
