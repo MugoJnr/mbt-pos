@@ -724,97 +724,32 @@ class _ReportPane(QWidget):
         if not self._last_rows:
             QMessageBox.information(self, 'Export', 'Run the report first.')
             return
-        try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
-        except ImportError:
-            QMessageBox.critical(self, 'Export', 'openpyxl is required for Excel export.')
-            return
 
         cur = _currency(self.p._cfg())
         shop = (self.p._cfg() or {}).get('shop_name', 'My Shop')
         start = self._s.date().toString('yyyy-MM-dd')
         end = self._e.date().toString('yyyy-MM-dd')
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = 'Internal Consumption'
-        headers = [
-            'Date', 'Reference', 'Department', 'Taken By', 'Reason', 'Notes',
-            'Product', 'Qty', 'Unit Cost', 'Total Cost', 'User', 'Status',
-        ]
-        thin = Border(
-            left=Side(style='thin', color='B0BEC5'),
-            right=Side(style='thin', color='B0BEC5'),
-            top=Side(style='thin', color='B0BEC5'),
-            bottom=Side(style='thin', color='B0BEC5'),
-        )
-        hdr_fill = PatternFill('solid', fgColor='1A3C5E')
-        hdr_font = Font(bold=True, color='FFFFFF')
-        ws['A1'] = f'{shop} | Internal Consumption Report'
-        ws['A1'].font = Font(bold=True, size=14, color='FFFFFF')
-        ws['A1'].fill = PatternFill('solid', fgColor='0D1B2A')
-        ws.merge_cells('A1:L1')
-        ws['A2'] = f'Period: {start} → {end}'
-        ws['A2'].font = Font(italic=True, color='F4A825')
-        ws.merge_cells('A2:L2')
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(4, col, h)
-            cell.fill = hdr_fill
-            cell.font = hdr_font
-            cell.alignment = Alignment(horizontal='center')
-            cell.border = thin
-
-        for ri, r in enumerate(self._last_rows, 5):
-            voided = int(r.get('voided') or 0) == 1
-            vals = [
-                str(r.get('date') or '')[:10],
-                r.get('reference_no') or '',
-                r.get('department_name') or '',
-                r.get('taken_by') or '',
-                r.get('reason') or '',
-                r.get('notes') or '',
-                r.get('product_name') or '',
-                _safe_float(r.get('quantity')),
-                _safe_float(r.get('unit_cost')),
-                _safe_float(r.get('total_cost')),
-                r.get('created_by_name') or '',
-                'Voided' if voided else 'OK',
-            ]
-            for ci, v in enumerate(vals, 1):
-                cell = ws.cell(ri, ci, v)
-                cell.border = thin
-
-        tot = self._last_totals or {}
-        fr = 5 + len(self._last_rows)
-        ws.cell(fr, 1, 'TOTALS').font = Font(bold=True)
-        ws.cell(fr, 8, _safe_float(tot.get('total_qty'))).font = Font(bold=True)
-        ws.cell(fr, 10, _safe_float(tot.get('total_cost'))).font = Font(bold=True)
-        ws.cell(fr, 10).number_format = '#,##0.00'
-
-        for col, width in enumerate(
-            [12, 14, 14, 14, 18, 24, 22, 10, 12, 12, 14, 10], 1
-        ):
-            ws.column_dimensions[get_column_letter(col)].width = width
-
-        folder = None
-        for d in (
-            os.path.join(os.path.expanduser('~'), 'Desktop'),
-            os.path.join(os.path.expanduser('~'), 'Documents'),
-            os.path.expanduser('~'),
-        ):
-            if os.path.isdir(d):
-                folder = os.path.join(d, 'MBT POS Exports')
-                os.makedirs(folder, exist_ok=True)
-                break
-        if not folder:
-            folder = os.path.join(os.path.dirname(self.p.db_path), '..', 'exports')
-            os.makedirs(folder, exist_ok=True)
-        path = os.path.join(
-            folder, f'Internal_Consumption_{start}_to_{end}.xlsx')
+        user = self.p.user.get('user') or self.p.user
+        who = user.get('full_name') or user.get('username') or 'admin'
+        dept = ''
         try:
-            wb.save(path)
+            if hasattr(self, '_dept') and self._dept.currentData():
+                dept = f"Department filter applied"
+        except Exception:
+            pass
+
+        try:
+            from backend.report_export_service import export_consumption_report
+            path = export_consumption_report(
+                self._last_rows,
+                shop_name=shop,
+                start_date=start,
+                end_date=end,
+                currency=cur,
+                generated_by=who,
+                filters=dept or f'Date range {start} to {end}',
+                totals=self._last_totals or {},
+            )
         except Exception as e:
             QMessageBox.critical(self, 'Export Failed', str(e))
             return

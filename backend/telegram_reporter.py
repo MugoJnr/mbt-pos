@@ -128,12 +128,22 @@ def _build_report_file(api, start: str, end: str,
     sales = [s for s in (api.get_sales(start, end) or [])
              if (s.get('status') or 'completed') != 'voided']
     items_by_sale = {}
-    for sale in sales:
-        sid = sale.get('id') or sale.get('sale_id')
-        d   = api.get_sale(sid)
-        if d:
-            items_by_sale[sid] = d.get('items', [])
-            sale['item_count'] = len(items_by_sale[sid])
+    try:
+        flat = api.get_sale_items_for_range(start, end) or []
+        for item in flat:
+            sid = item.get('sale_id')
+            if sid is not None:
+                items_by_sale.setdefault(sid, []).append(item)
+        for sale in sales:
+            sid = sale.get('id') or sale.get('sale_id')
+            sale['item_count'] = len(items_by_sale.get(sid, []))
+    except Exception:
+        for sale in sales:
+            sid = sale.get('id') or sale.get('sale_id')
+            d = api.get_sale(sid)
+            if d:
+                items_by_sale[sid] = d.get('items', [])
+                sale['item_count'] = len(items_by_sale[sid])
 
     # Current inventory for Stock sheet
     try:
@@ -166,6 +176,12 @@ def _build_report_file(api, start: str, end: str,
         debt_payments = api.get_debt_payments(start=start, end=end) or []
     except Exception:
         debt_payments = []
+    try:
+        vdata = api.get_payment_variance_report(start, end) or {}
+        variance_rows = vdata.get('rows') or []
+        variance_summary = vdata.get('summary') or {}
+    except Exception:
+        variance_rows, variance_summary = [], {}
 
     path  = export_sales_report(
         sales, items_by_sale,
@@ -176,6 +192,10 @@ def _build_report_file(api, start: str, end: str,
         aging_report=aging_report,
         debt_invoices=debt_invoices,
         debt_payments=debt_payments,
+        variance_rows=variance_rows,
+        variance_summary=variance_summary,
+        generated_by='Telegram Auto-Report',
+        filters=f'Date {start} → {end} · completed sales only',
     )
     return path
 

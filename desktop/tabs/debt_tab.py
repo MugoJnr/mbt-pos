@@ -166,13 +166,13 @@ class DebtTab(QWidget):
                 shop_name=shop,
                 currency=cur,
                 generated_by=who,
-                filters='All open invoices · full payment history',
+                filters='All open invoices - full payment history',
                 period=f"As at {date.today().isoformat()}",
             )
             QMessageBox.information(
                 self, 'Exported',
                 f'Debt report saved:\n{path}\n\n'
-                f'Sheets: Debt Invoices · Aging · Payments')
+                f'Sheets: Debt Invoices  - Aging  - Payments')
             try:
                 import os
                 os.startfile(path)
@@ -200,7 +200,7 @@ class _OverviewTab(QWidget):
         hrow = QHBoxLayout()
         hrow.addWidget(H2('Debt Overview'))
         hrow.addStretch()
-        exp_btn = SecondaryBtn('?  Export Excel', 40)
+        exp_btn = SecondaryBtn('Export Excel', 40)
         exp_btn.setToolTip('Export invoices, aging bands, and payments to Excel')
         exp_btn.clicked.connect(self.p._export_debt)
         hrow.addWidget(exp_btn)

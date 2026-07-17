@@ -1,98 +1,98 @@
-import sys
 """
-MBT POS - Spreadsheet Export Engine v2
+MBT POS - Spreadsheet Export Engine
 MugoByte Technologies | mugobyte.com
-Generates comprehensive multi-sheet Excel reports with full product detail.
+
+Multi-sheet Excel sales report built on report_export_service
+(professional headers, freeze panes, auto-filter, KSh formats, version footer).
 """
 import os
+import sys
 from datetime import datetime, date
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
+from openpyxl.utils import get_column_letter
 
-# ── Palette ────────────────────────────────────────────────────────────────────
-D = "0D1B2A"; M = "1A3C5E"; G = "F4A825"; W = "FFFFFF"
-ALT = "EEF3F8"; TOT_BG = "FFF3CC"; TOT_FG = "0D1B2A"; BDR = "B0BEC5"
-GRN = "43A047"; RED = "E53935"; BLU = "1565C0"
+from backend.report_export_service import (
+    ALT, BDR, BLU, D, G, GRN, M, RED, TOT_BG, TOT_FG, W,
+    _align, _border, _fill, _font,
+    apply_data_cell, currency_number_format, find_logo_path,
+    finalize_table, get_export_dir, write_footer, write_report_header,
+    write_totals_row, style_header_row, app_version,
+)
 
-def _s(style='thin', color=BDR): return Side(style=style, color=color)
-def _border(c=BDR): s=_s(color=c); return Border(left=s,right=s,top=s,bottom=s)
-def _fill(h): return PatternFill("solid", fgColor=h)
-def _font(size=10,bold=False,color='000000',italic=False,name='Calibri'):
-    return Font(name=name,size=size,bold=bold,color=color,italic=italic)
-def _align(h='left',v='center',wrap=False):
-    return Alignment(horizontal=h,vertical=v,wrap_text=wrap)
 
 def _hdr_cell(ws, row, col, value, width=None, col_letter=None):
     c = ws.cell(row=row, column=col, value=value)
-    c.font      = _font(11, bold=True, color=W)
-    c.fill      = _fill(M)
+    c.font = _font(11, bold=True, color=W)
+    c.fill = _fill(M)
     c.alignment = _align('center')
-    c.border    = _border(BDR)
+    c.border = _border(BDR)
     if width and col_letter:
         ws.column_dimensions[col_letter].width = width
     return c
 
-def _brand_header(ws, shop, title, date_range=None, ncols=12):
-    end = get_column_letter(ncols)
-    ws.merge_cells(f'A1:{end}1')
-    c = ws['A1']
-    c.value     = f"  {shop}  |  {title}"
-    c.font      = _font(16, bold=True, color=W)
-    c.fill      = _fill(D)
-    c.alignment = _align('center','center')
-    ws.row_dimensions[1].height = 34
 
-    ws.merge_cells(f'A2:{end}2')
-    c2 = ws['A2']
-    sub = "MugoByte Technologies  |  mugobyte.com"
-    if date_range: sub += f"  |  Period: {date_range}"
-    c2.value     = sub
-    c2.font      = _font(10, italic=True, color=G)
-    c2.fill      = _fill(M)
-    c2.alignment = _align('center','center')
-    ws.row_dimensions[2].height = 18
-
-def _kpi_block(ws, kpis, start_row=4, currency='KES'):
-    ws.cell(start_row-1,1).value = "KEY PERFORMANCE INDICATORS"
-    ws.cell(start_row-1,1).font  = _font(12, bold=True, color=M)
-    ws.row_dimensions[start_row-1].height = 22
-    for i,(lbl,val,fmt) in enumerate(kpis):
+def _kpi_block(ws, kpis, start_row=4):
+    ws.cell(start_row - 1, 1).value = "KEY PERFORMANCE INDICATORS"
+    ws.cell(start_row - 1, 1).font = _font(12, bold=True, color=M)
+    ws.row_dimensions[start_row - 1].height = 22
+    for i, (lbl, val, fmt) in enumerate(kpis):
         r = start_row + i
-        lc = ws.cell(r,1,lbl); lc.font=_font(10,bold=True); lc.fill=_fill(ALT)
-        lc.border=_border(); lc.alignment=_align()
-        vc = ws.cell(r,2,val); vc.border=_border(); vc.alignment=_align('right')
-        vc.font=_font(10,bold=True,color=BLU)
-        if fmt=='currency': vc.number_format='#,##0.00'
-    ws.column_dimensions['A'].width=30; ws.column_dimensions['B'].width=20
+        lc = ws.cell(r, 1, lbl)
+        lc.font = _font(10, bold=True)
+        lc.fill = _fill(ALT)
+        lc.border = _border()
+        lc.alignment = _align()
+        vc = ws.cell(r, 2, val)
+        vc.border = _border()
+        vc.alignment = _align('right')
+        vc.font = _font(10, bold=True, color=BLU)
+        if fmt == 'currency':
+            vc.number_format = '#,##0.00'
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 20
 
 
-def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
-                        start_date=None, end_date=None, output_path=None,
-                        currency='KES', products_data=None,
-                        debt_summary=None, aging_report=None,
-                        debt_invoices=None, debt_payments=None):
+def export_sales_report(
+    sales_data, items_by_sale, shop_name='My Shop',
+    start_date=None, end_date=None, output_path=None,
+    currency='KES', products_data=None,
+    debt_summary=None, aging_report=None,
+    debt_invoices=None, debt_payments=None,
+    variance_rows=None, variance_summary=None,
+    generated_by=None, filters=None,
+):
     """
     Multi-sheet Excel report.
-    Sheet 1 – Sales Summary    (transaction-level)
-    Sheet 2 – Line Items       (product name, qty, unit price, total, date, cashier)
-    Sheet 3 – Top Products     (aggregated + bar chart)
+    Sheet 1 – Sales Summary
+    Sheet 2 – Line Items
+    Sheet 3 – Top Products (+ chart)
     Sheet 4 – Payment Methods
-    Sheet 5 – Stock / Inventory (current stock, cost, value, low-stock flag)
-    Sheet 6 – Debt Management (summary, aging, invoices, payments)
+    Sheet 5 – Stock / Inventory
+    Sheet 6 – Debt Management
+    Sheet 7 – Payment Variance (optional)
     """
     wb = Workbook()
-    dr = f"{start_date or '—'} to {end_date or str(date.today())}"
+    period = f"{start_date or '—'} to {end_date or str(date.today())}"
+    filt = filters or f"Completed sales · {period}"
+    who = generated_by or 'System'
+    cur_fmt = currency_number_format(currency)
 
-    # ── Pre-compute totals ─────────────────────────────────────────────────────
-    total_rev   = sum(s.get('total', 0) for s in sales_data)
+    total_rev = sum(float(s.get('total', 0) or 0) for s in sales_data)
     total_count = len(sales_data)
-    avg_sale    = total_rev / total_count if total_count else 0
-    total_disc  = sum(s.get('discount', 0) for s in sales_data)
-    total_tax   = sum(s.get('tax', 0) for s in sales_data)
+    avg_sale = total_rev / total_count if total_count else 0
+    total_disc = sum(float(s.get('discount', 0) or 0) for s in sales_data)
+    total_tax = sum(float(s.get('tax', 0) or 0) for s in sales_data)
+    total_round = sum(float(s.get('cash_rounding_adj', 0) or 0) for s in sales_data)
+    total_orig = 0.0
+    for s in sales_data:
+        tot = float(s.get('total', 0) or 0)
+        adj = float(s.get('cash_rounding_adj', 0) or 0)
+        orig = float(s.get('original_total') or 0)
+        if orig <= 0:
+            orig = tot - adj
+        total_orig += orig
 
-    # Build flat line-items list eagerly (used by sheets 2+3)
     line_items = []
     for sale in sales_data:
         sid = sale.get('id') or sale.get('sale_id')
@@ -101,372 +101,319 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
             items = sale['items']
         for item in items:
             line_items.append({
-                'receipt':      sale.get('receipt_number', ''),
-                'date':         (sale.get('created_at', '') or '')[:19],
-                'cashier':      sale.get('cashier_name', ''),
+                'receipt': sale.get('receipt_number', ''),
+                'date': sale.get('created_at', '') or '',
+                'cashier': sale.get('cashier_name', ''),
                 'product_name': item.get('product_name', ''),
-                'sku':          item.get('sku', '') or '',
-                'quantity':     float(item.get('quantity', 0)),
-                'unit_price':   float(item.get('unit_price', 0)),
-                'discount':     float(item.get('discount', 0)),
-                'total':        float(item.get('total', 0)),
-                'payment':      sale.get('payment_method', '').upper(),
+                'sku': item.get('sku', '') or '',
+                'quantity': float(item.get('quantity', 0) or 0),
+                'unit_price': float(item.get('unit_price', 0) or 0),
+                'discount': float(item.get('discount', 0) or 0),
+                'total': float(item.get('total', 0) or 0),
+                'payment': (sale.get('payment_method', '') or '').upper(),
             })
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 1 – Sales Summary
-    # ══════════════════════════════════════════════════════════════════════════
-    ws1 = wb.active; ws1.title = "Sales Summary"
-    ws1.sheet_view.showGridLines = False
-    ws1.freeze_panes = 'A4'
-    _brand_header(ws1, shop_name, "Sales Report", dr, ncols=12)
-
+    # ── Sheet 1 – Sales Summary ───────────────────────────────────────────────
+    ws1 = wb.active
+    ws1.title = "Sales Summary"
+    hdr1 = write_report_header(
+        ws1, shop_name=shop_name, title="Sales Report", ncols=12,
+        period=period, generated_by=who, filters=filt, currency=currency,
+    )
+    # KPIs sit in rows 5–10 area; move table header after KPIs
     _kpi_block(ws1, [
         ('Total Transactions', total_count, ''),
         (f'Total Revenue ({currency})', total_rev, 'currency'),
+        (f'Original Total ({currency})', total_orig, 'currency'),
+        (f'Cash Rounding ({currency})', total_round, 'currency'),
         (f'Average Sale ({currency})', avg_sale, 'currency'),
         (f'Total Discounts ({currency})', total_disc, 'currency'),
         (f'Total Tax ({currency})', total_tax, 'currency'),
-    ], start_row=4, currency=currency)
+    ], start_row=5)
 
-    SR = 11
-    ws1.cell(SR-1, 1).value = "TRANSACTION DETAILS"
-    ws1.cell(SR-1, 1).font  = _font(12, bold=True, color=M)
+    SR = 14
+    ws1.cell(SR - 1, 1).value = "TRANSACTION DETAILS"
+    ws1.cell(SR - 1, 1).font = _font(12, bold=True, color=M)
 
-    hdrs1 = ['#','Receipt No.','Date & Time','Cashier','Items',
-             f'Subtotal ({currency})', f'Discount ({currency})',
-             f'Tax ({currency})', f'Original ({currency})',
-             f'Rounding ({currency})', f'Final ({currency})','Payment']
-    wds1  = [5, 18, 20, 16, 6, 16, 14, 12, 14, 12, 16, 12]
-    for col,(h,w) in enumerate(zip(hdrs1, wds1), 1):
-        _hdr_cell(ws1, SR, col, h, w, get_column_letter(col))
+    hdrs1 = [
+        '#', 'Receipt No.', 'Date & Time', 'Cashier', 'Items',
+        f'Subtotal ({currency})', f'Discount ({currency})',
+        f'Tax ({currency})', f'Original ({currency})',
+        f'Rounding ({currency})', f'Final ({currency})', 'Payment',
+    ]
+    wds1 = [5, 18, 20, 16, 6, 16, 14, 12, 14, 12, 16, 12]
+    style_header_row(ws1, SR, hdrs1, wds1)
 
     for idx, sale in enumerate(sales_data):
-        r = SR+1+idx; alt = idx%2==1
-        sid  = sale.get('id') or sale.get('sale_id')
+        r = SR + 1 + idx
+        sid = sale.get('id') or sale.get('sale_id')
         n_items = len(items_by_sale.get(sid, sale.get('items', [])))
         adj = float(sale.get('cash_rounding_adj') or 0)
-        tot = float(sale.get('total',0))
+        tot = float(sale.get('total', 0) or 0)
         orig = float(sale.get('original_total') or 0)
         if orig <= 0:
             orig = tot - adj
-        vals = [idx+1, sale.get('receipt_number',''), (sale.get('created_at','') or '')[:19],
-                sale.get('cashier_name',''), n_items or sale.get('item_count',''),
-                float(sale.get('subtotal', sale.get('total',0))),
-                float(sale.get('discount',0)), float(sale.get('tax',0)),
-                orig, adj, tot, sale.get('payment_method','').upper()]
-        for col, val in enumerate(vals, 1):
-            c = ws1.cell(r, col, val)
-            c.border    = _border()
-            c.alignment = _align('right' if isinstance(val,(int,float)) else 'left')
-            if alt: c.fill = _fill(ALT)
-            if col in (6,7,8,9,10,11): c.number_format = f'"{currency} "#,##0.00'
+        vals = [
+            idx + 1,
+            sale.get('receipt_number', ''),
+            sale.get('created_at', '') or '',
+            sale.get('cashier_name', ''),
+            n_items or sale.get('item_count', '') or 0,
+            float(sale.get('subtotal', sale.get('total', 0)) or 0),
+            float(sale.get('discount', 0) or 0),
+            float(sale.get('tax', 0) or 0),
+            orig, adj, tot,
+            (sale.get('payment_method', '') or '').upper(),
+        ]
+        kinds = [
+            'int', 'text', 'datetime', 'text', 'int',
+            'currency', 'currency', 'currency', 'currency', 'currency', 'currency', 'center',
+        ]
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws1.cell(r, col), val, kind=kind, currency=currency, alt=idx % 2 == 1)
 
-    # Totals row
-    TR1 = SR+1+len(sales_data)
-    ws1.cell(TR1,1).value = 'TOTAL'
-    for col in range(1,13):
-        c = ws1.cell(TR1, col)
-        c.fill = _fill(TOT_BG); c.font = _font(10,bold=True,color=TOT_FG); c.border = _border()
-    if total_count:
-        for col, col_letter in [(6,'F'),(7,'G'),(8,'H'),(9,'I'),(10,'J'),(11,'K')]:
-            cell = ws1.cell(TR1, col)
-            cell.value          = f'=SUM({col_letter}{SR+1}:{col_letter}{SR+total_count})'
-            cell.number_format  = f'"{currency} "#,##0.00'
-            cell.alignment      = _align('right')
+    TR1 = SR + 1 + len(sales_data)
+    write_totals_row(ws1, TR1, 12, currency=currency, values={
+        6: (sum(float(s.get('subtotal', s.get('total', 0)) or 0) for s in sales_data), 'currency'),
+        7: (total_disc, 'currency'),
+        8: (total_tax, 'currency'),
+        9: (total_orig, 'currency'),
+        10: (total_round, 'currency'),
+        11: (total_rev, 'currency'),
+    })
+    write_footer(ws1, TR1 + 2, 12, record_count=total_count,
+                 extra=f"Revenue {total_rev:,.2f} · Rounding {total_round:+,.2f}")
+    if sales_data:
+        finalize_table(ws1, SR, SR + 1, SR + total_count, 12)
 
-    _footer(ws1, TR1+2, 10)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 2 – Line Items (THE MISSING SHEET — product name, qty, price, etc.)
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 2 – Line Items ──────────────────────────────────────────────────
     ws2 = wb.create_sheet("Line Items")
-    ws2.sheet_view.showGridLines = False
-    ws2.freeze_panes = 'A4'
-    _brand_header(ws2, shop_name, "Sales Line Items — Full Detail", dr, ncols=10)
-
-    ws2.cell(3,1).value = "Every individual product sold in the selected period"
-    ws2.cell(3,1).font  = _font(10, italic=True, color=G)
-
-    hdrs2 = ['Receipt No.','Date & Time','Cashier','Product Name','SKU',
-             'Qty', f'Unit Price ({currency})', f'Discount ({currency})', f'Total ({currency})','Payment']
-    wds2  = [18, 20, 16, 30, 14, 8, 18, 14, 18, 12]
-    for col,(h,w) in enumerate(zip(hdrs2,wds2), 1):
-        _hdr_cell(ws2, 4, col, h, w, get_column_letter(col))
-
+    hdr2 = write_report_header(
+        ws2, shop_name=shop_name, title="Sales Line Items — Full Detail",
+        ncols=10, period=period, generated_by=who, filters=filt, currency=currency,
+    )
+    hdrs2 = [
+        'Receipt No.', 'Date & Time', 'Cashier', 'Product Name', 'SKU',
+        'Qty', f'Unit Price ({currency})', f'Discount ({currency})',
+        f'Total ({currency})', 'Payment',
+    ]
+    style_header_row(ws2, hdr2, hdrs2, [18, 20, 16, 30, 14, 8, 16, 14, 16, 12])
     for idx, li in enumerate(line_items):
-        r = 5+idx; alt = idx%2==1
-        vals = [li['receipt'], li['date'], li['cashier'], li['product_name'], li['sku'],
-                li['quantity'], li['unit_price'], li['discount'], li['total'], li['payment']]
-        for col, val in enumerate(vals, 1):
-            c = ws2.cell(r, col, val)
-            c.border    = _border()
-            c.alignment = _align('right' if isinstance(val,(int,float)) and col>5 else
-                                 'center' if col==6 else 'left')
-            if alt: c.fill = _fill(ALT)
-            if col in (7,8,9): c.number_format = f'"{currency} "#,##0.00'
-            if col==6:         c.number_format  = '#,##0.##'
-
-    # Totals
-    TR2 = 5+len(line_items)
-    ws2.cell(TR2,1).value='TOTAL'
-    for col in range(1,11):
-        c=ws2.cell(TR2,col); c.fill=_fill(TOT_BG); c.font=_font(10,bold=True); c.border=_border()
+        r = hdr2 + 1 + idx
+        vals = [
+            li['receipt'], li['date'], li['cashier'], li['product_name'], li['sku'],
+            li['quantity'], li['unit_price'], li['discount'], li['total'], li['payment'],
+        ]
+        kinds = [
+            'text', 'datetime', 'text', 'text', 'text',
+            'qty', 'currency', 'currency', 'currency', 'center',
+        ]
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws2.cell(r, col), val, kind=kind, currency=currency, alt=idx % 2 == 1)
+    TR2 = hdr2 + 1 + len(line_items)
+    write_totals_row(ws2, TR2, 10, currency=currency, values={
+        6: (sum(li['quantity'] for li in line_items), 'qty'),
+        8: (sum(li['discount'] for li in line_items), 'currency'),
+        9: (sum(li['total'] for li in line_items), 'currency'),
+    })
+    write_footer(ws2, TR2 + 2, 10, record_count=len(line_items))
     if line_items:
-        n = len(line_items)
-        for col,cl in [(6,'F'),(7,'G'),(8,'H'),(9,'I')]:
-            cell=ws2.cell(TR2,col)
-            cell.value         = f'=SUM({cl}5:{cl}{4+n})'
-            cell.number_format = '#,##0.00' if col==6 else f'"{currency} "#,##0.00'
-            cell.alignment     = _align('right')
+        finalize_table(ws2, hdr2, hdr2 + 1, hdr2 + len(line_items), 10)
 
-    _footer(ws2, TR2+2, 10)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 3 – Top Products (aggregated)
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 3 – Top Products ────────────────────────────────────────────────
     ws3 = wb.create_sheet("Top Products")
-    ws3.sheet_view.showGridLines = False
-    _brand_header(ws3, shop_name, "Product Performance", dr, ncols=8)
-
+    hdr3 = write_report_header(
+        ws3, shop_name=shop_name, title="Product Performance",
+        ncols=7, period=period, generated_by=who, filters=filt, currency=currency,
+    )
     prod_stats = {}
     for li in line_items:
         name = li['product_name'] or 'Unknown'
-        prod_stats.setdefault(name, {'qty':0,'revenue':0,'transactions':0})
-        prod_stats[name]['qty']          += li['quantity']
-        prod_stats[name]['revenue']      += li['total']
+        prod_stats.setdefault(name, {'qty': 0, 'revenue': 0, 'transactions': 0})
+        prod_stats[name]['qty'] += li['quantity']
+        prod_stats[name]['revenue'] += li['total']
         prod_stats[name]['transactions'] += 1
-
     sorted_prods = sorted(prod_stats.items(), key=lambda x: x[1]['revenue'], reverse=True)
-
-    hdrs3 = ['Rank','Product Name','Units Sold','Transactions',
-             f'Revenue ({currency})','% of Total','Avg Unit Price']
-    wds3  = [6, 32, 14, 14, 18, 14, 18]
-    for col,(h,w) in enumerate(zip(hdrs3,wds3),1):
-        _hdr_cell(ws3, 4, col, h, w, get_column_letter(col))
-
+    hdrs3 = [
+        'Rank', 'Product Name', 'Units Sold', 'Transactions',
+        f'Revenue ({currency})', '% of Total', 'Avg Unit Price',
+    ]
+    style_header_row(ws3, hdr3, hdrs3, [6, 32, 14, 14, 18, 14, 18])
     grand_rev = sum(v['revenue'] for v in prod_stats.values()) or 1
-    for rank,(name,st) in enumerate(sorted_prods,1):
-        r=4+rank; alt=rank%2==0
-        avg_up = st['revenue']/st['qty'] if st['qty'] else 0
-        vals=[rank, name, st['qty'], st['transactions'],
-              st['revenue'], st['revenue']/grand_rev, avg_up]
-        for col,val in enumerate(vals,1):
-            c=ws3.cell(r,col,val); c.border=_border()
-            if alt: c.fill=_fill(ALT)
-            c.alignment=_align('right' if col not in(1,2) else
-                               'center' if col==1 else 'left')
-            if col==5: c.number_format=f'"{currency} "#,##0.00'
-            if col==6: c.number_format='0.0%'
-            if col==7: c.number_format=f'"{currency} "#,##0.00'
-
-    # Totals row
-    TR3=4+len(sorted_prods)+1
-    ws3.cell(TR3,2).value='GRAND TOTAL'; ws3.cell(TR3,2).font=_font(10,bold=True)
-    ws3.cell(TR3,5).value=grand_rev; ws3.cell(TR3,5).number_format=f'"{currency} "#,##0.00'
-    ws3.cell(TR3,5).font=_font(10,bold=True,color=GRN)
-    for col in range(1,8):
-        ws3.cell(TR3,col).fill=_fill(TOT_BG); ws3.cell(TR3,col).border=_border()
-
-    # Bar chart
+    for rank, (name, st) in enumerate(sorted_prods, 1):
+        r = hdr3 + rank
+        avg_up = st['revenue'] / st['qty'] if st['qty'] else 0
+        vals = [
+            rank, name, st['qty'], st['transactions'],
+            st['revenue'], st['revenue'] / grand_rev, avg_up,
+        ]
+        kinds = ['int', 'text', 'qty', 'int', 'currency', 'pct', 'currency']
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws3.cell(r, col), val, kind=kind, currency=currency, alt=rank % 2 == 0)
+    TR3 = hdr3 + len(sorted_prods) + 1
+    write_totals_row(ws3, TR3, 7, currency=currency, values={
+        5: (grand_rev if prod_stats else 0, 'currency'),
+    })
     if sorted_prods:
-        chart=BarChart(); chart.type="bar"
-        chart.title="Revenue by Product"; chart.y_axis.title=f"Revenue ({currency})"
-        top_n=min(10,len(sorted_prods))
-        data_ref=Reference(ws3,min_col=5,min_row=4,max_row=4+top_n)
-        cats_ref=Reference(ws3,min_col=2,min_row=5,max_row=4+top_n)
-        chart.add_data(data_ref,titles_from_data=True); chart.set_categories(cats_ref)
-        chart.height=14; chart.width=24; ws3.add_chart(chart,"I5")
+        chart = BarChart()
+        chart.type = "bar"
+        chart.title = "Revenue by Product"
+        chart.y_axis.title = f"Revenue ({currency})"
+        top_n = min(10, len(sorted_prods))
+        data_ref = Reference(ws3, min_col=5, min_row=hdr3, max_row=hdr3 + top_n)
+        cats_ref = Reference(ws3, min_col=2, min_row=hdr3 + 1, max_row=hdr3 + top_n)
+        chart.add_data(data_ref, titles_from_data=True)
+        chart.set_categories(cats_ref)
+        chart.height = 14
+        chart.width = 24
+        ws3.add_chart(chart, "I5")
+        finalize_table(ws3, hdr3, hdr3 + 1, hdr3 + len(sorted_prods), 7)
+    write_footer(ws3, TR3 + 2, 7, record_count=len(sorted_prods))
 
-    _footer(ws3, TR3+2, 8)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 4 – Payment Methods
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 4 – Payment Methods ─────────────────────────────────────────────
     ws4 = wb.create_sheet("Payment Methods")
-    ws4.sheet_view.showGridLines = False
-    _brand_header(ws4, shop_name, "Payment Method Breakdown", dr, ncols=5)
-
+    hdr4 = write_report_header(
+        ws4, shop_name=shop_name, title="Payment Method Breakdown",
+        ncols=5, period=period, generated_by=who, filters=filt, currency=currency,
+    )
     pay_stats = {}
     for sale in sales_data:
         pm = (sale.get('payment_method') or 'cash').upper()
-        pay_stats.setdefault(pm, {'count':0,'total':0})
+        pay_stats.setdefault(pm, {'count': 0, 'total': 0.0})
         pay_stats[pm]['count'] += 1
-        pay_stats[pm]['total'] += float(sale.get('total',0))
+        pay_stats[pm]['total'] += float(sale.get('total', 0) or 0)
+    hdrs4 = [
+        'Payment Method', 'Transactions', '% Transactions',
+        f'Revenue ({currency})', '% Revenue',
+    ]
+    style_header_row(ws4, hdr4, hdrs4, [22, 16, 18, 22, 16])
+    grand_count = sum(v['count'] for v in pay_stats.values()) or 1
+    grand_pay = sum(v['total'] for v in pay_stats.values()) or 1
+    for idx, (pm, st) in enumerate(
+            sorted(pay_stats.items(), key=lambda x: x[1]['total'], reverse=True)):
+        r = hdr4 + 1 + idx
+        vals = [
+            pm, st['count'], st['count'] / grand_count,
+            st['total'], st['total'] / grand_pay,
+        ]
+        kinds = ['text', 'int', 'pct', 'currency', 'pct']
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws4.cell(r, col), val, kind=kind, currency=currency, alt=idx % 2 == 1)
+    write_footer(ws4, hdr4 + 2 + len(pay_stats), 5, record_count=len(pay_stats))
+    if pay_stats:
+        finalize_table(ws4, hdr4, hdr4 + 1, hdr4 + len(pay_stats), 5)
 
-    hdrs4=['Payment Method','Transactions','% Transactions',f'Revenue ({currency})','% Revenue']
-    wds4 =[22, 16, 18, 22, 16]
-    for col,(h,w) in enumerate(zip(hdrs4,wds4),1):
-        _hdr_cell(ws4, 4, col, h, w, get_column_letter(col))
-
-    grand_count=sum(v['count'] for v in pay_stats.values()) or 1
-    grand_pay  =sum(v['total'] for v in pay_stats.values()) or 1
-    for idx,(pm,st) in enumerate(sorted(pay_stats.items(),key=lambda x:x[1]['total'],reverse=True)):
-        r=5+idx; alt=idx%2==1
-        vals=[pm, st['count'], st['count']/grand_count,
-              st['total'], st['total']/grand_pay]
-        for col,val in enumerate(vals,1):
-            c=ws4.cell(r,col,val); c.border=_border()
-            if alt: c.fill=_fill(ALT)
-            c.alignment=_align('right' if col>1 else 'left')
-            if col in(3,5): c.number_format='0.0%'
-            if col==4:      c.number_format=f'"{currency} "#,##0.00'
-
-    _footer(ws4, 6+len(pay_stats), 5)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 5 – Stock / Inventory Snapshot
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 5 – Stock / Inventory ───────────────────────────────────────────
     ws5 = wb.create_sheet("Stock & Inventory")
-    ws5.sheet_view.showGridLines = False
-    ws5.freeze_panes = 'A5'
-    _brand_header(ws5, shop_name, "Stock & Inventory Snapshot",
-                  f"As at {datetime.now().strftime('%Y-%m-%d %H:%M')}", ncols=10)
-
-    ws5.cell(3, 1).value = (
-        "Current stock levels at time of export  —  "
-        "RED = below minimum stock threshold (reorder needed)"
+    hdr5 = write_report_header(
+        ws5, shop_name=shop_name, title="Stock & Inventory Snapshot",
+        ncols=10,
+        period=f"As at {datetime.now().strftime('%d %b %Y %H:%M')}",
+        generated_by=who, filters="Current stock levels", currency=currency,
     )
-    ws5.cell(3, 1).font      = _font(10, italic=True, color=G)
-    ws5.cell(3, 1).alignment = _align('left')
+    ws5.cell(5, 1).value = (
+        "Current stock at export — RED rows = below minimum (reorder needed)"
+    )
+    ws5.cell(5, 1).font = _font(10, italic=True, color=G)
 
-    hdrs5 = ['#', 'Product Name', 'SKU', 'Category',
-             f'Selling Price ({currency})', f'Cost Price ({currency})',
-             'Current Stock', 'Min Stock',
-             f'Stock Value ({currency})', 'Status']
-    wds5  = [5, 30, 14, 16, 18, 16, 14, 12, 18, 14]
-    for col, (h, w) in enumerate(zip(hdrs5, wds5), 1):
-        _hdr_cell(ws5, 4, col, h, w, get_column_letter(col))
+    hdrs5 = [
+        '#', 'Product Name', 'SKU', 'Category',
+        f'Selling Price ({currency})', f'Cost Price ({currency})',
+        'Current Stock', 'Min Stock', f'Stock Value ({currency})', 'Status',
+    ]
+    style_header_row(ws5, hdr5, hdrs5, [5, 30, 14, 16, 16, 14, 12, 10, 16, 14])
 
-    # Colours for status column
-    LOW_FILL  = _fill('FFEBEE')   # light red  — below minimum
-    LOW_FONT  = _font(10, bold=True, color=RED)
-    OK_FILL   = _fill('E8F5E9')   # light green — healthy stock
-    OK_FONT   = _font(10, bold=True, color=GRN)
-    ZERO_FILL = _fill('FFF3E0')   # amber — out of stock
+    LOW_FILL = _fill('FFEBEE')
+    LOW_FONT = _font(10, bold=True, color=RED)
+    OK_FONT = _font(10, bold=True, color=GRN)
+    ZERO_FILL = _fill('FFF3E0')
     ZERO_FONT = _font(10, bold=True, color='E65100')
 
     products = products_data or []
-    # Sort: out-of-stock first, then low-stock, then alphabetical
+
     def _sort_key(p):
-        stk = int(p.get('stock', 0) or 0)
-        mn  = int(p.get('min_stock', 5) or 5)
-        if stk == 0:   return (0, p.get('name', ''))
-        if stk <= mn:  return (1, p.get('name', ''))
-        return              (2, p.get('name', ''))
+        stk = float(p.get('stock', 0) or 0)
+        mn = float(p.get('min_stock', 5) or 5)
+        if stk == 0:
+            return (0, p.get('name', ''))
+        if stk <= mn:
+            return (1, p.get('name', ''))
+        return (2, p.get('name', ''))
 
     products_sorted = sorted(products, key=_sort_key)
-
     total_stock_value = 0.0
-    low_count  = 0
+    low_count = 0
     zero_count = 0
 
     for idx, prod in enumerate(products_sorted):
-        r   = 5 + idx
+        r = hdr5 + 1 + idx
         alt = idx % 2 == 1
-
-        name      = prod.get('name', '')
-        sku       = prod.get('sku', '') or ''
-        category  = prod.get('category', '') or ''
-        price     = float(prod.get('price', 0) or 0)
-        cost      = float(prod.get('cost_price', 0) or 0)
-        stock     = int(prod.get('stock', 0) or 0)
-        min_stock = int(prod.get('min_stock', 5) or 5)
+        name = prod.get('name', '')
+        sku = prod.get('sku', '') or ''
+        category = prod.get('category', '') or ''
+        price = float(prod.get('price', 0) or 0)
+        cost = float(prod.get('cost_price', 0) or 0)
+        stock = float(prod.get('stock', 0) or 0)
+        min_stock = float(prod.get('min_stock', 5) or 5)
         stk_value = cost * stock if cost else price * stock * 0.6
         total_stock_value += stk_value
 
         if stock == 0:
-            status     = 'OUT OF STOCK'
-            row_fill   = ZERO_FILL
-            stat_font  = ZERO_FONT
+            status = 'OUT OF STOCK'
             zero_count += 1
         elif stock <= min_stock:
-            status     = 'LOW STOCK'
-            row_fill   = LOW_FILL
-            stat_font  = LOW_FONT
-            low_count  += 1
+            status = 'LOW STOCK'
+            low_count += 1
         else:
-            status     = 'OK'
-            row_fill   = OK_FILL if not alt else _fill(ALT)
-            stat_font  = OK_FONT
+            status = 'OK'
 
-        vals = [idx + 1, name, sku, category, price, cost,
-                stock, min_stock, stk_value, status]
-
-        for col, val in enumerate(vals, 1):
-            c = ws5.cell(r, col, val)
-            c.border    = _border()
-            c.alignment = _align(
-                'right' if col in (5, 6, 7, 8, 9) else
-                'center' if col in (1,) else 'left')
-            # Row background
+        vals = [idx + 1, name, sku, category, price, cost, stock, min_stock, stk_value, status]
+        kinds = ['int', 'text', 'text', 'text', 'currency', 'currency',
+                 'qty', 'qty', 'currency', 'center']
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            cell = ws5.cell(r, col)
+            apply_data_cell(cell, val, kind=kind, currency=currency, alt=alt)
             if stock == 0:
-                c.fill = ZERO_FILL
+                cell.fill = ZERO_FILL
             elif stock <= min_stock:
-                c.fill = LOW_FILL
-            elif alt:
-                c.fill = _fill(ALT)
-            # Number formats
-            if col in (5, 6):   c.number_format = f'"{currency} "#,##0.00'
-            if col == 9:        c.number_format = f'"{currency} "#,##0.00'
-            if col in (7, 8):   c.number_format = '#,##0'
-            # Status column special font
-            if col == 10:       c.font = stat_font
+                cell.fill = LOW_FILL
+            if col == 10:
+                cell.font = (
+                    ZERO_FONT if stock == 0 else
+                    LOW_FONT if stock <= min_stock else OK_FONT
+                )
 
-    # ── Summary / totals row ──────────────────────────────────────────────────
     n_prods = len(products_sorted)
-    TR5     = 5 + n_prods
+    TR5 = hdr5 + 1 + n_prods
+    write_totals_row(ws5, TR5, 10, label='TOTALS', currency=currency, values={
+        9: (total_stock_value, 'currency'),
+    })
+    ws5.cell(TR5, 2).value = f'{n_prods} products · {zero_count} out · {low_count} low'
+    ws5.cell(TR5, 2).font = _font(10, bold=True, color=TOT_FG)
+    ws5.cell(TR5, 2).fill = _fill(TOT_BG)
 
-    ws5.cell(TR5, 1).value = 'TOTALS'
-    ws5.cell(TR5, 2).value = f'{n_prods} products'
-    ws5.cell(TR5, 9).value = total_stock_value
-    ws5.cell(TR5, 9).number_format = f'"{currency} "#,##0.00'
-    ws5.cell(TR5, 10).value = (
-        f'{zero_count} out-of-stock  ·  {low_count} low stock'
+    write_footer(
+        ws5, TR5 + 2, 10, record_count=n_prods,
+        extra=f"Stock value {total_stock_value:,.2f}",
     )
-    for col in range(1, 11):
-        c = ws5.cell(TR5, col)
-        c.fill   = _fill(TOT_BG)
-        c.font   = _font(10, bold=True, color=TOT_FG)
-        c.border = _border()
+    if products_sorted:
+        finalize_table(ws5, hdr5, hdr5 + 1, hdr5 + n_prods, 10)
 
-    # ── KPI summary block above table ─────────────────────────────────────────
-    # Insert 2 rows of KPI summary at the bottom for quick reading
-    KPI_ROW = TR5 + 2
-    ws5.cell(KPI_ROW,     1).value = 'INVENTORY SUMMARY'
-    ws5.cell(KPI_ROW,     1).font  = _font(12, bold=True, color=M)
-    kpis = [
-        ('Total Products',        n_prods,            ''),
-        ('Out of Stock',          zero_count,         ''),
-        ('Low Stock (need reorder)', low_count,        ''),
-        (f'Total Stock Value ({currency})', total_stock_value, 'currency'),
-    ]
-    for i, (lbl, val, fmt) in enumerate(kpis):
-        r = KPI_ROW + 1 + i
-        lc = ws5.cell(r, 1, lbl)
-        lc.font   = _font(10, bold=True); lc.fill = _fill(ALT)
-        lc.border = _border(); lc.alignment = _align()
-        vc = ws5.cell(r, 2, val)
-        vc.border = _border(); vc.alignment = _align('right')
-        vc.font   = _font(10, bold=True, color=RED if (lbl.startswith('Out') and val > 0)
-                           else GRN if lbl.startswith('Total Prod') else BLU)
-        if fmt == 'currency': vc.number_format = f'"{currency} "#,##0.00'
-
-    _footer(ws5, KPI_ROW + len(kpis) + 2, 10)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 6 – Debt Management
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Sheet 6 – Debt Management ─────────────────────────────────────────────
     ws6 = wb.create_sheet("Debt Management")
-    ws6.sheet_view.showGridLines = False
-    ws6.freeze_panes = 'A13'
-    _brand_header(ws6, shop_name, "Debt Management Report", dr, ncols=9)
-
     debt_summary = debt_summary or {}
     aging_report = aging_report or {}
     debt_invoices = debt_invoices or []
     debt_payments = debt_payments or []
 
+    hdr6 = write_report_header(
+        ws6, shop_name=shop_name, title="Debt Management Report",
+        ncols=9, period=period, generated_by=who, filters=filt, currency=currency,
+    )
     outstanding = float((debt_summary.get('outstanding') or {}).get('total', 0) or 0)
     overdue = float((debt_summary.get('overdue') or {}).get('total', 0) or 0)
     collected = float((debt_summary.get('today_collected') or {}).get('total', 0) or 0)
@@ -477,11 +424,13 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
         (f'Overdue Debt ({currency})', overdue, 'currency'),
         (f'Collected Today ({currency})', collected, 'currency'),
         ('Customers with Debt', customers_with_debt, ''),
-        ('Open Invoices', len([i for i in debt_invoices if i.get('status') not in ('paid', 'cancelled')]), ''),
-    ], start_row=4, currency=currency)
+        ('Open Invoices', len([
+            i for i in debt_invoices if i.get('status') not in ('paid', 'cancelled')
+        ]), ''),
+    ], start_row=5)
 
-    ws6.cell(4, 4).value = "AGING BREAKDOWN"
-    ws6.cell(4, 4).font = _font(12, bold=True, color=M)
+    ws6.cell(5, 4).value = "AGING BREAKDOWN"
+    ws6.cell(5, 4).font = _font(12, bold=True, color=M)
     aging_rows = [
         ('Current', aging_report.get('current', {})),
         ('1-30 Days', aging_report.get('1_30', {})),
@@ -489,67 +438,53 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
         ('61-90 Days', aging_report.get('61_90', {})),
         ('90+ Days', aging_report.get('over_90', {})),
     ]
-    _hdr_cell(ws6, 5, 4, "Bucket", 14, 'D')
-    _hdr_cell(ws6, 5, 5, "Invoices", 10, 'E')
-    _hdr_cell(ws6, 5, 6, f"Amount ({currency})", 16, 'F')
+    _hdr_cell(ws6, 6, 4, "Bucket", 14, 'D')
+    _hdr_cell(ws6, 6, 5, "Invoices", 10, 'E')
+    _hdr_cell(ws6, 6, 6, f"Amount ({currency})", 16, 'F')
     for i, (label, data) in enumerate(aging_rows):
-        r = 6 + i
-        cnt = int((data or {}).get('count', 0) or 0)
-        total = float((data or {}).get('total', 0) or 0)
-        vals = (label, cnt, total)
-        for cidx, val in enumerate(vals, 4):
-            c = ws6.cell(r, cidx, val)
-            c.border = _border()
-            c.alignment = _align('right' if cidx in (5, 6) else 'left')
-            if i % 2 == 1:
-                c.fill = _fill(ALT)
-            if cidx == 6:
-                c.number_format = f'"{currency} "#,##0.00'
+        r = 7 + i
+        apply_data_cell(ws6.cell(r, 4), label, kind='text', alt=i % 2 == 1)
+        apply_data_cell(
+            ws6.cell(r, 5), int((data or {}).get('count', 0) or 0),
+            kind='int', alt=i % 2 == 1)
+        apply_data_cell(
+            ws6.cell(r, 6), float((data or {}).get('total', 0) or 0),
+            kind='currency', currency=currency, alt=i % 2 == 1)
 
-    ws6.cell(11, 1).value = "OPEN / RECENT DEBT INVOICES"
-    ws6.cell(11, 1).font = _font(12, bold=True, color=M)
-    hdrs6 = ['Invoice No.', 'Customer', f'Outstanding ({currency})', 'Status', 'Due Date', 'Created']
-    wds6 = [18, 24, 18, 12, 14, 20]
-    for col, (h, w) in enumerate(zip(hdrs6, wds6), 1):
-        _hdr_cell(ws6, 12, col, h, w, get_column_letter(col))
-
+    INV_HDR = 14
+    ws6.cell(INV_HDR - 1, 1).value = "OPEN / RECENT DEBT INVOICES"
+    ws6.cell(INV_HDR - 1, 1).font = _font(12, bold=True, color=M)
+    hdrs6 = [
+        'Invoice No.', 'Customer', f'Outstanding ({currency})',
+        'Status', 'Due Date', 'Created',
+    ]
+    style_header_row(ws6, INV_HDR, hdrs6, [18, 24, 18, 12, 14, 20])
     inv_rows = sorted(
-        debt_invoices,
-        key=lambda x: x.get('created_at', ''),
-        reverse=True
-    )[:30]
+        debt_invoices, key=lambda x: x.get('created_at', ''), reverse=True
+    )[:200]
     for i, inv in enumerate(inv_rows):
-        r = 13 + i
+        r = INV_HDR + 1 + i
         vals = [
             inv.get('invoice_number', ''),
             inv.get('customer_name', ''),
             float(inv.get('balance', 0) or 0),
             (inv.get('status', '') or '').upper(),
             inv.get('due_date') or '',
-            (inv.get('created_at', '') or '')[:19],
+            inv.get('created_at', '') or '',
         ]
-        for col, val in enumerate(vals, 1):
-            c = ws6.cell(r, col, val)
-            c.border = _border()
-            c.alignment = _align('right' if col == 3 else 'left')
-            if i % 2 == 1:
-                c.fill = _fill(ALT)
-            if col == 3:
-                c.number_format = f'"{currency} "#,##0.00'
+        kinds = ['text', 'text', 'currency', 'center', 'date', 'datetime']
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws6.cell(r, col), val, kind=kind, currency=currency, alt=i % 2 == 1)
 
-    pay_start = 15 + len(inv_rows)
+    pay_start = INV_HDR + 2 + len(inv_rows)
     ws6.cell(pay_start, 1).value = "RECENT DEBT PAYMENTS"
     ws6.cell(pay_start, 1).font = _font(12, bold=True, color=M)
     pay_hdrs = ['Receipt', 'Customer', f'Amount ({currency})', 'Method', 'Date']
-    pay_wds = [18, 24, 18, 14, 20]
-    for col, (h, w) in enumerate(zip(pay_hdrs, pay_wds), 1):
-        _hdr_cell(ws6, pay_start + 1, col, h, w, get_column_letter(col))
-
+    style_header_row(ws6, pay_start + 1, pay_hdrs, [18, 24, 18, 14, 20])
     pay_rows = sorted(
-        debt_payments,
-        key=lambda x: x.get('created_at', ''),
-        reverse=True
-    )[:30]
+        debt_payments, key=lambda x: x.get('created_at', ''), reverse=True
+    )[:200]
     for i, pay in enumerate(pay_rows):
         r = pay_start + 2 + i
         vals = [
@@ -557,36 +492,80 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
             pay.get('customer_name', ''),
             float(pay.get('amount', 0) or 0),
             (pay.get('payment_method', '') or '').upper(),
-            (pay.get('created_at', '') or '')[:19],
+            pay.get('created_at', '') or '',
         ]
-        for col, val in enumerate(vals, 1):
-            c = ws6.cell(r, col, val)
-            c.border = _border()
-            c.alignment = _align('right' if col == 3 else 'left')
-            if i % 2 == 1:
-                c.fill = _fill(ALT)
-            if col == 3:
-                c.number_format = f'"{currency} "#,##0.00'
+        kinds = ['text', 'text', 'currency', 'center', 'datetime']
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws6.cell(r, col), val, kind=kind, currency=currency, alt=i % 2 == 1)
 
-    _footer(ws6, pay_start + 3 + len(pay_rows), 9)
+    write_footer(
+        ws6, pay_start + 4 + len(pay_rows), 9,
+        record_count=len(inv_rows) + len(pay_rows),
+        extra=f"Outstanding {outstanding:,.2f}",
+    )
+    if inv_rows:
+        finalize_table(ws6, INV_HDR, INV_HDR + 1, INV_HDR + len(inv_rows), 6)
+
+    # ── Sheet 7 – Payment Variance ────────────────────────────────────────────
+    variance_rows = variance_rows or []
+    variance_summary = variance_summary or {}
+    ws7 = wb.create_sheet("Payment Variance")
+    hdr7 = write_report_header(
+        ws7, shop_name=shop_name, title="Payment Variance Report",
+        ncols=12, period=period, generated_by=who, filters=filt, currency=currency,
+    )
+    _kpi_block(ws7, [
+        (f'Extra Received ({currency})', float(variance_summary.get('extra_received') or 0), 'currency'),
+        (f'Returned ({currency})', float(variance_summary.get('returned') or 0), 'currency'),
+        (f'Deposits ({currency})', float(variance_summary.get('deposits') or 0) + float(variance_summary.get('advances') or 0), 'currency'),
+        (f'Tips ({currency})', float(variance_summary.get('tips') or 0), 'currency'),
+        (f'Transport ({currency})', float(variance_summary.get('transport') or 0), 'currency'),
+    ], start_row=5)
+    VR = 13
+    vh = [
+        'Date', 'Sale #', 'Cashier', 'Method', 'Sale Total', 'Received',
+        'Excess', 'Handling', 'Returned', 'Deposit', 'Tip', 'Transport',
+    ]
+    style_header_row(ws7, VR, vh, [16, 16, 14, 10, 12, 12, 10, 14, 10, 10, 10, 12])
+    for i, row in enumerate(variance_rows):
+        r = VR + 1 + i
+        vals = [
+            row.get('created_at') or '',
+            row.get('receipt_number', ''),
+            row.get('cashier_name', ''),
+            (row.get('payment_method') or '').upper(),
+            float(row.get('sale_total') or 0),
+            float(row.get('amount_received') or 0),
+            float(row.get('excess_amount') or 0),
+            (row.get('handling') or '').replace('_', ' ').title(),
+            float(row.get('change_returned') or 0),
+            float(row.get('deposit_amount') or 0) + float(row.get('advance_amount') or 0),
+            float(row.get('tip_amount') or 0),
+            float(row.get('transport_amount') or 0),
+        ]
+        kinds = [
+            'datetime', 'text', 'text', 'center',
+            'currency', 'currency', 'currency', 'text',
+            'currency', 'currency', 'currency', 'currency',
+        ]
+        for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+            apply_data_cell(
+                ws7.cell(r, col), val, kind=kind, currency=currency, alt=i % 2 == 1)
+    write_footer(ws7, VR + 2 + len(variance_rows), 12, record_count=len(variance_rows))
+    if variance_rows:
+        finalize_table(ws7, VR, VR + 1, VR + len(variance_rows), 12)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     if output_path is None:
         output_path = os.path.join(
-            (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
-             else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            'exports',
-            f"sales_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            get_export_dir(),
+            f"sales_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         )
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     wb.save(output_path)
     return output_path
 
 
-def _footer(ws, row, ncols):
-    end = get_column_letter(ncols)
-    ws.merge_cells(f'A{row}:{end}{row}')
-    c = ws[f'A{row}']
-    c.value     = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  Powered by MugoByte Technologies  |  mugobyte.com"
-    c.font      = _font(9, italic=True, color=G)
-    c.alignment = _align('center')
+# Back-compat alias used by older callers
+_footer = lambda ws, row, ncols: write_footer(ws, row, ncols, record_count=0)

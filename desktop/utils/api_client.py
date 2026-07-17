@@ -74,16 +74,29 @@ def _hash_pw(pw: str) -> str:
 
 
 # ── Database connection ─────────────────────────────────────────────────────────
-def _db() -> sqlite3.Connection:
+_SCHEMA_READY = False
+
+
+def _db(*, ensure_schema: bool = True) -> sqlite3.Connection:
+    """Open SQLite connection. Schema bootstrap runs once per process (not every call)."""
+    global _SCHEMA_READY
     db_path = get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    is_new = not os.path.exists(db_path)
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=5.0)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     configure_sqlite_connection(conn)
     # Always ensure schema exists (safe on existing DBs via CREATE IF NOT EXISTS)
-    _ensure_schema(conn)
+    # Running full migrations on every open caused multi-second stalls / lock storms
+    # under rapid POS API sequences (sale → debt → payment).
+    if ensure_schema and not _SCHEMA_READY:
+        _ensure_schema(conn)
+        _SCHEMA_READY = True
     return conn
+
+
+def _db_light() -> sqlite3.Connection:
+    """Connection for audit/helpers — skip schema bootstrap."""
+    return _db(ensure_schema=False)
 
 
 def _rows(cursor) -> list:
@@ -676,7 +689,7 @@ def _next_receipt(conn=None) -> str:
 # ── Audit logger ────────────────────────────────────────────────────────────────
 def _audit(user_id, username, action, module='system', details=''):
     try:
-        db = _db()
+        db = _db_light()
         db.execute(
             "INSERT INTO audit_log (user_id,username,action,module,details) VALUES (?,?,?,?,?)",
             (user_id, username, action, module, details)
@@ -1133,6 +1146,30 @@ class APIClient:
                 " GROUP BY s.id ORDER BY s.created_at DESC",
                 (start, end)
             ))
+        finally:
+            db.close()
+
+    def get_sale_items_for_range(self, start=None, end=None, *, include_voided=False) -> list:
+        """
+        Batch-fetch line items for a date range (avoids N+1 get_sale calls in Reports).
+        Returns flat rows with sale header fields joined onto each item.
+        """
+        start = start or str(date.today())
+        end = end or str(date.today())
+        db = _db()
+        try:
+            status_clause = "" if include_voided else " AND s.status='completed' "
+            return _rows(db.execute(f"""
+                SELECT si.*,
+                       s.receipt_number, s.created_at AS sale_created_at,
+                       s.cashier_name, s.payment_method, s.status AS sale_status,
+                       s.id AS sale_id
+                FROM sale_items si
+                JOIN sales s ON si.sale_id = s.id
+                WHERE date(s.created_at) BETWEEN ? AND ?
+                {status_clause}
+                ORDER BY s.created_at DESC, si.id ASC
+            """, (start, end)))
         finally:
             db.close()
 
@@ -2509,7 +2546,12 @@ class APIClient:
 
     def _device_name(self) -> str:
         try:
+            # Prefer env — socket.gethostname() can stall on broken DNS/NetBIOS
+            name = (os.environ.get('COMPUTERNAME') or os.environ.get('HOSTNAME') or '').strip()
+            if name:
+                return name
             import socket
+            socket.setdefaulttimeout(2.0)
             return socket.gethostname() or 'unknown'
         except Exception:
             return 'unknown'

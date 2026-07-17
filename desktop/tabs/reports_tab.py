@@ -9,7 +9,8 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     SecondaryBtn, DangerBtn, SuccessBtn, GhostBtn,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, Badge, lovable_tab_qss,
-                                    wrap_table_card, page_intro)
+                                    wrap_table_card, page_intro,
+                                    apply_table_row_backgrounds, retint_table_items)
 from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
 from desktop.utils.select_controls import DatePresetSelect
 from desktop.utils.option_lists import date_range_for_preset
@@ -309,32 +310,38 @@ class ReportsTab(QWidget):
                     (s2.get('payment_method','') or '').upper(),
                 ]):
                     self._stbl.setItem(i, j, tbl_item(str(v)))
+            apply_table_row_backgrounds(self._stbl)
         except Exception as e:
             _log.warning(f"Reports sales list: {e}")
 
-        # Line items tab — fetch all items
+        # Line items — single batch query (UI capped so large catalogs stay responsive)
+        _UI_LINE_LIMIT = 500
         try:
-            sales_full = self.api.get_sales(start, end) or []
+            items = []
+            if hasattr(self.api, 'get_sale_items_for_range'):
+                items = self.api.get_sale_items_for_range(start, end) or []
             self._litbl.setRowCount(0)
-            row = 0
-            for sale in sales_full:
-                sid   = sale.get('id') or sale.get('sale_id')
-                d     = self.api.get_sale(sid) if sid else {}
-                items = (d or {}).get('items', [])
-                for item in items:
-                    self._litbl.insertRow(row)
-                    for j, v in enumerate([
-                        sale.get('receipt_number',''),
-                        (sale.get('created_at','') or '')[:16],
-                        sale.get('cashier_name',''),
-                        item.get('product_name',''),
-                        item.get('sku','') or '',
-                        str(item.get('quantity',0)),
-                        f"{cur} {item.get('unit_price',0):,.2f}",
-                        f"{cur} {item.get('total',0):,.2f}",
-                    ]):
-                        self._litbl.setItem(row, j, tbl_item(str(v)))
-                    row += 1
+            shown = items[:_UI_LINE_LIMIT]
+            for row, item in enumerate(shown):
+                self._litbl.insertRow(row)
+                for j, v in enumerate([
+                    item.get('receipt_number', ''),
+                    (item.get('sale_created_at') or item.get('created_at') or '')[:16],
+                    item.get('cashier_name', ''),
+                    item.get('product_name', ''),
+                    item.get('sku', '') or '',
+                    str(item.get('quantity', 0)),
+                    f"{cur} {float(item.get('unit_price') or 0):,.2f}",
+                    f"{cur} {float(item.get('total') or 0):,.2f}",
+                ]):
+                    self._litbl.setItem(row, j, tbl_item(str(v)))
+            if len(items) > _UI_LINE_LIMIT:
+                self._set_status(
+                    f"Line Items showing {_UI_LINE_LIMIT} of {len(items)} "
+                    f"(full detail in Excel export)",
+                    ok=None,
+                )
+            apply_table_row_backgrounds(self._litbl)
         except Exception as e:
             _log.warning(f"Reports line items: {e}")
 
@@ -354,6 +361,7 @@ class ReportsTab(QWidget):
                     f"{pct:.1f}%",
                 ]):
                     self._ptbl.setItem(i, j, tbl_item(str(v)))
+            apply_table_row_backgrounds(self._ptbl)
         except Exception as e:
             _log.warning(f"Reports top products: {e}")
 
@@ -373,6 +381,7 @@ class ReportsTab(QWidget):
                     f"{p.get('total',0)/total_pay*100:.1f}%",
                 ]):
                     self._mtbl.setItem(i, j, tbl_item(str(v)))
+            apply_table_row_backgrounds(self._mtbl)
         except Exception as e:
             _log.warning(f"Reports by payment: {e}")
 
@@ -412,6 +421,7 @@ class ReportsTab(QWidget):
                     str(note)[:40],
                 ]):
                     self._vtbl.setItem(i, j, tbl_item(str(v)))
+            apply_table_row_backgrounds(self._vtbl)
         except Exception as e:
             _log.warning(f"Reports payment variance: {e}")
 
@@ -420,26 +430,42 @@ class ReportsTab(QWidget):
     def _do_export(self):
         sys.path.insert(0, _PR)
         from backend.export_engine import export_sales_report
+        from backend.report_export_service import get_export_dir as _shared_export_dir
         start = self._s.date().toString('yyyy-MM-dd')
         end   = self._e.date().toString('yyyy-MM-dd')
         cfg   = self.config_getter() or {}
         shop  = cfg.get('shop_name', 'My Shop')
         cur   = cfg.get('currency_symbol', 'KES')
+        user_name = (
+            (self.user.get('user') or self.user).get('full_name')
+            or (self.user.get('user') or self.user).get('username')
+            or 'admin'
+        )
         sales = [s for s in (self.api.get_sales(start, end) or [])
                  if (s.get('status') or 'completed') != 'voided']
-        ibs   = {}
-        for sale in sales:
-            sid = sale.get('id') or sale.get('sale_id')
-            d   = self.api.get_sale(sid)
-            if d:
-                ibs[sid] = d.get('items', [])
-                sale['item_count'] = len(ibs[sid])
-        # Fetch current stock / inventory for Sheet 5
+        ibs = {}
+        # Prefer one batch query over N get_sale round-trips
+        try:
+            flat = self.api.get_sale_items_for_range(start, end) or []
+            for item in flat:
+                sid = item.get('sale_id')
+                if sid is None:
+                    continue
+                ibs.setdefault(sid, []).append(item)
+            for sale in sales:
+                sid = sale.get('id') or sale.get('sale_id')
+                sale['item_count'] = len(ibs.get(sid, []))
+        except Exception:
+            for sale in sales:
+                sid = sale.get('id') or sale.get('sale_id')
+                d = self.api.get_sale(sid)
+                if d:
+                    ibs[sid] = d.get('items', [])
+                    sale['item_count'] = len(ibs[sid])
         try:
             products = self.api.get_products() or []
         except Exception:
             products = []
-        # Fetch debt data for Sheet 6
         try:
             debt_summary = self.api.get_debt_summary() or {}
         except Exception:
@@ -456,8 +482,14 @@ class ReportsTab(QWidget):
             debt_payments = self.api.get_debt_payments(start=start, end=end) or []
         except Exception:
             debt_payments = []
-        fname  = f"MBT_Sales_{start}_to_{end}.xlsx"
-        out    = os.path.join(_get_export_dir(), fname)
+        try:
+            vdata = self.api.get_payment_variance_report(start, end) or {}
+            variance_rows = vdata.get('rows') or []
+            variance_summary = vdata.get('summary') or {}
+        except Exception:
+            variance_rows, variance_summary = [], {}
+        fname = f"MBT_Sales_{start}_to_{end}.xlsx"
+        out = os.path.join(_shared_export_dir(), fname)
         return export_sales_report(
             sales, ibs, shop_name=shop, start_date=start,
             end_date=end, output_path=out, currency=cur,
@@ -465,7 +497,12 @@ class ReportsTab(QWidget):
             debt_summary=debt_summary,
             aging_report=aging_report,
             debt_invoices=debt_invoices,
-            debt_payments=debt_payments)
+            debt_payments=debt_payments,
+            variance_rows=variance_rows,
+            variance_summary=variance_summary,
+            generated_by=user_name,
+            filters=f"Date {start} → {end} · completed sales only",
+        )
 
     def _export(self):
         try:
@@ -476,13 +513,14 @@ class ReportsTab(QWidget):
             self._set_status(f"✓ Saved: {path}", ok=True)
             QMessageBox.information(self, 'Exported ✓',
                 f'Report saved to:\n{path}\n\n'
-                f'Contains 6 sheets:\n'
+                f'Contains 7 sheets:\n'
                 f'  • Sales Summary\n'
                 f'  • Line Items (with Product Names)\n'
                 f'  • Top Products\n'
                 f'  • Payment Methods\n'
                 f'  • Stock & Inventory\n'
-                f'  • Debt Management')
+                f'  • Debt Management\n'
+                f'  • Payment Variance')
         except Exception as e:
             _log.error(f"Export error: {e}", exc_info=True)
             QMessageBox.critical(self, 'Export Error', str(e))
@@ -579,3 +617,9 @@ class ReportsTab(QWidget):
             f"color:{C['text2']}; font-size:12px; background:transparent;")
         for cb in (self._sched_daily, self._sched_weekly):
             cb.setStyleSheet(f"color:{C['text']}; background:transparent;")
+        for tbl in (self._stbl, self._litbl, self._ptbl, self._mtbl, self._vtbl):
+            try:
+                retint_table_items(tbl)
+                apply_table_row_backgrounds(tbl)
+            except Exception:
+                pass

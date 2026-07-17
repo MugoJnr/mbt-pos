@@ -74,7 +74,7 @@ class InventoryTab(QWidget):
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
 
-        exp = SecondaryBtn('⬇  Export', 40)
+        exp = SecondaryBtn('Export Excel', 40)
         exp.setToolTip('Export inventory snapshot and stock movements to Excel')
         exp.clicked.connect(self._export_inventory)
         tb.addWidget(exp)
