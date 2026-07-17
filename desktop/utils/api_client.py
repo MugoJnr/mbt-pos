@@ -260,6 +260,91 @@ def _ensure_schema(conn: sqlite3.Connection):
         notes TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS departments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        active INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS stock_consumptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reference_no TEXT UNIQUE NOT NULL,
+        date TEXT NOT NULL,
+        department_id INTEGER,
+        reason TEXT NOT NULL,
+        notes TEXT,
+        taken_by TEXT,
+        total_cost REAL DEFAULT 0,
+        created_by INTEGER,
+        created_by_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        voided INTEGER DEFAULT 0,
+        voided_by INTEGER,
+        voided_by_name TEXT,
+        voided_at TEXT,
+        void_reason TEXT,
+        FOREIGN KEY(department_id) REFERENCES departments(id)
+    );
+    CREATE TABLE IF NOT EXISTS stock_consumption_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        consumption_id INTEGER NOT NULL,
+        product_id INTEGER,
+        product_name TEXT,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        total_cost REAL NOT NULL,
+        FOREIGN KEY(consumption_id) REFERENCES stock_consumptions(id),
+        FOREIGN KEY(product_id) REFERENCES products(id)
+    );
+    CREATE TABLE IF NOT EXISTS customer_wallet (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL UNIQUE,
+        balance REAL NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(customer_id) REFERENCES customers(id)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        txn_type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_before REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        notes TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(customer_id) REFERENCES customers(id)
+    );
+    CREATE TABLE IF NOT EXISTS payment_variances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        customer_id INTEGER,
+        customer_name TEXT,
+        payment_method TEXT,
+        sale_total REAL NOT NULL,
+        amount_received REAL NOT NULL,
+        excess_amount REAL NOT NULL,
+        handling TEXT NOT NULL,
+        misc_category TEXT,
+        reason TEXT,
+        credit_applied REAL DEFAULT 0,
+        tip_amount REAL DEFAULT 0,
+        transport_amount REAL DEFAULT 0,
+        deposit_amount REAL DEFAULT 0,
+        advance_amount REAL DEFAULT 0,
+        change_returned REAL DEFAULT 0,
+        misc_amount REAL DEFAULT 0,
+        manager_approved INTEGER DEFAULT 0,
+        manager_name TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(sale_id) REFERENCES sales(id)
+    );
     """)
     # Seed default admin if missing
     existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
@@ -270,7 +355,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         conn.execute(
             "INSERT INTO users (username,password_hash,role,full_name,tab_permissions) VALUES (?,?,?,?,?)",
             ('admin', pw_hash, 'superadmin', 'Shop Owner',
-             '["dashboard","sales","inventory","reports","notes","settings","admin",'
+             '["dashboard","sales","inventory","consumption","reports","notes","settings","admin",'
              '"license","diagnostics","security"]')
         )
     _migrate_columns(conn)
@@ -295,7 +380,25 @@ def _ensure_schema(conn: sqlite3.Connection):
                 'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
                 'mpesa_mode': 'manual', 'mpesa_till': '', 'mpesa_paybill': '',
                 'mpesa_business_name': '',
+                'variance_enabled': '1',
+                'variance_enable_deposits': '1',
+                'variance_enable_tips': '1',
+                'variance_enable_transport': '1',
+                'variance_max_cashier': '1000',
+                'variance_require_customer_deposit': '1',
+                'variance_allow_refund_after_finalize': '0',
             }
+    # Payment variance defaults (upgrade-safe)
+    for k, v in (
+        ('variance_enabled', '1'),
+        ('variance_enable_deposits', '1'),
+        ('variance_enable_tips', '1'),
+        ('variance_enable_transport', '1'),
+        ('variance_max_cashier', '1000'),
+        ('variance_require_customer_deposit', '1'),
+        ('variance_allow_refund_after_finalize', '0'),
+    ):
+        conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     # Upgrade path: fill empty Telegram fields from build-time deploy config
@@ -364,6 +467,117 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
+    # Seed default departments for internal stock consumption
+    for dept_name in (
+        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
+        'Workshop', 'Manufacturing', 'Maintenance',
+    ):
+        conn.execute(
+            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
+            (dept_name,),
+        )
+    # Ensure consumption void / taken_by columns on upgrades
+    try:
+        sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumptions)").fetchall()}
+        for col, ddl in (
+            ('taken_by', "ALTER TABLE stock_consumptions ADD COLUMN taken_by TEXT"),
+            ('total_cost', "ALTER TABLE stock_consumptions ADD COLUMN total_cost REAL DEFAULT 0"),
+            ('created_by_name', "ALTER TABLE stock_consumptions ADD COLUMN created_by_name TEXT"),
+            ('voided', "ALTER TABLE stock_consumptions ADD COLUMN voided INTEGER DEFAULT 0"),
+            ('voided_by', "ALTER TABLE stock_consumptions ADD COLUMN voided_by INTEGER"),
+            ('voided_by_name', "ALTER TABLE stock_consumptions ADD COLUMN voided_by_name TEXT"),
+            ('voided_at', "ALTER TABLE stock_consumptions ADD COLUMN voided_at TEXT"),
+            ('void_reason', "ALTER TABLE stock_consumptions ADD COLUMN void_reason TEXT"),
+        ):
+            if sc_cols and col not in sc_cols:
+                conn.execute(ddl)
+    except Exception:
+        pass
+    # Grant Internal Consumption tab to existing inventory-capable staff
+    for row in conn.execute(
+        "SELECT id, role, tab_permissions FROM users "
+        "WHERE role IN ('superadmin','admin','manager')"
+    ).fetchall():
+        try:
+            import json as _json
+            perms = _json.loads(row['tab_permissions'] or '[]')
+            if 'consumption' not in perms and (
+                'inventory' in perms or row['role'] in ('superadmin', 'admin', 'manager')
+            ):
+                # Insert after inventory when present
+                if 'inventory' in perms:
+                    i = perms.index('inventory') + 1
+                    perms.insert(i, 'consumption')
+                else:
+                    perms.append('consumption')
+                conn.execute(
+                    "UPDATE users SET tab_permissions=? WHERE id=?",
+                    (_json.dumps(perms), row['id']),
+                )
+        except Exception:
+            pass
+    # Payment variance tables (upgrade path)
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS customer_wallet (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL UNIQUE,
+        balance REAL NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(customer_id) REFERENCES customers(id)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        txn_type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_before REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        notes TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS payment_variances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        customer_id INTEGER,
+        customer_name TEXT,
+        payment_method TEXT,
+        sale_total REAL NOT NULL,
+        amount_received REAL NOT NULL,
+        excess_amount REAL NOT NULL,
+        handling TEXT NOT NULL,
+        misc_category TEXT,
+        reason TEXT,
+        credit_applied REAL DEFAULT 0,
+        tip_amount REAL DEFAULT 0,
+        transport_amount REAL DEFAULT 0,
+        deposit_amount REAL DEFAULT 0,
+        advance_amount REAL DEFAULT 0,
+        change_returned REAL DEFAULT 0,
+        misc_amount REAL DEFAULT 0,
+        manager_approved INTEGER DEFAULT 0,
+        manager_name TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    # Sale columns for credit applied / variance snapshot
+    try:
+        sales_cols = {r[1] for r in conn.execute("PRAGMA table_info(sales)").fetchall()}
+        if 'credit_applied' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN credit_applied REAL DEFAULT 0")
+        if 'customer_id' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN customer_id INTEGER")
+        if 'variance_handling' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN variance_handling TEXT")
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -861,16 +1075,25 @@ class APIClient:
 
             rn = _next_receipt(db)          # pass connection — avoids race condition
             total = float(data.get('total') or 0)
+            amount_paid = float(data.get('amount_paid') or 0)
+            change_amount = float(data.get('change_amount') or 0)
+            credit_applied = round(float(data.get('credit_applied') or 0), 2)
+            customer_id = data.get('customer_id')
+            variance = data.get('variance') or {}
+            variance_handling = (variance.get('handling') or data.get('variance_handling') or '').strip() or None
 
             notes = data.get('notes', '') or ''
             mpesa_ref = (data.get('mpesa_ref') or '').strip()
             if mpesa_ref and 'mpesa ref' not in notes.lower():
                 notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
+            if variance_handling:
+                notes = (notes + f' | Variance: {variance_handling}').strip(' |')
 
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
-                "discount,tax,total,payment_method,amount_paid,change_amount,notes,mpesa_ref)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "discount,tax,total,payment_method,amount_paid,change_amount,notes,mpesa_ref,"
+                "credit_applied,customer_id,variance_handling)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
@@ -879,10 +1102,13 @@ class APIClient:
                  float(data.get('tax') or 0),
                  total,
                  data.get('payment_method', 'cash'),
-                 float(data.get('amount_paid') or 0),
-                 float(data.get('change_amount') or 0),
+                 amount_paid,
+                 change_amount,
                  notes,
-                 mpesa_ref or None)
+                 mpesa_ref or None,
+                 credit_applied,
+                 customer_id,
+                 variance_handling)
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -931,6 +1157,29 @@ class APIClient:
                              self._user_id, self._username or 'staff')
                         )
 
+            # Apply store credit against this sale (reduces amount due; not product revenue)
+            wallet_balance_after = None
+            if credit_applied > 0:
+                if not customer_id:
+                    db.rollback()
+                    raise ValueError('Customer required to apply store credit.')
+                wallet_balance_after = self._wallet_adjust(
+                    db, int(customer_id), -credit_applied, 'apply_credit',
+                    sale_id=sale_id, receipt_number=rn,
+                    notes=f'Applied to sale {rn}')
+
+            # Excess payment variance — tips/transport/misc/deposit never inflate product sales
+            variance_result = None
+            if variance and float(variance.get('excess_amount') or 0) > 0.009:
+                variance_result = self._record_payment_variance(
+                    db, sale_id=sale_id, receipt_number=rn,
+                    customer_id=customer_id, total=total,
+                    amount_received=amount_paid, credit_applied=credit_applied,
+                    payment_method=data.get('payment_method', 'cash'),
+                    variance=variance)
+                if variance_result.get('wallet_balance') is not None:
+                    wallet_balance_after = variance_result['wallet_balance']
+
             db.execute(
                 "INSERT INTO sync_queue (action_type,payload) VALUES (?,?)",
                 ('sale', json.dumps({
@@ -942,8 +1191,28 @@ class APIClient:
             )
             db.commit()
             _audit(self._user_id, self._username or 'staff',
-                   'CREATE_SALE', 'sales', f"receipt={rn} total={total}")
-            return {'success': True, 'receipt_number': rn, 'sale_id': sale_id}
+                   'CREATE_SALE', 'sales',
+                   f"receipt={rn} total={total} paid={amount_paid} "
+                   f"credit={credit_applied} variance={variance_handling or 'none'}")
+            if variance_result:
+                _audit(
+                    self._user_id, self._username or 'staff', 'PAYMENT_VARIANCE', 'sales',
+                    f"receipt={rn} excess={variance_result.get('excess_amount')} "
+                    f"handling={variance_result.get('handling')} "
+                    f"mgr={variance_result.get('manager_name') or '-'} "
+                    f"tip={variance_result.get('tip_amount')} "
+                    f"transport={variance_result.get('transport_amount')} "
+                    f"deposit={variance_result.get('deposit_amount')} "
+                    f"advance={variance_result.get('advance_amount')} "
+                    f"change={variance_result.get('change_returned')} "
+                    f"misc={variance_result.get('misc_amount')}"
+                )
+            out = {'success': True, 'receipt_number': rn, 'sale_id': sale_id}
+            if wallet_balance_after is not None:
+                out['wallet_balance'] = wallet_balance_after
+            if variance_result:
+                out['variance'] = variance_result
+            return out
 
         except Exception as e:
             try: db.rollback()
@@ -955,6 +1224,157 @@ class APIClient:
             except Exception: pass
             db.close()
 
+    def _wallet_row(self, db, customer_id: int):
+        row = db.execute(
+            "SELECT * FROM customer_wallet WHERE customer_id=?", (customer_id,)
+        ).fetchone()
+        if row:
+            return row
+        db.execute(
+            "INSERT INTO customer_wallet (customer_id, balance, updated_at) VALUES (?,0,?)",
+            (customer_id, datetime.now().isoformat())
+        )
+        return db.execute(
+            "SELECT * FROM customer_wallet WHERE customer_id=?", (customer_id,)
+        ).fetchone()
+
+    def _wallet_adjust(self, db, customer_id: int, delta: float, txn_type: str,
+                       sale_id=None, receipt_number=None, notes=''):
+        """Adjust wallet balance by delta (+deposit / -apply). Returns new balance."""
+        delta = round(float(delta), 2)
+        w = self._wallet_row(db, customer_id)
+        before = round(float(w['balance'] or 0), 2)
+        after = round(before + delta, 2)
+        if after < -0.009:
+            raise ValueError(
+                f'Insufficient store credit: available {before:.2f}, needed {abs(delta):.2f}')
+        now = datetime.now().isoformat()
+        db.execute(
+            "UPDATE customer_wallet SET balance=?, updated_at=? WHERE customer_id=?",
+            (after, now, customer_id)
+        )
+        db.execute(
+            "INSERT INTO wallet_transactions "
+            "(customer_id,sale_id,receipt_number,txn_type,amount,balance_before,"
+            "balance_after,notes,cashier_id,cashier_name) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (customer_id, sale_id, receipt_number, txn_type, abs(delta),
+             before, after, notes or '', self._user_id, self._username or 'staff')
+        )
+        return after
+
+    def _record_payment_variance(self, db, sale_id, receipt_number, customer_id,
+                                 total, amount_received, credit_applied,
+                                 payment_method, variance: dict) -> dict:
+        excess = round(float(variance.get('excess_amount') or 0), 2)
+        handling = (variance.get('handling') or '').strip().lower()
+        if excess <= 0 or not handling:
+            return {}
+        tip = transport = deposit = advance = change_ret = misc = 0.0
+        if handling == 'return_change':
+            change_ret = excess
+        elif handling == 'deposit':
+            deposit = excess
+        elif handling == 'transport':
+            transport = excess
+        elif handling == 'tip':
+            tip = excess
+        elif handling == 'advance':
+            advance = excess
+        elif handling == 'miscellaneous':
+            misc = excess
+        else:
+            raise ValueError(f'Unknown variance handling: {handling}')
+
+        cust_name = ''
+        wallet_bal = None
+        if customer_id:
+            crow = db.execute(
+                "SELECT name FROM customers WHERE id=?", (customer_id,)
+            ).fetchone()
+            cust_name = (crow['name'] if crow else '') or ''
+        if handling in ('deposit', 'advance'):
+            if not customer_id:
+                raise ValueError('Customer required for deposit / advance payment.')
+            txn = 'deposit' if handling == 'deposit' else 'advance'
+            wallet_bal = self._wallet_adjust(
+                db, int(customer_id), excess, txn,
+                sale_id=sale_id, receipt_number=receipt_number,
+                notes=f'{txn} from excess on {receipt_number}')
+
+        misc_cat = (variance.get('misc_category') or '').strip() or None
+        reason = (variance.get('reason') or '').strip() or None
+        if handling == 'miscellaneous' and (not misc_cat or not reason):
+            raise ValueError('Miscellaneous variance requires category and reason.')
+
+        mgr_ok = 1 if variance.get('manager_approved') else 0
+        mgr_name = (variance.get('manager_name') or '').strip() or None
+        now = datetime.now().isoformat()
+        db.execute(
+            "INSERT INTO payment_variances "
+            "(sale_id,receipt_number,customer_id,customer_name,payment_method,"
+            "sale_total,amount_received,excess_amount,handling,misc_category,reason,"
+            "credit_applied,tip_amount,transport_amount,deposit_amount,advance_amount,"
+            "change_returned,misc_amount,manager_approved,manager_name,"
+            "cashier_id,cashier_name,notes,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sale_id, receipt_number, customer_id, cust_name, payment_method,
+             total, amount_received, excess, handling, misc_cat, reason,
+             credit_applied, tip, transport, deposit, advance,
+             change_ret, misc, mgr_ok, mgr_name,
+             self._user_id, self._username or 'staff',
+             (variance.get('notes') or '').strip(), now)
+        )
+        return {
+            'handling': handling,
+            'excess_amount': excess,
+            'tip_amount': tip,
+            'transport_amount': transport,
+            'deposit_amount': deposit,
+            'advance_amount': advance,
+            'change_returned': change_ret,
+            'misc_amount': misc,
+            'misc_category': misc_cat,
+            'wallet_balance': wallet_bal,
+            'manager_approved': bool(mgr_ok),
+            'manager_name': mgr_name,
+        }
+
+    def get_wallet_balance(self, customer_id: int) -> dict:
+        db = _db()
+        try:
+            row = _row(db.execute(
+                "SELECT * FROM customer_wallet WHERE customer_id=?", (customer_id,)
+            ))
+            bal = float((row or {}).get('balance') or 0)
+            return {'customer_id': customer_id, 'balance': bal}
+        finally:
+            db.close()
+
+    def get_payment_variance_report(self, start=None, end=None) -> dict:
+        start = start or str(date.today())
+        end = end or str(date.today())
+        db = _db()
+        try:
+            rows = _rows(db.execute(
+                "SELECT * FROM payment_variances "
+                "WHERE date(created_at) BETWEEN ? AND ? "
+                "ORDER BY created_at DESC",
+                (start, end)
+            ))
+            summary = {
+                'count': len(rows),
+                'extra_received': round(sum(float(r.get('excess_amount') or 0) for r in rows), 2),
+                'returned': round(sum(float(r.get('change_returned') or 0) for r in rows), 2),
+                'deposits': round(sum(float(r.get('deposit_amount') or 0) for r in rows), 2),
+                'advances': round(sum(float(r.get('advance_amount') or 0) for r in rows), 2),
+                'tips': round(sum(float(r.get('tip_amount') or 0) for r in rows), 2),
+                'transport': round(sum(float(r.get('transport_amount') or 0) for r in rows), 2),
+                'misc': round(sum(float(r.get('misc_amount') or 0) for r in rows), 2),
+            }
+            return {'rows': rows, 'summary': summary, 'start': start, 'end': end}
+        finally:
+            db.close()
+
     def get_sale(self, sale_id: int) -> dict:
         db = _db()
         try:
@@ -963,6 +1383,25 @@ class APIClient:
                 return {}
             items = _rows(db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)))
             sale['items'] = items
+            var = _row(db.execute(
+                "SELECT * FROM payment_variances WHERE sale_id=? ORDER BY id DESC LIMIT 1",
+                (sale_id,)
+            ))
+            if var:
+                sale['variance'] = var
+            if sale.get('customer_id'):
+                cust = _row(db.execute(
+                    "SELECT name, phone FROM customers WHERE id=?", (sale['customer_id'],)
+                ))
+                if cust:
+                    sale['customer_name'] = cust.get('name') or ''
+                    sale['customer_phone'] = cust.get('phone') or ''
+                w = _row(db.execute(
+                    "SELECT balance FROM customer_wallet WHERE customer_id=?",
+                    (sale['customer_id'],)
+                ))
+                if w:
+                    sale['wallet_balance'] = float(w.get('balance') or 0)
             return sale
         finally:
             db.close()
@@ -1262,7 +1701,9 @@ class APIClient:
             return _rows(db.execute(
                 "SELECT c.*, "
                 "COALESCE(SUM(di.balance),0) as total_outstanding, "
-                "COUNT(di.id) as open_invoices "
+                "COUNT(di.id) as open_invoices, "
+                "COALESCE((SELECT balance FROM customer_wallet cw WHERE cw.customer_id=c.id),0) "
+                "as wallet_balance "
                 "FROM customers c "
                 "LEFT JOIN debt_invoices di ON c.id=di.customer_id AND di.status NOT IN ('paid','cancelled') "
                 "WHERE c.is_active=1 GROUP BY c.id ORDER BY c.name"
@@ -1618,6 +2059,402 @@ class APIClient:
         except Exception as e:
             db.rollback()
             return {'error': str(e)}
+        finally:
+            db.close()
+
+    # ── INTERNAL STOCK CONSUMPTION ──────────────────────────────────────────────
+
+    CONSUMPTION_REASONS = (
+        'Production', 'Staff Use', 'Office Use', 'Cleaning', 'Free Samples',
+        'Damaged During Production', 'Testing', 'Charity', 'Other',
+    )
+
+    def _device_name(self) -> str:
+        try:
+            import socket
+            return socket.gethostname() or 'unknown'
+        except Exception:
+            return 'unknown'
+
+    def _next_consumption_ref(self, db) -> str:
+        row = db.execute(
+            "SELECT reference_no FROM stock_consumptions "
+            "WHERE reference_no LIKE 'AUTO-%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        n = 0
+        if row and row[0]:
+            try:
+                n = int(str(row[0]).split('-', 1)[1])
+            except (IndexError, ValueError):
+                n = db.execute("SELECT COUNT(*) FROM stock_consumptions").fetchone()[0]
+        return f"AUTO-{n + 1:06d}"
+
+    def get_departments(self, active_only: bool = True) -> list:
+        db = _db()
+        try:
+            if active_only:
+                return _rows(db.execute(
+                    "SELECT * FROM departments WHERE active=1 ORDER BY name"
+                ))
+            return _rows(db.execute("SELECT * FROM departments ORDER BY name"))
+        finally:
+            db.close()
+
+    def peek_next_consumption_ref(self) -> str:
+        db = _db()
+        try:
+            return self._next_consumption_ref(db)
+        finally:
+            db.close()
+
+    def create_consumption(self, data: dict) -> dict:
+        """
+        Record internal stock consumption. Decrements stock, writes INTERNAL_USE
+        ledger rows, and full audit. No customer / payment / receipt.
+        data: date, department_id, reason, notes, taken_by, items[{product_id, quantity, unit_cost?}]
+        """
+        items = data.get('items') or []
+        if not items:
+            return {'error': 'Add at least one product line.'}
+        reason = (data.get('reason') or '').strip()
+        if not reason:
+            return {'error': 'Reason is required.'}
+        dept_id = data.get('department_id')
+        if not dept_id:
+            return {'error': 'Department is required.'}
+
+        db = _db()
+        device = self._device_name()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            dept = db.execute(
+                "SELECT id, name FROM departments WHERE id=? AND active=1",
+                (dept_id,)
+            ).fetchone()
+            if not dept:
+                db.rollback()
+                return {'error': 'Invalid department.'}
+
+            ref = self._next_consumption_ref(db)
+            cons_date = (data.get('date') or str(date.today())).strip()
+            notes = (data.get('notes') or '').strip()
+            taken_by = (data.get('taken_by') or '').strip()
+            created_name = self._username or 'staff'
+            now = datetime.now().isoformat()
+
+            line_rows = []
+            total_cost = 0.0
+            for item in items:
+                pid = item.get('product_id')
+                qty = round(float(item.get('quantity') or 0), 4)
+                if not pid or qty <= 0:
+                    db.rollback()
+                    return {'error': 'Each line needs a product and quantity > 0.'}
+                prod = db.execute(
+                    "SELECT id, name, stock, cost_price FROM products WHERE id=? AND is_active=1",
+                    (pid,)
+                ).fetchone()
+                if not prod:
+                    db.rollback()
+                    return {'error': f'Product id {pid} not found.'}
+                stock = round(float(prod['stock'] or 0), 4)
+                if stock < qty:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f"Insufficient stock for '{prod['name']}': "
+                            f"requested {qty}, available {stock}"
+                        )
+                    }
+                unit_cost = item.get('unit_cost')
+                if unit_cost is None or unit_cost == '':
+                    unit_cost = float(prod['cost_price'] or 0)
+                else:
+                    unit_cost = float(unit_cost)
+                unit_cost = round(unit_cost, 4)
+                line_total = round(qty * unit_cost, 2)
+                total_cost += line_total
+                line_rows.append((prod, qty, unit_cost, line_total, stock))
+
+            db.execute(
+                "INSERT INTO stock_consumptions "
+                "(reference_no, date, department_id, reason, notes, taken_by, total_cost,"
+                " created_by, created_by_name, created_at, voided) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0)",
+                (ref, cons_date, dept_id, reason, notes, taken_by, round(total_cost, 2),
+                 self._user_id, created_name, now)
+            )
+            cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            audit_lines = []
+
+            for prod, qty, unit_cost, line_total, old_stock in line_rows:
+                new_stock = round(old_stock - qty, 4)
+                db.execute(
+                    "INSERT INTO stock_consumption_items "
+                    "(consumption_id, product_id, product_name, quantity, unit_cost, total_cost) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (cons_id, prod['id'], prod['name'], qty, unit_cost, line_total)
+                )
+                db.execute(
+                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                    (new_stock, now, prod['id'])
+                )
+                mov_reason = (
+                    f"{reason} | Dept: {dept['name']}"
+                    + (f" | Taken by: {taken_by}" if taken_by else "")
+                    + (f" | {notes}" if notes else "")
+                    + f" | Device: {device}"
+                )
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username,device_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (prod['id'], prod['name'], 'INTERNAL_USE',
+                     old_stock, -qty, new_stock,
+                     ref, mov_reason,
+                     self._user_id, created_name, device)
+                )
+                audit_lines.append(
+                    f"{prod['name']} {old_stock}->{new_stock} qty={qty}"
+                )
+                _audit(
+                    self._user_id, created_name, 'INTERNAL_USE', 'inventory',
+                    f"ref={ref} product={prod['name']} prev={old_stock} new={new_stock} "
+                    f"qty={qty} reason={reason} notes={notes} device={device}"
+                )
+
+            db.commit()
+            _audit(
+                self._user_id, created_name, 'CREATE_CONSUMPTION', 'consumption',
+                f"ref={ref} dept={dept['name']} total={total_cost:.2f} lines={len(line_rows)} "
+                f"reason={reason} notes={notes} device={device} | "
+                + '; '.join(audit_lines)
+            )
+            return {
+                'success': True,
+                'id': cons_id,
+                'reference_no': ref,
+                'total_cost': round(total_cost, 2),
+            }
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception('create_consumption failed')
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def void_consumption(self, consumption_id: int, reason: str) -> dict:
+        """Soft-void a consumption and restore stock. Admin / superadmin."""
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'Void reason is required.'}
+        if self._role not in ('admin', 'superadmin'):
+            _audit(self._user_id, self._username, 'VOID_CONSUMPTION_DENIED',
+                   'consumption', f"id={consumption_id} role={self._role}")
+            return {'error': 'Insufficient permissions to void consumptions.'}
+
+        db = _db()
+        device = self._device_name()
+        now = datetime.now().isoformat()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            cons = db.execute(
+                "SELECT * FROM stock_consumptions WHERE id=?", (consumption_id,)
+            ).fetchone()
+            if not cons:
+                db.rollback()
+                return {'error': 'Consumption not found.'}
+            if int(cons['voided'] or 0) == 1:
+                db.rollback()
+                return {'error': 'Consumption already voided.'}
+
+            items = db.execute(
+                "SELECT * FROM stock_consumption_items WHERE consumption_id=?",
+                (consumption_id,)
+            ).fetchall()
+
+            audit_lines = []
+            for item in items:
+                pid = item['product_id']
+                if not pid:
+                    continue
+                prod = db.execute(
+                    "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+                ).fetchone()
+                if not prod:
+                    continue
+                old_stock = round(float(prod['stock'] or 0), 4)
+                qty = round(float(item['quantity'] or 0), 4)
+                new_stock = round(old_stock + qty, 4)
+                db.execute(
+                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                    (new_stock, now, pid)
+                )
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username,device_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (pid, prod['name'], 'INTERNAL_USE_VOID',
+                     old_stock, qty, new_stock,
+                     cons['reference_no'],
+                     f"Void restore: {reason} | Device: {device}",
+                     self._user_id, self._username or 'admin', device)
+                )
+                audit_lines.append(
+                    f"product={prod['name']} prev={old_stock} new={new_stock} qty={qty}"
+                )
+
+            db.execute(
+                "UPDATE stock_consumptions SET voided=1, voided_by=?, voided_by_name=?,"
+                " voided_at=?, void_reason=? WHERE id=?",
+                (self._user_id, self._username or 'admin', now, reason, consumption_id)
+            )
+            db.commit()
+            for line in audit_lines:
+                _audit(
+                    self._user_id, self._username, 'INTERNAL_USE_VOID', 'inventory',
+                    f"ref={cons['reference_no']} {line} void_reason={reason} device={device}"
+                )
+            _audit(
+                self._user_id, self._username, 'VOID_CONSUMPTION', 'consumption',
+                f"ref={cons['reference_no']} reason={reason} device={device}"
+            )
+            return {'success': True}
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception('void_consumption failed')
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def get_consumption(self, consumption_id: int) -> dict:
+        db = _db()
+        try:
+            cons = _row(db.execute("""
+                SELECT sc.*, d.name as department_name
+                FROM stock_consumptions sc
+                LEFT JOIN departments d ON d.id = sc.department_id
+                WHERE sc.id=?
+            """, (consumption_id,)))
+            if not cons:
+                return {}
+            cons['items'] = _rows(db.execute(
+                "SELECT * FROM stock_consumption_items WHERE consumption_id=? ORDER BY id",
+                (consumption_id,)
+            ))
+            return cons
+        finally:
+            db.close()
+
+    def get_consumptions(self, start=None, end=None, department_id=None,
+                         include_voided=True, limit=500) -> list:
+        start = start or str(date.today())
+        end = end or str(date.today())
+        db = _db()
+        try:
+            sql = """
+                SELECT sc.*, d.name as department_name,
+                       (SELECT COUNT(*) FROM stock_consumption_items sci
+                        WHERE sci.consumption_id=sc.id) as item_count
+                FROM stock_consumptions sc
+                LEFT JOIN departments d ON d.id = sc.department_id
+                WHERE date(sc.date) BETWEEN ? AND ?
+            """
+            params = [start, end]
+            if department_id:
+                sql += " AND sc.department_id=?"
+                params.append(department_id)
+            if not include_voided:
+                sql += " AND COALESCE(sc.voided,0)=0"
+            sql += " ORDER BY sc.date DESC, sc.id DESC LIMIT ?"
+            params.append(int(limit))
+            return _rows(db.execute(sql, params))
+        finally:
+            db.close()
+
+    def get_consumption_report(self, start: str, end: str, department_id=None,
+                               user_id=None, product_id=None, reason=None,
+                               include_voided=False) -> dict:
+        """Line-level internal consumption report with footer totals."""
+        db = _db()
+        try:
+            sql = """
+                SELECT sc.id as consumption_id, sc.reference_no, sc.date, sc.reason,
+                       sc.notes, sc.taken_by, sc.created_by_name, sc.created_at,
+                       sc.voided, sc.void_reason, sc.voided_by_name, sc.voided_at,
+                       d.name as department_name,
+                       sci.product_id, sci.product_name, sci.quantity,
+                       sci.unit_cost, sci.total_cost
+                FROM stock_consumption_items sci
+                JOIN stock_consumptions sc ON sc.id = sci.consumption_id
+                LEFT JOIN departments d ON d.id = sc.department_id
+                WHERE date(sc.date) BETWEEN ? AND ?
+            """
+            params = [start, end]
+            if not include_voided:
+                sql += " AND COALESCE(sc.voided,0)=0"
+            if department_id:
+                sql += " AND sc.department_id=?"
+                params.append(department_id)
+            if user_id:
+                sql += " AND sc.created_by=?"
+                params.append(user_id)
+            if product_id:
+                sql += " AND sci.product_id=?"
+                params.append(product_id)
+            if reason:
+                sql += " AND sc.reason=?"
+                params.append(reason)
+            sql += " ORDER BY sc.date DESC, sc.reference_no, sci.id"
+
+            rows = _rows(db.execute(sql, params))
+            total_qty = sum(float(r.get('quantity') or 0) for r in rows)
+            total_cost = sum(float(r.get('total_cost') or 0) for r in rows)
+            # Distinct consumptions / products
+            cons_ids = {r['consumption_id'] for r in rows}
+            return {
+                'rows': rows,
+                'totals': {
+                    'line_count': len(rows),
+                    'consumption_count': len(cons_ids),
+                    'total_qty': round(total_qty, 4),
+                    'total_cost': round(total_cost, 2),
+                },
+            }
+        finally:
+            db.close()
+
+    def get_consumption_today_summary(self) -> dict:
+        today = str(date.today())
+        db = _db()
+        try:
+            hdr = _row(db.execute("""
+                SELECT COUNT(*) as consumption_count,
+                       COALESCE(SUM(total_cost),0) as total_cost
+                FROM stock_consumptions
+                WHERE date(date)=? AND COALESCE(voided,0)=0
+            """, (today,)))
+            items = _row(db.execute("""
+                SELECT COALESCE(SUM(sci.quantity),0) as item_qty,
+                       COUNT(sci.id) as line_count
+                FROM stock_consumption_items sci
+                JOIN stock_consumptions sc ON sc.id = sci.consumption_id
+                WHERE date(sc.date)=? AND COALESCE(sc.voided,0)=0
+            """, (today,)))
+            return {
+                'consumption_count': int((hdr or {}).get('consumption_count') or 0),
+                'total_cost': float((hdr or {}).get('total_cost') or 0),
+                'item_qty': float((items or {}).get('item_qty') or 0),
+                'line_count': int((items or {}).get('line_count') or 0),
+            }
         finally:
             db.close()
 

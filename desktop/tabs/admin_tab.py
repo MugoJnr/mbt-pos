@@ -15,6 +15,7 @@ from desktop.utils.security import (
 
 ALL_TABS = ALL_DESKTOP_TABS
 TAB_LABELS = {'dashboard':'⊞ Dashboard','sales':'🛒 Point of Sale','inventory':'📦 Inventory',
+              'consumption':'▣ Internal Consumption',
               'debt':'💰 Debt','reports':'📊 Reports','notes':'📝 Notes','settings':'⚙ Settings',
               'admin':'👥 Users','license':'🔑 License','diagnostics':'🔧 Diagnostics',
               'security':'🔐 Security'}

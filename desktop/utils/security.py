@@ -26,6 +26,7 @@ _PERMISSIONS = {
         'reports.view_basic',
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',
+        'sales.variance_handle',
     },
     ROLE_VIEWER: {
         'sales.view_all',
@@ -33,6 +34,8 @@ _PERMISSIONS = {
         'reports.view_all',
         'notes.view_all',
         'debt.view',
+        'consumption.view_report',
+        'reports.view_variance',
     },
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all',
@@ -42,6 +45,8 @@ _PERMISSIONS = {
         'users.view',
         'settings.view',
         'debt.view', 'debt.create', 'debt.collect', 'debt.customer_manage',
+        'consumption.create', 'consumption.view_report', 'consumption.export',
+        'sales.variance_handle', 'reports.view_variance',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void',
@@ -53,6 +58,9 @@ _PERMISSIONS = {
         'audit.view',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel',
+        'consumption.create', 'consumption.void',
+        'consumption.view_report', 'consumption.export',
+        'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
@@ -67,6 +75,9 @@ _PERMISSIONS = {
         'security.override',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel',
+        'consumption.create', 'consumption.void',
+        'consumption.view_report', 'consumption.export',
+        'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
     },
 }
 

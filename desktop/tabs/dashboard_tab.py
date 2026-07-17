@@ -294,6 +294,18 @@ class DashboardTab(QWidget):
             kr2.addWidget(k)
         self._root_lay.addLayout(kr2)
 
+        # ── KPI ROW 3 — Internal Consumption ────────────────────────────────
+        kr3 = QHBoxLayout(); kr3.setSpacing(18)
+        self._k_cons = _KPI(
+            'Internal Consumption Today', '▣', '0',
+            'items · cost', p['info'], self._is_light)
+        self._k_cons.setCursor(Qt.PointingHandCursor)
+        self._k_cons.setToolTip('Open Internal Consumption report')
+        self._k_cons.mousePressEvent = lambda e: self._open_consumption_report()
+        kr3.addWidget(self._k_cons)
+        kr3.addStretch(3)
+        self._root_lay.addLayout(kr3)
+
         # ── CHARTS ROW ───────────────────────────────────────────────────────
         charts = QHBoxLayout(); charts.setSpacing(18)
         self._trend_chart = GoldLineChart(height=168)
@@ -661,6 +673,7 @@ class DashboardTab(QWidget):
             (self._k_debt_col, p['ok']),
             (self._k_customers,p['warn']),
             (self._k_overdue,  p['err']),
+            (self._k_cons,     p['info']),
         ]
         for kpi, acc in kpi_map:
             kpi._accent = acc
@@ -741,6 +754,13 @@ class DashboardTab(QWidget):
             pass
         QTimer.singleShot(0, self._load)
 
+    def _open_consumption_report(self):
+        """Dashboard KPI click → Internal Consumption report."""
+        mw = self.window()
+        if mw is not None:
+            setattr(mw, '_pending_consumption_report', True)
+        self.navigate.emit('consumption')
+
     def refresh(self):
         self._load()
 
@@ -812,6 +832,18 @@ class DashboardTab(QWidget):
                     p['err'] if int(over.get('count', 0)) > 0 else p['ok'])
         except Exception as e:
             log.warning(f"Dashboard debt KPIs: {e}")
+
+        # ── Internal consumption today ───────────────────────────────────────
+        try:
+            cs = self.api.get_consumption_today_summary() or {}
+            lines = int(cs.get('line_count') or 0)
+            qty = float(cs.get('item_qty') or 0)
+            cost = float(cs.get('total_cost') or 0)
+            # Prefer item count (lines); show qty in sub when useful
+            self._k_cons.set_value(str(lines if lines else int(qty) if qty else 0))
+            self._k_cons.set_sub(f"{cur} {cost:,.0f} used today")
+        except Exception as e:
+            log.warning(f"Dashboard consumption KPI: {e}")
 
         # ── Recent sales table ────────────────────────────────────────────────
         try:

@@ -369,6 +369,8 @@ class SecurityTab(QWidget):
             action_colors = {
                 'VOID_SALE': C['warn'], 'STOCK_ADJUSTED': C['gold'],
                 'SUPERADMIN_PIN_FAIL': C['err'], 'STOCK_ADJUST_BLOCKED': C['err'],
+                'INTERNAL_USE': C['info'], 'INTERNAL_USE_VOID': C['warn'],
+                'CREATE_CONSUMPTION': C['info'], 'VOID_CONSUMPTION': C['warn'],
                 'TAMPER_DETECT': C['err'], 'DEVICE_MISMATCH': C['err'],
                 'REVOKED': C['err'], 'ACTIVATED': C['ok'],
             }

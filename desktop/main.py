@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-17-v2.3.50"
-APP_VERSION   = "2.3.50"   # must match GitHub release tag vX.Y.Z
+APP_BUILD_TAG = "PROD-2026-07-17-v2.3.51"
+APP_VERSION   = "2.3.51"   # must match GitHub release tag vX.Y.Z
 
 
 def install_crash_handler():
@@ -82,6 +82,7 @@ from desktop.wizard.setup_wizard    import SetupWizard, needs_wizard, reset_wiza
 from desktop.tabs.dashboard_tab     import DashboardTab
 from desktop.tabs.sales_tab         import SalesTab
 from desktop.tabs.inventory_tab     import InventoryTab
+from desktop.tabs.consumption_tab   import ConsumptionTab
 from desktop.tabs.debt_tab          import DebtTab
 from desktop.tabs.reports_tab       import ReportsTab
 from desktop.tabs.notes_tab         import NotesTab
@@ -442,6 +443,7 @@ class MainWindow(QMainWindow):
             'dashboard':   DashboardTab,
             'sales':       SalesTab,
             'inventory':   InventoryTab,
+            'consumption': ConsumptionTab,
             'debt':        DebtTab,
             'reports':     ReportsTab,
             'notes':       NotesTab,
@@ -954,6 +956,7 @@ class MainWindow(QMainWindow):
             ('dashboard',   '\u229e',  'Dashboard'),
             ('sales',       '\u2295',  'Point of Sale'),
             ('inventory',   '\u25a4',  'Inventory'),
+            ('consumption', '\u25a3',  'Internal Consumption'),
             ('debt',        '\U0001f4b0', 'Debt Management'),
             ('reports',     '\u25a6',  'Reports'),
             ('notes',       '\u2261',  'Notes'),
@@ -1133,6 +1136,7 @@ class MainWindow(QMainWindow):
     # ?? Navigation ??????????????????????????????????????????????????????????????
     _TAB_LABELS = {
         'dashboard':'Dashboard', 'sales':'Point of Sale', 'inventory':'Inventory',
+        'consumption':'Internal Consumption',
         'debt':'Debt Management',
         'reports':'Reports', 'notes':'Notes', 'admin':'Users & Access',
         'settings':'Settings', 'security':'Security & Super-Admin',
@@ -1150,6 +1154,13 @@ class MainWindow(QMainWindow):
             if hasattr(tab, 'on_show'):
                 try: tab.on_show()
                 except Exception as e: log.warning(f"on_show {tid}: {e}")
+            if tid == 'consumption' and getattr(self, '_pending_consumption_report', False):
+                self._pending_consumption_report = False
+                if hasattr(tab, 'open_report'):
+                    try:
+                        tab.open_report()
+                    except Exception as e:
+                        log.warning(f"open_report consumption: {e}")
 
     # ?? Theme ???????????????????????????????????????????????????????????????????
     def _read_theme_pref(self) -> bool:

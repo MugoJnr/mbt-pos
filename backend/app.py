@@ -252,7 +252,67 @@ def init_db():
         notes TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS departments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        active INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_consumptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reference_no TEXT UNIQUE NOT NULL,
+        date TEXT NOT NULL,
+        department_id INTEGER,
+        reason TEXT NOT NULL,
+        notes TEXT,
+        taken_by TEXT,
+        total_cost REAL DEFAULT 0,
+        created_by INTEGER,
+        created_by_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        voided INTEGER DEFAULT 0,
+        voided_by INTEGER,
+        voided_by_name TEXT,
+        voided_at TEXT,
+        void_reason TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_consumption_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        consumption_id INTEGER NOT NULL,
+        product_id INTEGER,
+        product_name TEXT,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        total_cost REAL NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_movements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id INTEGER NOT NULL,
+        product_name TEXT NOT NULL,
+        movement_type TEXT NOT NULL,
+        qty_before REAL NOT NULL,
+        qty_change REAL NOT NULL,
+        qty_after REAL NOT NULL,
+        reference TEXT,
+        reason TEXT,
+        user_id INTEGER,
+        username TEXT,
+        device_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     """)
+
+    for dept_name in (
+        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
+        'Workshop', 'Manufacturing', 'Maintenance',
+    ):
+        cur.execute(
+            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
+            (dept_name,),
+        )
 
     # Default shop owner (wizard normally creates this; fallback for API-only init)
     existing = cur.execute("SELECT id FROM users WHERE username='admin'").fetchone()

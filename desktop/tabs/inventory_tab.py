@@ -659,11 +659,23 @@ class _ProductHistoryDlg(QDialog):
         moves = data.get('movements') or []
         self._stock_tbl.setRowCount(0)
         self._stock_empty.setVisible(not moves)
+        _type_labels = {
+            'INTERNAL_USE': 'Internal Use',
+            'INTERNAL_USE_VOID': 'Use Void',
+            'SALE': 'Sale',
+            'VOID_RESTORE': 'Void Restore',
+            'SUPERADMIN_ADJUST': 'Adjust',
+            'MANUAL_ADJUST': 'Adjust',
+            'PURCHASE': 'Purchase',
+            'TRANSFER': 'Transfer',
+            'ADJUSTMENT': 'Adjustment',
+        }
         for i, m in enumerate(moves):
             self._stock_tbl.insertRow(i)
             self._stock_tbl.setItem(i, 0, tbl_item(_fmt_dt(m.get('created_at'))))
             mtype = str(m.get('movement_type') or '')
-            self._stock_tbl.setItem(i, 1, tbl_center(mtype))
+            label = _type_labels.get(mtype, mtype)
+            self._stock_tbl.setItem(i, 1, tbl_center(label))
             self._stock_tbl.setItem(i, 2, tbl_center(_fmt_stock(m.get('qty_before'))))
             chg = _safe_float(m.get('qty_change'))
             chg_s = f"+{_fmt_stock(chg)}" if chg > 0 else _fmt_stock(chg)

@@ -1,8 +1,8 @@
 ﻿{
-  "version": "2.3.50",
-  "build": "PROD-2026-07-17-v2.3.50",
+  "version": "2.3.51",
+  "build": "PROD-2026-07-17-v2.3.51",
   "build_date": "2026-07-17",
-  "release_notes": "Harden AppData web_config.json writes (clear read-only, atomic replace, fallback) so Cloudflare auto-setup survives PermissionError on shop PCs; redact Telegram bot tokens in getUpdates error logs.",
+  "release_notes": "Internal Stock Consumption: sidebar screen, departments, INTERNAL_USE ledger, void with stock restore, consumption report + Excel export, dashboard today widget, product history labels, and role permissions.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
