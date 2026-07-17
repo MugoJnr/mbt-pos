@@ -1,8 +1,8 @@
 ﻿{
-  "version": "2.3.58",
-  "build": "PROD-2026-07-17-v2.3.58",
+  "version": "2.3.59",
+  "build": "PROD-2026-07-17-v2.3.59",
   "build_date": "2026-07-17",
-  "release_notes": "Standardized Dropdowns & Smart Input Controls: Select/SearchableSelect/MultiSelect/ReasonSelect + desktop/utils/option_lists.py catalogs wired across void, consumption, stock adjust, POS payments, roles, customer type, product status, dashboard/reports date presets. Free-text only for notes and Other→Please Specify. Preserves AutoFill/State Reset 2.3.57, Cash Rounding 2.3.53, Payment Variance, Consumption. No Setup/GitHub Release publish.",
+  "release_notes": "Streamlined Credit Sales & Debt Management: POS credit stays on checkout (select/create customer, searchable picker), auto debt linked to sale_id+receipt+customer (no orphans), payment validation, debt table Sale Date + row→sale details, partial payments + history with reference, void credit with payments warning, audit on debt payments. Built on Standardized Dropdowns 2.3.58, Cash Rounding 2.3.53, Payment Variance. No Setup/GitHub Release publish.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
