@@ -119,7 +119,7 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
     ws1 = wb.active; ws1.title = "Sales Summary"
     ws1.sheet_view.showGridLines = False
     ws1.freeze_panes = 'A4'
-    _brand_header(ws1, shop_name, "Sales Report", dr, ncols=10)
+    _brand_header(ws1, shop_name, "Sales Report", dr, ncols=12)
 
     _kpi_block(ws1, [
         ('Total Transactions', total_count, ''),
@@ -135,8 +135,9 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
 
     hdrs1 = ['#','Receipt No.','Date & Time','Cashier','Items',
              f'Subtotal ({currency})', f'Discount ({currency})',
-             f'Tax ({currency})', f'Total ({currency})','Payment']
-    wds1  = [5, 18, 20, 16, 6, 16, 14, 12, 16, 12]
+             f'Tax ({currency})', f'Original ({currency})',
+             f'Rounding ({currency})', f'Final ({currency})','Payment']
+    wds1  = [5, 18, 20, 16, 6, 16, 14, 12, 14, 12, 16, 12]
     for col,(h,w) in enumerate(zip(hdrs1, wds1), 1):
         _hdr_cell(ws1, SR, col, h, w, get_column_letter(col))
 
@@ -144,26 +145,31 @@ def export_sales_report(sales_data, items_by_sale, shop_name='My Shop',
         r = SR+1+idx; alt = idx%2==1
         sid  = sale.get('id') or sale.get('sale_id')
         n_items = len(items_by_sale.get(sid, sale.get('items', [])))
+        adj = float(sale.get('cash_rounding_adj') or 0)
+        tot = float(sale.get('total',0))
+        orig = float(sale.get('original_total') or 0)
+        if orig <= 0:
+            orig = tot - adj
         vals = [idx+1, sale.get('receipt_number',''), (sale.get('created_at','') or '')[:19],
                 sale.get('cashier_name',''), n_items or sale.get('item_count',''),
                 float(sale.get('subtotal', sale.get('total',0))),
                 float(sale.get('discount',0)), float(sale.get('tax',0)),
-                float(sale.get('total',0)), sale.get('payment_method','').upper()]
+                orig, adj, tot, sale.get('payment_method','').upper()]
         for col, val in enumerate(vals, 1):
             c = ws1.cell(r, col, val)
             c.border    = _border()
             c.alignment = _align('right' if isinstance(val,(int,float)) else 'left')
             if alt: c.fill = _fill(ALT)
-            if col in (6,7,8,9): c.number_format = f'"{currency} "#,##0.00'
+            if col in (6,7,8,9,10,11): c.number_format = f'"{currency} "#,##0.00'
 
     # Totals row
     TR1 = SR+1+len(sales_data)
     ws1.cell(TR1,1).value = 'TOTAL'
-    for col in range(1,11):
+    for col in range(1,13):
         c = ws1.cell(TR1, col)
         c.fill = _fill(TOT_BG); c.font = _font(10,bold=True,color=TOT_FG); c.border = _border()
     if total_count:
-        for col, col_letter in [(6,'F'),(7,'G'),(8,'H'),(9,'I')]:
+        for col, col_letter in [(6,'F'),(7,'G'),(8,'H'),(9,'I'),(10,'J'),(11,'K')]:
             cell = ws1.cell(TR1, col)
             cell.value          = f'=SUM({col_letter}{SR+1}:{col_letter}{SR+total_count})'
             cell.number_format  = f'"{currency} "#,##0.00'

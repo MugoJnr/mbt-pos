@@ -154,19 +154,51 @@ class ReceiptBuilder:
         self.divider()
         return self
 
-    def totals(self, subtotal, discount, tax, total, payment_method, amount_paid, change):
+    def totals(self, subtotal, discount, tax, total, payment_method, amount_paid, change,
+               credit_applied=0, variance=None, wallet_balance=None,
+               original_total=None, cash_rounding_adj=0):
         sym = self.currency
         if discount > 0:
             self._line(left_right(f"Subtotal:", format_currency(subtotal, sym)))
             self._line(left_right(f"Discount:", f"-{format_currency(discount, sym)}"))
         if tax > 0:
             self._line(left_right(f"Tax:", format_currency(tax, sym)))
+        adj = float(cash_rounding_adj or 0)
+        orig = original_total
+        if orig is None and abs(adj) > 0.009:
+            orig = float(total) - adj
+        pm = str(payment_method or '').lower()
+        is_electronic = any(x in pm for x in ('mpesa', 'm-pesa', 'card', 'bank', 'cheque', 'eft'))
+        # Show cash rounding only when applied and not pure electronic receipt
+        if abs(adj) > 0.009 and not is_electronic:
+            if orig is not None:
+                self._line(left_right("Original Total:", format_currency(orig, sym)))
+            sign = '+' if adj >= 0 else ''
+            self._line(left_right("Cash Rounding:", f"{sign}{format_currency(abs(adj), sym)}"))
         self.bold(True)
         self._line(left_right(f"TOTAL:", format_currency(total, sym)))
         self.bold(False)
+        if credit_applied and float(credit_applied) > 0:
+            self._line(left_right("Store Credit:", f"-{format_currency(credit_applied, sym)}"))
         self._line(left_right(f"Payment ({payment_method}):", format_currency(amount_paid, sym)))
         if change > 0:
-            self._line(left_right(f"Change:", format_currency(change, sym)))
+            self._line(left_right(f"Change Returned:", format_currency(change, sym)))
+        var = variance or {}
+        if var and float(var.get('excess_amount') or 0) > 0:
+            self.divider()
+            if float(var.get('tip_amount') or 0) > 0:
+                self._line(left_right("Tip:", format_currency(var.get('tip_amount'), sym)))
+            if float(var.get('transport_amount') or 0) > 0:
+                self._line(left_right("Transport:", format_currency(var.get('transport_amount'), sym)))
+            if float(var.get('deposit_amount') or 0) > 0:
+                self._line(left_right("Deposit:", format_currency(var.get('deposit_amount'), sym)))
+            if float(var.get('advance_amount') or 0) > 0:
+                self._line(left_right("Advance:", format_currency(var.get('advance_amount'), sym)))
+            if float(var.get('misc_amount') or 0) > 0:
+                cat = var.get('misc_category') or 'Misc'
+                self._line(left_right(f"Misc ({cat}):", format_currency(var.get('misc_amount'), sym)))
+            if wallet_balance is not None and float(var.get('deposit_amount') or 0) + float(var.get('advance_amount') or 0) > 0:
+                self._line(left_right("Credit Bal:", format_currency(wallet_balance, sym)))
         return self
 
     def footer(self, custom_footer='Thank you for shopping with us!'):
@@ -209,6 +241,11 @@ def build_receipt(sale_data, shop_name='My Shop', currency='KES',
         sale_data.get('payment_method', 'cash'),
         sale_data.get('amount_paid', sale_data.get('total', 0)),
         sale_data.get('change_amount', 0),
+        credit_applied=sale_data.get('credit_applied', 0),
+        variance=sale_data.get('variance'),
+        wallet_balance=sale_data.get('wallet_balance'),
+        original_total=sale_data.get('original_total'),
+        cash_rounding_adj=sale_data.get('cash_rounding_adj', 0),
     )
     b.footer(footer)
     return b.build()
@@ -427,7 +464,21 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
         lines.append(left_right('Discount:', f"-{sale_data.get('discount',0):.2f}"))
     if sale_data.get('tax', 0) > 0:
         lines.append(left_right('Tax:', f"{sale_data.get('tax',0):.2f}"))
+    adj = float(sale_data.get('cash_rounding_adj') or 0)
+    orig = sale_data.get('original_total')
+    if orig is None and abs(adj) > 0.009:
+        orig = float(sale_data.get('total') or 0) - adj
+    pm_check = str(sale_data.get('payment_method', 'cash')).lower()
+    is_electronic = any(x in pm_check for x in ('mpesa', 'm-pesa', 'card', 'bank', 'cheque', 'eft'))
+    if abs(adj) > 0.009 and not is_electronic:
+        if orig is not None:
+            lines.append(left_right('Original Total:', f"{float(orig):,.2f}"))
+        sign = '+' if adj >= 0 else '-'
+        lines.append(left_right('Cash Rounding:', f"{sign}{abs(adj):,.2f}"))
     lines.append(left_right('TOTAL:', f"{currency} {sale_data.get('total',0):,.2f}"))
+    credit_applied = float(sale_data.get('credit_applied') or 0)
+    if credit_applied > 0:
+        lines.append(left_right('Store Credit Applied:', f"-{credit_applied:,.2f}"))
     pm = str(sale_data.get('payment_method', 'cash'))
     if 'mpesa' in pm.lower() or pm.lower() == 'm-pesa':
         till = sale_data.get('mpesa_till', '')
@@ -442,12 +493,38 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
     lines.append(left_right(f"Paid ({pm}):",
                              f"{sale_data.get('amount_paid',0):,.2f}"))
     if sale_data.get('change_amount', 0) > 0:
-        lines.append(left_right('Change:', f"{sale_data.get('change_amount',0):,.2f}"))
+        lines.append(left_right('Change Returned:', f"{sale_data.get('change_amount',0):,.2f}"))
+    # Payment variance split (excess Till / M-Pesa)
+    var = sale_data.get('variance') or {}
+    if var and float(var.get('excess_amount') or 0) > 0:
+        lines.append('-' * W)
+        lines.append(center_text('*** PAYMENT VARIANCE ***'))
+        excess = float(var.get('excess_amount') or 0)
+        handling = (var.get('handling') or '').lower()
+        if float(var.get('tip_amount') or 0) > 0:
+            lines.append(left_right('Tip:', f"{var.get('tip_amount'):,.2f}"))
+        if float(var.get('transport_amount') or 0) > 0:
+            lines.append(left_right('Transport/Delivery:', f"{var.get('transport_amount'):,.2f}"))
+        if float(var.get('deposit_amount') or 0) > 0:
+            lines.append(left_right('Customer Deposit:', f"{var.get('deposit_amount'):,.2f}"))
+        if float(var.get('advance_amount') or 0) > 0:
+            lines.append(left_right('Advance Payment:', f"{var.get('advance_amount'):,.2f}"))
+        if float(var.get('misc_amount') or 0) > 0:
+            cat = var.get('misc_category') or 'Misc'
+            lines.append(left_right(f'Misc ({cat}):', f"{var.get('misc_amount'):,.2f}"))
+        if float(var.get('change_returned') or 0) > 0 and not sale_data.get('change_amount'):
+            lines.append(left_right('Change Returned:', f"{var.get('change_returned'):,.2f}"))
+        if handling in ('deposit', 'advance') and sale_data.get('wallet_balance') is not None:
+            lines.append(left_right('Credit Balance:',
+                                    f"{currency} {float(sale_data.get('wallet_balance')):,.2f}"))
+        if var.get('reason'):
+            lines.append(left_right('Note:', str(var.get('reason'))[:28]))
     # ── Part payment / credit sale (debt) block ──────────────────────────────
     pm_low = pm.lower()
     if pm_low in ('part payment', 'credit sale', 'credit'):
         balance = round(float(sale_data.get('total', 0) or 0)
-                        - float(sale_data.get('amount_paid', 0) or 0), 2)
+                        - float(sale_data.get('amount_paid', 0) or 0)
+                        - credit_applied, 2)
         if balance > 0:
             lines.append('-' * W)
             lines.append(center_text('*** CREDIT SALE ***' if pm_low != 'part payment'

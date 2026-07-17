@@ -98,6 +98,124 @@ class SettingsTab(QWidget):
         mf_body.addWidget(mf_w)
         lay.addWidget(mg)
 
+        # ── Payment Variance (M-Pesa / Till excess) ───────────────────────────
+        vg, vf_body = section_card('⚖', 'Payment Variance', 'Excess M-Pesa / Till payment handling')
+        vf = make_form(); vf_w = QWidget(); vf_w.setLayout(vf)
+        self.variance_enabled = QCheckBox('Enable payment variance handling on Till / M-Pesa')
+        self.variance_enabled.setMinimumHeight(36)
+        self.variance_enable_deposits = QCheckBox('Allow Customer Deposit / Advance (store credit)')
+        self.variance_enable_deposits.setMinimumHeight(36)
+        self.variance_enable_tips = QCheckBox('Allow Tip allocation')
+        self.variance_enable_tips.setMinimumHeight(36)
+        self.variance_enable_transport = QCheckBox('Allow Transport / Delivery Fee allocation')
+        self.variance_enable_transport.setMinimumHeight(36)
+        self.variance_require_customer = QCheckBox('Require customer for deposits and advances')
+        self.variance_require_customer.setMinimumHeight(36)
+        self.variance_allow_refund = QCheckBox('Allow refunding excess after sale is finalized')
+        self.variance_allow_refund.setMinimumHeight(36)
+        self.variance_max_cashier = QDoubleSpinBox()
+        self.variance_max_cashier.setRange(0, 99999999)
+        self.variance_max_cashier.setDecimals(2)
+        self.variance_max_cashier.setMinimumHeight(40)
+        self.variance_max_cashier.setPrefix('KES ')
+        var_hint = QLabel(
+            'When Received Amount exceeds the sale total, cashiers must choose how to allocate '
+            'the excess (change, deposit, tip, transport, advance, or miscellaneous). '
+            'Amounts above the max below require manager / super-admin PIN approval. '
+            'Tips and transport are separate revenue — they do not inflate product sales. '
+            '“Allow refunding excess after finalize” is a shop policy flag; voiding a sale '
+            'always reverses deposits/credit for accounting integrity.')
+        var_hint.setWordWrap(True)
+        var_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        FormRow('', self.variance_enabled, vf)
+        FormRow('', self.variance_enable_deposits, vf)
+        FormRow('', self.variance_enable_tips, vf)
+        FormRow('', self.variance_enable_transport, vf)
+        FormRow('', self.variance_require_customer, vf)
+        FormRow('', self.variance_allow_refund, vf)
+        FormRow('Max cashier-approvable variance', self.variance_max_cashier, vf)
+        vf.addRow(var_hint)
+        vf_body.addWidget(vf_w)
+        lay.addWidget(vg)
+
+        # ── Cash Rounding (Sales) ─────────────────────────────────────────────
+        from desktop.utils.cash_rounding_service import MODE_LABELS
+        cg, cf_body = section_card('🪙', 'Cash Rounding', 'Sales — round final cash amount only')
+        cf = make_form(); cf_w = QWidget(); cf_w.setLayout(cf)
+        self.cash_rounding_enabled = QCheckBox('Enable cash rounding')
+        self.cash_rounding_enabled.setMinimumHeight(36)
+        self.cash_rounding_apply_cash = QCheckBox('Apply to Cash')
+        self.cash_rounding_apply_cash.setMinimumHeight(36)
+        self.cash_rounding_apply_mpesa = QCheckBox('Apply to M-Pesa (not recommended)')
+        self.cash_rounding_apply_mpesa.setMinimumHeight(36)
+        self.cash_rounding_apply_card = QCheckBox('Apply to Card')
+        self.cash_rounding_apply_card.setMinimumHeight(36)
+        self.cash_rounding_apply_bank = QCheckBox('Apply to Bank / Cheque / Transfer')
+        self.cash_rounding_apply_bank.setMinimumHeight(36)
+        self.cash_rounding_mode = QComboBox()
+        self.cash_rounding_mode.setMinimumHeight(42)
+        self.cash_rounding_mode.setMinimumWidth(280)
+        for key, label in MODE_LABELS:
+            self.cash_rounding_mode.addItem(label, key)
+        self.cash_rounding_value = QDoubleSpinBox()
+        self.cash_rounding_value.setRange(1, 1000)
+        self.cash_rounding_value.setDecimals(0)
+        self.cash_rounding_value.setMinimumHeight(40)
+        self.cash_rounding_value.setPrefix('KSh ')
+        self.cash_rounding_value.setValue(5)
+        round_hint = QLabel(
+            'Rounds the final amount due only — product prices never change. '
+            'Default: nearest KSh 5 for Cash. M-Pesa, Card, Bank and other electronic '
+            'methods stay exact unless you enable them above. '
+            'Mixed payments round the cash portion only '
+            '(e.g. 137.50 with 100 M-Pesa → cash 37.50 rounds to 40). '
+            'Refunds/voids reverse the rounding adjustment and refund the rounded amount paid.')
+        round_hint.setWordWrap(True)
+        round_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        FormRow('', self.cash_rounding_enabled, cf)
+        FormRow('', self.cash_rounding_apply_cash, cf)
+        FormRow('', self.cash_rounding_apply_mpesa, cf)
+        FormRow('', self.cash_rounding_apply_card, cf)
+        FormRow('', self.cash_rounding_apply_bank, cf)
+        FormRow('Rounding Mode', self.cash_rounding_mode, cf)
+        FormRow('Rounding Value', self.cash_rounding_value, cf)
+        cf.addRow(round_hint)
+        cf_body.addWidget(cf_w)
+        lay.addWidget(cg)
+
+        # ── Workflow / After Sale defaults ────────────────────────────────────
+        wg, wf_body = section_card('🔄', 'Workflow', 'After Sale defaults for POS checkout')
+        wform = make_form(); wf_w = QWidget(); wf_w.setLayout(wform)
+        self.after_sale_default_customer = QComboBox()
+        self.after_sale_default_customer.setMinimumHeight(42)
+        self.after_sale_default_customer.addItem('Walk-in Customer', 'walk_in')
+        self.after_sale_default_payment = QComboBox()
+        self.after_sale_default_payment.setMinimumHeight(42)
+        self.after_sale_default_payment.addItems(['Cash', 'M-Pesa', 'Card'])
+        self.after_sale_focus_barcode = QCheckBox('Focus barcode / search after each sale')
+        self.after_sale_focus_barcode.setMinimumHeight(36)
+        self.after_sale_auto_clear_cart = QCheckBox('Auto-clear cart after successful sale')
+        self.after_sale_auto_clear_cart.setMinimumHeight(36)
+        self.after_sale_reset_discounts = QCheckBox('Reset discounts after sale')
+        self.after_sale_reset_discounts.setMinimumHeight(36)
+        self.after_sale_reset_notes = QCheckBox('Reset notes after sale')
+        self.after_sale_reset_notes.setMinimumHeight(36)
+        wf_hint = QLabel(
+            'After every successful sale (Cash, M-Pesa, Credit, split), POS restores these '
+            'defaults. Customer always returns to Walk-in so a credit sale for John Kamau '
+            'never leaves John selected on the next ticket.')
+        wf_hint.setWordWrap(True)
+        wf_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        FormRow('Default customer', self.after_sale_default_customer, wform)
+        FormRow('Default payment', self.after_sale_default_payment, wform)
+        FormRow('', self.after_sale_focus_barcode, wform)
+        FormRow('', self.after_sale_auto_clear_cart, wform)
+        FormRow('', self.after_sale_reset_discounts, wform)
+        FormRow('', self.after_sale_reset_notes, wform)
+        wform.addRow(wf_hint)
+        wf_body.addWidget(wf_w)
+        lay.addWidget(wg)
+
         # ── Automatic reports ─────────────────────────────────────────────────
         rg, rf_body = section_card('📊', 'Automatic Telegram Reports', 'Auto-schedule daily reports')
         rf = make_form(); rf_w = QWidget(); rf_w.setLayout(rf)
@@ -421,6 +539,56 @@ class SettingsTab(QWidget):
         self.auto_report_daily.setChecked(cfg.get('auto_report_daily', '1') == '1')
         self.auto_report_weekly.setChecked(cfg.get('auto_report_weekly', '0') == '1')
         self.auto_db_backup.setChecked(cfg.get('auto_db_backup', '1') == '1')
+        if hasattr(self, 'variance_enabled'):
+            self.variance_enabled.setChecked(cfg.get('variance_enabled', '1') == '1')
+            self.variance_enable_deposits.setChecked(
+                cfg.get('variance_enable_deposits', '1') == '1')
+            self.variance_enable_tips.setChecked(cfg.get('variance_enable_tips', '1') == '1')
+            self.variance_enable_transport.setChecked(
+                cfg.get('variance_enable_transport', '1') == '1')
+            self.variance_require_customer.setChecked(
+                cfg.get('variance_require_customer_deposit', '1') == '1')
+            self.variance_allow_refund.setChecked(
+                cfg.get('variance_allow_refund_after_finalize', '0') == '1')
+            try:
+                self.variance_max_cashier.setValue(
+                    float(cfg.get('variance_max_cashier', 1000) or 1000))
+            except (TypeError, ValueError):
+                self.variance_max_cashier.setValue(1000)
+        if hasattr(self, 'cash_rounding_enabled'):
+            self.cash_rounding_enabled.setChecked(
+                cfg.get('cash_rounding_enabled', '1') == '1')
+            self.cash_rounding_apply_cash.setChecked(
+                cfg.get('cash_rounding_apply_cash', '1') == '1')
+            self.cash_rounding_apply_mpesa.setChecked(
+                cfg.get('cash_rounding_apply_mpesa', '0') == '1')
+            self.cash_rounding_apply_card.setChecked(
+                cfg.get('cash_rounding_apply_card', '0') == '1')
+            self.cash_rounding_apply_bank.setChecked(
+                cfg.get('cash_rounding_apply_bank', '0') == '1')
+            mode = (cfg.get('cash_rounding_mode') or 'nearest').strip().lower()
+            idx = self.cash_rounding_mode.findData(mode)
+            self.cash_rounding_mode.setCurrentIndex(idx if idx >= 0 else 0)
+            try:
+                self.cash_rounding_value.setValue(
+                    float(cfg.get('cash_rounding_value', 5) or 5))
+            except (TypeError, ValueError):
+                self.cash_rounding_value.setValue(5)
+        if hasattr(self, 'after_sale_default_customer'):
+            cust = (cfg.get('after_sale_default_customer') or 'walk_in').strip().lower()
+            cidx = self.after_sale_default_customer.findData(cust)
+            self.after_sale_default_customer.setCurrentIndex(cidx if cidx >= 0 else 0)
+            pay = (cfg.get('after_sale_default_payment') or 'Cash').strip()
+            pidx = self.after_sale_default_payment.findText(pay)
+            self.after_sale_default_payment.setCurrentIndex(pidx if pidx >= 0 else 0)
+            self.after_sale_focus_barcode.setChecked(
+                cfg.get('after_sale_focus_barcode', '1') == '1')
+            self.after_sale_auto_clear_cart.setChecked(
+                cfg.get('after_sale_auto_clear_cart', '1') == '1')
+            self.after_sale_reset_discounts.setChecked(
+                cfg.get('after_sale_reset_discounts', '1') == '1')
+            self.after_sale_reset_notes.setChecked(
+                cfg.get('after_sale_reset_notes', '1') == '1')
         self._refresh_tg_status()
         self._refresh_cf_status()
 
@@ -968,6 +1136,40 @@ class SettingsTab(QWidget):
             'auto_db_backup':      '1' if self.auto_db_backup.isChecked() else '0',
             'auto_db_backup_interval_hours': '24',
             'auto_report_interval_hours': '4',
+            'variance_enabled': '1' if self.variance_enabled.isChecked() else '0',
+            'variance_enable_deposits': '1' if self.variance_enable_deposits.isChecked() else '0',
+            'variance_enable_tips': '1' if self.variance_enable_tips.isChecked() else '0',
+            'variance_enable_transport': '1' if self.variance_enable_transport.isChecked() else '0',
+            'variance_require_customer_deposit':
+                '1' if self.variance_require_customer.isChecked() else '0',
+            'variance_allow_refund_after_finalize':
+                '1' if self.variance_allow_refund.isChecked() else '0',
+            'variance_max_cashier': str(self.variance_max_cashier.value()),
+            'cash_rounding_enabled':
+                '1' if self.cash_rounding_enabled.isChecked() else '0',
+            'cash_rounding_apply_cash':
+                '1' if self.cash_rounding_apply_cash.isChecked() else '0',
+            'cash_rounding_apply_mpesa':
+                '1' if self.cash_rounding_apply_mpesa.isChecked() else '0',
+            'cash_rounding_apply_card':
+                '1' if self.cash_rounding_apply_card.isChecked() else '0',
+            'cash_rounding_apply_bank':
+                '1' if self.cash_rounding_apply_bank.isChecked() else '0',
+            'cash_rounding_mode':
+                self.cash_rounding_mode.currentData() or 'nearest',
+            'cash_rounding_value': str(int(self.cash_rounding_value.value())),
+            'after_sale_default_customer':
+                self.after_sale_default_customer.currentData() or 'walk_in',
+            'after_sale_default_payment':
+                self.after_sale_default_payment.currentText() or 'Cash',
+            'after_sale_focus_barcode':
+                '1' if self.after_sale_focus_barcode.isChecked() else '0',
+            'after_sale_auto_clear_cart':
+                '1' if self.after_sale_auto_clear_cart.isChecked() else '0',
+            'after_sale_reset_discounts':
+                '1' if self.after_sale_reset_discounts.isChecked() else '0',
+            'after_sale_reset_notes':
+                '1' if self.after_sale_reset_notes.isChecked() else '0',
         }
 
     def _save(self):

@@ -536,32 +536,96 @@ class SummaryCard(QFrame):
 # ── CustomerSelector ──────────────────────────────────────────────────────────
 
 class CustomerSelector(QComboBox):
-    """Walk-in + named customers for credit / debt / notes."""
+    """Walk-in + named customers for credit / debt / notes. Searchable filter."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posCustomer')
         self.setMinimumHeight(TOUCH_MIN - 2)
-        self.setEditable(False)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self._all = []  # (label, id)
         self.addItem('Walk-in Customer', None)
+        le = self.lineEdit()
+        if le:
+            le.setPlaceholderText('Search customer…')
+            le.textEdited.connect(self._filter)
         self.refresh_theme()
 
     def load_customers(self, customers: list):
         cur = self.currentData()
-        self.blockSignals(True)
-        self.clear()
-        self.addItem('Walk-in Customer', None)
+        self._all = [('Walk-in Customer', None)]
         for c in customers or []:
             name = (c.get('name') or 'Customer').strip()
             phone = (c.get('phone') or '').strip()
+            wallet = float(c.get('wallet_balance') or 0)
             label = f'{name}  ·  {phone}' if phone else name
-            self.addItem(label, c.get('id'))
-        idx = self.findData(cur)
-        self.setCurrentIndex(idx if idx >= 0 else 0)
+            if wallet > 0.009:
+                label = f'{label}  ·  Credit {wallet:,.2f}'
+            self._all.append((label, c.get('id')))
+        self._rebuild(keep=cur)
+
+    def _rebuild(self, keep=None, query=''):
+        q = (query or '').strip().lower()
+        self.blockSignals(True)
+        self.clear()
+        matched = 0
+        for label, cid in self._all:
+            if cid is None:
+                # Always keep Walk-in when no query
+                if not q:
+                    self.addItem(label, None)
+                    matched += 1
+                continue
+            if not q or q in label.lower():
+                self.addItem(label, cid)
+                matched += 1
+        if matched == 0:
+            self.addItem('No matches', None)
+        if keep is not None:
+            idx = self.findData(keep)
+            self.setCurrentIndex(idx if idx >= 0 else 0)
+        elif not q:
+            self.setCurrentIndex(0)
         self.blockSignals(False)
+        if q and matched > 0 and not self.view().isVisible():
+            self.showPopup()
+
+    def _filter(self, text: str):
+        keep = self.currentData()
+        self._rebuild(keep=keep, query=text)
+
+    def select_customer(self, customer_id):
+        """Select by id after reload; rebuild full list first."""
+        self._rebuild(keep=customer_id, query='')
+        idx = self.findData(customer_id)
+        if idx >= 0:
+            self.setCurrentIndex(idx)
 
     def selected_id(self):
         return self.currentData()
+
+    def select_walk_in(self):
+        """Force Walk-in Customer — clears search filter. Used after sale reset."""
+        self._rebuild(keep=None, query='')
+        self.blockSignals(True)
+        try:
+            if self.count() == 0:
+                self.addItem('Walk-in Customer', None)
+            idx = self.findData(None)
+            if idx < 0:
+                for i in range(self.count()):
+                    if 'walk-in' in (self.itemText(i) or '').lower():
+                        idx = i
+                        break
+            self.setCurrentIndex(idx if idx >= 0 else 0)
+            le = self.lineEdit()
+            if le is not None:
+                le.blockSignals(True)
+                le.setText(self.currentText() or 'Walk-in Customer')
+                le.blockSignals(False)
+        finally:
+            self.blockSignals(False)
 
     def refresh_theme(self):
         self.setStyleSheet(

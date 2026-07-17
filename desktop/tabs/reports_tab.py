@@ -11,6 +11,8 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     tbl_center, page_layout, Badge, lovable_tab_qss,
                                     wrap_table_card, page_intro)
 from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
+from desktop.utils.select_controls import DatePresetSelect
+from desktop.utils.option_lists import date_range_for_preset
 
 _log = logging.getLogger(__name__)
 _PR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,11 +58,16 @@ class ReportsTab(QWidget):
         self._tg_btn = SecondaryBtn('✈  Telegram', 40)
         self._tg_btn.clicked.connect(self._send_telegram)
         ar.addWidget(self._tg_btn); ar.addWidget(self._exp_btn)
-        intro, _ = page_intro('Reports', 'Sales, line items, products and payment breakdown.', actions)
+        intro, _ = page_intro('Reports', 'Sales, cash rounding, payment variance, products and payment breakdown.', actions)
         lay.addLayout(intro)
 
         # ── Filter bar ────────────────────────────────────────────────────────
         fc = Card(); fl = fc.layout_h((16, 12, 16, 12), 8)
+        fl.addWidget(self._lbl('Period:'))
+        self._preset = DatePresetSelect()
+        self._preset.setMinimumWidth(150)
+        self._preset.presetChanged.connect(self._on_preset)
+        fl.addWidget(self._preset)
         fl.addWidget(self._lbl('From:'))
         self._s = QDateEdit(date.today()); self._s.setCalendarPopup(True)
         self._s.setDisplayFormat('yyyy-MM-dd'); self._s.setMinimumHeight(36)
@@ -69,9 +76,6 @@ class ReportsTab(QWidget):
         self._e = QDateEdit(date.today()); self._e.setCalendarPopup(True)
         self._e.setDisplayFormat('yyyy-MM-dd'); self._e.setMinimumHeight(36)
         fl.addWidget(self._e)
-        for lbl, days in [('Today',0),('7 Days',7),('30 Days',30),('Month',-1)]:
-            b = SecondaryBtn(lbl, 36); b.clicked.connect(lambda _,d=days: self._quick(d))
-            fl.addWidget(b)
         fl.addStretch()
         run = PrimaryBtn('▶  Run', 36); run.setFixedWidth(100)
         run.clicked.connect(self.refresh); fl.addWidget(run)
@@ -80,11 +84,21 @@ class ReportsTab(QWidget):
         # ── KPIs ──────────────────────────────────────────────────────────────
         kr = QHBoxLayout(); kr.setSpacing(12)
         self._k_txn  = KPICard('Transactions', '0',  '', C['gold'])
-        self._k_rev  = KPICard('Revenue',      '—',  '', C['ok'])
+        self._k_rev  = KPICard('Final Total',  '—',  '', C['ok'])
         self._k_avg  = KPICard('Avg Sale',     '—',  '', C['info'])
         self._k_disc = KPICard('Discounts',    '—',  '', C['warn'])
         for k in (self._k_txn,self._k_rev,self._k_avg,self._k_disc): kr.addWidget(k)
         lay.addLayout(kr)
+
+        # Daily Sales + Cash Rounding + Actual Cash Received
+        self._round_kpis = QWidget()
+        rkr = QHBoxLayout(self._round_kpis); rkr.setContentsMargins(0, 0, 0, 0); rkr.setSpacing(10)
+        self._rk_orig = KPICard('Original Total', '—', '', C['info'])
+        self._rk_round = KPICard('Cash Rounding', '—', '', C['gold'])
+        self._rk_cash = KPICard('Actual Cash Received', '—', '', C['ok'])
+        for k in (self._rk_orig, self._rk_round, self._rk_cash):
+            rkr.addWidget(k)
+        lay.addWidget(self._round_kpis)
 
         # ── Charts (Lovable MiniBar + By Payment) ─────────────────────────────
         charts = QHBoxLayout(); charts.setSpacing(14)
@@ -132,7 +146,8 @@ class ReportsTab(QWidget):
         tabs.setProperty('mbtLovableTabs', True)
         tabs.setStyleSheet(lovable_tab_qss())
         self._stbl = make_table(
-            ['Receipt','Date / Time','Cashier','Items','Discount','Tax','Total','Payment'],
+            ['Receipt','Date / Time','Cashier','Items','Discount','Tax',
+             'Original','Rounding','Final','Payment'],
             stretch_col=0, row_height=40)
         self._ptbl = make_table(
             ['Product Name','Units Sold','Transactions',f'Revenue','% of Total'],
@@ -143,21 +158,40 @@ class ReportsTab(QWidget):
         self._mtbl = make_table(
             ['Payment Method','Count','% Count',f'Revenue','% Revenue'],
             stretch_col=0, row_height=40)
+        self._vtbl = make_table(
+            ['Date','Sale #','Cashier','Method','Sale Total','Received','Excess',
+             'Handling','Returned','Deposit','Tip','Transport','Mgr','Notes'],
+            stretch_col=13, row_height=38)
 
         for tbl, specs in [
-            (self._stbl,  [(1,140),(2,120),(3,80),(4,90),(5,70),(6,110),(7,90)]),
+            (self._stbl,  [(1,140),(2,120),(3,80),(4,90),(5,70),(6,90),(7,80),(8,100),(9,90)]),
             (self._ptbl,  [(1,90),(2,100),(3,110),(4,90)]),
             (self._litbl, [(0,130),(1,130),(2,100),(4,70),(5,50),(6,100),(7,100)]),
             (self._mtbl,  [(1,70),(2,80),(3,110),(4,80)]),
+            (self._vtbl,  [(0,130),(1,120),(2,90),(3,70),(4,90),(5,90),(6,80),
+                           (7,90),(8,80),(9,80),(10,70),(11,80),(12,50)]),
         ]:
             for col, w in specs:
                 tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
                 tbl.setColumnWidth(col, w)
 
+        # Variance KPI strip (shown under variance tab conceptually — always above tabs)
+        self._var_kpis = QWidget()
+        vkr = QHBoxLayout(self._var_kpis); vkr.setContentsMargins(0, 0, 0, 0); vkr.setSpacing(10)
+        self._vk_extra = KPICard('Extra Received', '—', '', C['warn'])
+        self._vk_ret   = KPICard('Returned',       '—', '', C['info'])
+        self._vk_dep   = KPICard('Deposits',       '—', '', C['ok'])
+        self._vk_tip   = KPICard('Tips',           '—', '', C['gold'])
+        self._vk_tr    = KPICard('Transport',      '—', '', C['gold'])
+        for k in (self._vk_extra, self._vk_ret, self._vk_dep, self._vk_tip, self._vk_tr):
+            vkr.addWidget(k)
+        lay.addWidget(self._var_kpis)
+
         tabs.addTab(self._stbl,  'Sales List')
         tabs.addTab(self._litbl, 'Line Items')
         tabs.addTab(self._ptbl,  'Top Products')
         tabs.addTab(self._mtbl,  'By Payment')
+        tabs.addTab(self._vtbl,  'Payment Variance')
         lay.addWidget(wrap_table_card(tabs), 1)
 
     def _lbl(self, t):
@@ -167,11 +201,28 @@ class ReportsTab(QWidget):
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
+    def _on_preset(self, key):
+        if key == 'custom':
+            return
+        start, end = date_range_for_preset(key)
+        self._s.setDate(start)
+        self._e.setDate(end)
+        self.refresh()
+
     def _quick(self, days):
-        t = date.today()
-        if days == 0:    self._s.setDate(t); self._e.setDate(t)
-        elif days == -1: self._s.setDate(t.replace(day=1)); self._e.setDate(t)
-        else:            self._s.setDate(t-timedelta(days=days)); self._e.setDate(t)
+        # Legacy quick buttons → map onto presets
+        if days == 0:
+            self._on_preset('today')
+        elif days == -1:
+            self._on_preset('month')
+        elif days == 7:
+            self._on_preset('week')
+        else:
+            t = date.today()
+            self._s.setDate(t - timedelta(days=days))
+            self._e.setDate(t)
+            if hasattr(self, '_preset'):
+                self._preset.set_value('custom')
 
     def on_show(self):
         self._load_schedule()
@@ -194,6 +245,13 @@ class ReportsTab(QWidget):
         self._k_rev.set_value(f"{cur} {s.get('total_revenue', 0):,.2f}")
         self._k_avg.set_value(f"{cur} {s.get('avg_transaction', 0):,.2f}")
         self._k_disc.set_value(f"{cur} {s.get('total_discounts', 0):,.2f}")
+        if hasattr(self, '_rk_orig'):
+            orig = float(s.get('original_total') or s.get('total_revenue') or 0)
+            rnd = float(s.get('total_cash_rounding') or 0)
+            cash_rx = float(s.get('cash_received') or 0)
+            self._rk_orig.set_value(f"{cur} {orig:,.2f}")
+            self._rk_round.set_value(f"{cur} {rnd:+,.2f}" if rnd else f"{cur} 0.00")
+            self._rk_cash.set_value(f"{cur} {cash_rx:,.2f}")
 
         # Charts — 7-day trend always; payment bars use selected range
         try:
@@ -227,6 +285,11 @@ class ReportsTab(QWidget):
             self._stbl.setRowCount(0)
             for i, s2 in enumerate(sales):
                 self._stbl.insertRow(i)
+                adj = float(s2.get('cash_rounding_adj') or 0)
+                tot = float(s2.get('total') or 0)
+                orig = float(s2.get('original_total') or 0)
+                if orig <= 0:
+                    orig = tot - adj
                 for j, v in enumerate([
                     s2.get('receipt_number',''),
                     (s2.get('created_at','') or '')[:16],
@@ -234,7 +297,9 @@ class ReportsTab(QWidget):
                     s2.get('items_summary','') or '',
                     f"{s2.get('discount',0):,.2f}",
                     f"{s2.get('tax',0):,.2f}",
-                    f"{cur} {s2.get('total',0):,.2f}",
+                    f"{cur} {orig:,.2f}",
+                    f"{adj:+,.2f}" if adj else '0.00',
+                    f"{cur} {tot:,.2f}",
                     (s2.get('payment_method','') or '').upper(),
                 ]):
                     self._stbl.setItem(i, j, tbl_item(str(v)))
@@ -304,6 +369,45 @@ class ReportsTab(QWidget):
                     self._mtbl.setItem(i, j, tbl_item(str(v)))
         except Exception as e:
             _log.warning(f"Reports by payment: {e}")
+
+        # Payment Variance tab
+        try:
+            vdata = self.api.get_payment_variance_report(start, end) or {}
+            summary = vdata.get('summary') or {}
+            if hasattr(self, '_vk_extra'):
+                self._vk_extra.set_value(f"{cur} {summary.get('extra_received', 0):,.2f}")
+                self._vk_ret.set_value(f"{cur} {summary.get('returned', 0):,.2f}")
+                self._vk_dep.set_value(
+                    f"{cur} {summary.get('deposits', 0) + summary.get('advances', 0):,.2f}")
+                self._vk_tip.set_value(f"{cur} {summary.get('tips', 0):,.2f}")
+                self._vk_tr.set_value(f"{cur} {summary.get('transport', 0):,.2f}")
+            rows = vdata.get('rows') or []
+            self._vtbl.setRowCount(0)
+            for i, r in enumerate(rows):
+                self._vtbl.insertRow(i)
+                note = (r.get('reason') or r.get('notes') or r.get('misc_category') or '')
+                mgr = 'Yes' if r.get('manager_approved') else ''
+                if r.get('manager_name'):
+                    mgr = str(r.get('manager_name'))[:12]
+                for j, v in enumerate([
+                    (r.get('created_at') or '')[:16],
+                    r.get('receipt_number', ''),
+                    r.get('cashier_name', ''),
+                    (r.get('payment_method') or '').upper(),
+                    f"{float(r.get('sale_total') or 0):,.2f}",
+                    f"{float(r.get('amount_received') or 0):,.2f}",
+                    f"{float(r.get('excess_amount') or 0):,.2f}",
+                    (r.get('handling') or '').replace('_', ' ').title(),
+                    f"{float(r.get('change_returned') or 0):,.2f}",
+                    f"{float(r.get('deposit_amount') or 0) + float(r.get('advance_amount') or 0):,.2f}",
+                    f"{float(r.get('tip_amount') or 0):,.2f}",
+                    f"{float(r.get('transport_amount') or 0):,.2f}",
+                    mgr,
+                    str(note)[:40],
+                ]):
+                    self._vtbl.setItem(i, j, tbl_item(str(v)))
+        except Exception as e:
+            _log.warning(f"Reports payment variance: {e}")
 
     # ── Export ────────────────────────────────────────────────────────────────
 

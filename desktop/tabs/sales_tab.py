@@ -12,6 +12,8 @@ from desktop.utils.pos_components import (
     CustomerSelector, PosSearchBar, safe_price as _safe_price,
     fmt_stock_short as _fmt_stock_short, round_qty, refresh_pos_components,
 )
+from desktop.utils.option_lists import POS_PAYMENT_METHODS
+from desktop.utils.select_controls import Select
 
 
 class _KesEdit(QLineEdit):
@@ -32,11 +34,16 @@ class SalesTab(QWidget):
         self.db_path = db_path; self.config_getter = config_getter
         self.cart = []; self.products = []
         self._subtotal = self._discount = self._tax = self._total = 0.0
+        self._original_total = 0.0
+        self._rounding_adj = 0.0
+        self._rounding_info = {}
         self._currency = 'KES'
         self._is_light  = bool(ThemeManager.is_light())
         self._last_sale_id = None
         self._last_receipt = ''
         self._printer_mgr = None
+        self._credit_to_apply = 0.0
+        self._wallet_by_customer = {}
         self._build()
         # Defer product grid load so MainWindow can paint first (avoids hang)
         QTimer.singleShot(400, self.refresh)
@@ -200,18 +207,43 @@ class SalesTab(QWidget):
         self._cust_lbl.setStyleSheet(
             f"color:{C['text2']};font-size:13px;background:transparent;")
         self._customer = CustomerSelector()
+        self._customer.currentIndexChanged.connect(self._on_customer_changed)
         cust_row.addWidget(self._cust_lbl)
         cust_row.addWidget(self._customer, 1)
         cbl.addLayout(cust_row)
+
+        # Store credit apply row (shown when customer has wallet balance)
+        self._credit_frame = QFrame()
+        self._credit_frame.setStyleSheet(
+            f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
+        cfl = QHBoxLayout(self._credit_frame)
+        cfl.setContentsMargins(10, 8, 10, 8); cfl.setSpacing(8)
+        self._credit_info = QLabel('Store credit: —')
+        self._credit_info.setStyleSheet(
+            f"color:{C['ok']};font-size:12px;font-weight:600;background:transparent;")
+        self._credit_spin = QDoubleSpinBox()
+        self._credit_spin.setRange(0, 99999999)
+        self._credit_spin.setDecimals(2)
+        self._credit_spin.setMinimumHeight(36)
+        self._credit_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self._credit_spin.setPrefix('Apply ')
+        self._credit_spin.valueChanged.connect(self._on_credit_apply_changed)
+        self._apply_all_credit_btn = SecondaryBtn('Use All', 36)
+        self._apply_all_credit_btn.setFixedWidth(80)
+        self._apply_all_credit_btn.clicked.connect(self._apply_all_credit)
+        cfl.addWidget(self._credit_info, 1)
+        cfl.addWidget(self._credit_spin)
+        cfl.addWidget(self._apply_all_credit_btn)
+        self._credit_frame.hide()
+        cbl.addWidget(self._credit_frame)
 
         pay = QHBoxLayout(); pay.setSpacing(8)
         self._pay_lbl = QLabel('Method')
         self._pay_lbl.setStyleSheet(
             f"color:{C['text2']};font-size:13px;background:transparent;")
-        self._pay = QComboBox()
-        self._pay.addItems(['Cash', 'M-Pesa', 'Card', 'Cheque',
-                            'Part Payment', 'Credit Sale'])
-        self._pay.setMinimumHeight(40); self._pay.setMinimumWidth(120)
+        self._pay = Select()
+        self._pay.set_items(list(POS_PAYMENT_METHODS))
+        self._pay.setMinimumHeight(40); self._pay.setMinimumWidth(140)
         self._pay.currentTextChanged.connect(self._on_payment_changed)
         self._paid = QDoubleSpinBox(); self._paid.setRange(0, 99999999)
         self._paid.setDecimals(2); self._paid.setMinimumHeight(40)
@@ -219,6 +251,64 @@ class SalesTab(QWidget):
         self._paid.valueChanged.connect(self._calc_change)
         pay.addWidget(self._pay_lbl); pay.addWidget(self._pay); pay.addWidget(self._paid, 1)
         cbl.addLayout(pay)
+
+        # Expected / Received / Difference (M-Pesa Till variance)
+        self._var_frame = QFrame()
+        self._var_frame.setStyleSheet(
+            f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
+        vfl = QVBoxLayout(self._var_frame)
+        vfl.setContentsMargins(12, 8, 12, 8); vfl.setSpacing(4)
+        self._expected_lbl = QLabel('Expected: —')
+        self._received_lbl = QLabel('Received: —')
+        self._diff_lbl = QLabel('Difference: —')
+        for w in (self._expected_lbl, self._received_lbl, self._diff_lbl):
+            w.setStyleSheet(
+                f"color:{C['text2']};font-size:12px;font-weight:600;background:transparent;")
+            vfl.addWidget(w)
+        self._var_frame.hide()
+        cbl.addWidget(self._var_frame)
+
+        # Cash rounding breakdown (Original / Rounding / Amount Due)
+        self._round_frame = QFrame()
+        self._round_frame.setObjectName('posRoundFrame')
+        self._round_frame.setStyleSheet(
+            f"QFrame#posRoundFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
+        rfl = QVBoxLayout(self._round_frame)
+        rfl.setContentsMargins(12, 8, 12, 8); rfl.setSpacing(4)
+        self._round_badge = QLabel('Cash Rounding Applied')
+        self._round_badge.setStyleSheet(
+            f"color:{C['gold']};font-size:11px;font-weight:800;background:transparent;")
+        self._orig_due_lbl = QLabel('Original: —')
+        self._round_adj_lbl = QLabel('Cash Rounding: —')
+        self._amount_due_lbl = QLabel('Amount Due: —')
+        for w in (self._orig_due_lbl, self._round_adj_lbl, self._amount_due_lbl):
+            w.setStyleSheet(
+                f"color:{C['text2']};font-size:12px;font-weight:600;background:transparent;")
+        self._amount_due_lbl.setStyleSheet(
+            f"color:{C['text']};font-size:13px;font-weight:800;background:transparent;")
+        rfl.addWidget(self._round_badge)
+        rfl.addWidget(self._orig_due_lbl)
+        rfl.addWidget(self._round_adj_lbl)
+        rfl.addWidget(self._amount_due_lbl)
+        # Mixed tender: electronic already paid (M-Pesa/Card portion)
+        erow = QHBoxLayout(); erow.setSpacing(8)
+        self._elec_lbl = QLabel('Other paid (M-Pesa/Card)')
+        self._elec_lbl.setStyleSheet(
+            f"color:{C['text2']};font-size:12px;background:transparent;")
+        self._elec_paid = QDoubleSpinBox()
+        self._elec_paid.setRange(0, 99999999)
+        self._elec_paid.setDecimals(2)
+        self._elec_paid.setMinimumHeight(34)
+        self._elec_paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self._elec_paid.setToolTip(
+            'Optional split tender: amount already paid electronically; '
+            'remaining cash portion is rounded.')
+        self._elec_paid.valueChanged.connect(self._on_elec_paid_changed)
+        erow.addWidget(self._elec_lbl)
+        erow.addWidget(self._elec_paid, 1)
+        rfl.addLayout(erow)
+        self._round_frame.hide()
+        cbl.addWidget(self._round_frame)
 
         chg = QHBoxLayout()
         self._chg_lbl = QLabel('Change')
@@ -329,6 +419,125 @@ class SalesTab(QWidget):
         except Exception:
             pass
 
+    def _amount_due(self):
+        """Payable after store credit and cash rounding (when active)."""
+        info = self._compute_rounding()
+        return round(float(info.get('amount_due', max(0.0, self._total - float(self._credit_to_apply or 0)))), 2)
+
+    def _elec_portion(self) -> float:
+        if not hasattr(self, '_elec_paid'):
+            return 0.0
+        return round(float(self._elec_paid.value() or 0), 2)
+
+    def _on_elec_paid_changed(self, *_args):
+        self._recalc()
+
+    def _compute_rounding(self) -> dict:
+        """Recompute cash rounding for current cart / payment method."""
+        from desktop.utils.cash_rounding_service import CashRoundingService
+        cfg = {}
+        try:
+            cfg = self.config_getter() or {}
+        except Exception:
+            cfg = {}
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        credit = float(self._credit_to_apply or 0)
+        # Electronic portion only applies on Cash (mixed tender)
+        elec = self._elec_portion() if method == 'Cash' else 0.0
+        info = CashRoundingService.apply_to_total(
+            self._subtotal, self._discount, self._tax, method, cfg,
+            credit_applied=credit, electronic_portion=elec)
+        self._rounding_info = info
+        self._original_total = float(info.get('cart_total', self._total))
+        self._rounding_adj = float(info.get('adjustment') or 0)
+        return info
+
+    def _update_rounding_ui(self):
+        info = self._rounding_info or self._compute_rounding()
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        from desktop.utils.cash_rounding_service import CashRoundingService
+        cfg = {}
+        try:
+            cfg = self.config_getter() or {}
+        except Exception:
+            pass
+        st = CashRoundingService.settings_from_config(cfg)
+        # Show breakdown when Cash + rounding enabled (cleared for M-Pesa / Card)
+        show = bool(st.get('enabled')) and method == 'Cash' and (
+            CashRoundingService.should_apply('cash', st) or bool(info.get('applied')))
+        if hasattr(self, '_round_frame'):
+            self._round_frame.setVisible(show)
+            if not show:
+                return
+            cur = self._currency
+            orig = float(info.get('original_due', info.get('original', 0)))
+            adj = float(info.get('adjustment') or 0)
+            due = float(info.get('amount_due', orig))
+            self._orig_due_lbl.setText(f'Original: {cur} {orig:,.2f}')
+            sign = '+' if adj >= 0 else ''
+            self._round_adj_lbl.setText(f'Cash Rounding: {sign}{cur} {adj:,.2f}')
+            self._amount_due_lbl.setText(f'Amount Due: {cur} {due:,.2f}')
+            self._round_badge.setVisible(bool(info.get('applied')))
+            gold, mute, text = C['gold'], C['text2'], C['text']
+            self._round_badge.setStyleSheet(
+                f"color:{gold};font-size:11px;font-weight:800;background:transparent;")
+            self._orig_due_lbl.setStyleSheet(
+                f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
+            self._round_adj_lbl.setStyleSheet(
+                f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
+            self._amount_due_lbl.setStyleSheet(
+                f"color:{text};font-size:13px;font-weight:800;background:transparent;")
+            self._round_frame.setStyleSheet(
+                f"QFrame#posRoundFrame{{background:{C['card2']};"
+                f"border:1px solid {C['border2']};border-radius:8px;}}")
+            if hasattr(self, '_elec_paid'):
+                self._elec_lbl.setVisible(True)
+                self._elec_paid.setVisible(True)
+                self._elec_lbl.setStyleSheet(
+                    f"color:{mute};font-size:12px;background:transparent;")
+
+
+    def _is_till_method(self, method=None):
+        method = method or self._pay.currentText()
+        return method in ('M-Pesa',)
+
+    def _on_customer_changed(self, *_args):
+        cust_id = self._customer.selected_id() if hasattr(self, '_customer') else None
+        bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
+        if cust_id and bal > 0.009:
+            self._credit_frame.show()
+            self._credit_info.setText(
+                f'Store credit available: {self._currency} {bal:,.2f}')
+            self._credit_spin.blockSignals(True)
+            self._credit_spin.setMaximum(min(bal, self._total if self._total > 0 else bal))
+            # Keep existing apply if still valid
+            apply = min(float(self._credit_to_apply or 0), bal, self._total)
+            self._credit_spin.setValue(apply)
+            self._credit_spin.blockSignals(False)
+            self._credit_to_apply = apply
+        else:
+            self._credit_frame.hide()
+            self._credit_to_apply = 0.0
+            self._credit_spin.blockSignals(True)
+            self._credit_spin.setValue(0)
+            self._credit_spin.blockSignals(False)
+        self._calc_change()
+
+    def _on_credit_apply_changed(self, val):
+        self._credit_to_apply = round(float(val or 0), 2)
+        if self._is_till_method() or self._pay.currentText() == 'Cash':
+            due = self._amount_due()
+            if abs(self._paid.value() - due) < 0.01 or self._is_till_method():
+                self._paid.blockSignals(True)
+                self._paid.setValue(due)
+                self._paid.blockSignals(False)
+        self._calc_change()
+
+    def _apply_all_credit(self):
+        cust_id = self._customer.selected_id()
+        bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
+        self._credit_spin.setValue(min(bal, self._total))
+
     def _on_payment_changed(self, method: str):
         if hasattr(self, '_pay_seg') and method in ('Cash', 'M-Pesa', 'Card'):
             self._pay_seg.select(method, emit=False)
@@ -339,6 +548,8 @@ class SalesTab(QWidget):
                 b.blockSignals(False)
         is_mpesa = method == 'M-Pesa'
         self._mpesa_frame.setVisible(is_mpesa)
+        if hasattr(self, '_var_frame'):
+            self._var_frame.setVisible(is_mpesa)
         if is_mpesa:
             cfg = self.config_getter() or {}
             till = cfg.get('mpesa_till', '').strip()
@@ -352,17 +563,26 @@ class SalesTab(QWidget):
             if not till and not pb:
                 parts.append('Set Till/Paybill in Settings → M-Pesa')
             self._mpesa_info.setText(' · '.join(parts))
-            self._paid.setValue(self._total)
-            self._paid.setEnabled(False)
+            # Received Amount is editable for Till variance (Expected = amount due)
+            self._paid.setEnabled(True)
+            self._paid.setValue(self._amount_due())
+            self._paid.setToolTip('Received Amount — enter what customer paid via Till')
+            self._pay_lbl.setText('Method')
+            self._chg_lbl.setText('Difference')
         elif method == 'Credit Sale':
             # Full amount on credit — nothing paid now
             self._paid.setValue(0.0)
             self._paid.setEnabled(False)
             self._mpesa_ref.clear()
+            self._paid.setToolTip('')
+            self._chg_lbl.setText('Change')
         else:
             # Cash / Card / Cheque / Part Payment — cashier enters amount paid
             self._paid.setEnabled(True)
             self._mpesa_ref.clear()
+            self._paid.setToolTip('')
+            self._chg_lbl.setText('Change')
+        self._calc_change()
 
     def refresh(self):
         try: self.products = self.api.get_products() or []
@@ -372,8 +592,13 @@ class SalesTab(QWidget):
         except Exception: pass
         try:
             customers = self.api.get_customers() or []
+            self._wallet_by_customer = {
+                c.get('id'): float(c.get('wallet_balance') or 0)
+                for c in customers if c.get('id')
+            }
             if hasattr(self, '_customer'):
                 self._customer.load_customers(customers)
+                self._on_customer_changed()
         except Exception:
             pass
         cats = sorted({p.get('category') or 'General' for p in self.products})
@@ -862,36 +1087,96 @@ class SalesTab(QWidget):
         self._sub_lbl.setText(f'{cur} {sub:,.2f}')
         self._tax_lbl.setText(f'{cur} {tax:,.2f}')
         self._tot_lbl.setText(f'{cur} {tot:,.2f}')
+        # Cap credit apply to new total
+        if self._credit_to_apply > tot:
+            self._credit_to_apply = tot
+            if hasattr(self, '_credit_spin'):
+                self._credit_spin.blockSignals(True)
+                self._credit_spin.setMaximum(tot)
+                self._credit_spin.setValue(tot)
+                self._credit_spin.blockSignals(False)
+        elif hasattr(self, '_credit_spin') and self._credit_frame.isVisible():
+            cust_id = self._customer.selected_id()
+            bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
+            self._credit_spin.setMaximum(min(bal, tot) if tot > 0 else bal)
+        # Cap electronic split to amount due before rounding
+        if hasattr(self, '_elec_paid'):
+            raw_due = round(max(0.0, tot - float(self._credit_to_apply or 0)), 2)
+            self._elec_paid.setMaximum(raw_due if raw_due > 0 else 0)
+            if self._elec_paid.value() > raw_due:
+                self._elec_paid.blockSignals(True)
+                self._elec_paid.setValue(raw_due)
+                self._elec_paid.blockSignals(False)
+        self._compute_rounding()
+        self._update_rounding_ui()
+        # Keep Cash paid in sync with rounded amount due when it was matching
+        if self._pay.currentText() == 'Cash':
+            due = self._amount_due()
+            if abs(self._paid.value() - due) < 0.01 or self._paid.value() <= 0.009:
+                self._paid.blockSignals(True)
+                self._paid.setValue(due)
+                self._paid.blockSignals(False)
         self._calc_change()
         if self._pay.currentText() == 'M-Pesa':
-            self._paid.setValue(tot)
+            self._paid.blockSignals(True)
+            self._paid.setValue(self._amount_due())
+            self._paid.blockSignals(False)
+            self._calc_change()
 
     def _calc_change(self):
-        paid = self._paid.value(); chg = max(0.0, paid - self._total)
-        ok   = paid >= self._total or self._total == 0
+        due = self._amount_due()
+        paid = self._paid.value()
+        chg = max(0.0, paid - due)
+        ok   = paid >= due or due == 0
         from desktop.utils.pos_light_theme import L, FS
         ok_color = L['ok'] if self._is_light else C['ok']
         err_color = L['err'] if self._is_light else C['err']
+        warn_color = L.get('warn', C.get('warn', '#E8A838')) if self._is_light else C.get('warn', '#E8A838')
         chg_sz = FS['change'] if self._is_light else '16px'
         self._chg.setText(f'{self._currency} {chg:,.2f}')
         self._chg.setStyleSheet(
             f"color:{ok_color if ok else err_color};"
             f"font-size:{chg_sz};font-weight:700;background:transparent;")
+        if hasattr(self, '_var_frame') and self._is_till_method():
+            self._expected_lbl.setText(f'Expected Amount: {self._currency} {due:,.2f}')
+            self._received_lbl.setText(f'Received Amount: {self._currency} {paid:,.2f}')
+            diff = round(paid - due, 2)
+            if diff > 0.009:
+                self._diff_lbl.setText(
+                    f'Difference: {self._currency} {diff:,.2f} excess — choose handling at checkout')
+                self._diff_lbl.setStyleSheet(
+                    f"color:{warn_color};font-size:12px;font-weight:700;background:transparent;")
+            elif diff < -0.009:
+                self._diff_lbl.setText(
+                    f'Difference: {self._currency} {diff:,.2f} short')
+                self._diff_lbl.setStyleSheet(
+                    f"color:{err_color};font-size:12px;font-weight:700;background:transparent;")
+            else:
+                self._diff_lbl.setText(f'Difference: {self._currency} 0.00')
+                self._diff_lbl.setStyleSheet(
+                    f"color:{ok_color};font-size:12px;font-weight:600;background:transparent;")
 
     def _clear(self):
-        self.cart.clear()
-        self._disc.blockSignals(True)
-        self._disc.setText('0.00')
-        self._disc.blockSignals(False)
-        self._paid.setValue(0)
-        self._note.clear(); self._refresh_cart()
+        """Manual Clear cart — full After Sale defaults (Walk-in, Cash, focus)."""
+        from desktop.utils.state_reset import StateResetManager
+        cfg = {}
+        try:
+            cfg = self.config_getter() or {}
+        except Exception:
+            pass
+        StateResetManager.reset_pos(self, cfg, force_walk_in=True)
 
     def _process(self):
         if not self.cart:
             QMessageBox.warning(self, 'Empty Cart', 'Add items before charging.'); return
         pay_method = self._pay.currentText()
         is_debt = pay_method in ('Part Payment', 'Credit Sale')
-        if pay_method == 'Cash' and self._paid.value() < self._total:
+        due = self._amount_due()
+        credit_applied = round(float(self._credit_to_apply or 0), 2)
+        cfg = self.config_getter() or {}
+        variance_enabled = cfg.get('variance_enabled', '1') == '1'
+
+        if pay_method == 'Cash' and self._paid.value() < due:
             QMessageBox.warning(self, 'Insufficient', 'Amount paid is less than total.'); return
         if pay_method == 'Part Payment' and self._paid.value() >= self._total:
             QMessageBox.information(
@@ -899,7 +1184,6 @@ class SalesTab(QWidget):
                 'Amount paid covers the full total — use "Cash" instead of "Part Payment".')
             return
         if pay_method == 'M-Pesa':
-            cfg = self.config_getter() or {}
             if not cfg.get('mpesa_till', '').strip() and not cfg.get('mpesa_paybill', '').strip():
                 r = QMessageBox.question(
                     self, 'M-Pesa Not Configured',
@@ -907,68 +1191,201 @@ class SalesTab(QWidget):
                     QMessageBox.Yes | QMessageBox.No)
                 if r != QMessageBox.Yes:
                     return
-            if QMessageBox.question(
-                self, 'Confirm M-Pesa',
-                f'Confirm customer paid {self._currency} {self._total:,.2f} via M-Pesa?',
-                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            if self._paid.value() + 0.009 < due:
+                QMessageBox.warning(
+                    self, 'Insufficient',
+                    f'Received Amount is less than Expected ({self._currency} {due:,.2f}).')
                 return
-        # Amount actually collected now
-        if pay_method == 'M-Pesa':
-            paid_now = self._total
-        elif pay_method == 'Credit Sale':
+
+        # Amount actually collected via payment method (Till / cash / card)
+        if pay_method == 'Credit Sale':
             paid_now = 0.0
         else:
             paid_now = self._paid.value()
+
         cust_id = None
         if hasattr(self, '_customer'):
             cust_id = self._customer.selected_id()
         if is_debt and not cust_id:
+            from desktop.dialogs.credit_customer_dialogs import ensure_credit_customer
+            cust_id = ensure_credit_customer(self, self.api)
+            if not cust_id:
+                return
+            # Reload customers and assign without leaving POS / clearing cart
+            try:
+                customers = self.api.get_customers() or []
+                self._wallet_by_customer = {
+                    c['id']: float(c.get('wallet_balance') or 0)
+                    for c in customers if c.get('id')
+                }
+                self._customer.load_customers(customers)
+                if hasattr(self._customer, 'select_customer'):
+                    self._customer.select_customer(cust_id)
+                else:
+                    idx = self._customer.findData(cust_id)
+                    if idx >= 0:
+                        self._customer.setCurrentIndex(idx)
+                self._on_customer_changed()
+            except Exception:
+                pass
+        if credit_applied > 0.009 and not cust_id:
             QMessageBox.warning(
                 self, 'Customer Required',
-                'Select a customer for Part Payment / Credit Sale.')
+                'Select a customer to apply store credit.')
             return
+
+        variance_payload = None
+        change_amount = 0.0
+        excess = round(paid_now - due, 2) if not is_debt else 0.0
+
+        if self._is_till_method(pay_method) and variance_enabled and excess > 0.009:
+            from desktop.dialogs.payment_variance_dialog import PaymentVarianceDialog
+            cust_name = ''
+            if cust_id and hasattr(self, '_customer'):
+                cust_name = self._customer.currentText().split('  ·  ')[0]
+            dlg = PaymentVarianceDialog(
+                self, self._currency, due, paid_now, excess,
+                settings=cfg, has_customer=bool(cust_id),
+                customer_name=cust_name)
+            if dlg.exec_() != QDialog.Accepted or not dlg.result_data:
+                return
+            variance_payload = dlg.result_data
+            # Manager approval when excess above threshold
+            try:
+                max_cash = float(cfg.get('variance_max_cashier', 1000) or 1000)
+            except (TypeError, ValueError):
+                max_cash = 1000.0
+            if excess > max_cash + 0.009:
+                from desktop.utils.security import ask_superadmin_pin, has_permission
+                role_ok = has_permission(self.user, 'sales.variance_approve')
+                if not role_ok:
+                    if not ask_superadmin_pin(
+                        self.api, self,
+                        reason=f'Approve variance {self._currency} {excess:,.2f}'):
+                        return
+                    variance_payload['manager_approved'] = True
+                    variance_payload['manager_name'] = 'superadmin-pin'
+                else:
+                    u = self.user.get('user', {}) if isinstance(self.user, dict) else {}
+                    variance_payload['manager_approved'] = True
+                    variance_payload['manager_name'] = (
+                        u.get('full_name') or u.get('username') or 'manager')
+            if variance_payload.get('handling') == 'return_change':
+                change_amount = excess
+            # Confirm till payment with split description
+            handle_label = {
+                'return_change': 'Return Change',
+                'deposit': 'Customer Deposit',
+                'transport': 'Transport/Delivery Fee',
+                'tip': 'Tip',
+                'advance': 'Advance Payment',
+                'miscellaneous': 'Miscellaneous',
+            }.get(variance_payload['handling'], variance_payload['handling'])
+            if QMessageBox.question(
+                self, 'Confirm M-Pesa',
+                f'Confirm customer paid {self._currency} {paid_now:,.2f} via M-Pesa?\n\n'
+                f'Sale: {self._currency} {self._total:,.2f}\n'
+                f'Credit applied: {self._currency} {credit_applied:,.2f}\n'
+                f'Excess {self._currency} {excess:,.2f} → {handle_label}',
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+        elif pay_method == 'M-Pesa':
+            if QMessageBox.question(
+                self, 'Confirm M-Pesa',
+                f'Confirm customer paid {self._currency} {paid_now:,.2f} via M-Pesa?',
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+            # Variance disabled: treat excess as change returned (do not inflate sales)
+            change_amount = max(0.0, excess)
+        elif not is_debt:
+            change_amount = max(0.0, paid_now - due)
+
         try:
+            info = self._compute_rounding()
+            round_adj = float(info.get('adjustment') or 0)
+            original_due = float(info.get('original_due', due))
+            payable = float(info.get('amount_due', due))
+            # Use rounded due for cash validation already done via _amount_due()
+            final_total = round(float(info.get('cart_total', self._total)) + round_adj, 2)
+            # When credit applied, final_total for storage = cart + adj (credit separate)
+            cart_total = float(info.get('cart_total', self._total))
+            sale_total = round(cart_total + round_adj, 2) if abs(round_adj) > 0.009 else cart_total
+            elec = float(info.get('electronic') or 0)
             sale_payload = {
                 'items':          self.cart,
                 'subtotal':       self._subtotal,
                 'discount':       self._discount,
                 'tax':            self._tax,
-                'total':          self._total,
-                'payment_method': pay_method.lower(),
+                'total':          sale_total,
+                'original_total': cart_total,
+                'cash_rounding_adj': round_adj,
+                'electronic_paid': elec,
+                'cash_original':  float(info.get('cash_original') or 0),
+                'cash_rounded':   float(info.get('cash_rounded') or 0),
+                'payment_method': pay_method.lower() if elec < 0.009 else (
+                    'mixed' if pay_method == 'Cash' and elec > 0.009 else pay_method.lower()),
                 'amount_paid':    paid_now,
-                'change_amount':  0.0 if is_debt or pay_method == 'M-Pesa'
-                                  else max(0.0, self._paid.value() - self._total),
+                'change_amount':  change_amount,
+                'credit_applied': credit_applied,
                 'notes':          self._note.text().strip(),
                 'mpesa_ref':      self._mpesa_ref.text().strip() if pay_method == 'M-Pesa' else '',
             }
             if cust_id:
                 sale_payload['customer_id'] = cust_id
+            if variance_payload:
+                sale_payload['variance'] = variance_payload
             res = self.api.create_sale(sale_payload)
             if res and res.get('success'):
                 rn  = res.get('receipt_number', 'N/A')
                 sid = res.get('sale_id')
                 self._last_sale_id = sid
                 self._last_receipt = rn
-                chg = max(0.0, self._paid.value() - self._total)
                 # Part Payment / Credit Sale → create a debt invoice for the balance
                 if is_debt:
                     self._create_debt_invoice(
                         sale_id=sid,
                         receipt_number=rn,
-                        total=self._total,
-                        paid=paid_now,
+                        total=cart_total,
+                        paid=paid_now + credit_applied,
                         method=pay_method,
                     )
                 else:
-                    QMessageBox.information(self, 'Sale Complete',
+                    msg = (
                         f'✓  Sale recorded\n\nInvoice:  {rn}\n'
-                        f'Total:    {self._currency} {self._total:,.2f}\n'
-                        f'Change:   {self._currency} {chg:,.2f}')
+                        f'Total:    {self._currency} {sale_total:,.2f}\n'
+                        f'Received: {self._currency} {paid_now:,.2f}\n'
+                    )
+                    if abs(round_adj) > 0.009:
+                        msg += (
+                            f'Original: {self._currency} {cart_total:,.2f}\n'
+                            f'Rounding: {self._currency} {round_adj:+,.2f}\n'
+                        )
+                    if credit_applied > 0:
+                        msg += f'Credit used: {self._currency} {credit_applied:,.2f}\n'
+                    if variance_payload:
+                        h = variance_payload.get('handling')
+                        msg += f'Excess:   {self._currency} {excess:,.2f} → {h}\n'
+                        wb = res.get('wallet_balance')
+                        if wb is not None:
+                            msg += f'Wallet:   {self._currency} {float(wb):,.2f}\n'
+                    elif change_amount > 0:
+                        msg += f'Change:   {self._currency} {change_amount:,.2f}\n'
+                    QMessageBox.information(self, 'Sale Complete', msg)
                 self._try_print_receipt(sid, rn)
-                self._clear(); self.refresh()
+                # Refresh stock/products first, then force After Sale defaults
+                # (Walk-in must win after credit sale — do not leave John selected).
+                self.refresh()
+                from desktop.utils.state_reset import StateResetManager
+                cfg = {}
+                try:
+                    cfg = self.config_getter() or {}
+                except Exception:
+                    pass
+                StateResetManager.reset_pos(self, cfg, force_walk_in=True)
                 self.sale_completed.emit()
             else:
-                QMessageBox.critical(self, 'Error', 'Failed to record sale.')
+                err = (res or {}).get('error') if isinstance(res, dict) else None
+                QMessageBox.critical(self, 'Error', err or 'Failed to record sale.')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
 
@@ -991,10 +1408,20 @@ class SalesTab(QWidget):
             'discount':       float(sale.get('discount') or 0),
             'tax':            float(sale.get('tax') or 0),
             'total':          float(sale.get('total') or 0),
+            'original_total': float(sale.get('original_total') or 0) or None,
+            'cash_rounding_adj': float(sale.get('cash_rounding_adj') or 0),
             'payment_method': sale.get('payment_method', 'cash'),
             'amount_paid':    float(sale.get('amount_paid') or 0),
             'change_amount':  float(sale.get('change_amount') or 0),
+            'credit_applied': float(sale.get('credit_applied') or 0),
+            'customer_name':  sale.get('customer_name', '') or '',
+            'wallet_balance': sale.get('wallet_balance'),
+            'variance':       sale.get('variance') or {},
             'notes':          sale.get('notes', '') or '',
+            'mpesa_till':     (self.config_getter() or {}).get('mpesa_till', ''),
+            'mpesa_paybill':  (self.config_getter() or {}).get('mpesa_paybill', ''),
+            'mpesa_ref':      sale.get('mpesa_ref', '') or '',
+            'receipt_footer': (self.config_getter() or {}).get('receipt_footer', 'Thank you!'),
         }
 
     def _try_print_receipt(self, sale_id, receipt_number):
@@ -1046,29 +1473,61 @@ class SalesTab(QWidget):
             QMessageBox.warning(self, 'Print Error', str(e))
 
     def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method):
-        """Open the debt invoice dialog pre-filled from this sale."""
+        """Auto-create debt linked to this completed sale (no orphan path)."""
+        cust_id = None
+        if hasattr(self, '_customer'):
+            cust_id = self._customer.selected_id()
+        if not cust_id or not sale_id or not receipt_number:
+            QMessageBox.critical(
+                self, 'Debt Invoice Error',
+                'The sale was recorded but debt could not be created '
+                '(missing customer, sale, or receipt).\n\n'
+                'Contact an admin — do not create orphan debts from Debt Management.')
+            return
         try:
-            from desktop.tabs.debt_tab import _NewInvoiceDialog
-            dlg = _NewInvoiceDialog(
-                self._get_debt_parent(),
-                self,
-                prefill_total=total,
-                prefill_paid=paid,
-                prefill_sale_id=sale_id,
-                prefill_receipt=receipt_number,
-            )
-            dlg.exec_()
+            res = self.api.create_debt_invoice({
+                'customer_id': cust_id,
+                'sale_id': sale_id,
+                'receipt_number': receipt_number,
+                'total_amount': total,
+                'amount_paid': paid,
+                'payment_method': (method or 'credit sale').lower(),
+                'notes': f'Auto from POS {method}',
+            })
+            if res and res.get('success'):
+                bal = float(res.get('balance') or 0)
+                inv = res.get('invoice_number', '')
+                msg = (
+                    f'✓  Credit sale recorded\n\n'
+                    f'Receipt:  {receipt_number}\n'
+                    f'Debt Inv: {inv}\n'
+                    f'Total:    {self._currency} {total:,.2f}\n'
+                    f'Paid now: {self._currency} {paid:,.2f}\n'
+                    f'Balance:  {self._currency} {bal:,.2f}\n'
+                )
+                if bal <= 0.009:
+                    msg += '\n✓ Fully paid'
+                else:
+                    msg += '\n⚠ Outstanding balance due'
+                QMessageBox.information(self, 'Sale Complete', msg)
+            else:
+                err = (res or {}).get('error', 'Failed to create debt invoice.')
+                QMessageBox.critical(
+                    self, 'Debt Invoice Error',
+                    f'The sale was recorded ({receipt_number}).\n'
+                    f'Debt create failed: {err}')
         except Exception as e:
-            QMessageBox.critical(self, 'Debt Invoice Error',
-                f'The sale was recorded.\nFailed to open the debt dialog: {e}\n\n'
-                f'Go to Debt Management to create the invoice manually.')
+            QMessageBox.critical(
+                self, 'Debt Invoice Error',
+                f'The sale was recorded ({receipt_number}).\n'
+                f'Failed to create debt: {e}')
 
     def _get_debt_parent(self):
-        """Minimal proxy so _NewInvoiceDialog gets api + currency."""
+        """Minimal proxy so debt dialogs get api + currency."""
         class _Proxy:
             pass
         p = _Proxy()
-        p.api       = self.api
+        p.api = self.api
         p._currency = self._currency
         return p
 
@@ -1079,6 +1538,7 @@ class SalesTab(QWidget):
             from printing.printer_engine import generate_receipt_text
             cfg  = self.config_getter() or {}
             u    = self.user.get('user', {})
+            info = self._compute_rounding()
             data = {
                 'receipt_number': 'PREVIEW',
                 'created_at':     datetime.now().isoformat(),
@@ -1087,15 +1547,22 @@ class SalesTab(QWidget):
                 'subtotal':       self._subtotal,
                 'discount':       self._discount,
                 'tax':            self._tax,
-                'total':          self._total,
+                'total':          float(info.get('amount_due', self._total)) + float(self._credit_to_apply or 0)
+                                  if abs(float(info.get('adjustment') or 0)) > 0.009
+                                  else self._total,
+                'original_total': float(info.get('cart_total', self._total)),
+                'cash_rounding_adj': float(info.get('adjustment') or 0),
                 'payment_method': self._pay.currentText(),
                 'amount_paid':    self._paid.value(),
-                'change_amount':  max(0.0, self._paid.value() - self._total),
+                'change_amount':  max(0.0, self._paid.value() - self._amount_due()),
+                'credit_applied': float(self._credit_to_apply or 0),
                 'receipt_footer': cfg.get('receipt_footer', 'Thank you!'),
                 'mpesa_till':     cfg.get('mpesa_till', ''),
                 'mpesa_paybill':  cfg.get('mpesa_paybill', ''),
                 'mpesa_ref':      self._mpesa_ref.text().strip(),
             }
+            if hasattr(self, '_customer') and self._customer.selected_id():
+                data['customer_name'] = self._customer.currentText().split('  ·  ')[0]
             txt = generate_receipt_text(data, cfg.get('shop_name', 'My Shop'), self._currency)
             dlg = QDialog(self); dlg.setWindowTitle('Invoice Preview')
             dlg.resize(480, 580); lv = QVBoxLayout(dlg)

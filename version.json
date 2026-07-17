@@ -1,11 +1,11 @@
-﻿{
-  "version": "2.3.51",
-  "build": "PROD-2026-07-17-v2.3.51",
-  "build_date": "2026-07-17",
-  "release_notes": "Internal Stock Consumption: sidebar screen, departments, INTERNAL_USE ledger, void with stock restore, consumption report + Excel export, dashboard today widget, product history labels, and role permissions.",
-  "github_repo": "MugoJnr/mbt-pos",
-  "asset_name": "MBT_POS_Setup.exe",
-  "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
-  "min_required_version": "1.0.0",
-  "force_update": false
-}
+﻿{
+  "version": "2.3.53",
+  "build": "PROD-2026-07-17-v2.3.53",
+  "build_date": "2026-07-17",
+  "release_notes": "Cash Rounding to nearest KSh 5 (Cash only by default): CashRoundingService, Settings → Cash Rounding, POS Original/Rounding/Amount Due + badge, mixed tender cash-portion rounding, receipts, reports (Original/Rounding/Final + Actual Cash Received), cash_rounding_adjustments ledger, void reverse. Preserves Payment Variance 2.3.52 and Internal Consumption 2.3.51. No Setup/GitHub Release publish.",
+  "github_repo": "MugoJnr/mbt-pos",
+  "asset_name": "MBT_POS_Setup.exe",
+  "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+  "min_required_version": "1.0.0",
+  "force_update": false
+}

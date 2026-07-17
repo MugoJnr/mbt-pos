@@ -387,6 +387,19 @@ def _ensure_schema(conn: sqlite3.Connection):
                 'variance_max_cashier': '1000',
                 'variance_require_customer_deposit': '1',
                 'variance_allow_refund_after_finalize': '0',
+                'cash_rounding_enabled': '1',
+                'cash_rounding_mode': 'nearest',
+                'cash_rounding_value': '5',
+                'cash_rounding_apply_cash': '1',
+                'cash_rounding_apply_mpesa': '0',
+                'cash_rounding_apply_card': '0',
+                'cash_rounding_apply_bank': '0',
+                'after_sale_default_customer': 'walk_in',
+                'after_sale_default_payment': 'Cash',
+                'after_sale_focus_barcode': '1',
+                'after_sale_auto_clear_cart': '1',
+                'after_sale_reset_discounts': '1',
+                'after_sale_reset_notes': '1',
             }
     # Payment variance defaults (upgrade-safe)
     for k, v in (
@@ -397,6 +410,19 @@ def _ensure_schema(conn: sqlite3.Connection):
         ('variance_max_cashier', '1000'),
         ('variance_require_customer_deposit', '1'),
         ('variance_allow_refund_after_finalize', '0'),
+        ('cash_rounding_enabled', '1'),
+        ('cash_rounding_mode', 'nearest'),
+        ('cash_rounding_value', '5'),
+        ('cash_rounding_apply_cash', '1'),
+        ('cash_rounding_apply_mpesa', '0'),
+        ('cash_rounding_apply_card', '0'),
+        ('cash_rounding_apply_bank', '0'),
+        ('after_sale_default_customer', 'walk_in'),
+        ('after_sale_default_payment', 'Cash'),
+        ('after_sale_focus_barcode', '1'),
+        ('after_sale_auto_clear_cart', '1'),
+        ('after_sale_reset_discounts', '1'),
+        ('after_sale_reset_notes', '1'),
     ):
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():
@@ -493,6 +519,14 @@ def _migrate_columns(conn: sqlite3.Connection):
                 conn.execute(ddl)
     except Exception:
         pass
+    # Customer type for standardized customer form
+    try:
+        cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customers)").fetchall()}
+        if cust_cols and 'customer_type' not in cust_cols:
+            conn.execute(
+                "ALTER TABLE customers ADD COLUMN customer_type TEXT DEFAULT 'Retail'")
+    except Exception:
+        pass
     # Grant Internal Consumption tab to existing inventory-capable staff
     for row in conn.execute(
         "SELECT id, role, tab_permissions FROM users "
@@ -576,6 +610,45 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE sales ADD COLUMN customer_id INTEGER")
         if 'variance_handling' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN variance_handling TEXT")
+        if 'original_total' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN original_total REAL DEFAULT 0")
+        if 'cash_rounding_adj' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
+        if 'electronic_paid' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+    except Exception:
+        pass
+    # Cash rounding adjustment ledger (does not inflate product revenue)
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS cash_rounding_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        original_amount REAL NOT NULL,
+        rounded_amount REAL NOT NULL,
+        adjustment REAL NOT NULL,
+        electronic_paid REAL DEFAULT 0,
+        cash_original REAL DEFAULT 0,
+        cash_rounded REAL DEFAULT 0,
+        payment_method TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        voided INTEGER DEFAULT 0,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    # Debt integrity: customer national_id + payment reference
+    try:
+        cust_cols = {r[1] for r in conn.execute("PRAGMA table_info(customers)").fetchall()}
+        if 'national_id' not in cust_cols:
+            conn.execute("ALTER TABLE customers ADD COLUMN national_id TEXT")
+    except Exception:
+        pass
+    try:
+        dp_cols = {r[1] for r in conn.execute("PRAGMA table_info(debt_payments)").fetchall()}
+        if 'payment_reference' not in dp_cols:
+            conn.execute("ALTER TABLE debt_payments ADD COLUMN payment_reference TEXT")
     except Exception:
         pass
     conn.commit()
@@ -1081,6 +1154,16 @@ class APIClient:
             customer_id = data.get('customer_id')
             variance = data.get('variance') or {}
             variance_handling = (variance.get('handling') or data.get('variance_handling') or '').strip() or None
+            original_total = round(float(
+                data.get('original_total') if data.get('original_total') is not None
+                else (total - float(data.get('cash_rounding_adj') or 0))
+            ), 2)
+            cash_rounding_adj = round(float(data.get('cash_rounding_adj') or 0), 2)
+            electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
+            # Product revenue stays at original_total; payable may include rounding
+            # Persist `total` as final payable (original + rounding) for amount-due compatibility
+            if abs(cash_rounding_adj) > 0.009 and abs(total - original_total) < 0.009:
+                total = round(original_total + cash_rounding_adj, 2)
 
             notes = data.get('notes', '') or ''
             mpesa_ref = (data.get('mpesa_ref') or '').strip()
@@ -1088,12 +1171,15 @@ class APIClient:
                 notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
             if variance_handling:
                 notes = (notes + f' | Variance: {variance_handling}').strip(' |')
+            if abs(cash_rounding_adj) > 0.009:
+                notes = (notes + f' | CashRounding: {cash_rounding_adj:+.2f}').strip(' |')
 
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,mpesa_ref,"
-                "credit_applied,customer_id,variance_handling)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "credit_applied,customer_id,variance_handling,"
+                "original_total,cash_rounding_adj,electronic_paid)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
@@ -1108,7 +1194,10 @@ class APIClient:
                  mpesa_ref or None,
                  credit_applied,
                  customer_id,
-                 variance_handling)
+                 variance_handling,
+                 original_total,
+                 cash_rounding_adj,
+                 electronic_paid)
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -1180,11 +1269,29 @@ class APIClient:
                 if variance_result.get('wallet_balance') is not None:
                     wallet_balance_after = variance_result['wallet_balance']
 
+            # Cash rounding adjustment — separate ledger entry (not product revenue)
+            if abs(cash_rounding_adj) > 0.009:
+                cash_orig = round(float(data.get('cash_original') or (original_total - electronic_paid - credit_applied)), 2)
+                cash_rnd = round(float(data.get('cash_rounded') or (cash_orig + cash_rounding_adj)), 2)
+                db.execute(
+                    "INSERT INTO cash_rounding_adjustments "
+                    "(sale_id,receipt_number,original_amount,rounded_amount,adjustment,"
+                    "electronic_paid,cash_original,cash_rounded,payment_method,"
+                    "cashier_id,cashier_name,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (sale_id, rn, original_total, total, cash_rounding_adj,
+                     electronic_paid, cash_orig, cash_rnd,
+                     data.get('payment_method', 'cash'),
+                     self._user_id, self._username or 'staff',
+                     'Cash rounding adjustment')
+                )
+
             db.execute(
                 "INSERT INTO sync_queue (action_type,payload) VALUES (?,?)",
                 ('sale', json.dumps({
                     'receipt_number': rn,
                     'total':          total,
+                    'original_total': original_total,
+                    'cash_rounding_adj': cash_rounding_adj,
                     'cashier':        self._username or 'staff',
                     'created_at':     datetime.now().isoformat()
                 }))
@@ -1192,8 +1299,15 @@ class APIClient:
             db.commit()
             _audit(self._user_id, self._username or 'staff',
                    'CREATE_SALE', 'sales',
-                   f"receipt={rn} total={total} paid={amount_paid} "
+                   f"receipt={rn} total={total} original={original_total} "
+                   f"rounding={cash_rounding_adj} paid={amount_paid} "
                    f"credit={credit_applied} variance={variance_handling or 'none'}")
+            if abs(cash_rounding_adj) > 0.009:
+                _audit(
+                    self._user_id, self._username or 'staff', 'CASH_ROUNDING', 'sales',
+                    f"receipt={rn} original={original_total} adj={cash_rounding_adj} "
+                    f"final={total} electronic={electronic_paid}"
+                )
             if variance_result:
                 _audit(
                     self._user_id, self._username or 'staff', 'PAYMENT_VARIANCE', 'sales',
@@ -1207,7 +1321,10 @@ class APIClient:
                     f"change={variance_result.get('change_returned')} "
                     f"misc={variance_result.get('misc_amount')}"
                 )
-            out = {'success': True, 'receipt_number': rn, 'sale_id': sale_id}
+            out = {'success': True, 'receipt_number': rn, 'sale_id': sale_id,
+                   'original_total': original_total,
+                   'cash_rounding_adj': cash_rounding_adj,
+                   'total': total}
             if wallet_balance_after is not None:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
@@ -1402,16 +1519,32 @@ class APIClient:
                 ))
                 if w:
                     sale['wallet_balance'] = float(w.get('balance') or 0)
+            # Linked debt invoice (credit / part payment)
+            debt = _row(db.execute(
+                "SELECT * FROM debt_invoices WHERE sale_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (sale_id,)
+            ))
+            if debt:
+                sale['debt'] = debt
+                sale['debt_original'] = float(debt.get('total_amount') or 0)
+                sale['debt_paid'] = float(debt.get('amount_paid') or 0)
+                sale['debt_outstanding'] = float(debt.get('balance') or 0)
+                sale['debt_invoice_id'] = debt.get('id')
+                sale['debt_invoice_number'] = debt.get('invoice_number')
+                sale['debt_status'] = debt.get('status')
             return sale
         finally:
             db.close()
 
     # ── SALES EDITING / VOID ─────────────────────────────────────────────────────
 
-    def void_sale(self, sale_id: int, reason: str) -> dict:
+    def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False) -> dict:
         """
         Void a completed sale. Only admin/superadmin.
         Restores stock for all items. Full audit trail.
+        Credit sales with debt payments already collected require force_with_payments=True
+        (UI confirms special handling).
         """
         if self._role not in ('admin', 'superadmin'):
             _audit(self._user_id, self._username,
@@ -1429,6 +1562,32 @@ class APIClient:
                 return {'error': 'Sale not found'}
             if sale['status'] == 'voided':
                 return {'error': 'Sale already voided'}
+
+            # Credit-sale debt payment check
+            debt_paid_total = 0.0
+            debt_payment_count = 0
+            debt_preview = db.execute(
+                "SELECT di.id, di.invoice_number, di.amount_paid, di.balance, di.status "
+                "FROM debt_invoices di WHERE di.sale_id=?",
+                (sale_id,)
+            ).fetchall()
+            for inv in debt_preview:
+                paid_amt = float(inv['amount_paid'] or 0)
+                if paid_amt > 0.009:
+                    debt_paid_total += paid_amt
+                    debt_payment_count += 1
+            if debt_paid_total > 0.009 and not force_with_payments:
+                db.rollback()
+                return {
+                    'error': 'credit_payments_exist',
+                    'debt_paid_total': round(debt_paid_total, 2),
+                    'debt_payment_count': debt_payment_count,
+                    'message': (
+                        f'This credit sale has {debt_payment_count} debt payment(s) totaling '
+                        f'{debt_paid_total:,.2f} already collected. Voiding cancels the remaining '
+                        f'balance but collected amounts must be refunded manually if applicable.'
+                    ),
+                }
 
             items = db.execute(
                 "SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)
@@ -1459,22 +1618,86 @@ class APIClient:
                              self._user_id, self._username or 'admin')
                         )
 
-            # Cancel linked debt invoices for this sale
+            # Cancel linked debt invoices for this sale (keep payment history)
             debt_rows = db.execute(
-                "SELECT id, invoice_number, status FROM debt_invoices "
-                "WHERE sale_id=? AND status NOT IN ('paid','cancelled')",
+                "SELECT id, invoice_number, status, amount_paid, balance FROM debt_invoices "
+                "WHERE sale_id=? AND status NOT IN ('cancelled')",
                 (sale_id,)
             ).fetchall()
             for inv in debt_rows:
+                paid_note = ''
+                paid_amt = float(inv['amount_paid'] or 0)
+                if paid_amt > 0.009:
+                    paid_note = (
+                        f' | Payments already collected: {paid_amt:,.2f} — '
+                        f'refund manually if required'
+                    )
                 db.execute(
-                    "UPDATE debt_invoices SET status='cancelled', notes=?, updated_at=? "
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, updated_at=? "
                     "WHERE id=?",
-                    (f"CANCELLED: sale {sale['receipt_number']} voided — {reason}",
+                    (f"CANCELLED: sale {sale['receipt_number']} voided — {reason}{paid_note}",
                      datetime.now().isoformat(), inv['id'])
                 )
                 _audit(self._user_id, self._username or 'admin',
                        'CANCEL_INVOICE', 'debt',
-                       f"inv={inv['invoice_number']} auto-cancelled (void sale)")
+                       f"inv={inv['invoice_number']} void_sale paid_collected={paid_amt}")
+
+            # Reverse store-credit apply and deposit/advance from payment variance
+            sale_keys = set(sale.keys()) if hasattr(sale, 'keys') else set()
+            credit_applied = float(sale['credit_applied'] if 'credit_applied' in sale_keys else 0) or 0.0
+            cust_id = sale['customer_id'] if 'customer_id' in sale_keys else None
+            rn = sale['receipt_number']
+
+            if cust_id and credit_applied > 0.009:
+                self._wallet_adjust(
+                    db, int(cust_id), credit_applied, 'void_restore_credit',
+                    sale_id=sale_id, receipt_number=rn,
+                    notes=f'Void restore credit applied on {rn}')
+
+            var = db.execute(
+                "SELECT * FROM payment_variances WHERE sale_id=? ORDER BY id DESC LIMIT 1",
+                (sale_id,)
+            ).fetchone()
+            if var:
+                v_cust = cust_id or (var['customer_id'] if var['customer_id'] else None)
+                dep = float(var['deposit_amount'] or 0) + float(var['advance_amount'] or 0)
+                if v_cust and dep > 0.009:
+                    self._wallet_adjust(
+                        db, int(v_cust), -dep, 'void_reverse_deposit',
+                        sale_id=sale_id, receipt_number=rn,
+                        notes=f'Void reverse deposit/advance from {rn}')
+
+            # Reverse cash rounding adjustment (refund was the rounded paid amount)
+            rounding_adj = 0.0
+            try:
+                if 'cash_rounding_adj' in sale_keys:
+                    rounding_adj = float(sale['cash_rounding_adj'] or 0)
+            except Exception:
+                rounding_adj = 0.0
+            rnd_rows = db.execute(
+                "SELECT id, adjustment FROM cash_rounding_adjustments "
+                "WHERE sale_id=? AND COALESCE(voided,0)=0",
+                (sale_id,)
+            ).fetchall()
+            for rr in rnd_rows:
+                db.execute(
+                    "UPDATE cash_rounding_adjustments SET voided=1, notes=? WHERE id=?",
+                    (f'REVERSED on void of {rn}: {reason}', rr['id'])
+                )
+            if abs(rounding_adj) > 0.009 or rnd_rows:
+                # Insert offsetting ledger row so reports net to zero
+                orig_t = float(sale['original_total'] if 'original_total' in sale_keys and sale['original_total'] is not None
+                               else (float(sale['total'] or 0) - rounding_adj))
+                db.execute(
+                    "INSERT INTO cash_rounding_adjustments "
+                    "(sale_id,receipt_number,original_amount,rounded_amount,adjustment,"
+                    "payment_method,cashier_id,cashier_name,voided,notes) "
+                    "VALUES (?,?,?,?,?,?,?,?,1,?)",
+                    (sale_id, rn, orig_t, float(sale['total'] or 0), -rounding_adj,
+                     sale['payment_method'] if 'payment_method' in sale_keys else 'cash',
+                     self._user_id, self._username or 'admin',
+                     f'VOID reverse cash rounding for {rn}')
+                )
 
             # Mark sale as voided
             db.execute(
@@ -1492,10 +1715,23 @@ class APIClient:
             )
 
             db.commit()
+            if abs(rounding_adj) > 0.009 or rnd_rows:
+                _audit(self._user_id, self._username or 'admin',
+                       'CASH_ROUNDING_REVERSE', 'sales',
+                       f"sale_id={sale_id} receipt={rn} reverse_adj={-rounding_adj} "
+                       f"refunded_total={float(sale['total'] or 0)}")
             _audit(self._user_id, self._username,
                    'VOID_SALE', 'sales',
-                   f"sale_id={sale_id} receipt={sale['receipt_number']} reason={reason}")
-            return {'success': True}
+                   f"sale_id={sale_id} receipt={rn} reason={reason} "
+                   f"debt_paid_collected={debt_paid_total}")
+            out = {'success': True}
+            if debt_paid_total > 0.009:
+                out['debt_paid_total'] = round(debt_paid_total, 2)
+                out['warning'] = (
+                    f'Voided. {debt_paid_total:,.2f} already collected on linked debt — '
+                    f'refund manually if required. Remaining balance cancelled.'
+                )
+            return out
         except Exception as e:
             db.rollback()
             logger.error(f"void_sale: {e}")
@@ -1571,9 +1807,16 @@ class APIClient:
             summary = _row(db.execute("""
                 SELECT COUNT(*) as total_transactions,
                        COALESCE(SUM(total),0) as total_revenue,
+                       COALESCE(SUM(
+                           CASE WHEN COALESCE(original_total,0) > 0 THEN original_total
+                                ELSE total - COALESCE(cash_rounding_adj,0) END
+                       ),0) as original_total,
+                       COALESCE(SUM(COALESCE(cash_rounding_adj,0)),0) as total_cash_rounding,
                        COALESCE(AVG(total),0) as avg_transaction,
                        COALESCE(SUM(discount),0) as total_discounts,
-                       COALESCE(SUM(tax),0) as total_tax
+                       COALESCE(SUM(tax),0) as total_tax,
+                       COALESCE(SUM(CASE WHEN LOWER(COALESCE(payment_method,''))='cash'
+                                         THEN amount_paid ELSE 0 END),0) as cash_received
                 FROM sales WHERE date(created_at) BETWEEN ? AND ?
                 AND status='completed'
             """, (start, end)))
@@ -1714,14 +1957,51 @@ class APIClient:
     def create_customer(self, data: dict) -> dict:
         db = _db()
         try:
-            db.execute(
-                "INSERT INTO customers (name,phone,email,address,credit_limit,notes) VALUES (?,?,?,?,?,?)",
-                (data['name'], data.get('phone',''), data.get('email',''),
-                 data.get('address',''), data.get('credit_limit',0), data.get('notes',''))
-            )
+            name = (data.get('name') or '').strip()
+            phone = (data.get('phone') or '').strip()
+            if not name:
+                return {'error': 'Customer name is required.'}
+            if not phone:
+                return {'error': 'Customer phone is required.'}
+            cust_cols = {r[1] for r in db.execute("PRAGMA table_info(customers)").fetchall()}
+            if 'customer_type' in cust_cols and 'national_id' in cust_cols:
+                db.execute(
+                    "INSERT INTO customers (name,phone,email,address,credit_limit,notes,national_id,customer_type) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (name, phone, data.get('email', ''),
+                     data.get('address', ''), data.get('credit_limit', 0),
+                     data.get('notes', ''), data.get('national_id', '') or '',
+                     data.get('customer_type', 'Retail') or 'Retail')
+                )
+            elif 'customer_type' in cust_cols:
+                db.execute(
+                    "INSERT INTO customers (name,phone,email,address,credit_limit,notes,customer_type) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (name, phone, data.get('email', ''),
+                     data.get('address', ''), data.get('credit_limit', 0),
+                     data.get('notes', ''),
+                     data.get('customer_type', 'Retail') or 'Retail')
+                )
+            elif 'national_id' in cust_cols:
+                db.execute(
+                    "INSERT INTO customers (name,phone,email,address,credit_limit,notes,national_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (name, phone, data.get('email', ''),
+                     data.get('address', ''), data.get('credit_limit', 0),
+                     data.get('notes', ''), data.get('national_id', '') or '')
+                )
+            else:
+                db.execute(
+                    "INSERT INTO customers (name,phone,email,address,credit_limit,notes) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (name, phone, data.get('email', ''),
+                     data.get('address', ''), data.get('credit_limit', 0),
+                     data.get('notes', ''))
+                )
             db.commit()
             cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            _audit(self._user_id, self._username, 'CREATE_CUSTOMER', 'debt', f"name={data['name']}")
+            _audit(self._user_id, self._username, 'CREATE_CUSTOMER', 'debt',
+                   f"name={name} phone={phone}")
             return {'success': True, 'customer_id': cid}
         except sqlite3.IntegrityError:
             return {'error': 'Customer already exists'}
@@ -1732,13 +2012,28 @@ class APIClient:
         db = _db()
         try:
             fields, values = [], []
-            for f in ('name','phone','email','address','credit_limit','notes','is_active'):
+            for f in ('name', 'phone', 'email', 'address', 'credit_limit',
+                      'notes', 'is_active', 'national_id', 'customer_type'):
                 if f in data:
-                    fields.append(f"{f}=?"); values.append(data[f])
+                    fields.append(f"{f}=?")
+                    values.append(data[f])
             if fields:
-                values.append(cid)
-                db.execute(f"UPDATE customers SET {','.join(fields)} WHERE id=?", values)
-                db.commit()
+                # Skip columns that may not exist yet
+                cust_cols = {r[1] for r in db.execute("PRAGMA table_info(customers)").fetchall()}
+                filtered = []
+                filtered_vals = []
+                for fld, val in zip(fields, values):
+                    col = fld.split('=')[0]
+                    if col not in cust_cols:
+                        continue
+                    filtered.append(fld)
+                    filtered_vals.append(val)
+                if filtered:
+                    filtered_vals.append(cid)
+                    db.execute(
+                        f"UPDATE customers SET {','.join(filtered)} WHERE id=?",
+                        filtered_vals)
+                    db.commit()
             return {'success': True}
         finally:
             db.close()
@@ -1796,62 +2091,146 @@ class APIClient:
 
     def create_debt_invoice(self, data: dict) -> dict:
         """
-        Create a debt invoice (part payment or credit sale).
-        data keys: customer_id, sale_id, receipt_number, total_amount,
-                   amount_paid, due_date, notes, cashier_name
+        Create a debt invoice linked to a completed sale.
+        Required: customer_id, sale_id, receipt_number, total_amount.
+        Orphan debts (no sale / no invoice) are rejected.
         """
         db = _db()
         try:
-            cust = _row(db.execute("SELECT * FROM customers WHERE id=?", (data['customer_id'],)))
+            customer_id = data.get('customer_id')
+            sale_id = data.get('sale_id')
+            receipt_number = (data.get('receipt_number') or '').strip()
+
+            if not customer_id:
+                return {'error': 'Customer is required — cannot create debt without a customer.'}
+            if not sale_id:
+                return {
+                    'error': 'Sale is required — debts must link to a completed POS sale. '
+                             'Use Credit Sale / Part Payment on the POS screen.'
+                }
+            if not receipt_number:
+                return {
+                    'error': 'Invoice/receipt number is required — debts must link to a completed sale.'
+                }
+
+            cust = _row(db.execute("SELECT * FROM customers WHERE id=?", (customer_id,)))
             if not cust:
                 return {'error': 'Customer not found'}
 
-            total    = float(data['total_amount'])
-            paid     = float(data.get('amount_paid', 0))
-            balance  = round(total - paid, 2)
+            sale = _row(db.execute("SELECT * FROM sales WHERE id=?", (int(sale_id),)))
+            if not sale:
+                return {'error': 'Linked sale not found — cannot create orphan debt.'}
+            if (sale.get('status') or 'completed') == 'voided':
+                return {'error': 'Cannot create debt for a voided sale.'}
+            sale_rn = (sale.get('receipt_number') or '').strip()
+            if sale_rn and sale_rn != receipt_number:
+                return {
+                    'error': f'Receipt mismatch: sale has {sale_rn}, got {receipt_number}.'
+                }
+            # Prefer canonical receipt from sale
+            receipt_number = sale_rn or receipt_number
+
+            # Prevent duplicate debt for same sale
+            existing = _row(db.execute(
+                "SELECT id, invoice_number FROM debt_invoices "
+                "WHERE sale_id=? AND status NOT IN ('cancelled')",
+                (int(sale_id),)
+            ))
+            if existing:
+                return {
+                    'error': f'Debt already exists for this sale ({existing.get("invoice_number")}).',
+                    'invoice_id': existing.get('id'),
+                    'invoice_number': existing.get('invoice_number'),
+                }
+
+            total = float(data['total_amount'])
+            paid = float(data.get('amount_paid', 0) or 0)
+            if total <= 0:
+                return {'error': 'Debt amount must be greater than zero.'}
+            balance = round(total - paid, 2)
 
             if balance < 0:
                 return {'error': 'Amount paid exceeds total — no debt to record.'}
+            if balance == 0 and paid > 0:
+                # Fully paid at sale — still record as paid invoice for history
+                pass
 
-            inv_num  = self._next_invoice_number(db)
-            status   = 'paid' if balance == 0 else ('partial' if paid > 0 else 'pending')
+            inv_num = self._next_invoice_number(db)
+            status = 'paid' if balance == 0 else ('partial' if paid > 0 else 'pending')
 
             db.execute(
                 "INSERT INTO debt_invoices (invoice_number,sale_id,receipt_number,"
                 "customer_id,customer_name,customer_phone,total_amount,amount_paid,"
                 "balance,status,due_date,cashier_id,cashier_name,notes) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (inv_num, data.get('sale_id'), data.get('receipt_number'),
-                 data['customer_id'], cust['name'], cust.get('phone',''),
+                (inv_num, int(sale_id), receipt_number,
+                 int(customer_id), cust['name'], cust.get('phone', ''),
                  total, paid, balance, status,
                  data.get('due_date'), self._user_id,
-                 self._username or data.get('cashier_name','staff'),
-                 data.get('notes',''))
+                 self._username or data.get('cashier_name', 'staff'),
+                 data.get('notes', ''))
             )
             inv_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            # Record initial payment if any
             if paid > 0:
                 pay_receipt = self._next_payment_receipt(db)
-                db.execute(
-                    "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                    "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (pay_receipt, inv_id, data['customer_id'],
-                     paid, data.get('payment_method','cash'),
-                     total, balance,
-                     self._user_id, self._username or 'staff',
-                     f"Initial payment on invoice {inv_num}")
-                )
+                dp_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
+                if 'payment_reference' in dp_cols:
+                    db.execute(
+                        "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                        "amount,payment_method,payment_reference,balance_before,balance_after,"
+                        "cashier_id,cashier_name,notes) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (pay_receipt, inv_id, int(customer_id),
+                         paid, data.get('payment_method', 'cash'),
+                         data.get('payment_reference', '') or receipt_number,
+                         total, balance,
+                         self._user_id, self._username or 'staff',
+                         f"Initial payment on invoice {inv_num}")
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                        "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (pay_receipt, inv_id, int(customer_id),
+                         paid, data.get('payment_method', 'cash'),
+                         total, balance,
+                         self._user_id, self._username or 'staff',
+                         f"Initial payment on invoice {inv_num}")
+                    )
 
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_INVOICE', 'debt',
-                   f"inv={inv_num} customer={cust['name']} total={total} paid={paid} balance={balance}")
-            return {'success': True, 'invoice_number': inv_num, 'invoice_id': inv_id, 'balance': balance}
+                   f"inv={inv_num} sale={sale_id} receipt={receipt_number} "
+                   f"customer={cust['name']} total={total} paid={paid} balance={balance}")
+            return {
+                'success': True,
+                'invoice_number': inv_num,
+                'invoice_id': inv_id,
+                'balance': balance,
+                'sale_id': int(sale_id),
+                'receipt_number': receipt_number,
+            }
         except Exception as e:
             db.rollback()
             logger.error(f"create_debt_invoice: {e}", exc_info=True)
             return {'error': str(e)}
+        finally:
+            db.close()
+
+    def get_debt_invoice(self, invoice_id: int) -> dict:
+        db = _db()
+        try:
+            inv = _row(db.execute(
+                "SELECT di.*, c.phone as c_phone, c.email as c_email, "
+                "s.created_at as sale_date, s.status as sale_status "
+                "FROM debt_invoices di "
+                "JOIN customers c ON di.customer_id=c.id "
+                "LEFT JOIN sales s ON di.sale_id=s.id "
+                "WHERE di.id=?", (invoice_id,)
+            ))
+            return inv or {}
         finally:
             db.close()
 
@@ -1860,24 +2239,31 @@ class APIClient:
         db = _db()
         try:
             clauses = []
-            params  = []
+            params = []
             if status:
                 if isinstance(status, list):
                     ph = ','.join('?' * len(status))
                     clauses.append(f"di.status IN ({ph})")
                     params.extend(status)
                 else:
-                    clauses.append("di.status=?"); params.append(status)
+                    clauses.append("di.status=?")
+                    params.append(status)
             if customer_id:
-                clauses.append("di.customer_id=?"); params.append(customer_id)
+                clauses.append("di.customer_id=?")
+                params.append(customer_id)
             if start:
-                clauses.append("date(di.created_at)>=?"); params.append(start)
+                clauses.append("date(di.created_at)>=?")
+                params.append(start)
             if end:
-                clauses.append("date(di.created_at)<=?"); params.append(end)
+                clauses.append("date(di.created_at)<=?")
+                params.append(end)
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             return _rows(db.execute(
-                f"SELECT di.*, c.phone as c_phone, c.email as c_email "
-                f"FROM debt_invoices di JOIN customers c ON di.customer_id=c.id "
+                f"SELECT di.*, c.phone as c_phone, c.email as c_email, "
+                f"s.created_at as sale_date, s.status as sale_status "
+                f"FROM debt_invoices di "
+                f"JOIN customers c ON di.customer_id=c.id "
+                f"LEFT JOIN sales s ON di.sale_id=s.id "
                 f"{where} ORDER BY di.created_at DESC", params
             ))
         finally:
@@ -1887,8 +2273,10 @@ class APIClient:
         db = _db()
         try:
             return _rows(db.execute(
-                "SELECT di.*, c.phone, c.email FROM debt_invoices di "
+                "SELECT di.*, c.phone, c.email, s.created_at as sale_date "
+                "FROM debt_invoices di "
                 "JOIN customers c ON di.customer_id=c.id "
+                "LEFT JOIN sales s ON di.sale_id=s.id "
                 "WHERE di.status NOT IN ('paid','cancelled') "
                 "AND di.due_date IS NOT NULL AND di.due_date < date('now') "
                 "ORDER BY di.due_date ASC"
@@ -1897,45 +2285,90 @@ class APIClient:
             db.close()
 
     def record_debt_payment(self, invoice_id: int, amount: float,
-                            payment_method: str = 'cash', notes: str = '') -> dict:
-        """Collect a payment against an existing invoice."""
+                            payment_method: str = 'cash', notes: str = '',
+                            payment_reference: str = '') -> dict:
+        """Collect a payment against an existing invoice. Rejects invalid / orphan debts."""
         db = _db()
         try:
+            if not invoice_id:
+                return {'error': 'Invoice is required — cannot record payment without an invoice.'}
+
             inv = _row(db.execute("SELECT * FROM debt_invoices WHERE id=?", (invoice_id,)))
             if not inv:
                 return {'error': 'Invoice not found'}
-            if inv['status'] in ('paid', 'cancelled'):
-                return {'error': f"Invoice is already {inv['status']}"}
+            if inv['status'] == 'cancelled':
+                return {'error': 'Invoice is cancelled — cannot collect payment.'}
+            if inv['status'] == 'paid' or float(inv.get('balance') or 0) <= 0.009:
+                return {'error': 'Invoice is already fully paid.'}
 
-            amount = round(float(amount), 2)
-            balance_before = round(float(inv['balance']), 2)
+            if not inv.get('sale_id'):
+                return {
+                    'error': 'This debt has no linked sale (orphan). '
+                             'Cannot mark paid — create credit sales from POS only.'
+                }
+            if not (inv.get('receipt_number') or '').strip():
+                return {
+                    'error': 'This debt has no invoice/receipt number. Cannot mark paid.'
+                }
 
+            sale = _row(db.execute(
+                "SELECT id, status, receipt_number FROM sales WHERE id=?",
+                (inv['sale_id'],)
+            ))
+            if not sale:
+                return {'error': 'Linked sale is missing — cannot mark this debt paid.'}
+            if (sale.get('status') or 'completed') == 'voided':
+                return {'error': 'Linked sale was voided — cannot collect payment on this debt.'}
+
+            amount = round(float(amount or 0), 2)
             if amount <= 0:
-                return {'error': 'Payment amount must be greater than zero'}
-            if amount > balance_before:
-                return {'error': f"Payment ({amount:,.2f}) exceeds outstanding balance ({balance_before:,.2f})"}
+                return {'error': 'Payment amount must be greater than zero.'}
+
+            balance_before = round(float(inv['balance']), 2)
+            if amount > balance_before + 0.009:
+                return {
+                    'error': f"Payment ({amount:,.2f}) exceeds outstanding balance "
+                             f"({balance_before:,.2f})"
+                }
 
             balance_after = round(balance_before - amount, 2)
-            new_paid      = round(float(inv['amount_paid']) + amount, 2)
-            new_status    = 'paid' if balance_after == 0 else 'partial'
+            new_paid = round(float(inv['amount_paid']) + amount, 2)
+            new_status = 'paid' if balance_after <= 0.009 else 'partial'
+            if balance_after < 0.009:
+                balance_after = 0.0
 
             pay_receipt = self._next_payment_receipt(db)
+            dp_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
+            ref = (payment_reference or '').strip()
 
-            db.execute(
-                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (pay_receipt, invoice_id, inv['customer_id'],
-                 amount, payment_method, balance_before, balance_after,
-                 self._user_id, self._username or 'staff', notes)
-            )
+            if 'payment_reference' in dp_cols:
+                db.execute(
+                    "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                    "amount,payment_method,payment_reference,balance_before,balance_after,"
+                    "cashier_id,cashier_name,notes) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (pay_receipt, invoice_id, inv['customer_id'],
+                     amount, payment_method, ref, balance_before, balance_after,
+                     self._user_id, self._username or 'staff', notes)
+                )
+            else:
+                db.execute(
+                    "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                    "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (pay_receipt, invoice_id, inv['customer_id'],
+                     amount, payment_method, balance_before, balance_after,
+                     self._user_id, self._username or 'staff', notes)
+                )
             db.execute(
                 "UPDATE debt_invoices SET amount_paid=?, balance=?, status=?, updated_at=? WHERE id=?",
                 (new_paid, balance_after, new_status, datetime.now().isoformat(), invoice_id)
             )
             db.commit()
             _audit(self._user_id, self._username, 'DEBT_PAYMENT', 'debt',
-                   f"inv={inv['invoice_number']} amount={amount} balance_after={balance_after}")
+                   f"inv={inv['invoice_number']} sale={inv.get('sale_id')} "
+                   f"amount={amount} method={payment_method} ref={ref} "
+                   f"balance_after={balance_after}")
             return {
                 'success': True,
                 'payment_receipt': pay_receipt,
@@ -1943,6 +2376,7 @@ class APIClient:
                 'balance_after': balance_after,
                 'status': new_status,
                 'invoice_number': inv['invoice_number'],
+                'customer_id': inv['customer_id'],
             }
         except Exception as e:
             db.rollback()
@@ -1957,13 +2391,17 @@ class APIClient:
         try:
             clauses, params = [], []
             if invoice_id:
-                clauses.append("dp.invoice_id=?"); params.append(invoice_id)
+                clauses.append("dp.invoice_id=?")
+                params.append(invoice_id)
             if customer_id:
-                clauses.append("dp.customer_id=?"); params.append(customer_id)
+                clauses.append("dp.customer_id=?")
+                params.append(customer_id)
             if start:
-                clauses.append("date(dp.created_at)>=?"); params.append(start)
+                clauses.append("date(dp.created_at)>=?")
+                params.append(start)
             if end:
-                clauses.append("date(dp.created_at)<=?"); params.append(end)
+                clauses.append("date(dp.created_at)<=?")
+                params.append(end)
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             return _rows(db.execute(
                 f"SELECT dp.*, di.invoice_number, di.receipt_number, "
@@ -2065,8 +2503,8 @@ class APIClient:
     # ── INTERNAL STOCK CONSUMPTION ──────────────────────────────────────────────
 
     CONSUMPTION_REASONS = (
-        'Production', 'Staff Use', 'Office Use', 'Cleaning', 'Free Samples',
-        'Damaged During Production', 'Testing', 'Charity', 'Other',
+        'Production', 'Staff Consumption', 'Office Use', 'Cleaning', 'Sampling',
+        'Damaged During Production', 'Donation', 'Promotion', 'Other',
     )
 
     def _device_name(self) -> str:

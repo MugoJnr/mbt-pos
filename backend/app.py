@@ -303,6 +303,56 @@ def init_db():
         device_id TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS customer_wallet (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL UNIQUE,
+        balance REAL NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        txn_type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        balance_before REAL NOT NULL,
+        balance_after REAL NOT NULL,
+        notes TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS payment_variances (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        customer_id INTEGER,
+        customer_name TEXT,
+        payment_method TEXT,
+        sale_total REAL NOT NULL,
+        amount_received REAL NOT NULL,
+        excess_amount REAL NOT NULL,
+        handling TEXT NOT NULL,
+        misc_category TEXT,
+        reason TEXT,
+        credit_applied REAL DEFAULT 0,
+        tip_amount REAL DEFAULT 0,
+        transport_amount REAL DEFAULT 0,
+        deposit_amount REAL DEFAULT 0,
+        advance_amount REAL DEFAULT 0,
+        change_returned REAL DEFAULT 0,
+        misc_amount REAL DEFAULT 0,
+        manager_approved INTEGER DEFAULT 0,
+        manager_name TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     for dept_name in (
@@ -353,6 +403,57 @@ def init_db():
         )
     if 'mpesa_ref' not in cols:
         cur.execute("ALTER TABLE sales ADD COLUMN mpesa_ref TEXT")
+    sales_cols = {r[1] for r in cur.execute("PRAGMA table_info(sales)").fetchall()}
+    if 'credit_applied' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN credit_applied REAL DEFAULT 0")
+    if 'customer_id' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN customer_id INTEGER")
+    if 'variance_handling' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN variance_handling TEXT")
+    if 'original_total' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN original_total REAL DEFAULT 0")
+    if 'cash_rounding_adj' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
+    if 'electronic_paid' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cash_rounding_adjustments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER,
+        receipt_number TEXT,
+        original_amount REAL NOT NULL,
+        rounded_amount REAL NOT NULL,
+        adjustment REAL NOT NULL,
+        electronic_paid REAL DEFAULT 0,
+        cash_original REAL DEFAULT 0,
+        cash_rounded REAL DEFAULT 0,
+        payment_method TEXT,
+        cashier_id INTEGER,
+        cashier_name TEXT,
+        voided INTEGER DEFAULT 0,
+        notes TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    for k, v in (
+        ('variance_enabled', '1'),
+        ('variance_enable_deposits', '1'),
+        ('variance_enable_tips', '1'),
+        ('variance_enable_transport', '1'),
+        ('variance_max_cashier', '1000'),
+        ('variance_require_customer_deposit', '1'),
+        ('variance_allow_refund_after_finalize', '0'),
+        ('cash_rounding_enabled', '1'),
+        ('cash_rounding_mode', 'nearest'),
+        ('cash_rounding_value', '5'),
+        ('cash_rounding_apply_cash', '1'),
+        ('cash_rounding_apply_mpesa', '0'),
+        ('cash_rounding_apply_card', '0'),
+        ('cash_rounding_apply_bank', '0'),
+    ):
+        cur.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 
     db.commit()
     db.close()
