@@ -369,8 +369,8 @@ def _ensure_schema(conn: sqlite3.Connection):
         conn.execute(
             "INSERT INTO users (username,password_hash,role,full_name,tab_permissions) VALUES (?,?,?,?,?)",
             ('admin', pw_hash, 'superadmin', 'Shop Owner',
-             '["dashboard","sales","inventory","consumption","reports","notes","settings","admin",'
-             '"license","diagnostics","security"]')
+             '["dashboard","sales","inventory","consumption","debt","accounting","reports","notes",'
+             '"settings","admin","license","diagnostics","security"]')
         )
     _migrate_columns(conn)
     # Seed default settings if missing (per-shop; see config/deploy.py)
@@ -672,7 +672,121 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE notes ADD COLUMN pinned INTEGER DEFAULT 0")
     except Exception:
         pass
+    # Category visual management
+    _ensure_categories_table(conn)
+    # Enterprise accounting (double-entry) — offline SQLite
+    try:
+        from desktop.utils.accounting_engine import ensure_accounting_schema
+        ensure_accounting_schema(conn)
+    except Exception as _acc_err:
+        logger.error('accounting schema: %s', _acc_err, exc_info=True)
+    # Grant Accounting tab to managers / admins on upgrade
+    for row in conn.execute(
+        "SELECT id, role, tab_permissions FROM users "
+        "WHERE role IN ('superadmin','admin','manager')"
+    ).fetchall():
+        try:
+            import json as _json
+            perms = _json.loads(row['tab_permissions'] or '[]')
+            if 'accounting' not in perms:
+                if 'reports' in perms:
+                    perms.insert(perms.index('reports'), 'accounting')
+                else:
+                    perms.append('accounting')
+                conn.execute(
+                    "UPDATE users SET tab_permissions=? WHERE id=?",
+                    (_json.dumps(perms), row['id']),
+                )
+        except Exception:
+            pass
     conn.commit()
+
+
+def _ensure_categories_table(conn: sqlite3.Connection):
+    """Create categories table, migrate visual columns, seed from product names."""
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        description TEXT,
+        visual_type TEXT DEFAULT 'icon',
+        icon_name TEXT,
+        image_path TEXT,
+        accent_color TEXT DEFAULT '#3B82F6',
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(categories)").fetchall()}
+    for col, ddl in (
+        ('visual_type', "ALTER TABLE categories ADD COLUMN visual_type TEXT DEFAULT 'icon'"),
+        ('icon_name', "ALTER TABLE categories ADD COLUMN icon_name TEXT"),
+        ('image_path', "ALTER TABLE categories ADD COLUMN image_path TEXT"),
+        ('accent_color', "ALTER TABLE categories ADD COLUMN accent_color TEXT DEFAULT '#3B82F6'"),
+        ('description', "ALTER TABLE categories ADD COLUMN description TEXT"),
+        ('sort_order', "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0"),
+        ('is_active', "ALTER TABLE categories ADD COLUMN is_active INTEGER DEFAULT 1"),
+        ('updated_at', "ALTER TABLE categories ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP"),
+    ):
+        if col not in cols:
+            try:
+                conn.execute(ddl)
+            except Exception:
+                pass
+    # Seed from distinct product categories + sensible defaults
+    try:
+        from desktop.utils.category_suggest import suggest_visual_for_category_name
+    except Exception:
+        suggest_visual_for_category_name = None
+    names = set()
+    try:
+        for row in conn.execute(
+            "SELECT DISTINCT category FROM products "
+            "WHERE category IS NOT NULL AND TRIM(category) != ''"
+        ).fetchall():
+            names.add((row[0] or '').strip())
+    except Exception:
+        pass
+    for default_name in (
+        'General', 'Grocery', 'Pharmacy', 'Electronics', 'Clothing',
+        'Hardware', 'Beverages', 'Beauty',
+    ):
+        names.add(default_name)
+    for name in sorted(n for n in names if n):
+        existing = conn.execute(
+            "SELECT id, icon_name FROM categories WHERE LOWER(name)=LOWER(?)",
+            (name,),
+        ).fetchone()
+        if existing:
+            # Fill missing icon via smart match
+            if not (existing['icon_name'] if isinstance(existing, sqlite3.Row)
+                    else existing[1]) and suggest_visual_for_category_name:
+                vis = suggest_visual_for_category_name(name)
+                conn.execute(
+                    "UPDATE categories SET icon_name=?, accent_color=?, "
+                    "visual_type='icon', updated_at=? WHERE id=?",
+                    (vis.get('icon_name'), vis.get('accent_color'),
+                     datetime.now().isoformat(),
+                     existing['id'] if isinstance(existing, sqlite3.Row) else existing[0]),
+                )
+            continue
+        vis = suggest_visual_for_category_name(name) if suggest_visual_for_category_name else {
+            'visual_type': 'icon',
+            'icon_name': 'generic/general-product',
+            'accent_color': '#3B82F6',
+        }
+        try:
+            conn.execute(
+                "INSERT INTO categories "
+                "(name, visual_type, icon_name, accent_color, is_active) "
+                "VALUES (?,?,?,?,1)",
+                (name, vis.get('visual_type', 'icon'),
+                 vis.get('icon_name'), vis.get('accent_color', '#3B82F6')),
+            )
+        except sqlite3.IntegrityError:
+            pass
 
 
 # ── Receipt number generator ────────────────────────────────────────────────────
@@ -768,6 +882,11 @@ class APIClient:
                 return self.get_products()
             if path == '/api/products' and method == 'POST':
                 return self.create_product(data or {})
+            # Categories
+            if path == '/api/categories' and method == 'GET':
+                return self.get_categories()
+            if path == '/api/categories' and method == 'POST':
+                return self.create_category(data or {})
             # Notes
             if path == '/api/notes' and method == 'GET':
                 return self.get_notes()
@@ -791,6 +910,12 @@ class APIClient:
                 pid = int(m.group(1))
                 if method == 'PUT':    return self.update_product(pid, data or {})
                 if method == 'DELETE': return self.delete_product(pid)
+            m = re.match(r'/api/categories/(\d+)', path)
+            if m:
+                cid = int(m.group(1))
+                if method == 'PUT':    return self.update_category(cid, data or {})
+                if method == 'DELETE': return self.delete_category(cid)
+                if method == 'GET':    return self.get_category(cid)
             m = re.match(r'/api/sales/(\d+)', path)
             if m:
                 return self.get_sale(int(m.group(1)))
@@ -969,6 +1094,148 @@ class APIClient:
         finally:
             db.close()
 
+    # ── CATEGORIES (visual management) ─────────────────────────────────────────
+
+    def get_categories(self, active_only: bool = True) -> list:
+        db = _db()
+        try:
+            q = "SELECT * FROM categories"
+            if active_only:
+                q += " WHERE is_active=1"
+            q += " ORDER BY sort_order, name"
+            return _rows(db.execute(q))
+        finally:
+            db.close()
+
+    def get_category(self, cid: int) -> dict:
+        db = _db()
+        try:
+            row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+            return row or {'error': 'Category not found'}
+        finally:
+            db.close()
+
+    def get_category_by_name(self, name: str) -> dict:
+        db = _db()
+        try:
+            return _row(db.execute(
+                "SELECT * FROM categories WHERE LOWER(name)=LOWER(?)",
+                ((name or '').strip(),),
+            )) or {}
+        finally:
+            db.close()
+
+    def categories_by_name_map(self) -> dict:
+        """name -> category dict (also lower-case keys)."""
+        out = {}
+        for c in self.get_categories(active_only=False):
+            n = c.get('name') or ''
+            out[n] = c
+            out[n.lower()] = c
+        return out
+
+    def create_category(self, data: dict) -> dict:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return {'error': 'Category name is required.'}
+        from desktop.utils.category_suggest import suggest_visual_for_category_name
+        vis = suggest_visual_for_category_name(name)
+        vt = (data.get('visual_type') or vis.get('visual_type') or 'icon').lower()
+        if vt not in ('icon', 'image'):
+            vt = 'icon'
+        icon_name = data.get('icon_name') or vis.get('icon_name')
+        image_path = data.get('image_path')
+        accent = data.get('accent_color') or vis.get('accent_color') or '#3B82F6'
+        db = _db()
+        try:
+            db.execute(
+                "INSERT INTO categories "
+                "(name, description, visual_type, icon_name, image_path, "
+                " accent_color, sort_order, is_active, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (name, data.get('description') or '',
+                 vt, icon_name, image_path, accent,
+                 int(data.get('sort_order') or 0), 1,
+                 datetime.now().isoformat()),
+            )
+            cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.commit()
+            _audit(self._user_id, self._username, 'CREATE_CATEGORY', 'inventory',
+                   f'category={name}')
+            return _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+        except sqlite3.IntegrityError:
+            return {'error': 'Category name already exists'}
+        finally:
+            db.close()
+
+    def update_category(self, cid: int, data: dict) -> dict:
+        db = _db()
+        try:
+            row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+            if not row:
+                return {'error': 'Category not found'}
+            name = (data.get('name') or row['name'] or '').strip()
+            vt = (data.get('visual_type') or row.get('visual_type') or 'icon').lower()
+            if vt not in ('icon', 'image'):
+                vt = 'icon'
+            fields = {
+                'name': name,
+                'description': data.get('description', row.get('description')),
+                'visual_type': vt,
+                'icon_name': data.get('icon_name', row.get('icon_name')),
+                'image_path': data.get('image_path', row.get('image_path')),
+                'accent_color': data.get('accent_color', row.get('accent_color')) or '#3B82F6',
+                'sort_order': int(data.get('sort_order', row.get('sort_order') or 0)),
+                'is_active': int(data.get('is_active', row.get('is_active', 1))),
+                'updated_at': datetime.now().isoformat(),
+            }
+            old_name = row.get('name')
+            db.execute(
+                "UPDATE categories SET name=?, description=?, visual_type=?, "
+                "icon_name=?, image_path=?, accent_color=?, sort_order=?, "
+                "is_active=?, updated_at=? WHERE id=?",
+                (fields['name'], fields['description'], fields['visual_type'],
+                 fields['icon_name'], fields['image_path'], fields['accent_color'],
+                 fields['sort_order'], fields['is_active'], fields['updated_at'], cid),
+            )
+            # Rename product.category free-text when category renamed
+            if old_name and name and old_name != name:
+                db.execute(
+                    "UPDATE products SET category=? WHERE category=?",
+                    (name, old_name),
+                )
+            db.commit()
+            _audit(self._user_id, self._username, 'UPDATE_CATEGORY', 'inventory',
+                   f'id={cid} name={name}')
+            return _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+        except sqlite3.IntegrityError:
+            return {'error': 'Category name already exists'}
+        finally:
+            db.close()
+
+    def delete_category(self, cid: int) -> dict:
+        db = _db()
+        try:
+            row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+            if not row:
+                return {'error': 'Category not found'}
+            db.execute("UPDATE categories SET is_active=0, updated_at=? WHERE id=?",
+                       (datetime.now().isoformat(), cid))
+            db.commit()
+            return {'success': True}
+        finally:
+            db.close()
+
+    def ensure_category_for_product_name(self, name: str) -> dict:
+        """When saving a product with a new category string, ensure a categories row."""
+        name = (name or '').strip()
+        if not name:
+            return {}
+        existing = self.get_category_by_name(name)
+        if existing:
+            return existing
+        return self.create_category({'name': name})
+
     # ── PRODUCTS ─────────────────────────────────────────────────────────────────
 
     def get_products(self) -> list:
@@ -984,6 +1251,8 @@ class APIClient:
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Product name is required.'}
+        cat_name = (data.get('category') or '').strip()
+        result = None
         db = _db()
         try:
             initial_stock = round(float(data.get('stock', 0) or 0), 4)
@@ -1012,7 +1281,7 @@ class APIClient:
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
                    f"name={name} stock={initial_stock}")
-            return {'success': True, 'id': pid}
+            result = {'success': True, 'id': pid}
         except sqlite3.IntegrityError as e:
             logger.warning(f"create_product integrity: {e}")
             msg = str(e).lower()
@@ -1025,6 +1294,12 @@ class APIClient:
             return {'error': f'Could not save product: {e}'}
         finally:
             db.close()
+        if result and cat_name:
+            try:
+                self.ensure_category_for_product_name(cat_name)
+            except Exception:
+                pass
+        return result or {'error': 'Could not save product'}
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
         """
@@ -1081,7 +1356,7 @@ class APIClient:
 
             _audit(self._user_id, self._username, 'UPDATE_PRODUCT', 'inventory',
                    f"pid={pid} fields={list(data.keys())} pin_verified={pin_verified}")
-            return {'success': True}
+            result_ok = True
         except sqlite3.IntegrityError as e:
             logger.warning(f"update_product integrity: {e}")
             msg = str(e).lower()
@@ -1093,6 +1368,12 @@ class APIClient:
             return {'error': f'Could not update product: {e}'}
         finally:
             db.close()
+        if result_ok and 'category' in data and (data.get('category') or '').strip():
+            try:
+                self.ensure_category_for_product_name(data['category'])
+            except Exception:
+                pass
+        return {'success': True}
 
     def adjust_stock(self, pid: int, new_qty, reason: str) -> dict:
         """
@@ -1123,6 +1404,20 @@ class APIClient:
                  f"ADJUST_pid={pid}", reason,
                  self._user_id, self._username or 'superadmin')
             )
+            mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            try:
+                cost_row = db.execute(
+                    "SELECT cost_price FROM products WHERE id=?", (pid,)
+                ).fetchone()
+                unit_cost = float(cost_row['cost_price'] or 0) if cost_row else 0
+                from desktop.utils.accounting_hooks import post_stock_adjust_journal
+                post_stock_adjust_journal(
+                    db, product_id=pid, product_name=row['name'],
+                    qty_change=qty_change, unit_cost=unit_cost, reason=reason,
+                    movement_id=mov_id, user_id=self._user_id,
+                    username=self._username or 'superadmin', safe=True)
+            except Exception as _je:
+                logger.error('stock adjust accounting: %s', _je, exc_info=True)
             db.commit()
             _audit(self._user_id, self._username,
                    'STOCK_ADJUSTED', 'inventory',
@@ -1218,6 +1513,12 @@ class APIClient:
                 notes = (notes + f' | Variance: {variance_handling}').strip(' |')
             if abs(cash_rounding_adj) > 0.009:
                 notes = (notes + f' | CashRounding: {cash_rounding_adj:+.2f}').strip(' |')
+            emethod = (data.get('electronic_method') or '').strip()
+            if electronic_paid > 0.009 and emethod and 'split:' not in notes.lower():
+                cash_bit = round(float(data.get('cash_paid') or (amount_paid - electronic_paid)), 2)
+                notes = (
+                    notes + f' | Split: {emethod} {electronic_paid:,.2f} + Cash {cash_bit:,.2f}'
+                ).strip(' |')
 
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
@@ -1759,6 +2060,16 @@ class APIClient:
                  'VOID', 'status', 'completed', 'voided', reason)
             )
 
+            # Reverse sale journal
+            try:
+                from desktop.utils.accounting_hooks import reverse_sale_journal
+                reverse_sale_journal(
+                    db, sale_id, reason=reason,
+                    user_id=self._user_id, username=self._username or 'admin',
+                    safe=True)
+            except Exception as _je:
+                logger.error('void sale accounting: %s', _je, exc_info=True)
+
             db.commit()
             if abs(rounding_adj) > 0.009 or rnd_rows:
                 _audit(self._user_id, self._username or 'admin',
@@ -2017,8 +2328,11 @@ class APIClient:
             phone = (data.get('phone') or '').strip()
             if not name:
                 return {'error': 'Customer name is required.'}
-            if not phone:
-                return {'error': 'Customer phone is required.'}
+            # Phone is optional; when provided, soft-check digit length
+            if phone:
+                digits = ''.join(ch for ch in phone if ch.isdigit())
+                if len(digits) < 9 or len(digits) > 15:
+                    return {'error': 'Enter a valid phone number or leave it blank.'}
             cust_cols = {r[1] for r in db.execute("PRAGMA table_info(customers)").fetchall()}
             if 'customer_type' in cust_cols and 'national_id' in cust_cols:
                 db.execute(
@@ -2420,6 +2734,24 @@ class APIClient:
                 "UPDATE debt_invoices SET amount_paid=?, balance=?, status=?, updated_at=? WHERE id=?",
                 (new_paid, balance_after, new_status, datetime.now().isoformat(), invoice_id)
             )
+            try:
+                from desktop.utils.accounting_hooks import post_debt_payment_journal
+                pay_row = db.execute(
+                    "SELECT id FROM debt_payments WHERE payment_receipt=?",
+                    (pay_receipt,)
+                ).fetchone()
+                post_debt_payment_journal(
+                    db,
+                    payment_id=pay_row[0] if pay_row else None,
+                    invoice_id=invoice_id,
+                    amount=amount,
+                    payment_method=payment_method,
+                    payment_receipt=pay_receipt,
+                    user_id=self._user_id,
+                    username=self._username or 'staff',
+                    safe=True)
+            except Exception as _je:
+                logger.error('debt payment accounting: %s', _je, exc_info=True)
             db.commit()
             _audit(self._user_id, self._username, 'DEBT_PAYMENT', 'debt',
                    f"inv={inv['invoice_number']} sale={inv.get('sale_id')} "
@@ -2723,6 +3055,14 @@ class APIClient:
                     f"qty={qty} reason={reason} notes={notes} device={device}"
                 )
 
+            try:
+                from desktop.utils.accounting_hooks import post_consumption_journal
+                post_consumption_journal(
+                    db, cons_id,
+                    user_id=self._user_id, username=created_name, safe=True)
+            except Exception as _je:
+                logger.error('consumption accounting: %s', _je, exc_info=True)
+
             db.commit()
             _audit(
                 self._user_id, created_name, 'CREATE_CONSUMPTION', 'consumption',
@@ -2813,6 +3153,14 @@ class APIClient:
                 " voided_at=?, void_reason=? WHERE id=?",
                 (self._user_id, self._username or 'admin', now, reason, consumption_id)
             )
+            try:
+                from desktop.utils.accounting_hooks import reverse_consumption_journal
+                reverse_consumption_journal(
+                    db, consumption_id, reason=reason,
+                    user_id=self._user_id, username=self._username or 'admin',
+                    safe=True)
+            except Exception as _je:
+                logger.error('void consumption accounting: %s', _je, exc_info=True)
             db.commit()
             for line in audit_lines:
                 _audit(

@@ -460,6 +460,73 @@ def init_db():
     ):
         cur.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 
+    # Category visual management (mirror desktop api_client)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        description TEXT,
+        visual_type TEXT DEFAULT 'icon',
+        icon_name TEXT,
+        image_path TEXT,
+        accent_color TEXT DEFAULT '#3B82F6',
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    cat_cols = {r[1] for r in cur.execute("PRAGMA table_info(categories)").fetchall()}
+    for col, ddl in (
+        ('visual_type', "ALTER TABLE categories ADD COLUMN visual_type TEXT DEFAULT 'icon'"),
+        ('icon_name', "ALTER TABLE categories ADD COLUMN icon_name TEXT"),
+        ('image_path', "ALTER TABLE categories ADD COLUMN image_path TEXT"),
+        ('accent_color', "ALTER TABLE categories ADD COLUMN accent_color TEXT DEFAULT '#3B82F6'"),
+        ('description', "ALTER TABLE categories ADD COLUMN description TEXT"),
+        ('sort_order', "ALTER TABLE categories ADD COLUMN sort_order INTEGER DEFAULT 0"),
+        ('is_active', "ALTER TABLE categories ADD COLUMN is_active INTEGER DEFAULT 1"),
+        ('updated_at', "ALTER TABLE categories ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP"),
+    ):
+        if col not in cat_cols:
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
+    try:
+        from desktop.utils.category_suggest import suggest_visual_for_category_name as _sug_cat
+    except Exception:
+        _sug_cat = None
+    seed_names = {'General', 'Grocery', 'Pharmacy', 'Electronics', 'Clothing',
+                  'Hardware', 'Beverages', 'Beauty'}
+    try:
+        for row in cur.execute(
+            "SELECT DISTINCT category FROM products "
+            "WHERE category IS NOT NULL AND TRIM(category) != ''"
+        ).fetchall():
+            seed_names.add((row[0] or '').strip())
+    except Exception:
+        pass
+    for _cname in sorted(n for n in seed_names if n):
+        exists = cur.execute(
+            "SELECT id, icon_name FROM categories WHERE LOWER(name)=LOWER(?)",
+            (_cname,),
+        ).fetchone()
+        if exists:
+            continue
+        vis = _sug_cat(_cname) if _sug_cat else {
+            'visual_type': 'icon', 'icon_name': 'generic/general-product',
+            'accent_color': '#3B82F6',
+        }
+        try:
+            cur.execute(
+                "INSERT INTO categories (name, visual_type, icon_name, accent_color, is_active) "
+                "VALUES (?,?,?,?,1)",
+                (_cname, vis.get('visual_type', 'icon'),
+                 vis.get('icon_name'), vis.get('accent_color', '#3B82F6')),
+            )
+        except Exception:
+            pass
+
     db.commit()
     db.close()
     logger.info("Database initialized")

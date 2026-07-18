@@ -72,33 +72,89 @@ def fmt_stock_short(n) -> str:
     return f'{f:g}'
 
 
-def round_qty(v, step=0.25) -> float:
+def round_qty(v, step=0.25, minimum=None) -> float:
     try:
         q = float(v)
     except (TypeError, ValueError):
-        return step
-    return max(step, round(round(q / step) * step, 2))
+        q = float(step) if step else 0.0
+    step = float(step) if step else 0.25
+    mn = float(step if minimum is None else minimum)
+    if step <= 0:
+        return max(mn, round(q, 2))
+    snapped = round(round(q / step) * step, 2)
+    return max(mn, snapped)
 
 
 # ── CategoryIcon ──────────────────────────────────────────────────────────────
 
 class CategoryIcon(QLabel):
-    """Colored circle with category emoji — used when product has no image."""
+    """Category visual tile — SVG/image when available, emoji fallback."""
 
-    def __init__(self, category='General', size=48, parent=None):
+    def __init__(self, category='General', size=48, parent=None, category_meta=None):
         super().__init__(parent)
         self._category = category or 'General'
+        self._meta = category_meta or {}
         self._size = int(size)
         self.setFixedSize(self._size, self._size)
         self.setAlignment(Qt.AlignCenter)
         self.refresh_theme()
 
-    def set_category(self, category: str):
+    def set_category(self, category: str, category_meta: dict = None):
         self._category = category or 'General'
+        if category_meta is not None:
+            self._meta = category_meta or {}
+        self.refresh_theme()
+
+    def set_category_meta(self, meta: dict):
+        self._meta = meta or {}
         self.refresh_theme()
 
     def refresh_theme(self):
+        # Prefer offline CategoryVisual rendering into this label
+        try:
+            from desktop.utils.category_visuals import (
+                resolve_icon_path, svg_to_pixmap, load_image_pixmap,
+                suggest_visual_for_category_name, accessible_fg,
+            )
+            meta = dict(self._meta or {})
+            meta.setdefault('name', self._category)
+            accent = meta.get('accent_color') or category_visual(self._category)[1]
+            vtype = (meta.get('visual_type') or 'icon').lower()
+            pm = None
+            if vtype == 'image' and meta.get('image_path'):
+                import os
+                path = meta['image_path']
+                if not os.path.isabs(path):
+                    try:
+                        from mbt_paths import get_project_root
+                        path = os.path.join(get_project_root(), path)
+                    except Exception:
+                        pass
+                pm = load_image_pixmap(path, self._size)
+            if (pm is None or pm.isNull()) and meta.get('icon_name'):
+                svg = resolve_icon_path(meta.get('icon_name'))
+                if svg:
+                    pm = svg_to_pixmap(svg, self._size)
+            if pm is None or pm.isNull():
+                sug = suggest_visual_for_category_name(self._category)
+                svg = resolve_icon_path(sug.get('icon_name'))
+                if svg:
+                    pm = svg_to_pixmap(svg, self._size)
+                    accent = meta.get('accent_color') or sug.get('accent_color') or accent
+            if pm is not None and not pm.isNull():
+                self.setPixmap(pm)
+                self.setText('')
+                r = self._size // 2
+                self.setStyleSheet(
+                    f"QLabel {{ background:{qss_alpha(accent, 0.15)}; "
+                    f"border-radius:{r}px; border:none; }}")
+                return
+        except Exception:
+            pass
         emoji, accent = category_visual(self._category)
+        if self._meta.get('accent_color'):
+            accent = self._meta['accent_color']
+        self.setPixmap(QPixmap())
         self.setText(emoji)
         r = self._size // 2
         self.setStyleSheet(
@@ -160,11 +216,13 @@ class ProductCard(QFrame):
     """
     clicked = pyqtSignal(dict)
 
-    def __init__(self, product: dict, currency='KES', card_size=(214, 148), parent=None):
+    def __init__(self, product: dict, currency='KES', card_size=(214, 148),
+                 parent=None, category_meta=None):
         super().__init__(parent)
         self._product = product or {}
         self._currency = currency
         self._active = True
+        self._category_meta = category_meta or {}
         self.setObjectName('posProdCard')
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
@@ -190,7 +248,7 @@ class ProductCard(QFrame):
 
         top = QHBoxLayout()
         top.setSpacing(10)
-        self._icon = CategoryIcon(cat, size=44)
+        self._icon = CategoryIcon(cat, size=44, category_meta=self._category_meta)
         top.addWidget(self._icon)
 
         tcol = QVBoxLayout()
@@ -319,40 +377,61 @@ class ProductCard(QFrame):
 # ── QuantityControl ───────────────────────────────────────────────────────────
 
 class QuantityControl(QWidget):
-    """Segmented − | qty | + control. Qty rounded to 2 decimals; step 0.25."""
+    """
+    Flat − | value | + stepper for cart Qty / Disc.
+    Single outer shell (no nested button boxes) so dark mode does not clip glyphs.
+    """
     valueChanged = pyqtSignal(float)
 
-    def __init__(self, value=1.0, step=0.25, parent=None):
+    def __init__(
+        self,
+        value=1.0,
+        step=0.25,
+        parent=None,
+        *,
+        minimum=None,
+        maximum=99999.0,
+        snap=True,
+        decimals=2,
+        width=124,
+    ):
         super().__init__(parent)
-        self._step = float(step)
+        self._step = float(step) if step else 0.25
+        self._snap = bool(snap)
+        self._minimum = float(self._step if minimum is None else minimum)
+        self._maximum = float(maximum)
         self.setObjectName('qtyControl')
-        self.setFixedHeight(TOUCH_MIN - 6)
-        self.setFixedWidth(118)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(36)
+        self.setFixedWidth(int(width))
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(2, 2, 2, 2)
         lay.setSpacing(0)
 
-        self._minus = QPushButton('−')
+        # ASCII +/- render reliably; Unicode minus often clips under Fusion + radius
+        self._minus = QPushButton('-')
         self._plus = QPushButton('+')
-        for b, seg in ((self._minus, 'left'), (self._plus, 'right')):
+        for b in (self._minus, self._plus):
             b.setObjectName('qtyBtn')
-            b.setProperty('seg', seg)
-            b.setFixedSize(32, TOUCH_MIN - 6)
+            b.setFixedSize(30, 32)
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.NoFocus)
+            b.setFlat(True)
 
         self._spin = QDoubleSpinBox()
         self._spin.setObjectName('qtyInput')
-        self._spin.setRange(self._step, 9999.0)
-        self._spin.setDecimals(2)
+        self._spin.setRange(self._minimum, self._maximum)
+        self._spin.setDecimals(int(decimals))
         self._spin.setSingleStep(self._step)
-        self._spin.setValue(round_qty(value, self._step))
+        self._spin.setValue(self._coerce(value))
         self._spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._spin.setAlignment(Qt.AlignCenter)
-        self._spin.setFixedHeight(TOUCH_MIN - 6)
+        self._spin.setFixedHeight(32)
+        self._spin.setFrame(False)
         le = self._spin.lineEdit()
         if le:
             le.setAlignment(Qt.AlignCenter)
+            le.setFrame(False)
 
         self._spin.valueChanged.connect(self._on_spin)
         self._minus.clicked.connect(lambda: self._bump(-self._step))
@@ -362,12 +441,20 @@ class QuantityControl(QWidget):
         lay.addWidget(self._plus)
         self.refresh_theme()
 
+    def _coerce(self, v) -> float:
+        if self._snap:
+            return round_qty(v, self._step, minimum=self._minimum)
+        try:
+            return max(self._minimum, min(self._maximum, round(float(v), 2)))
+        except (TypeError, ValueError):
+            return self._minimum
+
     def value(self) -> float:
         return float(self._spin.value())
 
     def setValue(self, v):
         self._spin.blockSignals(True)
-        self._spin.setValue(round_qty(v, self._step))
+        self._spin.setValue(self._coerce(v))
         self._spin.blockSignals(False)
 
     def _bump(self, delta):
@@ -375,7 +462,7 @@ class QuantityControl(QWidget):
         self.valueChanged.emit(self.value())
 
     def _on_spin(self, v):
-        q = round_qty(v, self._step)
+        q = self._coerce(v)
         if abs(q - float(v)) > 1e-9:
             self._spin.blockSignals(True)
             self._spin.setValue(q)
@@ -383,24 +470,25 @@ class QuantityControl(QWidget):
         self.valueChanged.emit(q)
 
     def refresh_theme(self):
-        q_bg, q_card = C['input'], C['card2']
-        q_fg, q_bd, q_bd1 = C['text'], C['border2'], C['border']
-        q_hover, q_gold, q_sel = C['hover'], C['gold'], C['selected']
-        q_spin = C['card']
-        r = 12
+        shell = C['input']
+        fg = C['text']
+        bd = C['border2']
+        hover = C['hover']
+        gold = C['gold']
+        # Flat shell only — buttons/spin stay transparent (avoids dark semicircle artifacts)
         self.setStyleSheet(
-            f"QWidget#qtyControl{{background:{q_bg};border:1px solid {q_bd};"
-            f"border-radius:{r}px;}}"
-            f"QPushButton#qtyBtn{{background:{q_card};color:{q_fg};border:none;"
-            f"font-size:16px;font-weight:700;padding:0;min-height:{TOUCH_MIN - 6}px;}}"
-            f"QPushButton#qtyBtn:hover{{background:{q_hover};color:{q_gold};}}"
-            f"QPushButton#qtyBtn[seg=\"left\"]{{border-top-left-radius:{r}px;"
-            f"border-bottom-left-radius:{r}px;border-right:1px solid {q_bd1};}}"
-            f"QPushButton#qtyBtn[seg=\"right\"]{{border-top-right-radius:{r}px;"
-            f"border-bottom-right-radius:{r}px;border-left:1px solid {q_bd1};}}"
-            f"QDoubleSpinBox#qtyInput{{background:{q_spin};color:{q_fg};border:none;"
-            f"padding:0;font-size:14px;font-weight:700;}}"
-            f"QDoubleSpinBox#qtyInput:focus{{background:{q_hover};}}"
+            f"QWidget#qtyControl{{background:{shell};border:1px solid {bd};"
+            f"border-radius:8px;}}"
+            f"QPushButton#qtyBtn{{background:transparent;color:{fg};border:none;"
+            f"border-radius:6px;font-size:18px;font-weight:800;padding:0;"
+            f"min-width:30px;max-width:30px;min-height:32px;}}"
+            f"QPushButton#qtyBtn:hover{{background:{hover};color:{gold};}}"
+            f"QPushButton#qtyBtn:pressed{{background:{qss_alpha(gold, 0.18)};color:{gold};}}"
+            f"QDoubleSpinBox#qtyInput{{background:transparent;color:{fg};border:none;"
+            f"padding:0;margin:0;font-size:13px;font-weight:700;}}"
+            f"QDoubleSpinBox#qtyInput:focus{{background:transparent;}}"
+            f"QDoubleSpinBox#qtyInput::up-button,QDoubleSpinBox#qtyInput::down-button{{"
+            f"width:0;height:0;border:none;}}"
         )
 
 
@@ -536,7 +624,7 @@ class SummaryCard(QFrame):
 # ── CustomerSelector ──────────────────────────────────────────────────────────
 
 class CustomerSelector(QComboBox):
-    """Walk-in + named customers for credit / debt / notes. Searchable filter."""
+    """Walk-in + named customers. Searchable with clear dropdown affordance."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -544,12 +632,22 @@ class CustomerSelector(QComboBox):
         self.setMinimumHeight(TOUCH_MIN - 2)
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.NoInsert)
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(18)
         self._all = []  # (label, id)
         self.addItem('Walk-in Customer', None)
         le = self.lineEdit()
         if le:
             le.setPlaceholderText('Search customer…')
             le.textEdited.connect(self._filter)
+            # Leading search + trailing chevron (QSS often hides native arrow)
+            self._search_act = QAction('🔍', self)
+            self._search_act.setToolTip('Type to search customers')
+            le.addAction(self._search_act, QLineEdit.LeadingPosition)
+            self._drop_act = QAction('▾', self)
+            self._drop_act.setToolTip('Browse customers')
+            self._drop_act.triggered.connect(self.showPopup)
+            le.addAction(self._drop_act, QLineEdit.TrailingPosition)
         self.refresh_theme()
 
     def load_customers(self, customers: list):
@@ -569,18 +667,16 @@ class CustomerSelector(QComboBox):
         q = (query or '').strip().lower()
         self.blockSignals(True)
         self.clear()
-        matched = 0
+        # Always keep Walk-in at top
+        self.addItem('Walk-in Customer', None)
+        matched = 1
         for label, cid in self._all:
             if cid is None:
-                # Always keep Walk-in when no query
-                if not q:
-                    self.addItem(label, None)
-                    matched += 1
                 continue
             if not q or q in label.lower():
                 self.addItem(label, cid)
                 matched += 1
-        if matched == 0:
+        if matched <= 1 and q:
             self.addItem('No matches', None)
         if keep is not None:
             idx = self.findData(keep)
@@ -588,7 +684,7 @@ class CustomerSelector(QComboBox):
         elif not q:
             self.setCurrentIndex(0)
         self.blockSignals(False)
-        if q and matched > 0 and not self.view().isVisible():
+        if q and matched > 1 and not self.view().isVisible():
             self.showPopup()
 
     def _filter(self, text: str):
@@ -627,6 +723,17 @@ class CustomerSelector(QComboBox):
         finally:
             self.blockSignals(False)
 
+    def mousePressEvent(self, event):
+        # Clicking the field opens the list (picker affordance)
+        if event.button() == Qt.LeftButton:
+            le = self.lineEdit()
+            # If clicking near the trailing chevron zone, always open
+            if le is not None and event.pos().x() > self.width() - 36:
+                self.showPopup()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
     def showPopup(self):
         self.refresh_theme()
         super().showPopup()
@@ -645,17 +752,27 @@ class CustomerSelector(QComboBox):
     def refresh_theme(self):
         bg = C['card']
         fg = C['text']
+        muted = C['text2']
         sel = C.get('selected', C['hover'])
+        bd = C['border2']
+        gold = C['gold']
+        r = RADIUS['md']
         self.setStyleSheet(
             f"QComboBox#posCustomer{{background:{C['input']};color:{fg};"
-            f"border:1px solid {C['border2']};border-radius:{RADIUS['md']}px;"
-            f"padding:6px 10px;font-size:13px;min-height:{TOUCH_MIN - 4}px;}}"
-            f"QComboBox#posCustomer:focus{{border-color:{C['gold']};}}"
+            f"border:1px solid {bd};border-radius:{r}px;"
+            f"padding:6px 10px;padding-right:8px;font-size:13px;"
+            f"min-height:{TOUCH_MIN - 4}px;}}"
+            f"QComboBox#posCustomer:hover{{border-color:{gold};}}"
+            f"QComboBox#posCustomer:focus{{border-color:{gold};}}"
+            f"QComboBox#posCustomer::drop-down{{subcontrol-origin:padding;"
+            f"subcontrol-position:center right;width:28px;border:none;"
+            f"background:transparent;}}"
+            f"QComboBox#posCustomer::down-arrow{{image:none;width:0;height:0;}}"
             f"QComboBox#posCustomer QAbstractItemView{{background:{bg};"
             f"color:{fg};border:1px solid {C['border']};outline:0;"
             f"selection-background-color:{sel};selection-color:{fg};}}"
             f"QComboBox#posCustomer QAbstractItemView::item{{"
-            f"color:{fg};background:{bg};min-height:30px;padding:4px 10px;}}"
+            f"color:{fg};background:{bg};min-height:32px;padding:6px 12px;}}"
             f"QComboBox#posCustomer QAbstractItemView::item:selected{{"
             f"background:{sel};color:{fg};}}"
             f"QComboBox#posCustomer QAbstractItemView::item:hover{{"
@@ -677,12 +794,16 @@ class CustomerSelector(QComboBox):
             view.setStyleSheet(
                 f"QAbstractItemView{{background:{bg};color:{fg};outline:0;}}"
                 f"QAbstractItemView::item{{color:{fg};background:{bg};"
-                f"min-height:30px;padding:4px 10px;}}")
+                f"min-height:32px;padding:6px 12px;}}")
         le = self.lineEdit()
         if le is not None:
             le.setStyleSheet(
                 f"QLineEdit{{background:transparent;color:{fg};"
-                f"border:none;padding:0;font-size:13px;}}")
+                f"border:none;padding:0;font-size:13px;}}"
+                f"QLineEdit::placeholder{{color:{muted};}}")
+            # Keep action icons readable
+            for act in le.actions():
+                act.setVisible(True)
 
 
 # ── PosSearchBar ──────────────────────────────────────────────────────────────
@@ -729,6 +850,7 @@ class ProductGrid(QWidget):
         self._currency = 'KES'
         self._is_light = False
         self._total_count = 0
+        self._categories_by_name = {}
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
@@ -749,6 +871,9 @@ class ProductGrid(QWidget):
 
     def set_light(self, is_light: bool):
         self._is_light = bool(is_light)
+
+    def set_categories_map(self, mapping: dict):
+        self._categories_by_name = mapping or {}
 
     def clear(self):
         while self._grid.count():
@@ -779,8 +904,13 @@ class ProductGrid(QWidget):
             self._hint.show()
         card_size = (220, 150) if self._is_light else (214, 148)
         cols = max(1, int(columns))
+        cmap = self._categories_by_name or {}
         for i, p in enumerate(visible):
-            card = ProductCard(p, currency=self._currency, card_size=card_size)
+            cat = p.get('category') or 'General'
+            meta = cmap.get(cat) or cmap.get(str(cat).lower()) or {}
+            card = ProductCard(
+                p, currency=self._currency, card_size=card_size,
+                category_meta=meta)
             card.clicked.connect(self.productClicked.emit)
             self._grid.addWidget(card, i // cols, i % cols)
 

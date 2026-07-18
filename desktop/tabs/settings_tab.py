@@ -183,6 +183,57 @@ class SettingsTab(QWidget):
         cf_body.addWidget(cf_w)
         lay.addWidget(cg)
 
+        # ── Category Visual Settings ───────────────────────────────────────────
+        cvg, cv_body = section_card(
+            '🎨', 'Category Visual Settings',
+            'Offline icons & tiles for POS and inventory')
+        cvf = make_form(); cv_w = QWidget(); cv_w.setLayout(cvf)
+        from desktop.utils.category_visuals import load_visual_prefs
+        _cvp = load_visual_prefs()
+        self.cv_tile_size = QSpinBox()
+        self.cv_tile_size.setRange(32, 128)
+        self.cv_tile_size.setValue(int(_cvp.get('tile_size', 48)))
+        self.cv_tile_size.setMinimumHeight(40)
+        self.cv_corner = QSpinBox()
+        self.cv_corner.setRange(0, 32)
+        self.cv_corner.setValue(int(_cvp.get('corner_radius', 12)))
+        self.cv_corner.setMinimumHeight(40)
+        self.cv_fit = QComboBox()
+        self.cv_fit.setMinimumHeight(40)
+        self.cv_fit.addItem('Cover (crop to fill)', 'cover')
+        self.cv_fit.addItem('Contain (fit inside)', 'contain')
+        fi = self.cv_fit.findData(_cvp.get('image_fit', 'cover'))
+        if fi >= 0:
+            self.cv_fit.setCurrentIndex(fi)
+        self.cv_show_labels = QCheckBox('Show labels under tiles')
+        self.cv_show_labels.setChecked(bool(_cvp.get('show_labels', True)))
+        self.cv_show_accent = QCheckBox('Show accent color ring')
+        self.cv_show_accent.setChecked(bool(_cvp.get('show_accent', True)))
+        self.cv_compact = QCheckBox('Compact mode (no labels)')
+        self.cv_compact.setChecked(bool(_cvp.get('compact_mode', False)))
+        self.cv_placeholder = Field('generic/_placeholder.svg')
+        self.cv_placeholder.setText(_cvp.get('default_placeholder') or 'generic/_placeholder.svg')
+        for lbl, w in [
+            ('Tile size (px)', self.cv_tile_size),
+            ('Corner radius', self.cv_corner),
+            ('Image fit', self.cv_fit),
+            ('', self.cv_show_labels),
+            ('', self.cv_show_accent),
+            ('', self.cv_compact),
+            ('Default placeholder', self.cv_placeholder),
+        ]:
+            FormRow(lbl, w, cvf)
+        manage_cats = SecondaryBtn('Manage Category Visuals…', 40)
+        manage_cats.clicked.connect(self._open_category_manager)
+        cvf.addRow(QLabel(''), manage_cats)
+        cv_hint = QLabel(
+            'Icons ship with the app (offline). Custom images are stored under AppData uploads/categories/.')
+        cv_hint.setWordWrap(True)
+        cv_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        cvf.addRow(cv_hint)
+        cv_body.addWidget(cv_w)
+        lay.addWidget(cvg)
+
         # ── Workflow / After Sale defaults ────────────────────────────────────
         wg, wf_body = section_card('🔄', 'Workflow', 'After Sale defaults for POS checkout')
         wform = make_form(); wf_w = QWidget(); wf_w.setLayout(wform)
@@ -475,7 +526,8 @@ class SettingsTab(QWidget):
             vg, vg_body = section_card('🚫', 'Void Completed Sale', 'Cancel a sale by receipt number')
             vinfo = QLabel(
                 'Cancel a completed sale by receipt number. Stock is restored automatically.\n'
-                'Requires Super-Admin PIN. Superadmins can also use Security → Sale Edits / Voids.')
+                'Pick a standardized void reason (Other requires specify). Requires Super-Admin PIN.\n'
+                'Also available from Point of Sale (Void Sale) and Dashboard → Recent Sales.')
             vinfo.setWordWrap(True)
             vinfo.setStyleSheet(
                 f"color:{C['text2']}; font-size:13px; background:transparent;")
@@ -1222,15 +1274,37 @@ class SettingsTab(QWidget):
         res = self.api.update_settings(self._common_payload())
         if res and res.get('success'):
             self._save_web_remote_config()
+            self._save_category_visual_prefs()
             self._refresh_cf_status()
             QMessageBox.information(self, 'Saved', 'Settings saved.')
         else:
             QMessageBox.critical(self, 'Error', 'Failed to save settings.')
 
+    def _save_category_visual_prefs(self):
+        try:
+            from desktop.utils.category_visuals import save_visual_prefs
+            save_visual_prefs({
+                'tile_size': int(self.cv_tile_size.value()),
+                'corner_radius': int(self.cv_corner.value()),
+                'image_fit': self.cv_fit.currentData() or 'cover',
+                'show_labels': self.cv_show_labels.isChecked(),
+                'show_accent': self.cv_show_accent.isChecked(),
+                'compact_mode': self.cv_compact.isChecked(),
+                'default_placeholder': (self.cv_placeholder.text() or '').strip()
+                    or 'generic/_placeholder.svg',
+            })
+        except Exception:
+            pass
+
+    def _open_category_manager(self):
+        from desktop.dialogs.category_manager import CategoryManagerDialog
+        CategoryManagerDialog(self.api, self).exec_()
+
     def _save_silent(self):
         """Save without any dialog — used for auto-saves like chat ID linking."""
         try:
             self.api.update_settings(self._common_payload())
+            self._save_category_visual_prefs()
         except Exception:
             pass
 

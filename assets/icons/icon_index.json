@@ -1,0 +1,4829 @@
+{
+  "version": 1,
+  "total": 241,
+  "folders": [
+    "agriculture",
+    "automotive",
+    "bakery",
+    "beauty",
+    "books",
+    "clothing",
+    "construction",
+    "drinks",
+    "electronics",
+    "finance",
+    "food",
+    "furniture",
+    "generic",
+    "hardware",
+    "home",
+    "logistics",
+    "office",
+    "pets",
+    "pharmacy",
+    "restaurant",
+    "services",
+    "sports",
+    "toys"
+  ],
+  "icons": [
+    {
+      "id": "food/flour-unga",
+      "name": "Flour / Unga",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/flour-unga.svg",
+      "keywords": [
+        "flour",
+        "unga",
+        "grocery",
+        "supermarket",
+        "🌾"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🌾",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/rice",
+      "name": "Rice",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/rice.svg",
+      "keywords": [
+        "rice",
+        "grocery",
+        "supermarket",
+        "🍚"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍚",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/salt",
+      "name": "Salt",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/salt.svg",
+      "keywords": [
+        "salt",
+        "grocery",
+        "supermarket",
+        "🧂"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🧂",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "food/sugar",
+      "name": "Sugar",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/sugar.svg",
+      "keywords": [
+        "sugar",
+        "grocery",
+        "supermarket",
+        "🫙"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🫙",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/cooking-oil",
+      "name": "Cooking Oil",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/cooking-oil.svg",
+      "keywords": [
+        "cooking",
+        "oil",
+        "grocery",
+        "supermarket",
+        "🛢"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🛢",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "drinks/milk",
+      "name": "Milk",
+      "category": "drinks",
+      "section": "Grocery & Supermarket",
+      "path": "drinks/milk.svg",
+      "keywords": [
+        "milk",
+        "grocery",
+        "supermarket",
+        "🥛"
+      ],
+      "tags": [
+        "drinks",
+        "grocery & supermarket"
+      ],
+      "emoji": "🥛",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/butter",
+      "name": "Butter",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/butter.svg",
+      "keywords": [
+        "butter",
+        "grocery",
+        "supermarket",
+        "🧈"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🧈",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/eggs",
+      "name": "Eggs",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/eggs.svg",
+      "keywords": [
+        "eggs",
+        "grocery",
+        "supermarket",
+        "🥚"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🥚",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "bakery/bread",
+      "name": "Bread",
+      "category": "bakery",
+      "section": "Grocery & Supermarket",
+      "path": "bakery/bread.svg",
+      "keywords": [
+        "bread",
+        "grocery",
+        "supermarket",
+        "🍞"
+      ],
+      "tags": [
+        "bakery",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍞",
+      "bg": "#fff7ed"
+    },
+    {
+      "id": "bakery/biscuits",
+      "name": "Biscuits",
+      "category": "bakery",
+      "section": "Grocery & Supermarket",
+      "path": "bakery/biscuits.svg",
+      "keywords": [
+        "biscuits",
+        "grocery",
+        "supermarket",
+        "🧁"
+      ],
+      "tags": [
+        "bakery",
+        "grocery & supermarket"
+      ],
+      "emoji": "🧁",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "food/tea-leaves",
+      "name": "Tea Leaves",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/tea-leaves.svg",
+      "keywords": [
+        "tea",
+        "leaves",
+        "grocery",
+        "supermarket",
+        "🌿"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🌿",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/honey",
+      "name": "Honey",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/honey.svg",
+      "keywords": [
+        "honey",
+        "grocery",
+        "supermarket",
+        "🍯"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍯",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/tinned-food",
+      "name": "Tinned Food",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/tinned-food.svg",
+      "keywords": [
+        "tinned",
+        "food",
+        "grocery",
+        "supermarket",
+        "🥫"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🥫",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "food/maize",
+      "name": "Maize",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/maize.svg",
+      "keywords": [
+        "maize",
+        "grocery",
+        "supermarket",
+        "🌽"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🌽",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/beans",
+      "name": "Beans",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/beans.svg",
+      "keywords": [
+        "beans",
+        "grocery",
+        "supermarket",
+        "🫘"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🫘",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/groundnuts",
+      "name": "Groundnuts",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/groundnuts.svg",
+      "keywords": [
+        "groundnuts",
+        "grocery",
+        "supermarket",
+        "🥜"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🥜",
+      "bg": "#fff7ed"
+    },
+    {
+      "id": "drinks/juice",
+      "name": "Juice",
+      "category": "drinks",
+      "section": "Grocery & Supermarket",
+      "path": "drinks/juice.svg",
+      "keywords": [
+        "juice",
+        "grocery",
+        "supermarket",
+        "🧃"
+      ],
+      "tags": [
+        "drinks",
+        "grocery & supermarket"
+      ],
+      "emoji": "🧃",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "drinks/water",
+      "name": "Water",
+      "category": "drinks",
+      "section": "Grocery & Supermarket",
+      "path": "drinks/water.svg",
+      "keywords": [
+        "water",
+        "grocery",
+        "supermarket",
+        "💧"
+      ],
+      "tags": [
+        "drinks",
+        "grocery & supermarket"
+      ],
+      "emoji": "💧",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "drinks/soda-drink",
+      "name": "Soda / Drink",
+      "category": "drinks",
+      "section": "Grocery & Supermarket",
+      "path": "drinks/soda-drink.svg",
+      "keywords": [
+        "soda",
+        "drink",
+        "grocery",
+        "supermarket",
+        "🥤"
+      ],
+      "tags": [
+        "drinks",
+        "grocery & supermarket"
+      ],
+      "emoji": "🥤",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "food/chocolate",
+      "name": "Chocolate",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/chocolate.svg",
+      "keywords": [
+        "chocolate",
+        "grocery",
+        "supermarket",
+        "🍫"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍫",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "food/sweets",
+      "name": "Sweets",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/sweets.svg",
+      "keywords": [
+        "sweets",
+        "grocery",
+        "supermarket",
+        "🍬"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍬",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/ghee-margarine",
+      "name": "Ghee / Margarine",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/ghee-margarine.svg",
+      "keywords": [
+        "ghee",
+        "margarine",
+        "grocery",
+        "supermarket",
+        "🫚"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🫚",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/pasta",
+      "name": "Pasta",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/pasta.svg",
+      "keywords": [
+        "pasta",
+        "grocery",
+        "supermarket",
+        "🍝"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🍝",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/spices",
+      "name": "Spices",
+      "category": "food",
+      "section": "Grocery & Supermarket",
+      "path": "food/spices.svg",
+      "keywords": [
+        "spices",
+        "grocery",
+        "supermarket",
+        "🌶"
+      ],
+      "tags": [
+        "food",
+        "grocery & supermarket"
+      ],
+      "emoji": "🌶",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "bakery/cereal",
+      "name": "Cereal",
+      "category": "bakery",
+      "section": "Grocery & Supermarket",
+      "path": "bakery/cereal.svg",
+      "keywords": [
+        "cereal",
+        "grocery",
+        "supermarket",
+        "🧆"
+      ],
+      "tags": [
+        "bakery",
+        "grocery & supermarket"
+      ],
+      "emoji": "🧆",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/vegetables",
+      "name": "Vegetables",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/vegetables.svg",
+      "keywords": [
+        "vegetables",
+        "fresh",
+        "produce",
+        "meat",
+        "🥬"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥬",
+      "bg": "#dcfce7"
+    },
+    {
+      "id": "food/fruits",
+      "name": "Fruits",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/fruits.svg",
+      "keywords": [
+        "fruits",
+        "fresh",
+        "produce",
+        "meat",
+        "🍋"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍋",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/greens-sukuma",
+      "name": "Greens / Sukuma",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/greens-sukuma.svg",
+      "keywords": [
+        "greens",
+        "sukuma",
+        "fresh",
+        "produce",
+        "meat",
+        "🥦"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥦",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/tomatoes",
+      "name": "Tomatoes",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/tomatoes.svg",
+      "keywords": [
+        "tomatoes",
+        "fresh",
+        "produce",
+        "meat",
+        "🍅"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍅",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "food/onions",
+      "name": "Onions",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/onions.svg",
+      "keywords": [
+        "onions",
+        "fresh",
+        "produce",
+        "meat",
+        "🧅"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🧅",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/potatoes",
+      "name": "Potatoes",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/potatoes.svg",
+      "keywords": [
+        "potatoes",
+        "fresh",
+        "produce",
+        "meat",
+        "🥔"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥔",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/green-peas",
+      "name": "Green Peas",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/green-peas.svg",
+      "keywords": [
+        "green",
+        "peas",
+        "fresh",
+        "produce",
+        "meat",
+        "🫛"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🫛",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/beef-nyama",
+      "name": "Beef / Nyama",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/beef-nyama.svg",
+      "keywords": [
+        "beef",
+        "nyama",
+        "fresh",
+        "produce",
+        "meat",
+        "🥩"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥩",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "food/chicken",
+      "name": "Chicken",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/chicken.svg",
+      "keywords": [
+        "chicken",
+        "fresh",
+        "produce",
+        "meat",
+        "🍗"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍗",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/fish",
+      "name": "Fish",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/fish.svg",
+      "keywords": [
+        "fish",
+        "fresh",
+        "produce",
+        "meat",
+        "🐟"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🐟",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "food/sausage",
+      "name": "Sausage",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/sausage.svg",
+      "keywords": [
+        "sausage",
+        "fresh",
+        "produce",
+        "meat",
+        "🥓"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥓",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "food/cheese",
+      "name": "Cheese",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/cheese.svg",
+      "keywords": [
+        "cheese",
+        "fresh",
+        "produce",
+        "meat",
+        "🧀"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🧀",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "food/avocado",
+      "name": "Avocado",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/avocado.svg",
+      "keywords": [
+        "avocado",
+        "fresh",
+        "produce",
+        "meat",
+        "🥑"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🥑",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "food/banana",
+      "name": "Banana",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/banana.svg",
+      "keywords": [
+        "banana",
+        "fresh",
+        "produce",
+        "meat",
+        "🍌"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍌",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "food/apple",
+      "name": "Apple",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/apple.svg",
+      "keywords": [
+        "apple",
+        "fresh",
+        "produce",
+        "meat",
+        "🍎"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍎",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "food/grapes",
+      "name": "Grapes",
+      "category": "food",
+      "section": "Fresh Produce & Meat",
+      "path": "food/grapes.svg",
+      "keywords": [
+        "grapes",
+        "fresh",
+        "produce",
+        "meat",
+        "🍇"
+      ],
+      "tags": [
+        "food",
+        "fresh produce & meat"
+      ],
+      "emoji": "🍇",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "pharmacy/tablets-pills",
+      "name": "Tablets / Pills",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/tablets-pills.svg",
+      "keywords": [
+        "tablets",
+        "pills",
+        "pharmacy",
+        "chemist",
+        "💊"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "💊",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "pharmacy/injection-syringe",
+      "name": "Injection / Syringe",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/injection-syringe.svg",
+      "keywords": [
+        "injection",
+        "syringe",
+        "pharmacy",
+        "chemist",
+        "💉"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "💉",
+      "bg": "#dcfce7"
+    },
+    {
+      "id": "pharmacy/plaster-bandage",
+      "name": "Plaster / Bandage",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/plaster-bandage.svg",
+      "keywords": [
+        "plaster",
+        "bandage",
+        "pharmacy",
+        "chemist",
+        "🩹"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🩹",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "pharmacy/syrup-tonic",
+      "name": "Syrup / Tonic",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/syrup-tonic.svg",
+      "keywords": [
+        "syrup",
+        "tonic",
+        "pharmacy",
+        "chemist",
+        "🧴"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🧴",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "pharmacy/thermometer",
+      "name": "Thermometer",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/thermometer.svg",
+      "keywords": [
+        "thermometer",
+        "pharmacy",
+        "chemist",
+        "🌡"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🌡",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "pharmacy/stethoscope",
+      "name": "Stethoscope",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/stethoscope.svg",
+      "keywords": [
+        "stethoscope",
+        "pharmacy",
+        "chemist",
+        "🩺"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🩺",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "pharmacy/ointment-cream",
+      "name": "Ointment / Cream",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/ointment-cream.svg",
+      "keywords": [
+        "ointment",
+        "cream",
+        "pharmacy",
+        "chemist",
+        "💆"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "💆",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "pharmacy/supplements",
+      "name": "Supplements",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/supplements.svg",
+      "keywords": [
+        "supplements",
+        "pharmacy",
+        "chemist",
+        "🧫"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🧫",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "pharmacy/test-kit",
+      "name": "Test Kit",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/test-kit.svg",
+      "keywords": [
+        "test",
+        "kit",
+        "pharmacy",
+        "chemist",
+        "🩻"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🩻",
+      "bg": "#dcfce7"
+    },
+    {
+      "id": "pharmacy/first-aid-kit",
+      "name": "First Aid Kit",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/first-aid-kit.svg",
+      "keywords": [
+        "first",
+        "aid",
+        "kit",
+        "pharmacy",
+        "chemist",
+        "🚑"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🚑",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "pharmacy/eye-drops",
+      "name": "Eye Drops",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/eye-drops.svg",
+      "keywords": [
+        "eye",
+        "drops",
+        "pharmacy",
+        "chemist",
+        "👁"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "👁",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "pharmacy/dental-care",
+      "name": "Dental Care",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/dental-care.svg",
+      "keywords": [
+        "dental",
+        "care",
+        "pharmacy",
+        "chemist",
+        "🦷"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🦷",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "pharmacy/respiratory",
+      "name": "Respiratory",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/respiratory.svg",
+      "keywords": [
+        "respiratory",
+        "pharmacy",
+        "chemist",
+        "🫁"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🫁",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "pharmacy/cardiac-care",
+      "name": "Cardiac Care",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/cardiac-care.svg",
+      "keywords": [
+        "cardiac",
+        "care",
+        "pharmacy",
+        "chemist",
+        "🫀"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🫀",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "pharmacy/vitamins-lab",
+      "name": "Vitamins / Lab",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/vitamins-lab.svg",
+      "keywords": [
+        "vitamins",
+        "lab",
+        "pharmacy",
+        "chemist",
+        "🧬"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🧬",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "pharmacy/blood-products",
+      "name": "Blood Products",
+      "category": "pharmacy",
+      "section": "Pharmacy & Chemist",
+      "path": "pharmacy/blood-products.svg",
+      "keywords": [
+        "blood",
+        "products",
+        "pharmacy",
+        "chemist",
+        "🩸"
+      ],
+      "tags": [
+        "pharmacy",
+        "pharmacy & chemist"
+      ],
+      "emoji": "🩸",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/soap-detergent",
+      "name": "Soap / Detergent",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/soap-detergent.svg",
+      "keywords": [
+        "soap",
+        "detergent",
+        "household",
+        "cleaning",
+        "🧼"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🧼",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/bucket-container",
+      "name": "Bucket / Container",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/bucket-container.svg",
+      "keywords": [
+        "bucket",
+        "container",
+        "household",
+        "cleaning",
+        "🪣"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪣",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "home/broom",
+      "name": "Broom",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/broom.svg",
+      "keywords": [
+        "broom",
+        "household",
+        "cleaning",
+        "🧹"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🧹",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/toothbrush",
+      "name": "Toothbrush",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/toothbrush.svg",
+      "keywords": [
+        "toothbrush",
+        "household",
+        "cleaning",
+        "🪥"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪥",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/tissue-toilet-paper",
+      "name": "Tissue / Toilet Paper",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/tissue-toilet-paper.svg",
+      "keywords": [
+        "tissue",
+        "toilet",
+        "paper",
+        "household",
+        "cleaning",
+        "🧻"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🧻",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "home/sponge-scrub",
+      "name": "Sponge / Scrub",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/sponge-scrub.svg",
+      "keywords": [
+        "sponge",
+        "scrub",
+        "household",
+        "cleaning",
+        "🧽"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🧽",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "home/razor-shaving",
+      "name": "Razor / Shaving",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/razor-shaving.svg",
+      "keywords": [
+        "razor",
+        "shaving",
+        "household",
+        "cleaning",
+        "🪒"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪒",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "home/bath-products",
+      "name": "Bath Products",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/bath-products.svg",
+      "keywords": [
+        "bath",
+        "products",
+        "household",
+        "cleaning",
+        "🛁"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🛁",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/bleach-jik",
+      "name": "Bleach / Jik",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/bleach-jik.svg",
+      "keywords": [
+        "bleach",
+        "jik",
+        "household",
+        "cleaning",
+        "🫧"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🫧",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/air-freshener",
+      "name": "Air Freshener",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/air-freshener.svg",
+      "keywords": [
+        "air",
+        "freshener",
+        "household",
+        "cleaning",
+        "🪴"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪴",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "home/laundry-basket",
+      "name": "Laundry Basket",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/laundry-basket.svg",
+      "keywords": [
+        "laundry",
+        "basket",
+        "household",
+        "cleaning",
+        "🧺"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🧺",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "home/insecticide-trap",
+      "name": "Insecticide / Trap",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/insecticide-trap.svg",
+      "keywords": [
+        "insecticide",
+        "trap",
+        "household",
+        "cleaning",
+        "🪤"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪤",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/candle",
+      "name": "Candle",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/candle.svg",
+      "keywords": [
+        "candle",
+        "household",
+        "cleaning",
+        "🕯"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🕯",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "home/glass-cleaner",
+      "name": "Glass Cleaner",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/glass-cleaner.svg",
+      "keywords": [
+        "glass",
+        "cleaner",
+        "household",
+        "cleaning",
+        "🪟"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🪟",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/liquid-soap",
+      "name": "Liquid Soap",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/liquid-soap.svg",
+      "keywords": [
+        "liquid",
+        "soap",
+        "household",
+        "cleaning",
+        "🫗"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "🫗",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "home/bin-waste-bag",
+      "name": "Bin / Waste Bag",
+      "category": "home",
+      "section": "Household & Cleaning",
+      "path": "home/bin-waste-bag.svg",
+      "keywords": [
+        "bin",
+        "waste",
+        "bag",
+        "household",
+        "cleaning",
+        "♻"
+      ],
+      "tags": [
+        "home",
+        "household & cleaning"
+      ],
+      "emoji": "♻",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "beauty/lipstick-makeup",
+      "name": "Lipstick / Makeup",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/lipstick-makeup.svg",
+      "keywords": [
+        "lipstick",
+        "makeup",
+        "beauty",
+        "personal",
+        "care",
+        "💄"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "💄",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "beauty/lotion-moisturiser",
+      "name": "Lotion / Moisturiser",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/lotion-moisturiser.svg",
+      "keywords": [
+        "lotion",
+        "moisturiser",
+        "beauty",
+        "personal",
+        "care",
+        "🧴"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🧴",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "beauty/nail-polish",
+      "name": "Nail Polish",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/nail-polish.svg",
+      "keywords": [
+        "nail",
+        "polish",
+        "beauty",
+        "personal",
+        "care",
+        "💅"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "💅",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "beauty/perfume-deodorant",
+      "name": "Perfume / Deodorant",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/perfume-deodorant.svg",
+      "keywords": [
+        "perfume",
+        "deodorant",
+        "beauty",
+        "personal",
+        "care",
+        "🌸"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🌸",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "drinks/barber-salon",
+      "name": "Barber / Salon",
+      "category": "drinks",
+      "section": "Beauty & Personal Care",
+      "path": "drinks/barber-salon.svg",
+      "keywords": [
+        "barber",
+        "salon",
+        "beauty",
+        "personal",
+        "care",
+        "💈"
+      ],
+      "tags": [
+        "drinks",
+        "beauty & personal care"
+      ],
+      "emoji": "💈",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "beauty/lip-care",
+      "name": "Lip Care",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/lip-care.svg",
+      "keywords": [
+        "lip",
+        "care",
+        "beauty",
+        "personal",
+        "👄"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "👄",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "beauty/hair-brush-comb",
+      "name": "Hair Brush / Comb",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/hair-brush-comb.svg",
+      "keywords": [
+        "hair",
+        "brush",
+        "comb",
+        "beauty",
+        "personal",
+        "care",
+        "🪮"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🪮",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "beauty/hair-products",
+      "name": "Hair Products",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/hair-products.svg",
+      "keywords": [
+        "hair",
+        "products",
+        "beauty",
+        "personal",
+        "care",
+        "💇"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "💇",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "beauty/face-skin-care",
+      "name": "Face / Skin Care",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/face-skin-care.svg",
+      "keywords": [
+        "face",
+        "skin",
+        "care",
+        "beauty",
+        "personal",
+        "🧖"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🧖",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "beauty/cosmetics",
+      "name": "Cosmetics",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/cosmetics.svg",
+      "keywords": [
+        "cosmetics",
+        "beauty",
+        "personal",
+        "care",
+        "💋"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "💋",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "beauty/mirror",
+      "name": "Mirror",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/mirror.svg",
+      "keywords": [
+        "mirror",
+        "beauty",
+        "personal",
+        "care",
+        "🪞"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🪞",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "beauty/accessories",
+      "name": "Accessories",
+      "category": "beauty",
+      "section": "Beauty & Personal Care",
+      "path": "beauty/accessories.svg",
+      "keywords": [
+        "accessories",
+        "beauty",
+        "personal",
+        "care",
+        "🧣"
+      ],
+      "tags": [
+        "beauty",
+        "beauty & personal care"
+      ],
+      "emoji": "🧣",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "clothing/t-shirt",
+      "name": "T-Shirt",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/t-shirt.svg",
+      "keywords": [
+        "t-shirt",
+        "clothing",
+        "apparel",
+        "👕"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👕",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "clothing/dress",
+      "name": "Dress",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/dress.svg",
+      "keywords": [
+        "dress",
+        "clothing",
+        "apparel",
+        "👗"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👗",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "clothing/trousers-jeans",
+      "name": "Trousers / Jeans",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/trousers-jeans.svg",
+      "keywords": [
+        "trousers",
+        "jeans",
+        "clothing",
+        "apparel",
+        "👖"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👖",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "clothing/jacket-coat",
+      "name": "Jacket / Coat",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/jacket-coat.svg",
+      "keywords": [
+        "jacket",
+        "coat",
+        "clothing",
+        "apparel",
+        "🧥"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🧥",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "clothing/shoes-sneakers",
+      "name": "Shoes / Sneakers",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/shoes-sneakers.svg",
+      "keywords": [
+        "shoes",
+        "sneakers",
+        "clothing",
+        "apparel",
+        "👟"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👟",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "clothing/formal-shoes",
+      "name": "Formal Shoes",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/formal-shoes.svg",
+      "keywords": [
+        "formal",
+        "shoes",
+        "clothing",
+        "apparel",
+        "👞"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👞",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "clothing/heels",
+      "name": "Heels",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/heels.svg",
+      "keywords": [
+        "heels",
+        "clothing",
+        "apparel",
+        "👠"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👠",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "clothing/gloves",
+      "name": "Gloves",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/gloves.svg",
+      "keywords": [
+        "gloves",
+        "clothing",
+        "apparel",
+        "🧤"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🧤",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "clothing/cap-hat",
+      "name": "Cap / Hat",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/cap-hat.svg",
+      "keywords": [
+        "cap",
+        "hat",
+        "clothing",
+        "apparel",
+        "🧢"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🧢",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "clothing/socks",
+      "name": "Socks",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/socks.svg",
+      "keywords": [
+        "socks",
+        "clothing",
+        "apparel",
+        "🧦"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🧦",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "clothing/underwear",
+      "name": "Underwear",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/underwear.svg",
+      "keywords": [
+        "underwear",
+        "clothing",
+        "apparel",
+        "👙"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👙",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "clothing/handbag",
+      "name": "Handbag",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/handbag.svg",
+      "keywords": [
+        "handbag",
+        "clothing",
+        "apparel",
+        "👜"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "👜",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "clothing/school-bag",
+      "name": "School Bag",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/school-bag.svg",
+      "keywords": [
+        "school",
+        "bag",
+        "clothing",
+        "apparel",
+        "🎒"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🎒",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "clothing/watch",
+      "name": "Watch",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/watch.svg",
+      "keywords": [
+        "watch",
+        "clothing",
+        "apparel",
+        "⌚"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "⌚",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "clothing/jewellery",
+      "name": "Jewellery",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/jewellery.svg",
+      "keywords": [
+        "jewellery",
+        "clothing",
+        "apparel",
+        "💍"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "💍",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "clothing/uniform",
+      "name": "Uniform",
+      "category": "clothing",
+      "section": "Clothing & Apparel",
+      "path": "clothing/uniform.svg",
+      "keywords": [
+        "uniform",
+        "clothing",
+        "apparel",
+        "🩱"
+      ],
+      "tags": [
+        "clothing",
+        "clothing & apparel"
+      ],
+      "emoji": "🩱",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "electronics/mobile-phone",
+      "name": "Mobile Phone",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/mobile-phone.svg",
+      "keywords": [
+        "mobile",
+        "phone",
+        "electronics",
+        "phones",
+        "📱"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "📱",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/laptop",
+      "name": "Laptop",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/laptop.svg",
+      "keywords": [
+        "laptop",
+        "electronics",
+        "phones",
+        "💻"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "💻",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/computer",
+      "name": "Computer",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/computer.svg",
+      "keywords": [
+        "computer",
+        "electronics",
+        "phones",
+        "🖥"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🖥",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/tv-screen",
+      "name": "TV / Screen",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/tv-screen.svg",
+      "keywords": [
+        "tv",
+        "screen",
+        "electronics",
+        "phones",
+        "📺"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "📺",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/printer",
+      "name": "Printer",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/printer.svg",
+      "keywords": [
+        "printer",
+        "electronics",
+        "phones",
+        "🖨"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🖨",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/keyboard",
+      "name": "Keyboard",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/keyboard.svg",
+      "keywords": [
+        "keyboard",
+        "electronics",
+        "phones",
+        "⌨"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "⌨",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/mouse",
+      "name": "Mouse",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/mouse.svg",
+      "keywords": [
+        "mouse",
+        "electronics",
+        "phones",
+        "🖱"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🖱",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/headphones",
+      "name": "Headphones",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/headphones.svg",
+      "keywords": [
+        "headphones",
+        "electronics",
+        "phones",
+        "🎧"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🎧",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/battery-charger",
+      "name": "Battery / Charger",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/battery-charger.svg",
+      "keywords": [
+        "battery",
+        "charger",
+        "electronics",
+        "phones",
+        "🔋"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🔋",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/cable-adapter",
+      "name": "Cable / Adapter",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/cable-adapter.svg",
+      "keywords": [
+        "cable",
+        "adapter",
+        "electronics",
+        "phones",
+        "🔌"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🔌",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/router-wifi",
+      "name": "Router / WiFi",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/router-wifi.svg",
+      "keywords": [
+        "router",
+        "wifi",
+        "electronics",
+        "phones",
+        "📡"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "📡",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/gaming",
+      "name": "Gaming",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/gaming.svg",
+      "keywords": [
+        "gaming",
+        "electronics",
+        "phones",
+        "🕹"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🕹",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/camera",
+      "name": "Camera",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/camera.svg",
+      "keywords": [
+        "camera",
+        "electronics",
+        "phones",
+        "📷"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "📷",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/torch-flashlight",
+      "name": "Torch / Flashlight",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/torch-flashlight.svg",
+      "keywords": [
+        "torch",
+        "flashlight",
+        "electronics",
+        "phones",
+        "🔦"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🔦",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/bulb-led",
+      "name": "Bulb / LED",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/bulb-led.svg",
+      "keywords": [
+        "bulb",
+        "led",
+        "electronics",
+        "phones",
+        "💡"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "💡",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "electronics/speaker",
+      "name": "Speaker",
+      "category": "electronics",
+      "section": "Electronics & Phones",
+      "path": "electronics/speaker.svg",
+      "keywords": [
+        "speaker",
+        "electronics",
+        "phones",
+        "🔈"
+      ],
+      "tags": [
+        "electronics",
+        "electronics & phones"
+      ],
+      "emoji": "🔈",
+      "bg": "#1e3a5f"
+    },
+    {
+      "id": "hardware/hammer",
+      "name": "Hammer",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/hammer.svg",
+      "keywords": [
+        "hammer",
+        "hardware",
+        "building",
+        "🔨"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🔨",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "hardware/screwdriver",
+      "name": "Screwdriver",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/screwdriver.svg",
+      "keywords": [
+        "screwdriver",
+        "hardware",
+        "building",
+        "🪛"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪛",
+      "bg": "#e0e7ff"
+    },
+    {
+      "id": "hardware/spanner-wrench",
+      "name": "Spanner / Wrench",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/spanner-wrench.svg",
+      "keywords": [
+        "spanner",
+        "wrench",
+        "hardware",
+        "building",
+        "🔧"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🔧",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "hardware/bolt-nail-screw",
+      "name": "Bolt / Nail / Screw",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/bolt-nail-screw.svg",
+      "keywords": [
+        "bolt",
+        "nail",
+        "screw",
+        "hardware",
+        "building",
+        "🔩"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🔩",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "hardware/saw",
+      "name": "Saw",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/saw.svg",
+      "keywords": [
+        "saw",
+        "hardware",
+        "building",
+        "🪚"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪚",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "construction/ladder",
+      "name": "Ladder",
+      "category": "construction",
+      "section": "Hardware & Building",
+      "path": "construction/ladder.svg",
+      "keywords": [
+        "ladder",
+        "hardware",
+        "building",
+        "🪜"
+      ],
+      "tags": [
+        "construction",
+        "hardware & building"
+      ],
+      "emoji": "🪜",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "construction/cement-blocks",
+      "name": "Cement / Blocks",
+      "category": "construction",
+      "section": "Hardware & Building",
+      "path": "construction/cement-blocks.svg",
+      "keywords": [
+        "cement",
+        "blocks",
+        "hardware",
+        "building",
+        "🧱"
+      ],
+      "tags": [
+        "construction",
+        "hardware & building"
+      ],
+      "emoji": "🧱",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "hardware/paint-bucket",
+      "name": "Paint Bucket",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/paint-bucket.svg",
+      "keywords": [
+        "paint",
+        "bucket",
+        "hardware",
+        "building",
+        "🪣"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪣",
+      "bg": "#e0e7ff"
+    },
+    {
+      "id": "hardware/hook-wire",
+      "name": "Hook / Wire",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/hook-wire.svg",
+      "keywords": [
+        "hook",
+        "wire",
+        "hardware",
+        "building",
+        "🪝"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪝",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "hardware/lock-key",
+      "name": "Lock / Key",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/lock-key.svg",
+      "keywords": [
+        "lock",
+        "key",
+        "hardware",
+        "building",
+        "🔑"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🔑",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "hardware/window-glass",
+      "name": "Window / Glass",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/window-glass.svg",
+      "keywords": [
+        "window",
+        "glass",
+        "hardware",
+        "building",
+        "🪟"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪟",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "hardware/door-hinge",
+      "name": "Door / Hinge",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/door-hinge.svg",
+      "keywords": [
+        "door",
+        "hinge",
+        "hardware",
+        "building",
+        "🚪"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🚪",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "hardware/plumbing",
+      "name": "Plumbing",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/plumbing.svg",
+      "keywords": [
+        "plumbing",
+        "hardware",
+        "building",
+        "🪠"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🪠",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "hardware/electrical",
+      "name": "Electrical",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/electrical.svg",
+      "keywords": [
+        "electrical",
+        "hardware",
+        "building",
+        "⚡"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "⚡",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "construction/construction",
+      "name": "Construction",
+      "category": "construction",
+      "section": "Hardware & Building",
+      "path": "construction/construction.svg",
+      "keywords": [
+        "construction",
+        "hardware",
+        "building",
+        "🏗"
+      ],
+      "tags": [
+        "construction",
+        "hardware & building"
+      ],
+      "emoji": "🏗",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "hardware/garden-landscaping",
+      "name": "Garden / Landscaping",
+      "category": "hardware",
+      "section": "Hardware & Building",
+      "path": "hardware/garden-landscaping.svg",
+      "keywords": [
+        "garden",
+        "landscaping",
+        "hardware",
+        "building",
+        "🌿"
+      ],
+      "tags": [
+        "hardware",
+        "hardware & building"
+      ],
+      "emoji": "🌿",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "agriculture/seeds",
+      "name": "Seeds",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/seeds.svg",
+      "keywords": [
+        "seeds",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🌱"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🌱",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "agriculture/pesticide-herbicide",
+      "name": "Pesticide / Herbicide",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/pesticide-herbicide.svg",
+      "keywords": [
+        "pesticide",
+        "herbicide",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🌿"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🌿",
+      "bg": "#dcfce7"
+    },
+    {
+      "id": "agriculture/animal-feeds",
+      "name": "Animal Feeds",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/animal-feeds.svg",
+      "keywords": [
+        "animal",
+        "feeds",
+        "agrovet",
+        "🌾"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🌾",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "agriculture/vet-medicine",
+      "name": "Vet Medicine",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/vet-medicine.svg",
+      "keywords": [
+        "vet",
+        "medicine",
+        "agrovet",
+        "animal",
+        "feeds",
+        "💊"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "💊",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "agriculture/cattle-products",
+      "name": "Cattle Products",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/cattle-products.svg",
+      "keywords": [
+        "cattle",
+        "products",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🐄"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🐄",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "agriculture/poultry-feeds",
+      "name": "Poultry Feeds",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/poultry-feeds.svg",
+      "keywords": [
+        "poultry",
+        "feeds",
+        "agrovet",
+        "animal",
+        "🐔"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🐔",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "agriculture/aquaculture",
+      "name": "Aquaculture",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/aquaculture.svg",
+      "keywords": [
+        "aquaculture",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🐟"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🐟",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "agriculture/goat-sheep",
+      "name": "Goat / Sheep",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/goat-sheep.svg",
+      "keywords": [
+        "goat",
+        "sheep",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🐐"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🐐",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "agriculture/fertiliser",
+      "name": "Fertiliser",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/fertiliser.svg",
+      "keywords": [
+        "fertiliser",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🌻"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🌻",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "agriculture/dip-spray",
+      "name": "Dip / Spray",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/dip-spray.svg",
+      "keywords": [
+        "dip",
+        "spray",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🪣"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🪣",
+      "bg": "#dcfce7"
+    },
+    {
+      "id": "agriculture/vaccines",
+      "name": "Vaccines",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/vaccines.svg",
+      "keywords": [
+        "vaccines",
+        "agrovet",
+        "animal",
+        "feeds",
+        "💉"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "💉",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "agriculture/lab-soil-test",
+      "name": "Lab / Soil Test",
+      "category": "agriculture",
+      "section": "Agrovet & Animal Feeds",
+      "path": "agriculture/lab-soil-test.svg",
+      "keywords": [
+        "lab",
+        "soil",
+        "test",
+        "agrovet",
+        "animal",
+        "feeds",
+        "🧪"
+      ],
+      "tags": [
+        "agriculture",
+        "agrovet & animal feeds"
+      ],
+      "emoji": "🧪",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "restaurant/burgers",
+      "name": "Burgers",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/burgers.svg",
+      "keywords": [
+        "burgers",
+        "food",
+        "service",
+        "restaurant",
+        "🍔"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🍔",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "restaurant/pizza",
+      "name": "Pizza",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/pizza.svg",
+      "keywords": [
+        "pizza",
+        "food",
+        "service",
+        "restaurant",
+        "🍕"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🍕",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "restaurant/chips-fries",
+      "name": "Chips / Fries",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/chips-fries.svg",
+      "keywords": [
+        "chips",
+        "fries",
+        "food",
+        "service",
+        "restaurant",
+        "🍟"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🍟",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "restaurant/salads",
+      "name": "Salads",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/salads.svg",
+      "keywords": [
+        "salads",
+        "food",
+        "service",
+        "restaurant",
+        "🥗"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🥗",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "restaurant/noodles-soup",
+      "name": "Noodles / Soup",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/noodles-soup.svg",
+      "keywords": [
+        "noodles",
+        "soup",
+        "food",
+        "service",
+        "restaurant",
+        "🍜"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🍜",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "restaurant/grill-nyama-choma",
+      "name": "Grill / Nyama Choma",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/grill-nyama-choma.svg",
+      "keywords": [
+        "grill",
+        "nyama",
+        "choma",
+        "food",
+        "service",
+        "restaurant",
+        "🥩"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🥩",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "restaurant/ice-cream",
+      "name": "Ice Cream",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/ice-cream.svg",
+      "keywords": [
+        "ice",
+        "cream",
+        "food",
+        "service",
+        "restaurant",
+        "🧊"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🧊",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "bakery/cakes-pastry",
+      "name": "Cakes / Pastry",
+      "category": "bakery",
+      "section": "Food Service & Restaurant",
+      "path": "bakery/cakes-pastry.svg",
+      "keywords": [
+        "cakes",
+        "pastry",
+        "food",
+        "service",
+        "restaurant",
+        "🎂"
+      ],
+      "tags": [
+        "bakery",
+        "food service & restaurant"
+      ],
+      "emoji": "🎂",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "restaurant/breakfast",
+      "name": "Breakfast",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/breakfast.svg",
+      "keywords": [
+        "breakfast",
+        "food",
+        "service",
+        "restaurant",
+        "🥞"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🥞",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "services/tea-coffee-service",
+      "name": "Tea / Coffee Service",
+      "category": "services",
+      "section": "Food Service & Restaurant",
+      "path": "services/tea-coffee-service.svg",
+      "keywords": [
+        "tea",
+        "coffee",
+        "service",
+        "food",
+        "restaurant",
+        "🫖"
+      ],
+      "tags": [
+        "services",
+        "food service & restaurant"
+      ],
+      "emoji": "🫖",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "drinks/drinks-bar",
+      "name": "Drinks / Bar",
+      "category": "drinks",
+      "section": "Food Service & Restaurant",
+      "path": "drinks/drinks-bar.svg",
+      "keywords": [
+        "drinks",
+        "bar",
+        "food",
+        "service",
+        "restaurant",
+        "🍺"
+      ],
+      "tags": [
+        "drinks",
+        "food service & restaurant"
+      ],
+      "emoji": "🍺",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "restaurant/snacks",
+      "name": "Snacks",
+      "category": "restaurant",
+      "section": "Food Service & Restaurant",
+      "path": "restaurant/snacks.svg",
+      "keywords": [
+        "snacks",
+        "food",
+        "service",
+        "restaurant",
+        "🌮"
+      ],
+      "tags": [
+        "restaurant",
+        "food service & restaurant"
+      ],
+      "emoji": "🌮",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "books/books-textbooks",
+      "name": "Books / Textbooks",
+      "category": "books",
+      "section": "Stationery & School",
+      "path": "books/books-textbooks.svg",
+      "keywords": [
+        "books",
+        "textbooks",
+        "stationery",
+        "school",
+        "📚"
+      ],
+      "tags": [
+        "books",
+        "stationery & school"
+      ],
+      "emoji": "📚",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "books/exercise-books",
+      "name": "Exercise Books",
+      "category": "books",
+      "section": "Stationery & School",
+      "path": "books/exercise-books.svg",
+      "keywords": [
+        "exercise",
+        "books",
+        "stationery",
+        "school",
+        "📓"
+      ],
+      "tags": [
+        "books",
+        "stationery & school"
+      ],
+      "emoji": "📓",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "office/pencils-pens",
+      "name": "Pencils / Pens",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/pencils-pens.svg",
+      "keywords": [
+        "pencils",
+        "pens",
+        "stationery",
+        "school",
+        "✏"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "✏",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "office/ink-markers",
+      "name": "Ink / Markers",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/ink-markers.svg",
+      "keywords": [
+        "ink",
+        "markers",
+        "stationery",
+        "school",
+        "🖊"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "🖊",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "office/geometry-set",
+      "name": "Geometry Set",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/geometry-set.svg",
+      "keywords": [
+        "geometry",
+        "set",
+        "stationery",
+        "school",
+        "📐"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "📐",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "office/office-supplies",
+      "name": "Office Supplies",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/office-supplies.svg",
+      "keywords": [
+        "office",
+        "supplies",
+        "stationery",
+        "school",
+        "📎"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "📎",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "services/printing-services",
+      "name": "Printing Services",
+      "category": "services",
+      "section": "Stationery & School",
+      "path": "services/printing-services.svg",
+      "keywords": [
+        "printing",
+        "services",
+        "stationery",
+        "school",
+        "🖨"
+      ],
+      "tags": [
+        "services",
+        "stationery & school"
+      ],
+      "emoji": "🖨",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "office/files-folders",
+      "name": "Files / Folders",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/files-folders.svg",
+      "keywords": [
+        "files",
+        "folders",
+        "stationery",
+        "school",
+        "🗂"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "🗂",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "office/scissors-craft",
+      "name": "Scissors / Craft",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/scissors-craft.svg",
+      "keywords": [
+        "scissors",
+        "craft",
+        "stationery",
+        "school",
+        "✂"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "✂",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "office/art-supplies",
+      "name": "Art Supplies",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/art-supplies.svg",
+      "keywords": [
+        "art",
+        "supplies",
+        "stationery",
+        "school",
+        "🖼"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "🖼",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "office/school-bag",
+      "name": "School Bag",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/school-bag.svg",
+      "keywords": [
+        "school",
+        "bag",
+        "stationery",
+        "🎒"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "🎒",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "office/lab-equipment",
+      "name": "Lab Equipment",
+      "category": "office",
+      "section": "Stationery & School",
+      "path": "office/lab-equipment.svg",
+      "keywords": [
+        "lab",
+        "equipment",
+        "stationery",
+        "school",
+        "🔭"
+      ],
+      "tags": [
+        "office",
+        "stationery & school"
+      ],
+      "emoji": "🔭",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "automotive/engine-parts",
+      "name": "Engine Parts",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/engine-parts.svg",
+      "keywords": [
+        "engine",
+        "parts",
+        "auto",
+        "workshop",
+        "🔧"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🔧",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/tyres",
+      "name": "Tyres",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/tyres.svg",
+      "keywords": [
+        "tyres",
+        "auto",
+        "parts",
+        "workshop",
+        "🛞"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🛞",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/engine-oil",
+      "name": "Engine Oil",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/engine-oil.svg",
+      "keywords": [
+        "engine",
+        "oil",
+        "auto",
+        "parts",
+        "workshop",
+        "🛢"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🛢",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/fuel",
+      "name": "Fuel",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/fuel.svg",
+      "keywords": [
+        "fuel",
+        "auto",
+        "parts",
+        "workshop",
+        "⛽"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "⛽",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/car-battery",
+      "name": "Car Battery",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/car-battery.svg",
+      "keywords": [
+        "car",
+        "battery",
+        "auto",
+        "parts",
+        "workshop",
+        "🔋"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🔋",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/headlights",
+      "name": "Headlights",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/headlights.svg",
+      "keywords": [
+        "headlights",
+        "auto",
+        "parts",
+        "workshop",
+        "💡"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "💡",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/windscreen",
+      "name": "Windscreen",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/windscreen.svg",
+      "keywords": [
+        "windscreen",
+        "auto",
+        "parts",
+        "workshop",
+        "🪟"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🪟",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/body-parts",
+      "name": "Body Parts",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/body-parts.svg",
+      "keywords": [
+        "body",
+        "parts",
+        "auto",
+        "workshop",
+        "🚘"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🚘",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/workshop-tools",
+      "name": "Workshop Tools",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/workshop-tools.svg",
+      "keywords": [
+        "workshop",
+        "tools",
+        "auto",
+        "parts",
+        "🛠"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🛠",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/coolant-fluids",
+      "name": "Coolant / Fluids",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/coolant-fluids.svg",
+      "keywords": [
+        "coolant",
+        "fluids",
+        "auto",
+        "parts",
+        "workshop",
+        "🪣"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🪣",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/wiring-electrical",
+      "name": "Wiring / Electrical",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/wiring-electrical.svg",
+      "keywords": [
+        "wiring",
+        "electrical",
+        "auto",
+        "parts",
+        "workshop",
+        "🔌"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🔌",
+      "bg": "#374151"
+    },
+    {
+      "id": "automotive/car-care-products",
+      "name": "Car Care Products",
+      "category": "automotive",
+      "section": "Auto Parts & Workshop",
+      "path": "automotive/car-care-products.svg",
+      "keywords": [
+        "car",
+        "care",
+        "products",
+        "auto",
+        "parts",
+        "workshop",
+        "🧴"
+      ],
+      "tags": [
+        "automotive",
+        "auto parts & workshop"
+      ],
+      "emoji": "🧴",
+      "bg": "#374151"
+    },
+    {
+      "id": "toys/video-games",
+      "name": "Video Games",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/video-games.svg",
+      "keywords": [
+        "video",
+        "games",
+        "entertainment",
+        "toys",
+        "🎮"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎮",
+      "bg": "#ede9fe"
+    },
+    {
+      "id": "toys/soft-toys",
+      "name": "Soft Toys",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/soft-toys.svg",
+      "keywords": [
+        "soft",
+        "toys",
+        "entertainment",
+        "🧸"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🧸",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "toys/board-games",
+      "name": "Board Games",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/board-games.svg",
+      "keywords": [
+        "board",
+        "games",
+        "entertainment",
+        "toys",
+        "🎲"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎲",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "sports/football",
+      "name": "Football",
+      "category": "sports",
+      "section": "Entertainment & Toys",
+      "path": "sports/football.svg",
+      "keywords": [
+        "football",
+        "entertainment",
+        "toys",
+        "⚽"
+      ],
+      "tags": [
+        "sports",
+        "entertainment & toys"
+      ],
+      "emoji": "⚽",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "sports/cricket-sports",
+      "name": "Cricket / Sports",
+      "category": "sports",
+      "section": "Entertainment & Toys",
+      "path": "sports/cricket-sports.svg",
+      "keywords": [
+        "cricket",
+        "sports",
+        "entertainment",
+        "toys",
+        "🏏"
+      ],
+      "tags": [
+        "sports",
+        "entertainment & toys"
+      ],
+      "emoji": "🏏",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "toys/art-craft",
+      "name": "Art / Craft",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/art-craft.svg",
+      "keywords": [
+        "art",
+        "craft",
+        "entertainment",
+        "toys",
+        "🎨"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎨",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "toys/music",
+      "name": "Music",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/music.svg",
+      "keywords": [
+        "music",
+        "entertainment",
+        "toys",
+        "🎵"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎵",
+      "bg": "#ede9fe"
+    },
+    {
+      "id": "toys/party-supplies",
+      "name": "Party Supplies",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/party-supplies.svg",
+      "keywords": [
+        "party",
+        "supplies",
+        "entertainment",
+        "toys",
+        "🎪"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎪",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "toys/puzzle-learning",
+      "name": "Puzzle / Learning",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/puzzle-learning.svg",
+      "keywords": [
+        "puzzle",
+        "learning",
+        "entertainment",
+        "toys",
+        "🧩"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🧩",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "toys/dolls-figurines",
+      "name": "Dolls / Figurines",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/dolls-figurines.svg",
+      "keywords": [
+        "dolls",
+        "figurines",
+        "entertainment",
+        "toys",
+        "🪆"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🪆",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "sports/fitness-gym",
+      "name": "Fitness / Gym",
+      "category": "sports",
+      "section": "Entertainment & Toys",
+      "path": "sports/fitness-gym.svg",
+      "keywords": [
+        "fitness",
+        "gym",
+        "entertainment",
+        "toys",
+        "🏋"
+      ],
+      "tags": [
+        "sports",
+        "entertainment & toys"
+      ],
+      "emoji": "🏋",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "toys/events-shows",
+      "name": "Events / Shows",
+      "category": "toys",
+      "section": "Entertainment & Toys",
+      "path": "toys/events-shows.svg",
+      "keywords": [
+        "events",
+        "shows",
+        "entertainment",
+        "toys",
+        "🎭"
+      ],
+      "tags": [
+        "toys",
+        "entertainment & toys"
+      ],
+      "emoji": "🎭",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "furniture/sofa-furniture",
+      "name": "Sofa / Furniture",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/sofa-furniture.svg",
+      "keywords": [
+        "sofa",
+        "furniture",
+        "home",
+        "🛋"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🛋",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "furniture/bed-mattress",
+      "name": "Bed / Mattress",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/bed-mattress.svg",
+      "keywords": [
+        "bed",
+        "mattress",
+        "home",
+        "furniture",
+        "🛏"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🛏",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "furniture/chair",
+      "name": "Chair",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/chair.svg",
+      "keywords": [
+        "chair",
+        "home",
+        "furniture",
+        "🪑"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🪑",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "furniture/mirror-decor",
+      "name": "Mirror / Decor",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/mirror-decor.svg",
+      "keywords": [
+        "mirror",
+        "decor",
+        "home",
+        "furniture",
+        "🪞"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🪞",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "furniture/wall-clock",
+      "name": "Wall Clock",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/wall-clock.svg",
+      "keywords": [
+        "wall",
+        "clock",
+        "home",
+        "furniture",
+        "🕰"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🕰",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "furniture/photo-frame",
+      "name": "Photo Frame",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/photo-frame.svg",
+      "keywords": [
+        "photo",
+        "frame",
+        "home",
+        "furniture",
+        "🖼"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🖼",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "furniture/indoor-plants",
+      "name": "Indoor Plants",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/indoor-plants.svg",
+      "keywords": [
+        "indoor",
+        "plants",
+        "home",
+        "furniture",
+        "🪴"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🪴",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "furniture/storage",
+      "name": "Storage",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/storage.svg",
+      "keywords": [
+        "storage",
+        "home",
+        "furniture",
+        "🛒"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🛒",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "furniture/ceramics-decor",
+      "name": "Ceramics / Decor",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/ceramics-decor.svg",
+      "keywords": [
+        "ceramics",
+        "decor",
+        "home",
+        "furniture",
+        "🏺"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🏺",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "furniture/lighting",
+      "name": "Lighting",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/lighting.svg",
+      "keywords": [
+        "lighting",
+        "home",
+        "furniture",
+        "🪔"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🪔",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "furniture/cleaning-tools",
+      "name": "Cleaning Tools",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/cleaning-tools.svg",
+      "keywords": [
+        "cleaning",
+        "tools",
+        "home",
+        "furniture",
+        "🧹"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🧹",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "furniture/diy-repairs",
+      "name": "DIY / Repairs",
+      "category": "furniture",
+      "section": "Home & Furniture",
+      "path": "furniture/diy-repairs.svg",
+      "keywords": [
+        "diy",
+        "repairs",
+        "home",
+        "furniture",
+        "🛠"
+      ],
+      "tags": [
+        "furniture",
+        "home & furniture"
+      ],
+      "emoji": "🛠",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/frying-pan",
+      "name": "Frying Pan",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/frying-pan.svg",
+      "keywords": [
+        "frying",
+        "pan",
+        "kitchen",
+        "cookware",
+        "🍳"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🍳",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "home/sufuria-pot",
+      "name": "Sufuria / Pot",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/sufuria-pot.svg",
+      "keywords": [
+        "sufuria",
+        "pot",
+        "kitchen",
+        "cookware",
+        "🫕"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🫕",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "home/spoon-ladle",
+      "name": "Spoon / Ladle",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/spoon-ladle.svg",
+      "keywords": [
+        "spoon",
+        "ladle",
+        "kitchen",
+        "cookware",
+        "🥄"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🥄",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "home/knife",
+      "name": "Knife",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/knife.svg",
+      "keywords": [
+        "knife",
+        "kitchen",
+        "cookware",
+        "🔪"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🔪",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/waffle-iron-toaster",
+      "name": "Waffle Iron / Toaster",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/waffle-iron-toaster.svg",
+      "keywords": [
+        "waffle",
+        "iron",
+        "toaster",
+        "kitchen",
+        "cookware",
+        "🧇"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🧇",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/flask-thermos",
+      "name": "Flask / Thermos",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/flask-thermos.svg",
+      "keywords": [
+        "flask",
+        "thermos",
+        "kitchen",
+        "cookware",
+        "🫙"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🫙",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "home/plates-cups",
+      "name": "Plates / Cups",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/plates-cups.svg",
+      "keywords": [
+        "plates",
+        "cups",
+        "kitchen",
+        "cookware",
+        "🍶"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🍶",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "home/cutlery-set",
+      "name": "Cutlery Set",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/cutlery-set.svg",
+      "keywords": [
+        "cutlery",
+        "set",
+        "kitchen",
+        "cookware",
+        "🥢"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🥢",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "home/kettle-jug",
+      "name": "Kettle / Jug",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/kettle-jug.svg",
+      "keywords": [
+        "kettle",
+        "jug",
+        "kitchen",
+        "cookware",
+        "🫖"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🫖",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "home/fridge-cooler",
+      "name": "Fridge / Cooler",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/fridge-cooler.svg",
+      "keywords": [
+        "fridge",
+        "cooler",
+        "kitchen",
+        "cookware",
+        "🧊"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🧊",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "home/stove-cooker",
+      "name": "Stove / Cooker",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/stove-cooker.svg",
+      "keywords": [
+        "stove",
+        "cooker",
+        "kitchen",
+        "cookware",
+        "🔥"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🔥",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "home/basin-sink",
+      "name": "Basin / Sink",
+      "category": "home",
+      "section": "Kitchen & Cookware",
+      "path": "home/basin-sink.svg",
+      "keywords": [
+        "basin",
+        "sink",
+        "kitchen",
+        "cookware",
+        "🪣"
+      ],
+      "tags": [
+        "home",
+        "kitchen & cookware"
+      ],
+      "emoji": "🪣",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "pets/dog-food-care",
+      "name": "Dog Food / Care",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/dog-food-care.svg",
+      "keywords": [
+        "dog",
+        "food",
+        "care",
+        "pet",
+        "supplies",
+        "🐕"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🐕",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "pets/cat-food-care",
+      "name": "Cat Food / Care",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/cat-food-care.svg",
+      "keywords": [
+        "cat",
+        "food",
+        "care",
+        "pet",
+        "supplies",
+        "🐈"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🐈",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "pets/fish-aquarium",
+      "name": "Fish / Aquarium",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/fish-aquarium.svg",
+      "keywords": [
+        "fish",
+        "aquarium",
+        "pet",
+        "supplies",
+        "🐠"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🐠",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "pets/bird-parrot-care",
+      "name": "Bird / Parrot Care",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/bird-parrot-care.svg",
+      "keywords": [
+        "bird",
+        "parrot",
+        "care",
+        "pet",
+        "supplies",
+        "🦜"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🦜",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "pets/pet-bedding",
+      "name": "Pet Bedding",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/pet-bedding.svg",
+      "keywords": [
+        "pet",
+        "bedding",
+        "supplies",
+        "🪺"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🪺",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "pets/pet-medicine",
+      "name": "Pet Medicine",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/pet-medicine.svg",
+      "keywords": [
+        "pet",
+        "medicine",
+        "supplies",
+        "💊"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "💊",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "pets/pet-accessories",
+      "name": "Pet Accessories",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/pet-accessories.svg",
+      "keywords": [
+        "pet",
+        "accessories",
+        "supplies",
+        "🦮"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🦮",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "pets/grooming",
+      "name": "Grooming",
+      "category": "pets",
+      "section": "Pet Supplies",
+      "path": "pets/grooming.svg",
+      "keywords": [
+        "grooming",
+        "pet",
+        "supplies",
+        "🪮"
+      ],
+      "tags": [
+        "pets",
+        "pet supplies"
+      ],
+      "emoji": "🪮",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "logistics/kerosene-paraffin",
+      "name": "Kerosene / Paraffin",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/kerosene-paraffin.svg",
+      "keywords": [
+        "kerosene",
+        "paraffin",
+        "energy",
+        "utilities",
+        "🪔"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🪔",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "logistics/lpg-gas-cylinder",
+      "name": "LPG / Gas Cylinder",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/lpg-gas-cylinder.svg",
+      "keywords": [
+        "lpg",
+        "gas",
+        "cylinder",
+        "energy",
+        "utilities",
+        "🔥"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🔥",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "logistics/solar-panel-kit",
+      "name": "Solar Panel / Kit",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/solar-panel-kit.svg",
+      "keywords": [
+        "solar",
+        "panel",
+        "kit",
+        "energy",
+        "utilities",
+        "☀"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "☀",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "logistics/generator-battery",
+      "name": "Generator / Battery",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/generator-battery.svg",
+      "keywords": [
+        "generator",
+        "battery",
+        "energy",
+        "utilities",
+        "🔋"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🔋",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "logistics/electric-tokens-prepaid",
+      "name": "Electric Tokens / Prepaid",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/electric-tokens-prepaid.svg",
+      "keywords": [
+        "electric",
+        "tokens",
+        "prepaid",
+        "energy",
+        "utilities",
+        "⚡"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "⚡",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "logistics/candle-torch",
+      "name": "Candle / Torch",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/candle-torch.svg",
+      "keywords": [
+        "candle",
+        "torch",
+        "energy",
+        "utilities",
+        "🕯"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🕯",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "logistics/fuel-diesel",
+      "name": "Fuel / Diesel",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/fuel-diesel.svg",
+      "keywords": [
+        "fuel",
+        "diesel",
+        "energy",
+        "utilities",
+        "🛢"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🛢",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "logistics/charcoal-firewood",
+      "name": "Charcoal / Firewood",
+      "category": "logistics",
+      "section": "Energy & Utilities",
+      "path": "logistics/charcoal-firewood.svg",
+      "keywords": [
+        "charcoal",
+        "firewood",
+        "energy",
+        "utilities",
+        "🌬"
+      ],
+      "tags": [
+        "logistics",
+        "energy & utilities"
+      ],
+      "emoji": "🌬",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "generic/general-product",
+      "name": "General Product",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/general-product.svg",
+      "keywords": [
+        "general",
+        "product",
+        "default",
+        "📦"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "📦",
+      "bg": "#f3f4f6"
+    },
+    {
+      "id": "generic/tagged-labelled",
+      "name": "Tagged / Labelled",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/tagged-labelled.svg",
+      "keywords": [
+        "tagged",
+        "labelled",
+        "general",
+        "default",
+        "🏷"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "🏷",
+      "bg": "#dbeafe"
+    },
+    {
+      "id": "generic/featured-item",
+      "name": "Featured Item",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/featured-item.svg",
+      "keywords": [
+        "featured",
+        "item",
+        "general",
+        "default",
+        "⭐"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "⭐",
+      "bg": "#fef9c3"
+    },
+    {
+      "id": "generic/refill-deposit",
+      "name": "Refill / Deposit",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/refill-deposit.svg",
+      "keywords": [
+        "refill",
+        "deposit",
+        "general",
+        "default",
+        "♻"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "♻",
+      "bg": "#ecfccb"
+    },
+    {
+      "id": "generic/gift-bundle",
+      "name": "Gift / Bundle",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/gift-bundle.svg",
+      "keywords": [
+        "gift",
+        "bundle",
+        "general",
+        "default",
+        "🎁"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "🎁",
+      "bg": "#fce7f3"
+    },
+    {
+      "id": "generic/promo-discount",
+      "name": "Promo / Discount",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/promo-discount.svg",
+      "keywords": [
+        "promo",
+        "discount",
+        "general",
+        "default",
+        "🔖"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "🔖",
+      "bg": "#fee2e2"
+    },
+    {
+      "id": "generic/retail-bag-pack",
+      "name": "Retail Bag / Pack",
+      "category": "generic",
+      "section": "General / Default",
+      "path": "generic/retail-bag-pack.svg",
+      "keywords": [
+        "retail",
+        "bag",
+        "pack",
+        "general",
+        "default",
+        "🛍"
+      ],
+      "tags": [
+        "generic",
+        "general / default"
+      ],
+      "emoji": "🛍",
+      "bg": "#fef3c7"
+    },
+    {
+      "id": "services/service-subscription",
+      "name": "Service / Subscription",
+      "category": "services",
+      "section": "General / Default",
+      "path": "services/service-subscription.svg",
+      "keywords": [
+        "service",
+        "subscription",
+        "general",
+        "default",
+        "📋"
+      ],
+      "tags": [
+        "services",
+        "general / default"
+      ],
+      "emoji": "📋",
+      "bg": "#dbeafe"
+    }
+  ]
+}

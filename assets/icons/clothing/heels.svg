@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Heels">
+  <rect width="64" height="64" rx="14" fill="#fce7f3"/>
+  <g color="#0f172a" transform="translate(0,0)"><path d="M20 18l12-6 12 6 8-2 4 10-8 4v20H16V30l-8-4 4-10z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/></g>
+  <text x="52" y="14" font-size="10" text-anchor="middle" dominant-baseline="middle">👠</text>
+</svg>

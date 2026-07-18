@@ -43,6 +43,7 @@ a = Analysis(
     ),
     hiddenimports=[
         'PyQt5', 'PyQt5.QtWidgets', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.sip',
+        'PyQt5.QtSvg',
         'jwt', 'jwt.algorithms',
         'bcrypt', 'cffi', '_cffi_backend',
         'requests', 'urllib3', 'charset_normalizer', 'certifi', 'idna',

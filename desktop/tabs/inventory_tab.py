@@ -69,6 +69,11 @@ class InventoryTab(QWidget):
             add.clicked.connect(self._add)
             tb.addWidget(add)
 
+        cats_btn = SecondaryBtn('Category Visuals', 40)
+        cats_btn.setToolTip('Assign offline icons or images to product categories')
+        cats_btn.clicked.connect(self._manage_categories)
+        tb.addWidget(cats_btn)
+
         if self._role() == ROLE_SUPERADMIN:
             adj = SecondaryBtn('\u2699  Adjust Stock', 40)
             adj.clicked.connect(self._adjust_stock_dialog)
@@ -157,11 +162,25 @@ class InventoryTab(QWidget):
         except Exception:
             self.products = []
         try:
+            self._categories_by_name = self.api.categories_by_name_map()
+        except Exception:
+            self._categories_by_name = {}
+        try:
             self._populate(self.products)
         except Exception as e:
             self.products = []
             self._tbl.setRowCount(0)
             self._stats.setText(f"  Could not load inventory: {e}")
+
+    def _manage_categories(self):
+        from desktop.dialogs.category_manager import CategoryManagerDialog
+        dlg = CategoryManagerDialog(self.api, self)
+        dlg.exec_()
+        try:
+            self._categories_by_name = self.api.categories_by_name_map()
+        except Exception:
+            pass
+        self.refresh()
 
     def _export_inventory(self):
         """Export inventory snapshot + recent stock movements (shared formatter)."""
@@ -522,6 +541,7 @@ class _ProdDlg(QDialog):
         self.name  = QLineEdit(); self.name.setMinimumHeight(42); self.name.setPlaceholderText('Product name *')
         self.sku   = QLineEdit(); self.sku.setMinimumHeight(42);  self.sku.setPlaceholderText('e.g. UNG-2KG')
         self.cat   = QLineEdit(); self.cat.setMinimumHeight(42);  self.cat.setPlaceholderText('e.g. Flour, Dairy')
+        self.cat.textChanged.connect(self._on_cat_preview)
         self.price = QDoubleSpinBox(); self.price.setRange(0, 9999999); self.price.setDecimals(2); self.price.setMinimumHeight(42)
         self.cost  = QDoubleSpinBox(); self.cost.setRange(0, 9999999);  self.cost.setDecimals(2); self.cost.setMinimumHeight(42)
         self.mins  = QSpinBox();       self.mins.setRange(0, 999999);   self.mins.setValue(5);    self.mins.setMinimumHeight(42)
@@ -557,7 +577,20 @@ class _ProdDlg(QDialog):
 
         lay.addRow(lbl('Name *'),           self.name)
         lay.addRow(lbl('SKU / Code'),        self.sku)
-        lay.addRow(lbl('Category'),          self.cat)
+        # Category + live visual preview (icon from offline library)
+        cat_wrap = QWidget()
+        cat_hl = QHBoxLayout(cat_wrap)
+        cat_hl.setContentsMargins(0, 0, 0, 0)
+        cat_hl.setSpacing(8)
+        cat_hl.addWidget(self.cat, 1)
+        try:
+            from desktop.utils.category_visuals import CategoryVisual
+            self._cat_vis = CategoryVisual(size=40, show_label=False)
+            cat_hl.addWidget(self._cat_vis)
+        except Exception:
+            self._cat_vis = None
+        lay.addRow(lbl('Category'),          cat_wrap)
+        self._on_cat_preview(self.cat.text())
         lay.addRow(lbl('Selling Price'),     self.price)
         lay.addRow(lbl('Cost Price'),        self.cost)
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
@@ -605,6 +638,31 @@ class _ProdDlg(QDialog):
                 self, wipe=lambda: StateResetManager.reset_product_form(self))
         else:
             StateResetManager.clear_modal_on_close(self)
+
+    def _on_cat_preview(self, text=''):
+        if not getattr(self, '_cat_vis', None):
+            return
+        name = (text or self.cat.text() or '').strip() or 'General'
+        meta = {}
+        try:
+            parent = self.parent()
+            cmap = getattr(parent, '_categories_by_name', None) or {}
+            meta = cmap.get(name) or cmap.get(name.lower()) or {}
+            if not meta and parent is not None and hasattr(parent, 'api'):
+                meta = parent.api.get_category_by_name(name) or {}
+        except Exception:
+            meta = {}
+        if meta:
+            self._cat_vis.set_category(meta)
+        else:
+            from desktop.utils.category_visuals import suggest_visual_for_category_name
+            sug = suggest_visual_for_category_name(name)
+            self._cat_vis.set_visual(
+                visual_type='icon',
+                icon_name=sug.get('icon_name'),
+                accent_color=sug.get('accent_color'),
+                name=name,
+            )
 
     def _val(self):
         if not self.name.text().strip():

@@ -148,18 +148,21 @@ class SalesTab(QWidget):
 
         self._ctbl = make_table(['Item', 'Qty', 'Price', 'Disc', 'Total', ''],
                                 stretch_col=0, row_height=56)
-        # Disc = KES per line. Wide enough for prefix "- " + "0.00" / "9999.99".
+        # Disc = KES per line. Wide enough for stepper + value.
         hdr = self._ctbl.horizontalHeader()
         hdr.setMinimumSectionSize(40)
         self._ctbl.setColumnWidth(0, 200)
-        for ci, w in [(1, 118), (2, 90), (3, 140), (4, 92), (5, 42)]:
+        for ci, w in [(1, 128), (2, 90), (3, 128), (4, 92), (5, 42)]:
             hdr.setSectionResizeMode(ci, QHeaderView.Fixed)
             self._ctbl.setColumnWidth(ci, w)
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         self._ctbl.setWordWrap(False)
-        self._ctbl.setTextElideMode(Qt.ElideNone)
+        self._ctbl.setTextElideMode(Qt.ElideRight)
         self._ctbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._ctbl.setAlternatingRowColors(True)
+        # Widgets own interaction — row selection paints ugly nested boxes
+        self._ctbl.setAlternatingRowColors(False)
+        self._ctbl.setSelectionMode(QAbstractItemView.NoSelection)
+        self._ctbl.setFocusPolicy(Qt.NoFocus)
         self._ctbl.setMinimumHeight(220)
         self._ctbl.setMaximumHeight(320)
         cbl.addWidget(self._ctbl)
@@ -278,7 +281,7 @@ class SalesTab(QWidget):
         self._var_frame.hide()
         cbl.addWidget(self._var_frame)
 
-        # Cash rounding breakdown (Original / Rounding / Amount Due)
+        # Cash rounding breakdown — shown only when Cash/Mixed + delta ≠ 0
         self._round_frame = QFrame()
         self._round_frame.setObjectName('posRoundFrame')
         self._round_frame.setStyleSheet(
@@ -300,9 +303,26 @@ class SalesTab(QWidget):
         rfl.addWidget(self._orig_due_lbl)
         rfl.addWidget(self._round_adj_lbl)
         rfl.addWidget(self._amount_due_lbl)
-        # Mixed tender: electronic already paid (M-Pesa/Card portion)
+        self._round_frame.hide()
+        cbl.addWidget(self._round_frame)
+
+        # Split / 2-way tender (outside rounding — visible whenever Cash or Mixed)
+        self._split_frame = QFrame()
+        self._split_frame.setObjectName('posSplitFrame')
+        self._split_frame.setStyleSheet(
+            f"QFrame#posSplitFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
+        sfl = QVBoxLayout(self._split_frame)
+        sfl.setContentsMargins(12, 8, 12, 8); sfl.setSpacing(6)
+        self._split_hdr = QLabel('Split payment (optional)')
+        self._split_hdr.setStyleSheet(
+            f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
+        sfl.addWidget(self._split_hdr)
         erow = QHBoxLayout(); erow.setSpacing(8)
-        self._elec_lbl = QLabel('Other paid (M-Pesa/Card)')
+        self._elec_method = Select()
+        self._elec_method.set_items(['M-Pesa', 'Card', 'Bank Transfer', 'Airtel Money'])
+        self._elec_method.setMinimumHeight(34)
+        self._elec_method.setMinimumWidth(120)
+        self._elec_lbl = QLabel('Electronic')
         self._elec_lbl.setStyleSheet(
             f"color:{C['text2']};font-size:12px;background:transparent;")
         self._elec_paid = QDoubleSpinBox()
@@ -311,14 +331,25 @@ class SalesTab(QWidget):
         self._elec_paid.setMinimumHeight(34)
         self._elec_paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._elec_paid.setToolTip(
-            'Optional split tender: amount already paid electronically; '
-            'remaining cash portion is rounded.')
+            'Amount paid electronically (M-Pesa / Card / Bank). '
+            'Cash portion below is rounded separately.')
         self._elec_paid.valueChanged.connect(self._on_elec_paid_changed)
+        try:
+            self._elec_method.currentTextChanged.connect(
+                lambda *_: self._update_rounding_ui())
+        except Exception:
+            pass
         erow.addWidget(self._elec_lbl)
+        erow.addWidget(self._elec_method, 1)
         erow.addWidget(self._elec_paid, 1)
-        rfl.addLayout(erow)
-        self._round_frame.hide()
-        cbl.addWidget(self._round_frame)
+        sfl.addLayout(erow)
+        self._split_summary = QLabel('')
+        self._split_summary.setWordWrap(True)
+        self._split_summary.setStyleSheet(
+            f"color:{C['text']};font-size:12px;font-weight:700;background:transparent;")
+        sfl.addWidget(self._split_summary)
+        self._split_frame.hide()
+        cbl.addWidget(self._split_frame)
 
         chg = QHBoxLayout()
         self._chg_lbl = QLabel('Change')
@@ -376,6 +407,15 @@ class SalesTab(QWidget):
         self._reprint_btn.clicked.connect(self._reprint_receipt)
         br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
         br.addWidget(self._reprint_btn)
+        from desktop.utils.security import can_void_sales
+        if can_void_sales(self.user):
+            self._void_btn = DangerBtn('Void Sale', 40)
+            self._void_btn.setToolTip(
+                'Void a completed sale (reason dropdown + Super-Admin PIN)')
+            self._void_btn.clicked.connect(self._void_sale)
+            br.addWidget(self._void_btn)
+        else:
+            self._void_btn = None
         fl.addLayout(br)
 
         self._charge_btn = PrimaryBtn('🛒  Complete Sale', 56)
@@ -440,6 +480,26 @@ class SalesTab(QWidget):
         if not hasattr(self, '_elec_paid'):
             return 0.0
         return round(float(self._elec_paid.value() or 0), 2)
+
+    def _elec_method_name(self) -> str:
+        if hasattr(self, '_elec_method'):
+            try:
+                return (self._elec_method.currentText() or 'M-Pesa').strip()
+            except Exception:
+                pass
+        return 'M-Pesa'
+
+    def _is_split_method(self, method=None) -> bool:
+        method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
+        return method in ('Cash', 'Mixed')
+
+    def _cash_due_amount(self) -> float:
+        """Cash portion due (post rounding) — used for Cash Paid autofill on split."""
+        info = self._rounding_info or self._compute_rounding()
+        elec = float(info.get('electronic') or 0)
+        if elec > 0.009:
+            return round(float(info.get('cash_rounded', 0)), 2)
+        return round(float(info.get('amount_due', self._amount_due())), 2)
 
     def _on_elec_paid_changed(self, *_args):
         # Split tender: remaining cash due re-fills Cash Paid when not dirty
@@ -506,7 +566,7 @@ class SalesTab(QWidget):
             self._chg.setVisible(visible)
 
     def _maybe_autofill_cash_paid(self, *, focus: bool = False):
-        """Fill Cash Paid = Amount Due (post rounding) when allowed."""
+        """Fill Cash Paid = cash due (post rounding) when allowed."""
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
         cfg = self._cfg()
         try:
@@ -521,7 +581,8 @@ class SalesTab(QWidget):
             )
         if not ok:
             return False
-        due = self._amount_due()
+        # Split: only autofill the cash portion, not electronic + cash
+        due = self._cash_due_amount()
         self._set_paid_value(due, mark_clean=True)
         if focus and due > 0.009:
             self._focus_cash_paid()
@@ -537,10 +598,12 @@ class SalesTab(QWidget):
             cfg = {}
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
         credit = float(self._credit_to_apply or 0)
-        # Electronic portion only applies on Cash (mixed tender)
-        elec = self._elec_portion() if method == 'Cash' else 0.0
+        # Electronic portion only on Cash / Mixed (split tender)
+        elec = self._elec_portion() if self._is_split_method(method) else 0.0
+        # Mixed always applies cash-portion rounding rules
+        round_method = 'Cash' if method == 'Mixed' else method
         info = CashRoundingService.apply_to_total(
-            self._subtotal, self._discount, self._tax, method, cfg,
+            self._subtotal, self._discount, self._tax, round_method, cfg,
             credit_applied=credit, electronic_portion=elec)
         self._rounding_info = info
         self._original_total = float(info.get('cart_total', self._total))
@@ -557,39 +620,80 @@ class SalesTab(QWidget):
         except Exception:
             pass
         st = CashRoundingService.settings_from_config(cfg)
-        # Show breakdown when Cash + rounding enabled (cleared for M-Pesa / Card)
-        show = bool(st.get('enabled')) and method == 'Cash' and (
-            CashRoundingService.should_apply('cash', st) or bool(info.get('applied')))
+        adj = float(info.get('adjustment') or 0)
+        # Rounding badge/lines ONLY when Cash/Mixed + enabled + non-zero delta
+        show_round = (
+            self._is_split_method(method)
+            and bool(st.get('enabled'))
+            and CashRoundingService.should_apply('cash', st)
+            and abs(adj) > 0.009
+        )
         if hasattr(self, '_round_frame'):
-            self._round_frame.setVisible(show)
-            if not show:
-                return
-            cur = self._currency
-            orig = float(info.get('original_due', info.get('original', 0)))
-            adj = float(info.get('adjustment') or 0)
-            due = float(info.get('amount_due', orig))
-            self._orig_due_lbl.setText(f'Original: {cur} {orig:,.2f}')
-            sign = '+' if adj >= 0 else ''
-            self._round_adj_lbl.setText(f'Cash Rounding: {sign}{cur} {adj:,.2f}')
-            self._amount_due_lbl.setText(f'Amount Due: {cur} {due:,.2f}')
-            self._round_badge.setVisible(bool(info.get('applied')))
-            gold, mute, text = C['gold'], C['text2'], C['text']
-            self._round_badge.setStyleSheet(
-                f"color:{gold};font-size:11px;font-weight:800;background:transparent;")
-            self._orig_due_lbl.setStyleSheet(
-                f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
-            self._round_adj_lbl.setStyleSheet(
-                f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
-            self._amount_due_lbl.setStyleSheet(
-                f"color:{text};font-size:13px;font-weight:800;background:transparent;")
-            self._round_frame.setStyleSheet(
-                f"QFrame#posRoundFrame{{background:{C['card2']};"
-                f"border:1px solid {C['border2']};border-radius:8px;}}")
-            if hasattr(self, '_elec_paid'):
-                self._elec_lbl.setVisible(True)
-                self._elec_paid.setVisible(True)
+            self._round_frame.setVisible(show_round)
+            if show_round:
+                cur = self._currency
+                orig = float(info.get('original_due', info.get('original', 0)))
+                due = float(info.get('amount_due', orig))
+                cash_orig = float(info.get('cash_original') or orig)
+                cash_rnd = float(info.get('cash_rounded') or due)
+                elec = float(info.get('electronic') or 0)
+                if elec > 0.009:
+                    self._orig_due_lbl.setText(
+                        f'Cash original: {cur} {cash_orig:,.2f}')
+                    self._amount_due_lbl.setText(
+                        f'Cash due: {cur} {cash_rnd:,.2f}')
+                else:
+                    self._orig_due_lbl.setText(f'Original: {cur} {orig:,.2f}')
+                    self._amount_due_lbl.setText(f'Amount Due: {cur} {due:,.2f}')
+                sign = '+' if adj >= 0 else ''
+                self._round_adj_lbl.setText(
+                    f'Cash Rounding: {sign}{cur} {adj:,.2f}')
+                self._round_badge.setVisible(True)
+                gold, mute, text = C['gold'], C['text2'], C['text']
+                self._round_badge.setStyleSheet(
+                    f"color:{gold};font-size:11px;font-weight:800;background:transparent;")
+                self._orig_due_lbl.setStyleSheet(
+                    f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
+                self._round_adj_lbl.setStyleSheet(
+                    f"color:{mute};font-size:12px;font-weight:600;background:transparent;")
+                self._amount_due_lbl.setStyleSheet(
+                    f"color:{text};font-size:13px;font-weight:800;background:transparent;")
+                self._round_frame.setStyleSheet(
+                    f"QFrame#posRoundFrame{{background:{C['card2']};"
+                    f"border:1px solid {C['border2']};border-radius:8px;}}")
+
+        # Split tender panel — Cash / Mixed only (never on pure M-Pesa/Card/Bank)
+        show_split = self._is_split_method(method)
+        if hasattr(self, '_split_frame'):
+            self._split_frame.setVisible(show_split)
+            if show_split:
+                mute = C['text2']
+                self._split_frame.setStyleSheet(
+                    f"QFrame#posSplitFrame{{background:{C['card2']};"
+                    f"border:1px solid {C['border2']};border-radius:8px;}}")
                 self._elec_lbl.setStyleSheet(
                     f"color:{mute};font-size:12px;background:transparent;")
+                self._split_hdr.setStyleSheet(
+                    f"color:{mute};font-size:11px;font-weight:700;background:transparent;")
+                # Force Mixed label when electronic amount entered on Cash
+                elec = float(info.get('electronic') or 0)
+                cash_due = float(info.get('cash_rounded') or 0)
+                cash_paid = float(self._paid.value() or 0) if hasattr(self, '_paid') else cash_due
+                cur = self._currency
+                em = self._elec_method_name()
+                if elec > 0.009:
+                    self._split_summary.setText(
+                        f'{em} {cur} {elec:,.2f}  +  Cash {cur} {cash_paid:,.2f}'
+                        f'  =  {cur} {elec + cash_paid:,.2f}'
+                        f'   (cash due {cur} {cash_due:,.2f})')
+                    self._split_hdr.setText('Split payment')
+                else:
+                    self._split_summary.setText(
+                        'Enter electronic amount for 2-way pay '
+                        '(e.g. M-Pesa + Cash). Leave 0 for cash only.')
+                    self._split_hdr.setText(
+                        'Split payment (optional)' if method == 'Cash'
+                        else 'Split payment — enter both tenders')
 
 
     def _is_till_method(self, method=None):
@@ -673,6 +777,12 @@ class SalesTab(QWidget):
         # Switching payment method resets Cash Paid dirty flag for Cash/Mixed
         if AutoFillService.is_cash_like(method):
             self._cash_paid_dirty = False
+        else:
+            # Leaving split methods — clear electronic portion
+            if hasattr(self, '_elec_paid'):
+                self._elec_paid.blockSignals(True)
+                self._elec_paid.setValue(0)
+                self._elec_paid.blockSignals(False)
 
         if is_mpesa:
             cfg = self._cfg()
@@ -745,6 +855,10 @@ class SalesTab(QWidget):
             self._currency = (self.config_getter() or {}).get('currency_symbol', 'KES') or 'KES'
         except Exception: pass
         try:
+            self._categories_by_name = self.api.categories_by_name_map()
+        except Exception:
+            self._categories_by_name = {}
+        try:
             customers = self.api.get_customers() or []
             self._wallet_by_customer = {
                 c.get('id'): float(c.get('wallet_balance') or 0)
@@ -756,10 +870,29 @@ class SalesTab(QWidget):
         except Exception:
             pass
         cats = sorted({p.get('category') or 'General' for p in self.products})
+        # Prefer managed category list when available
+        try:
+            managed = [c.get('name') for c in (self.api.get_categories() or []) if c.get('name')]
+            if managed:
+                cats = sorted(set(cats) | set(managed))
+        except Exception:
+            pass
         self._cat.blockSignals(True)
         cur = self._cat.currentText()
         self._cat.clear(); self._cat.addItem('All Categories')
-        for c in cats: self._cat.addItem(c)
+        for c in cats:
+            meta = (self._categories_by_name or {}).get(c) or {}
+            # Show icon hint in combo via item data; text stays readable
+            self._cat.addItem(c)
+            idx_i = self._cat.count() - 1
+            if meta.get('icon_name'):
+                try:
+                    from desktop.utils.category_visuals import resolve_icon_path, svg_to_pixmap
+                    svg = resolve_icon_path(meta['icon_name'])
+                    if svg:
+                        self._cat.setItemIcon(idx_i, QIcon(svg_to_pixmap(svg, 20)))
+                except Exception:
+                    pass
         idx = self._cat.findText(cur)
         if idx >= 0: self._cat.setCurrentIndex(idx)
         self._cat.blockSignals(False)
@@ -817,6 +950,8 @@ class SalesTab(QWidget):
             self._empty.hide()
             self._prod_grid.set_currency(self._currency)
             self._prod_grid.set_light(bool(getattr(self, '_is_light', False)))
+            self._prod_grid.set_categories_map(
+                getattr(self, '_categories_by_name', None) or {})
             cols = self._product_columns()
             self._prod_grid.populate(filtered, columns=cols)
 
@@ -967,16 +1102,18 @@ class SalesTab(QWidget):
     def _refresh_cart(self):
         from desktop.utils.pos_light_theme import fmt, SPINBOX, REMOVE_BTN, L
         from desktop.utils.theme import DARK, LIGHT, ThemeManager
+        from desktop.utils.widgets import apply_table_row_backgrounds, tbl_item
         self._ctbl.setRowCount(0)
         light = bool(getattr(self, '_is_light', False) or ThemeManager.is_light())
         item_color = self._cart_fg()
-        # Keep table QSS in sync so QTableWidgetItem + labels stay readable
+        # Keep table QSS in sync — no ::item selection chrome (NoSelection)
         if light:
             self._ctbl.setStyleSheet(fmt(
                 "QTableWidget{{background:#FFFFFF;border:2px solid {border2};"
                 "border-radius:10px;color:{text};font-size:{font_cart};font-weight:700;"
-                "alternate-background-color:{card2};gridline-color:transparent;}}"
-                "QTableWidget::item{{color:{text};padding:10px 10px;background:transparent;}}"
+                "gridline-color:transparent;outline:0;}}"
+                "QTableWidget::item{{color:{text};padding:8px 10px;background:transparent;}}"
+                "QTableWidget::item:selected{{background:transparent;color:{text};}}"
                 "QHeaderView::section{{background:{card2};color:{text};font-size:{font_cart_head};"
                 "font-weight:800;letter-spacing:0.6px;padding:10px 8px;border:none;"
                 "border-bottom:2px solid {border2};}}"
@@ -985,9 +1122,9 @@ class SalesTab(QWidget):
             self._ctbl.setStyleSheet(
                 f"QTableWidget{{background:{DARK['card']};border:1px solid {DARK['border2']};"
                 f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
-                f"alternate-background-color:{DARK['card2']};"
-                f"gridline-color:transparent;}}"
-                f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;background:transparent;}}"
+                f"gridline-color:transparent;outline:0;}}"
+                f"QTableWidget::item{{color:#F5F7FA;padding:8px 10px;background:transparent;}}"
+                f"QTableWidget::item:selected{{background:transparent;color:#F5F7FA;}}"
                 f"QHeaderView::section{{background:{DARK['panel']};color:#C5D0E0;"
                 f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
                 f"border:none;border-bottom:1px solid {DARK['border2']};}}"
@@ -995,85 +1132,42 @@ class SalesTab(QWidget):
         for i, item in enumerate(self.cart):
             self._ctbl.insertRow(i)
             full_name = item['product_name']
-            name_lbl = QLabel(full_name)
-            name_lbl.setWordWrap(False)
-            name_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            name_lbl.setToolTip(full_name)
-            name_lbl.setMinimumWidth(80)
-            name_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            name_lbl.setStyleSheet(
-                f"QLabel{{color:{item_color}; background:transparent; "
-                f"font-size:15px; font-weight:800; padding-left:4px;}}"
-            )
-            name_wrap = QWidget()
-            name_wrap.setMinimumWidth(80)
-            nw_lay = QVBoxLayout(name_wrap)
-            nw_lay.setContentsMargins(2, 0, 2, 0)
-            nw_lay.setSpacing(0)
-            nw_lay.addWidget(name_lbl, 0, Qt.AlignVCenter)
-            self._ctbl.setCellWidget(i, 0, name_wrap)
-            # Elide after column has a real width
-            col_w = max(80, self._ctbl.columnWidth(0) - 12)
-            name_lbl.setText(name_lbl.fontMetrics().elidedText(full_name, Qt.ElideRight, col_w))
-            # Qty editor: modular QuantityControl (0.25 step, 2 decimals)
-            qty = QuantityControl(value=float(item['quantity']), step=0.25)
+            # Plain item (no nested QLabel box) — ThemeTableDelegate elides
+            name_it = tbl_item(full_name, color=item_color)
+            name_it.setToolTip(full_name)
+            name_it.setFlags(name_it.flags() & ~Qt.ItemIsEditable)
+            self._ctbl.setItem(i, 0, name_it)
+
+            # Qty — flat QuantityControl (shared light/dark)
+            qty = QuantityControl(
+                value=float(item['quantity']), step=0.25, minimum=0.25, width=124)
             qty.valueChanged.connect(lambda v, idx=i: self._qty(idx, v))
             cell_wrap = QWidget()
+            cell_wrap.setStyleSheet('background:transparent;border:none;')
             cw_lay = QHBoxLayout(cell_wrap)
-            cw_lay.setContentsMargins(0, 0, 0, 0)
+            cw_lay.setContentsMargins(2, 2, 2, 2)
             cw_lay.setSpacing(0)
             cw_lay.addWidget(qty, 0, Qt.AlignCenter)
             self._ctbl.setCellWidget(i, 1, cell_wrap)
             self._ctbl.setItem(i, 2, tbl_right(f'{item["unit_price"]:,.2f}', color=item_color))
 
-            # Disc (KES) — QLineEdit (spinbox was rejecting typed values / stuck on 0.00)
+            # Disc — same stepper chrome as Qty (no nested boxes)
             self._apply_line_total(item)
-            disc_bg = LIGHT['input'] if light else DARK['input']
-            disc_fg = item_color
-            disc_bd = LIGHT['border2'] if light else DARK['border2']
-            disc_gold = LIGHT['gold'] if light else DARK['gold']
-
-            disc_ed = _KesEdit()
-            disc_ed.setObjectName('lineDisc')
-            disc_ed.setText(f"{float(item.get('discount') or 0):.2f}")
-            disc_ed.setFixedSize(78, 32)
-            disc_ed.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            disc_ed.setPlaceholderText('0')
-            disc_ed.setToolTip('Click, type amount e.g. 60, press Enter')
-            disc_ed.setStyleSheet(
-                f"QLineEdit#lineDisc{{"
-                f"background:{disc_bg};color:{disc_fg};"
-                f"border:1px solid {disc_bd};border-radius:6px;"
-                f"padding:0px 6px;font-size:13px;font-weight:700;}}"
-                f"QLineEdit#lineDisc:focus{{border-color:{disc_gold};}}"
+            disc = QuantityControl(
+                value=float(item.get('discount') or 0),
+                step=10.0,
+                minimum=0.0,
+                maximum=999999.0,
+                snap=False,
+                width=124,
             )
-            disc_ed.editingFinished.connect(
-                lambda idx=i, ed=disc_ed: self._commit_line_disc_text(idx, ed))
-            disc_ed.returnPressed.connect(
-                lambda idx=i, ed=disc_ed: self._commit_line_disc_text(idx, ed))
-
-            d_minus = QPushButton('-')
-            d_plus = QPushButton('+')
-            for b in (d_minus, d_plus):
-                b.setFixedSize(28, 32)
-                b.setCursor(Qt.PointingHandCursor)
-                b.setStyleSheet(
-                    f"QPushButton{{background:{disc_bg};color:{disc_fg};"
-                    f"border:1px solid {disc_bd};border-radius:6px;"
-                    f"font-size:14px;font-weight:800;padding:0;}}"
-                    f"QPushButton:hover{{border-color:{disc_gold};color:{disc_gold};}}"
-                )
-            d_minus.clicked.connect(lambda _, idx=i: self._bump_line_disc(idx, -10))
-            d_plus.clicked.connect(lambda _, idx=i: self._bump_line_disc(idx, 10))
-
+            disc.valueChanged.connect(lambda v, idx=i: self._set_line_disc(idx, v))
             disc_wrap = QWidget()
-            disc_wrap.setMinimumWidth(136)
+            disc_wrap.setStyleSheet('background:transparent;border:none;')
             dw_lay = QHBoxLayout(disc_wrap)
-            dw_lay.setContentsMargins(2, 0, 2, 0)
-            dw_lay.setSpacing(3)
-            dw_lay.addWidget(d_minus, 0, Qt.AlignVCenter)
-            dw_lay.addWidget(disc_ed, 1, Qt.AlignVCenter)
-            dw_lay.addWidget(d_plus, 0, Qt.AlignVCenter)
+            dw_lay.setContentsMargins(2, 2, 2, 2)
+            dw_lay.setSpacing(0)
+            dw_lay.addWidget(disc, 0, Qt.AlignCenter)
             self._ctbl.setCellWidget(i, 3, disc_wrap)
 
             self._ctbl.setItem(i, 4, tbl_right(f'{item["total"]:,.2f}', color=item_color))
@@ -1089,20 +1183,9 @@ class SalesTab(QWidget):
             rm.setCursor(Qt.PointingHandCursor)
             rm.clicked.connect(lambda _, idx=i: self._rm(idx))
             self._ctbl.setCellWidget(i, 5, rm)
-            self._ctbl.setRowHeight(i, 52)
+            self._ctbl.setRowHeight(i, 48)
 
-        # Re-elide names with real column width (avoids mid-word cuts looking broken)
-        name_w = max(100, int(self._ctbl.columnWidth(0)) - 16)
-        for i, item in enumerate(self.cart):
-            wrap = self._ctbl.cellWidget(i, 0)
-            if wrap is None:
-                continue
-            lbl = wrap.findChild(QLabel)
-            if lbl is None:
-                continue
-            full = item.get('product_name') or ''
-            lbl.setToolTip(full)
-            lbl.setText(lbl.fontMetrics().elidedText(full, Qt.ElideRight, name_w))
+        apply_table_row_backgrounds(self._ctbl)
 
         n = len(self.cart)
         self._cnt.setText(f"{n} item{'s' if n != 1 else ''}")
@@ -1162,11 +1245,15 @@ class SalesTab(QWidget):
         self._apply_line_total(item)
         disc_w = self._ctbl.cellWidget(idx, 3)
         if disc_w:
-            ed = disc_w.findChild(QLineEdit)
-            if ed:
-                ed.blockSignals(True)
-                ed.setText(f"{item['discount']:.2f}")
-                ed.blockSignals(False)
+            qc = disc_w.findChild(QuantityControl)
+            if qc is not None:
+                qc.setValue(item['discount'])
+            else:
+                ed = disc_w.findChild(QLineEdit)
+                if ed:
+                    ed.blockSignals(True)
+                    ed.setText(f"{item['discount']:.2f}")
+                    ed.blockSignals(False)
         color = self._cart_fg()
         self._ctbl.setItem(idx, 4, tbl_right(f'{item["total"]:,.2f}', color=color))
         self._recalc()
@@ -1295,13 +1382,33 @@ class SalesTab(QWidget):
             self._chg.setStyleSheet(
                 f"color:{tone};font-size:{chg_sz};font-weight:700;background:transparent;")
         elif AutoFillService.is_cash_like(method) or method in ('Credit Sale', 'Credit Account'):
-            st = AutoFillService.cash_change_state(paid, due)
-            self._chg_lbl.setText(st['label'])
-            self._chg.setText(f"{self._currency} {st['amount']:,.2f}")
-            color = {'ok': ok_color, 'warn': warn_color, 'err': err_color}.get(
-                st['tone'], ok_color)
-            self._chg.setStyleSheet(
-                f"color:{color};font-size:{chg_sz};font-weight:700;background:transparent;")
+            elec = self._elec_portion() if self._is_split_method(method) else 0.0
+            # Split: Change/Remaining is vs cash portion only
+            compare_due = self._cash_due_amount() if elec > 0.009 else due
+            st = AutoFillService.cash_change_state(paid, compare_due)
+            if elec > 0.009 and st.get('tone') == 'err':
+                # Remaining on total bill when cash short
+                rem_total = max(0.0, round(due - elec - paid, 2))
+                if rem_total > 0.009:
+                    self._chg_lbl.setText('Remaining')
+                    self._chg.setText(f'{self._currency} {rem_total:,.2f}')
+                    self._chg.setStyleSheet(
+                        f"color:{err_color};font-size:{chg_sz};font-weight:700;background:transparent;")
+                else:
+                    self._chg_lbl.setText(st['label'])
+                    self._chg.setText(f"{self._currency} {st['amount']:,.2f}")
+                    self._chg.setStyleSheet(
+                        f"color:{err_color};font-size:{chg_sz};font-weight:700;background:transparent;")
+            else:
+                self._chg_lbl.setText(st['label'])
+                self._chg.setText(f"{self._currency} {st['amount']:,.2f}")
+                color = {'ok': ok_color, 'warn': warn_color, 'err': err_color}.get(
+                    st['tone'], ok_color)
+                self._chg.setStyleSheet(
+                    f"color:{color};font-size:{chg_sz};font-weight:700;background:transparent;")
+            # Keep split summary in sync when Cash Paid edits
+            if hasattr(self, '_split_frame') and self._split_frame.isVisible():
+                self._update_rounding_ui()
         else:
             # M-Pesa Difference label handled below; keep Change neutral when hidden
             chg = max(0.0, paid - due)
@@ -1349,13 +1456,27 @@ class SalesTab(QWidget):
         cfg = self.config_getter() or {}
         variance_enabled = cfg.get('variance_enabled', '1') == '1'
 
-        if pay_method == 'Cash' and self._paid.value() < due:
-            QMessageBox.warning(
-                self, 'Insufficient',
-                'Cash Paid is less than Amount Due.\n\n'
-                'Pay the remainder in cash, record Other paid (M-Pesa/Card split), '
-                'or use Part Payment / Credit Sale for intentional credit.')
-            return
+        if pay_method in ('Cash', 'Mixed'):
+            elec = self._elec_portion()
+            cash_due = self._cash_due_amount()
+            cash_paid = float(self._paid.value() or 0)
+            if elec > 0.009:
+                if cash_paid + 0.009 < cash_due:
+                    em = self._elec_method_name()
+                    QMessageBox.warning(
+                        self, 'Insufficient',
+                        f'Cash Paid is less than the cash portion due '
+                        f'({self._currency} {cash_due:,.2f}).\n\n'
+                        f'{em}: {self._currency} {elec:,.2f}\n'
+                        f'Cash due: {self._currency} {cash_due:,.2f}')
+                    return
+            elif cash_paid + 0.009 < due:
+                QMessageBox.warning(
+                    self, 'Insufficient',
+                    'Cash Paid is less than Amount Due.\n\n'
+                    'Pay the remainder in cash, use Split payment '
+                    '(Electronic + Cash), or use Part Payment / Credit Sale.')
+                return
         if pay_method == 'Part Payment' and self._paid.value() >= self._total:
             QMessageBox.information(
                 self, 'No Balance',
@@ -1378,8 +1499,14 @@ class SalesTab(QWidget):
         # Amount actually collected via payment method (Till / cash / card)
         if pay_method in ('Credit Sale', 'Credit Account'):
             paid_now = 0.0
+            cash_paid_now = 0.0
+            elec_now = 0.0
         else:
-            paid_now = self._paid.value()
+            cash_paid_now = float(self._paid.value() or 0)
+            elec_now = self._elec_portion() if self._is_split_method(pay_method) else 0.0
+            # amount_paid = total tendered (both methods when split)
+            paid_now = round(cash_paid_now + elec_now, 2) if elec_now > 0.009 else cash_paid_now
+        elec_method_name = self._elec_method_name() if elec_now > 0.009 else ''
 
         cust_id = None
         if hasattr(self, '_customer'):
@@ -1414,7 +1541,13 @@ class SalesTab(QWidget):
 
         variance_payload = None
         change_amount = 0.0
-        excess = round(paid_now - due, 2) if not is_debt else 0.0
+        # Till variance uses full paid vs due; cash split uses cash overpayment only
+        if self._is_till_method(pay_method):
+            excess = round(paid_now - due, 2) if not is_debt else 0.0
+        elif self._is_split_method(pay_method) and elec_now > 0.009:
+            excess = round(cash_paid_now - self._cash_due_amount(), 2) if not is_debt else 0.0
+        else:
+            excess = round(paid_now - due, 2) if not is_debt else 0.0
 
         if self._is_till_method(pay_method) and variance_enabled and excess > 0.009:
             from desktop.dialogs.payment_variance_dialog import PaymentVarianceDialog
@@ -1476,7 +1609,10 @@ class SalesTab(QWidget):
             # Variance disabled: treat excess as change returned (do not inflate sales)
             change_amount = max(0.0, excess)
         elif not is_debt:
-            change_amount = max(0.0, paid_now - due)
+            if self._is_split_method(pay_method) and elec_now > 0.009:
+                change_amount = max(0.0, round(cash_paid_now - self._cash_due_amount(), 2))
+            else:
+                change_amount = max(0.0, paid_now - due)
 
         try:
             info = self._compute_rounding()
@@ -1488,7 +1624,17 @@ class SalesTab(QWidget):
             # When credit applied, final_total for storage = cart + adj (credit separate)
             cart_total = float(info.get('cart_total', self._total))
             sale_total = round(cart_total + round_adj, 2) if abs(round_adj) > 0.009 else cart_total
-            elec = float(info.get('electronic') or 0)
+            elec = float(info.get('electronic') or elec_now or 0)
+            is_split = elec > 0.009 and self._is_split_method(pay_method)
+            pay_label = (
+                'mixed' if is_split
+                else (pay_method.lower() if pay_method else 'cash')
+            )
+            note_bits = [self._note.text().strip()]
+            if is_split:
+                note_bits.append(
+                    f'Split: {elec_method_name} {elec:,.2f} + Cash {cash_paid_now:,.2f}')
+            notes_joined = ' | '.join(b for b in note_bits if b)
             sale_payload = {
                 'items':          self.cart,
                 'subtotal':       self._subtotal,
@@ -1498,14 +1644,15 @@ class SalesTab(QWidget):
                 'original_total': cart_total,
                 'cash_rounding_adj': round_adj,
                 'electronic_paid': elec,
+                'electronic_method': elec_method_name if is_split else '',
+                'cash_paid':      cash_paid_now if is_split else paid_now,
                 'cash_original':  float(info.get('cash_original') or 0),
                 'cash_rounded':   float(info.get('cash_rounded') or 0),
-                'payment_method': pay_method.lower() if elec < 0.009 else (
-                    'mixed' if pay_method == 'Cash' and elec > 0.009 else pay_method.lower()),
+                'payment_method': pay_label,
                 'amount_paid':    paid_now,
                 'change_amount':  change_amount,
                 'credit_applied': credit_applied,
-                'notes':          self._note.text().strip(),
+                'notes':          notes_joined,
                 'mpesa_ref':      self._mpesa_ref.text().strip() if pay_method == 'M-Pesa' else '',
             }
             if cust_id:
@@ -1531,8 +1678,14 @@ class SalesTab(QWidget):
                     msg = (
                         f'✓  Sale recorded\n\nInvoice:  {rn}\n'
                         f'Total:    {self._currency} {sale_total:,.2f}\n'
-                        f'Received: {self._currency} {paid_now:,.2f}\n'
                     )
+                    if is_split:
+                        msg += (
+                            f'{elec_method_name}: {self._currency} {elec:,.2f}\n'
+                            f'Cash:     {self._currency} {cash_paid_now:,.2f}\n'
+                        )
+                    else:
+                        msg += f'Received: {self._currency} {paid_now:,.2f}\n'
                     if abs(round_adj) > 0.009:
                         msg += (
                             f'Original: {self._currency} {cart_total:,.2f}\n'
@@ -1577,6 +1730,19 @@ class SalesTab(QWidget):
         sale = self.api.get_sale(sale_id) if sale_id else {}
         if not sale:
             return None
+        elec = float(sale.get('electronic_paid') or 0)
+        notes = sale.get('notes', '') or ''
+        elec_method = (sale.get('electronic_method') or '').strip()
+        if not elec_method and elec > 0.009 and 'Split:' in notes:
+            # "Split: M-Pesa 600.00 + Cash 400.00"
+            try:
+                part = notes.split('Split:', 1)[1].strip()
+                elec_method = part.split()[0]
+            except Exception:
+                elec_method = 'Electronic'
+        cash_paid = float(sale.get('cash_paid') or 0)
+        if cash_paid < 0.009 and elec > 0.009:
+            cash_paid = max(0.0, round(float(sale.get('amount_paid') or 0) - elec, 2))
         return {
             'receipt_number': receipt_number or sale.get('receipt_number', ''),
             'created_at':     sale.get('created_at', datetime.now().isoformat()),
@@ -1595,7 +1761,10 @@ class SalesTab(QWidget):
             'customer_name':  sale.get('customer_name', '') or '',
             'wallet_balance': sale.get('wallet_balance'),
             'variance':       sale.get('variance') or {},
-            'notes':          sale.get('notes', '') or '',
+            'notes':          notes,
+            'electronic_paid': elec,
+            'electronic_method': elec_method,
+            'cash_paid': cash_paid,
             'mpesa_till':     (self.config_getter() or {}).get('mpesa_till', ''),
             'mpesa_paybill':  (self.config_getter() or {}).get('mpesa_paybill', ''),
             'mpesa_ref':      sale.get('mpesa_ref', '') or '',
@@ -1649,6 +1818,13 @@ class SalesTab(QWidget):
                                     f'Receipt {receipt} sent to printer queue.')
         except Exception as e:
             QMessageBox.warning(self, 'Print Error', str(e))
+
+    def _void_sale(self):
+        """Void a completed sale from POS (reason dropdown + Super-Admin PIN)."""
+        from desktop.utils.security import prompt_void_sale
+        prefill = getattr(self, '_last_receipt', '') or ''
+        if prompt_void_sale(self.api, self, receipt_prefill=prefill):
+            self.sale_completed.emit()
 
     def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method):
         """Auto-create debt linked to this completed sale (no orphan path)."""
