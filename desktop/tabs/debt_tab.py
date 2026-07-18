@@ -194,7 +194,7 @@ class _OverviewTab(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 24), spacing=20)
+        lay, _ = page_layout(self)
 
         # Header row
         hrow = QHBoxLayout()
@@ -348,7 +348,7 @@ class _InvoicesTab(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 20, 24, 20), spacing=16)
+        lay, _ = page_layout(self)
 
         # Toolbar
         tb = QHBoxLayout(); tb.setSpacing(10)
@@ -575,7 +575,7 @@ class _CustomersTab(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 20, 24, 20), spacing=16)
+        lay, _ = page_layout(self)
 
         tb = QHBoxLayout(); tb.setSpacing(10)
         self._search = SearchBar('Search customers?')
@@ -690,7 +690,7 @@ class _PaymentsTab(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 20, 24, 20), spacing=16)
+        lay, _ = page_layout(self)
 
         tb = QHBoxLayout(); tb.setSpacing(10)
         self._search = SearchBar('Search by receipt, customer?')
@@ -779,7 +779,7 @@ class _AgingTab(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 24), spacing=20)
+        lay, _ = page_layout(self)
         lay.addWidget(H2('Debt Aging Report'))
 
         # Band cards
@@ -865,7 +865,7 @@ class _CustomerDialog(QDialog):
 
     def _build(self):
         lay = QFormLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
 
         def lbl(t):
@@ -974,7 +974,7 @@ class _NewInvoiceDialog(QDialog):
         self.setMinimumWidth(480)
         apply_themed_dialog(self)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
         lay.addWidget(H2('Use POS for Credit Sales'))
         msg = QLabel(
@@ -1017,7 +1017,7 @@ class _CollectPaymentDialog(QDialog):
 
     def _build(self):
         lay = QFormLayout(self)
-        lay.setContentsMargins(28, 24, 28, 24)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
 
         def lbl(t):
@@ -1160,7 +1160,7 @@ class _InvoiceHistoryDialog(QDialog):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20); lay.setSpacing(14)
+        lay.setContentsMargins(20, 18, 20, 18); lay.setSpacing(14)
         lay.addWidget(H2('Invoice Payment History'))
         self._info = QLabel()
         self._info.setStyleSheet(
@@ -1221,7 +1221,7 @@ class _CustomerLedgerDialog(QDialog):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20); lay.setSpacing(14)
+        lay.setContentsMargins(20, 18, 20, 18); lay.setSpacing(14)
         self._header = QLabel()
         self._header.setStyleSheet(
             f"color:{C['text']};font-size:13px;background:{C['card']};"
@@ -1309,7 +1309,7 @@ class _SaleDebtDetailDialog(QDialog):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
         lay.addWidget(H2("Credit Sale Details"))
         self._info = QLabel()

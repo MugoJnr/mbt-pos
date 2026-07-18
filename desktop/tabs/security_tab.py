@@ -33,9 +33,14 @@ class SecurityTab(QWidget):
 
     # ── Build ─────────────────────────────────────────────────────────────────
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 22, 24, 24), spacing=16)
+        lay, _ = page_layout(self)
+        from desktop.utils.widgets import page_intro
+        intro, _ = page_intro(
+            'Security',
+            'PIN policy, stock audit, sale voids, and full audit log.')
+        lay.addLayout(intro)
 
-        # Lovable status KPI strip
+        # Status KPI strip
         kpi = QHBoxLayout(); kpi.setSpacing(12)
         for label, value, tone in (
             ('PIN Policy', 'Strong', C['ok']),
@@ -92,7 +97,7 @@ class SecurityTab(QWidget):
     # ── PIN Setup ─────────────────────────────────────────────────────────────
     def _build_pin_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.setContentsMargins(28, 24, 28, 24); lay.setSpacing(16)
+        lay.setContentsMargins(20, 18, 20, 18); lay.setSpacing(16)
 
         title = H2('Super-Admin PIN')
         title.setStyleSheet(f"color:{C['text']}; font-size:18px; font-weight:800;")
@@ -159,7 +164,7 @@ class SecurityTab(QWidget):
     # ── Stock Adjustment ──────────────────────────────────────────────────────
     def _build_stock_adj_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.setContentsMargins(28, 24, 28, 24); lay.setSpacing(14)
+        lay.setContentsMargins(20, 18, 20, 18); lay.setSpacing(14)
 
         desc = QLabel(
             '⚖  Directly adjust stock levels for any product.\n'
@@ -249,7 +254,7 @@ class SecurityTab(QWidget):
     # ── Stock Movement Log ────────────────────────────────────────────────────
     def _build_stock_log_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(10)
+        lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(12)
         top = QHBoxLayout()
         top.addWidget(H2('Stock Movement Log'))
         top.addStretch()
@@ -299,7 +304,7 @@ class SecurityTab(QWidget):
     # ── Sale Edits / Voids ───────────────────────────────────────────────────
     def _build_sales_edit_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(10)
+        lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(12)
         top = QHBoxLayout()
         top.addWidget(H2('Sale Edits & Voids'))
         top.addStretch()
@@ -359,7 +364,7 @@ class SecurityTab(QWidget):
     # ── Full Audit Log ────────────────────────────────────────────────────────
     def _build_audit_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.setContentsMargins(16, 16, 16, 16); lay.setSpacing(10)
+        lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(12)
         top = QHBoxLayout()
         top.addWidget(H2('Full Audit Log'))
         top.addStretch()

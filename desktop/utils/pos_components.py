@@ -562,7 +562,7 @@ class SummaryCard(QFrame):
         super().__init__(parent)
         self.setObjectName('posTotFrame')
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
         self._body = lay
         self._sub_lbl = self._row('Subtotal')
@@ -860,7 +860,7 @@ class ProductGrid(QWidget):
         outer.addWidget(self._hint)
         self._host = QWidget()
         self._grid = QGridLayout(self._host)
-        self._grid.setSpacing(GAP - 4)
+        self._grid.setSpacing(GAP)
         self._grid.setContentsMargins(PADDING - 4, PADDING - 4, PADDING - 4, PADDING - 4)
         self._grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         outer.addWidget(self._host, 1)
@@ -885,7 +885,7 @@ class ProductGrid(QWidget):
 
     def columns_for_width(self, available: int) -> int:
         card_w = 220 if self._is_light else 214
-        gap = self._grid.horizontalSpacing() or (GAP - 4)
+        gap = self._grid.horizontalSpacing() or GAP
         cols = max(2, int((max(640, available) + gap) // (card_w + gap)))
         return min(4, cols)
 

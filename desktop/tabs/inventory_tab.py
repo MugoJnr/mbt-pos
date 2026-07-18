@@ -9,7 +9,8 @@ _log = logging.getLogger('inventory')
 from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
-                                    tbl_right, tbl_center, page_layout, retint_table_items,
+                                    tbl_right, tbl_center, page_layout, PageChrome,
+                                    retint_table_items,
                                     apply_table_row_backgrounds, table_row_bg_hex)
 from desktop.utils.security import (has_permission, require_permission,
                                      ask_superadmin_pin, ROLE_SUPERADMIN)
@@ -56,10 +57,15 @@ class InventoryTab(QWidget):
         return (self.user.get('user') or self.user).get('role', 'cashier')
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=16)
+        lay, _ = page_layout(self)  # 20/18 rhythm
 
-        # â”€â”€ Toolbar (Lovable: search + primary + secondary + ghost) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        tb = QHBoxLayout(); tb.setSpacing(8)
+        chrome, _ = PageChrome(
+            'Inventory',
+            'Products, stock levels, and category visuals.')
+        lay.addWidget(chrome)
+
+        # Toolbar: search + primary + secondary + ghost
+        tb = QHBoxLayout(); tb.setSpacing(10)
         self._search = SearchBar('Search by name or SKU\u2026')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)

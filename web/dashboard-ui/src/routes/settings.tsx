@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, Store, MessageSquare } from "lucide-react";
+import { Save, Store, MessageSquare, Palette } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Button, Card, Input } from "@/components/ui-kit";
+import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
+import { useTheme, type ThemeVariant } from "@/components/theme";
 import { GET, PUT } from "@/lib/api";
 
 export const Route = createFileRoute("/settings")({
@@ -52,6 +53,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Settings() {
   const qc = useQueryClient();
+  const { theme, toggle, variant, setVariant } = useTheme();
   const settingsQ = useQuery({
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
@@ -88,20 +90,62 @@ function Settings() {
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  const variants: { id: ThemeVariant; label: string }[] = [
+    { id: "default", label: "Professional" },
+    { id: "mugobyte", label: "MugoByte" },
+    { id: "retail", label: "Retail" },
+    { id: "minimal", label: "Minimal" },
+    { id: "contrast", label: "High Contrast" },
+  ];
+
   return (
     <AppShell title="Settings">
-      <div className="flex items-center justify-between mb-5">
-        <p className="text-sm text-text2">Configure your shop, receipts and integrations.</p>
-        <Button
-          variant="primary"
-          disabled={save.isPending || settingsQ.isLoading}
-          onClick={() => save.mutate()}
-        >
-          <Save className="h-4 w-4" /> {save.isPending ? "Saving…" : "Save Changes"}
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Admin"
+        title="Settings"
+        description="Configure your shop, receipts, appearance, and integrations."
+        actions={
+          <Button
+            variant="primary"
+            disabled={save.isPending || settingsQ.isLoading}
+            onClick={() => save.mutate()}
+          >
+            <Save className="h-4 w-4" /> {save.isPending ? "Saving…" : "Save Changes"}
+          </Button>
+        }
+      />
 
       <div className="space-y-5 max-w-5xl">
+        <Section
+          icon={<Palette className="h-5 w-5" />}
+          title="Appearance"
+          desc="Theme mode and visual variant (presentation only)"
+        >
+          <Field label="Mode">
+            <Button variant="secondary" onClick={toggle} className="min-h-11 w-full justify-center">
+              Switch to {theme === "dark" ? "Light" : "Dark"}
+            </Button>
+          </Field>
+          <Field label="Variant">
+            <div className="flex flex-wrap gap-2">
+              {variants.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setVariant(v.id)}
+                  className={`min-h-11 rounded-lg border px-3 text-sm font-semibold transition-colors ${
+                    variant === v.id
+                      ? "border-gold bg-gold/15 text-gold"
+                      : "border-border bg-card text-text2 hover:bg-hover"
+                  }`}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        </Section>
+
         <Section
           icon={<Store className="h-5 w-5" />}
           title="Shop Information"

@@ -140,8 +140,8 @@ class NotesTab(QWidget):
 
     def _build(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(14)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(16)
 
         # Left list
         self._left = Card()

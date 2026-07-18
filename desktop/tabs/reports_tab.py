@@ -53,7 +53,7 @@ class ReportsTab(QWidget):
     # ── UI ─────────────────────────────────────────────────────────────────────
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=16)
+        lay, _ = page_layout(self)
 
         # Lovable-style top actions
         actions = QWidget()

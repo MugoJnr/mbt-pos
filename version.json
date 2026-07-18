@@ -1,8 +1,8 @@
 ﻿{
-  "version": "2.3.88",
-  "build": "PROD-2026-07-18-v2.3.88",
+  "version": "2.3.89",
+  "build": "PROD-2026-07-18-v2.3.89",
   "build_date": "2026-07-18",
-  "release_notes": "Fix AI Command Center chat: sales today now uses SQLite ground truth (same as Insights) instead of returning 0 when api=None.",
+  "release_notes": "Desktop-first UI polish: MainWindow + all 14 sidebar tabs (nav chrome, PageChrome, 20/18 rhythm, touch POS). Web Command Center design system also updated. Presentation only.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

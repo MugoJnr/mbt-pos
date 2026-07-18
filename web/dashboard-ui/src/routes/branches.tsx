@@ -1,8 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+﻿import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { GitBranch, MapPin, Check } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, EmptyState, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, EmptyState, PageHeader, SectionTitle } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -42,17 +42,15 @@ function BranchesPage() {
 
   return (
     <AppShell title="Branches">
-      <div className="mb-4">
-        <h2 className="text-xl font-bold text-text flex items-center gap-2">
-          <GitBranch className="h-5 w-5 text-gold" /> Branch Management
-        </h2>
-        <p className="text-sm text-text2">
-          Switch active branch context. Multi-location comparison uses available shop data.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Command"
+        title="Branch Management"
+        description="Switch active branch context. Multi-location comparison uses available shop data."
+        icon={<GitBranch className="h-5 w-5 text-gold" />}
+      />
 
       {q.isLoading ? (
-        <div className="py-12 text-center text-sm text-text2">Loading branches…</div>
+        <div className="py-12 text-center text-sm text-text2">Loading branchesâ€¦</div>
       ) : branches.length === 0 ? (
         <Card>
           <EmptyState title="No branches" description="Default branch will be created on first API call." />
@@ -76,8 +74,8 @@ function BranchesPage() {
                   <div className="flex items-start gap-2 text-sm text-text2 mb-3">
                     <MapPin className="h-4 w-4 shrink-0 mt-0.5" />
                     <span>
-                      {b.address || "—"}
-                      {b.phone ? ` · ${b.phone}` : ""}
+                      {b.address || "â€”"}
+                      {b.phone ? ` Â· ${b.phone}` : ""}
                     </span>
                   </div>
                 )}
@@ -87,7 +85,7 @@ function BranchesPage() {
                       Today revenue
                     </div>
                     <div className="font-bold text-gold tabular-nums mt-0.5">
-                      {b.today_revenue != null ? KES(b.today_revenue) : "—"}
+                      {b.today_revenue != null ? KES(b.today_revenue) : "â€”"}
                     </div>
                   </div>
                   <div className="rounded-md bg-panel/50 p-3">
@@ -95,7 +93,7 @@ function BranchesPage() {
                       Products
                     </div>
                     <div className="font-bold text-text mt-0.5">
-                      {b.products != null ? b.products : "—"}
+                      {b.products != null ? b.products : "â€”"}
                     </div>
                   </div>
                 </div>

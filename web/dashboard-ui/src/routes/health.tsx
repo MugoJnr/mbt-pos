@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { HeartPulse, CheckCircle2, AlertTriangle, XCircle, HelpCircle } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, PageHeader, SectionTitle } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/health")({
@@ -32,17 +32,17 @@ function HealthPage() {
 
   return (
     <AppShell title="System Health">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-text flex items-center gap-2">
-            <HeartPulse className="h-5 w-5 text-gold" /> System Health
-          </h2>
-          <p className="text-sm text-text2">Scored checks across DB, storage, cloud, AI & more</p>
-        </div>
-        <Button variant="secondary" onClick={() => healthQ.refetch()}>
-          Re-run checks
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Command"
+        title="System Health"
+        icon={<HeartPulse className="h-4 w-4" />}
+        description="Scored checks across DB, storage, cloud, AI & more"
+        actions={
+          <Button variant="secondary" onClick={() => healthQ.refetch()} className="min-h-[44px]">
+            Re-run checks
+          </Button>
+        }
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4 mb-4">
         <Card className="p-5 flex flex-col items-center justify-center">

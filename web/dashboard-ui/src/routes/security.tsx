@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ShieldCheck, Lock, KeyRound, ScrollText } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, Input, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, Input, PageHeader, SectionTitle } from "@/components/ui-kit";
 
 export const Route = createFileRoute("/security")({
   component: Security,
@@ -10,6 +10,12 @@ export const Route = createFileRoute("/security")({
 function Security() {
   return (
     <AppShell title="Security">
+      <PageHeader
+        eyebrow="Admin"
+        title="Security"
+        description="PIN policy, auto-lock, and audit visibility for managers."
+        icon={<ShieldCheck className="h-5 w-5 text-gold" />}
+      />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         {[
           { k: "PIN Policy", v: "Strong", tone: "ok" as const, i: <KeyRound className="h-5 w-5" /> },

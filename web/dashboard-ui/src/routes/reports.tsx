@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Download, CalendarRange } from "lucide-react";
+import { Download, CalendarRange, BarChart3 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Button, Card, SectionTitle, Select, Table } from "@/components/ui-kit";
+import { Button, Card, PageHeader, SectionTitle, Select, Table } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { addDaysISO, KES, todayISO } from "@/lib/format";
 
@@ -59,28 +59,30 @@ function Reports() {
 
   return (
     <AppShell title="Reports">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-2">
-          <Select value={preset} onChange={(e) => setPreset(e.target.value)}>
-            {["Today", "Yesterday", "This Week", "This Month"].map((p) => (
-              <option key={p}>{p}</option>
-            ))}
-          </Select>
-          <span className="text-xs text-text2 inline-flex items-center gap-1">
-            <CalendarRange className="h-3.5 w-3.5" />
-            {range.start} → {range.end}
-          </span>
-        </div>
-        <a
-          href={`/api/reports/html?date=${todayISO()}`}
-          className="inline-flex"
-          download
-        >
-          <Button variant="primary">
-            <Download className="h-4 w-4" /> Download HTML Report
-          </Button>
-        </a>
-      </div>
+      <PageHeader
+        eyebrow="Operations"
+        title="Reports"
+        icon={<BarChart3 className="h-4 w-4" />}
+        description={`${range.start} → ${range.end}`}
+        actions={
+          <>
+            <Select value={preset} onChange={(e) => setPreset(e.target.value)} className="min-h-[44px]">
+              {["Today", "Yesterday", "This Week", "This Month"].map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </Select>
+            <span className="text-xs text-text2 inline-flex items-center gap-1">
+              <CalendarRange className="h-3.5 w-3.5" />
+              {range.start} → {range.end}
+            </span>
+            <a href={`/api/reports/html?date=${todayISO()}`} className="inline-flex" download>
+              <Button variant="primary" className="min-h-[44px]">
+                <Download className="h-4 w-4" /> Download HTML Report
+              </Button>
+            </a>
+          </>
+        }
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <Card className="p-5 lg:col-span-2">

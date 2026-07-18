@@ -9,7 +9,7 @@ import {
   ClipboardCheck,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, KpiCard, SectionTitle } from "@/components/ui-kit";
+import { Badge, Card, KpiCard, PageHeader, SectionTitle } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -33,25 +33,21 @@ function LivePage() {
 
   return (
     <AppShell title="Live Monitoring">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-text flex items-center gap-2">
-            <Activity className="h-5 w-5 text-gold" /> Live Monitoring
-          </h2>
-          <p className="text-sm text-text2">
-            Auto-refreshes every 20s
-            {d.refreshed_at ? (
-              <>
-                {" "}
-                · last {new Date(d.refreshed_at).toLocaleTimeString("en-GB", { hour12: false })}
-              </>
-            ) : null}
-          </p>
-        </div>
-        <Badge tone={liveQ.isFetching ? "info" : "ok"}>
-          {liveQ.isFetching ? "Refreshing…" : "Live"}
-        </Badge>
-      </div>
+      <PageHeader
+        eyebrow="Overview"
+        title="Live Monitoring"
+        icon={<Activity className="h-4 w-4" />}
+        description={`Auto-refreshes every 20s${
+          d.refreshed_at
+            ? ` · last ${new Date(d.refreshed_at).toLocaleTimeString("en-GB", { hour12: false })}`
+            : ""
+        }`}
+        actions={
+          <Badge tone={liveQ.isFetching ? "info" : "ok"}>
+            {liveQ.isFetching ? "Refreshing…" : "Live"}
+          </Badge>
+        }
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <KpiCard

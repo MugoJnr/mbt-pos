@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Play, Download, RotateCw, CheckCircle2, HelpCircle, HeartPulse } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card } from "@/components/ui-kit";
+import { Badge, Button, Card, PageHeader } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/diagnostics")({
@@ -56,14 +56,21 @@ function Diagnostics() {
 
   return (
     <AppShell title="Diagnostics">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h2 className="text-xl font-bold text-text">System Diagnostics</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <Link to="/health">
-            <Button variant="primary">
-              <HeartPulse className="h-4 w-4" /> Health Score
-            </Button>
-          </Link>
+      <PageHeader
+        eyebrow="Admin"
+        title="System Diagnostics"
+        description="Health checks, sync queue, and runtime logs."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Link to="/health">
+              <Button variant="primary">
+                <HeartPulse className="h-4 w-4" /> System Health
+              </Button>
+            </Link>
+          </div>
+        }
+      />
+      <div className="flex flex-wrap items-center justify-end gap-2 mb-4">
           <Button variant="secondary" onClick={() => healthQ.refetch()}>
             <Play className="h-4 w-4" /> Run Check
           </Button>
@@ -73,7 +80,6 @@ function Diagnostics() {
           <Button variant="ghost" disabled>
             <RotateCw className="h-4 w-4" /> Rotate Logs
           </Button>
-        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">

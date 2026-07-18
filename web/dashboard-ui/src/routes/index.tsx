@@ -14,9 +14,30 @@ import {
   HeartPulse,
   Activity,
 } from "lucide-react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { AppShell, ThemeToggle } from "@/components/app-shell";
-import { Badge, Button, Card, EmptyState, KpiCard, SectionTitle, Table } from "@/components/ui-kit";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  KpiCard,
+  SectionTitle,
+  Skeleton,
+  Table,
+} from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES, todayISO } from "@/lib/format";
@@ -43,10 +64,24 @@ function HealthRing({ score, overall }: { score: number; overall: string }) {
           strokeDasharray={`${(score / 100) * 251} 251`}
         />
       </svg>
-      <span className="absolute inset-0 grid place-items-center text-sm font-extrabold text-text">
+      <span className="absolute inset-0 grid place-items-center text-sm font-extrabold text-text tabular-nums">
         {score}
       </span>
     </Link>
+  );
+}
+
+function ChartTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border border-border bg-card px-3 py-2 shadow-md text-xs">
+      <div className="text-text2 mb-1">{label}</div>
+      {payload.map((p: any) => (
+        <div key={p.dataKey} className="font-semibold text-gold tabular-nums">
+          {KES(p.value)}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -125,6 +160,47 @@ function Dashboard() {
     ? notifQ.data.notifications
     : [];
 
+  const hourly = useMemo(() => {
+    const raw = Array.isArray(wrap.hourly) ? wrap.hourly : [];
+    if (raw.length) {
+      return raw.map((h: any) => ({
+        hour: `${String(h.hour ?? h.label ?? "").padStart(2, "0")}:00`,
+        total: Number(h.total || 0),
+      }));
+    }
+    // Derive a simple hourly series from today's sales when API has no hourly
+    const buckets: Record<number, number> = {};
+    for (let i = 0; i < 24; i++) buckets[i] = 0;
+    for (const row of sales) {
+      const t = row.created_at || row.sold_at || row.timestamp;
+      if (!t) continue;
+      const hr = new Date(t).getHours();
+      if (!Number.isNaN(hr)) buckets[hr] += Number(row.total || 0);
+    }
+    const entries = Object.entries(buckets)
+      .map(([h, total]) => ({ hour: `${String(h).padStart(2, "0")}:00`, total }))
+      .filter((e) => e.total > 0);
+    return entries.length ? entries : Object.entries(buckets)
+      .slice(8, 20)
+      .map(([h, total]) => ({ hour: `${String(h).padStart(2, "0")}:00`, total }));
+  }, [wrap.hourly, sales]);
+
+  const byPayment = useMemo(() => {
+    const raw = Array.isArray(wrap.by_payment) ? wrap.by_payment : [];
+    if (raw.length) {
+      return raw.map((p: any) => ({
+        name: String(p.method || p.payment_method || p.name || "Other"),
+        total: Number(p.total || 0),
+      }));
+    }
+    const map: Record<string, number> = {};
+    for (const row of sales) {
+      const m = String(row.payment_method || "Cash");
+      map[m] = (map[m] || 0) + Number(row.total || 0);
+    }
+    return Object.entries(map).map(([name, total]) => ({ name, total }));
+  }, [wrap.by_payment, sales]);
+
   const primaryKpis = [
     {
       key: "sales",
@@ -202,6 +278,8 @@ function Dashboard() {
     alert: <AlertTriangle className="h-5 w-5" />,
   };
 
+  const loading = summaryQ.isLoading && ccQ.isLoading;
+
   return (
     <AppShell title="Dashboard">
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-6">
@@ -211,61 +289,150 @@ function Dashboard() {
             <span className="mx-1 text-muted-fg">·</span>
             <span>{rest.join(" ")}</span>
           </div>
-          <h2 className="text-[22px] sm:text-[26px] font-extrabold tracking-tight text-text mt-1">
-            Welcome back, {name}
-          </h2>
-          <div className="text-sm text-text2">Executive Overview · Command Center</div>
+          <h2 className="text-display text-text mt-1">Welcome back, {name}</h2>
+          <div className="text-sm text-text2 mt-0.5">Executive Overview · Command Center</div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2">
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 shadow-card">
             <HealthRing score={healthScore} overall={healthOverall} />
             <div className="leading-tight">
-              <div className="text-[10px] tracking-[0.14em] uppercase text-text2 font-semibold">
-                Health
-              </div>
+              <div className="text-eyebrow">Health</div>
               <div className="text-sm font-semibold text-text capitalize">{healthOverall}</div>
-              <Link to="/health" className="text-xs text-gold font-semibold">
+              <Link to="/health" className="text-xs text-gold font-semibold hover:underline">
                 Details →
               </Link>
             </div>
           </div>
           <ThemeToggle />
           <Link to="/pos">
-            <Button variant="primary" size="lg" className="min-h-[44px]">
+            <Button variant="primary" size="touch">
               <Plus className="h-4 w-4" /> New Sale
             </Button>
           </Link>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4">
-        {primaryKpis.map((k) => (
-          <KpiCard
-            key={k.key}
-            label={k.label}
-            value={k.value}
-            sub={k.sub}
-            accent={k.accent}
-            icon={ICONS[k.icon]}
-          />
-        ))}
-      </div>
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i} className="p-4 space-y-3">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-8 w-28" />
+              <Skeleton className="h-3 w-16" />
+            </Card>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4">
+            {primaryKpis.map((k) => (
+              <KpiCard
+                key={k.key}
+                label={k.label}
+                value={k.value}
+                sub={k.sub}
+                accent={k.accent}
+                icon={ICONS[k.icon]}
+              />
+            ))}
+          </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
-        {secondaryKpis.map((k) => (
-          <KpiCard
-            key={k.key}
-            label={k.label}
-            value={k.value}
-            sub={k.sub}
-            accent={k.accent}
-            icon={k.icon}
-          />
-        ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+            {secondaryKpis.map((k) => (
+              <KpiCard
+                key={k.key}
+                label={k.label}
+                value={k.value}
+                sub={k.sub}
+                accent={k.accent}
+                icon={k.icon}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Charts row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
+        <Card className="p-4 lg:col-span-2">
+          <SectionTitle
+            action={<span className="text-xs text-text2">Today · hourly</span>}
+          >
+            Revenue pulse
+          </SectionTitle>
+          <div className="h-[200px] w-full mt-1">
+            {hourly.some((h) => h.total > 0) ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={hourly} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="mbtGoldFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="var(--gold)" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="var(--gold)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="hour"
+                    tick={{ fill: "var(--text2)", fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis
+                    tick={{ fill: "var(--text2)", fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={48}
+                    tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
+                  />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Area
+                    type="monotone"
+                    dataKey="total"
+                    stroke="var(--gold)"
+                    strokeWidth={2}
+                    fill="url(#mbtGoldFill)"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState
+                icon={<BarChart3 className="h-6 w-6" />}
+                title="No hourly data yet"
+                description="Sales today will populate this chart."
+                className="py-8"
+              />
+            )}
+          </div>
+        </Card>
+
+        <Card className="p-4">
+          <SectionTitle>By payment</SectionTitle>
+          <div className="h-[200px] w-full mt-1">
+            {byPayment.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={byPayment} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
+                  <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fill: "var(--text2)", fontSize: 11 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis hide />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Bar dataKey="total" fill="var(--gold)" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyState title="No payments yet" className="py-8" />
+            )}
+          </div>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-        <Card className="p-4 lg:col-span-1">
+        <Card className="p-4 lg:col-span-1 border-gold/20 bg-gradient-to-b from-gold/[0.06] to-card">
           <SectionTitle
             action={
               <Link to="/ai" className="text-sm text-gold font-semibold inline-flex items-center gap-1">
@@ -284,7 +451,7 @@ function Dashboard() {
               .map((line: string, i: number) => (
                 <li
                   key={i}
-                  className="text-xs text-text2 pl-2 border-l-2 border-gold/40 leading-snug"
+                  className="text-xs text-text2 pl-2.5 border-l-2 border-gold/40 leading-snug"
                 >
                   {line}
                 </li>
@@ -306,7 +473,7 @@ function Dashboard() {
           </div>
           {sales.length === 0 ? (
             <EmptyState
-              icon={<BarChart3 className="h-8 w-8 text-muted-fg" />}
+              icon={<BarChart3 className="h-6 w-6" />}
               title="No sales yet today"
               description="Complete a sale on Point of Sale to see it here."
             />
@@ -413,17 +580,17 @@ function Dashboard() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Link to="/live">
-              <Button variant="secondary" className="min-h-[44px]">
+              <Button variant="secondary" size="touch">
                 <Activity className="h-4 w-4" /> Live
               </Button>
             </Link>
             <Link to="/approvals">
-              <Button variant="secondary" className="min-h-[44px]">
+              <Button variant="secondary" size="touch">
                 Approvals
               </Button>
             </Link>
             <Link to="/health">
-              <Button variant="secondary" className="min-h-[44px]">
+              <Button variant="secondary" size="touch">
                 <HeartPulse className="h-4 w-4" /> Health
               </Button>
             </Link>

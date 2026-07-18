@@ -1,10 +1,10 @@
-"""
-MBT POS — Dashboard Tab v2  (Modern Redesign)
+﻿"""
+MBT POS â€” Dashboard Tab v2  (Modern Redesign)
 MugoByte Technologies | mugobyte.com
 
 Full dark + light mode support.
 Larger, readable KPI values. Debt summary. Top products mini-bar.
-Recent sales with status badges. 2×2 quick action grid.
+Recent sales with status badges. 2Ã—2 quick action grid.
 """
 import logging
 from datetime import date, timedelta
@@ -30,17 +30,17 @@ def _palette(is_light=None):
     return C
 
 
-def _qs(css): return css  # passthrough — just for readability
+def _qs(css): return css  # passthrough â€” just for readability
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# KPI CARD  (redesigned — bigger value, icon accent, both modes)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# KPI CARD  (redesigned â€” bigger value, icon accent, both modes)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class _KPI(AnimatedKPI):
-    """Dashboard KPI — AnimatedKPI with theme apply_mode shim."""
+    """Dashboard KPI â€” AnimatedKPI with theme apply_mode shim."""
 
-    def __init__(self, label, icon, value='—', sub='', accent=None, is_light=False):
+    def __init__(self, label, icon, value='â€”', sub='', accent=None, is_light=False):
         super().__init__(label=label, icon=icon, value=value, sub=sub, accent=accent)
         self._is_light = is_light
         apply_card_shadow(self)
@@ -50,9 +50,9 @@ class _KPI(AnimatedKPI):
         self.refresh_theme()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SECTION CARD
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class _Card(QFrame):
     def __init__(self, is_light=False):
@@ -92,9 +92,9 @@ class _Card(QFrame):
         return row, lbl
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # MINI BAR ROW  (top products)
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class _BarRow(QWidget):
     def __init__(self, name, value_str, pct, accent, is_light=False):
@@ -128,12 +128,12 @@ class _BarRow(QWidget):
         lay.addWidget(nm); lay.addWidget(track, 1); lay.addWidget(val)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # QUICK ACTION BUTTON
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _qa_btn(icon, label, accent, bg_dim, is_light=False):
-    """Quick-action button — icons + hover elevation, touch-friendly height."""
+    """Quick-action button â€” icons + hover elevation, touch-friendly height."""
     p = _palette(is_light)
     text = f"{icon}  {label}" if icon else label
     btn = QPushButton(text)
@@ -152,16 +152,16 @@ def _qa_btn(icon, label, accent, bg_dim, is_light=False):
     return btn
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # STATUS ROW
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _status_row(label, value, color, is_light=False):
     p = _palette(is_light)
     w = QWidget(); w.setStyleSheet("background:transparent;")
     row = QHBoxLayout(w); row.setContentsMargins(0, 4, 0, 4); row.setSpacing(8)
 
-    dot = QLabel("●")
+    dot = QLabel("â—")
     dot.setStyleSheet(
         f"color:{color}; font-size:13px; background:transparent; border:none;")
     lbl = QLabel(label)
@@ -175,9 +175,9 @@ def _status_row(label, value, color, is_light=False):
     return w, val, dot
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # SEPARATOR
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _sep(is_light=False):
     p = _palette(is_light)
@@ -186,9 +186,9 @@ def _sep(is_light=False):
     return f
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # DASHBOARD TAB
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 class DashboardTab(QWidget):
     navigate = pyqtSignal(str)
@@ -208,10 +208,10 @@ class DashboardTab(QWidget):
         self._t.timeout.connect(self._load)
         self._t.start(60_000)
 
-    # ── Build ─────────────────────────────────────────────────────────────────
+    # â”€â”€ Build â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build(self):
-        # Page scrolls as a whole — never clip Quick Actions under the window edge
+        # Page scrolls as a whole â€” never clip Quick Actions under the window edge
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -223,8 +223,8 @@ class DashboardTab(QWidget):
         self._page = QWidget()
         self._page.setStyleSheet('background:transparent;')
         self._root_lay = QVBoxLayout(self._page)
-        self._root_lay.setContentsMargins(28, 28, 28, 28)
-        self._root_lay.setSpacing(22)
+        self._root_lay.setContentsMargins(20, 18, 20, 18)
+        self._root_lay.setSpacing(16)
         self._page_scroll.setWidget(self._page)
         outer.addWidget(self._page_scroll)
         self._build_content()
@@ -233,7 +233,7 @@ class DashboardTab(QWidget):
     def _build_content(self):
         p = _palette(self._is_light)
 
-        # ── HEADER ──────────────────────────────────────────────────────────
+        # â”€â”€ HEADER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         hdr = QHBoxLayout(); hdr.setSpacing(0)
         left = QVBoxLayout(); left.setSpacing(3)
 
@@ -243,7 +243,7 @@ class DashboardTab(QWidget):
         rest = today.strftime('%B %d, %Y')
         self._date_lbl.setText(
             f'<span style="color:{p["gold"]};font-weight:600">{weekday}</span>'
-            f'<span style="color:{p["muted"]}">  ·  </span>'
+            f'<span style="color:{p["muted"]}">  Â·  </span>'
             f'<span style="color:{p["text2"]}">{rest}</span>')
         self._title_lbl = QLabel('Good Morning')
         self._title_lbl.setStyleSheet(
@@ -258,7 +258,7 @@ class DashboardTab(QWidget):
         left.addWidget(self._shop_lbl)
         hdr.addLayout(left, 1)
 
-        # Header right — period preset + New Sale (theme switch is topbar-only)
+        # Header right â€” period preset + New Sale (theme switch is topbar-only)
         right_row = QHBoxLayout(); right_row.setSpacing(10)
 
         self._theme_btn = None
@@ -268,7 +268,7 @@ class DashboardTab(QWidget):
         self._period.presetChanged.connect(self._on_period)
         right_row.addWidget(self._period)
 
-        ns_btn = QPushButton('＋  New Sale')
+        ns_btn = QPushButton('ï¼‹  New Sale')
         ns_btn.setObjectName('primaryBtn')
         ns_btn.setMinimumHeight(38)
         ns_btn.setFixedWidth(130)
@@ -281,31 +281,31 @@ class DashboardTab(QWidget):
         hdr.addLayout(right_row)
         self._root_lay.addLayout(hdr)
 
-        # ── KPI ROW 1 — Sales ────────────────────────────────────────────────
-        kr1 = QHBoxLayout(); kr1.setSpacing(18)
-        self._k_sales = _KPI("Today's Sales",   '🛒', '0',   'Transactions', p['gold'],   self._is_light)
-        self._k_rev   = _KPI("Today's Revenue", '💰', '—',   'Gross income',  p['ok'],     self._is_light)
-        self._k_avg   = _KPI("Avg Transaction", '📈', '—',   'Per receipt',   p['info'],   self._is_light)
-        self._k_low   = _KPI("Low Stock",        '⚠', '0',   'Items to restock', p['err'], self._is_light)
+        # â”€â”€ KPI ROW 1 â€” Sales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        kr1 = QHBoxLayout(); kr1.setSpacing(16)
+        self._k_sales = _KPI("Today's Sales",   'ðŸ›’', '0',   'Transactions', p['gold'],   self._is_light)
+        self._k_rev   = _KPI("Today's Revenue", 'ðŸ’°', 'â€”',   'Gross income',  p['ok'],     self._is_light)
+        self._k_avg   = _KPI("Avg Transaction", 'ðŸ“ˆ', 'â€”',   'Per receipt',   p['info'],   self._is_light)
+        self._k_low   = _KPI("Low Stock",        'âš ', '0',   'Items to restock', p['err'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
         self._root_lay.addLayout(kr1)
 
-        # ── KPI ROW 2 — Debt ────────────────────────────────────────────────
-        kr2 = QHBoxLayout(); kr2.setSpacing(18)
-        self._k_debt_out  = _KPI("Outstanding Debt",    '📋', '—', 'unpaid',        p['err'],  self._is_light)
-        self._k_debt_col  = _KPI("Collected Today",     '✅', '—', 'debt payments', p['ok'],   self._is_light)
-        self._k_customers = _KPI("Customers w/ Debt",   '👤', '0', 'accounts',      p['warn'], self._is_light)
-        self._k_overdue   = _KPI("Overdue",             '🔔', '0', 'past due date', p['err'],  self._is_light)
+        # â”€â”€ KPI ROW 2 â€” Debt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        kr2 = QHBoxLayout(); kr2.setSpacing(16)
+        self._k_debt_out  = _KPI("Outstanding Debt",    'ðŸ“‹', 'â€”', 'unpaid',        p['err'],  self._is_light)
+        self._k_debt_col  = _KPI("Collected Today",     'âœ…', 'â€”', 'debt payments', p['ok'],   self._is_light)
+        self._k_customers = _KPI("Customers w/ Debt",   'ðŸ‘¤', '0', 'accounts',      p['warn'], self._is_light)
+        self._k_overdue   = _KPI("Overdue",             'ðŸ””', '0', 'past due date', p['err'],  self._is_light)
         for k in (self._k_debt_out, self._k_debt_col, self._k_customers, self._k_overdue):
             kr2.addWidget(k)
         self._root_lay.addLayout(kr2)
 
-        # ── KPI ROW 3 — Internal Consumption ────────────────────────────────
+        # â”€â”€ KPI ROW 3 â€” Internal Consumption â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         kr3 = QHBoxLayout(); kr3.setSpacing(18)
         self._k_cons = _KPI(
-            'Internal Consumption Today', '▣', '0',
-            'items · cost', p['info'], self._is_light)
+            'Internal Consumption Today', 'â–£', '0',
+            'items Â· cost', p['info'], self._is_light)
         self._k_cons.setCursor(Qt.PointingHandCursor)
         self._k_cons.setToolTip('Open Internal Consumption report')
         self._k_cons.mousePressEvent = lambda e: self._open_consumption_report()
@@ -313,19 +313,19 @@ class DashboardTab(QWidget):
         kr3.addStretch(3)
         self._root_lay.addLayout(kr3)
 
-        # ── CHARTS ROW ───────────────────────────────────────────────────────
+        # â”€â”€ CHARTS ROW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         charts = QHBoxLayout(); charts.setSpacing(18)
         self._trend_chart = GoldLineChart(height=168)
-        self._trend_card = ChartCard('Sales · Last 7 Days', self._trend_chart)
+        self._trend_card = ChartCard('Sales Â· Last 7 Days', self._trend_chart)
         apply_card_shadow(self._trend_card)
         self._pay_chart = PaymentBars()
-        self._pay_card = ChartCard('By Payment · 7 Days', self._pay_chart)
+        self._pay_card = ChartCard('By Payment Â· 7 Days', self._pay_chart)
         apply_card_shadow(self._pay_card)
         charts.addWidget(self._trend_card, 3)
         charts.addWidget(self._pay_card, 2)
         self._root_lay.addLayout(charts)
 
-        # ── Quick Actions (full width — never crushed in the side rail) ───────
+        # â”€â”€ Quick Actions (full width â€” never crushed in the side rail) â”€â”€â”€â”€â”€â”€â”€
         self._qa_card = _Card(self._is_light)
         self._qa_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         qcl = self._qa_card.body(margins=(16, 14, 16, 14), spacing=10)
@@ -336,10 +336,10 @@ class DashboardTab(QWidget):
         qcl.addWidget(self._qa_title)
         qa_row = QHBoxLayout(); qa_row.setSpacing(10)
         actions = [
-            ('🛒', 'New Sale',   'gold',  'sales'),
-            ('📦', 'Inventory',  'ok',    'inventory'),
-            ('💰', 'Debt',       'info',  'debt'),
-            ('📊', 'Reports',    'warn',  'reports'),
+            ('ðŸ›’', 'New Sale',   'gold',  'sales'),
+            ('ðŸ“¦', 'Inventory',  'ok',    'inventory'),
+            ('ðŸ’°', 'Debt',       'info',  'debt'),
+            ('ðŸ“Š', 'Reports',    'warn',  'reports'),
         ]
         self._qa_btns = []
         for icon, lbl, acc_key, tid in actions:
@@ -355,7 +355,7 @@ class DashboardTab(QWidget):
         qcl.addLayout(qa_row)
         self._root_lay.addWidget(self._qa_card)
 
-        # ── BODY ROW ─────────────────────────────────────────────────────────
+        # â”€â”€ BODY ROW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         body = QHBoxLayout(); body.setSpacing(16)
 
         # Left: Recent Sales (60%)
@@ -390,7 +390,7 @@ class DashboardTab(QWidget):
         else:
             self._void_btn = None
 
-        ref_btn = QPushButton('↺')
+        ref_btn = QPushButton('â†º')
         ref_btn.setFixedSize(32, 32)
         ref_btn.setCursor(Qt.PointingHandCursor)
         ref_btn.setStyleSheet(
@@ -425,7 +425,7 @@ class DashboardTab(QWidget):
         self._tbl.cellDoubleClicked.connect(self._on_sale_double_click)
         scl.addWidget(self._tbl)
 
-        self._sales_empty = EmptyState('📄', 'No sales today', 'Start your first sale from Point of Sale')
+        self._sales_empty = EmptyState('ðŸ“„', 'No sales today', 'Start your first sale from Point of Sale')
         self._sales_empty.hide()
         scl.addWidget(self._sales_empty)
 
@@ -441,7 +441,7 @@ class DashboardTab(QWidget):
         # Right column (40%)
         rcol = QVBoxLayout(); rcol.setSpacing(14)
 
-        # ── Top Products ──────────────────────────────────────────────────────
+        # â”€â”€ Top Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._top_card = _Card(self._is_light)
         self._top_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         tcl = self._top_card.body()
@@ -461,7 +461,7 @@ class DashboardTab(QWidget):
         self._top_container.addWidget(self._no_top)
         rcol.addWidget(self._top_card)
 
-        # ── System Status (side rail only — Quick Actions moved full-width) ───
+        # â”€â”€ System Status (side rail only â€” Quick Actions moved full-width) â”€â”€â”€
         self._st_card = _Card(self._is_light)
         self._st_card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         stcl = self._st_card.body(spacing=2)
@@ -478,21 +478,21 @@ class DashboardTab(QWidget):
         self._st_net_w,  self._st_net,  self._st_net_dot  = _status_row('Internet',      'Online',  p['ok'],   self._is_light)
         self._st_lic_w,  self._st_lic,  self._st_lic_dot  = _status_row('License',       'Active',  p['ok'],   self._is_light)
         self._st_bak_w,  self._st_bak,  self._st_bak_dot  = _status_row('Backup',        'OK',      p['ok'],   self._is_light)
-        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Cloud Sync',    '—',       p['muted'],self._is_light)
+        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Cloud Sync',    'â€”',       p['muted'],self._is_light)
         self._st_ver_w,  self._st_ver,  self._st_ver_dot  = _status_row('Version',       'v2.3',    p['info'], self._is_light)
         for w in (self._st_db_w, self._st_api_w, self._st_prn_w, self._st_net_w,
                   self._st_lic_w, self._st_bak_w, self._st_sync_w, self._st_ver_w):
             stcl.addWidget(w)
         rcol.addWidget(self._st_card)
 
-        # ── MBT AI Insights ───────────────────────────────────────────────────
+        # â”€â”€ MBT AI Insights â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._ai_card = _Card(self._is_light)
         ail = self._ai_card.body(margins=(18, 16, 18, 16), spacing=10)
         hdr_ai = QHBoxLayout()
-        self._ai_title = QLabel('✦  AI Insights')
+        self._ai_title = QLabel('âœ¦  AI Insights')
         self._ai_title.setStyleSheet(
             f"color:{p['text']}; font-size:15px; font-weight:700; background:transparent; border:none;")
-        self._ai_refresh = QPushButton('↻')
+        self._ai_refresh = QPushButton('â†»')
         self._ai_refresh.setFixedSize(28, 28)
         self._ai_refresh.setCursor(Qt.PointingHandCursor)
         self._ai_refresh.setToolTip('Refresh AI insights')
@@ -503,7 +503,7 @@ class DashboardTab(QWidget):
         self._ai_banner.setWordWrap(True)
         self._ai_banner.hide()
         ail.addWidget(self._ai_banner)
-        self._ai_summary = QLabel('Loading insights…')
+        self._ai_summary = QLabel('Loading insightsâ€¦')
         self._ai_summary.setWordWrap(True)
         self._ai_summary.setStyleSheet(
             f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
@@ -529,7 +529,7 @@ class DashboardTab(QWidget):
         rcol.addWidget(self._ai_card)
         QTimer.singleShot(600, lambda: self._load_ai_insights(force=False))
 
-        # ── Today's Tasks + Activity ──────────────────────────────────────────
+        # â”€â”€ Today's Tasks + Activity â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._tasks_card = _Card(self._is_light)
         tl = self._tasks_card.body(margins=(18, 16, 18, 16), spacing=8)
         tt = QLabel("Today's Tasks")
@@ -549,7 +549,7 @@ class DashboardTab(QWidget):
             f"color:{p['text']}; font-size:13px; font-weight:700; background:transparent; border:none; padding-top:8px;")
         tl.addWidget(rem)
         for rem_txt in ('Supplier payment tomorrow', 'License check', 'Monthly report due'):
-            rlbl = QLabel(f'⏰  {rem_txt}')
+            rlbl = QLabel(f'â°  {rem_txt}')
             rlbl.setStyleSheet(
                 f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
             tl.addWidget(rlbl)
@@ -563,7 +563,7 @@ class DashboardTab(QWidget):
         al.addWidget(at)
         self._act_list = QVBoxLayout(); self._act_list.setSpacing(6)
         al.addLayout(self._act_list)
-        self._act_placeholder = EmptyState('📋', 'No recent activity', 'Sales and system events appear here')
+        self._act_placeholder = EmptyState('ðŸ“‹', 'No recent activity', 'Sales and system events appear here')
         self._act_list.addWidget(self._act_placeholder)
         rcol.addWidget(self._act_card)
 
@@ -577,14 +577,14 @@ class DashboardTab(QWidget):
         self._root_lay.addLayout(body, 1)
 
         # Footer
-        self._footer = QLabel('MBT POS  ·  MugoByte Technologies  ·  mugobyte.com')
+        self._footer = QLabel('MBT POS  Â·  MugoByte Technologies  Â·  mugobyte.com')
         self._footer.setAlignment(Qt.AlignCenter)
         self._footer.setStyleSheet(
             f"color:{p['muted']}; font-size:11px; "
             f"background:transparent; border:none; padding:6px 0;")
         self._root_lay.addWidget(self._footer)
 
-    # ── Theme toggle ──────────────────────────────────────────────────────────
+    # â”€â”€ Theme toggle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _style_new_sale_btn(self):
         p = _palette()
@@ -626,10 +626,10 @@ class DashboardTab(QWidget):
     def _install_fab(self):
         self._fab = FloatingActionButton(
             [
-                ('🛒', 'New Sale', lambda: self.navigate.emit('sales')),
-                ('📦', 'New Product', lambda: self.navigate.emit('inventory')),
-                ('👤', 'New Customer', lambda: self.navigate.emit('debt')),
-                ('🚚', 'New Supplier', lambda: self.navigate.emit('inventory')),
+                ('ðŸ›’', 'New Sale', lambda: self.navigate.emit('sales')),
+                ('ðŸ“¦', 'New Product', lambda: self.navigate.emit('inventory')),
+                ('ðŸ‘¤', 'New Customer', lambda: self.navigate.emit('debt')),
+                ('ðŸšš', 'New Supplier', lambda: self.navigate.emit('inventory')),
             ],
             parent=self,
         )
@@ -663,10 +663,10 @@ class DashboardTab(QWidget):
         self._is_light = ThemeManager.is_light()
         p = _palette()
 
-        # Root background — Lovable main column is surface, not app tint
+        # Root background â€” Lovable main column is surface, not app tint
         self.setStyleSheet(f"background:{p['surface']};")
 
-        # Theme switch bar (topbar-only — may be None on this tab)
+        # Theme switch bar (topbar-only â€” may be None on this tab)
         tb = getattr(self, '_theme_btn', None)
         if tb is not None and hasattr(tb, '_refresh_theme'):
             tb._refresh_theme()
@@ -681,7 +681,7 @@ class DashboardTab(QWidget):
         rest = today.strftime('%d %B %Y')
         self._date_lbl.setText(
             f'<span style="color:{p["gold"]};font-weight:600">{weekday}</span>'
-            f'<span style="color:{p["muted"]}">  ·  </span>'
+            f'<span style="color:{p["muted"]}">  Â·  </span>'
             f'<span style="color:{p["text2"]}">{rest}</span>')
         self._date_lbl.setStyleSheet("background:transparent; border:none;")
         self._title_lbl.setStyleSheet(
@@ -763,7 +763,7 @@ class DashboardTab(QWidget):
         if getattr(self, '_fab', None):
             self._fab.refresh_theme()
 
-        # Status rows — style only; do not reload product data during theme switch
+        # Status rows â€” style only; do not reload product data during theme switch
         for w, val, dot in ((self._st_db_w, self._st_db, self._st_db_dot),
                              (self._st_api_w, self._st_api, self._st_api_dot)):
             w.setStyleSheet("background:transparent;")
@@ -780,7 +780,7 @@ class DashboardTab(QWidget):
             self._no_top.setStyleSheet(
                 f"color:{p['muted']}; font-size:13px; background:transparent; border:none;")
 
-    # ── Data loading ──────────────────────────────────────────────────────────
+    # â”€â”€ Data loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def on_show(self):
         try:
@@ -793,13 +793,13 @@ class DashboardTab(QWidget):
             self._currency = cfg.get('currency_symbol', 'KES')
             headline, sub = time_greeting(name)
             self._title_lbl.setText(headline)
-            self._shop_lbl.setText(f'{shop}  ·  {sub}')
+            self._shop_lbl.setText(f'{shop}  Â·  {sub}')
         except Exception:
             pass
         QTimer.singleShot(0, self._load)
 
     def _open_consumption_report(self):
-        """Dashboard KPI click → Internal Consumption report."""
+        """Dashboard KPI click â†’ Internal Consumption report."""
         mw = self.window()
         if mw is not None:
             setattr(mw, '_pending_consumption_report', True)
@@ -831,7 +831,7 @@ class DashboardTab(QWidget):
         p = _palette()
         banner = data.get('banner')
         if banner:
-            self._ai_banner.setText('⚠  ' + banner)
+            self._ai_banner.setText('âš   ' + banner)
             self._ai_banner.setStyleSheet(
                 f"color:{p['warn']}; font-size:11px; font-weight:600; background:transparent; border:none;")
             self._ai_banner.show()
@@ -840,12 +840,12 @@ class DashboardTab(QWidget):
         self._ai_summary.setText(data.get('summary') or '')
         alerts = data.get('alerts') or []
         self._ai_alerts.setText(
-            'Alerts:\n' + '\n'.join(f'• {a}' for a in alerts[:4]) if alerts else '')
+            'Alerts:\n' + '\n'.join(f'â€¢ {a}' for a in alerts[:4]) if alerts else '')
         recs = data.get('recommendations') or []
         self._ai_recs.setText(
-            'Recommendations:\n' + '\n'.join(f'• {r}' for r in recs[:4]) if recs else '')
+            'Recommendations:\n' + '\n'.join(f'â€¢ {r}' for r in recs[:4]) if recs else '')
         src = data.get('source') or ''
-        self._ai_title.setText(f'✦  AI Insights' + (f'  ·  {src}' if src else ''))
+        self._ai_title.setText(f'âœ¦  AI Insights' + (f'  Â·  {src}' if src else ''))
 
     def refresh(self):
         self._load()
@@ -868,7 +868,7 @@ class DashboardTab(QWidget):
         p     = _palette(self._is_light)
         cur   = self._currency
 
-        # ── Sales KPIs ────────────────────────────────────────────────────────
+        # â”€â”€ Sales KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         today_tx = 0
         today_rev = 0.0
         try:
@@ -907,7 +907,7 @@ class DashboardTab(QWidget):
                 self._k_rev.set_sub(self._period.current_label() if hasattr(self, '_period') else '')
         except Exception as e:
             log.warning(f"Dashboard trends: {e}")
-        # ── Low stock ─────────────────────────────────────────────────────────
+        # â”€â”€ Low stock â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             prods = self.api.get_products() or []
             low   = sum(1 for p2 in prods if float(p2.get('stock', 0)) <= float(p2.get('min_stock', 5)))
@@ -916,7 +916,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard low stock: {e}")
 
-        # ── Debt KPIs ─────────────────────────────────────────────────────────
+        # â”€â”€ Debt KPIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             ds = self.api.get_debt_summary()
             if ds:
@@ -935,7 +935,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard debt KPIs: {e}")
 
-        # ── Internal consumption today ───────────────────────────────────────
+        # â”€â”€ Internal consumption today â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             cs = self.api.get_consumption_today_summary() or {}
             lines = int(cs.get('line_count') or 0)
@@ -947,7 +947,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard consumption KPI: {e}")
 
-        # ── Recent sales table ────────────────────────────────────────────────
+        # â”€â”€ Recent sales table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             sales = self.api.get_sales(today, today) or []
             self._tbl.setRowCount(0)
@@ -963,7 +963,7 @@ class DashboardTab(QWidget):
                 total_col = p['muted'] if voided else p['ok']
                 self._tbl.setItem(i, 3, tbl_right(
                     f"{cur} {float(s.get('total', 0)):,.2f}", total_col))
-                st_label = '✕ Voided' if voided else '✓ Done'
+                st_label = 'âœ• Voided' if voided else 'âœ“ Done'
                 st_color = p['err'] if voided else p['ok']
                 self._tbl.setItem(i, 4, tbl_center(st_label, st_color))
 
@@ -974,7 +974,7 @@ class DashboardTab(QWidget):
                 self._sales_empty.setVisible(not has)
             self._tbl_footer.setText(
                 f"  {n} transaction{'s' if n != 1 else ''} today" +
-                (f"  ·  Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
+                (f"  Â·  Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
             self._on_sale_selected()
 
             # Activity feed from recent sales
@@ -982,7 +982,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard sales table: {e}")
 
-        # ── Top products ──────────────────────────────────────────────────────
+        # â”€â”€ Top products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             d = self.api.get_report_summary(today, today)
             top = (d.get('top_products') or [])[:5] if d else []
@@ -991,7 +991,7 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard top products: {e}")
 
-        # ── Charts (7-day trend + payment mix) ───────────────────────────────
+        # â”€â”€ Charts (7-day trend + payment mix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             trend = self.api.get_sales_trend(7) or []
             self._trend_chart.set_data(
@@ -1000,7 +1000,7 @@ class DashboardTab(QWidget):
             )
             total_7 = sum(float(t.get('revenue') or 0) for t in trend)
             self._trend_card.set_title(
-                f"Sales · Last 7 Days  ·  {cur} {total_7:,.0f}")
+                f"Sales Â· Last 7 Days  Â·  {cur} {total_7:,.0f}")
         except Exception as e:
             log.warning(f"Dashboard sales trend: {e}")
 
@@ -1018,13 +1018,13 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard payment chart: {e}")
 
-        # ── System status ─────────────────────────────────────────────────────
+        # â”€â”€ System status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         p2 = _palette(self._is_light)
         from datetime import datetime as _dt
         now_s = _dt.now().strftime('%H:%M')
         for lbl, text, color in (
-            (self._st_db, 'OK · ' + now_s, p2['ok']),
-            (self._st_api, 'Online · <40ms', p2['ok']),
+            (self._st_db, 'OK Â· ' + now_s, p2['ok']),
+            (self._st_api, 'Online Â· <40ms', p2['ok']),
             (self._st_prn, 'Ready', p2['ok']),
             (self._st_net, 'Online', p2['ok']),
             (self._st_lic, 'Active', p2['ok']),
@@ -1051,19 +1051,19 @@ class DashboardTab(QWidget):
                 item.widget().deleteLater()
         p = _palette()
         if not sales:
-            empty = EmptyState('📋', 'No recent activity', 'Sales and system events appear here')
+            empty = EmptyState('ðŸ“‹', 'No recent activity', 'Sales and system events appear here')
             lay.addWidget(empty)
             return
         for s in sales:
             who = s.get('cashier_name') or 'Cashier'
             rcpt = s.get('receipt_number') or ''
             total = float(s.get('total', 0) or 0)
-            row = QLabel(f"✓  {who} completed Sale {rcpt}  ·  {cur} {total:,.0f}")
+            row = QLabel(f"âœ“  {who} completed Sale {rcpt}  Â·  {cur} {total:,.0f}")
             row.setWordWrap(True)
             row.setStyleSheet(
                 f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
             lay.addWidget(row)
-        bak = QLabel('✓  Database ready  ·  Backup OK')
+        bak = QLabel('âœ“  Database ready  Â·  Backup OK')
         bak.setStyleSheet(
             f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
         lay.addWidget(bak)
@@ -1080,7 +1080,7 @@ class DashboardTab(QWidget):
         cur = self._currency
 
         if not top:
-            empty = EmptyState('📦', 'No sales today', 'Top products will appear after your first sale')
+            empty = EmptyState('ðŸ“¦', 'No sales today', 'Top products will appear after your first sale')
             self._no_top = empty
             self._top_container.addWidget(empty)
             return
@@ -1095,10 +1095,10 @@ class DashboardTab(QWidget):
             bar = _BarRow(name, val_str, pct, accents[i % len(accents)], self._is_light)
             self._top_container.addWidget(bar)
 
-    # ── Void helpers ──────────────────────────────────────────────────────────
+    # â”€â”€ Void helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _on_sale_selected(self):
-        # Void stays enabled so users can always discover it (no selection → enter receipt).
+        # Void stays enabled so users can always discover it (no selection â†’ enter receipt).
         if self._void_btn:
             self._void_btn.setEnabled(True)
 
@@ -1140,7 +1140,7 @@ class DashboardTab(QWidget):
         headers = ['Receipt', 'Time', 'Cashier', 'Total', 'Status']
         from desktop.utils.theme import apply_themed_dialog, C as TC
         dlg = QDialog(self)
-        dlg.setWindowTitle(f'Sale — {receipt}')
+        dlg.setWindowTitle(f'Sale â€” {receipt}')
         dlg.setMinimumWidth(400)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)

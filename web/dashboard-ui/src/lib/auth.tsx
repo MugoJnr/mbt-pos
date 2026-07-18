@@ -80,27 +80,37 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-app px-4">
+    <div className="min-h-screen flex items-center justify-center bg-app px-4 relative overflow-hidden">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-40"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 50% at 50% -20%, color-mix(in srgb, var(--gold) 28%, transparent), transparent), radial-gradient(ellipse 60% 40% at 100% 100%, color-mix(in srgb, var(--info) 12%, transparent), transparent)",
+        }}
+      />
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-lg"
+        className="relative w-full max-w-sm rounded-2xl border border-border bg-card/95 p-8 shadow-elevated backdrop-blur-sm animate-in fade-in zoom-in-95 duration-300"
       >
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-xl bg-gold text-xl font-black text-[color:var(--gold-fg)]">
+          <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-xl bg-gold text-xl font-black text-[color:var(--gold-fg)] shadow-[0_4px_20px_rgba(242,168,0,0.35)]">
             MBT
           </div>
-          <h1 className="text-xl font-extrabold text-text">Sign in</h1>
-          <p className="mt-1 text-sm text-text2">MugoByte POS Web Dashboard</p>
+          <div className="text-[10px] tracking-[0.22em] font-semibold text-gold uppercase mb-1">
+            Command Center
+          </div>
+          <h1 className="text-xl font-extrabold text-text tracking-tight">Sign in</h1>
+          <p className="mt-1 text-sm text-text2">MugoByte POS · secure remote access</p>
         </div>
         {err ? (
-          <div className="mb-4 rounded-md border border-err/40 bg-err/10 px-3 py-2 text-sm text-err">
+          <div className="mb-4 rounded-lg border border-err/40 bg-err/10 px-3 py-2.5 text-sm text-err">
             {err}
           </div>
         ) : null}
         <label className="mb-3 block text-sm font-semibold text-text2">
           Username
           <input
-            className="mt-1 w-full rounded-lg border border-border2 bg-input px-3 py-2.5 text-text outline-none focus:border-gold"
+            className="mt-1.5 w-full min-h-11 rounded-lg border border-border2 bg-input px-3 py-2.5 text-text outline-none focus:border-gold focus:ring-2 focus:ring-gold/25 transition-shadow"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
@@ -111,7 +121,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           Password
           <input
             type="password"
-            className="mt-1 w-full rounded-lg border border-border2 bg-input px-3 py-2.5 text-text outline-none focus:border-gold"
+            className="mt-1.5 w-full min-h-11 rounded-lg border border-border2 bg-input px-3 py-2.5 text-text outline-none focus:border-gold focus:ring-2 focus:ring-gold/25 transition-shadow"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
@@ -121,7 +131,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         <button
           type="submit"
           disabled={busy}
-          className="w-full rounded-xl bg-gold py-3 text-sm font-extrabold tracking-wide text-[color:var(--gold-fg)] hover:brightness-110 disabled:opacity-60"
+          className="w-full min-h-11 rounded-xl bg-gold py-3 text-sm font-extrabold tracking-wide text-[color:var(--gold-fg)] hover:brightness-110 disabled:opacity-60 transition-all active:scale-[0.99]"
         >
           {busy ? "Signing in…" : "SIGN IN"}
         </button>

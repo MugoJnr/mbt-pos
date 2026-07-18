@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Sparkles, Send, Lightbulb, AlertTriangle } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, Input, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, Input, PageHeader, SectionTitle } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 
 export const Route = createFileRoute("/ai")({
@@ -61,12 +61,12 @@ function AiPage() {
 
   return (
     <AppShell title="AI Command Center">
-      <div className="mb-4">
-        <h2 className="text-xl font-bold text-text flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-gold" /> AI Command Center
-        </h2>
-        <p className="text-sm text-text2">Insights and chat for remote operators</p>
-      </div>
+      <PageHeader
+        eyebrow="Command"
+        title="AI Command Center"
+        icon={<Sparkles className="h-4 w-4" />}
+        description="Insights and chat for remote operators"
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="p-4">

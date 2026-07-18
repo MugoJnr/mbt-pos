@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, RefreshCw } from "lucide-react";
+import { Search, RefreshCw, Package } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, Input, Table } from "@/components/ui-kit";
+import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -58,23 +58,32 @@ function Inventory() {
 
   return (
     <AppShell title="Inventory">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
-          <Input
-            placeholder="Search by name or SKU…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            className="pl-8"
-          />
-        </div>
-        <Button
-          variant="ghost"
-          onClick={() => qc.invalidateQueries({ queryKey: ["products"] })}
-        >
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Operations"
+        title="Inventory"
+        icon={<Package className="h-4 w-4" />}
+        description={`${products.length} SKUs · ${KES(totalValue, currency)} stock value${lowCount ? ` · ${lowCount} low` : ""}`}
+        actions={
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 min-w-[200px] max-w-md">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
+              <Input
+                placeholder="Search by name or SKU…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                className="pl-8 min-h-[44px]"
+              />
+            </div>
+            <Button
+              variant="ghost"
+              onClick={() => qc.invalidateQueries({ queryKey: ["products"] })}
+              className="min-h-[44px]"
+            >
+              <RefreshCw className="h-4 w-4" /> Refresh
+            </Button>
+          </div>
+        }
+      />
 
       <Card className="overflow-hidden">
         {productsQ.isLoading ? (

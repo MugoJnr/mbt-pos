@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-18-v2.3.88"
-APP_VERSION   = "2.3.88"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-18-v2.3.89"
+APP_VERSION   = "2.3.89"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -76,6 +76,7 @@ from PyQt5.QtGui     import *
 from desktop.utils.api_client       import APIClient
 from desktop.utils.theme            import (
     MBT_STYLESHEET, C, ThemeManager, is_light_mode, ensure_fonts, qss_alpha,
+    PADDING, RADIUS,
 )
 from desktop.utils.splash           import SplashScreen
 from desktop.wizard.setup_wizard    import SetupWizard, needs_wizard, reset_wizard
@@ -958,18 +959,18 @@ class MainWindow(QMainWindow):
         root.addWidget(right, 1)
 
     def _build_sidebar(self):
-        # Lovable AppShell sidebar ? 228px, logo + brand, gold active rail
-        sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(228)
+        # AppShell sidebar — 240px (matches theme QSS), logo + brand, gold active rail
+        sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(240)
         # QWidget backgrounds need styled-background or light QSS never paints
         sb.setAttribute(Qt.WA_StyledBackground, True)
         sb.setAutoFillBackground(True)
         self._sidebar = sb
         sl = QVBoxLayout(sb); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
 
-        # Logo block ? HD mark + MBT / POS SYSTEM text (Lovable)
-        lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(76)
+        # Logo block — HD mark + MBT / POS SYSTEM
+        lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(80)
         ll = QHBoxLayout(lw)
-        ll.setContentsMargins(14, 10, 14, 10); ll.setSpacing(10)
+        ll.setContentsMargins(16, 12, 16, 12); ll.setSpacing(12)
         ll.setAlignment(Qt.AlignVCenter)
         logo = _make_logo_label(44, 44)
         logo.setFixedSize(48, 48)
@@ -980,9 +981,9 @@ class MainWindow(QMainWindow):
         ll.addWidget(logo); ll.addLayout(brand, 1)
         sl.addWidget(lw)
 
-        sl.addSpacing(6)
+        sl.addSpacing(8)
 
-        # Navigation ? scrollable when many tabs / short displays
+        # Navigation — scrollable when many tabs / short displays
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
@@ -1010,8 +1011,8 @@ class MainWindow(QMainWindow):
         nav_body = QWidget()
         nav_body.setStyleSheet("background:transparent;")
         nv = QVBoxLayout(nav_body)
-        nv.setContentsMargins(0, 4, 0, 4)
-        nv.setSpacing(1)
+        nv.setContentsMargins(0, 6, 0, 6)
+        nv.setSpacing(2)
         for tid, icon, lbl in tabs:
             if tid in ('security', 'license') and role != 'superadmin':
                 continue
@@ -1033,7 +1034,7 @@ class MainWindow(QMainWindow):
 
         # User panel
         uw = QWidget(); uw.setObjectName("sidebarUser")
-        ul = QVBoxLayout(uw); ul.setContentsMargins(14, 12, 14, 12); ul.setSpacing(2)
+        ul = QVBoxLayout(uw); ul.setContentsMargins(16, 14, 16, 14); ul.setSpacing(4)
         u  = self.user_data.get('user', {})
         un = QLabel(u.get('full_name') or u.get('username', ''))
         un.setObjectName("sidebarUserName")
@@ -1050,7 +1051,7 @@ class MainWindow(QMainWindow):
         bar.setAttribute(Qt.WA_StyledBackground, True)
         bar.setAutoFillBackground(True)
         self._topbar = bar
-        lay = QHBoxLayout(bar); lay.setContentsMargins(24, 0, 20, 0); lay.setSpacing(10)
+        lay = QHBoxLayout(bar); lay.setContentsMargins(PADDING, 0, PADDING, 0); lay.setSpacing(12)
 
         self._page_title = QLabel("Dashboard"); self._page_title.setObjectName("pageTitle")
         lay.addWidget(self._page_title); lay.addStretch()
@@ -1069,10 +1070,11 @@ class MainWindow(QMainWindow):
         self._update_btn.setObjectName("updateBtn")
         self._update_btn.setCursor(Qt.PointingHandCursor)
         gold_fg = C.get('gold_fg', '#0A0F1A')
+        r = RADIUS['md']
         self._update_btn.setStyleSheet(
             f"QPushButton#updateBtn {{ background:{C['gold']}; color:{gold_fg};"
-            f" font-weight:700; font-size:12px; border:none; border-radius:8px;"
-            f" padding:6px 12px; }}"
+            f" font-weight:700; font-size:12px; border:none; border-radius:{r}px;"
+            f" padding:6px 12px; min-height:36px; }}"
             f"QPushButton#updateBtn:hover {{ background:{C['gold_lt']}; }}"
         )
         self._update_btn.clicked.connect(self._on_update_btn_clicked)
@@ -1110,7 +1112,7 @@ class MainWindow(QMainWindow):
         bar.setAttribute(Qt.WA_StyledBackground, True)
         bar.setAutoFillBackground(True)
         self._status_bar = bar
-        lay = QHBoxLayout(bar); lay.setContentsMargins(24, 0, 24, 0)
+        lay = QHBoxLayout(bar); lay.setContentsMargins(PADDING, 0, PADDING, 0)
         l = QLabel("MBT POS \u00b7 MugoByte Technologies"); l.setObjectName("statusLeft")
         runtime = "EXE" if getattr(sys, 'frozen', False) else "DEV"
         exe_name = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else "python"

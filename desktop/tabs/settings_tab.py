@@ -31,7 +31,7 @@ class SettingsTab(QWidget):
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=18)
+        lay, _ = page_layout(self)
 
         save_top = PrimaryBtn('💾  Save Changes', 40)
         save_top.clicked.connect(self._save)

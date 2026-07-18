@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, Table } from "@/components/ui-kit";
+import { Badge, Card, PageHeader, Table } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/users")({
@@ -26,12 +26,11 @@ function Users() {
 
   return (
     <AppShell title="Users & Access">
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-text2 max-w-2xl">
-          Staff accounts and roles from the POS database. Create/edit users from the desktop app
-          or legacy tools if needed.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Admin"
+        title="Users & Access"
+        description="Staff accounts and roles from the POS database. Create or edit users from the desktop app when needed."
+      />
 
       <Card>
         {usersQ.isLoading ? (

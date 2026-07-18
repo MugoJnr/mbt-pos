@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { KeyRound, Cpu, CalendarClock, ShieldCheck } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, Input, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, Input, PageHeader, SectionTitle } from "@/components/ui-kit";
 
 export const Route = createFileRoute("/license")({
   component: License,
@@ -10,6 +10,11 @@ export const Route = createFileRoute("/license")({
 function License() {
   return (
     <AppShell title="License">
+      <PageHeader
+        eyebrow="Admin"
+        title="License & Subscription"
+        description="Plan status and activation for this installation."
+      />
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
         <Card className="p-6">
           <div className="flex items-center gap-3 mb-4">

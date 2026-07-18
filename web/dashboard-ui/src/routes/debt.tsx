@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Phone, Receipt, Banknote, Users, AlertTriangle, TrendingDown } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, KpiCard, SectionTitle, Table } from "@/components/ui-kit";
+import { Badge, Card, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -58,6 +58,11 @@ function Debt() {
 
   return (
     <AppShell title="Debt Management">
+      <PageHeader
+        eyebrow="Operations"
+        title="Debt Management"
+        description="Outstanding credit, overdue accounts, and collections."
+      />
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-1 bg-panel/60 border border-border rounded-lg p-1">
           {TABS.map((t) => (

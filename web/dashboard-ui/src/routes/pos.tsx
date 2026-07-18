@@ -1,12 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, Trash2, CreditCard, Banknote, Smartphone } from "lucide-react";
+import { Search, Trash2, CreditCard, Banknote, Smartphone, ShoppingBag } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Button, Card, Input, Select } from "@/components/ui-kit";
+import { Badge, Button, Card, EmptyState, Input, PageHeader, Select, Skeleton } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { KES } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/pos")({
   component: POS,
@@ -81,6 +82,7 @@ function POS() {
   const total = Math.max(0, taxable + tax);
   const paid = parseFloat(amount) || 0;
   const change = Math.max(0, paid - total);
+  const itemCount = cart.reduce((s, l) => s + l.quantity, 0);
 
   const add = (p: Product) => {
     if (Number(p.stock) <= 0) return;
@@ -164,19 +166,31 @@ function POS() {
 
   return (
     <AppShell title="Point of Sale">
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_420px] gap-4 h-[calc(100vh-9rem)]">
+      <PageHeader
+        title="Point of Sale"
+        description="Tap products to build a cart · touch-friendly checkout"
+        icon={<ShoppingBag className="h-4 w-4" />}
+        eyebrow="Operations"
+        className="mb-4"
+      />
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] xl:grid-cols-[1fr_440px] gap-4 min-h-[calc(100vh-12rem)]">
         <Card className="flex flex-col overflow-hidden">
-          <div className="p-3 border-b border-border flex items-center gap-2">
+          <div className="p-3 border-b border-border flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-panel/30">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
               <Input
-                placeholder="Search products…"
+                placeholder="Search products or SKU…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                className="pl-8"
+                className="pl-9 min-h-[44px] h-11 text-[15px]"
               />
             </div>
-            <Select value={cat} onChange={(e) => setCat(e.target.value)}>
+            <Select
+              value={cat}
+              onChange={(e) => setCat(e.target.value)}
+              className="min-h-[44px] h-11 sm:w-44"
+            >
               <option value="">All Categories</option>
               {categories.filter(Boolean).map((c) => (
                 <option key={c} value={c}>
@@ -185,11 +199,53 @@ function POS() {
               ))}
             </Select>
           </div>
+
+          {/* Category chips for touch */}
+          {categories.filter(Boolean).length > 0 ? (
+            <div className="px-3 py-2 border-b border-border flex gap-2 overflow-x-auto scrollbar-thin">
+              <button
+                type="button"
+                onClick={() => setCat("")}
+                className={cn(
+                  "shrink-0 min-h-[36px] px-3 rounded-full text-xs font-semibold border transition-ui",
+                  !cat
+                    ? "border-gold bg-gold/15 text-gold"
+                    : "border-border bg-card2 text-text2 hover:text-text",
+                )}
+              >
+                All
+              </button>
+              {categories.filter(Boolean).map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setCat(c)}
+                  className={cn(
+                    "shrink-0 min-h-[36px] px-3 rounded-full text-xs font-semibold border transition-ui",
+                    cat === c
+                      ? "border-gold bg-gold/15 text-gold"
+                      : "border-border bg-card2 text-text2 hover:text-text",
+                  )}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
           <div className="flex-1 overflow-y-auto scrollbar-thin p-3">
             {productsQ.isLoading ? (
-              <div className="py-16 text-center text-sm text-text2">Loading products…</div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <Skeleton key={i} className="h-24 rounded-xl" />
+                ))}
+              </div>
             ) : filtered.length === 0 ? (
-              <div className="py-16 text-center text-sm text-text2">No products found</div>
+              <EmptyState
+                icon={<ShoppingBag className="h-6 w-6" />}
+                title="No products found"
+                description="Try another search or category."
+              />
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5">
                 {filtered.map((p) => {
@@ -201,23 +257,25 @@ function POS() {
                       key={p.id}
                       disabled={oos}
                       onClick={() => add(p)}
-                      className={`text-left rounded-lg border p-3 transition-all ${
+                      className={cn(
+                        "text-left rounded-xl border p-3.5 min-h-[96px] transition-ui",
                         oos
                           ? "border-border/50 bg-panel/40 opacity-60 cursor-not-allowed"
-                          : "border-border bg-card2 hover:border-gold/60 active:scale-[0.98]"
-                      }`}
+                          : "border-border bg-card2 hover:border-gold/70 hover:shadow-gold active:scale-[0.97]",
+                      )}
                     >
                       <div className="text-[13px] font-semibold text-text leading-tight line-clamp-2 min-h-[2.4em]">
                         {p.name}
                       </div>
-                      <div className="mt-2 flex items-center justify-between">
+                      <div className="mt-2.5 flex items-end justify-between gap-1">
                         <div className="text-[15px] font-extrabold text-gold tabular-nums">
                           {KES(p.price, currency)}
                         </div>
                         <div
-                          className={`text-[10px] font-semibold uppercase tracking-wider ${
-                            oos ? "text-err" : low ? "text-warn" : "text-text2"
-                          }`}
+                          className={cn(
+                            "text-[10px] font-semibold uppercase tracking-wider",
+                            oos ? "text-err" : low ? "text-warn" : "text-text2",
+                          )}
                         >
                           {oos ? "Out" : `${stock} ${p.unit || "pcs"}`}
                         </div>
@@ -230,71 +288,77 @@ function POS() {
           </div>
         </Card>
 
-        <Card className="flex flex-col overflow-hidden">
-          <div className="p-4 border-b border-border flex items-center justify-between">
+        <Card className="flex flex-col overflow-hidden lg:sticky lg:top-16 lg:max-h-[calc(100vh-8rem)]">
+          <div className="p-4 border-b border-border flex items-center justify-between bg-panel/30">
             <h2 className="text-[15px] font-semibold text-text">Current Sale</h2>
-            <span className="text-xs text-text2">
-              {cart.reduce((s, l) => s + l.quantity, 0)} items
-            </span>
+            <Badge tone={itemCount ? "gold" : "muted"}>
+              {itemCount} item{itemCount === 1 ? "" : "s"}
+            </Badge>
           </div>
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="flex-1 overflow-y-auto scrollbar-thin min-h-[120px]">
             {cart.length === 0 ? (
-              <div className="py-16 text-center text-sm text-text2">
-                No items yet. Tap a product to add.
-              </div>
+              <EmptyState
+                icon={<ShoppingBag className="h-6 w-6" />}
+                title="Cart is empty"
+                description="Tap a product to add it."
+                className="py-14"
+              />
             ) : (
               cart.map((l) => (
                 <div
                   key={l.product_id}
-                  className="grid grid-cols-[1fr_auto_auto_auto_auto] items-center gap-2 px-4 py-2.5 border-b border-border/50"
+                  className="flex items-center gap-2 px-3 py-3 border-b border-border/50"
                 >
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium text-text truncate">{l.product_name}</div>
-                    <div className="text-[11px] text-text2 font-mono">{l.sku || `#${l.product_id}`}</div>
+                    <div className="text-[11px] text-text2 font-mono">
+                      {l.sku || `#${l.product_id}`} · {KES(l.unit_price, currency)}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => setQty(l.product_id, l.quantity - 1)}
-                      className="h-6 w-6 rounded border border-border bg-input text-text hover:bg-hover"
+                      className="h-11 w-11 rounded-lg border border-border bg-input text-text text-lg hover:bg-hover transition-ui"
+                      aria-label="Decrease"
                     >
                       −
                     </button>
-                    <span className="w-6 text-center text-sm font-semibold text-text">{l.quantity}</span>
+                    <span className="w-8 text-center text-sm font-bold text-text tabular-nums">
+                      {l.quantity}
+                    </span>
                     <button
                       onClick={() => setQty(l.product_id, l.quantity + 1)}
-                      className="h-6 w-6 rounded border border-border bg-input text-text hover:bg-hover"
+                      className="h-11 w-11 rounded-lg border border-border bg-input text-text text-lg hover:bg-hover transition-ui"
+                      aria-label="Increase"
                     >
                       +
                     </button>
                   </div>
-                  <div className="text-xs text-text2 tabular-nums text-right">
-                    {KES(l.unit_price, currency)}
-                  </div>
-                  <div className="text-sm font-semibold text-text tabular-nums text-right w-16">
+                  <div className="text-sm font-semibold text-text tabular-nums text-right w-[4.5rem]">
                     {KES(l.total, currency)}
                   </div>
                   <button
                     onClick={() => setQty(l.product_id, 0)}
-                    className="text-text2 hover:text-err"
+                    className="h-11 w-11 inline-flex items-center justify-center rounded-lg text-text2 hover:text-err hover:bg-err/10 transition-ui"
                     aria-label="Remove"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
               ))
             )}
           </div>
 
-          <div className="border-t border-border p-4 space-y-2 bg-panel/30">
+          <div className="border-t border-border p-4 space-y-2.5 bg-panel/40">
             <Row label="Subtotal" value={KES(subtotal, currency)} />
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-text2">Discount</span>
+            <div className="flex items-center justify-between text-sm gap-3">
+              <span className="text-text2 shrink-0">Discount</span>
               <Input
                 type="number"
                 value={discount || ""}
                 onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
-                className="h-8 w-28 text-right"
+                className="h-11 w-32 text-right"
                 placeholder="0"
               />
             </div>
@@ -302,14 +366,14 @@ function POS() {
               label={`Tax (${(taxRate * 100).toFixed(1)}%)`}
               value={KES(tax, currency)}
             />
-            <div className="flex items-center justify-between pt-2 border-t border-border">
-              <span className="text-sm font-semibold text-text">TOTAL</span>
-              <span className="text-2xl font-extrabold text-gold tabular-nums">
+            <div className="flex items-center justify-between pt-2.5 border-t border-border">
+              <span className="text-sm font-semibold text-text tracking-wide">TOTAL</span>
+              <span className="text-2xl font-extrabold text-gold tabular-nums tracking-tight">
                 {KES(total, currency)}
               </span>
             </div>
 
-            <div className="pt-3 grid grid-cols-3 gap-2">
+            <div className="pt-2 grid grid-cols-3 gap-2">
               {[
                 { k: "Cash", i: <Banknote className="h-4 w-4" /> },
                 { k: "M-Pesa", i: <Smartphone className="h-4 w-4" /> },
@@ -318,11 +382,12 @@ function POS() {
                 <button
                   key={m.k}
                   onClick={() => setPayment(m.k)}
-                  className={`h-10 rounded-md border text-xs font-semibold flex items-center justify-center gap-1.5 ${
+                  className={cn(
+                    "min-h-[48px] rounded-xl border text-xs font-semibold flex flex-col items-center justify-center gap-1 transition-ui",
                     payment === m.k
-                      ? "border-gold bg-gold/15 text-gold"
-                      : "border-border bg-card2 text-text2 hover:text-text"
-                  }`}
+                      ? "border-gold bg-gold/15 text-gold shadow-gold"
+                      : "border-border bg-card2 text-text2 hover:text-text hover:border-border2",
+                  )}
                 >
                   {m.i}
                   {m.k}
@@ -335,13 +400,14 @@ function POS() {
               placeholder="Amount tendered"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
+              className="min-h-[44px] h-11 text-[15px]"
             />
             <Row label="Change" value={KES(change, currency)} tone="ok" />
 
             <Button
               variant="primary"
-              size="lg"
-              className="w-full mt-2"
+              size="touch"
+              className="w-full mt-1 text-base"
               disabled={checkout.isPending || cart.length === 0}
               onClick={() => checkout.mutate()}
             >

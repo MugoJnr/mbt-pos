@@ -64,8 +64,8 @@ class SalesTab(QWidget):
 
     def _build(self):
         root = QHBoxLayout(self)
-        root.setContentsMargins(PADDING, PADDING, PADDING, PADDING)
-        root.setSpacing(GAP - 2)
+        root.setContentsMargins(PADDING, 18, PADDING, 18)
+        root.setSpacing(GAP)
 
         # ── LEFT: product browser (modular ProductGrid) ───────────────────────
         self._left_panel = QFrame()
@@ -86,7 +86,7 @@ class SalesTab(QWidget):
         sf.addWidget(self._search, 1)
         self._cat = QComboBox()
         self._cat.setObjectName('posCatCombo')
-        self._cat.setMinimumHeight(42)
+        self._cat.setMinimumHeight(44)
         self._cat.setFixedWidth(220)
         from desktop.utils.pos_light_theme import style_cat_combo
         style_cat_combo(self._cat, is_light=bool(getattr(self, '_is_light', False)))
@@ -126,7 +126,7 @@ class SalesTab(QWidget):
         self._right_panel.setFixedWidth(880)
         self._right_panel.setStyleSheet(
             f"QFrame#posCartPanel {{ background:{C['card']}; "
-            f"border:1px solid {C['border']}; border-radius:12px; }}")
+            f"border:1px solid {C['border']}; border-radius:{RADIUS['xl']}px; }}")
         rp_outer = QVBoxLayout(self._right_panel)
         rp_outer.setContentsMargins(0, 0, 0, 0)
         rp_outer.setSpacing(0)
@@ -258,10 +258,10 @@ class SalesTab(QWidget):
             f"color:{C['text2']};font-size:13px;background:transparent;")
         self._pay = Select()
         self._pay.set_items(list(POS_PAYMENT_METHODS))
-        self._pay.setMinimumHeight(40); self._pay.setMinimumWidth(140)
+        self._pay.setMinimumHeight(44); self._pay.setMinimumWidth(140)
         self._pay.currentTextChanged.connect(self._on_payment_changed)
         self._paid = QDoubleSpinBox(); self._paid.setRange(0, 99999999)
-        self._paid.setDecimals(2); self._paid.setMinimumHeight(40)
+        self._paid.setDecimals(2); self._paid.setMinimumHeight(44)
         self._paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self._paid.setToolTip('Cash Paid')
         self._paid.valueChanged.connect(self._on_paid_changed)

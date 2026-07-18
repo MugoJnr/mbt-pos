@@ -34,7 +34,7 @@ class AdminTab(QWidget):
             lay=QVBoxLayout(self); lay.setAlignment(Qt.AlignCenter)
             lbl=QLabel('Administrator access required.'); lbl.setStyleSheet(f"color:{C['text2']}; font-size:16px;")
             lay.addWidget(lbl); return
-        lay, _ = page_layout(self, margins=(24,24,24,24), spacing=16)
+        lay, _ = page_layout(self)
 
         add=PrimaryBtn('+ New User', 40); add.setFixedWidth(130); add.clicked.connect(self._add)
         intro, _ = page_intro(

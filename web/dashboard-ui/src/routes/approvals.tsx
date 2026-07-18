@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, X, Plus, Filter } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, EmptyState, Input, Select } from "@/components/ui-kit";
+import { Badge, Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -88,13 +88,11 @@ function ApprovalsPage() {
 
   return (
     <AppShell title="Remote Approvals">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-text">Approvals Queue</h2>
-          <p className="text-sm text-text2">
-            Void, refund, discount, override, stock, expense & credit requests
-          </p>
-        </div>
+      <PageHeader
+        eyebrow="Overview"
+        title="Approvals Queue"
+        description="Void, refund, discount, override, stock, expense & credit requests"
+        actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
             <Filter className="h-3.5 w-3.5 text-text2" />
@@ -109,7 +107,8 @@ function ApprovalsPage() {
             <Plus className="h-4 w-4" /> New Request
           </Button>
         </div>
-      </div>
+        }
+      />
 
       {showNew ? (
         <Card className="p-4 mb-4 space-y-3">

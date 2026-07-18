@@ -9,7 +9,7 @@ no per-widget repaint needed.
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme import C, COLORS, MBT_STYLESHEET, RADIUS, qss_alpha
+from desktop.utils.theme import C, COLORS, MBT_STYLESHEET, RADIUS, PADDING, GAP, TOUCH_MIN, qss_alpha
 
 
 # ── TYPOGRAPHY ────────────────────────────────────────────────────────────────
@@ -297,8 +297,10 @@ def refresh_themed_widgets(root):
 
 # ── BUTTONS ───────────────────────────────────────────────────────────────────
 
-def PrimaryBtn(text, height=40):
+def PrimaryBtn(text, height=None):
     """Gold primary action — inline QSS so Fusion/transparent parents can't hide it."""
+    if height is None:
+        height = TOUCH_MIN
     b = QPushButton(text)
     b.setObjectName('primaryBtn')
     b.setMinimumHeight(height)
@@ -636,7 +638,15 @@ def retint_table_items(table):
 
 # ── PAGE LAYOUT ───────────────────────────────────────────────────────────────
 
-def page_layout(parent=None, margins=(24, 24, 24, 24), spacing=18):
+def page_layout(parent=None, margins=None, spacing=None):
+    """
+    Standard scrollable page shell.
+    Default rhythm: margins PADDING/GAP-ish (20, 18, 20, 18), spacing GAP (16).
+    """
+    if margins is None:
+        margins = (PADDING, 18, PADDING, 18)
+    if spacing is None:
+        spacing = GAP
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -654,6 +664,42 @@ def page_layout(parent=None, margins=(24, 24, 24, 24), spacing=18):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
     return lay, scroll
+
+
+def PageChrome(title, subtitle='', action_widget=None):
+    """
+    Consistent page title row (title + optional subtitle + optional right action).
+    Returns (widget, title_label) — drop into any tab layout without rewriting.
+    """
+    w = QWidget()
+    w.setObjectName('mbtPageChrome')
+    root = QVBoxLayout(w)
+    root.setContentsMargins(0, 0, 0, 4)
+    root.setSpacing(0)
+    row, title_lbl = page_intro(title, subtitle, action_widget)
+    root.addLayout(row)
+    return w, title_lbl
+
+
+def ToolbarRow(*widgets, stretch_index=0):
+    """
+    Horizontal filter / action bar with consistent spacing.
+    stretch_index: which child gets stretch (default first = search).
+    Returns (QWidget, QHBoxLayout).
+    """
+    bar = QWidget()
+    bar.setObjectName('mbtToolbar')
+    lay = QHBoxLayout(bar)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(10)
+    for i, w in enumerate(widgets):
+        if w is None:
+            continue
+        if i == stretch_index:
+            lay.addWidget(w, 1)
+        else:
+            lay.addWidget(w)
+    return bar, lay
 
 
 # ── BADGES ────────────────────────────────────────────────────────────────────
@@ -895,7 +941,10 @@ def wrap_table_card(table, title=None):
     lay = card.layout_v(margins=(0, 0, 0, 0), spacing=0)
     if title:
         hdr = QWidget()
-        hdr.setStyleSheet(f"border-bottom:1px solid {C['border']};")
+        hdr.setObjectName('mbtTableCardHdr')
+        hdr.setStyleSheet(
+            f"QWidget#mbtTableCardHdr {{ background:transparent; "
+            f"border:none; border-bottom:1px solid {C['border']}; }}")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 14, 16, 14)
         hl.addWidget(H2(title)); hl.addStretch()
         lay.addWidget(hdr)

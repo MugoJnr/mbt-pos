@@ -19,7 +19,7 @@ if PROJECT_ROOT not in sys.path:
 
 from desktop.utils.theme import C, RADIUS, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerBtn,
-                                    page_layout, Card, H2, Badge, GhostBtn)
+                                    page_layout, Card, H2, Badge, GhostBtn, PageChrome)
 
 
 # ── State styling map (Lovable semantic tokens — read C at render time) ────────
@@ -90,33 +90,20 @@ class LicenseTab(QWidget):
         QTimer.singleShot(500, self.refresh)
 
     def _setup_ui(self):
-        root, _ = page_layout(self, margins=(24, 20, 24, 20), spacing=16)
+        root, _ = page_layout(self)
 
-        # ── Header (Lovable) ──────────────────────────────────────────────────
-        hdr_row = QHBoxLayout()
-        hdr_col = QVBoxLayout()
-        hdr_col.setSpacing(2)
-        eye = QLabel("CURRENT PLAN")
-        eye.setStyleSheet(
-            f"color:{C['text2']}; font-size:10px; letter-spacing:2px; font-weight:700;")
-        ttl = QLabel("License & Subscription")
-        ttl.setStyleSheet(f"color:{C['text']}; font-size:20px; font-weight:700;")
-        sub = QLabel("Manage your MBT POS license, subscription, and device binding")
-        sub.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
-        hdr_col.addWidget(eye)
-        hdr_col.addWidget(ttl)
-        hdr_col.addWidget(sub)
-        hdr_row.addLayout(hdr_col)
-        hdr_row.addStretch()
-
+        actions = QWidget()
+        ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(10)
         ref_btn = GhostBtn("↺  Refresh", 36)
         ref_btn.clicked.connect(self.refresh)
-        hdr_row.addWidget(ref_btn)
-
         sync_btn = SecondaryBtn("⟳  Sync Now", 36)
         sync_btn.clicked.connect(self._force_sync)
-        hdr_row.addWidget(sync_btn)
-        root.addLayout(hdr_row)
+        ar.addWidget(ref_btn); ar.addWidget(sync_btn)
+        chrome, _ = PageChrome(
+            'License & Subscription',
+            'Manage your MBT POS license, subscription, and device binding.',
+            actions)
+        root.addWidget(chrome)
 
         # ── Status banner ─────────────────────────────────────────────────────
         self.status_banner = QFrame()

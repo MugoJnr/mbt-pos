@@ -6,7 +6,8 @@ from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C, RADIUS
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
-                                    GhostBtn, page_layout, lovable_tab_qss, Badge)
+                                    GhostBtn, page_layout, lovable_tab_qss, Badge,
+                                    PageChrome)
 
 
 class DiagnosticsTab(QWidget):
@@ -24,19 +25,19 @@ class DiagnosticsTab(QWidget):
         except Exception as e: self._log(f'[WARN] Engine: {e}')
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24,24,24,24), spacing=16)
-        hdr=QHBoxLayout(); hdr.setSpacing(8)
-        title=QLabel('System Diagnostics')
-        title.setStyleSheet(
-            f"color:{C['text']}; font-size:20px; font-weight:700; "
-            f"background:transparent; border:none;")
-        hdr.addWidget(title); hdr.addStretch()
+        lay, _ = page_layout(self)
+        actions = QWidget()
+        ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(10)
         run=PrimaryBtn('▶  Run Check', 40); run.clicked.connect(self.run_check)
         copy=SecondaryBtn('📋  Copy Errors', 40); copy.clicked.connect(self._copy_errors)
         exp=SecondaryBtn('⬇  Export', 40); exp.clicked.connect(self._export)
         rot=GhostBtn('↺  Rotate Logs', 40); rot.clicked.connect(self._rotate)
-        hdr.addWidget(run); hdr.addWidget(copy); hdr.addWidget(exp); hdr.addWidget(rot)
-        lay.addLayout(hdr)
+        ar.addWidget(run); ar.addWidget(copy); ar.addWidget(exp); ar.addWidget(rot)
+        chrome, _ = PageChrome(
+            'System Diagnostics',
+            'Health checks, logs, and support tooling.',
+            actions)
+        lay.addWidget(chrome)
 
         # Row 1: core health
         cr=QHBoxLayout(); cr.setSpacing(12); self._cards={}

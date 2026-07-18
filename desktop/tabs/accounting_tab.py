@@ -111,7 +111,7 @@ class _DashboardPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(14)
         head = QHBoxLayout()
         head.addWidget(H2('Accounting Overview'))
@@ -168,7 +168,7 @@ class _AccountsPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         bar.addWidget(H2('Chart of Accounts'), 1)
@@ -245,7 +245,7 @@ class _LedgerPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         bar.addWidget(H2('General Ledger'))
@@ -308,7 +308,7 @@ class _JournalsPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         bar.addWidget(H2('Journal Entries'), 1)
@@ -423,7 +423,7 @@ class _ExpensesPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         bar.addWidget(H2('Expenses'), 1)
@@ -495,7 +495,7 @@ class _TransfersPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(12)
         lay.addWidget(H2('Cash / Bank Transfer'))
         form = QFormLayout()
@@ -542,7 +542,7 @@ class _PeriodsPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         bar.addWidget(H2('Accounting Periods'), 1)
@@ -596,7 +596,7 @@ class _ReportsPage(QWidget):
         super().__init__()
         self.p = parent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(10)
         bar = QHBoxLayout()
         self._kind = Select(items=[

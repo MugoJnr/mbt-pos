@@ -10,7 +10,7 @@ import {
   Package,
 } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, EmptyState } from "@/components/ui-kit";
+import { Badge, Button, Card, EmptyState, PageHeader } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 
 export const Route = createFileRoute("/notifications")({
@@ -74,23 +74,22 @@ function NotificationsPage() {
 
   return (
     <AppShell title="Notifications">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-text flex items-center gap-2">
-            <Bell className="h-5 w-5 text-gold" /> Notifications
-          </h2>
-          <p className="text-sm text-text2">
-            {unread} unread · polls every 15s
-          </p>
-        </div>
-        <Button
-          variant="secondary"
-          disabled={!unread || readAll.isPending}
-          onClick={() => readAll.mutate()}
-        >
-          Mark all read
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Command"
+        title="Notifications"
+        icon={<Bell className="h-4 w-4" />}
+        description={`${unread} unread · polls every 15s`}
+        actions={
+          <Button
+            variant="secondary"
+            disabled={!unread || readAll.isPending}
+            onClick={() => readAll.mutate()}
+            className="min-h-[44px]"
+          >
+            Mark all read
+          </Button>
+        }
+      />
 
       {q.isLoading ? (
         <div className="py-12 text-center text-sm text-text2">Loading…</div>

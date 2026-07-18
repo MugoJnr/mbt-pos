@@ -5,8 +5,9 @@
 @custom-variant dark (&:is(.dark, .dark *));
 
 /* ============================================================
- * MBT POS — Design System
- * Dark (default) + Light themes. Gold accent, operational density.
+ * MBT POS — Design System v2 (Command Center)
+ * Gold identity · navy operational · dense but elegant
+ * Themes: dark (default) | light + data-variant prep
  * ============================================================ */
 
 @theme inline {
@@ -17,8 +18,15 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  --radius-xl: 14px;
-  --radius-2xl: 18px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  --spacing-rhythm-1: 8px;
+  --spacing-rhythm-2: 12px;
+  --spacing-rhythm-3: 16px;
+  --spacing-rhythm-4: 20px;
+  --spacing-rhythm-5: 24px;
+  --spacing-rhythm-6: 32px;
 
   --color-app: var(--app);
   --color-surface: var(--surface);
@@ -40,6 +48,7 @@
   --color-accent: var(--selected);
   --color-accent-foreground: var(--text);
   --color-border: var(--border);
+  --color-border2: var(--border2);
   --color-ring: var(--gold);
 
   --color-gold: var(--gold);
@@ -61,40 +70,59 @@
   --color-info: var(--info);
   --color-destructive: var(--err);
   --color-destructive-foreground: #ffffff;
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-gold: var(--shadow-gold);
 }
 
-/* -------- Dark (default) -------- */
+/* -------- Dark (default) — aligned to Figma brief -------- */
 :root,
 .dark {
-  --app: #05080f;
-  --surface: #080d18;
-  --panel: #0b1220;
-  --card: #0f1a2e;
-  --card2: #132034;
-  --sidebar: #060a14;
-  --input: #0c1626;
-  --hover: #162a44;
-  --selected: #1a3560;
+  --app: #0b1220;
+  --surface: #0b1220;
+  --panel: #0e1628;
+  --card: #16213a;
+  --card2: #1b2943;
+  --sidebar: #0a101c;
+  --input: #101a2e;
+  --hover: #1e2e4a;
+  --selected: #243554;
 
-  --gold: #f2a800;
-  --gold-lt: #ffbe3a;
-  --gold-dk: #c07800;
-  --gold-fg: #0a0f1a;
+  --gold: #fbbf24;
+  --gold-lt: #fcd34d;
+  --gold-dk: #d97706;
+  --gold-fg: #0b1220;
 
-  --text: #eef2fc;
-  --text2: #6880a0;
-  --muted-fg: #334d68;
+  --text: #ffffff;
+  --text2: #b4c2d6;
+  --muted-fg: #6b7f99;
 
-  --ok: #00c97e;
-  --warn: #f0a500;
-  --err: #ff3d50;
-  --info: #4a8fff;
+  --ok: #00d084;
+  --warn: #ffb000;
+  --err: #ff4d6d;
+  --info: #3b82f6;
 
-  --border: #10192c;
-  --border2: #18283e;
+  --border: #2a4060;
+  --border2: #3a5270;
 
-  --shadow-card: 0 1px 0 0 rgba(255, 255, 255, 0.02) inset,
-    0 8px 24px -12px rgba(0, 0, 0, 0.6);
+  --shadow-xs: 0 1px 0 0 rgba(255, 255, 255, 0.03) inset;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 16px -6px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 12px 40px -16px rgba(0, 0, 0, 0.7);
+  --shadow-card: var(--shadow-xs), 0 8px 28px -14px rgba(0, 0, 0, 0.65);
+  --shadow-gold: 0 4px 18px -4px color-mix(in oklab, var(--gold) 45%, transparent);
+
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px color-mix(in oklab, var(--gold) 55%, transparent);
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+  --duration-slow: 250ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --touch-min: 44px;
+  --sidebar-width: 240px;
 }
 
 /* -------- Light -------- */
@@ -115,8 +143,8 @@
   --gold-fg: #ffffff;
 
   --text: #0c1828;
-  --text2: #3c5270;
-  --muted-fg: #7890aa;
+  --text2: #2e4460;
+  --muted-fg: #5a7390;
 
   --ok: #006b48;
   --warn: #a05800;
@@ -124,10 +152,78 @@
   --info: #1850a8;
 
   --border: #cdd8e8;
-  --border2: #b8c8dc;
+  --border2: #a8bdd4;
 
-  --shadow-card: 0 1px 2px rgba(15, 26, 46, 0.06),
-    0 4px 12px -4px rgba(15, 26, 46, 0.08);
+  --shadow-xs: 0 1px 0 0 rgba(15, 26, 46, 0.04) inset;
+  --shadow-sm: 0 1px 2px rgba(15, 26, 46, 0.06);
+  --shadow-md: 0 4px 14px -4px rgba(15, 26, 46, 0.1);
+  --shadow-lg: 0 12px 32px -12px rgba(15, 26, 46, 0.14);
+  --shadow-card: 0 1px 2px rgba(15, 26, 46, 0.06), 0 4px 14px -4px rgba(15, 26, 46, 0.08);
+  --shadow-gold: 0 4px 16px -4px color-mix(in oklab, var(--gold) 35%, transparent);
+
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px color-mix(in oklab, var(--gold) 45%, transparent);
+}
+
+/* -------- Theme variants (prep — set data-variant on <html>) -------- */
+/* MugoByte: gold-forward brand */
+[data-variant="mugobyte"] {
+  --gold: #f5b301;
+  --gold-lt: #ffcb3d;
+  --gold-dk: #c08a00;
+  --sidebar: #080e18;
+  --selected: #2a2810;
+  --hover: #242010;
+}
+
+.light[data-variant="mugobyte"] {
+  --gold: #a65c00;
+  --sidebar: #ebe4d4;
+  --selected: #f0e6cc;
+  --hover: #f5edd8;
+}
+
+/* Retail: higher-contrast product tiles */
+[data-variant="retail"] {
+  --card: #1a2740;
+  --card2: #223352;
+  --border: #3d5678;
+  --text2: #c8d4e6;
+}
+
+.light[data-variant="retail"] {
+  --card: #ffffff;
+  --card2: #eef2f8;
+  --border: #9eb0c8;
+  --text2: #1a2e48;
+}
+
+/* Minimal: quieter chrome */
+[data-variant="minimal"] {
+  --shadow-card: none;
+  --border: color-mix(in oklab, var(--border) 70%, transparent);
+  --card: color-mix(in oklab, var(--panel) 80%, var(--card));
+}
+
+/* High Contrast (a11y) */
+[data-variant="contrast"] {
+  --text: #ffffff;
+  --text2: #e8eef8;
+  --muted-fg: #c0cce0;
+  --border: #5a7aa0;
+  --gold: #ffd060;
+  --ok: #20f0a0;
+  --warn: #ffc040;
+  --err: #ff6080;
+}
+
+.light[data-variant="contrast"] {
+  --text: #000000;
+  --text2: #102030;
+  --muted-fg: #203040;
+  --border: #405870;
+  --gold: #8a5000;
+  --app: #ffffff;
+  --surface: #ffffff;
 }
 
 @layer base {
@@ -141,10 +237,61 @@
     font-family: var(--font-sans);
     font-feature-settings: "ss01", "cv11";
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   ::selection {
     background: color-mix(in oklab, var(--gold) 40%, transparent);
     color: var(--text);
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  /* Typography scale helpers */
+  .text-display {
+    font-size: 1.625rem;
+    line-height: 1.2;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+  }
+  .text-title {
+    font-size: 1.25rem;
+    line-height: 1.3;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .text-body {
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+  .text-caption {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text2);
+  }
+  .text-eyebrow {
+    font-size: 0.625rem;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text2);
+  }
+  .font-tabular {
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono);
+  }
+}
+
+/* ---- Motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -154,8 +301,27 @@
   box-shadow: var(--shadow-card);
 }
 
+@utility shadow-elevated {
+  box-shadow: var(--shadow-md);
+}
+
+@utility shadow-gold {
+  box-shadow: var(--shadow-gold);
+}
+
 @utility kpi-accent {
   position: relative;
+}
+
+@utility touch-target {
+  min-height: var(--touch-min);
+  min-width: var(--touch-min);
+}
+
+@utility transition-ui {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+  transition-duration: var(--duration-base);
+  transition-timing-function: var(--ease-out);
 }
 
 @utility scrollbar-thin {
@@ -169,8 +335,62 @@
     background: var(--border2);
     border-radius: 8px;
   }
+  &::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--gold) 40%, var(--border2));
+  }
 }
 
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Shell page enter */
+@keyframes mbt-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: mbt-fade-in var(--duration-slow) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none;
+  }
+}
+
+/* Skeleton shimmer */
+@keyframes mbt-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--card2) 0%,
+    color-mix(in oklab, var(--hover) 80%, var(--card2)) 50%,
+    var(--card2) 100%
+  );
+  background-size: 200% 100%;
+  animation: mbt-shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--card2);
+  }
 }

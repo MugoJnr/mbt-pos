@@ -261,7 +261,7 @@ class _CreatePane(QWidget):
         scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
         body = QWidget()
         body.setStyleSheet('background:transparent; border:none;')
-        lay, _ = page_layout(body, margins=(28, 24, 28, 12), spacing=18)
+        lay, _ = page_layout(body, margins=(20, 18, 20, 12), spacing=16)
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
 
@@ -366,7 +366,7 @@ class _CreatePane(QWidget):
         foot_wrap = QFrame()
         foot_wrap.setObjectName('mbtConsFooter')
         foot_lay = QHBoxLayout(foot_wrap)
-        foot_lay.setContentsMargins(28, 12, 28, 16)
+        foot_lay.setContentsMargins(20, 12, 20, 16)
         foot_lay.setSpacing(12)
         self._total_lbl = QLabel('Total Cost Used: —')
         self._total_lbl.setObjectName('mbtConsTotal')
@@ -758,7 +758,7 @@ class _HistoryPane(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 24), spacing=14)
+        lay, _ = page_layout(self, margins=(20, 18, 20, 18), spacing=16)
         lay.addWidget(H2('Consumption History'))
         lay.addWidget(Caption('Posted consumptions — void to restore stock.'))
 
@@ -891,7 +891,7 @@ class _ReportPane(QWidget):
         self._build()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(28, 24, 28, 24), spacing=14)
+        lay, _ = page_layout(self, margins=(20, 18, 20, 18), spacing=16)
         lay.addWidget(H2('Internal Consumption Report'))
         lay.addWidget(Caption('Filter, review, and export consumption cost by period.'))
 

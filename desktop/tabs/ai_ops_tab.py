@@ -55,7 +55,7 @@ class AiOpsTab(QWidget):
         return ((self.user.get('user') or self.user).get('role') or '').lower()
 
     def _build(self):
-        lay, _ = page_layout(self, margins=(24, 24, 24, 24), spacing=14)
+        lay, _ = page_layout(self)
         actions = QWidget()
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
         self._refresh_btn = PrimaryBtn('↻  Refresh Health', 40)

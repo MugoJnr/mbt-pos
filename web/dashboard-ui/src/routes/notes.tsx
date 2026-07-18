@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Button, Card, Input } from "@/components/ui-kit";
+import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
 import { DEL, GET, POST, PUT } from "@/lib/api";
 
 export const Route = createFileRoute("/notes")({
@@ -102,7 +102,12 @@ function Notes() {
 
   return (
     <AppShell title="Notes">
-      <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 h-[calc(100vh-9rem)]">
+      <PageHeader
+        eyebrow="Operations"
+        title="Notes"
+        description="Shared operational notes for the shop."
+      />
+      <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 h-[calc(100vh-12rem)]">
         <Card className="flex flex-col overflow-hidden">
           <div className="p-3 border-b border-border flex items-center gap-2">
             <div className="relative flex-1">

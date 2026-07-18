@@ -1,11 +1,12 @@
 """
-MBT POS — Design System v7  (Lovable / Design System port)
+MBT POS — Design System v8  (Command Center / Figma brief aligned)
 MugoByte Technologies | mugobyte.com
 
 Two complete themes: DARK (default) + LIGHT
-Tokens mirror lovable_export/src/styles.css
+Tokens align with web/dashboard-ui styles.css + FIGMA_UI_MODERNIZATION_SOURCE.md
 Global switch via ThemeManager.apply(is_light)
 Font: Manrope when available, Segoe UI fallback
+C dict API is stable — tabs read C['…'] keys; do not rename keys.
 
 CRITICAL Qt QSS rule:
   CSS 8-digit hex (#RRGGBBAA) is WRONG in Qt — Qt uses #AARRGGBB.
@@ -47,9 +48,9 @@ def qss_hex_aa(color: str, alpha: float = 0.13) -> str:
     return f'#{a:02X}{r:02X}{g:02X}{b:02X}'
 
 
-# ── DARK PALETTE (commercial refine — keep MBT gold identity) ─────────────────
-# Aligned with POS redesign tokens: bg #0B1220, surface #16213A, hover #1E2E4A
-# text2/muted bumped for WCAG-ish contrast on card (#16213A) — headers/labels.
+# ── DARK PALETTE (premium navy + gold — clearer hierarchy) ────────────────────
+# Surfaces step: app/sidebar → panel → card → card2/hover for elevation.
+# text2/muted tuned for WCAG-ish contrast on card (#16213A).
 DARK = {
     'app':       '#0B1220',
     'surface':   '#0B1220',
@@ -61,14 +62,14 @@ DARK = {
     'hover':     '#1E2E4A',
     'selected':  '#243554',
     'gold':      '#FBBF24',
-    'gold_lt':   '#F5B301',
-    'gold_dk':   '#C08A00',
+    'gold_lt':   '#FCD34D',
+    'gold_dk':   '#D97706',
     'gold_fg':   '#0B1220',
     # dim tokens are solid-ish panel mixes (NOT CSS #RRGGBBAA — Qt misreads those)
     'gold_dim':  '#1C1808',
     'text':      '#FFFFFF',
     'text2':     '#B4C2D6',   # secondary / form labels / table headers
-    'muted':     '#8B9BB0',   # captions / placeholders (was #64748B — too low)
+    'muted':     '#8B9BB0',   # captions / placeholders
     'disabled':  '#1C2A3A',
     'ok':        '#00D084',
     'ok_dim':    '#0A1F18',
@@ -78,7 +79,7 @@ DARK = {
     'err_dim':   '#2A1018',   # solid danger chip bg (readable vs translucent)
     'info':      '#3B82F6',
     'info_dim':  '#0C1424',
-    'border':    '#2A4060',   # slightly brighter separators
+    'border':    '#2A4060',
     'border2':   '#3A5270',   # input borders — visible on card
     'sep':       '#121A2C',
     'divider':   '#2A4060',
@@ -133,7 +134,7 @@ LIGHT = {
     'danger':    '#B81C2C',
 }
 
-# Radius scale — commercial cards use 16px
+# Radius scale — brief: 6 / 8 / 12 / 16 / 20
 RADIUS = {
     'sm': 6,
     'md': 8,
@@ -142,10 +143,10 @@ RADIUS = {
     '2xl': 20,
 }
 
-# POS layout rhythm (PyQt5 modular redesign)
+# POS layout rhythm (PyQt5 modular redesign) — spacing 8/12/16/20/24/32
 PADDING = 20
-GAP = 18
-ANIMATION_MS = 150
+GAP = 16
+ANIMATION_MS = 180
 TOUCH_MIN = 44  # touch-friendly control minimum height/width where practical
 
 _FONT_LOADED = False
@@ -280,11 +281,11 @@ QFrame {{ border: none; }}
 #sidebar {{
     background: {p['sidebar']};
     border-right: 1px solid {p['border']};
-    min-width: 228px; max-width: 228px;
+    min-width: 240px; max-width: 240px;
 }}
 #sidebarLogo {{
     background: {p['sidebar']};
-    min-height: 76px; max-height: 76px;
+    min-height: 80px; max-height: 80px;
     border-bottom: 1px solid {p['border']};
 }}
 #sidebarLogoText {{
@@ -294,39 +295,40 @@ QFrame {{ border: none; }}
 }}
 #sidebarLogoSub {{
     color: {p['text2']};
-    font-size: 10px; letter-spacing: 3px; font-weight: 600;
+    font-size: 10px; letter-spacing: 2.5px; font-weight: 700;
     background: transparent;
 }}
 #navBtn {{
     background: transparent;
     color: {p['text2']};
     border: none;
-    padding: 10px 12px 10px 16px;
+    border-left: 3px solid transparent;
+    padding: 10px 12px 10px 13px;
     text-align: left;
     font-size: 13px; font-weight: 500;
-    border-radius: {r_md}px;
-    margin: 2px 8px;
-    min-height: 40px;
+    border-radius: {r_lg}px;
+    margin: 2px 10px;
+    min-height: 44px;
 }}
 #navBtn:hover {{
     background: {nav_hover_soft};
     color: {p['text']};
 }}
 #navBtn:checked {{
-    background: {p['hover']};
+    background: {gold_tint};
     color: {p['gold']};
-    font-weight: 600;
+    font-weight: 700;
     border-left: 3px solid {p['gold']};
     padding-left: 13px;
 }}
 #navBtn:checked:hover {{
-    background: {p['hover']};
+    background: {gold_tint};
     color: {p['gold']};
 }}
 #sidebarUser {{
     background: {p['panel']};
     border-top: 1px solid {p['border']};
-    min-height: 88px;
+    min-height: 92px;
 }}
 #sidebarUserName {{
     color: {p['text']};
@@ -343,10 +345,10 @@ QFrame {{ border: none; }}
     color: {p['text']};
     border: 1px solid {p['border']};
     border-radius: {r_md}px;
-    padding: 6px 12px;
+    padding: 8px 12px;
     font-size: 13px;
     margin-top: 6px;
-    min-height: 0;
+    min-height: 40px;
 }}
 #logoutBtn:hover {{
     color: {p['err']};
@@ -362,8 +364,22 @@ QFrame {{ border: none; }}
 }}
 #pageTitle {{
     color: {p['text']};
-    font-size: 15px; font-weight: 600;
+    font-size: 16px; font-weight: 700;
+    letter-spacing: -0.3px;
     background: transparent;
+}}
+#mbtPageChrome {{
+    background: transparent;
+    border: none;
+}}
+#mbtToolbar {{
+    background: transparent;
+    border: none;
+}}
+QFrame#mbtCard {{
+    background: {p['card']};
+    border: 1px solid {p['border']};
+    border-radius: {r_card}px;
 }}
 #connBadge {{
     font-size: 12px; font-weight: 600;
@@ -386,7 +402,7 @@ QFrame {{ border: none; }}
     border-radius: {r_md}px;
     padding: 6px 12px;
     font-size: 13px; font-weight: 500;
-    min-height: 0;
+    min-height: 36px;
 }}
 #refreshBtn:hover {{ color: {p['text']}; background: {p['hover']}; border-color: {gold_border_hover}; }}
 #themeBtn {{
@@ -395,6 +411,7 @@ QFrame {{ border: none; }}
     border: 1px solid {p['border']};
     border-radius: {r_md}px;
     font-size: 12px; font-weight: 500;
+    min-height: 36px;
 }}
 #themeBtn:hover {{ border-color: {p['gold']}; color: {p['gold']}; }}
 
@@ -609,20 +626,23 @@ QTabBar::tab:hover:!selected {{ color: {p['text']}; }}
 
 /* ── SCROLLBARS ── */
 QScrollBar:vertical {{
-    background: transparent; width: 8px; border-radius: 4px; margin: 0;
+    background: transparent; width: 10px; border-radius: 5px; margin: 2px;
 }}
 QScrollBar::handle:vertical {{
-    background: {p['border2']}; border-radius: 4px; min-height: 30px;
+    background: {p['border2']}; border-radius: 5px; min-height: 36px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {p['gold']}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QScrollBar:horizontal {{
-    background: transparent; height: 8px; border-radius: 4px;
+    background: transparent; height: 10px; border-radius: 5px; margin: 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {p['border2']}; border-radius: 4px;
+    background: {p['border2']}; border-radius: 5px; min-width: 36px;
 }}
+QScrollBar::handle:horizontal:hover {{ background: {p['gold']}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 
 /* ── GROUPBOX ── */
 QGroupBox {{
@@ -812,12 +832,25 @@ QPushButton#loginEyeBtn:hover {{ color: {p['gold']}; border-color: {p['gold']}; 
     border: 1px solid {p['border']};
     border-radius: {r_md}px;
     font-size: 12px; font-weight: 600;
-    min-height: 40px;
+    min-height: 44px;
 }}
 #posPayToggle:checked {{
     background: {gold_tint};
     color: {p['gold']};
     border-color: {p['gold']};
+}}
+
+/* Empty states */
+QFrame#mbtEmptyState {{
+    background: transparent;
+    border: none;
+}}
+
+/* Nested tab panes — avoid double-border when parent already cards */
+QTabWidget#mbtInnerTabs::pane {{
+    background: {p['surface']};
+    border: none;
+    border-radius: 0;
 }}
 """
 

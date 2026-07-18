@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { HardDrive, Cloud, Play, CheckCircle2, XCircle } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, EmptyState, KpiCard, SectionTitle } from "@/components/ui-kit";
+import { Badge, Button, Card, EmptyState, KpiCard, PageHeader, SectionTitle } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 
 export const Route = createFileRoute("/backup")({
@@ -30,25 +30,23 @@ function BackupPage() {
 
   return (
     <AppShell title="Backup Center">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-xl font-bold text-text flex items-center gap-2">
-            <HardDrive className="h-5 w-5 text-gold" /> Backup Center
-          </h2>
-          <p className="text-sm text-text2">
-            Local snapshots and cloud backup status
-          </p>
-        </div>
-        <Button
-          variant="primary"
-          disabled={runM.isPending}
-          onClick={() => runM.mutate()}
-          className="min-h-[44px]"
-        >
-          <Play className="h-4 w-4" />
-          {runM.isPending ? "Running…" : "Run Backup Now"}
-        </Button>
-      </div>
+      <PageHeader
+        eyebrow="Command"
+        title="Backup Center"
+        icon={<HardDrive className="h-4 w-4" />}
+        description="Local snapshots and cloud backup status"
+        actions={
+          <Button
+            variant="primary"
+            disabled={runM.isPending}
+            onClick={() => runM.mutate()}
+            className="min-h-[44px]"
+          >
+            <Play className="h-4 w-4" />
+            {runM.isPending ? "Running…" : "Run Backup Now"}
+          </Button>
+        }
+      />
 
       {runM.data && !(runM.data as any).success ? (
         <Card className="p-3 mb-4 border-err/40 text-sm text-err">
