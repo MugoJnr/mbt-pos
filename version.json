@@ -1,8 +1,8 @@
-﻿{
-  "version": "2.3.93",
-  "build": "PROD-2026-07-19-v2.3.93",
+{
+  "version": "2.3.94",
+  "build": "PROD-2026-07-19-v2.3.94",
   "build_date": "2026-07-19",
-  "release_notes": "Web POS 3-panel layout (approved reference) shipped in Setup. Includes v2.3.92 Command Center features.",
+  "release_notes": "Premium Current Sale 2-column checkout UI (CartLineRow/CustomerCard). Includes v2.3.93 web POS layout.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
