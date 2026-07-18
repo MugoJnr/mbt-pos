@@ -36,9 +36,10 @@ _PERMISSIONS = {
         'debt.view',
         'consumption.view_report',
         'reports.view_variance',
+        'accounting.view', 'accounting.view_reports',
     },
     ROLE_MANAGER: {
-        'sales.create', 'sales.view_all',
+        'sales.create', 'sales.view_all', 'sales.void',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -47,6 +48,9 @@ _PERMISSIONS = {
         'debt.view', 'debt.create', 'debt.collect', 'debt.customer_manage',
         'consumption.create', 'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'reports.view_variance',
+        'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
+        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.export',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void',
@@ -61,6 +65,9 @@ _PERMISSIONS = {
         'consumption.create', 'consumption.void',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
+        'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
+        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
@@ -78,6 +85,9 @@ _PERMISSIONS = {
         'consumption.create', 'consumption.void',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
+        'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
+        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
     },
 }
 
@@ -183,37 +193,115 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
 
 
 def can_void_sales(user: dict) -> bool:
-    """True if user may void completed sales (admin / superadmin)."""
-    role = (user.get('user') or user).get('role', ROLE_CASHIER)
-    return role in (ROLE_ADMIN, ROLE_SUPERADMIN)
+    """True if user may void completed sales (manager / admin / superadmin)."""
+    return has_permission(user, 'sales.void')
+
+
+class VoidSaleDialog:
+    """Themed void dialog: receipt + ReasonSelect (Other → Please specify)."""
+
+    @staticmethod
+    def ask(parent_widget=None, receipt_prefill: str = '') -> tuple:
+        """
+        Returns (receipt, reason) or (None, None) if cancelled.
+        Reason is the catalog label, or 'Other: <detail>' (+ optional notes).
+        """
+        from PyQt5.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+            QDialogButtonBox, QMessageBox,
+        )
+        from desktop.utils.theme import C, apply_themed_dialog
+        from desktop.utils.option_lists import VOID_REASONS
+        from desktop.utils.select_controls import ReasonSelect, CONTROL_HEIGHT
+
+        dlg = QDialog(parent_widget)
+        dlg.setWindowTitle('Void Sale')
+        dlg.setMinimumWidth(460)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        title = QLabel('Void Sale')
+        title.setStyleSheet(
+            f"color:{C['text']};font-size:18px;font-weight:700;background:transparent;")
+        lay.addWidget(title)
+
+        hint = QLabel(
+            'Cancel a completed sale and restore stock. '
+            'Requires Super-Admin PIN after you confirm the reason.')
+        hint.setWordWrap(True)
+        hint.setStyleSheet(
+            f"color:{C['text2']};font-size:13px;background:transparent;")
+        lay.addWidget(hint)
+
+        rcpt_lbl = QLabel('Receipt number')
+        rcpt_lbl.setStyleSheet(
+            f"color:{C['muted']};font-size:12px;font-weight:600;background:transparent;")
+        lay.addWidget(rcpt_lbl)
+        receipt_edit = QLineEdit()
+        receipt_edit.setPlaceholderText('e.g. RCP-20260605-0089')
+        receipt_edit.setMinimumHeight(CONTROL_HEIGHT)
+        if receipt_prefill:
+            receipt_edit.setText(receipt_prefill.strip())
+        lay.addWidget(receipt_edit)
+
+        reason_lbl = QLabel('Void reason')
+        reason_lbl.setStyleSheet(
+            f"color:{C['muted']};font-size:12px;font-weight:600;background:transparent;")
+        lay.addWidget(reason_lbl)
+        reason_sel = ReasonSelect(dlg, reasons=VOID_REASONS, height=CONTROL_HEIGHT)
+        lay.addWidget(reason_sel)
+
+        notes_lbl = QLabel('Notes (optional)')
+        notes_lbl.setStyleSheet(
+            f"color:{C['muted']};font-size:12px;background:transparent;")
+        lay.addWidget(notes_lbl)
+        notes = QLineEdit()
+        notes.setPlaceholderText('Optional notes…')
+        notes.setMinimumHeight(CONTROL_HEIGHT)
+        lay.addWidget(notes)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_btn = buttons.button(QDialogButtonBox.Ok)
+        if ok_btn:
+            ok_btn.setText('Continue')
+        buttons.rejected.connect(dlg.reject)
+
+        def _accept():
+            rcpt = receipt_edit.text().strip()
+            if not rcpt:
+                QMessageBox.warning(dlg, 'Required', 'Enter a receipt number.')
+                receipt_edit.setFocus()
+                return
+            if not reason_sel.is_valid():
+                QMessageBox.warning(dlg, 'Required', reason_sel.validation_error())
+                return
+            dlg.accept()
+
+        buttons.accepted.connect(_accept)
+        lay.addWidget(buttons)
+        reason_sel.refresh_theme()
+
+        if dlg.exec_() != QDialog.Accepted:
+            return None, None
+        reason = reason_sel.value().strip()
+        extra = notes.text().strip()
+        if extra:
+            reason = f'{reason} — {extra}' if reason else extra
+        return receipt_edit.text().strip(), reason or None
 
 
 def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool:
     """
-    Prompt for receipt, reason, and super-admin PIN; void the sale if confirmed.
-    Returns True when a sale was voided successfully.
+    Prompt for receipt, standardized void reason, and super-admin PIN;
+    void the sale if confirmed. Returns True when a sale was voided successfully.
     """
-    from PyQt5.QtWidgets import QInputDialog, QMessageBox
+    from PyQt5.QtWidgets import QMessageBox
     from desktop.utils.api_client import _db
-    from desktop.utils.option_lists import VOID_REASONS
-    from desktop.utils.select_controls import prompt_reason
 
-    receipt = (receipt_prefill or '').strip()
-    if not receipt:
-        receipt, ok = QInputDialog.getText(
-            parent_widget, 'Void Sale',
-            'Receipt number to void:\n(e.g. RCP-20260605-0089)')
-        if not ok or not receipt.strip():
-            return False
-        receipt = receipt.strip()
-
-    reason = prompt_reason(
-        parent_widget,
-        title='Void Reason',
-        prompt=f'Reason for voiding {receipt}:',
-        reasons=VOID_REASONS,
-    )
-    if not reason or not reason.strip():
+    receipt, reason = VoidSaleDialog.ask(parent_widget, receipt_prefill=receipt_prefill)
+    if not receipt or not reason:
         return False
 
     if not ask_superadmin_pin(api, parent_widget, reason=f'Void {receipt}'):

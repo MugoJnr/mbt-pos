@@ -959,7 +959,7 @@ class APIClient:
             }, SECRET_KEY, algorithm='HS256')
 
             perms = json.loads(user.get('tab_permissions') or '[]')
-            return {
+            result = {
                 'token': token,
                 'user': {
                     'id':              user['id'],
@@ -969,6 +969,12 @@ class APIClient:
                     'tab_permissions': perms,
                 }
             }
+            # Apply session context immediately (desktop login also calls set_token)
+            try:
+                self.set_token(token)
+            except Exception:
+                pass
+            return result
         finally:
             db.close()
 
@@ -1642,6 +1648,15 @@ class APIClient:
                     'created_at':     datetime.now().isoformat()
                 }))
             )
+            # Auto-post double-entry journal (never block checkout)
+            try:
+                from desktop.utils.accounting_hooks import post_sale_journal
+                post_sale_journal(
+                    db, sale_id,
+                    user_id=self._user_id, username=self._username or 'staff',
+                    safe=True)
+            except Exception as _je:
+                logger.error('sale accounting post: %s', _je, exc_info=True)
             db.commit()
             _audit(self._user_id, self._username or 'staff',
                    'CREATE_SALE', 'sales',
@@ -3302,6 +3317,278 @@ class APIClient:
                 'item_qty': float((items or {}).get('item_qty') or 0),
                 'line_count': int((items or {}).get('line_count') or 0),
             }
+        finally:
+            db.close()
+
+    # ── ACCOUNTING ──────────────────────────────────────────────────────────────
+
+    def _acc_perm(self, action: str) -> bool:
+        """Granular accounting permissions by role."""
+        from desktop.utils.security import has_permission
+        return has_permission({'role': self._role}, action)
+
+    def accounting_dashboard(self) -> dict:
+        if not self._acc_perm('accounting.view'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import dashboard_kpis
+            return dashboard_kpis(db)
+        finally:
+            db.close()
+
+    def accounting_accounts(self, active_only=True) -> list:
+        if not self._acc_perm('accounting.view'):
+            return []
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import list_accounts
+            return list_accounts(db, active_only=active_only)
+        finally:
+            db.close()
+
+    def accounting_save_account(self, data: dict) -> dict:
+        if not self._acc_perm('accounting.edit_accounts'):
+            return {'error': 'Insufficient permissions to edit accounts'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import upsert_account
+            r = upsert_account(db, data, user_id=self._user_id,
+                               username=self._username or '')
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_delete_account(self, code: str) -> dict:
+        if not self._acc_perm('accounting.edit_accounts'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import soft_delete_account
+            r = soft_delete_account(db, code, user_id=self._user_id,
+                                    username=self._username or '')
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_journals(self, start=None, end=None, source_module=None) -> list:
+        if not self._acc_perm('accounting.view'):
+            return []
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import list_journals
+            return list_journals(db, start=start, end=end,
+                                 source_module=source_module)
+        finally:
+            db.close()
+
+    def accounting_journal(self, journal_id: int) -> dict:
+        if not self._acc_perm('accounting.view'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import get_journal
+            return get_journal(db, journal_id) or {}
+        finally:
+            db.close()
+
+    def accounting_post_manual(self, data: dict) -> dict:
+        if not self._acc_perm('accounting.create_journal'):
+            return {'error': 'Insufficient permissions to create journals'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import post_journal
+            r = post_journal(
+                db, data.get('lines') or [],
+                description=data.get('description') or 'Manual journal',
+                entry_date=data.get('entry_date'),
+                source_module='manual',
+                source_id=data.get('source_id') or f"manual:{datetime.now().timestamp()}",
+                entry_type='manual',
+                user_id=self._user_id,
+                username=self._username or '',
+                branch_id=data.get('branch_id'),
+            )
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_reverse(self, journal_id: int, reason: str = '') -> dict:
+        if not self._acc_perm('accounting.reverse_journal'):
+            return {'error': 'Insufficient permissions to reverse journals'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import reverse_journal
+            r = reverse_journal(
+                db, journal_id, reason=reason,
+                user_id=self._user_id, username=self._username or '',
+                source_module='manual',
+                source_id=f'rev:{journal_id}',
+                entry_type='reversal',
+            )
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_ledger(self, account_code: str, start=None, end=None) -> dict:
+        if not self._acc_perm('accounting.view'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import account_activity
+            return account_activity(db, account_code, start, end)
+        finally:
+            db.close()
+
+    def accounting_trial_balance(self, as_of=None, start=None) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import trial_balance
+            return trial_balance(db, as_of=as_of, start=start)
+        finally:
+            db.close()
+
+    def accounting_pnl(self, start=None, end=None) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import profit_and_loss
+            return profit_and_loss(db, start=start, end=end)
+        finally:
+            db.close()
+
+    def accounting_balance_sheet(self, as_of=None) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import balance_sheet
+            return balance_sheet(db, as_of=as_of)
+        finally:
+            db.close()
+
+    def accounting_cash_book(self, account_code='1000', start=None, end=None) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import cash_book
+            return cash_book(db, account_code, start, end)
+        finally:
+            db.close()
+
+    def accounting_ar_aging(self) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import ar_aging_from_debts
+            return ar_aging_from_debts(db)
+        finally:
+            db.close()
+
+    def accounting_ap_aging(self) -> dict:
+        if not self._acc_perm('accounting.view_reports'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import ap_aging_stub
+            return ap_aging_stub(db)
+        finally:
+            db.close()
+
+    def accounting_expenses(self, start=None, end=None) -> list:
+        if not self._acc_perm('accounting.view'):
+            return []
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import list_expenses
+            return list_expenses(db, start, end)
+        finally:
+            db.close()
+
+    def accounting_create_expense(self, data: dict) -> dict:
+        if not self._acc_perm('accounting.approve_expenses'):
+            return {'error': 'Insufficient permissions to record expenses'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import create_expense
+            r = create_expense(db, data, user_id=self._user_id,
+                               username=self._username or '')
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_create_transfer(self, data: dict) -> dict:
+        if not self._acc_perm('accounting.create_journal'):
+            return {'error': 'Insufficient permissions'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import create_transfer
+            r = create_transfer(db, data, user_id=self._user_id,
+                                username=self._username or '')
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_periods(self) -> list:
+        if not self._acc_perm('accounting.view'):
+            return []
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import list_periods
+            return list_periods(db)
+        finally:
+            db.close()
+
+    def accounting_close_period(self, period_id: int, notes: str = '') -> dict:
+        if not self._acc_perm('accounting.close_period'):
+            return {'error': 'Insufficient permissions to close periods'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import close_period
+            r = close_period(db, period_id, user_id=self._user_id,
+                             username=self._username or '', notes=notes)
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_currency(self) -> str:
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import get_currency_code
+            return get_currency_code(db)
         finally:
             db.close()
 

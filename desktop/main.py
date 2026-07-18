@@ -84,6 +84,7 @@ from desktop.tabs.sales_tab         import SalesTab
 from desktop.tabs.inventory_tab     import InventoryTab
 from desktop.tabs.consumption_tab   import ConsumptionTab
 from desktop.tabs.debt_tab          import DebtTab
+from desktop.tabs.accounting_tab    import AccountingTab
 from desktop.tabs.reports_tab       import ReportsTab
 from desktop.tabs.notes_tab         import NotesTab
 from desktop.tabs.admin_tab         import AdminTab
@@ -445,6 +446,7 @@ class MainWindow(QMainWindow):
             'inventory':   InventoryTab,
             'consumption': ConsumptionTab,
             'debt':        DebtTab,
+            'accounting':  AccountingTab,
             'reports':     ReportsTab,
             'notes':       NotesTab,
             'admin':       AdminTab,
@@ -958,6 +960,7 @@ class MainWindow(QMainWindow):
             ('inventory',   '\u25a4',  'Inventory'),
             ('consumption', '\u25a3',  'Internal Consumption'),
             ('debt',        '\U0001f4b0', 'Debt Management'),
+            ('accounting',  '\u2395',  'Accounting'),
             ('reports',     '\u25a6',  'Reports'),
             ('notes',       '\u2261',  'Notes'),
             ('admin',       '\u229b',  'Users && Access'),
@@ -1138,6 +1141,7 @@ class MainWindow(QMainWindow):
         'dashboard':'Dashboard', 'sales':'Point of Sale', 'inventory':'Inventory',
         'consumption':'Internal Consumption',
         'debt':'Debt Management',
+        'accounting':'Accounting',
         'reports':'Reports', 'notes':'Notes', 'admin':'Users & Access',
         'settings':'Settings', 'security':'Security & Super-Admin',
         'license':'License & Subscription', 'diagnostics':'Diagnostics',

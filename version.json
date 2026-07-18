@@ -1,8 +1,8 @@
-{
-  "version": "2.3.74",
-  "build": "PROD-2026-07-18-v2.3.74",
+﻿{
+  "version": "2.3.75",
+  "build": "PROD-2026-07-18-v2.3.75",
   "build_date": "2026-07-18",
-  "release_notes": "Offline Category Visual Management: 241 local SVG icons, CategoryVisual widget, IconPicker (search/favorites/recent), custom image uploads to AppData, categories DB (visual_type/icon_name/image_path/accent_color), POS+inventory+settings wiring. 100% offline.",
+  "release_notes": "Enterprise Accounting v1: double-entry engine (COA/journals/periods), auto-post from sales/void/debt/consumption/stock adjust, Accounting sidebar (GL/P&L/TB/BS/expenses/transfers/period close), role permissions. Offline SQLite. Preserves POS checkout.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
