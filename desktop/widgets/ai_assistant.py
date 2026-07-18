@@ -1,31 +1,101 @@
 """
-Floating AI Assistant — available on every MainWindow screen.
+MBT AI — Enterprise Business Copilot
+MugoByte Technologies | mugobyte.com
 
-Modern chat panel: markdown-ish rendering, streaming, suggestions, regenerate,
-copy, typing indicator, conversation history. Theme follows ThemeManager.
+Collapsible right drawer (not a permanent chatbot). Home dashboard,
+context awareness, quick actions, structured replies, workspace history.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import (
-    Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QSize,
+    Qt, QThread, pyqtSignal, QTimer, QPoint, QSize,
 )
-from PyQt5.QtGui import QFont, QTextCursor, QClipboard
+from PyQt5.QtGui import QFont, QColor, QPainter, QMouseEvent
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QLineEdit, QScrollArea, QSizePolicy, QApplication, QMessageBox, QListWidget,
-    QListWidgetItem, QSplitter, QInputDialog, QGraphicsOpacityEffect,
+    QScrollArea, QSizePolicy, QApplication, QMessageBox, QListWidget,
+    QListWidgetItem, QStackedWidget, QGridLayout, QLineEdit, QSplitter,
+    QGraphicsDropShadowEffect, QToolButton, QAbstractItemView,
 )
 
 from desktop.utils.theme import C, ThemeManager, qss_alpha, RADIUS
 from desktop.utils.ai import get_ai_service
-from desktop.utils.ai.connectivity import get_connectivity, OFFLINE_BANNER
+from desktop.utils.ai.connectivity import get_connectivity
 from desktop.utils.ai.actions import format_action_preview, ProposedAction
 from desktop.utils.ai.conversations import get_conversation_store
+from desktop.utils.ai.insights import get_dashboard_insights, _heuristic_insights
+from desktop.utils.ai.copilot_prefs import load_copilot_prefs, save_copilot_prefs
 
-log = logging.getLogger('ai.assistant')
+log = logging.getLogger('ai.copilot')
+
+# Enterprise Copilot palette (overlays theme; follows light/dark)
+def _copilot_colors() -> dict:
+    light = ThemeManager.is_light()
+    if light:
+        return {
+            'bg': '#F8FAFC',
+            'bg2': '#FFFFFF',
+            'card': '#FFFFFF',
+            'sidebar': '#F1F5F9',
+            'border': '#E2E8F0',
+            'accent': '#D97706',
+            'ok': '#059669',
+            'warn': '#D97706',
+            'danger': '#DC2626',
+            'info': '#2563EB',
+            'text': '#0F172A',
+            'text2': '#475569',
+            'muted': '#64748B',
+        }
+    return {
+        'bg': '#0B1220',
+        'bg2': '#111827',
+        'card': '#1A2335',
+        'sidebar': '#0F172A',
+        'border': '#273449',
+        'accent': '#FBBF24',
+        'ok': '#10B981',
+        'warn': '#F59E0B',
+        'danger': '#EF4444',
+        'info': '#3B82F6',
+        'text': '#F8FAFC',
+        'text2': '#CBD5E1',
+        'muted': '#94A3B8',
+    }
+
+
+_MODULE_LABELS = {
+    'dashboard': 'Dashboard',
+    'sales': 'Sales / POS',
+    'inventory': 'Inventory',
+    'debt': 'Credit & Debt',
+    'accounting': 'Accounting',
+    'reports': 'Reports',
+    'purchasing': 'Purchasing',
+    'settings': 'Settings',
+    'diagnostics': 'Diagnostics',
+    'ai_ops': 'AI Operations',
+    'consumption': 'Internal Consumption',
+    'notes': 'Notes',
+    'admin': 'Users & Admin',
+    'security': 'Security',
+    'license': 'License',
+}
+
+_QUICK_ACTIONS = [
+    ('Analyze sales today', 'sales', '📊'),
+    ('Inventory health check', 'inventory', '📦'),
+    ('Customer / debt insights', 'debt', '👥'),
+    ('Explain this screen', 'context', '◎'),
+    ('Detect problems', 'diagnostics', '⚠'),
+    ('Generate report ideas', 'reports', '📄'),
+    ('Reorder suggestions', 'inventory', '↻'),
+    ('Accounting checklist', 'accounting', '📒'),
+]
 
 
 class _ChatWorker(QThread):
@@ -61,7 +131,6 @@ class _ChatWorker(QThread):
 
 
 def _md_to_html(text: str) -> str:
-    """Lightweight markdown → HTML (bold, code, lists, newlines)."""
     import html
     import re
     s = html.escape(text or '')
@@ -72,27 +141,71 @@ def _md_to_html(text: str) -> str:
     return s
 
 
-# Friendly module labels for the panel subtitle
-_MODULE_LABELS = {
-    'dashboard': 'Dashboard Assistant',
-    'sales': 'Sales Assistant',
-    'inventory': 'Inventory Assistant',
-    'debt': 'Credit & Debt Assistant',
-    'accounting': 'Accounting Assistant',
-    'reports': 'Reports Assistant',
-    'purchasing': 'Purchasing Assistant',
-    'settings': 'Settings Assistant',
-    'diagnostics': 'Diagnostics Assistant',
-    'ai_ops': 'AI Operations',
-    'consumption': 'Consumption Assistant',
-    'notes': 'Notes Assistant',
-}
+class _ResizeHandle(QFrame):
+    """Left-edge drag to resize docked drawer."""
+    resized = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(6)
+        self.setCursor(Qt.SizeHorCursor)
+        self._dragging = False
+        self._origin_x = 0
+        self._origin_w = 0
+
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() == Qt.LeftButton:
+            self._dragging = True
+            self._origin_x = e.globalPos().x()
+            self._origin_w = self.parentWidget().width() if self.parentWidget() else 380
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if self._dragging:
+            dx = self._origin_x - e.globalPos().x()
+            self.resized.emit(self._origin_w + dx)
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        self._dragging = False
+        super().mouseReleaseEvent(e)
+
+
+class _KpiCard(QFrame):
+    def __init__(self, title: str, value: str = '—', tone: str = 'info', parent=None):
+        super().__init__(parent)
+        self.setObjectName('copilotKpi')
+        self._tone = tone
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(4)
+        self._t = QLabel(title)
+        self._t.setObjectName('copilotKpiTitle')
+        self._v = QLabel(value)
+        self._v.setObjectName('copilotKpiValue')
+        self._v.setWordWrap(True)
+        lay.addWidget(self._t)
+        lay.addWidget(self._v)
+
+    def set_value(self, value: str, tone: str = None):
+        self._v.setText(value)
+        if tone:
+            self._tone = tone
+
+
+class _ActionCard(QPushButton):
+    def __init__(self, label: str, icon: str = '', parent=None):
+        super().__init__(parent)
+        self.setObjectName('copilotAction')
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(52)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setText(f'{icon}  {label}' if icon else label)
+        self.setToolTip(label)
 
 
 class AiAssistantPanel(QFrame):
-    """Slide-over chat panel hosted by MainWindow."""
-
-    PANEL_WIDTH = 520
+    """Enterprise Copilot drawer — docked to MainWindow right edge."""
 
     def __init__(self, main_window):
         super().__init__(main_window)
@@ -103,70 +216,185 @@ class AiAssistantPanel(QFrame):
         self._last_user_msg = ''
         self._worker: Optional[_ChatWorker] = None
         self._streaming_buf = ''
-        self.setObjectName('mbtAiPanel')
-        self.setMinimumWidth(self.PANEL_WIDTH)
-        self.setFixedWidth(self.PANEL_WIDTH)
+        self._prefs = load_copilot_prefs()
+        self._floating = False
+        self.setObjectName('mbtCopilot')
+        self.setMinimumWidth(340)
+        self.setMaximumWidth(640)
+        w = int(self._prefs.get('width') or 380)
+        self.setFixedWidth(w)
         self.hide()
         self._build()
         self.refresh_theme()
         conn = get_connectivity()
         conn.subscribe(lambda online: QTimer.singleShot(0, self._on_conn))
         conn.start_watch(45)
+        QTimer.singleShot(100, self._refresh_home)
 
-    # ── UI ────────────────────────────────────────────────────────────────────
+    # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build(self):
-        root = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._handle = _ResizeHandle(self)
+        self._handle.resized.connect(self._on_resize_drag)
+        outer.addWidget(self._handle)
+
+        root = QVBoxLayout()
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        outer.addLayout(root, 1)
 
         # Header
-        hdr = QFrame(); hdr.setObjectName('mbtAiHdr')
-        hl = QHBoxLayout(hdr); hl.setContentsMargins(18, 14, 14, 14); hl.setSpacing(10)
-        self._title = QLabel('MBT AI')
-        self._title.setObjectName('mbtAiTitle')
-        self._sub = QLabel('Dashboard Assistant')
-        self._sub.setObjectName('mbtAiSub')
-        tit_col = QVBoxLayout(); tit_col.setSpacing(2)
-        tit_col.addWidget(self._title); tit_col.addWidget(self._sub)
-        hl.addLayout(tit_col, 1)
+        hdr = QFrame(); hdr.setObjectName('copilotHdr')
+        hv = QVBoxLayout(hdr); hv.setContentsMargins(12, 10, 10, 8); hv.setSpacing(8)
+        hl = QHBoxLayout(); hl.setSpacing(8)
+        tit = QVBoxLayout(); tit.setSpacing(2)
+        self._title = QLabel('MBT Copilot')
+        self._title.setObjectName('copilotTitle')
+        self._context = QLabel('Context: Dashboard')
+        self._context.setObjectName('copilotContext')
+        tit.addWidget(self._title)
+        tit.addWidget(self._context)
+        hl.addLayout(tit, 1)
 
-        self._new_btn = QPushButton('+'); self._new_btn.setFixedSize(36, 36)
-        self._new_btn.setToolTip('New conversation')
-        self._new_btn.clicked.connect(self.new_chat)
-        self._hist_btn = QPushButton('≡'); self._hist_btn.setFixedSize(36, 36)
-        self._hist_btn.setToolTip('Chat history')
-        self._hist_btn.setCheckable(True)
-        self._hist_btn.clicked.connect(self._toggle_history)
-        self._close_btn = QPushButton('×'); self._close_btn.setFixedSize(36, 36)
-        self._close_btn.setToolTip('Close assistant')
+        self._full_btn = QToolButton()
+        self._full_btn.setText('⛶')
+        self._full_btn.setObjectName('copilotIconBtn')
+        self._full_btn.setToolTip('Full Workspace — AI Operations Center')
+        self._full_btn.setCursor(Qt.PointingHandCursor)
+        self._full_btn.clicked.connect(self.open_full_workspace)
+        self._mode_btn = QToolButton()
+        self._mode_btn.setText('Float')
+        self._mode_btn.setObjectName('copilotIconBtn')
+        self._mode_btn.setToolTip('Toggle floating window')
+        self._mode_btn.setCursor(Qt.PointingHandCursor)
+        self._mode_btn.clicked.connect(self._toggle_float)
+        self._close_btn = QToolButton()
+        self._close_btn.setText('×')
+        self._close_btn.setObjectName('copilotIconBtn')
+        self._close_btn.setToolTip('Close')
+        self._close_btn.setCursor(Qt.PointingHandCursor)
         self._close_btn.clicked.connect(self.close_panel)
-        for b in (self._new_btn, self._hist_btn, self._close_btn):
+        hl.addWidget(self._full_btn)
+        hl.addWidget(self._mode_btn)
+        hl.addWidget(self._close_btn)
+        hv.addLayout(hl)
+
+        tabs = QHBoxLayout(); tabs.setSpacing(4)
+        self._tab_home = QToolButton(); self._tab_home.setText('Home')
+        self._tab_chat = QToolButton(); self._tab_chat.setText('Chat')
+        self._tab_ws = QToolButton(); self._tab_ws.setText('Workspace')
+        for b, key in (
+            (self._tab_home, 'home'),
+            (self._tab_chat, 'chat'),
+            (self._tab_ws, 'workspace'),
+        ):
+            b.setCheckable(True)
+            b.setObjectName('copilotTab')
             b.setCursor(Qt.PointingHandCursor)
-            b.setObjectName('mbtAiIconBtn')
-            hl.addWidget(b)
+            b.clicked.connect(lambda _=False, k=key: self._show_tab(k))
+            tabs.addWidget(b)
+        tabs.addStretch(1)
+        hv.addLayout(tabs)
         root.addWidget(hdr)
 
         self._banner = QLabel('')
-        self._banner.setObjectName('mbtAiBanner')
+        self._banner.setObjectName('copilotBanner')
         self._banner.setWordWrap(True)
         self._banner.hide()
         root.addWidget(self._banner)
 
-        body = QSplitter(Qt.Horizontal)
-        body.setChildrenCollapsible(False)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._build_home())
+        self._stack.addWidget(self._build_chat())
+        self._stack.addWidget(self._build_workspace())
+        root.addWidget(self._stack, 1)
 
-        # History list
-        self._hist_list = QListWidget()
-        self._hist_list.setObjectName('mbtAiHist')
-        self._hist_list.setFixedWidth(170)
-        self._hist_list.hide()
-        self._hist_list.itemClicked.connect(self._load_history_item)
-        body.addWidget(self._hist_list)
+        tab = self._prefs.get('last_tab') or 'home'
+        self._show_tab(tab)
 
-        # Chat column
-        chat_col = QWidget()
-        cl = QVBoxLayout(chat_col); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
+    def _build_home(self) -> QWidget:
+        page = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setSpacing(12)
+
+        hour = datetime.now().hour
+        greet = 'Good morning' if hour < 12 else ('Good afternoon' if hour < 17 else 'Good evening')
+        self._greet = QLabel(greet)
+        self._greet.setObjectName('copilotGreet')
+        lay.addWidget(self._greet)
+
+        self._status_line = QLabel('Store status · loading…')
+        self._status_line.setObjectName('copilotStatus')
+        self._status_line.setWordWrap(True)
+        lay.addWidget(self._status_line)
+
+        grid = QGridLayout(); grid.setSpacing(8)
+        self._kpi_sales = _KpiCard('Today\'s sales', '—')
+        self._kpi_inv = _KpiCard('Inventory alerts', '—', 'warn')
+        self._kpi_cust = _KpiCard('Credit / debt', '—')
+        self._kpi_ai = _KpiCard('AI status', '—')
+        grid.addWidget(self._kpi_sales, 0, 0)
+        grid.addWidget(self._kpi_inv, 0, 1)
+        grid.addWidget(self._kpi_cust, 1, 0)
+        grid.addWidget(self._kpi_ai, 1, 1)
+        lay.addLayout(grid)
+
+        rec_lbl = QLabel('AI RECOMMENDATIONS')
+        rec_lbl.setObjectName('copilotSection')
+        lay.addWidget(rec_lbl)
+        self._recs = QLabel('—')
+        self._recs.setObjectName('copilotRecs')
+        self._recs.setWordWrap(True)
+        lay.addWidget(self._recs)
+
+        act_lbl = QLabel('QUICK ACTIONS')
+        act_lbl.setObjectName('copilotSection')
+        lay.addWidget(act_lbl)
+        ag = QGridLayout(); ag.setSpacing(8)
+        for i, (label, kind, icon) in enumerate(_QUICK_ACTIONS):
+            btn = _ActionCard(label, icon)
+            btn.clicked.connect(lambda _=False, t=label, k=kind: self._run_quick(t, k))
+            ag.addWidget(btn, i // 2, i % 2)
+        lay.addLayout(ag)
+
+        pin_lbl = QLabel('RECENT CONVERSATIONS')
+        pin_lbl.setObjectName('copilotSection')
+        lay.addWidget(pin_lbl)
+        self._home_recent = QListWidget()
+        self._home_recent.setObjectName('copilotList')
+        self._home_recent.setMaximumHeight(120)
+        self._home_recent.itemClicked.connect(self._open_recent_item)
+        lay.addWidget(self._home_recent)
+
+        new_btn = QPushButton('＋  New chat about this screen')
+        new_btn.setObjectName('copilotPrimary')
+        new_btn.setCursor(Qt.PointingHandCursor)
+        new_btn.setMinimumHeight(42)
+        new_btn.clicked.connect(self._start_context_chat)
+        lay.addWidget(new_btn)
+        lay.addStretch(1)
+
+        scroll.setWidget(host)
+        wrap = QVBoxLayout(page)
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.addWidget(scroll)
+        return page
+
+    def _build_chat(self) -> QWidget:
+        page = QWidget()
+        cl = QVBoxLayout(page)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -174,98 +402,257 @@ class AiAssistantPanel(QFrame):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._chat_host = QWidget()
         self._chat_lay = QVBoxLayout(self._chat_host)
-        self._chat_lay.setContentsMargins(16, 16, 16, 16)
-        self._chat_lay.setSpacing(12)
+        self._chat_lay.setContentsMargins(12, 12, 12, 12)
+        self._chat_lay.setSpacing(10)
         self._chat_lay.addStretch(1)
         self._scroll.setWidget(self._chat_host)
         cl.addWidget(self._scroll, 1)
 
-        # Suggestions — stacked full-width so labels never truncate
-        sug_wrap = QFrame(); sug_wrap.setObjectName('mbtAiSugWrap')
-        self._sug_col = QVBoxLayout(sug_wrap)
-        self._sug_col.setContentsMargins(14, 8, 14, 8)
-        self._sug_col.setSpacing(8)
-        self._sug_label = QLabel('TRY ASKING')
-        self._sug_label.setObjectName('mbtAiSugLabel')
-        self._sug_col.addWidget(self._sug_label)
-        cl.addWidget(sug_wrap)
-
-        # Typing
-        self._typing = QLabel('MBT AI is thinking…')
-        self._typing.setObjectName('mbtAiTyping')
+        self._typing = QLabel('Copilot is thinking…')
+        self._typing.setObjectName('copilotTyping')
         self._typing.hide()
         cl.addWidget(self._typing)
 
-        # Composer
-        comp = QFrame(); comp.setObjectName('mbtAiComposer')
-        cpl = QHBoxLayout(comp); cpl.setContentsMargins(14, 12, 14, 14); cpl.setSpacing(10)
+        sug = QFrame(); sug.setObjectName('copilotSugBar')
+        sl = QHBoxLayout(sug); sl.setContentsMargins(10, 6, 10, 6); sl.setSpacing(6)
+        self._chip_row = sl
+        cl.addWidget(sug)
+
+        comp = QFrame(); comp.setObjectName('copilotComposer')
+        cpl = QHBoxLayout(comp); cpl.setContentsMargins(10, 10, 10, 12); cpl.setSpacing(8)
         self._input = QTextEdit()
-        self._input.setPlaceholderText(
-            'Ask about sales, stock, customers, or this screen…')
-        self._input.setFixedHeight(76)
-        self._input.setObjectName('mbtAiInput')
+        self._input.setPlaceholderText('Ask Copilot… (Enter to send, Shift+Enter for new line)')
+        self._input.setFixedHeight(64)
+        self._input.setObjectName('copilotInput')
+        self._input.installEventFilter(self)
         self._send = QPushButton('Send')
-        self._send.setObjectName('mbtAiSend')
+        self._send.setObjectName('copilotSend')
         self._send.setCursor(Qt.PointingHandCursor)
-        self._send.setFixedHeight(76)
-        self._send.setMinimumWidth(88)
-        self._send.setFixedWidth(96)
+        self._send.setFixedHeight(64)
+        self._send.setFixedWidth(78)
         self._send.clicked.connect(self._on_send)
         cpl.addWidget(self._input, 1)
         cpl.addWidget(self._send)
         cl.addWidget(comp)
 
-        body.addWidget(chat_col)
-        body.setStretchFactor(1, 1)
-        root.addWidget(body, 1)
-
         self._empty_hint()
-        self._reload_suggestions()
+        return page
+
+    def _build_workspace(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+        self._ws_search = QLineEdit()
+        self._ws_search.setPlaceholderText('Search conversations…')
+        self._ws_search.setObjectName('copilotSearch')
+        self._ws_search.setMinimumHeight(36)
+        self._ws_search.textChanged.connect(self._refresh_workspace)
+        lay.addWidget(self._ws_search)
+
+        for title in ('Pinned', 'Recent', 'Saved analyses'):
+            lbl = QLabel(title.upper())
+            lbl.setObjectName('copilotSection')
+            lay.addWidget(lbl)
+            if title == 'Pinned':
+                self._ws_pinned = QListWidget()
+                self._ws_pinned.setObjectName('copilotList')
+                self._ws_pinned.itemClicked.connect(self._open_recent_item)
+                lay.addWidget(self._ws_pinned, 1)
+            elif title == 'Recent':
+                self._ws_recent = QListWidget()
+                self._ws_recent.setObjectName('copilotList')
+                self._ws_recent.itemClicked.connect(self._open_recent_item)
+                lay.addWidget(self._ws_recent, 2)
+            else:
+                tip = QLabel('Pin chats from history to keep analyses here.')
+                tip.setObjectName('copilotMuted')
+                tip.setWordWrap(True)
+                lay.addWidget(tip)
+
+        new_btn = QPushButton('New conversation')
+        new_btn.setObjectName('copilotPrimary')
+        new_btn.setMinimumHeight(40)
+        new_btn.setCursor(Qt.PointingHandCursor)
+        new_btn.clicked.connect(self.new_chat)
+        lay.addWidget(new_btn)
+        return page
+
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        if obj is self._input and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+                self._on_send()
+                return True
+        return super().eventFilter(obj, event)
 
     def _empty_hint(self):
         tip = QLabel(
-            '<p style="margin:0 0 10px 0;"><b>Ask anything about this screen</b></p>'
-            '<p style="margin:0 0 8px 0;">Answers use your shop data — filtered by your role.</p>'
-            '<p style="margin:0;">MBT AI never changes stock, sales, or money '
-            'without your explicit approval.</p>'
+            '<b>Ask about this screen</b><br/>'
+            'Copilot uses role-filtered shop data.<br/>'
+            'It never changes stock, sales, or money without your approval.'
         )
-        tip.setObjectName('mbtAiHint')
+        tip.setObjectName('copilotHint')
         tip.setWordWrap(True)
         tip.setAlignment(Qt.AlignCenter)
         tip.setTextFormat(Qt.RichText)
-        tip.setMinimumHeight(120)
         self._chat_lay.insertWidget(self._chat_lay.count() - 1, tip)
         self._hint = tip
 
+    # ── Tabs / layout ─────────────────────────────────────────────────────────
+
+    def _show_tab(self, key: str):
+        idx = {'home': 0, 'chat': 1, 'workspace': 2}.get(key, 0)
+        self._stack.setCurrentIndex(idx)
+        self._tab_home.setChecked(key == 'home')
+        self._tab_chat.setChecked(key == 'chat')
+        self._tab_ws.setChecked(key == 'workspace')
+        save_copilot_prefs(last_tab=key)
+        if key == 'home':
+            self._refresh_home()
+        elif key == 'workspace':
+            self._refresh_workspace()
+        elif key == 'chat':
+            self._reload_suggestions()
+
+    def _on_resize_drag(self, width: int):
+        w = max(340, min(640, int(width)))
+        self.setFixedWidth(w)
+        self._reposition()
+        save_copilot_prefs(width=w)
+
+    def _toggle_float(self):
+        if self._floating:
+            self._dock()
+        else:
+            self._undock()
+
+    def _undock(self):
+        self._floating = True
+        self.setParent(None)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowTitle('MBT Copilot')
+        self.resize(self.width(), max(520, (self.mw.height() if self.mw else 640) - 80))
+        if self.mw:
+            g = self.mw.geometry()
+            self.move(g.right() - self.width() - 24, g.top() + 60)
+        self.show()
+        self._mode_btn.setText('Dock')
+        save_copilot_prefs(mode='floating')
+        self.refresh_theme()
+
+    def _dock(self):
+        self._floating = False
+        self.setParent(self.mw)
+        self.setWindowFlags(Qt.Widget)
+        self._mode_btn.setText('Float')
+        self.show()
+        self._reposition()
+        save_copilot_prefs(mode='docked')
+        self.refresh_theme()
+
+    # ── Module / home ─────────────────────────────────────────────────────────
+
     def set_module(self, module: str):
         self._module = (module or 'dashboard').lower()
-        label = _MODULE_LABELS.get(
-            self._module,
-            f'{self._module.replace("_", " ").title()} Assistant',
-        )
-        self._sub.setText(label)
+        label = _MODULE_LABELS.get(self._module, self._module.replace('_', ' ').title())
+        self._context.setText(f'Context · {label}')
         self._reload_suggestions()
+        if self._stack.currentIndex() == 0:
+            self._refresh_home()
+
+    def _refresh_home(self):
+        hour = datetime.now().hour
+        greet = 'Good morning' if hour < 12 else ('Good afternoon' if hour < 17 else 'Good evening')
+        try:
+            name = ((self.mw.user_data or {}).get('user') or {}).get('username') or ''
+            if name:
+                greet = f'{greet}, {name}'
+        except Exception:
+            pass
+        self._greet.setText(greet)
+
+        api = getattr(self.mw, 'api', None)
+        user = getattr(self.mw, 'user_data', {}) or {}
+        data = {}
+        try:
+            if api:
+                data = _heuristic_insights(api, user)
+        except Exception as e:
+            log.debug('home insights: %s', e)
+            data = {'summary': '—', 'alerts': [], 'recommendations': []}
+
+        self._status_line.setText(data.get('summary') or 'Store snapshot unavailable.')
+        alerts = data.get('alerts') or []
+        self._kpi_inv.set_value(alerts[0] if alerts else 'No urgent alerts', 'ok' if not alerts or 'No urgent' in str(alerts[0]) else 'warn')
+        self._kpi_sales.set_value(data.get('summary') or '—')
+        debt_alert = next((a for a in alerts if 'credit' in a.lower() or 'debt' in a.lower() or 'overdue' in a.lower()), None)
+        self._kpi_cust.set_value(debt_alert or 'Credit OK')
+        st = get_ai_service().status()
+        if st.get('configured') and st.get('online'):
+            self._kpi_ai.set_value('Online · ready', 'ok')
+        elif st.get('configured'):
+            self._kpi_ai.set_value('Offline · local mode', 'warn')
+        else:
+            self._kpi_ai.set_value('Not configured', 'danger')
+
+        recs = data.get('recommendations') or []
+        self._recs.setText('• ' + '\n• '.join(recs[:4]) if recs else 'No recommendations yet.')
+
+        self._home_recent.clear()
+        try:
+            u = user.get('user') or user
+            uid = str(u.get('id') or u.get('username') or '')
+            for row in get_conversation_store().list(uid)[:6]:
+                title = row.get('title') or 'Chat'
+                item = QListWidgetItem(('📌 ' if row.get('pinned') else '') + title)
+                item.setData(Qt.UserRole, row)
+                self._home_recent.addItem(item)
+        except Exception:
+            pass
+        self.refresh_theme()
+
+    def _run_quick(self, label: str, kind: str):
+        # Map quick action to a concrete prompt + optional module switch context
+        prompts = {
+            'Analyze sales today': 'Summarize today\'s sales performance with key KPIs and any risks.',
+            'Inventory health check': 'Give an inventory health check: low stock, overstock risks, and reorder priorities.',
+            'Customer / debt insights': 'Summarize credit and debt: overdue accounts and collection priorities.',
+            'Explain this screen': f'Explain the {self._module} screen and what I should focus on right now.',
+            'Detect problems': 'Scan for common POS problems: stock mismatches, payment variance, and config risks.',
+            'Generate report ideas': 'Suggest the most useful reports for today\'s decisions.',
+            'Reorder suggestions': 'Which products should I reorder first and why?',
+            'Accounting checklist': 'Give a short accounting checklist for today (journals, cash, variances).',
+        }
+        msg = prompts.get(label) or label
+        if kind in _MODULE_LABELS and kind != 'context':
+            # keep current module unless action implies another — still ok to ask in context
+            pass
+        self._show_tab('chat')
+        self._input.setPlainText(msg)
+        self._on_send()
+
+    def _start_context_chat(self):
+        self.new_chat()
+        self._show_tab('chat')
+        label = _MODULE_LABELS.get(self._module, self._module)
+        self._input.setPlainText(f'Explain this {label} screen and highlight what needs attention.')
+        self._input.setFocus()
 
     def _reload_suggestions(self):
-        # Keep header label; clear chip buttons only
-        while self._sug_col.count() > 1:
-            item = self._sug_col.takeAt(1)
+        while self._chip_row.count():
+            item = self._chip_row.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
         for s in get_ai_service().suggestions(self._module)[:3]:
             b = QPushButton(s)
-            b.setObjectName('mbtAiChip')
+            b.setObjectName('copilotChip')
             b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumHeight(40)
-            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            b.setStyleSheet('')  # theme QSS applies
-            # Elide-proof: full text + tooltip
             b.setToolTip(s)
-            b.setText(s)
             b.clicked.connect(lambda _, t=s: self._use_suggestion(t))
-            self._sug_col.addWidget(b)
-        self.refresh_theme()
+            self._chip_row.addWidget(b)
+        self._chip_row.addStretch(1)
 
     def _use_suggestion(self, text: str):
         self._input.setPlainText(text)
@@ -274,79 +661,81 @@ class AiAssistantPanel(QFrame):
     # ── Theme ─────────────────────────────────────────────────────────────────
 
     def refresh_theme(self):
-        p = C
-        r = RADIUS.get('xl', 14)
+        p = _copilot_colors()
         self.setStyleSheet(
             f"""
-            QFrame#mbtAiPanel {{
-                background:{p['card']}; border-left:1px solid {p['border']};
+            QFrame#mbtCopilot {{ background:{p['bg']}; border-left:1px solid {p['border']}; }}
+            QFrame#copilotHdr {{ background:{p['bg2']}; border-bottom:1px solid {p['border']}; }}
+            QLabel#copilotTitle {{ color:{p['text']}; font-size:16px; font-weight:800; background:transparent; }}
+            QLabel#copilotContext {{
+                color:{p['accent']}; font-size:12px; font-weight:700; background:transparent;
             }}
-            QFrame#mbtAiHdr {{
-                background:{p['card2']}; border-bottom:1px solid {p['border']};
+            QToolButton#copilotTab {{
+                background:transparent; color:{p['muted']}; border:none; padding:6px 10px;
+                font-size:12px; font-weight:700; border-radius:8px;
             }}
-            QLabel#mbtAiTitle {{
-                color:{p['text']}; font-size:18px; font-weight:800; background:transparent;
+            QToolButton#copilotTab:checked {{
+                background:{qss_alpha(p['accent'], 0.16)}; color:{p['accent']};
             }}
-            QLabel#mbtAiSub {{
-                color:{p['text2']}; font-size:13px; font-weight:600; background:transparent;
+            QToolButton#copilotIconBtn {{
+                background:{p['card']}; color:{p['text']}; border:1px solid {p['border']};
+                border-radius:8px; padding:6px 10px; font-size:14px; font-weight:700;
             }}
-            QPushButton#mbtAiIconBtn {{
-                background:{p['input']}; color:{p['text']}; border:1px solid {p['border']};
-                border-radius:9px; font-size:15px;
+            QLabel#copilotBanner {{
+                background:{qss_alpha(p['warn'], 0.15)}; color:{p['warn']};
+                padding:8px 12px; font-size:12px; font-weight:600;
             }}
-            QPushButton#mbtAiIconBtn:hover {{ border-color:{p['gold']}; color:{p['gold']}; }}
-            QLabel#mbtAiBanner {{
-                background:{qss_alpha(p['warn'], 0.18)}; color:{p['warn']};
-                padding:10px 14px; font-size:13px; font-weight:600;
-                border-bottom:1px solid {qss_alpha(p['warn'], 0.35)};
+            QLabel#copilotGreet {{ color:{p['text']}; font-size:20px; font-weight:800; background:transparent; }}
+            QLabel#copilotStatus {{ color:{p['text2']}; font-size:13px; background:transparent; }}
+            QLabel#copilotSection {{
+                color:{p['muted']}; font-size:11px; font-weight:800; letter-spacing:1px;
+                background:transparent; padding-top:4px;
             }}
-            QLabel#mbtAiTyping {{
-                color:{p['gold']}; font-size:13px; font-weight:600;
-                padding:6px 16px; background:transparent;
+            QLabel#copilotRecs {{ color:{p['text2']}; font-size:13px; background:transparent; }}
+            QLabel#copilotMuted {{ color:{p['muted']}; font-size:12px; background:transparent; }}
+            QFrame#copilotKpi {{
+                background:{p['card']}; border:1px solid {p['border']}; border-radius:12px;
             }}
-            QLabel#mbtAiHint {{
-                color:{p['text2']}; font-size:15px;
-                padding:24px 22px; background:transparent;
+            QLabel#copilotKpiTitle {{ color:{p['muted']}; font-size:11px; font-weight:700; background:transparent; }}
+            QLabel#copilotKpiValue {{ color:{p['text']}; font-size:13px; font-weight:700; background:transparent; }}
+            QPushButton#copilotAction {{
+                background:{p['card']}; color:{p['text']}; border:1px solid {p['border']};
+                border-radius:12px; padding:10px 12px; font-size:12px; font-weight:600; text-align:left;
             }}
-            QFrame#mbtAiSugWrap {{
-                background:{p['card2']}; border-top:1px solid {p['border']};
+            QPushButton#copilotAction:hover {{ border-color:{p['accent']}; color:{p['accent']}; }}
+            QPushButton#copilotPrimary {{
+                background:{p['accent']}; color:#0B1220; border:none; border-radius:10px;
+                font-size:13px; font-weight:800;
             }}
-            QLabel#mbtAiSugLabel {{
-                color:{p['muted']}; font-size:12px; font-weight:800;
-                letter-spacing:1px; background:transparent; border:none;
-                padding:0 2px 4px 2px;
+            QPushButton#copilotPrimary:hover {{ background:#FCD34D; }}
+            QLineEdit#copilotSearch, QTextEdit#copilotInput {{
+                background:{p['card']}; color:{p['text']}; border:1px solid {p['border']};
+                border-radius:10px; padding:8px 10px; font-size:13px;
             }}
-            QFrame#mbtAiComposer {{
-                background:{p['card2']}; border-top:1px solid {p['border']};
+            QTextEdit#copilotInput:focus, QLineEdit#copilotSearch:focus {{ border-color:{p['accent']}; }}
+            QPushButton#copilotSend {{
+                background:{p['accent']}; color:#0B1220; border:none; border-radius:10px;
+                font-weight:800; font-size:13px;
             }}
-            QTextEdit#mbtAiInput {{
-                background:{p['input']}; color:{p['text']}; border:1.5px solid {p['border']};
-                border-radius:12px; padding:10px 12px; font-size:15px;
+            QFrame#copilotComposer, QFrame#copilotSugBar {{
+                background:{p['bg2']}; border-top:1px solid {p['border']};
             }}
-            QTextEdit#mbtAiInput:focus {{ border-color:{p['gold']}; }}
-            QPushButton#mbtAiSend {{
-                background:{p['gold']}; color:{p.get('gold_fg', '#0A0F1A')};
-                border:none; border-radius:12px; font-weight:800; font-size:15px;
+            QPushButton#copilotChip {{
+                background:{p['card']}; color:{p['text2']}; border:1px solid {p['border']};
+                border-radius:14px; padding:6px 10px; font-size:11px; font-weight:600;
             }}
-            QPushButton#mbtAiSend:hover {{ background:{p.get('gold_lt', p['gold'])}; }}
-            QPushButton#mbtAiSend:disabled {{ background:{p['border']}; color:{p['muted']}; }}
-            QPushButton#mbtAiChip {{
-                background:{p['input']}; color:{p['text']}; border:1px solid {p['border']};
-                border-radius:10px; padding:12px 16px; font-size:14px; font-weight:600;
-                text-align:left;
+            QPushButton#copilotChip:hover {{ border-color:{p['accent']}; color:{p['accent']}; }}
+            QLabel#copilotTyping {{ color:{p['accent']}; font-size:12px; font-weight:600; padding:4px 12px; }}
+            QLabel#copilotHint {{ color:{p['text2']}; font-size:13px; padding:20px; background:transparent; }}
+            QListWidget#copilotList {{
+                background:{p['card']}; color:{p['text']}; border:1px solid {p['border']};
+                border-radius:10px; font-size:12px; outline:none;
             }}
-            QPushButton#mbtAiChip:hover {{
-                border-color:{p['gold']}; color:{p['gold']};
-                background:{qss_alpha(p['gold'], 0.10)};
-            }}
-            QListWidget#mbtAiHist {{
-                background:{p['card2']}; color:{p['text']}; border:none;
-                border-right:1px solid {p['border']}; font-size:13px;
-            }}
+            QListWidget#copilotList::item {{ padding:8px 10px; }}
+            QListWidget#copilotList::item:selected {{ background:{qss_alpha(p['accent'], 0.18)}; color:{p['accent']}; }}
             QScrollArea {{ background:transparent; border:none; }}
             """
         )
-        # Restyle bubbles
         for i in range(self._chat_lay.count()):
             w = self._chat_lay.itemAt(i).widget()
             if w and hasattr(w, 'refresh_theme'):
@@ -354,16 +743,37 @@ class AiAssistantPanel(QFrame):
 
     # ── Open / close ──────────────────────────────────────────────────────────
 
+    def open_full_workspace(self):
+        """Enter flagship Full Workspace (POS state stays in memory)."""
+        self.hide()
+        if self._floating:
+            self._dock()
+        enter = getattr(self.mw, 'enter_ai_full_workspace', None)
+        if callable(enter):
+            enter()
+        else:
+            QMessageBox.information(self, 'Copilot', 'Full Workspace is unavailable.')
+
     def open_panel(self):
         self.refresh_theme()
         self._on_conn()
-        self.show()
-        self.raise_()
-        self._reposition()
-        self._input.setFocus()
+        # Never auto-enter floating/full on open — user chooses explicitly
+        if self._floating:
+            self.show()
+        else:
+            self.show()
+            self.raise_()
+            self._reposition()
+        save_copilot_prefs(mode='docked' if not self._floating else 'floating')
+        self._refresh_home()
+        if self._stack.currentIndex() == 1:
+            self._input.setFocus()
 
     def close_panel(self):
+        if self._floating:
+            self._dock()
         self.hide()
+        save_copilot_prefs(mode='minimized')
 
     def toggle(self):
         if self.isVisible():
@@ -372,18 +782,11 @@ class AiAssistantPanel(QFrame):
             self.open_panel()
 
     def _reposition(self):
-        parent = self.parentWidget()
-        if not parent:
+        if self._floating or not self.parentWidget():
             return
-        h = parent.height()
-        # Leave room for status bar ~36 and topbar — panel fills right edge of content
-        self.setFixedHeight(h)
+        parent = self.parentWidget()
+        self.setFixedHeight(parent.height())
         self.move(parent.width() - self.width(), 0)
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-
-    # ── Connectivity banner ───────────────────────────────────────────────────
 
     def _on_conn(self):
         st = get_ai_service().status()
@@ -393,12 +796,13 @@ class AiAssistantPanel(QFrame):
         else:
             self._banner.hide()
 
-    # ── Chat bubbles ──────────────────────────────────────────────────────────
+    # ── Chat ──────────────────────────────────────────────────────────────────
 
-    def _add_bubble(self, role: str, text: str, actions: Optional[list] = None) -> '_Bubble':
+    def _add_bubble(self, role: str, text: str, actions: Optional[list] = None,
+                    structured: Optional[dict] = None) -> '_Bubble':
         if getattr(self, '_hint', None):
             self._hint.hide()
-        b = _Bubble(role, text, actions=actions or [], panel=self)
+        b = _Bubble(role, text, actions=actions or [], panel=self, structured=structured)
         self._chat_lay.insertWidget(self._chat_lay.count() - 1, b)
         QTimer.singleShot(30, self._scroll_bottom)
         return b
@@ -419,26 +823,29 @@ class AiAssistantPanel(QFrame):
         self._conversation_id = None
         self._history = []
         self._clear_chat_widgets()
+        self._show_tab('chat')
 
-    def _toggle_history(self, on: bool):
-        if on:
-            self._refresh_history_list()
-            self._hist_list.show()
-        else:
-            self._hist_list.hide()
+    def _refresh_workspace(self, *_):
+        q = (self._ws_search.text() or '').strip().lower()
+        self._ws_pinned.clear()
+        self._ws_recent.clear()
+        try:
+            u = (self.mw.user_data or {}).get('user') or {}
+            uid = str(u.get('id') or u.get('username') or '')
+            for row in get_conversation_store().list(uid):
+                title = row.get('title') or 'Chat'
+                if q and q not in title.lower():
+                    continue
+                item = QListWidgetItem(('📌 ' if row.get('pinned') else '') + title)
+                item.setData(Qt.UserRole, row)
+                if row.get('pinned'):
+                    self._ws_pinned.addItem(item)
+                else:
+                    self._ws_recent.addItem(item)
+        except Exception:
+            pass
 
-    def _refresh_history_list(self):
-        self._hist_list.clear()
-        u = self.mw.user_data.get('user') or {}
-        uid = str(u.get('id') or u.get('username') or '')
-        for row in get_conversation_store().list(uid):
-            title = row.get('title') or 'Chat'
-            pin = '📌 ' if row.get('pinned') else ''
-            item = QListWidgetItem(f"{pin}{title}")
-            item.setData(Qt.UserRole, row)
-            self._hist_list.addItem(item)
-
-    def _load_history_item(self, item: QListWidgetItem):
+    def _open_recent_item(self, item: QListWidgetItem):
         row = item.data(Qt.UserRole) or {}
         cid = row.get('id')
         if not cid:
@@ -446,15 +853,13 @@ class AiAssistantPanel(QFrame):
         self._conversation_id = cid
         self._history = []
         self._clear_chat_widgets()
-        msgs = get_conversation_store().messages(cid)
-        for m in msgs:
+        self._show_tab('chat')
+        for m in get_conversation_store().messages(cid):
             role = m.get('role') or 'assistant'
             content = m.get('content') or ''
             self._add_bubble(role, content)
             if role in ('user', 'assistant'):
                 self._history.append({'role': role, 'content': content})
-
-    # ── Send / stream ─────────────────────────────────────────────────────────
 
     def _on_send(self):
         msg = (self._input.toPlainText() or '').strip()
@@ -462,6 +867,7 @@ class AiAssistantPanel(QFrame):
             return
         if self._worker and self._worker.isRunning():
             return
+        self._show_tab('chat')
         self._input.clear()
         self._last_user_msg = msg
         self._add_bubble('user', msg)
@@ -476,8 +882,12 @@ class AiAssistantPanel(QFrame):
         self._streaming_buf = ''
         self._stream_bubble = self._add_bubble('assistant', '')
 
+        # Inject screen context into message for awareness
+        label = _MODULE_LABELS.get(self._module, self._module)
+        contextual = f'[Screen context: {label}]\n{msg}'
+
         payload = {
-            'message': msg,
+            'message': contextual,
             'api': self.mw.api,
             'user': self.mw.user_data,
             'module': self._module,
@@ -507,21 +917,32 @@ class AiAssistantPanel(QFrame):
         self._conversation_id = result.get('conversation_id') or self._conversation_id
         text = result.get('text') or ''
         actions = result.get('actions') or []
+        structured = self._maybe_structure(text)
         if getattr(self, '_stream_bubble', None):
-            # Prefer final sanitized text
             self._stream_bubble.set_text(text)
             self._stream_bubble.set_actions(actions)
+            if structured:
+                self._stream_bubble.set_structured(structured)
         else:
-            self._add_bubble('assistant', text, actions)
+            self._add_bubble('assistant', text, actions, structured)
         self._history.append({'role': 'assistant', 'content': text})
         self._on_conn()
         for act in actions:
             self._prompt_action(act)
 
+    def _maybe_structure(self, text: str) -> Optional[dict]:
+        """Lightweight structured card when response has bullet KPIs."""
+        if not text:
+            return None
+        lines = [ln.strip('•- ').strip() for ln in text.splitlines() if ln.strip().startswith(('•', '-', '*'))]
+        if len(lines) >= 2:
+            return {'type': 'bullets', 'items': lines[:6]}
+        return None
+
     def _on_fail(self, err: str):
         self._typing.hide()
         self._send.setEnabled(True)
-        msg = f'AI error: {err}'
+        msg = f'Copilot error: {err}'
         if getattr(self, '_stream_bubble', None):
             self._stream_bubble.set_text(msg)
         else:
@@ -539,57 +960,47 @@ class AiAssistantPanel(QFrame):
         if not action.permission_ok(self.mw.user_data):
             QMessageBox.information(
                 self, 'Action not allowed',
-                'Your role cannot approve this AI-proposed action.')
+                'Your role cannot approve this Copilot-proposed action.')
             return
         preview = format_action_preview(action)
         box = QMessageBox(self)
-        box.setWindowTitle('Approve AI Action?')
+        box.setWindowTitle('Approve Copilot Action?')
         box.setText(
-            'MBT AI proposed an action. Nothing has been changed yet.\n\n' + preview)
+            'MBT Copilot proposed an action. Nothing has been changed yet.\n\n' + preview)
         approve = box.addButton('Approve', QMessageBox.AcceptRole)
-        edit = box.addButton('Edit…', QMessageBox.ActionRole)
         cancel = box.addButton('Cancel', QMessageBox.RejectRole)
         box.exec_()
-        clicked = box.clickedButton()
-        if clicked == cancel:
+        if box.clickedButton() == cancel:
             return
-        if clicked == edit:
-            text, ok = QInputDialog.getMultiLineText(
-                self, 'Edit action payload', 'JSON / notes:',
-                str(action.payload))
-            if not ok:
-                return
-            action.payload = {'_edited': text}
-        # MVP: do not mutate DB — acknowledge and offer navigation hints
         QMessageBox.information(
             self, 'Action noted',
             f'Approved locally: {action.action}\n\n'
-            'v1 records your approval in chat. '
-            'Open Inventory / Purchasing to apply stock changes manually.\n'
+            'Apply changes from the relevant module when ready.\n'
             f'Payload: {action.payload}')
         self._add_bubble(
             'assistant',
-            f'✅ You approved **{action.action}**. Apply changes from the relevant module when ready.',
+            f'✅ You approved **{action.action}**. Open the related module to apply.',
         )
 
 
 class _Bubble(QFrame):
-    def __init__(self, role: str, text: str, actions=None, panel=None):
+    def __init__(self, role: str, text: str, actions=None, panel=None, structured=None):
         super().__init__()
         self.role = role
         self.panel = panel
-        self.setObjectName('mbtAiBubbleUser' if role == 'user' else 'mbtAiBubbleAi')
+        self.setObjectName('copilotBubbleUser' if role == 'user' else 'copilotBubbleAi')
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(6)
-        who = QLabel('You' if role == 'user' else 'MBT AI')
-        who.setObjectName('mbtAiWho')
+        who = QLabel('You' if role == 'user' else 'Copilot')
+        who.setObjectName('copilotWho')
         self._body = QLabel()
         self._body.setWordWrap(True)
         self._body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._body.setOpenExternalLinks(False)
         lay.addWidget(who)
         lay.addWidget(self._body)
+        self._struct_host = QVBoxLayout()
+        lay.addLayout(self._struct_host)
         self._actions_host = QVBoxLayout()
         lay.addLayout(self._actions_host)
         if role == 'assistant':
@@ -597,22 +1008,44 @@ class _Bubble(QFrame):
             copy_btn = QPushButton('Copy')
             regen = QPushButton('Regenerate')
             for b in (copy_btn, regen):
-                b.setObjectName('mbtAiMini')
+                b.setObjectName('copilotMini')
                 b.setCursor(Qt.PointingHandCursor)
                 row.addWidget(b)
             row.addStretch()
             copy_btn.clicked.connect(self._copy)
             regen.clicked.connect(lambda: panel and panel.regenerate())
             lay.addLayout(row)
-            self._copy_btn = copy_btn
-            self._regen_btn = regen
         self.set_text(text)
         self.set_actions(actions or [])
+        if structured:
+            self.set_structured(structured)
         self.refresh_theme()
 
     def set_text(self, text: str):
         self._raw = text or ''
         self._body.setText(_md_to_html(self._raw))
+
+    def set_structured(self, data: dict):
+        while self._struct_host.count():
+            item = self._struct_host.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        if not data:
+            return
+        if data.get('type') == 'bullets':
+            card = QFrame()
+            card.setObjectName('copilotStructCard')
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(10, 8, 10, 8)
+            title = QLabel('Key points')
+            title.setObjectName('copilotWho')
+            cl.addWidget(title)
+            for it in data.get('items') or []:
+                lbl = QLabel('• ' + it)
+                lbl.setWordWrap(True)
+                cl.addWidget(lbl)
+            self._struct_host.addWidget(card)
 
     def set_actions(self, actions):
         while self._actions_host.count():
@@ -624,7 +1057,7 @@ class _Bubble(QFrame):
             if not isinstance(act, ProposedAction):
                 continue
             b = QPushButton(f'⚡ {act.summary or act.action}')
-            b.setObjectName('mbtAiAction')
+            b.setObjectName('copilotActionBtn')
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, a=act: self.panel and self.panel._prompt_action(a))
             self._actions_host.addWidget(b)
@@ -633,42 +1066,50 @@ class _Bubble(QFrame):
         QApplication.clipboard().setText(self._raw or '')
 
     def refresh_theme(self):
-        p = C
+        p = _copilot_colors()
         if self.role == 'user':
-            bg = qss_alpha(p['gold'], 0.14)
-            border = qss_alpha(p['gold'], 0.35)
+            bg = qss_alpha(p['accent'], 0.14)
+            border = qss_alpha(p['accent'], 0.35)
         else:
-            bg = p['card2']
+            bg = p['card']
             border = p['border']
         self.setStyleSheet(
             f"QFrame {{ background:{bg}; border:1px solid {border}; border-radius:12px; }}"
-            f"QLabel#mbtAiWho {{ color:{p['muted']}; font-size:11px; font-weight:700;"
+            f"QLabel#copilotWho {{ color:{p['muted']}; font-size:11px; font-weight:700;"
             f" background:transparent; border:none; }}"
-            f"QLabel {{ color:{p['text']}; font-size:14px; background:transparent; border:none; }}"
-            f"QPushButton#mbtAiMini {{ background:transparent; color:{p['text2']}; border:none;"
-            f" font-size:12px; padding:4px 8px; }}"
-            f"QPushButton#mbtAiMini:hover {{ color:{p['gold']}; }}"
-            f"QPushButton#mbtAiAction {{ background:{qss_alpha(p['info'], 0.15)}; color:{p['info']};"
+            f"QLabel {{ color:{p['text']}; font-size:13px; background:transparent; border:none; }}"
+            f"QFrame#copilotStructCard {{ background:{p['bg2']}; border:1px solid {p['border']};"
+            f" border-radius:10px; }}"
+            f"QPushButton#copilotMini {{ background:transparent; color:{p['text2']}; border:none;"
+            f" font-size:11px; padding:2px 6px; }}"
+            f"QPushButton#copilotMini:hover {{ color:{p['accent']}; }}"
+            f"QPushButton#copilotActionBtn {{ background:{qss_alpha(p['info'], 0.15)}; color:{p['info']};"
             f" border:1px solid {qss_alpha(p['info'], 0.4)}; border-radius:8px;"
-            f" padding:8px 12px; font-size:13px; font-weight:600; text-align:left; }}"
+            f" padding:6px 10px; font-size:12px; font-weight:600; text-align:left; }}"
         )
 
 
 class AiFabButton(QPushButton):
-    """Floating launcher — bottom-right of MainWindow content."""
+    """Floating Copilot launcher — bottom-right."""
 
     def __init__(self, parent=None):
-        super().__init__('✦ AI', parent)
-        self.setObjectName('mbtAiFab')
+        super().__init__('✦  Copilot', parent)
+        self.setObjectName('mbtCopilotFab')
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(64, 64)
+        self.setFixedSize(118, 48)
         self.refresh_theme()
 
     def refresh_theme(self):
-        p = C
-        fg = p.get('gold_fg', '#0A0F1A')
+        p = _copilot_colors()
         self.setStyleSheet(
-            f"QPushButton#mbtAiFab {{ background:{p['gold']}; color:{fg}; border:none;"
-            f" border-radius:32px; font-size:14px; font-weight:800; }}"
-            f"QPushButton#mbtAiFab:hover {{ background:{p.get('gold_lt', p['gold'])}; }}"
+            f"QPushButton#mbtCopilotFab {{"
+            f" background:{p['accent']}; color:#0B1220; border:none;"
+            f" border-radius:24px; font-size:13px; font-weight:800;"
+            f" padding:0 14px; }}"
+            f"QPushButton#mbtCopilotFab:hover {{ background:#FCD34D; }}"
         )
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 90))
+        self.setGraphicsEffect(shadow)

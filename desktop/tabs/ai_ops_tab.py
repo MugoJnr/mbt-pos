@@ -66,7 +66,7 @@ class AiOpsTab(QWidget):
         ar.addWidget(self._support_btn)
         intro, _ = page_intro(
             'AI Operations Center',
-            'Health, integrity, config audit, self-healing, and support — vendor AI, offline-safe.',
+            'Copilot health, integrity, config audit, self-healing, and support — vendor AI, offline-safe.',
             actions,
         )
         lay.addLayout(intro)

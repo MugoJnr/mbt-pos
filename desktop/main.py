@@ -42,7 +42,7 @@ log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
 APP_BUILD_TAG = "PROD-2026-07-18-v2.3.82"
-APP_VERSION   = "2.3.84"   # must match GitHub release tag vX.Y.Z / version.json
+APP_VERSION   = "2.3.86"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -1226,7 +1226,7 @@ class MainWindow(QMainWindow):
             log.debug('ai set_module: %s', e)
 
     def _install_ai_assistant(self):
-        """Mount floating AI FAB + slide-over panel on the main window."""
+        """Mount floating AI FAB + slide-over panel + Full Workspace."""
         try:
             from desktop.widgets.ai_assistant import AiAssistantPanel, AiFabButton
             self._ai_panel = AiAssistantPanel(self)
@@ -1234,13 +1234,56 @@ class MainWindow(QMainWindow):
             self._ai_fab.clicked.connect(self._ai_panel.toggle)
             self._ai_fab.show()
             self._ai_fab.raise_()
+            self._ai_workspace = None
+            self._ai_ws_active = False
             QTimer.singleShot(0, self._position_ai_chrome)
         except Exception as e:
             log.warning('AI assistant install failed: %s', e)
             self._ai_panel = None
             self._ai_fab = None
+            self._ai_workspace = None
+
+    def enter_ai_full_workspace(self):
+        """Overlay Full Workspace; POS tabs stay loaded underneath."""
+        try:
+            from desktop.widgets.ai_workspace import AiFullWorkspace
+            central = self.centralWidget()
+            if central is None:
+                return
+            if self._ai_workspace is None:
+                self._ai_workspace = AiFullWorkspace(self)
+                self._ai_workspace.closed.connect(self.exit_ai_full_workspace)
+            self._ai_ws_prev_tab = getattr(self, '_active_tab_id', None)
+            if getattr(self, '_ai_panel', None):
+                self._ai_panel.hide()
+            if getattr(self, '_ai_fab', None):
+                self._ai_fab.hide()
+            self._ai_ws_active = True
+            self._ai_workspace.setGeometry(central.rect())
+            mod = getattr(self, '_active_tab_id', None) or 'dashboard'
+            self._ai_workspace.enter(mod)
+            self._ai_workspace.show()
+            self._ai_workspace.raise_()
+        except Exception as e:
+            log.exception('enter full workspace')
+            QMessageBox.warning(self, 'Copilot', f'Could not open Full Workspace:\n{e}')
+
+    def exit_ai_full_workspace(self):
+        """Leave Full Workspace; restore FAB and previous POS screen."""
+        self._ai_ws_active = False
+        ws = getattr(self, '_ai_workspace', None)
+        if ws is not None:
+            ws.hide()
+        fab = getattr(self, '_ai_fab', None)
+        if fab is not None:
+            fab.show()
+            fab.raise_()
+        self._position_ai_chrome()
+        # POS stack/tabs never unloaded — user returns to same place
 
     def _position_ai_chrome(self):
+        if getattr(self, '_ai_ws_active', False):
+            return
         fab = getattr(self, '_ai_fab', None)
         panel = getattr(self, '_ai_panel', None)
         if fab is not None:
@@ -1340,6 +1383,12 @@ class MainWindow(QMainWindow):
         ov = getattr(self, '_theme_overlay', None)
         if ov is not None and ov.isVisible():
             ov.setGeometry(self.rect())
+        ws = getattr(self, '_ai_workspace', None)
+        if ws is not None and getattr(self, '_ai_ws_active', False) and self.centralWidget():
+            try:
+                ws.setGeometry(self.centralWidget().rect())
+            except Exception:
+                pass
         try:
             self._position_ai_chrome()
         except Exception:

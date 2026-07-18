@@ -1,8 +1,8 @@
 ﻿{
-  "version": "2.3.84",
-  "build": "PROD-2026-07-18-v2.3.84",
+  "version": "2.3.86",
+  "build": "PROD-2026-07-18-v2.3.86",
   "build_date": "2026-07-18",
-  "release_notes": "Widen MBT AI panel (520px), stacked readable suggestion chips, larger fonts, clearer empty-state wording. Keeps coloured category icons from 2.3.83.",
+  "release_notes": "MBT Copilot Full Workspace: Enterprise AI Operations Center with minimized/docked/floating/full modes, business snapshot dashboard, workspace tabs, quick actions; POS state preserved on exit.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
