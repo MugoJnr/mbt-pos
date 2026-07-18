@@ -75,6 +75,30 @@ class DiagnosticsTab(QWidget):
             self._cards[name]=(card,st,ms); cr2.addWidget(card)
         lay.addLayout(cr2)
 
+        # Cloudflare admin health panel
+        cf_card = Card()
+        cf_lay = cf_card.layout_v((16, 14, 16, 14), 8)
+        cf_title = QLabel('CLOUDFLARE CONNECTION')
+        cf_title.setStyleSheet(
+            f"color:{C['text2']}; font-size:10px; font-weight:700; "
+            f"letter-spacing:1.5px; background:transparent; border:none;")
+        self._cf_panel = QLabel('Not checked yet')
+        self._cf_panel.setWordWrap(True)
+        self._cf_panel.setStyleSheet(
+            f"color:{C['text2']}; font-size:12px; font-family:Consolas; background:transparent;")
+        cf_btns = QHBoxLayout()
+        self._cf_retry_btn = SecondaryBtn('Retry / Repair', 36)
+        self._cf_retry_btn.clicked.connect(self._cf_repair)
+        self._cf_logs_btn = GhostBtn('CF Logs', 36)
+        self._cf_logs_btn.clicked.connect(self._cf_show_logs)
+        cf_btns.addWidget(self._cf_retry_btn)
+        cf_btns.addWidget(self._cf_logs_btn)
+        cf_btns.addStretch()
+        cf_lay.addWidget(cf_title)
+        cf_lay.addWidget(self._cf_panel)
+        cf_lay.addLayout(cf_btns)
+        lay.addWidget(cf_card)
+
         self._overall=QLabel('Not checked yet')
         self._overall.setStyleSheet(
             f"color:{C['text2']}; font-size:14px; font-weight:700; "
@@ -114,7 +138,82 @@ class DiagnosticsTab(QWidget):
             try: self._render(self._engine.run_manual_check())
             except Exception as e: self._log(f'[ERROR] {e}')
         else: self._basic()
+        self._refresh_cf_panel()
         self.refresh()
+
+    def _refresh_cf_panel(self):
+        if not hasattr(self, '_cf_panel'):
+            return
+        try:
+            from backend.cloudflare_setup import get_cloudflare_health_panel
+            p = get_cloudflare_health_panel()
+            failed = p.get('failed_domains') or []
+            fail_s = ', '.join(
+                f"{x.get('domain') or '?'}({x.get('reason')})" for x in failed[:5]
+            ) or 'none'
+            self._cf_panel.setText(
+                f"State: {p.get('connection_state')}  |  Domain: {p.get('domain') or '—'}\n"
+                f"Token: {p.get('token_type')}  valid={p.get('token_valid')}  "
+                f"wrong_type={p.get('wrong_token_type')}\n"
+                f"Zone: {p.get('zone_detail') or '—'}  |  DNS={p.get('dns_ok')}  "
+                f"SSL={p.get('ssl_ok')}  tunnel={p.get('tunnel_running')}\n"
+                f"Pending={p.get('remote_setup_pending')}  ACTIVE_flag={p.get('remote_setup_ok')}\n"
+                f"Retry queue: {p.get('retry_queue_len')}  |  Failed: {fail_s}\n"
+                f"Last error: {p.get('last_error') or '—'}\n"
+                f"Log: {p.get('log_path')}"
+            )
+        except Exception as e:
+            self._cf_panel.setText(f'Cloudflare panel error: {e}')
+
+    def _cf_repair(self):
+        self._log('[CF] Repair started…')
+        self._cf_retry_btn.setEnabled(False)
+
+        def worker():
+            try:
+                from backend.cloudflare_setup import (
+                    reconcile_cloudflare_state, process_cf_retry_queue,
+                )
+                rep = reconcile_cloudflare_state(force_dns=True, verify_https=True)
+                process_cf_retry_queue(max_items=3)
+                QTimer.singleShot(0, lambda: self._cf_repair_done(rep))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._cf_repair_done(
+                    {'ok': False, 'errors': [str(e)]}))
+
+        import threading
+        threading.Thread(target=worker, daemon=True, name='Diag-CF-Repair').start()
+
+    def _cf_repair_done(self, rep: dict):
+        self._cf_retry_btn.setEnabled(True)
+        msg = (
+            f"active={rep.get('active')} dns={rep.get('dns_ok')} "
+            f"https={rep.get('https_ok')} errors={rep.get('errors')}"
+        )
+        self._log(f'[CF] Repair done: {msg}')
+        self._refresh_cf_panel()
+
+    def _cf_show_logs(self):
+        try:
+            from backend.cloudflare_setup import get_log_path
+            path = str(get_log_path())
+        except Exception:
+            path = ''
+        try:
+            if path and os.path.exists(path):
+                with open(path, 'r', errors='replace') as f:
+                    lines = f.readlines()[-80:]
+                safe = []
+                for ln in lines:
+                    if 'cfat_' in ln or 'cfut_' in ln or 'eyJ' in ln or 'Bearer' in ln:
+                        safe.append('[redacted]\n')
+                    else:
+                        safe.append(ln)
+                self._dlog.append('--- cloudflare_setup.log (tail) ---\n' + ''.join(safe))
+            else:
+                self._dlog.append('No cloudflare_setup.log yet.')
+        except Exception as e:
+            self._dlog.append(f'Could not read CF log: {e}')
 
     def _render(self, report):
         colors={'healthy':C['ok'],'warning':C['warn'],'critical':C['err'],'error':C['err']}

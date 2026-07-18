@@ -434,11 +434,21 @@ class InventoryTab(QWidget):
                 old_s = _safe_float(res.get('old_stock'))
                 new_s = _safe_float(res.get('new_stock'))
                 chg   = round(new_s - old_s, 4)
+                try:
+                    from desktop.utils.audio_manager import play as _audio_play
+                    _audio_play('save')
+                except Exception:
+                    pass
                 QMessageBox.information(self, 'Stock Adjusted',
                     "'%s'\n  Before: %s\n  After:  %s\n  Change: %+g" % (
                         prod['name'], _fmt_stock(old_s), _fmt_stock(new_s), chg))
                 self.refresh()
             else:
+                try:
+                    from desktop.utils.audio_manager import play as _audio_play
+                    _audio_play('error')
+                except Exception:
+                    pass
                 QMessageBox.critical(self, 'Error',
                     (res or {}).get('error', 'Adjustment failed.'))
         except Exception as e:

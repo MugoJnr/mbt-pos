@@ -878,7 +878,7 @@ class _CustomerDialog(QDialog):
             return f
 
         self.name  = fld('Full name *')
-        self.phone = fld('Phone *  e.g. 0712345678')
+        self.phone = fld('Phone (optional)  e.g. 0712345678')
         self.email = fld('customer@email.com')
         self.cust_type = Select(items=list(CUSTOMER_TYPES))
         self.cust_type.setMinimumHeight(40)
@@ -900,7 +900,7 @@ class _CustomerDialog(QDialog):
             ctype = self._cust.get('customer_type') or self._cust.get('type') or 'Retail'
             self.cust_type.set_value(ctype)
         lay.addRow(lbl('Name *'), self.name)
-        lay.addRow(lbl('Phone *'), self.phone)
+        lay.addRow(lbl('Phone'), self.phone)
         lay.addRow(lbl('Email'), self.email)
         lay.addRow(lbl('Customer Type'), self.cust_type)
         lay.addRow(lbl('Address'), self.addr)
@@ -921,12 +921,16 @@ class _CustomerDialog(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, 'Required', 'Name is required.')
             return
-        if not self.phone.text().strip():
-            QMessageBox.warning(self, 'Required', 'Phone is required.')
+        phone = self.phone.text().strip()
+        from desktop.utils.auto_fill import AutoFillService, phone_format_ok
+        if phone and not phone_format_ok(phone):
+            QMessageBox.warning(
+                self, 'Invalid Phone',
+                'Enter a valid phone number (e.g. 0712345678) or leave it blank.')
             return
         data = {
             'name':         self.name.text().strip(),
-            'phone':        self.phone.text().strip(),
+            'phone':        phone,
             'email':        self.email.text().strip(),
             'address':      self.addr.text().strip(),
             'national_id':  self.nid.text().strip(),
@@ -938,14 +942,14 @@ class _CustomerDialog(QDialog):
             if self._cust:
                 res = self.p.api.update_customer(self._cust['id'], data)
             else:
-                from desktop.utils.auto_fill import AutoFillService
-                existing = AutoFillService.prompt_use_existing_customer(
-                    self, self.p.api, data['phone'])
-                if existing == -1:
-                    return
-                if existing is not None:
-                    self.accept()
-                    return
+                if phone:
+                    existing = AutoFillService.prompt_use_existing_customer(
+                        self, self.p.api, phone)
+                    if existing == -1:
+                        return
+                    if existing is not None:
+                        self.accept()
+                        return
                 res = self.p.api.create_customer(data)
             if res and res.get('success'):
                 self.accept()

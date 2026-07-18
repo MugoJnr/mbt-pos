@@ -556,6 +556,11 @@ class ReasonSelect(QWidget):
                 self._specify.setText(raw)
         self._on_change()
 
+    def clear_selection(self):
+        self._select.clear_selection()
+        self._specify.clear()
+        self._on_change()
+
     def refresh_theme(self):
         self._select.refresh_theme()
         self._specify.setStyleSheet(_line_qss())

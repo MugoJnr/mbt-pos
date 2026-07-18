@@ -227,6 +227,25 @@ COLORS = {
 }
 
 
+def _calendar_icon_qss() -> str:
+    """QDateEdit drop-down affordance — calendar SVG when bundled, else chevron."""
+    path = os.path.join(_assets_root(), 'icons', 'calendar.svg')
+    if os.path.isfile(path):
+        url = path.replace('\\', '/')
+        return (
+            f"image: url(\"{url}\");"
+            f"width: 14px; height: 14px;"
+            f"border: none; margin-right: 6px;"
+        )
+    return (
+        "image: none; width: 0; height: 0;"
+        f"border-left: 5px solid transparent;"
+        f"border-right: 5px solid transparent;"
+        f"border-top: 6px solid {{p_muted}};"
+        f"margin-right: 8px;"
+    )
+
+
 def _build_stylesheet(p):
     """Build the full QSS stylesheet from palette p (Lovable-aligned)."""
     ff = font_stack()
@@ -238,6 +257,7 @@ def _build_stylesheet(p):
     gold_border_soft = qss_alpha(p['gold'], 0.35)
     gold_tint = qss_alpha(p['gold'], 0.14)
     nav_hover_soft = qss_alpha(p['hover'], 0.55)
+    cal_arrow = _calendar_icon_qss().replace('{p_muted}', p['muted'])
     return f"""
 * {{
     font-family: {ff};
@@ -699,11 +719,42 @@ QListWidget::item:hover:!selected {{ background: {p['hover']}; }}
 QDateEdit {{
     background: {p['input']}; color: {p['text']};
     border: 1px solid {p['border2']}; border-radius: {r_md}px;
-    padding: 6px 10px; font-size: 13px;
+    padding: 6px 34px 6px 12px; font-size: 13px;
+    min-height: 28px; min-width: 140px;
 }}
 QDateEdit:focus {{ border-color: {p['gold']}; }}
-QDateEdit::drop-down {{ border: none; width: 26px; }}
-QCalendarWidget {{ background: {p['card2']}; color: {p['text']}; }}
+QDateEdit::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 30px;
+    border: none;
+    border-left: 1px solid {p['border']};
+    background: transparent;
+}}
+QDateEdit::drop-down:hover {{ background: {p['hover']}; }}
+QDateEdit::down-arrow {{
+    {cal_arrow}
+}}
+QCalendarWidget {{
+    background: {p['card']}; color: {p['text']};
+    border: 1px solid {p['border']};
+}}
+QCalendarWidget QWidget {{ alternate-background-color: {p['card2']}; }}
+QCalendarWidget QToolButton {{
+    color: {p['text']}; background: transparent;
+    border: none; border-radius: {r_md}px;
+    padding: 4px 8px; font-weight: 700;
+}}
+QCalendarWidget QToolButton:hover {{ background: {p['hover']}; color: {p['gold']}; }}
+QCalendarWidget QMenu {{ background: {p['card']}; color: {p['text']}; }}
+QCalendarWidget QSpinBox {{
+    background: {p['input']}; color: {p['text']};
+    border: 1px solid {p['border2']}; border-radius: 4px;
+}}
+QCalendarWidget QAbstractItemView:enabled {{
+    color: {p['text']}; background: {p['card']};
+    selection-background-color: {p['selected']}; selection-color: {p['gold']};
+}}
 
 /* ── LOGIN ── */
 #loginBrand {{
@@ -916,6 +967,11 @@ def apply_themed_dialog(dialog) -> None:
         try:
             from desktop.utils.select_controls import refresh_select_controls
             refresh_select_controls(dialog)
+        except Exception:
+            pass
+        try:
+            from desktop.utils.audio_manager import play as _audio_play
+            _audio_play('dialog_open')
         except Exception:
             pass
     except Exception:

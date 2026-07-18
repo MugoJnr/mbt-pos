@@ -527,6 +527,48 @@ def init_db():
         except Exception:
             pass
 
+    # Cloud backup sync columns (non-breaking)
+    for table in ('products', 'sales', 'customers'):
+        try:
+            tcols = {r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+        except Exception:
+            continue
+        for col, ddl in (
+            ('sync_id', f"ALTER TABLE {table} ADD COLUMN sync_id TEXT"),
+            ('sync_status', f"ALTER TABLE {table} ADD COLUMN sync_status TEXT DEFAULT 'local'"),
+        ):
+            if col not in tcols:
+                try:
+                    cur.execute(ddl)
+                except Exception:
+                    pass
+        if table == 'customers' and 'updated_at' not in tcols:
+            try:
+                cur.execute(
+                    "ALTER TABLE customers ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+        if table == 'sales' and 'updated_at' not in tcols:
+            try:
+                cur.execute(
+                    "ALTER TABLE sales ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP")
+            except Exception:
+                pass
+    try:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS cloud_change_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            table_name TEXT NOT NULL,
+            row_id INTEGER,
+            op TEXT NOT NULL,
+            payload TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            synced INTEGER DEFAULT 0
+        )
+        """)
+    except Exception:
+        pass
+
     db.commit()
     db.close()
     logger.info("Database initialized")

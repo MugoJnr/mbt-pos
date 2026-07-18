@@ -48,9 +48,10 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 
 !insertmacro MUI_LANGUAGE "English"
 
-; Kill running POS before install — prevents corrupted exe / python DLL errors
+; Kill running POS + tunnel before install — cloudflared locks _internal\cloudflared.exe
 Function .onInit
     ExecWait 'taskkill /F /IM MBT_POS.exe' $0
+    ExecWait 'taskkill /F /IM cloudflared.exe' $0
     Sleep 3000
 FunctionEnd
 
@@ -100,7 +101,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "2.3.53"
+        "DisplayVersion"       "2.3.82"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"
@@ -139,6 +140,7 @@ SectionEnd
 Section "Uninstall"
     ; Kill running process first
     ExecWait 'taskkill /F /IM MBT_POS.exe' $0
+    ExecWait 'taskkill /F /IM cloudflared.exe' $0
 
     ; Remove files
     RMDir /r "$INSTDIR"

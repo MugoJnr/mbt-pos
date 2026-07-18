@@ -156,7 +156,37 @@ class DiagnosticEngine(threading.Thread):
             return {'status': 'warning', 'message': str(e)}
 
     def _check_tunnel(self):
-        """Cloudflare tunnel / remote dashboard readiness."""
+        """Cloudflare tunnel / remote dashboard readiness (token-aware, no false ACTIVE)."""
+        try:
+            from backend.cloudflare_setup import get_cloudflare_health_panel
+            p = get_cloudflare_health_panel()
+            domain = p.get('domain') or '—'
+            state = p.get('connection_state') or 'unknown'
+            if state == 'active' and p.get('ssl_ok'):
+                return {'status': 'healthy',
+                        'message': f'ACTIVE — {domain} (DNS+SSL OK)'}
+            if p.get('wrong_token_type'):
+                return {'status': 'critical',
+                        'message': f'Wrong token type (cfut_ in API slot) — {domain}'}
+            if p.get('token_type') == 'missing' and domain != '—':
+                return {'status': 'warning',
+                        'message': f'Vendor management token missing — {domain}'}
+            if p.get('tunnel_running') and not p.get('ssl_ok'):
+                return {'status': 'warning',
+                        'message': f'Tunnel up, HTTPS pending — {domain}'}
+            if p.get('dns_ok') and not p.get('ssl_ok'):
+                return {'status': 'warning',
+                        'message': f'DNS OK, SSL pending — {domain}'}
+            if state in ('configured', 'pending', 'running'):
+                return {'status': 'warning',
+                        'message': f'{state} — {domain}'}
+            if state == 'off':
+                return {'status': 'healthy', 'message': 'Remote disabled (LAN only)'}
+            return {'status': 'warning',
+                    'message': f'{state} — {domain}'}
+        except Exception:
+            pass
+        # Fallback without cloudflare_setup import
         try:
             root = os.path.dirname(os.path.dirname(self.db_path))
             cfg_path = os.path.join(root, 'config', 'web_config.json')
@@ -167,13 +197,9 @@ class DiagnosticEngine(threading.Thread):
                     w = json.load(f)
                 domain = w.get('tunnel_domain') or '—'
                 remote_ok = bool(w.get('remote_setup_ok'))
-            cert = os.path.join(os.path.expanduser('~'), '.cloudflared', 'cert.pem')
-            has_cert = os.path.exists(cert)
-            if remote_ok and has_cert:
-                return {'status': 'healthy', 'message': f'Tunnel ready — {domain}'}
-            if not has_cert:
+            if remote_ok:
                 return {'status': 'warning',
-                        'message': f'Need cloudflared login (cert.pem) — {domain}'}
+                        'message': f'Config says OK — verify HTTPS — {domain}'}
             return {'status': 'warning',
                     'message': f'Remote setup incomplete — {domain}'}
         except Exception as e:

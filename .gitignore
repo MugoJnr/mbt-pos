@@ -21,9 +21,21 @@ _system_test.py
 *.spec.bak
 .env
 .env.*
+config/cloud_config.json
+**/cloud_identity.json
+**/cloud_offline_queue.json
+**/cloud_backup_state.json
 
 # Node
 node_modules/
 web/dashboard-ui/node_modules/
 web/dashboard-ui/.tanstack/
+
+
+config/vendor_ai.local.json
+config/vendor_ai.bin
+
+
+config/vendor_ai.local.json
+config/vendor_ai.bin
 

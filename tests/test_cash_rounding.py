@@ -107,13 +107,13 @@ class TestMixedTender(unittest.TestCase):
 
 class TestApplyToTotal(unittest.TestCase):
     def test_with_credit(self):
-        # cart 50, credit 10 → due 40 → already multiple of 5
+        # cart 50, credit 10 → due 40 → already multiple of 5 (no delta)
         r = CashRoundingService.apply_to_total(
             50, 0, 0, 'Cash', CFG_CASH, credit_applied=10)
         self.assertEqual(r['cart_total'], 50.0)
         self.assertEqual(r['original_due'], 40.0)
         self.assertEqual(r['amount_due'], 40.0)
-        self.assertTrue(r['applied'])
+        self.assertFalse(r['applied'])
         self.assertFalse(r.get('show_on_receipt'))
 
     def test_prices_unchanged_concept(self):

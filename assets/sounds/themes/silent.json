@@ -1,0 +1,33 @@
+{
+  "name": "silent",
+  "description": "No-op map \u2014 all software sounds muted",
+  "events": {
+    "startup": "",
+    "login_success": "",
+    "login_fail": "",
+    "barcode_scan": "",
+    "product_add": "",
+    "product_remove": "",
+    "sale_complete": "",
+    "void": "",
+    "payment_cash": "",
+    "payment_mpesa": "",
+    "payment_card": "",
+    "payment_credit": "",
+    "low_stock": "",
+    "error": "",
+    "warning": "",
+    "success": "",
+    "ai_thinking": "",
+    "ai_ready": "",
+    "permission_denied": "",
+    "dialog_open": "",
+    "dialog_close": "",
+    "save": "",
+    "delete": "",
+    "nav_switch": "",
+    "click": "",
+    "notification": "",
+    "accounting_post": ""
+  }
+}

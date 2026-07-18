@@ -136,14 +136,28 @@ class WebDashboardService:
             if started:
                 domain = cfg.get('tunnel_domain', '')
                 if domain:
+                    # Tenant routing: single-shop PC — Host should match tunnel_domain
+                    try:
+                        self._warn_host_mismatch(domain)
+                    except Exception:
+                        pass
                     remote_ok, remote_detail = _http_check(
                         f'https://{domain}/api/health', timeout=12)
                     if remote_ok:
                         log.info('Remote dashboard live: https://%s', domain)
+                        try:
+                            from backend.cloudflare_setup import mark_remote_active_if_healthy
+                            mark_remote_active_if_healthy(
+                                domain=domain,
+                                verify={'remote_https_ok': True, 'dns_ok': True,
+                                        'public_dns_ok': True},
+                            )
+                        except Exception:
+                            pass
                     else:
                         log.warning(
                             'Tunnel process started but remote check failed '
-                            '(%s) — DNS may still be propagating',
+                            '(%s) — DNS may still be propagating (not ACTIVE)',
                             remote_detail)
                 else:
                     log.warning('Remote enabled but tunnel_domain is not set')
@@ -165,6 +179,16 @@ class WebDashboardService:
             log.warning('Cloudflare tunnel: %s', e)
         finally:
             self._tunnel_start_scheduled = False
+
+    def _warn_host_mismatch(self, expected_domain: str):
+        """Document/detect Host≠tunnel_domain (single-tenant; no multi-shop map)."""
+        # No live request here — log guidance for operators diagnosing portal 404s
+        if not expected_domain:
+            return
+        log.debug(
+            'Tenant routing: this PC serves only https://%s '
+            '(Host-based multi-shop lookup is not used)',
+            expected_domain)
 
     def stop(self):
         with self._lock:

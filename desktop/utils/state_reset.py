@@ -413,8 +413,32 @@ class StateResetManager:
         except Exception:
             pass
         _safe_clear_text(getattr(pane, '_notes', None))
-        _safe_clear_text(getattr(pane, '_taken', None))
         _safe_clear_text(getattr(pane, '_search', None))
+        taken = getattr(pane, '_taken', None)
+        if taken is not None:
+            try:
+                if hasattr(taken, 'clear_selection'):
+                    taken.clear_selection()
+                else:
+                    _safe_clear_text(taken)
+            except Exception:
+                _safe_clear_text(taken)
+        dept = getattr(pane, '_dept', None)
+        if dept is not None and hasattr(dept, 'clear_selection'):
+            try:
+                dept.clear_selection()
+            except Exception:
+                pass
+        prod_sel = getattr(pane, '_prod_sel', None)
+        if prod_sel is not None and hasattr(prod_sel, 'clear_selection'):
+            try:
+                prod_sel.clear_selection()
+            except Exception:
+                pass
+        _safe_clear_text(getattr(pane, '_search', None))
+        qty_add = getattr(pane, '_qty_add', None)
+        if qty_add is not None:
+            _safe_set_spin(qty_add, 1.0)
         reason = getattr(pane, '_reason', None)
         if reason is not None:
             try:

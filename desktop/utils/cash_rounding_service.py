@@ -217,8 +217,8 @@ class CashRoundingService:
             'cash_rounded': cash_rounded,
             'rounded_total': rounded_total,
             'adjustment': adj,
-            # Active for this tender (badge); receipt line only when abs(adj) > 0
-            'applied': True,
+            # Applied only when delta is real (UI / receipt gate on this)
+            'applied': abs(adj) > 0.009,
             'show_on_receipt': abs(adj) > 0.009,
         })
         return result

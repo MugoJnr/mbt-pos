@@ -82,6 +82,15 @@ def _norm_phone(phone: str) -> str:
     return digits
 
 
+def phone_format_ok(phone: str) -> bool:
+    """True when phone is empty (optional) or has a plausible digit length."""
+    raw = (phone or '').strip()
+    if not raw:
+        return True
+    digits = re.sub(r'\D+', '', raw)
+    return 9 <= len(digits) <= 15
+
+
 class SearchMemory:
     """Per-module search text; cleared on leave unless pinned."""
 
@@ -423,7 +432,10 @@ class AutoFillService:
         """
         If phone already exists, ask Use Existing / Create New.
         Returns existing customer_id, None to continue create, or -1 to cancel.
+        Skips entirely when phone is empty (phone is optional).
         """
+        if not (phone or '').strip():
+            return None
         hits = AutoFillService.find_customers_by_phone(api, phone)
         if not hits:
             return None

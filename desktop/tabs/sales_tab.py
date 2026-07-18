@@ -16,6 +16,14 @@ from desktop.utils.option_lists import POS_PAYMENT_METHODS
 from desktop.utils.select_controls import Select
 
 
+def _sfx(event: str, **kw):
+    try:
+        from desktop.utils.audio_manager import play
+        play(event, **kw)
+    except Exception:
+        pass
+
+
 class _KesEdit(QLineEdit):
     """KES amount field — select-all on focus so typing 60 replaces 0.00 without sip crashes."""
 
@@ -925,10 +933,11 @@ class SalesTab(QWidget):
             except (TypeError, ValueError):
                 stock_n = 0
             if stock_n <= 0:
+                _sfx('warning')
                 QMessageBox.information(self, 'Out of stock',
                                         f'{(hit.get("name") or "Item")} is out of stock.')
             else:
-                self._add(hit)
+                self._add(hit, from_scan=True)
             self._search.clear()
             self._search.setFocus(Qt.OtherFocusReason)
         else:
@@ -1075,7 +1084,19 @@ class SalesTab(QWidget):
         item['total'] = round(gross - disc, 2)
         return item['total']
 
-    def _add(self, p):
+    def _add(self, p, from_scan: bool = False):
+        if from_scan:
+            _sfx('barcode_scan')
+        else:
+            _sfx('product_add')
+        # Low-stock cue (grouped) — never audio-only; UI already shows stock on cards
+        try:
+            stock_n = float(p.get('stock', 0) or 0)
+            reorder = float(p.get('reorder_level') or p.get('min_stock') or 5)
+            if 0 < stock_n <= reorder:
+                _sfx('low_stock')
+        except (TypeError, ValueError):
+            pass
         for item in self.cart:
             if item['product_id'] == p['id']:
                 item['quantity'] = round(item['quantity'] + 1.0, 2)
@@ -1287,7 +1308,9 @@ class SalesTab(QWidget):
 
     def _rm(self, idx):
         if 0 <= idx < len(self.cart):
-            del self.cart[idx]; self._refresh_cart()
+            del self.cart[idx]
+            _sfx('product_remove')
+            self._refresh_cart()
 
     def _cart_disc_value(self):
         parsed = self._parse_kes(self._disc.text())
@@ -1448,6 +1471,7 @@ class SalesTab(QWidget):
 
     def _process(self):
         if not self.cart:
+            _sfx('warning')
             QMessageBox.warning(self, 'Empty Cart', 'Add items before charging.'); return
         pay_method = self._pay.currentText()
         is_debt = pay_method in ('Part Payment', 'Credit Sale', 'Credit Account')
@@ -1665,6 +1689,12 @@ class SalesTab(QWidget):
                 sid = res.get('sale_id')
                 self._last_sale_id = sid
                 self._last_receipt = rn
+                try:
+                    from desktop.utils.audio_manager import get_audio
+                    get_audio().play_payment(pay_method)
+                    _sfx('sale_complete')
+                except Exception:
+                    _sfx('sale_complete')
                 # Part Payment / Credit Sale → create a debt invoice for the balance
                 if is_debt:
                     self._create_debt_invoice(
@@ -1716,8 +1746,10 @@ class SalesTab(QWidget):
                 self.sale_completed.emit()
             else:
                 err = (res or {}).get('error') if isinstance(res, dict) else None
+                _sfx('error')
                 QMessageBox.critical(self, 'Error', err or 'Failed to record sale.')
         except Exception as e:
+            _sfx('error')
             QMessageBox.critical(self, 'Error', str(e))
 
     def _get_printer(self):
@@ -1824,6 +1856,7 @@ class SalesTab(QWidget):
         from desktop.utils.security import prompt_void_sale
         prefill = getattr(self, '_last_receipt', '') or ''
         if prompt_void_sale(self.api, self, receipt_prefill=prefill):
+            _sfx('void')
             self.sale_completed.emit()
 
     def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method):

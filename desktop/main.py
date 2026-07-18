@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-18-v2.3.73"
-APP_VERSION   = "2.3.74"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-18-v2.3.82"
+APP_VERSION   = "2.3.82"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -90,6 +90,7 @@ from desktop.tabs.notes_tab         import NotesTab
 from desktop.tabs.admin_tab         import AdminTab
 from desktop.tabs.settings_tab      import SettingsTab
 from desktop.tabs.diagnostics_tab   import DiagnosticsTab
+from desktop.tabs.ai_ops_tab        import AiOpsTab
 from desktop.tabs.license_tab       import LicenseTab
 from desktop.tabs.security_tab      import SecurityTab
 
@@ -369,8 +370,18 @@ class LoginDialog(QDialog):
             if res and 'token' in res:
                 self.user_data = res
                 self._btn.setText("SIGN IN"); self._btn.setEnabled(True)
+                try:
+                    from desktop.utils.audio_manager import play as _audio_play
+                    _audio_play('login_success')
+                except Exception:
+                    pass
                 self.accept()
                 return
+            try:
+                from desktop.utils.audio_manager import play as _audio_play
+                _audio_play('login_fail')
+            except Exception:
+                pass
             self._set_msg("Invalid username or password", err=True)
         except Exception as e:
             self._set_msg(f"Could not open database.\n{e}", err=True)
@@ -433,6 +444,12 @@ class MainWindow(QMainWindow):
 
         # UI first — services second (never block render)
         self._build_ui()
+        try:
+            from desktop.utils.audio_manager import get_audio
+            get_audio().ensure_qt(self)
+            QTimer.singleShot(400, lambda: get_audio().play('startup'))
+        except Exception:
+            pass
         # Lazy tabs: only build the first page before paint. Eagerly constructing
         # all 11 tabs under light QSS freezes Windows (Not Responding) for 40–80s
         # and blocks QA/theme evidence dumps.
@@ -454,11 +471,14 @@ class MainWindow(QMainWindow):
             'security':    SecurityTab,
             'diagnostics': DiagnosticsTab,
             'license':     LicenseTab,
+            'ai_ops':      AiOpsTab,
         }
         # Prefetch dashboard only so first paint has content
         self._ensure_tab('dashboard')
         # Paint shell chrome from live C (sidebar/topbar need WA_StyledBackground tint)
         self._refresh_chrome_styles()
+        # Floating AI assistant (every screen) — vendor-managed OpenRouter; offline-safe
+        self._install_ai_assistant()
 
         self.signals.connection_changed.connect(self._on_conn)
         self.signals.sync_status.connect(self._on_sync)
@@ -641,12 +661,16 @@ class MainWindow(QMainWindow):
             log.warning(f"Diagnostics: {e}")
 
         try:
-            from backend.telegram_reporter import ReportScheduler
-            self._svc_sched = ReportScheduler(
+            from backend.telegram_reporter import (
+                start_report_scheduler, validate_telegram_config,
+            )
+            cfg0 = self._cfg() or {}
+            for w in validate_telegram_config(cfg0):
+                log.warning('Daily reports config: %s', w)
+            self._svc_sched = start_report_scheduler(
                 self.api, self._cfg,
                 is_online_getter=lambda: getattr(self._svc_net, 'is_connected', False),
             )
-            self._svc_sched.start()
         except Exception as e:
             log.warning(f"Report scheduler: {e}")
 
@@ -676,6 +700,14 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             log.warning(f"Auto Cloudflare: {e}")
+
+        try:
+            from backend.cloud_backup import start_cloud_backup_service
+            from backend.cloud_backup.device_manager import get_or_create_device_id
+            get_or_create_device_id()
+            start_cloud_backup_service()
+        except Exception as e:
+            log.warning(f"Cloud backup service: {e}")
 
         # Pass license service to license tab if it exists
         if 'license' in self._tabs and self._svc_lic:
@@ -963,6 +995,7 @@ class MainWindow(QMainWindow):
             ('accounting',  '\u2395',  'Accounting'),
             ('reports',     '\u25a6',  'Reports'),
             ('notes',       '\u2261',  'Notes'),
+            ('ai_ops',      '\u2726',  'AI Operations'),
             ('admin',       '\u229b',  'Users && Access'),
             ('settings',    '\u2699',  'Settings'),
             ('security',    '\U0001f510', 'Security'),
@@ -982,7 +1015,10 @@ class MainWindow(QMainWindow):
         for tid, icon, lbl in tabs:
             if tid in ('security', 'license') and role != 'superadmin':
                 continue
-            if role != 'admin' and role != 'superadmin' and tid not in perms:
+            # AI Operations: manager / admin / superadmin (even if legacy tab_permissions omit it)
+            if tid == 'ai_ops' and role not in ('manager', 'admin', 'superadmin'):
+                continue
+            if tid != 'ai_ops' and role != 'admin' and role != 'superadmin' and tid not in perms:
                 continue
             btn = QPushButton(f"  {icon}   {lbl}")
             btn.setObjectName("navBtn")
@@ -1142,7 +1178,8 @@ class MainWindow(QMainWindow):
         'consumption':'Internal Consumption',
         'debt':'Debt Management',
         'accounting':'Accounting',
-        'reports':'Reports', 'notes':'Notes', 'admin':'Users & Access',
+        'reports':'Reports', 'notes':'Notes', 'ai_ops':'AI Operations',
+        'admin':'Users & Access',
         'settings':'Settings', 'security':'Security & Super-Admin',
         'license':'License & Subscription', 'diagnostics':'Diagnostics',
     }
@@ -1154,6 +1191,12 @@ class MainWindow(QMainWindow):
                 from desktop.utils.auto_fill import AutoFillService
                 AutoFillService.on_module_leave(
                     prev, self._tabs.get(prev), self._cfg() if hasattr(self, '_cfg') else {})
+            except Exception:
+                pass
+        if prev != tid:
+            try:
+                from desktop.utils.audio_manager import play as _audio_play
+                _audio_play('nav_switch')
             except Exception:
                 pass
         self._ensure_tab(tid)
@@ -1174,6 +1217,46 @@ class MainWindow(QMainWindow):
                         tab.open_report()
                     except Exception as e:
                         log.warning(f"open_report consumption: {e}")
+        # Keep AI context engine aware of the active module
+        try:
+            ai = getattr(self, '_ai_panel', None)
+            if ai is not None:
+                ai.set_module(tid)
+        except Exception as e:
+            log.debug('ai set_module: %s', e)
+
+    def _install_ai_assistant(self):
+        """Mount floating AI FAB + slide-over panel on the main window."""
+        try:
+            from desktop.widgets.ai_assistant import AiAssistantPanel, AiFabButton
+            self._ai_panel = AiAssistantPanel(self)
+            self._ai_fab = AiFabButton(self)
+            self._ai_fab.clicked.connect(self._ai_panel.toggle)
+            self._ai_fab.show()
+            self._ai_fab.raise_()
+            QTimer.singleShot(0, self._position_ai_chrome)
+        except Exception as e:
+            log.warning('AI assistant install failed: %s', e)
+            self._ai_panel = None
+            self._ai_fab = None
+
+    def _position_ai_chrome(self):
+        fab = getattr(self, '_ai_fab', None)
+        panel = getattr(self, '_ai_panel', None)
+        if fab is not None:
+            # Bottom-right of window, above status bar
+            fab.move(self.width() - fab.width() - 20, self.height() - fab.height() - 52)
+            fab.raise_()
+            try:
+                fab.refresh_theme()
+            except Exception:
+                pass
+        if panel is not None and panel.isVisible():
+            try:
+                panel._reposition()
+                panel.raise_()
+            except Exception:
+                pass
 
     # ?? Theme ???????????????????????????????????????????????????????????????????
     def _read_theme_pref(self) -> bool:
@@ -1257,6 +1340,10 @@ class MainWindow(QMainWindow):
         ov = getattr(self, '_theme_overlay', None)
         if ov is not None and ov.isVisible():
             ov.setGeometry(self.rect())
+        try:
+            self._position_ai_chrome()
+        except Exception:
+            pass
 
     def _sync_theme_ui(self, is_light: bool, persist: bool = True):
         """
@@ -1287,6 +1374,14 @@ class MainWindow(QMainWindow):
                 self._theme_btn.setText('Dark' if is_light else 'Light')
 
             self._refresh_chrome_styles()
+            try:
+                if getattr(self, '_ai_panel', None) is not None:
+                    self._ai_panel.refresh_theme()
+                if getattr(self, '_ai_fab', None) is not None:
+                    self._ai_fab.refresh_theme()
+                self._position_ai_chrome()
+            except Exception:
+                pass
 
             cur = self._stack.currentWidget() if hasattr(self, '_stack') else None
             cur_tid = None

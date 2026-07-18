@@ -30,6 +30,20 @@ BASE_DOMAIN = 'mugobyte.com'
 DEFAULT_PORT = 5050
 _CF_RELEASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download'
 
+# Subdomains that must never be auto-assigned to a shop portal
+RESERVED_SUBDOMAINS = frozenset({
+    'admin', 'www', 'cloudflare', 'test', 'api', 'mail', 'ftp', 'localhost',
+    'mbt', 'mugobyte', 'portal', 'dashboard', 'cdn', 'static', 'assets',
+    'ns1', 'ns2', 'smtp', 'pop', 'imap', 'webmail', 'cpanel', 'autoconfig',
+    'status', 'help', 'support', 'docs', 'blog', 'shop', 'store', 'app',
+    'dev', 'staging', 'prod', 'production', 'internal', 'vpn', 'proxy',
+})
+
+# Retry / backoff for Cloudflare API (rate limits + transient network)
+_CF_API_MAX_RETRIES = 4
+_CF_API_BASE_DELAY = 1.5
+_CF_RETRY_QUEUE_MAX = 50
+
 
 def _cloudflared_download_url() -> tuple[str, str]:
     """Return (download_url, local_filename) for this OS/arch."""
@@ -491,17 +505,42 @@ def _read_shop_name_from_db() -> str:
 
 
 def save_web_config(updates: dict) -> Path:
+    """
+    Persist web/tunnel config. Never raises — shop POS / auto Cloudflare must
+    keep working even when AppData web_config.json is read-only or locked.
+    """
     path = get_config_path()
-    cfg = load_web_config()
-    cfg.update(updates)
-    # Never write UTF-8 BOM (PowerShell -Encoding UTF8 breaks older readers)
-    return _atomic_write_json(path, cfg)
+    try:
+        cfg = load_web_config()
+        cfg.update(updates)
+        # Never write UTF-8 BOM (PowerShell -Encoding UTF8 breaks older readers)
+        return _atomic_write_json(path, cfg)
+    except Exception as e:
+        logger.warning(
+            'save_web_config soft-fail (POS / remote still usable if config loads): %s', e)
+        return path
 
 
 # ── Naming ────────────────────────────────────────────────────────────────────
 
+def _redact_secrets(text: str) -> str:
+    """Strip tokens from log lines — never leak cfat_/cfut_/JWT/Bearer."""
+    if not text:
+        return text
+    s = str(text)
+    s = re.sub(r'(?i)(bearer\s+)[A-Za-z0-9_\-\.]+', r'\1[REDACTED]', s)
+    s = re.sub(r'(?i)\bcfat_[A-Za-z0-9_\-]+', 'cfat_[REDACTED]', s)
+    s = re.sub(r'(?i)\bcfut_[A-Za-z0-9_\-]+', 'cfut_[REDACTED]', s)
+    s = re.sub(r'\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+',
+               'eyJ[REDACTED_JWT]', s)
+    s = re.sub(
+        r'(?i)(cloudflare_(?:api|tunnel|management)_token["\']?\s*[:=]\s*["\']?)[^"\'\s,}]+',
+        r'\1[REDACTED]', s)
+    return s
+
+
 def shop_to_subdomain(shop_name: str) -> str:
-    """Turn shop name into a DNS-safe subdomain slug."""
+    """Turn shop name into a DNS-safe subdomain slug (reserved names remapped)."""
     s = (shop_name or '').strip().lower()
     s = re.sub(r'[^a-z0-9]+', '-', s)
     s = re.sub(r'-+', '-', s).strip('-')
@@ -509,7 +548,29 @@ def shop_to_subdomain(shop_name: str) -> str:
         s = 'mbt-shop'
     if s[0].isdigit():
         s = 'shop-' + s
-    return s[:40].rstrip('-')
+    s = s[:40].rstrip('-') or 'mbt-shop'
+    if s in RESERVED_SUBDOMAINS:
+        s = f'shop-{s}'[:40].rstrip('-')
+    # Double-check after prefix (e.g. reserved collision)
+    if s in RESERVED_SUBDOMAINS:
+        s = f'mbt-{s}'[:40].rstrip('-')
+    return s
+
+
+def validate_subdomain(subdomain: str) -> tuple[bool, str]:
+    """Return (ok, reason). Rejects empty, invalid chars, reserved, too long."""
+    raw = (subdomain or '').strip().lower()
+    if not raw:
+        return False, 'empty subdomain'
+    if raw.endswith('.' + BASE_DOMAIN):
+        raw = raw[: -(len(BASE_DOMAIN) + 1)]
+    if not re.fullmatch(r'[a-z0-9]([a-z0-9\-]{0,38}[a-z0-9])?', raw):
+        return False, 'invalid hostname characters or length'
+    if raw in RESERVED_SUBDOMAINS:
+        return False, f'reserved subdomain: {raw}'
+    if '..' in raw or raw.startswith('-') or raw.endswith('-'):
+        return False, 'invalid hyphen placement'
+    return True, 'ok'
 
 
 def full_domain(subdomain: str) -> str:
@@ -536,10 +597,11 @@ class _SetupLog:
 
     def write(self, level: str, msg: str):
         ts = datetime.now().strftime('%H:%M:%S')
-        line = f'[{ts}] [{level.upper()}] {msg}'
+        safe = _redact_secrets(msg)
+        line = f'[{ts}] [{level.upper()}] {safe}'
         self.lines.append(line)
         logger.log(
-            logging.ERROR if level == 'error' else logging.INFO, msg)
+            logging.ERROR if level == 'error' else logging.INFO, safe)
         try:
             with open(self._file, 'a', encoding='utf-8') as f:
                 f.write(line + '\n')
@@ -547,7 +609,7 @@ class _SetupLog:
             pass
         if self._cb:
             try:
-                self._cb(level, msg)
+                self._cb(level, safe)
             except Exception:
                 pass
 
@@ -698,6 +760,42 @@ def normalize_cloudflare_tokens() -> None:
 _CF_API = 'https://api.cloudflare.com/client/v4'
 _cf_account_cache: str = ''
 _cf_zone_cache: str = ''
+_cf_retry_queue: list = []
+_cf_retry_lock = threading.Lock()
+_cf_last_api_error: dict = {}
+
+
+class CloudflareAPIError(RuntimeError):
+    """Typed Cloudflare API failure — never treat as success / ACTIVE."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 0,
+        kind: str = 'error',
+        retryable: bool = False,
+        body: str = '',
+    ):
+        super().__init__(message)
+        self.status = status
+        self.kind = kind  # auth | forbidden | rate_limit | timeout | network | api
+        self.retryable = retryable
+        self.body = body
+
+
+def _classify_http_error(code: int, body: str) -> tuple[str, bool]:
+    """Return (kind, retryable)."""
+    b = (body or '').lower()
+    if code in (401, 10000) or 'authentication' in b or 'unauthorized' in b:
+        return 'auth', False
+    if code == 403 or 'forbidden' in b or 'not authorized' in b:
+        return 'forbidden', False
+    if code == 429 or 'rate limit' in b or 'too many requests' in b:
+        return 'rate_limit', True
+    if code >= 500:
+        return 'api', True
+    return 'api', False
 
 
 def _subprocess_env() -> dict:
@@ -732,41 +830,114 @@ def _cf_api(
     path: str,
     body: Optional[dict] = None,
     timeout: int = 45,
+    *,
+    retries: Optional[int] = None,
 ) -> dict:
-    """Call Cloudflare v4 API with the management token. Raises RuntimeError."""
+    """
+    Call Cloudflare v4 API with management token.
+    Retries 429/5xx/timeouts with exponential backoff.
+    Never retries 401/403. Raises CloudflareAPIError (not false ACTIVE).
+    """
     token = _get_cloudflare_api_token()
     if not token:
-        raise RuntimeError(VENDOR_TOKEN_MISSING)
+        raise CloudflareAPIError(
+            VENDOR_TOKEN_MISSING, kind='auth', retryable=False)
     url = path if path.startswith('http') else f'{_CF_API}{path}'
+    max_attempts = (retries if retries is not None else _CF_API_MAX_RETRIES) + 1
     data = None if body is None else json.dumps(body).encode('utf-8')
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method=method,
-        headers={
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json',
-            'User-Agent': 'MBT-POS/1.0',
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode('utf-8'))
-    except urllib.error.HTTPError as e:
-        err_body = ''
+    last_err: Optional[Exception] = None
+
+    for attempt in range(max_attempts):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+                'User-Agent': 'MBT-POS/2.3.81',
+            },
+        )
         try:
-            err_body = e.read().decode('utf-8', errors='replace')
-        except Exception:
-            err_body = str(e)
-        raise RuntimeError(
-            f'Cloudflare API {method} {path}: HTTP {e.code}\n{err_body[:500]}'
-        ) from e
-    except Exception as e:
-        raise RuntimeError(f'Cloudflare API {method} {path}: {e}') from e
-    if not payload.get('success', True):
-        errs = payload.get('errors') or payload.get('messages') or payload
-        raise RuntimeError(f'Cloudflare API {method} {path} failed: {errs}')
-    return payload
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            err_body = ''
+            try:
+                err_body = e.read().decode('utf-8', errors='replace')
+            except Exception:
+                err_body = str(e)
+            kind, retryable = _classify_http_error(e.code, err_body)
+            safe_body = _redact_secrets(err_body[:500])
+            msg = f'Cloudflare API {method} {path}: HTTP {e.code} ({kind})\n{safe_body}'
+            last_err = CloudflareAPIError(
+                msg, status=e.code, kind=kind, retryable=retryable, body=safe_body)
+            _cf_last_api_error.clear()
+            _cf_last_api_error.update({
+                'status': e.code, 'kind': kind, 'path': path,
+                'at': datetime.now().isoformat(),
+            })
+            if retryable and attempt < max_attempts - 1:
+                delay = _CF_API_BASE_DELAY * (2 ** attempt)
+                # Honor Retry-After when present
+                try:
+                    ra = e.headers.get('Retry-After')
+                    if ra:
+                        delay = max(delay, float(ra))
+                except Exception:
+                    pass
+                logger.warning(
+                    'CF API %s %s → %s; backoff %.1fs (attempt %s/%s)',
+                    method, path, e.code, delay, attempt + 1, max_attempts)
+                time.sleep(delay)
+                continue
+            raise last_err from e
+        except (TimeoutError, socket.timeout) as e:
+            last_err = CloudflareAPIError(
+                f'Cloudflare API {method} {path}: timeout',
+                kind='timeout', retryable=True)
+            _cf_last_api_error.update({
+                'status': 0, 'kind': 'timeout', 'path': path,
+                'at': datetime.now().isoformat(),
+            })
+            if attempt < max_attempts - 1:
+                delay = _CF_API_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    'CF API timeout %s %s; backoff %.1fs', method, path, delay)
+                time.sleep(delay)
+                continue
+            raise last_err from e
+        except urllib.error.URLError as e:
+            last_err = CloudflareAPIError(
+                f'Cloudflare API {method} {path}: network {e.reason}',
+                kind='network', retryable=True)
+            _cf_last_api_error.update({
+                'status': 0, 'kind': 'network', 'path': path,
+                'at': datetime.now().isoformat(),
+            })
+            if attempt < max_attempts - 1:
+                delay = _CF_API_BASE_DELAY * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            raise last_err from e
+        except Exception as e:
+            raise CloudflareAPIError(
+                f'Cloudflare API {method} {path}: {_redact_secrets(str(e))}',
+                kind='network', retryable=True,
+            ) from e
+
+        if not payload.get('success', True):
+            errs = payload.get('errors') or payload.get('messages') or payload
+            err_s = _redact_secrets(str(errs))
+            # Duplicate DNS often appears as code 81057 / already exists — caller upserts
+            raise CloudflareAPIError(
+                f'Cloudflare API {method} {path} failed: {err_s}',
+                kind='api', retryable=False, body=err_s)
+        return payload
+
+    raise last_err or CloudflareAPIError(
+        f'Cloudflare API {method} {path}: exhausted retries', kind='network',
+        retryable=True)
 
 
 def _cf_account_id() -> str:
@@ -905,21 +1076,29 @@ def _api_ensure_dns_cname(
     tunnel_id: str,
     log: Optional[_SetupLog] = None,
 ) -> None:
+    """
+    Upsert proxied CNAME → {tunnel_id}.cfargotunnel.com.
+    Existing CNAME: update in place. Conflicting A/AAAA/other: delete then create.
+    Never fails solely because the name already exists.
+    """
     target = f'{tunnel_id}.cfargotunnel.com'
     q = urllib.parse.quote(hostname)
-    data = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}&type=CNAME')
-    records = data.get('result') or []
     body = {
         'type': 'CNAME',
         'name': hostname,
         'content': target,
         'proxied': True,
-        'ttl': 1,
+        'ttl': 1,  # automatic when proxied
     }
+
+    # Prefer exact CNAME match
+    data = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}&type=CNAME')
+    records = data.get('result') or []
     if records:
         rid = records[0]['id']
         cur = (records[0].get('content') or '').strip().rstrip('.')
-        if cur.lower() == target.lower() and records[0].get('proxied', True):
+        proxied = bool(records[0].get('proxied', True))
+        if cur.lower() == target.lower() and proxied:
             if log:
                 log.ok(f'DNS already OK → {hostname}')
             return
@@ -927,9 +1106,51 @@ def _api_ensure_dns_cname(
         if log:
             log.ok(f'DNS updated → {hostname} → {target}')
         return
-    _cf_api('POST', f'/zones/{zone_id}/dns_records', body)
-    if log:
-        log.ok(f'DNS created → {hostname} → {target}')
+
+    # Conflicting non-CNAME records (A/AAAA/MX leftovers on apex-like names)
+    all_data = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}')
+    conflicts = all_data.get('result') or []
+    for rec in conflicts:
+        rtype = (rec.get('type') or '').upper()
+        if rtype in ('A', 'AAAA', 'CNAME', 'AAAA'):
+            try:
+                _cf_api('DELETE', f'/zones/{zone_id}/dns_records/{rec["id"]}')
+                if log:
+                    log.warn(f'Removed conflicting {rtype} record for {hostname}')
+            except Exception as e:
+                if log:
+                    log.warn(f'Could not remove conflicting {rtype}: {_redact_secrets(str(e))}')
+
+    try:
+        _cf_api('POST', f'/zones/{zone_id}/dns_records', body)
+        if log:
+            log.ok(f'DNS created → {hostname} → {target}')
+    except CloudflareAPIError as e:
+        # Race: record appeared between GET and POST — upsert via list again
+        if e.status in (400, 409) or 'already exists' in str(e).lower() or '81057' in str(e):
+            data2 = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}&type=CNAME')
+            recs2 = data2.get('result') or []
+            if recs2:
+                _cf_api('PUT', f'/zones/{zone_id}/dns_records/{recs2[0]["id"]}', body)
+                if log:
+                    log.ok(f'DNS upserted after exists → {hostname}')
+                return
+        raise
+
+
+def dns_record_exists(hostname: str) -> tuple[bool, str]:
+    """Check zone has a record for hostname (management token required)."""
+    try:
+        zone_id = _cf_zone_id(BASE_DOMAIN)
+        q = urllib.parse.quote(hostname)
+        data = _cf_api('GET', f'/zones/{zone_id}/dns_records?name={q}', retries=1)
+        recs = data.get('result') or []
+        if not recs:
+            return False, 'no DNS record in zone'
+        r = recs[0]
+        return True, f'{r.get("type")} → {r.get("content")} (proxied={r.get("proxied")})'
+    except Exception as e:
+        return False, _redact_secrets(str(e))[:160]
 
 
 def _api_tunnel_run_token(account_id: str, tunnel_id: str) -> str:
@@ -951,7 +1172,15 @@ def provision_shop_tunnel_via_api(
     Zero-browser shop provisioning:
       create/reuse named tunnel → remote ingress → DNS CNAME → connector token.
     Persists token + tunnel ids in AppData web_config (survives Program Files reinstall).
+    Does NOT mark remote_setup_ok / ACTIVE — caller must verify HTTPS first.
     """
+    ok_sub, reason = validate_subdomain(shop_to_subdomain(subdomain))
+    if not ok_sub:
+        # Still allow remapped reserved names via shop_to_subdomain
+        slug = shop_to_subdomain(subdomain)
+        ok2, reason2 = validate_subdomain(slug)
+        if not ok2:
+            raise RuntimeError(f'Invalid subdomain: {reason2}')
     slug = shop_to_subdomain(subdomain)
     domain = full_domain(slug)
     tname = tunnel_name_for(slug)
@@ -994,12 +1223,14 @@ def provision_shop_tunnel_via_api(
         'tunnel_id': tunnel_id,
         'remote_enabled': True,
         'cloudflare_tunnel_token': run_tok,
-        # Keep management token out of web_config when it lives in deploy.local
-        'remote_setup_ok': True,
+        # Provisioned infra — ACTIVE only after DNS+HTTPS verify
+        'remote_setup_ok': False,
+        'remote_setup_pending': True,
         'remote_setup_at': datetime.now().isoformat(),
+        'last_provision_error': '',
     })
     if log:
-        log.ok(f'Persisted connector token + config for {domain}')
+        log.ok(f'Persisted connector token + config for {domain} (pending HTTPS verify)')
     return {
         'ok': True,
         'tunnel_id': tunnel_id,
@@ -1007,6 +1238,7 @@ def provision_shop_tunnel_via_api(
         'domain': domain,
         'subdomain': slug,
         'via': 'api',
+        'active': False,
     }
 
 
@@ -1510,55 +1742,65 @@ class CloudflareSetup:
                 self.domain, self.log, start_tunnel=True, wait_dns=90)
 
             pub_ok, _ = _dns_resolves_via(self.domain, '1.1.1.1')
+            https_ok = bool(verify.get('remote_https_ok'))
+            dns_ok = bool(verify.get('dns_ok')) or pub_ok
 
-            if verify.get('remote_https_ok'):
+            if https_ok:
                 self._step('Verify remote URL', True, verify.get('remote_detail', ''))
-            elif verify.get('pending_dns') or pub_ok:
+            elif verify.get('pending_dns') or (dns_ok and not https_ok):
                 self._step('Verify remote URL', True,
                            'DNS propagating — remote URL will work in a few minutes')
                 self.log.info(
-                    'Tunnel is configured. DNS may take 2–5 minutes worldwide.')
+                    'Tunnel is configured. DNS/SSL may take 2–5 minutes worldwide.')
             elif verify.get('tunnel_ok') and verify.get('local_ok'):
                 self._step('Verify remote URL', True,
-                           verify.get('remote_detail', 'tunnel running'))
+                           verify.get('remote_detail', 'tunnel running — HTTPS pending'))
             else:
                 self._step('Verify remote URL', False, verify.get('detail', ''))
 
-            setup_complete = bool(tunnel_id) and bool(self.domain)
+            # ACTIVE only when DNS exists AND HTTPS health OK — never on infra alone
+            active = mark_remote_active_if_healthy(
+                domain=self.domain,
+                tunnel_id=tunnel_id,
+                verify=verify,
+                cloudflared_exe=str(cf),
+            )
 
-            save_web_config({
-                'remote_enabled': True,
-                'remote_setup_ok': setup_complete,
-                'remote_setup_at': datetime.now().isoformat(),
-                'cloudflared_exe': str(cf),
-                'tunnel_id': tunnel_id,
-            })
-
-            self.result['ok'] = True
-            self.result['remote_ok'] = verify.get('remote_https_ok', False) or pub_ok
+            self.result['ok'] = bool(tunnel_id) and bool(self.domain)
+            self.result['remote_ok'] = https_ok
+            self.result['active'] = active
             self.result['remote_pending_dns'] = (
-                verify.get('pending_dns', False) or (pub_ok and not verify.get('dns_ok'))
+                verify.get('pending_dns', False) or (dns_ok and not https_ok)
             )
             self.result['tunnel_running'] = verify.get('tunnel_ok', False)
-            self.log.ok('Setup complete')
+            if active:
+                self.log.ok('Setup complete — remote ACTIVE')
+            else:
+                self.log.ok('Setup infra complete — pending DNS/HTTPS (not ACTIVE yet)')
+                enqueue_cf_retry('pending_https', self.subdomain, self.domain)
             self.log.info(f'Local:  http://127.0.0.1:{port}')
             self.log.info(f'Remote: https://{self.domain}')
             if verify.get('pending_dns'):
                 self.log.info(
                     f'Next: wait 2–5 min, then open https://{self.domain} '
                     f'or run DIAGNOSE CLOUDFLARE.bat')
-            elif not verify.get('remote_https_ok'):
+            elif not https_ok:
                 self.log.info('Restart MBT POS to keep the tunnel running automatically.')
 
         except Exception as e:
             self.log.error(str(e))
             self._step('Setup', False, str(e))
-            cfg_now = load_web_config()
             save_web_config({
                 'remote_enabled': True,
-                'remote_setup_ok': bool(cfg_now.get('tunnel_id') and cfg_now.get('tunnel_domain')),
+                'remote_setup_ok': False,
+                'remote_setup_pending': True,
+                'last_provision_error': _redact_secrets(str(e))[:400],
                 'remote_setup_at': datetime.now().isoformat(),
             })
+            try:
+                enqueue_cf_retry('setup_failed', self.subdomain, self.domain)
+            except Exception:
+                pass
 
         self.result['log'] = '\n'.join(self.log.lines)
         return self.result
@@ -1873,34 +2115,357 @@ def verify_remote_setup(
     }
 
 
+def mark_remote_active_if_healthy(
+    domain: str = '',
+    tunnel_id: str = '',
+    verify: Optional[dict] = None,
+    cloudflared_exe: str = '',
+) -> bool:
+    """
+    Persist remote_setup_ok=True ONLY when DNS resolves AND HTTPS health OK.
+    Otherwise keep pending — never falsely ACTIVE.
+    """
+    cfg = load_web_config()
+    domain = (domain or cfg.get('tunnel_domain') or '').strip()
+    tunnel_id = (tunnel_id or cfg.get('tunnel_id') or '').strip()
+    verify = verify or {}
+    https_ok = bool(verify.get('remote_https_ok'))
+    dns_ok = bool(verify.get('dns_ok')) or bool(verify.get('public_dns_ok'))
+    if not https_ok and domain:
+        # Quick recheck without long wait
+        pub, _ = _dns_resolves_via(domain, '1.1.1.1')
+        loc, _ = _dns_resolves(domain)
+        dns_ok = dns_ok or pub or loc
+        if dns_ok:
+            https_ok, _ = _http_check(f'https://{domain}/api/health', timeout=10)
+            if not https_ok:
+                https_ok, _ = _http_check(f'https://{domain}/', timeout=10)
+
+    updates = {
+        'remote_enabled': True,
+        'tunnel_id': tunnel_id or cfg.get('tunnel_id', ''),
+        'remote_setup_at': datetime.now().isoformat(),
+    }
+    if cloudflared_exe:
+        updates['cloudflared_exe'] = cloudflared_exe
+
+    if domain and tunnel_id and dns_ok and https_ok:
+        updates['remote_setup_ok'] = True
+        updates['remote_setup_pending'] = False
+        updates['last_provision_error'] = ''
+        save_web_config(updates)
+        logger.info('Remote ACTIVE — DNS+HTTPS OK for %s', domain)
+        return True
+
+    updates['remote_setup_ok'] = False
+    updates['remote_setup_pending'] = True
+    if not https_ok:
+        updates['last_provision_error'] = 'pending HTTPS/SSL health check'
+    elif not dns_ok:
+        updates['last_provision_error'] = 'pending DNS propagation'
+    save_web_config(updates)
+    logger.info(
+        'Remote NOT active yet for %s (dns=%s https=%s)', domain, dns_ok, https_ok)
+    return False
+
+
+def enqueue_cf_retry(reason: str, subdomain: str = '', domain: str = '') -> None:
+    """Queue a background retry (rate-limit / pending HTTPS / network). No secrets."""
+    item = {
+        'reason': reason,
+        'subdomain': shop_to_subdomain(subdomain) if subdomain else '',
+        'domain': domain or '',
+        'enqueued_at': datetime.now().isoformat(),
+        'attempts': 0,
+        'next_at': time.time() + _CF_API_BASE_DELAY,
+    }
+    with _cf_retry_lock:
+        # Dedupe by domain
+        _cf_retry_queue[:] = [
+            x for x in _cf_retry_queue
+            if (x.get('domain') or x.get('subdomain')) != (domain or subdomain)
+        ]
+        if len(_cf_retry_queue) >= _CF_RETRY_QUEUE_MAX:
+            _cf_retry_queue.pop(0)
+        _cf_retry_queue.append(item)
+    logger.info('CF retry queued: %s (%s)', reason, domain or subdomain)
+
+
+def process_cf_retry_queue(max_items: int = 3) -> list:
+    """Process due retry queue items with exponential backoff. Returns results."""
+    now = time.time()
+    due = []
+    with _cf_retry_lock:
+        keep = []
+        for item in _cf_retry_queue:
+            if item.get('next_at', 0) <= now and len(due) < max_items:
+                due.append(item)
+            else:
+                keep.append(item)
+        _cf_retry_queue[:] = keep
+
+    results = []
+    for item in due:
+        attempts = int(item.get('attempts') or 0) + 1
+        subdomain = item.get('subdomain') or ''
+        domain = item.get('domain') or full_domain(subdomain)
+        try:
+            if not is_online():
+                item['attempts'] = attempts
+                item['next_at'] = now + min(3600, _CF_API_BASE_DELAY * (2 ** attempts))
+                with _cf_retry_lock:
+                    _cf_retry_queue.append(item)
+                results.append({'ok': False, 'reason': 'offline', 'domain': domain})
+                continue
+            # Prefer reconcile/repair over full reprovision when infra exists
+            rep = reconcile_cloudflare_state(force_dns=True, verify_https=True)
+            if rep.get('active'):
+                results.append({'ok': True, 'action': 'reconcile', 'domain': domain})
+                continue
+            if _get_cloudflare_api_token() and subdomain:
+                r = run_auto_cloudflare_setup()
+                results.append({
+                    'ok': bool(r.get('ok')),
+                    'action': 'auto_setup',
+                    'domain': domain,
+                })
+                if not r.get('ok') and attempts < 8:
+                    item['attempts'] = attempts
+                    item['next_at'] = now + min(
+                        3600, _CF_API_BASE_DELAY * (2 ** attempts))
+                    with _cf_retry_lock:
+                        _cf_retry_queue.append(item)
+            else:
+                results.append({'ok': False, 'reason': 'no_token', 'domain': domain})
+        except Exception as e:
+            logger.warning('CF retry failed: %s', _redact_secrets(str(e)))
+            if attempts < 8:
+                item['attempts'] = attempts
+                item['next_at'] = now + min(3600, _CF_API_BASE_DELAY * (2 ** attempts))
+                with _cf_retry_lock:
+                    _cf_retry_queue.append(item)
+            results.append({'ok': False, 'error': _redact_secrets(str(e))[:200]})
+    return results
+
+
+def reconcile_cloudflare_state(
+    force_dns: bool = False,
+    verify_https: bool = True,
+    log: Optional[_SetupLog] = None,
+) -> dict:
+    """
+    Repair DB/config vs Cloudflare reality.
+    - normalize tokens
+    - sync remote ingress port
+    - upsert DNS if management token present
+    - set ACTIVE only when DNS + HTTPS OK
+    """
+    log = log or _SetupLog()
+    report = {
+        'ok': False,
+        'active': False,
+        'steps': [],
+        'domain': '',
+        'errors': [],
+    }
+    try:
+        normalize_cloudflare_tokens()
+        report['steps'].append({'name': 'normalize_tokens', 'ok': True})
+    except Exception as e:
+        report['steps'].append({
+            'name': 'normalize_tokens', 'ok': False,
+            'detail': _redact_secrets(str(e))[:120]})
+
+    cfg = load_web_config()
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    tunnel_id = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    report['domain'] = domain
+
+    if not cfg.get('remote_enabled') and not domain:
+        report['ok'] = True
+        report['detail'] = 'remote disabled'
+        return report
+
+    try:
+        ensure_remote_ingress_port(log=log)
+        report['steps'].append({'name': 'ingress', 'ok': True})
+    except Exception as e:
+        report['steps'].append({
+            'name': 'ingress', 'ok': False,
+            'detail': _redact_secrets(str(e))[:120]})
+
+    if force_dns and domain and tunnel_id and _get_cloudflare_api_token():
+        try:
+            zone_id = _cf_zone_id(BASE_DOMAIN)
+            _api_ensure_dns_cname(zone_id, domain, tunnel_id, log)
+            report['steps'].append({'name': 'dns_upsert', 'ok': True})
+        except Exception as e:
+            report['errors'].append(_redact_secrets(str(e))[:200])
+            report['steps'].append({
+                'name': 'dns_upsert', 'ok': False,
+                'detail': _redact_secrets(str(e))[:120]})
+
+    dns_ok = False
+    https_ok = False
+    if domain:
+        dns_ok = _dns_resolves_via(domain, '1.1.1.1')[0] or _dns_resolves(domain)[0]
+        if verify_https and dns_ok:
+            https_ok, det = _http_check(f'https://{domain}/api/health', timeout=10)
+            if not https_ok:
+                https_ok, det = _http_check(f'https://{domain}/', timeout=10)
+            report['https_detail'] = det
+
+    active = mark_remote_active_if_healthy(
+        domain=domain,
+        tunnel_id=tunnel_id,
+        verify={'remote_https_ok': https_ok, 'dns_ok': dns_ok, 'public_dns_ok': dns_ok},
+    )
+    report['active'] = active
+    report['dns_ok'] = dns_ok
+    report['https_ok'] = https_ok
+    report['ok'] = True
+    report['tunnel_running'] = _cloudflared_running()
+    report['has_management_token'] = bool(_get_cloudflare_api_token())
+    report['wrong_token_type'] = bool(
+        _is_tunnel_run_token(_token_from_sources()) and not _get_cloudflare_api_token()
+    )
+    if not active and domain:
+        enqueue_cf_retry('reconcile_pending', cfg.get('tunnel_subdomain', ''), domain)
+    return report
+
+
+def get_cloudflare_health_panel() -> dict:
+    """
+    Structured admin diagnostic payload for Settings / Diagnostics.
+    No secrets — tokens shown as type/valid only.
+    """
+    cfg = load_web_config()
+    domain = (cfg.get('tunnel_domain') or '').strip()
+    has_mgmt = bool(_get_cloudflare_api_token())
+    has_run = bool(_get_tunnel_run_token())
+    raw = _token_from_sources()
+    wrong = _is_tunnel_run_token(raw) and not has_mgmt
+    token_label = (
+        'management (cfat_)' if has_mgmt else (
+            'connector only (cfut_/JWT)' if has_run or wrong else 'missing')
+    )
+    token_valid = False
+    token_detail = ''
+    zone_ok = False
+    zone_detail = ''
+    if has_mgmt:
+        try:
+            token_valid, token_detail = verify_management_api_token()
+            if token_valid:
+                try:
+                    zid = _cf_zone_id(BASE_DOMAIN)
+                    zone_ok = bool(zid)
+                    zone_detail = f'{BASE_DOMAIN} ({zid[:8]}…)'
+                except Exception as e:
+                    zone_detail = _redact_secrets(str(e))[:120]
+        except Exception as e:
+            token_detail = _redact_secrets(str(e))[:120]
+
+    dns_ok, dns_detail = (False, 'n/a')
+    ssl_ok, ssl_detail = (False, 'n/a')
+    if domain:
+        dns_ok, dns_detail = _dns_resolves_via(domain, '1.1.1.1')
+        if not dns_ok:
+            dns_ok, dns_detail = _dns_resolves(domain)
+        if dns_ok:
+            ssl_ok, ssl_detail = _http_check(f'https://{domain}/api/health', timeout=8)
+
+    with _cf_retry_lock:
+        queue_len = len(_cf_retry_queue)
+        failed = [
+            {'domain': x.get('domain'), 'reason': x.get('reason'),
+             'attempts': x.get('attempts')}
+            for x in list(_cf_retry_queue)[-10:]
+        ]
+
+    st = get_remote_dashboard_status()
+    # Override ACTIVE presentation: remote_setup_ok alone is not enough
+    active = bool(
+        cfg.get('remote_setup_ok') and dns_ok and (ssl_ok or st.get('state') == 'running')
+        and ssl_ok
+    )
+    return {
+        'timestamp': datetime.now().isoformat(),
+        'connection_state': 'active' if active else st.get('state'),
+        'domain': domain,
+        'subdomain': cfg.get('tunnel_subdomain', ''),
+        'token_type': token_label,
+        'token_valid': token_valid,
+        'token_detail': _redact_secrets(token_detail)[:160],
+        'wrong_token_type': wrong,
+        'zone_ok': zone_ok,
+        'zone_detail': zone_detail,
+        'dns_ok': dns_ok,
+        'dns_detail': dns_detail,
+        'ssl_ok': ssl_ok,
+        'ssl_detail': ssl_detail,
+        'tunnel_running': _cloudflared_running(),
+        'remote_setup_ok': bool(cfg.get('remote_setup_ok')),
+        'remote_setup_pending': bool(cfg.get('remote_setup_pending')),
+        'last_error': _redact_secrets(cfg.get('last_provision_error') or '')[:200],
+        'last_api_error': dict(_cf_last_api_error),
+        'retry_queue_len': queue_len,
+        'failed_domains': failed,
+        'config_path': str(get_config_path()),
+        'fallback_config': str(get_config_fallback_path()),
+        'log_path': str(get_log_path()),
+        'tenant_note': (
+            'Single-tenant per PC: Host routes to local Flask only; '
+            'no multi-shop Host→DB lookup.'
+        ),
+    }
+
+
 def refresh_remote_setup_status(save: bool = True) -> bool:
     """
-    Mark remote_setup_ok when the tunnel is clearly working.
-    Fixes UI stuck on 'setup in progress' after a good install.
+    Mark remote_setup_ok ONLY when DNS + HTTPS health are OK.
+    DNS-only or process-only is NOT enough (prevents false ACTIVE).
     """
     cfg = load_web_config()
     if not cfg.get('remote_enabled'):
         return False
-    if cfg.get('remote_setup_ok'):
-        return True
     domain = (cfg.get('tunnel_domain') or '').strip()
     tunnel_id = (cfg.get('tunnel_id') or '').strip()
     if not domain or not tunnel_id:
         return False
 
-    live = (
-        _cloudflared_running()
-        or _dns_resolves_via(domain, '1.1.1.1')[0]
-        or _dns_resolves(domain)[0]
-    )
-    if live and save:
-        save_web_config({
-            'remote_setup_ok': True,
-            'remote_setup_at': datetime.now().isoformat(),
-        })
-        logger.info('remote_setup_ok refreshed — %s is live', domain)
-        return True
-    return bool(live)
+    if cfg.get('remote_setup_ok'):
+        # Re-validate periodically — demote if health lost
+        dns_ok = _dns_resolves_via(domain, '1.1.1.1')[0] or _dns_resolves(domain)[0]
+        https_ok = False
+        if dns_ok:
+            https_ok, _ = _http_check(f'https://{domain}/api/health', timeout=8)
+        if https_ok:
+            return True
+        if save:
+            save_web_config({
+                'remote_setup_ok': False,
+                'remote_setup_pending': True,
+                'last_provision_error': 'health check failed — demoted from ACTIVE',
+            })
+            logger.warning('remote_setup_ok demoted — HTTPS fail for %s', domain)
+        return False
+
+    dns_ok = _dns_resolves_via(domain, '1.1.1.1')[0] or _dns_resolves(domain)[0]
+    https_ok = False
+    if dns_ok:
+        https_ok, _ = _http_check(f'https://{domain}/api/health', timeout=8)
+        if not https_ok:
+            https_ok, _ = _http_check(f'https://{domain}/', timeout=8)
+    if not (dns_ok and https_ok):
+        return False
+    if save:
+        return mark_remote_active_if_healthy(
+            domain=domain,
+            tunnel_id=tunnel_id,
+            verify={'remote_https_ok': True, 'dns_ok': True, 'public_dns_ok': True},
+        )
+    return True
 
 
 def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
@@ -2180,12 +2745,15 @@ class CloudflareTunnelService:
                     ensure_remote_ingress_port()
                 except Exception:
                     pass
-                # Mark setup OK once tunnel stays up — avoids re-prompt loops
-                if not cfg.get('remote_setup_ok'):
+                # Do NOT mark ACTIVE here — only DNS+HTTPS health may set remote_setup_ok
+                try:
+                    refresh_remote_setup_status(save=True)
+                except Exception:
+                    pass
+                if not cfg.get('tunnel_id') and (cfg_tid or yml_tid):
                     save_web_config({
-                        'remote_setup_ok': True,
-                        'remote_setup_at': datetime.now().isoformat(),
-                        'tunnel_id': cfg_tid or yml_tid or cfg.get('tunnel_id', ''),
+                        'tunnel_id': cfg_tid or yml_tid,
+                        'remote_setup_pending': not bool(cfg.get('remote_setup_ok')),
                     })
             return ok or _cloudflared_running()
 
@@ -2244,7 +2812,9 @@ def _remote_infra_ready() -> bool:
 def get_remote_dashboard_status() -> dict:
     """
     Structured status for Settings UI.
-    state: off | needs_setup | configured | running | vendor_token_missing | broken
+    state: off | needs_setup | configured | running | active |
+           pending | vendor_token_missing | broken
+    ACTIVE (`active`) only when remote_setup_ok AND we are not knowingly pending.
     """
     cfg = load_web_config()
     domain = (cfg.get('tunnel_domain') or '').strip()
@@ -2254,6 +2824,8 @@ def get_remote_dashboard_status() -> dict:
     has_mgmt = bool(_get_cloudflare_api_token())
     has_cert = has_cloudflare_login()
     has_run = bool(_get_tunnel_run_token())
+    setup_ok = bool(cfg.get('remote_setup_ok'))
+    pending = bool(cfg.get('remote_setup_pending')) and not setup_ok
     raw = _token_from_sources()
     bad_tok = (
         _is_tunnel_run_token(raw)
@@ -2265,9 +2837,22 @@ def get_remote_dashboard_status() -> dict:
     if not remote and not has_mgmt:
         state = 'off'
         detail = 'LAN only — remote access disabled'
+    elif setup_ok and domain and running:
+        state = 'active'
+        detail = f'ACTIVE https://{domain}'
+    elif setup_ok and domain:
+        state = 'active'
+        detail = f'ACTIVE https://{domain} — start MBT POS to keep tunnel up'
+    elif pending and ready:
+        state = 'pending'
+        detail = (
+            f'Configured — waiting DNS/HTTPS for https://{domain}'
+            if domain else 'Configured — waiting DNS/HTTPS verify')
     elif running and (ready or domain):
         state = 'running'
-        detail = f'https://{domain}' if domain else 'Tunnel process running'
+        detail = (
+            f'Tunnel up for https://{domain} — verifying HTTPS…'
+            if domain else 'Tunnel process running')
     elif ready:
         state = 'configured'
         detail = (
@@ -2304,11 +2889,14 @@ def get_remote_dashboard_status() -> dict:
         'remote_enabled': remote,
         'running': running,
         'configured': ready,
-        'remote_setup_ok': bool(cfg.get('remote_setup_ok')),
+        'remote_setup_ok': setup_ok,
+        'remote_setup_pending': pending,
+        'active': state == 'active',
         'has_management_token': has_mgmt,
         'has_cert': has_cert,
         'wrong_token_type': bad_tok,
         'cloudflared_dir': str(get_cloudflared_dir()),
+        'last_error': _redact_secrets(cfg.get('last_provision_error') or '')[:200],
     }
 
 
@@ -2366,7 +2954,11 @@ def needs_auto_cloudflare_setup() -> tuple[bool, str]:
 
 
 def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dict:
-    """Start existing tunnel or provision once via management API. No shop browser login."""
+    """Start existing tunnel or provision once via management API. No shop browser login.
+
+    Soft-fails on config write / DNS issues so an existing remote URL / tunnel
+    can still start. Never blocks the Qt UI (caller must use a background thread).
+    """
     global _auto_cf_running
     with _auto_cf_lock:
         if _auto_cf_running:
@@ -2394,7 +2986,10 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
                     apply_shop_pc_dns_fix(log)
                 except Exception:
                     pass
-            refresh_remote_setup_status()
+            try:
+                refresh_remote_setup_status()
+            except Exception:
+                pass
             return {
                 'ok': ok or bool(load_web_config().get('remote_setup_ok')) or _cloudflared_running(),
                 'action': reason,
@@ -2404,16 +2999,33 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
         if reason == 'start_token_tunnel':
             log.info('Starting Cloudflare tunnel via connector token…')
             save_web_config({'remote_enabled': True})
-            apply_shop_pc_dns_fix(log)
+            try:
+                apply_shop_pc_dns_fix(log)
+            except Exception:
+                pass
             ok = CloudflareTunnelService().start()
             if ok:
-                save_web_config({
-                    'remote_setup_ok': True,
-                    'remote_setup_at': datetime.now().isoformat(),
-                })
-                refresh_remote_setup_status()
+                # Do NOT mark ACTIVE on process start alone — refresh requires DNS+HTTPS
+                try:
+                    active = refresh_remote_setup_status(save=True)
+                except Exception:
+                    active = False
+                if not active:
+                    save_web_config({
+                        'remote_setup_pending': True,
+                        'remote_setup_at': datetime.now().isoformat(),
+                    })
+                    try:
+                        enqueue_cf_retry(
+                            'token_tunnel_pending_https',
+                            load_web_config().get('tunnel_subdomain', ''),
+                            load_web_config().get('tunnel_domain', ''),
+                        )
+                    except Exception:
+                        pass
                 return {
                     'ok': True,
+                    'active': bool(active),
                     'action': 'start_token_tunnel',
                     'domain': load_web_config().get('tunnel_domain', ''),
                 }
@@ -2440,22 +3052,62 @@ def run_auto_cloudflare_setup(log_callback: Optional[LogCallback] = None) -> dic
             return {'ok': False, 'error': 'Set shop name in Settings first'}
 
         log.info(f'Automatic Cloudflare setup for {shop}…')
-        apply_shop_pc_dns_fix(log)
+        try:
+            apply_shop_pc_dns_fix(log)
+        except Exception as dns_e:
+            log.warn(f'DNS fix skipped/failed (will retry later): {dns_e}')
         cfg = load_web_config()
         sub = (cfg.get('tunnel_subdomain') or '').strip() or shop_to_subdomain(shop)
+        # Config write must never abort tunnel provisioning (shop PermissionError)
         save_web_config({'remote_enabled': True})
         result = CloudflareSetup(
             shop, subdomain=sub, log_callback=log_callback,
             force_relogin=False,
         ).run()
         if result.get('ok'):
-            sync_cloudflared_state()
-            CloudflareTunnelService().start()
-            refresh_remote_setup_status()
-        result['action'] = 'full_setup'
+            try:
+                sync_cloudflared_state()
+            except Exception:
+                pass
+            try:
+                CloudflareTunnelService().start()
+            except Exception as te:
+                logger.warning('Tunnel start after setup: %s', te)
+            try:
+                refresh_remote_setup_status()
+            except Exception:
+                pass
+        else:
+            # Soft recovery: if infra already on disk, still try to start tunnel
+            if _remote_infra_ready() and not _cloudflared_running():
+                try:
+                    started = CloudflareTunnelService().start()
+                    if started:
+                        result = {
+                            'ok': True,
+                            'action': 'start_after_setup_partial',
+                            'domain': load_web_config().get('tunnel_domain', ''),
+                            'warning': result.get('error') or 'setup partial; tunnel started',
+                        }
+                except Exception:
+                    pass
+        result['action'] = result.get('action') or 'full_setup'
         return result
     except Exception as e:
         logger.exception('run_auto_cloudflare_setup: %s', e)
+        # Last-chance: start existing tunnel even if setup threw (e.g. old RO config)
+        try:
+            if _remote_infra_ready() and not _cloudflared_running():
+                ok = CloudflareTunnelService().start()
+                if ok:
+                    return {
+                        'ok': True,
+                        'action': 'start_after_exception',
+                        'domain': load_web_config().get('tunnel_domain', ''),
+                        'warning': str(e),
+                    }
+        except Exception:
+            pass
         return {'ok': False, 'error': str(e)}
     finally:
         with _auto_cf_lock:
@@ -2467,6 +3119,12 @@ def _auto_cf_worker():
     _auto_cf_stop.wait(AUTO_CF_FIRST_DELAY)
     warned_vendor = False
     while not _auto_cf_stop.is_set():
+        # Drain rate-limit / pending-HTTPS queue first
+        try:
+            process_cf_retry_queue(max_items=2)
+        except Exception as e:
+            logger.debug('CF retry queue: %s', e)
+
         need, reason = needs_auto_cloudflare_setup()
         if reason in ('needs_one_time_setup', 'vendor_token_missing'):
             if not warned_vendor:
@@ -2496,6 +3154,15 @@ def _auto_cf_worker():
         if result.get('ok'):
             dom = result.get('domain', '')
             logger.info('Auto Cloudflare OK — %s', dom or result.get('action', 'ok'))
+            if not result.get('active') and not result.get('remote_ok'):
+                try:
+                    enqueue_cf_retry(
+                        'pending_https_after_auto',
+                        load_web_config().get('tunnel_subdomain', ''),
+                        dom,
+                    )
+                except Exception:
+                    pass
             if cb_ok:
                 try:
                     cb_ok(result)
@@ -2518,7 +3185,11 @@ def _auto_cf_worker():
             err = result.get('error') or result.get('errors', ['unknown'])
             if isinstance(err, list):
                 err = '; '.join(str(x) for x in err[:3])
-            logger.warning('Auto Cloudflare failed: %s', err)
+            logger.warning('Auto Cloudflare failed: %s', _redact_secrets(str(err)))
+            try:
+                enqueue_cf_retry('auto_failed', '', load_web_config().get('tunnel_domain', ''))
+            except Exception:
+                pass
             if cb_fail:
                 try:
                     cb_fail(result)

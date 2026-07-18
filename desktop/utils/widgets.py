@@ -62,22 +62,26 @@ class Card(QFrame):
     """Standard section card with optional accent top-bar (Lovable rounded-xl)."""
     def __init__(self, parent=None, accent=None, flat=False):
         super().__init__(parent)
+        self.setObjectName('mbtCard')
         self._accent = accent
         self._flat = flat
         self.refresh_theme()
 
     def refresh_theme(self):
+        # Scope to #mbtCard only — bare `QFrame { border }` bled onto child
+        # frames and looked like a spreadsheet of nested boxes.
         r = RADIUS['xl']
         if self._flat:
             self.setStyleSheet(
-                f"QFrame {{ background:{C['card2']}; border:none; border-radius:{r}px; }}")
+                f"QFrame#mbtCard {{ background:{C['card2']}; border:none; "
+                f"border-radius:{r}px; }}")
         elif self._accent:
             self.setStyleSheet(
-                f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
+                f"QFrame#mbtCard {{ background:{C['card']}; border:1px solid {C['border']}; "
                 f"border-top:3px solid {self._accent}; border-radius:{r}px; }}")
         else:
             self.setStyleSheet(
-                f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
+                f"QFrame#mbtCard {{ background:{C['card']}; border:1px solid {C['border']}; "
                 f"border-radius:{r}px; }}")
 
     def layout_v(self, margins=(20, 16, 20, 16), spacing=14):

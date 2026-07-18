@@ -1,0 +1,33 @@
+{
+  "name": "supermarket",
+  "description": "Fast checkout supermarket feel",
+  "events": {
+    "startup": "library/startup.wav",
+    "login_success": "library/login_ok.wav",
+    "login_fail": "library/login_fail.wav",
+    "barcode_scan": "library/barcode.wav",
+    "product_add": "library/barcode.wav",
+    "product_remove": "library/product_remove.wav",
+    "sale_complete": "library/success.wav",
+    "void": "library/void.wav",
+    "payment_cash": "library/pay_cash.wav",
+    "payment_mpesa": "library/pay_mpesa.wav",
+    "payment_card": "library/pay_card.wav",
+    "payment_credit": "library/pay_credit.wav",
+    "low_stock": "library/low_stock.wav",
+    "error": "library/error.wav",
+    "warning": "library/warning.wav",
+    "success": "library/success.wav",
+    "ai_thinking": "library/ai_thinking.wav",
+    "ai_ready": "library/ai_ready.wav",
+    "permission_denied": "library/permission.wav",
+    "dialog_open": "library/dialog_open.wav",
+    "dialog_close": "library/dialog_close.wav",
+    "save": "library/save.wav",
+    "delete": "library/delete.wav",
+    "nav_switch": "library/nav.wav",
+    "click": "library/click.wav",
+    "notification": "library/notify.wav",
+    "accounting_post": "library/success.wav"
+  }
+}

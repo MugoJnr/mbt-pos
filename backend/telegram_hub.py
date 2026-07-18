@@ -20,6 +20,9 @@ logger = logging.getLogger('telegram_hub')
 
 POLL_TIMEOUT = 20
 RETRY_DELAY = 5
+# DNS / offline: escalate sleep so we do not spam getUpdates every 5s forever
+DNS_BACKOFF_START = 5
+DNS_BACKOFF_MAX = 120
 
 _hub_lock = threading.Lock()
 _hub_instance: Optional['TelegramHub'] = None
@@ -29,12 +32,37 @@ _TG_BOT_URL_RE = re.compile(
     r'(https?://api\.telegram\.org/bot)([^/\s\'\"]+)',
     re.IGNORECASE,
 )
+_TG_BOT_PATH_RE = re.compile(
+    r'(/bot)(\d{6,}:[A-Za-z0-9_-]{15,})',
+    re.IGNORECASE,
+)
+_TG_TOKEN_BARE_RE = re.compile(
+    r'\b(\d{8,}:[A-Za-z0-9_-]{20,})\b',
+)
 
 
 def _redact_telegram_url(text: object) -> str:
     """Strip bot tokens from exception / URL strings before logging."""
     s = str(text)
-    return _TG_BOT_URL_RE.sub(r'\1***', s)
+    s = _TG_BOT_URL_RE.sub(r'\1***', s)
+    s = _TG_BOT_PATH_RE.sub(r'\1***', s)
+    return _TG_TOKEN_BARE_RE.sub('***', s)
+
+
+def _is_dns_or_offline_error(exc: BaseException) -> bool:
+    """True for getaddrinfo / NameResolution / offline-style failures."""
+    msg = _redact_telegram_url(exc).lower()
+    needles = (
+        'failed to resolve',
+        'getaddrinfo',
+        'nameresolutionerror',
+        'name or service not known',
+        'nodename nor servname',
+        'temporary failure in name resolution',
+        'network is unreachable',
+        'unreachable',
+    )
+    return any(n in msg for n in needles)
 
 
 def _offset_path() -> str:
@@ -115,6 +143,74 @@ class TelegramHub(threading.Thread):
         self._capture_cb: Optional[Callable[[dict], bool]] = None
         self._capture_until = 0.0
 
+        # Soft-fail status for Settings / diagnostics (POS keeps running offline)
+        self._status = 'starting'  # starting | online | dns_fail | offline | no_token
+        self._status_detail = ''
+        self._fail_streak = 0
+        self._backoff_sec = RETRY_DELAY
+        self._dns_logged = False
+
+    def get_status(self) -> dict:
+        """Lightweight connection status — never includes bot token."""
+        return {
+            'state': self._status,
+            'detail': self._status_detail,
+            'fail_streak': self._fail_streak,
+            'backoff_sec': self._backoff_sec,
+        }
+
+    def _set_status(self, state: str, detail: str = ''):
+        self._status = state
+        self._status_detail = _redact_telegram_url(detail) if detail else ''
+
+    def _on_poll_ok(self):
+        if self._fail_streak or self._status != 'online':
+            logger.info('Telegram hub connected (api.telegram.org reachable)')
+        self._fail_streak = 0
+        self._backoff_sec = RETRY_DELAY
+        self._dns_logged = False
+        self._set_status('online')
+
+    def _on_poll_fail(self, exc: BaseException):
+        """Backoff on DNS/offline; keep POS usable. Never log raw tokens."""
+        self._fail_streak += 1
+        safe = _redact_telegram_url(exc)
+        dns = _is_dns_or_offline_error(exc)
+        if dns:
+            self._set_status(
+                'dns_fail',
+                'Cannot resolve api.telegram.org — check DNS / internet',
+            )
+            # Escalate: 5 → 10 → 20 → 40 → … → 120s
+            self._backoff_sec = min(
+                DNS_BACKOFF_MAX,
+                max(DNS_BACKOFF_START, self._backoff_sec * 2)
+                if self._fail_streak > 1 else DNS_BACKOFF_START,
+            )
+            if not self._dns_logged:
+                logger.warning(
+                    'Telegram DNS/offline: %s — backing off (POS sales still work)',
+                    safe,
+                )
+                self._dns_logged = True
+            else:
+                logger.debug(
+                    'Telegram still unreachable (backoff %ss, streak %s): %s',
+                    self._backoff_sec, self._fail_streak, safe,
+                )
+        else:
+            self._set_status('offline', safe)
+            self._backoff_sec = min(
+                DNS_BACKOFF_MAX,
+                RETRY_DELAY * min(self._fail_streak, 8),
+            )
+            # Log first + every 10th failure to avoid spam
+            if self._fail_streak == 1 or self._fail_streak % 10 == 0:
+                logger.warning('getUpdates error: %s', safe)
+            else:
+                logger.debug('getUpdates error: %s', safe)
+        self._stop.wait(self._backoff_sec)
+
     def set_admin_handler(self, handler: Callable):
         """handler(update: dict, reply_fn: Callable[[str], None]) -> None"""
         self._admin_handler = handler
@@ -179,13 +275,14 @@ class TelegramHub(threading.Thread):
             try:
                 self._poll_once()
             except Exception as e:
-                logger.warning('Telegram hub poll error: %s', _redact_telegram_url(e))
-                self._stop.wait(RETRY_DELAY)
+                # Outer safety net — never crash POS because Telegram failed
+                self._on_poll_fail(e)
 
     def _poll_once(self):
         cfg = self.config_getter() or {}
         token = resolve_bot_token(cfg)
         if not token:
+            self._set_status('no_token', 'No bot token configured')
             self._stop.wait(30)
             return
 
@@ -204,16 +301,19 @@ class TelegramHub(threading.Thread):
                 timeout=POLL_TIMEOUT + 10,
             )
         except requests.exceptions.Timeout:
+            # Long-poll idle timeout is normal; stay ready
             return
         except Exception as e:
-            logger.warning('getUpdates error: %s', _redact_telegram_url(e))
-            self._stop.wait(RETRY_DELAY)
+            self._on_poll_fail(e)
             return
 
         if not r.ok:
-            self._stop.wait(RETRY_DELAY)
+            self._on_poll_fail(
+                RuntimeError(f'HTTP {r.status_code} from api.telegram.org')
+            )
             return
 
+        self._on_poll_ok()
         for upd in r.json().get('result', []):
             with self._offset_lock:
                 self._offset = max(self._offset, upd.get('update_id', 0) + 1)
@@ -237,7 +337,7 @@ class TelegramHub(threading.Thread):
                     timeout=10,
                 )
             except Exception as e:
-                logger.warning(f'Telegram reply error: {e}')
+                logger.warning('Telegram reply error: %s', _redact_telegram_url(e))
 
         # 1. Short-lived capture (connect / wait-for-key)
         with self._capture_lock:

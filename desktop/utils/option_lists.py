@@ -13,16 +13,26 @@ from typing import Iterable, List, Optional, Tuple
 # ── Void / Consumption / Stock ────────────────────────────────────────────────
 
 VOID_REASONS = (
-    'Customer Request',
-    'Wrong Item Sold',
-    'Wrong Price / Amount',
     'Duplicate Sale',
+    'Wrong Product',
+    'Wrong Quantity',
+    'Customer Cancelled',
     'Payment Failed',
     'Cashier Error',
-    'Manager Override',
-    'Fraud / Suspicion',
+    'Pricing Error',
+    'Test Transaction',
+    'Fraud Suspected',
     'Other',
 )
+
+# Legacy labels → current catalog (history display / filters)
+VOID_REASON_ALIASES = {
+    'Customer Request': 'Customer Cancelled',
+    'Wrong Item Sold': 'Wrong Product',
+    'Wrong Price / Amount': 'Pricing Error',
+    'Manager Override': 'Cashier Error',
+    'Fraud / Suspicion': 'Fraud Suspected',
+}
 
 CONSUMPTION_REASONS = (
     'Production',

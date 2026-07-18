@@ -11,17 +11,18 @@ ROLE_SUPERADMIN = 'superadmin'
 ALL_DESKTOP_TABS = [
     'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
     'reports', 'notes', 'settings', 'admin', 'license', 'diagnostics', 'security',
+    'ai_ops',
 ]
 
 TAB_PERMISSIONS_BY_ROLE = {
     ROLE_SUPERADMIN: list(ALL_DESKTOP_TABS),
     ROLE_ADMIN: [
         'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
-        'reports', 'notes', 'settings', 'admin', 'diagnostics',
+        'reports', 'notes', 'settings', 'admin', 'diagnostics', 'ai_ops',
     ],
     ROLE_MANAGER: [
         'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
-        'reports', 'notes', 'settings',
+        'reports', 'notes', 'settings', 'ai_ops',
     ],
     ROLE_CASHIER: ['dashboard', 'sales'],
     ROLE_VIEWER: ['dashboard', 'reports', 'accounting'],
@@ -67,6 +68,9 @@ def sanitize_tab_permissions(role: str, perms) -> list:
     out = list(perms or [])
     if role != ROLE_SUPERADMIN:
         out = [p for p in out if p not in ('security', 'license')]
+    # ai_ops is manager+ only — strip for cashier/viewer even if somehow granted
+    if role in (ROLE_CASHIER, ROLE_VIEWER):
+        out = [p for p in out if p != 'ai_ops']
     return out
 
 

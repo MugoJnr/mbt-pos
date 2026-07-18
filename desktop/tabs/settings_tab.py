@@ -301,8 +301,8 @@ class SettingsTab(QWidget):
             'Send daily database backup to Telegram (disaster recovery)')
         self.auto_db_backup.setMinimumHeight(36)
         rep_hint = QLabel(
-            'Requires Telegram connected below. Sales reports send when internet comes back '
-            '(about 1 minute after reconnect), then every 4 hours while online. '
+            'Requires Telegram connected below. One daily Excel report per shop per date '
+            '(queued offline, sent when online, catch-up for missed days). '
             'Database backups go to your Telegram and the developer copy once every 24 hours.')
         rep_hint.setWordWrap(True)
         rep_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
@@ -488,6 +488,10 @@ class SettingsTab(QWidget):
         self._cf_setup_btn.clicked.connect(self._cf_setup_or_fix)
         self._cf_test_btn = SecondaryBtn('Test Connection', 40)
         self._cf_test_btn.clicked.connect(self._test_cloudflare)
+        self._cf_repair_btn = SecondaryBtn('Repair', 40)
+        self._cf_repair_btn.setToolTip(
+            'Reconcile DNS/ingress, re-check HTTPS, drain retry queue. No browser login.')
+        self._cf_repair_btn.clicked.connect(self._repair_cloudflare)
         self._cf_relogin_btn = SecondaryBtn('Vendor recovery', 40)
         self._cf_relogin_btn.setToolTip(
             'Emergency only — browser login to Cloudflare. '
@@ -495,9 +499,16 @@ class SettingsTab(QWidget):
         self._cf_relogin_btn.clicked.connect(lambda: self._run_cloudflare_setup(True))
         cf_btn_row.addWidget(self._cf_setup_btn)
         cf_btn_row.addWidget(self._cf_test_btn)
+        cf_btn_row.addWidget(self._cf_repair_btn)
         cf_btn_row.addWidget(self._cf_relogin_btn)
         cf_btn_row.addStretch()
         rbl.addLayout(cf_btn_row)
+
+        self._cf_health = QLabel('')
+        self._cf_health.setWordWrap(True)
+        self._cf_health.setStyleSheet(
+            f"color:{C['muted']}; font-size:11px; font-family:Consolas; background:transparent;")
+        rbl.addWidget(self._cf_health)
 
         self._cf_status = QLabel(
             'Remote access auto-provisions on launch when the vendor API token is installed.')
@@ -519,6 +530,22 @@ class SettingsTab(QWidget):
         self._cf_mode_remote.toggled.connect(self._toggle_cf_remote_box)
         wg_body.addLayout(_wg_lay)
         lay.addWidget(wg)
+
+        # ── MBT Cloud Backup (Supabase encrypted snapshots) ───────────────────
+        try:
+            from desktop.tabs.cloud_backup_panel import CloudBackupPanel
+            self._cloud_panel = CloudBackupPanel(self)
+            lay.addWidget(self._cloud_panel)
+        except Exception as _ce:
+            self._cloud_panel = None
+
+        # ── Audio Experience (offline themes + collision modes) ───────────────
+        try:
+            from desktop.tabs.audio_settings_panel import AudioSettingsPanel
+            self._audio_panel = AudioSettingsPanel(self)
+            lay.addWidget(self._audio_panel)
+        except Exception as _ae:
+            self._audio_panel = None
 
         role = self.user.get('user', {}).get('role', '')
         if role in ('admin', 'superadmin'):
@@ -676,7 +703,134 @@ class SettingsTab(QWidget):
             self.autofill_credit_customer_info.setChecked(
                 cfg.get('autofill_credit_customer_info', '1') == '1')
         self._refresh_tg_status()
+        self._refresh_report_health()
         self._refresh_cf_status()
+        self._refresh_cf_health_panel()
+        panel = getattr(self, '_cloud_panel', None)
+        if panel is not None:
+            try:
+                panel.refresh()
+            except Exception:
+                pass
+
+    def _refresh_cf_health_panel(self):
+        """Admin diagnostic strip — token/zone/DNS/SSL (no secrets)."""
+        if not hasattr(self, '_cf_health'):
+            return
+        try:
+            from backend.cloudflare_setup import get_cloudflare_health_panel
+            p = get_cloudflare_health_panel()
+            lines = [
+                f"State: {p.get('connection_state')}  ·  Token: {p.get('token_type')} "
+                f"({'valid' if p.get('token_valid') else 'check'})",
+                f"Zone: {p.get('zone_detail') or '—'}  ·  DNS: "
+                f"{'OK' if p.get('dns_ok') else 'FAIL'}  ·  SSL: "
+                f"{'OK' if p.get('ssl_ok') else 'FAIL'}",
+                f"Tunnel: {'up' if p.get('tunnel_running') else 'down'}  ·  "
+                f"Queue: {p.get('retry_queue_len', 0)}  ·  "
+                f"Err: {p.get('last_error') or '—'}",
+            ]
+            self._cf_health.setText('\n'.join(lines))
+        except Exception as e:
+            self._cf_health.setText(f'Health panel unavailable: {e}')
+
+    def _repair_cloudflare(self):
+        if not self._require_cf_admin():
+            return
+        self._cf_status.setText('⏳ Repairing Cloudflare (DNS/ingress/HTTPS)…')
+        self._cf_repair_btn.setEnabled(False)
+
+        def _cb(level, msg):
+            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+
+        def worker():
+            try:
+                from backend.cloudflare_setup import (
+                    reconcile_cloudflare_state, process_cf_retry_queue, _SetupLog,
+                )
+                log = _SetupLog(_cb)
+                rep = reconcile_cloudflare_state(
+                    force_dns=True, verify_https=True, log=log)
+                process_cf_retry_queue(max_items=3)
+                QTimer.singleShot(0, lambda: self._on_cf_repair_done(rep))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self._on_cf_repair_done(
+                    {'ok': False, 'errors': [str(e)], 'active': False}))
+
+        threading.Thread(target=worker, daemon=True, name='CF-Repair').start()
+
+    def _on_cf_repair_done(self, rep: dict):
+        if hasattr(self, '_cf_repair_btn'):
+            self._cf_repair_btn.setEnabled(True)
+        if rep.get('active'):
+            self._cf_status.setText('✓ Repair OK — remote ACTIVE')
+            self._cf_status.setStyleSheet(
+                f"color:{C['ok']}; font-size:13px; font-weight:600;")
+        elif rep.get('ok'):
+            self._cf_status.setText(
+                'Repair ran — still pending DNS/HTTPS (not ACTIVE yet).')
+            self._cf_status.setStyleSheet(
+                f"color:{C['warn']}; font-size:13px; font-weight:600;")
+        else:
+            errs = '; '.join(rep.get('errors') or ['repair failed'])[:200]
+            self._cf_status.setText(f'✗ Repair: {errs}')
+            self._cf_status.setStyleSheet(
+                f"color:{C['err']}; font-size:13px; font-weight:600;")
+        self._refresh_cf_status()
+        self._refresh_cf_health_panel()
+
+    def _refresh_report_health(self):
+        """Update Automatic Reports health panel (no secrets)."""
+        if not hasattr(self, '_rh_connected'):
+            return
+        try:
+            from backend.telegram_reporter import get_report_health
+            h = get_report_health(self.config_getter)
+        except Exception as e:
+            self._rh_connected.setText(f'Connected: error ({e})')
+            self._rh_sched.setText('Scheduler: —')
+            return
+
+        connected = h.get('telegram_connected')
+        hub = h.get('hub_state') or ''
+        warn = h.get('config_warnings') or []
+        if connected:
+            self._rh_connected.setText(
+                f'Connected: Yes  ·  Hub: {hub or "ok"}')
+            self._rh_connected.setStyleSheet(
+                f"color:{C['ok']}; font-size:12px; background:transparent;")
+        else:
+            tip = warn[0] if warn else 'Connect Telegram below'
+            self._rh_connected.setText(f'Connected: No — {tip}')
+            self._rh_connected.setStyleSheet(
+                f"color:{C['warn']}; font-size:12px; background:transparent;")
+
+        last_date = h.get('last_report_date') or 'never'
+        last_st = h.get('last_report_status') or 'none'
+        sent_at = h.get('last_sent_at') or ''
+        self._rh_last.setText(
+            f'Last Report: {last_date} ({last_st})'
+            + (f'  ·  {sent_at}' if sent_at else '')
+        )
+
+        pending = h.get('delivery_pending', 0)
+        failed = h.get('delivery_failed', 0)
+        self._rh_delivery.setText(
+            f'Delivery: {pending} pending / retrying  ·  {failed} failed'
+        )
+        self._rh_failed.setText(
+            f"Failed Attempts: {h.get('failed_attempts', 0)}"
+        )
+
+        sched = h.get('scheduler') or 'STOPPED'
+        detail = h.get('scheduler_detail') or ''
+        self._rh_sched.setText(f'Scheduler: {sched}' + (f'  ·  {detail}' if detail else ''))
+        if sched == 'RUNNING':
+            self._rh_sched.setStyleSheet(
+                f"color:{C['ok']}; font-size:12px; background:transparent;")
+        else:
+            self._rh_sched.setStyleSheet(
+                f"color:{C['text2']}; font-size:12px; background:transparent;")
 
     def _refresh_cf_status(self):
         try:
@@ -711,14 +865,14 @@ class SettingsTab(QWidget):
         if remote and domain and setup_ok:
             self._cf_icon.setText('✓')
             self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
-            self._cf_title.setText('Remote dashboard active')
+            self._cf_title.setText('Remote dashboard ACTIVE')
             self._cf_title.setStyleSheet(
                 f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
             self._cf_sub.setText(f'https://{domain}  ·  Keep MBT POS running for remote access.')
             self._cf_status_row.setStyleSheet(
                 f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
-            self._cf_status.setText('Configured — tunnel auto-starts every time you open MBT POS.')
-            self._cf_setup_btn.setText('Set Up Cloudflare')
+            self._cf_status.setText('ACTIVE — DNS + HTTPS verified. Tunnel auto-starts on launch.')
+            self._cf_setup_btn.setText('Repair / Re-check')
         else:
             # Prefer live status helper when available
             st = {}
@@ -732,28 +886,51 @@ class SettingsTab(QWidget):
             detail = st.get('detail') or (
                 f'https://{domain} — finish one-time setup' if domain else
                 'View sales and inventory from anywhere via your mugobyte.com link.')
-            if state == 'running':
+            if state == 'active':
                 self._cf_icon.setText('✓')
                 self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
-                self._cf_title.setText('Remote dashboard running')
+                self._cf_title.setText('Remote dashboard ACTIVE')
                 self._cf_title.setStyleSheet(
                     f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
                 self._cf_sub.setText(detail)
                 self._cf_status_row.setStyleSheet(
                     f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
-                self._cf_status.setText('Tunnel is up. No further setup needed.')
-                self._cf_setup_btn.setText('Set Up Cloudflare')
+                self._cf_status.setText('ACTIVE — DNS + HTTPS verified.')
+                self._cf_setup_btn.setText('Repair / Re-check')
+            elif state == 'pending':
+                self._cf_icon.setText('◐')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
+                self._cf_title.setText('Remote pending DNS/HTTPS')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['warn']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText(
+                    'Infra ready — not ACTIVE until DNS + HTTPS health pass. Use Test / Repair.')
+                self._cf_setup_btn.setText('Retry / Repair')
+            elif state == 'running':
+                self._cf_icon.setText('✓')
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
+                self._cf_title.setText('Tunnel running — verifying…')
+                self._cf_title.setStyleSheet(
+                    f"color:{C['warn']}; font-size:14px; font-weight:700; background:transparent;")
+                self._cf_sub.setText(detail)
+                self._cf_status_row.setStyleSheet(
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText('Tunnel is up. HTTPS verify still needed for ACTIVE.')
+                self._cf_setup_btn.setText('Retry / Repair')
             elif state == 'configured':
                 self._cf_icon.setText('✓')
-                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
+                self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['warn']}; background:transparent;")
                 self._cf_title.setText('Remote dashboard configured')
                 self._cf_title.setStyleSheet(
-                    f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
+                    f"color:{C['warn']}; font-size:14px; font-weight:700; background:transparent;")
                 self._cf_sub.setText(detail)
                 self._cf_status_row.setStyleSheet(
-                    f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};border-radius:10px;}}")
-                self._cf_status.setText('One-time setup done — tunnel auto-starts on app launch.')
-                self._cf_setup_btn.setText('Set Up Cloudflare')
+                    f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:10px;}}")
+                self._cf_status.setText('Configured — awaiting ACTIVE (DNS + HTTPS).')
+                self._cf_setup_btn.setText('Retry / Repair')
             elif state == 'vendor_token_missing':
                 self._cf_icon.setText('!')
                 self._cf_icon.setStyleSheet(f"font-size:22px; color:{C['err']}; background:transparent;")
@@ -810,6 +987,9 @@ class SettingsTab(QWidget):
             btn.setVisible(is_admin)
         # Vendor recovery is emergency-only — keep visible for admin but not primary
         self._cf_test_btn.setEnabled(True)
+        if hasattr(self, '_cf_repair_btn'):
+            self._cf_repair_btn.setEnabled(is_admin)
+            self._cf_repair_btn.setVisible(is_admin)
 
     def _toggle_cf_remote_box(self):
         remote = self._cf_mode_remote.isChecked()
@@ -1000,19 +1180,24 @@ class SettingsTab(QWidget):
         self._cf_test_btn.setEnabled(True)
         self._cf_relogin_btn.setEnabled(True)
         if result.get('ok'):
-            self._save_web_remote_config(remote_setup_ok=True)
+            # ACTIVE only when setup verified HTTPS — never force remote_setup_ok
+            active = bool(result.get('active') or result.get('remote_ok'))
+            self._save_web_remote_config(remote_setup_ok=True if active else False)
             try:
                 from backend.cloudflare_setup import refresh_remote_setup_status
                 refresh_remote_setup_status()
             except Exception:
                 pass
-            remote_ok = result.get('remote_ok', True)
-            self._cf_status.setText(
-                '✓ Cloudflare configured — tunnel auto-starts on every launch. '
-                + ('Remote URL is live.' if remote_ok else
-                   'DNS may take a few minutes — use Test Connection.'))
+            if active:
+                self._cf_status.setText(
+                    '✓ Cloudflare ACTIVE — remote URL is live. '
+                    'Tunnel auto-starts every launch.')
+            else:
+                self._cf_status.setText(
+                    '✓ Tunnel configured — DNS/HTTPS still propagating. '
+                    'Not ACTIVE yet; use Test Connection / Retry in a few minutes.')
             self._cf_status.setStyleSheet(
-                f"color:{C['ok']}; font-size:13px; font-weight:600;")
+                f"color:{C['ok' if active else 'warn']}; font-size:13px; font-weight:600;")
         else:
             errs = '; '.join(result.get('errors', [])[:2]) or 'Setup failed'
             self._cf_status.setText(f'✗ {errs}')
@@ -1275,10 +1460,34 @@ class SettingsTab(QWidget):
         if res and res.get('success'):
             self._save_web_remote_config()
             self._save_category_visual_prefs()
+            self._save_audio_settings()
             self._refresh_cf_status()
+            try:
+                from desktop.utils.audio_manager import play as _audio_play
+                _audio_play('save')
+            except Exception:
+                pass
             QMessageBox.information(self, 'Saved', 'Settings saved.')
         else:
+            try:
+                from desktop.utils.audio_manager import play as _audio_play
+                _audio_play('error')
+            except Exception:
+                pass
             QMessageBox.critical(self, 'Error', 'Failed to save settings.')
+
+    def _save_audio_settings(self):
+        panel = getattr(self, '_audio_panel', None)
+        if panel is None:
+            return
+        try:
+            panel.save_silent()
+        except Exception:
+            try:
+                from desktop.utils.audio_manager import get_audio
+                get_audio().save_settings(panel.collect_patch())
+            except Exception:
+                pass
 
     def _save_category_visual_prefs(self):
         try:

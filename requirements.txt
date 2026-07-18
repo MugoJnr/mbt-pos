@@ -22,8 +22,8 @@ idna>=3.4
 openpyxl>=3.1
 et_xmlfile>=1.1
 
-# Hardware (receipt printer)
-pyserial>=3.5
+# Optional: AES-GCM helper (Windows CNG works without it)
+cryptography>=41.0
 
 # Web framework — desktop uses it for DB init; the optional web dashboard
 # (web_launcher.py + backend/app.py) runs a local Flask server for remote access.

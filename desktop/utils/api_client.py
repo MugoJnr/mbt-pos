@@ -700,6 +700,39 @@ def _migrate_columns(conn: sqlite3.Connection):
         except Exception:
             pass
     conn.commit()
+    # Cloud backup sync columns (non-breaking) + change log hook table
+    try:
+        from backend.cloud_backup.sync_manager import ensure_change_log_table
+        ensure_change_log_table(conn)
+        for table in ('products', 'sales', 'customers'):
+            try:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            except Exception:
+                continue
+            for col, ddl in (
+                ('sync_id', f"ALTER TABLE {table} ADD COLUMN sync_id TEXT"),
+                ('sync_status', f"ALTER TABLE {table} ADD COLUMN sync_status TEXT DEFAULT 'local'"),
+            ):
+                if col not in cols:
+                    try:
+                        conn.execute(ddl)
+                    except Exception:
+                        pass
+            if table == 'customers' and 'updated_at' not in cols:
+                try:
+                    conn.execute(
+                        "ALTER TABLE customers ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP")
+                except Exception:
+                    pass
+            if table == 'sales' and 'updated_at' not in cols:
+                try:
+                    conn.execute(
+                        "ALTER TABLE sales ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP")
+                except Exception:
+                    pass
+        conn.commit()
+    except Exception:
+        pass
 
 
 def _ensure_categories_table(conn: sqlite3.Connection):

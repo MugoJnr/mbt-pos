@@ -1,8 +1,8 @@
 ﻿{
-  "version": "2.3.75",
-  "build": "PROD-2026-07-18-v2.3.75",
+  "version": "2.3.82",
+  "build": "PROD-2026-07-18-v2.3.82",
   "build_date": "2026-07-18",
-  "release_notes": "Enterprise Accounting v1: double-entry engine (COA/journals/periods), auto-post from sales/void/debt/consumption/stock adjust, Accounting sidebar (GL/P&L/TB/BS/expenses/transfers/period close), role permissions. Offline SQLite. Preserves POS checkout.",
+  "release_notes": "MBT Cloud Backup & Restore (Supabase): encrypted SQLite snapshot versioning, device registration, business auth, Settings dashboard, setup-wizard hooks, offline queue. Preserves Cloudflare 2.3.81 + Telegram Reports + Audio + AI + Accounting.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

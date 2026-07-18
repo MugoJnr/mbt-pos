@@ -81,7 +81,7 @@ class CreditCustomerChoiceDialog(QDialog):
 
 
 class QuickCustomerDialog(QDialog):
-    """Modal create: Name*, Phone*, Email, Address, National ID, Notes."""
+    """Modal create: Name*, Phone (optional), Email, Address, National ID, Notes."""
 
     def __init__(self, parent, api):
         super().__init__(parent)
@@ -107,7 +107,7 @@ class QuickCustomerDialog(QDialog):
             return f
 
         self.name = fld('Full name *')
-        self.phone = fld('Phone *  e.g. 0712345678')
+        self.phone = fld('Phone (optional)  e.g. 0712345678')
         self.email = fld('Email (optional)')
         self.addr = fld('Address (optional)')
         self.nid = fld('National ID (optional)')
@@ -116,7 +116,7 @@ class QuickCustomerDialog(QDialog):
         self.notes.setMaximumHeight(72)
 
         lay.addRow(lbl('Name *'), self.name)
-        lay.addRow(lbl('Phone *'), self.phone)
+        lay.addRow(lbl('Phone'), self.phone)
         lay.addRow(lbl('Email'), self.email)
         lay.addRow(lbl('Address'), self.addr)
         lay.addRow(lbl('National ID'), self.nid)
@@ -141,8 +141,11 @@ class QuickCustomerDialog(QDialog):
         if not name:
             QMessageBox.warning(self, 'Required', 'Name is required.')
             return
-        if not phone:
-            QMessageBox.warning(self, 'Required', 'Phone is required.')
+        from desktop.utils.auto_fill import AutoFillService, phone_format_ok
+        if phone and not phone_format_ok(phone):
+            QMessageBox.warning(
+                self, 'Invalid Phone',
+                'Enter a valid phone number (e.g. 0712345678) or leave it blank.')
             return
         data = {
             'name': name,
@@ -153,15 +156,15 @@ class QuickCustomerDialog(QDialog):
             'notes': self.notes.toPlainText().strip(),
         }
         try:
-            from desktop.utils.auto_fill import AutoFillService
-            existing = AutoFillService.prompt_use_existing_customer(
-                self, self.api, phone)
-            if existing == -1:
-                return
-            if existing is not None:
-                self.customer_id = int(existing)
-                self.accept()
-                return
+            if phone:
+                existing = AutoFillService.prompt_use_existing_customer(
+                    self, self.api, phone)
+                if existing == -1:
+                    return
+                if existing is not None:
+                    self.customer_id = int(existing)
+                    self.accept()
+                    return
             res = self.api.create_customer(data)
             if res and res.get('success'):
                 self.customer_id = int(res['customer_id'])

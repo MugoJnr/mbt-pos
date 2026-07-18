@@ -156,7 +156,8 @@ class ReceiptBuilder:
 
     def totals(self, subtotal, discount, tax, total, payment_method, amount_paid, change,
                credit_applied=0, variance=None, wallet_balance=None,
-               original_total=None, cash_rounding_adj=0):
+               original_total=None, cash_rounding_adj=0,
+               electronic_paid=0, electronic_method='', cash_paid=0):
         sym = self.currency
         if discount > 0:
             self._line(left_right(f"Subtotal:", format_currency(subtotal, sym)))
@@ -169,8 +170,9 @@ class ReceiptBuilder:
             orig = float(total) - adj
         pm = str(payment_method or '').lower()
         is_electronic = any(x in pm for x in ('mpesa', 'm-pesa', 'card', 'bank', 'cheque', 'eft'))
+        is_mixed = 'mixed' in pm or float(electronic_paid or 0) > 0.009
         # Show cash rounding only when applied and not pure electronic receipt
-        if abs(adj) > 0.009 and not is_electronic:
+        if abs(adj) > 0.009 and (not is_electronic or is_mixed):
             if orig is not None:
                 self._line(left_right("Original Total:", format_currency(orig, sym)))
             sign = '+' if adj >= 0 else ''
@@ -180,7 +182,16 @@ class ReceiptBuilder:
         self.bold(False)
         if credit_applied and float(credit_applied) > 0:
             self._line(left_right("Store Credit:", f"-{format_currency(credit_applied, sym)}"))
-        self._line(left_right(f"Payment ({payment_method}):", format_currency(amount_paid, sym)))
+        elec = float(electronic_paid or 0)
+        if elec > 0.009:
+            em = (electronic_method or 'Electronic').strip() or 'Electronic'
+            cash_amt = float(cash_paid or 0)
+            if cash_amt < 0.009:
+                cash_amt = max(0.0, round(float(amount_paid or 0) - elec, 2))
+            self._line(left_right(f"{em}:", format_currency(elec, sym)))
+            self._line(left_right("Cash:", format_currency(cash_amt, sym)))
+        else:
+            self._line(left_right(f"Payment ({payment_method}):", format_currency(amount_paid, sym)))
         if change > 0:
             self._line(left_right(f"Change Returned:", format_currency(change, sym)))
         var = variance or {}
@@ -246,6 +257,9 @@ def build_receipt(sale_data, shop_name='My Shop', currency='KES',
         wallet_balance=sale_data.get('wallet_balance'),
         original_total=sale_data.get('original_total'),
         cash_rounding_adj=sale_data.get('cash_rounding_adj', 0),
+        electronic_paid=sale_data.get('electronic_paid', 0),
+        electronic_method=sale_data.get('electronic_method', ''),
+        cash_paid=sale_data.get('cash_paid', 0),
     )
     b.footer(footer)
     return b.build()
@@ -470,7 +484,9 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
         orig = float(sale_data.get('total') or 0) - adj
     pm_check = str(sale_data.get('payment_method', 'cash')).lower()
     is_electronic = any(x in pm_check for x in ('mpesa', 'm-pesa', 'card', 'bank', 'cheque', 'eft'))
-    if abs(adj) > 0.009 and not is_electronic:
+    elec = float(sale_data.get('electronic_paid') or 0)
+    is_mixed = 'mixed' in pm_check or elec > 0.009
+    if abs(adj) > 0.009 and (not is_electronic or is_mixed):
         if orig is not None:
             lines.append(left_right('Original Total:', f"{float(orig):,.2f}"))
         sign = '+' if adj >= 0 else '-'
@@ -490,8 +506,16 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
         ref = sale_data.get('mpesa_ref', '')
         if ref:
             lines.append(left_right('M-Pesa Ref:', ref))
-    lines.append(left_right(f"Paid ({pm}):",
-                             f"{sale_data.get('amount_paid',0):,.2f}"))
+    if elec > 0.009:
+        em = (sale_data.get('electronic_method') or 'Electronic').strip() or 'Electronic'
+        cash_amt = float(sale_data.get('cash_paid') or 0)
+        if cash_amt < 0.009:
+            cash_amt = max(0.0, round(float(sale_data.get('amount_paid') or 0) - elec, 2))
+        lines.append(left_right(f'{em}:', f"{elec:,.2f}"))
+        lines.append(left_right('Cash:', f"{cash_amt:,.2f}"))
+    else:
+        lines.append(left_right(f"Paid ({pm}):",
+                                 f"{sale_data.get('amount_paid',0):,.2f}"))
     if sale_data.get('change_amount', 0) > 0:
         lines.append(left_right('Change Returned:', f"{sale_data.get('change_amount',0):,.2f}"))
     # Payment variance split (excess Till / M-Pesa)

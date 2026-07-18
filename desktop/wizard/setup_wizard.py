@@ -29,6 +29,7 @@ STEPS = [
     ("License",          "License Activation"),
     ("Telegram & Sync",  "Remote Monitoring"),
     ("Remote Web",       "Remote Web Dashboard"),
+    ("Cloud Backup",     "MBT Cloud Backup"),
     ("Complete",         "Setup Complete"),
 ]
 
@@ -126,6 +127,7 @@ class SetupWizard(QDialog):
         self._build_pages()
         self._go_to(0)
         root.addWidget(right, 1)
+        self._cloud_restore_offer = None
 
     def _build_sidebar(self):
         sb = QWidget()
@@ -262,11 +264,12 @@ class SetupWizard(QDialog):
             self._page_license(),
             self._page_telegram(),
             self._page_remote_web(),
+            self._page_cloud_backup(),
             self._page_complete(),
         ]
         # Scroll long steps so footer nav buttons are never covered by content.
         self._pages = [
-            self._scroll_page(p) if i in (3, 4, 5, 6) else p
+            self._scroll_page(p) if i in (3, 4, 5, 6, 7) else p
             for i, p in enumerate(raw_pages)
         ]
         for p in self._pages:
@@ -886,7 +889,122 @@ class SetupWizard(QDialog):
                 'ok' if c.get('ok') else 'error',
                 f'{mark}: {c.get("name")} ({c.get("detail", "")}){fix}')
 
-    # Page 8 — Complete
+    # Page 8 — MBT Cloud Backup (optional — never blocks cashiers)
+    def _page_cloud_backup(self):
+        w, lay = self._page_container()
+        lay.addWidget(_label("MBT Cloud Backup", 22, True))
+        lay.addWidget(_label(
+            "Encrypted offline-first backups to the cloud. Optional — "
+            "cashiers can Continue offline and sell without internet.",
+            13, color=C['text2']))
+        lay.addSpacing(12)
+
+        self.w_cloud_email = _field("Business email")
+        self.w_cloud_pw = _field("Password", password=True)
+        self.w_cloud_biz = _field("Business name (for Create New)")
+        for f in (self.w_cloud_email, self.w_cloud_pw, self.w_cloud_biz):
+            lay.addWidget(f)
+            lay.addSpacing(8)
+
+        btn_row = QHBoxLayout()
+        create_btn = PrimaryBtn("Create New Business", 42)
+        create_btn.clicked.connect(self._cloud_create)
+        login_btn = SecondaryBtn("Login Existing", 42)
+        login_btn.clicked.connect(self._cloud_login)
+        skip_btn = SecondaryBtn("Continue Offline", 42)
+        skip_btn.clicked.connect(self._cloud_skip)
+        btn_row.addWidget(create_btn)
+        btn_row.addWidget(login_btn)
+        btn_row.addWidget(skip_btn)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        self.w_cloud_status = _label(
+            "Skip anytime — local POS always works. Configure Supabase keys in "
+            "AppData cloud_config.json (see docs/CLOUD_BACKUP.md).",
+            12, color=C['muted'])
+        lay.addSpacing(10)
+        lay.addWidget(self.w_cloud_status)
+        lay.addStretch()
+        return w
+
+    def _cloud_create(self):
+        email = self.w_cloud_email.text().strip()
+        pw = self.w_cloud_pw.text()
+        name = self.w_cloud_biz.text().strip() or self._data.get('shop_name') or 'My Business'
+        if not email or not pw:
+            self.w_cloud_status.setText("Email and password required (or Continue Offline).")
+            return
+        try:
+            from backend.cloud_backup.auth_service import create_business
+            from backend.cloud_backup.paths import is_cloud_configured
+            if not is_cloud_configured():
+                self.w_cloud_status.setText(
+                    "Supabase not configured yet — place cloud_config.json in AppData, "
+                    "or Continue Offline and set up later in Settings.")
+                self._data['cloud_mode'] = 'skipped_unconfigured'
+                return
+            r = create_business(email, pw, name)
+            self._data['cloud_mode'] = 'created'
+            self._data['cloud_business_id'] = r.get('business_id')
+            self.w_cloud_status.setText(
+                f"Business ready · device {r.get('device_id')}. Continue to finish setup.")
+        except Exception as e:
+            self.w_cloud_status.setText(f"Cloud create failed: {e}")
+
+    def _cloud_login(self):
+        email = self.w_cloud_email.text().strip()
+        pw = self.w_cloud_pw.text()
+        if not email or not pw:
+            self.w_cloud_status.setText("Email and password required (or Continue Offline).")
+            return
+        try:
+            from backend.cloud_backup.auth_service import login_existing
+            from backend.cloud_backup.paths import is_cloud_configured
+            if not is_cloud_configured():
+                self.w_cloud_status.setText(
+                    "Supabase not configured — Continue Offline, then Settings → Cloud Backup.")
+                return
+            r = login_existing(email, pw)
+            self._data['cloud_mode'] = 'login'
+            self._data['cloud_business_id'] = r.get('business_id')
+            if r.get('has_backups'):
+                n = len(r.get('backups') or [])
+                self.w_cloud_status.setText(
+                    f"Logged in — {n} backup(s) found. Restore from Settings after launch "
+                    "(or use Restore Latest there).")
+                reply = QMessageBox.question(
+                    self, "Restore from cloud?",
+                    f"Found {n} backup(s) for this business.\n\n"
+                    "Restore the latest backup onto this PC now?\n"
+                    "(A pre-restore copy of the local DB is kept.)",
+                    QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    try:
+                        from backend.cloud_backup.restore_manager import RestoreManager
+                        RestoreManager().restore_latest(password=pw)
+                        self.w_cloud_status.setText(
+                            "Restore complete — restart POS after wizard finishes.")
+                        self._data['cloud_restored'] = True
+                    except Exception as re:
+                        self.w_cloud_status.setText(f"Restore later in Settings: {re}")
+            else:
+                self.w_cloud_status.setText(
+                    f"Logged in · device {r.get('device_id')}. No backups yet.")
+        except Exception as e:
+            self.w_cloud_status.setText(f"Cloud login failed: {e}")
+
+    def _cloud_skip(self):
+        try:
+            from backend.cloud_backup.auth_service import skip_cloud
+            skip_cloud()
+        except Exception:
+            pass
+        self._data['cloud_mode'] = 'offline'
+        self.w_cloud_status.setText(
+            "Continuing offline — you can enable Cloud Backup anytime in Settings.")
+
+    # Page 9 — Complete
     def _page_complete(self):
         w, lay = self._page_container()
         lay.addStretch()
@@ -928,11 +1046,21 @@ class SetupWizard(QDialog):
         self._prog.setValue(step)
         self._back_btn.setEnabled(step > 0)
 
-        skippable = step in (3, 4, 5, 6)
+        skippable = step in (3, 4, 5, 6, 7)
         self._skip_btn.setVisible(skippable)
 
         if step == 6:
             self._refresh_cf_subdomain()
+
+        if step == 7:
+            # Prefill business name from shop info
+            if hasattr(self, 'w_cloud_biz') and not self.w_cloud_biz.text().strip():
+                self.w_cloud_biz.setText(self._data.get('shop_name') or self.w_shop_name.text().strip())
+            try:
+                from backend.cloud_backup.device_manager import get_or_create_device_id
+                get_or_create_device_id()
+            except Exception:
+                pass
 
         if step == len(STEPS) - 1:
             self._next_btn.setText("Launch POS  →")
@@ -1032,6 +1160,9 @@ class SetupWizard(QDialog):
                     save_web_config({'remote_enabled': False})
             except Exception:
                 pass
+        elif step == 7:
+            if 'cloud_mode' not in self._data:
+                self._data['cloud_mode'] = 'skipped'
 
     def _update_summary(self):
         shop = self._data.get('shop_name', '(not set)')
@@ -1050,10 +1181,20 @@ class SetupWizard(QDialog):
             web = f'https://{dom}' if dom else 'Remote (setup pending)'
         else:
             web = 'LAN only (port 5050)'
+        cloud = {
+            'created': 'Cloud business created',
+            'login': 'Cloud logged in',
+            'offline': 'Cloud offline',
+            'skipped': 'Cloud skipped',
+            'skipped_unconfigured': 'Cloud (not configured)',
+        }.get(self._data.get('cloud_mode'), 'Cloud optional')
+        if self._data.get('cloud_restored'):
+            cloud += ' · restored'
         self.w_summary.setText(
             f"Shop: {shop}  ·  Admin: {user}\n"
             f"Printer: {prt}  ·  License: {lic}  ·  Telegram: {tg}\n"
-            f"Web dashboard: {web}"
+            f"Web dashboard: {web}\n"
+            f"{cloud}"
         )
 
     def _show_err(self, msg):

@@ -373,15 +373,19 @@ class DashboardTab(QWidget):
 
         if can_void_sales(self.user):
             self._void_btn = QPushButton('Void Sale')
+            self._void_btn.setObjectName('mbtVoidSaleBtn')
             self._void_btn.setMinimumHeight(32)
-            self._void_btn.setFixedWidth(90)
+            self._void_btn.setMinimumWidth(100)
             self._void_btn.setCursor(Qt.PointingHandCursor)
+            self._void_btn.setToolTip(
+                'Select a sale below, or click to enter a receipt number.\n'
+                'Uses reason dropdown + Super-Admin PIN.')
             self._void_btn.setStyleSheet(
                 f"QPushButton {{ background:{p['err_dim']}; color:{p['err']}; "
                 f"border:1px solid {qss_alpha(p['err'], 0.45)}; border-radius:7px; "
-                f"font-size:12px; font-weight:700; }}"
+                f"font-size:12px; font-weight:700; padding:0 12px; }}"
                 f"QPushButton:hover {{ background:{p['err']}; color:{p.get('on_danger', '#FFFFFF')}; }}")
-            self._void_btn.clicked.connect(self._void_selected_sale)
+            self._void_btn.clicked.connect(self._void_sale_action)
             sh.addWidget(self._void_btn)
         else:
             self._void_btn = None
@@ -418,6 +422,7 @@ class DashboardTab(QWidget):
             f"QTableWidget::item:selected {{ background:{p['selected']}; color:{p['text']}; }}"
             f"QTableWidget::item:hover:!selected {{ background:{p['hover']}; }}")
         self._tbl.itemSelectionChanged.connect(self._on_sale_selected)
+        self._tbl.cellDoubleClicked.connect(self._on_sale_double_click)
         scl.addWidget(self._tbl)
 
         self._sales_empty = EmptyState('📄', 'No sales today', 'Start your first sale from Point of Sale')
@@ -480,32 +485,49 @@ class DashboardTab(QWidget):
             stcl.addWidget(w)
         rcol.addWidget(self._st_card)
 
-        # ── MBT AI (UI placeholder) ───────────────────────────────────────────
+        # ── MBT AI Insights ───────────────────────────────────────────────────
         self._ai_card = _Card(self._is_light)
         ail = self._ai_card.body(margins=(18, 16, 18, 16), spacing=10)
-        ai_title = QLabel('✨  MBT AI')
-        ai_title.setStyleSheet(
+        hdr_ai = QHBoxLayout()
+        self._ai_title = QLabel('✦  AI Insights')
+        self._ai_title.setStyleSheet(
             f"color:{p['text']}; font-size:15px; font-weight:700; background:transparent; border:none;")
-        ail.addWidget(ai_title)
-        self._ai_input = QLineEdit()
-        self._ai_input.setPlaceholderText('Ask me anything…')
-        self._ai_input.setMinimumHeight(40)
-        self._ai_input.setStyleSheet(
-            f"QLineEdit {{ background:{p['input']}; color:{p['text']}; border:1px solid {p['border']}; "
-            f"border-radius:10px; padding:0 12px; font-size:13px; }}"
-            f"QLineEdit:focus {{ border-color:{p['gold']}; }}")
-        ail.addWidget(self._ai_input)
-        for tip in (
-            'Show today\'s sales',
-            'Predict inventory shortages',
-            'Generate end-of-day report',
-            'Find overdue debtors',
-        ):
-            chip = QLabel(f'  ·  {tip}')
-            chip.setStyleSheet(
-                f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
-            ail.addWidget(chip)
+        self._ai_refresh = QPushButton('↻')
+        self._ai_refresh.setFixedSize(28, 28)
+        self._ai_refresh.setCursor(Qt.PointingHandCursor)
+        self._ai_refresh.setToolTip('Refresh AI insights')
+        self._ai_refresh.clicked.connect(lambda: self._load_ai_insights(force=True))
+        hdr_ai.addWidget(self._ai_title); hdr_ai.addStretch(); hdr_ai.addWidget(self._ai_refresh)
+        ail.addLayout(hdr_ai)
+        self._ai_banner = QLabel('')
+        self._ai_banner.setWordWrap(True)
+        self._ai_banner.hide()
+        ail.addWidget(self._ai_banner)
+        self._ai_summary = QLabel('Loading insights…')
+        self._ai_summary.setWordWrap(True)
+        self._ai_summary.setStyleSheet(
+            f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
+        ail.addWidget(self._ai_summary)
+        self._ai_alerts = QLabel('')
+        self._ai_alerts.setWordWrap(True)
+        self._ai_alerts.setStyleSheet(
+            f"color:{p['warn']}; font-size:12px; background:transparent; border:none;")
+        ail.addWidget(self._ai_alerts)
+        self._ai_recs = QLabel('')
+        self._ai_recs.setWordWrap(True)
+        self._ai_recs.setStyleSheet(
+            f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
+        ail.addWidget(self._ai_recs)
+        open_ai = QPushButton('Open assistant')
+        open_ai.setCursor(Qt.PointingHandCursor)
+        open_ai.setStyleSheet(
+            f"QPushButton {{ background:{p['card2']}; color:{p['gold']}; border:1px solid {p['border']};"
+            f" border-radius:8px; padding:6px 10px; font-weight:700; font-size:12px; }}"
+            f"QPushButton:hover {{ border-color:{p['gold']}; }}")
+        open_ai.clicked.connect(self._open_floating_ai)
+        ail.addWidget(open_ai)
         rcol.addWidget(self._ai_card)
+        QTimer.singleShot(600, lambda: self._load_ai_insights(force=False))
 
         # ── Today's Tasks + Activity ──────────────────────────────────────────
         self._tasks_card = _Card(self._is_light)
@@ -697,10 +719,26 @@ class DashboardTab(QWidget):
                 chart_card.refresh_theme()
 
         # Section titles
-        for lbl in (self._sales_title, self._top_title, self._qa_title, self._st_title):
-            lbl.setStyleSheet(
-                f"color:{p['text']}; font-size:15px; font-weight:700; "
-                f"background:transparent; border:none;")
+        for lbl in (self._sales_title, self._top_title, self._qa_title, self._st_title,
+                    getattr(self, '_ai_title', None)):
+            if lbl is not None:
+                lbl.setStyleSheet(
+                    f"color:{p['text']}; font-size:15px; font-weight:700; "
+                    f"background:transparent; border:none;")
+        if getattr(self, '_ai_summary', None):
+            self._ai_summary.setStyleSheet(
+                f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
+        if getattr(self, '_ai_alerts', None):
+            self._ai_alerts.setStyleSheet(
+                f"color:{p['warn']}; font-size:12px; background:transparent; border:none;")
+        if getattr(self, '_ai_recs', None):
+            self._ai_recs.setStyleSheet(
+                f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
+        if getattr(self, '_ai_refresh', None):
+            self._ai_refresh.setStyleSheet(
+                f"QPushButton {{ background:{p['card2']}; color:{p['text2']}; "
+                f"border:1px solid {p['border']}; border-radius:8px; }}"
+                f"QPushButton:hover {{ color:{p['gold']}; border-color:{p['gold']}; }}")
 
         # Table
         self._tbl.setAlternatingRowColors(False)
@@ -766,6 +804,48 @@ class DashboardTab(QWidget):
         if mw is not None:
             setattr(mw, '_pending_consumption_report', True)
         self.navigate.emit('consumption')
+
+    def _open_floating_ai(self):
+        mw = self.window()
+        panel = getattr(mw, '_ai_panel', None) if mw else None
+        if panel is not None:
+            try:
+                panel.set_module('dashboard')
+                panel.open_panel()
+            except Exception:
+                pass
+
+    def _load_ai_insights(self, force: bool = False):
+        """Load cached/local/AI dashboard insights into the insights card."""
+        try:
+            from desktop.utils.ai.insights import get_dashboard_insights
+            data = get_dashboard_insights(self.api, self.user, force=force)
+        except Exception as e:
+            log.warning('AI insights: %s', e)
+            data = {
+                'summary': 'Insights unavailable.',
+                'alerts': [],
+                'recommendations': [],
+                'banner': str(e),
+            }
+        p = _palette()
+        banner = data.get('banner')
+        if banner:
+            self._ai_banner.setText('⚠  ' + banner)
+            self._ai_banner.setStyleSheet(
+                f"color:{p['warn']}; font-size:11px; font-weight:600; background:transparent; border:none;")
+            self._ai_banner.show()
+        else:
+            self._ai_banner.hide()
+        self._ai_summary.setText(data.get('summary') or '')
+        alerts = data.get('alerts') or []
+        self._ai_alerts.setText(
+            'Alerts:\n' + '\n'.join(f'• {a}' for a in alerts[:4]) if alerts else '')
+        recs = data.get('recommendations') or []
+        self._ai_recs.setText(
+            'Recommendations:\n' + '\n'.join(f'• {r}' for r in recs[:4]) if recs else '')
+        src = data.get('source') or ''
+        self._ai_title.setText(f'✦  AI Insights' + (f'  ·  {src}' if src else ''))
 
     def refresh(self):
         self._load()
@@ -1018,8 +1098,9 @@ class DashboardTab(QWidget):
     # ── Void helpers ──────────────────────────────────────────────────────────
 
     def _on_sale_selected(self):
+        # Void stays enabled so users can always discover it (no selection → enter receipt).
         if self._void_btn:
-            self._void_btn.setEnabled(self._tbl.currentRow() >= 0)
+            self._void_btn.setEnabled(True)
 
     def _selected_receipt(self):
         row = self._tbl.currentRow()
@@ -1032,12 +1113,76 @@ class DashboardTab(QWidget):
         if prompt_void_sale(self.api, self):
             self._load()
 
-    def _void_selected_sale(self):
+    def _void_sale_action(self):
+        """Void selected sale, or open blank receipt dialog if none selected."""
         receipt = self._selected_receipt()
-        if not receipt:
-            QMessageBox.warning(self, 'Select Sale',
-                                'Select a receipt from the table first.')
-            return
         if prompt_void_sale(self.api, self, receipt_prefill=receipt):
             ToastNotification.show_toast(self, 'Sale voided', tone='warn')
             self._load()
+
+    def _void_selected_sale(self):
+        self._void_sale_action()
+
+    def _on_sale_double_click(self, row, _col):
+        """Sale details dialog with Void action when permitted."""
+        if row < 0:
+            return
+        receipt = ''
+        item = self._tbl.item(row, 0)
+        if item:
+            receipt = item.text().strip()
+        if not receipt:
+            return
+        vals = []
+        for c in range(self._tbl.columnCount()):
+            it = self._tbl.item(row, c)
+            vals.append(it.text() if it else '')
+        headers = ['Receipt', 'Time', 'Cashier', 'Total', 'Status']
+        from desktop.utils.theme import apply_themed_dialog, C as TC
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f'Sale — {receipt}')
+        dlg.setMinimumWidth(400)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(10)
+        title = QLabel('Sale Details')
+        title.setStyleSheet(
+            f"color:{TC['text']};font-size:17px;font-weight:700;background:transparent;")
+        lay.addWidget(title)
+        for h, v in zip(headers, vals):
+            row_l = QHBoxLayout()
+            hl = QLabel(h)
+            hl.setStyleSheet(
+                f"color:{TC['muted']};font-size:12px;font-weight:600;background:transparent;")
+            hl.setFixedWidth(80)
+            vl = QLabel(v)
+            vl.setStyleSheet(
+                f"color:{TC['text']};font-size:13px;background:transparent;")
+            row_l.addWidget(hl)
+            row_l.addWidget(vl, 1)
+            lay.addLayout(row_l)
+        btns = QHBoxLayout()
+        btns.addStretch()
+        if can_void_sales(self.user) and (vals[4] or '').lower().find('void') < 0:
+            void_b = QPushButton('Void Sale')
+            void_b.setCursor(Qt.PointingHandCursor)
+            void_b.setMinimumHeight(36)
+            void_b.setStyleSheet(
+                f"QPushButton {{ background:{TC['err_dim']}; color:{TC['err']}; "
+                f"border:1px solid {qss_alpha(TC['err'], 0.45)}; border-radius:7px; "
+                f"font-size:13px; font-weight:700; padding:0 16px; }}"
+                f"QPushButton:hover {{ background:{TC['err']}; color:{TC.get('on_danger', '#FFFFFF')}; }}")
+            def _do_void():
+                dlg.accept()
+                if prompt_void_sale(self.api, self, receipt_prefill=receipt):
+                    ToastNotification.show_toast(self, 'Sale voided', tone='warn')
+                    self._load()
+            void_b.clicked.connect(_do_void)
+            btns.addWidget(void_b)
+        close_b = QPushButton('Close')
+        close_b.setMinimumHeight(36)
+        close_b.clicked.connect(dlg.reject)
+        btns.addWidget(close_b)
+        lay.addLayout(btns)
+        dlg.exec_()

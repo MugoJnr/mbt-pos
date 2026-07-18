@@ -51,6 +51,7 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
         'accounting.reverse_journal', 'accounting.approve_expenses',
         'accounting.export',
+        'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void',
@@ -68,6 +69,7 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
         'accounting.reverse_journal', 'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
+        'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
@@ -88,6 +90,8 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
         'accounting.reverse_journal', 'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
+        'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
+        'ai_ops.developer',
     },
 }
 
@@ -108,6 +112,11 @@ def require_permission(user: dict, action: str, parent_widget=None) -> bool:
         return True
     from PyQt5.QtWidgets import QMessageBox
     role = (user.get('user') or user).get('role', 'cashier')
+    try:
+        from desktop.utils.audio_manager import play as _audio_play
+        _audio_play('permission_denied')
+    except Exception:
+        pass
     QMessageBox.warning(
         parent_widget, 'Access Denied',
         f'Your role ({role}) does not have permission for this action.\n'

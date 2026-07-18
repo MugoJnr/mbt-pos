@@ -12,8 +12,12 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     wrap_table_card, page_intro,
                                     apply_table_row_backgrounds, retint_table_items)
 from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
-from desktop.utils.select_controls import DatePresetSelect
+from desktop.utils.select_controls import DatePresetSelect, refresh_select_controls
 from desktop.utils.option_lists import date_range_for_preset
+from desktop.utils.date_controls import (
+    make_date_edit, add_labeled, refresh_filter_labels, refresh_date_edits,
+    DATE_API_FMT,
+)
 
 _log = logging.getLogger(__name__)
 _PR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,25 +66,25 @@ class ReportsTab(QWidget):
         intro, _ = page_intro('Reports', 'Sales, cash rounding, payment variance, products and payment breakdown.', actions)
         lay.addLayout(intro)
 
-        # ── Filter bar ────────────────────────────────────────────────────────
-        fc = Card(); fl = fc.layout_h((16, 12, 16, 12), 8)
-        fl.addWidget(self._lbl('Period:'))
+        # ── Filter bar (single clean row — labels are plain text, not pills) ──
+        today = date.today()
+        fc = Card()
+        fl = fc.layout_h((16, 12, 16, 12), 10)
         self._preset = DatePresetSelect()
-        self._preset.setMinimumWidth(150)
+        self._preset.setMinimumWidth(160)
         self._preset.presetChanged.connect(self._on_preset)
-        fl.addWidget(self._preset)
-        fl.addWidget(self._lbl('From:'))
-        self._s = QDateEdit(date.today()); self._s.setCalendarPopup(True)
-        self._s.setDisplayFormat('yyyy-MM-dd'); self._s.setMinimumHeight(36)
-        fl.addWidget(self._s)
-        fl.addWidget(self._lbl('To:'))
-        self._e = QDateEdit(date.today()); self._e.setCalendarPopup(True)
-        self._e.setDisplayFormat('yyyy-MM-dd'); self._e.setMinimumHeight(36)
-        fl.addWidget(self._e)
+        self._s = make_date_edit(today)
+        self._e = make_date_edit(today)
+        add_labeled(fl, 'Period', self._preset, spacing=14)
+        add_labeled(fl, 'From', self._s, spacing=14)
+        add_labeled(fl, 'To', self._e, spacing=10)
         fl.addStretch()
-        run = PrimaryBtn('▶  Run', 36); run.setFixedWidth(100)
-        run.clicked.connect(self.refresh); fl.addWidget(run)
+        run = PrimaryBtn('▶  Run', 40)
+        run.setFixedWidth(100)
+        run.clicked.connect(self.refresh)
+        fl.addWidget(run)
         lay.addWidget(fc)
+        self._filter_card = fc
 
         # ── KPIs ──────────────────────────────────────────────────────────────
         kr = QHBoxLayout(); kr.setSpacing(12)
@@ -110,6 +114,24 @@ class ReportsTab(QWidget):
         charts.addWidget(self._trend_card, 3)
         charts.addWidget(self._pay_card, 2)
         lay.addLayout(charts)
+
+        # ── AI Summary (optional, online) ─────────────────────────────────────
+        self._ai_sum_card = Card()
+        ail = self._ai_sum_card.layout_v((16, 12, 16, 12), 8)
+        arow = QHBoxLayout()
+        self._ai_sum_title = QLabel('✦  AI Summary')
+        self._ai_sum_title.setStyleSheet(
+            f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
+        self._ai_sum_btn = SecondaryBtn('Generate', 32)
+        self._ai_sum_btn.clicked.connect(self._ai_summary)
+        arow.addWidget(self._ai_sum_title); arow.addStretch(); arow.addWidget(self._ai_sum_btn)
+        ail.addLayout(arow)
+        self._ai_sum_body = QLabel('Click Generate for an AI briefing of the current report period.')
+        self._ai_sum_body.setWordWrap(True)
+        self._ai_sum_body.setStyleSheet(
+            f"color:{C['text2']}; font-size:12px; background:transparent;")
+        ail.addWidget(self._ai_sum_body)
+        lay.addWidget(self._ai_sum_card)
 
         # ── Status / open folder ──────────────────────────────────────────────
         ac = Card(); al = ac.layout_h((16, 10, 16, 10), 8)
@@ -196,9 +218,9 @@ class ReportsTab(QWidget):
         lay.addWidget(wrap_table_card(tabs), 1)
 
     def _lbl(self, t):
-        l = QLabel(t)
-        l.setStyleSheet(f"color:{C['text2']}; font-size:13px; background:transparent;")
-        return l
+        """Plain schedule/filter caption — no pill border."""
+        from desktop.utils.date_controls import filter_label
+        return filter_label(t)
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -206,8 +228,8 @@ class ReportsTab(QWidget):
         if key == 'custom':
             return
         start, end = date_range_for_preset(key)
-        self._s.setDate(start)
-        self._e.setDate(end)
+        self._s.setDate(QDate(start.year, start.month, start.day))
+        self._e.setDate(QDate(end.year, end.month, end.day))
         self.refresh()
 
     def _quick(self, days):
@@ -220,8 +242,8 @@ class ReportsTab(QWidget):
             self._on_preset('week')
         else:
             t = date.today()
-            self._s.setDate(t - timedelta(days=days))
-            self._e.setDate(t)
+            self._s.setDate(QDate(t.year, t.month, t.day).addDays(-days))
+            self._e.setDate(QDate.currentDate())
             if hasattr(self, '_preset'):
                 self._preset.set_value('custom')
 
@@ -232,12 +254,39 @@ class ReportsTab(QWidget):
             AutoFillService.apply_reports_default_dates(self, cfg)
         except Exception:
             pass
+        # Guarantee To ≤ today (never a far-future default)
+        if self._e.date() > QDate.currentDate():
+            self._e.setDate(QDate.currentDate())
+        if self._s.date() > self._e.date():
+            self._s.setDate(self._e.date())
         self._load_schedule()
         self.refresh()
 
+    def _ai_summary(self):
+        """Optional AI briefing for the selected report period."""
+        start = self._s.date().toString(DATE_API_FMT)
+        end = self._e.date().toString(DATE_API_FMT)
+        self._ai_sum_body.setText('Generating…')
+        try:
+            from desktop.utils.ai.service import get_ai_service
+            from desktop.utils.ai.connectivity import get_connectivity, OFFLINE_BANNER
+            st = get_ai_service().status()
+            if not st.get('online'):
+                self._ai_sum_body.setText(st.get('banner') or OFFLINE_BANNER)
+                return
+            data = self.api.get_report_summary(start, end) or {}
+            text = get_ai_service().summarize_report(
+                self.api, self.user,
+                {'period': {'start': start, 'end': end}, 'report': data},
+            )
+            self._ai_sum_body.setText(text)
+        except Exception as e:
+            _log.warning('AI report summary: %s', e)
+            self._ai_sum_body.setText(f'AI summary unavailable: {e}')
+
     def refresh(self):
-        start = self._s.date().toString('yyyy-MM-dd')
-        end   = self._e.date().toString('yyyy-MM-dd')
+        start = self._s.date().toString(DATE_API_FMT)
+        end   = self._e.date().toString(DATE_API_FMT)
         cfg   = self.config_getter() or {}
         cur   = cfg.get('currency_symbol', 'KES')
 
@@ -431,8 +480,8 @@ class ReportsTab(QWidget):
         sys.path.insert(0, _PR)
         from backend.export_engine import export_sales_report
         from backend.report_export_service import get_export_dir as _shared_export_dir
-        start = self._s.date().toString('yyyy-MM-dd')
-        end   = self._e.date().toString('yyyy-MM-dd')
+        start = self._s.date().toString(DATE_API_FMT)
+        end   = self._e.date().toString(DATE_API_FMT)
         cfg   = self.config_getter() or {}
         shop  = cfg.get('shop_name', 'My Shop')
         cur   = cfg.get('currency_symbol', 'KES')
@@ -539,8 +588,8 @@ class ReportsTab(QWidget):
                 'Your Telegram is not connected.\n'
                 'Go to Settings → Telegram & click Connect My Telegram.')
             return
-        start = self._s.date().toString('yyyy-MM-dd')
-        end   = self._e.date().toString('yyyy-MM-dd')
+        start = self._s.date().toString(DATE_API_FMT)
+        end   = self._e.date().toString(DATE_API_FMT)
         if QMessageBox.question(self, 'Send via Telegram',
                 f'Export and send report ({start} → {end}) to your Telegram?',
                 QMessageBox.Yes|QMessageBox.No) != QMessageBox.Yes:
@@ -610,11 +659,23 @@ class ReportsTab(QWidget):
 
     def apply_theme(self, is_light=None):
         """Refresh chart cards + labels when app theme toggles."""
-        for card in (getattr(self, '_trend_card', None), getattr(self, '_pay_card', None)):
-            if card is not None:
+        for card in (
+            getattr(self, '_filter_card', None),
+            getattr(self, '_trend_card', None),
+            getattr(self, '_pay_card', None),
+        ):
+            if card is not None and hasattr(card, 'refresh_theme'):
                 card.refresh_theme()
+        refresh_filter_labels(self)
+        refresh_date_edits(self)
+        try:
+            refresh_select_controls(self)
+        except Exception:
+            pass
+        if hasattr(self, '_preset') and hasattr(self._preset, 'refresh_theme'):
+            self._preset.refresh_theme()
         self._status_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:12px; background:transparent;")
+            f"color:{C['text2']}; font-size:12px; background:transparent; border:none;")
         for cb in (self._sched_daily, self._sched_weekly):
             cb.setStyleSheet(f"color:{C['text']}; background:transparent;")
         for tbl in (self._stbl, self._litbl, self._ptbl, self._mtbl, self._vtbl):

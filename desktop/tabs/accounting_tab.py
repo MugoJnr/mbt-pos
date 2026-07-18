@@ -395,6 +395,11 @@ class _JournalsPage(QWidget):
         if res.get('error'):
             QMessageBox.warning(self, 'Journal', res['error'])
         else:
+            try:
+                from desktop.utils.audio_manager import play as _audio_play
+                _audio_play('accounting_post')
+            except Exception:
+                pass
             QMessageBox.information(self, 'Journal', f"Posted {res.get('entry_number')}")
         self.refresh()
 
