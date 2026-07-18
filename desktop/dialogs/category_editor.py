@@ -13,7 +13,7 @@ from desktop.utils.theme import C, qss_alpha
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn, Field
 from desktop.utils.category_visuals import (
     CategoryVisual, suggest_icons_for_name, save_category_image,
-    resolve_icon_path, svg_to_pixmap, accessible_fg, find_icon,
+    resolve_icon_path, svg_to_pixmap, accessible_fg, find_icon, icon_to_pixmap,
 )
 from desktop.dialogs.icon_picker import IconPickerDialog
 
@@ -178,10 +178,8 @@ class CategoryEditorDialog(QDialog):
         for ic in suggest_icons_for_name(text, limit=6):
             btn = QToolButton()
             btn.setFixedSize(44, 44)
-            path = resolve_icon_path(ic.get('path') or ic.get('id'))
-            if path:
-                btn.setIcon(QIcon(svg_to_pixmap(path, 40)))
-                btn.setIconSize(QSize(40, 40))
+            btn.setIcon(QIcon(icon_to_pixmap(icon=ic, size=40)))
+            btn.setIconSize(QSize(40, 40))
             btn.setToolTip(ic.get('name'))
             iid = ic.get('id')
             btn.clicked.connect(lambda _=False, i=iid: self._apply_suggestion(i))

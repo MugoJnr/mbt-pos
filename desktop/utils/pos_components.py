@@ -115,6 +115,7 @@ class CategoryIcon(QLabel):
             from desktop.utils.category_visuals import (
                 resolve_icon_path, svg_to_pixmap, load_image_pixmap,
                 suggest_visual_for_category_name, accessible_fg,
+                find_icon, emoji_tile_pixmap, section_tile_bg, icon_to_pixmap,
             )
             meta = dict(self._meta or {})
             meta.setdefault('name', self._category)
@@ -132,21 +133,20 @@ class CategoryIcon(QLabel):
                         pass
                 pm = load_image_pixmap(path, self._size)
             if (pm is None or pm.isNull()) and meta.get('icon_name'):
-                svg = resolve_icon_path(meta.get('icon_name'))
-                if svg:
-                    pm = svg_to_pixmap(svg, self._size)
+                pm = icon_to_pixmap(icon_id=meta.get('icon_name'), size=self._size)
+                ic = find_icon(meta.get('icon_name'))
+                if ic and ic.get('bg') and (not meta.get('accent_color')):
+                    accent = ic.get('bg')
             if pm is None or pm.isNull():
                 sug = suggest_visual_for_category_name(self._category)
-                svg = resolve_icon_path(sug.get('icon_name'))
-                if svg:
-                    pm = svg_to_pixmap(svg, self._size)
-                    accent = meta.get('accent_color') or sug.get('accent_color') or accent
+                pm = icon_to_pixmap(icon_id=sug.get('icon_name'), size=self._size)
+                accent = meta.get('accent_color') or sug.get('accent_color') or accent
             if pm is not None and not pm.isNull():
                 self.setPixmap(pm)
                 self.setText('')
                 r = self._size // 2
                 self.setStyleSheet(
-                    f"QLabel {{ background:{qss_alpha(accent, 0.15)}; "
+                    f"QLabel {{ background:transparent; "
                     f"border-radius:{r}px; border:none; }}")
                 return
         except Exception:

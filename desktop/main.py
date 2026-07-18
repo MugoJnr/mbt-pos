@@ -42,7 +42,7 @@ log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
 APP_BUILD_TAG = "PROD-2026-07-18-v2.3.82"
-APP_VERSION   = "2.3.82"   # must match GitHub release tag vX.Y.Z / version.json
+APP_VERSION   = "2.3.84"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():

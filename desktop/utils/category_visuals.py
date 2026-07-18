@@ -227,6 +227,154 @@ def suggest_icons_for_name(name: str, limit: int = 8) -> list:
 
 # ── Pixmap loading ────────────────────────────────────────────────────────────
 
+# Claude-style section tile colours (coloured emoji tiles, not grey glyphs)
+SECTION_TILE_COLOURS = {
+    'Grocery & Supermarket': '#fef9c3',
+    'Fresh Produce & Meat': '#dcfce7',
+    'Pharmacy & Chemist': '#dbeafe',
+    'Household & Cleaning': '#ede9fe',
+    'Beauty & Personal Care': '#fce7f3',
+    'Clothing & Apparel': '#e0f2fe',
+    'Electronics & Phones': '#1e3a5f',
+    'Hardware & Building': '#fef3c7',
+    'Agrovet & Animal Feeds': '#ecfccb',
+    'Food Service & Restaurant': '#fef3c7',
+    'Stationery & School': '#dbeafe',
+    'Auto Parts & Workshop': '#374151',
+    'Entertainment & Toys': '#ede9fe',
+    'Home & Furniture': '#fef9c3',
+    'Kitchen & Cookware': '#fee2e2',
+    'Pet Supplies': '#fef3c7',
+    'Energy & Utilities': '#fef9c3',
+    'General / Default': '#f3f4f6',
+}
+_DARK_SECTIONS = frozenset({'Electronics & Phones', 'Auto Parts & Workshop'})
+
+
+def section_tile_bg(section: str, fallback: str = None) -> str:
+    if fallback:
+        return fallback
+    return SECTION_TILE_COLOURS.get(section or '', '#f3f4f6')
+
+
+def emoji_tile_pixmap(
+    emoji: str,
+    bg: str = '#f3f4f6',
+    size: int = 48,
+    radius: int = None,
+    selected: bool = False,
+    selected_border: str = None,
+    emoji_png: str = None,
+) -> QPixmap:
+    """
+    Coloured rounded tile with a colour emoji (Claude pack look).
+
+    Prefer Twemoji PNG (``emoji_png`` / assets/icons/emoji_png) because
+    PyQt5 on Windows cannot paint colour emoji fonts reliably.
+    """
+    from PyQt5.QtGui import QPen
+
+    emoji = (emoji or '').strip() or '📦'
+    bg = bg or '#f3f4f6'
+    r = int(radius if radius is not None else max(8, size // 4.5))
+    border = selected_border or '#D4A017'
+    cache_key = ('emoji_tile_v3', emoji, bg, size, r, selected, border, emoji_png or '')
+    if cache_key in _PIXMAP_CACHE:
+        return _PIXMAP_CACHE[cache_key]
+
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.setBrush(QColor(bg))
+    if selected:
+        pen = QPen(QColor(border))
+        pen.setWidth(max(2, size // 28))
+        p.setPen(pen)
+    else:
+        p.setPen(Qt.NoPen)
+    inset = max(1, size // 32) if selected else 0
+    p.drawRoundedRect(inset, inset, size - 2 * inset, size - 2 * inset, r, r)
+
+    # Resolve Twemoji PNG
+    png_path = None
+    if emoji_png:
+        cand = emoji_png
+        if not os.path.isabs(cand):
+            cand = os.path.join(icons_root(), cand.replace('\\', '/'))
+        if os.path.isfile(cand):
+            png_path = cand
+
+    if png_path:
+        icon = QPixmap(png_path)
+        if not icon.isNull():
+            side = max(16, int(size * 0.62))
+            icon = icon.scaled(side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            x = (size - icon.width()) // 2
+            y = (size - icon.height()) // 2
+            p.drawPixmap(x, y, icon)
+            p.end()
+            _PIXMAP_CACHE[cache_key] = pm
+            return pm
+
+    # Fallback: QLabel colour emoji (works on some platforms)
+    p.end()
+    try:
+        from PyQt5.QtWidgets import QLabel, QApplication
+        from PyQt5.QtGui import QFontDatabase
+        if QApplication.instance() is not None:
+            if not getattr(emoji_tile_pixmap, '_font_ready', False):
+                for fp in (r'C:\Windows\Fonts\seguiemj.ttf', r'C:\Windows\Fonts\Seguiemj.ttf'):
+                    if os.path.isfile(fp):
+                        QFontDatabase.addApplicationFont(fp)
+                emoji_tile_pixmap._font_ready = True
+            lbl = QLabel(emoji)
+            lbl.setFixedSize(size, size)
+            lbl.setAlignment(Qt.AlignCenter)
+            border_css = (
+                f'border:{max(2, size // 28)}px solid {border};'
+                if selected else 'border:none;'
+            )
+            font_px = max(16, int(size * 0.48))
+            lbl.setStyleSheet(
+                f'QLabel {{ background:{bg}; {border_css} '
+                f'border-radius:{r}px; font-size:{font_px}px; }}'
+            )
+            f = QFont('Segoe UI Emoji')
+            f.setPixelSize(font_px)
+            lbl.setFont(f)
+            lbl.ensurePolished()
+            lbl.show()
+            grabbed = lbl.grab()
+            lbl.hide()
+            lbl.deleteLater()
+            _PIXMAP_CACHE[cache_key] = grabbed
+            return grabbed
+    except Exception:
+        pass
+
+    _PIXMAP_CACHE[cache_key] = pm
+    return pm
+
+
+def icon_to_pixmap(icon: dict = None, icon_id: str = None, size: int = 48,
+                   prefer_emoji: bool = True) -> QPixmap:
+    """
+    Resolve icon dict/id → coloured emoji tile (preferred) or SVG fallback.
+    """
+    ic = icon or (find_icon(icon_id) if icon_id else None) or {}
+    emoji = (ic.get('emoji') or '').strip()
+    bg = ic.get('bg') or section_tile_bg(ic.get('section') or '')
+    png = ic.get('emoji_png') or ''
+    if prefer_emoji and (png or emoji):
+        return emoji_tile_pixmap(emoji or '📦', bg=bg, size=size, emoji_png=png or None)
+    path = resolve_icon_path(ic.get('path') or ic.get('id') or icon_id)
+    if path:
+        return svg_to_pixmap(path, size)
+    return emoji_tile_pixmap(emoji or '📦', bg=bg or '#f3f4f6', size=size, emoji_png=png or None)
+
+
 def svg_to_pixmap(svg_path: str, size: int = 48) -> QPixmap:
     cache_key = (svg_path, size)
     if cache_key in _PIXMAP_CACHE:
@@ -528,24 +676,60 @@ class CategoryVisual(QFrame):
             pm = load_image_pixmap(path, s, fit=self._fit)
 
         if pm.isNull() and icon_name:
-            svg = resolve_icon_path(icon_name)
-            if svg:
-                pm = svg_to_pixmap(svg, s)
+            ic = find_icon(icon_name)
+            if ic and ((ic.get('emoji_png') or '').strip() or (ic.get('emoji') or '').strip()):
+                bg = ic.get('bg') or section_tile_bg(ic.get('section') or '') or accent
+                pm = emoji_tile_pixmap(
+                    ic.get('emoji') or '📦',
+                    bg=bg,
+                    size=s,
+                    radius=r,
+                    emoji_png=ic.get('emoji_png'),
+                )
+                if not cat.get('accent_color') or accent == '#3B82F6':
+                    accent = bg if bg not in ('#1e3a5f', '#374151') else accent
+            if pm.isNull():
+                svg = resolve_icon_path(icon_name)
+                if svg:
+                    pm = svg_to_pixmap(svg, s)
 
         if pm.isNull():
             # Name-based suggestion fallback
             if name:
                 sug = suggest_visual_for_category_name(name)
-                svg = resolve_icon_path(sug.get('icon_name'))
-                if svg:
-                    pm = svg_to_pixmap(svg, s)
+                ic = find_icon(sug.get('icon_name'))
+                if ic and ((ic.get('emoji_png') or '').strip() or (ic.get('emoji') or '').strip()):
+                    bg = ic.get('bg') or section_tile_bg(ic.get('section') or '')
+                    pm = emoji_tile_pixmap(
+                        ic.get('emoji') or '📦',
+                        bg=bg,
+                        size=s,
+                        radius=r,
+                        emoji_png=ic.get('emoji_png'),
+                    )
                     if not accent or accent == '#3B82F6':
-                        accent = sug.get('accent_color') or accent
+                        accent = sug.get('accent_color') or bg or accent
+                if pm.isNull():
+                    svg = resolve_icon_path(sug.get('icon_name'))
+                    if svg:
+                        pm = svg_to_pixmap(svg, s)
+                        if not accent or accent == '#3B82F6':
+                            accent = sug.get('accent_color') or accent
 
         if pm.isNull():
-            ph = resolve_icon_path(prefs.get('default_placeholder') or 'generic/_placeholder.svg')
-            if ph:
-                pm = svg_to_pixmap(ph, s)
+            ph_ic = find_icon(prefs.get('default_placeholder') or 'generic/general-product')
+            if ph_ic and (ph_ic.get('emoji_png') or ph_ic.get('emoji')):
+                pm = emoji_tile_pixmap(
+                    ph_ic.get('emoji') or '📦',
+                    bg=ph_ic.get('bg') or '#f3f4f6',
+                    size=s,
+                    radius=r,
+                    emoji_png=ph_ic.get('emoji_png'),
+                )
+            else:
+                ph = resolve_icon_path(prefs.get('default_placeholder') or 'generic/_placeholder.svg')
+                if ph:
+                    pm = svg_to_pixmap(ph, s)
 
         if pm.isNull():
             # Last resort: colored tile with initial

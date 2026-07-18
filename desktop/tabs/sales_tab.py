@@ -895,10 +895,9 @@ class SalesTab(QWidget):
             idx_i = self._cat.count() - 1
             if meta.get('icon_name'):
                 try:
-                    from desktop.utils.category_visuals import resolve_icon_path, svg_to_pixmap
-                    svg = resolve_icon_path(meta['icon_name'])
-                    if svg:
-                        self._cat.setItemIcon(idx_i, QIcon(svg_to_pixmap(svg, 20)))
+                    from desktop.utils.category_visuals import icon_to_pixmap
+                    self._cat.setItemIcon(
+                        idx_i, QIcon(icon_to_pixmap(icon_id=meta['icon_name'], size=20)))
                 except Exception:
                     pass
         idx = self._cat.findText(cur)

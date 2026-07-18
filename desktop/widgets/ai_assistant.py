@@ -72,8 +72,27 @@ def _md_to_html(text: str) -> str:
     return s
 
 
+# Friendly module labels for the panel subtitle
+_MODULE_LABELS = {
+    'dashboard': 'Dashboard Assistant',
+    'sales': 'Sales Assistant',
+    'inventory': 'Inventory Assistant',
+    'debt': 'Credit & Debt Assistant',
+    'accounting': 'Accounting Assistant',
+    'reports': 'Reports Assistant',
+    'purchasing': 'Purchasing Assistant',
+    'settings': 'Settings Assistant',
+    'diagnostics': 'Diagnostics Assistant',
+    'ai_ops': 'AI Operations',
+    'consumption': 'Consumption Assistant',
+    'notes': 'Notes Assistant',
+}
+
+
 class AiAssistantPanel(QFrame):
     """Slide-over chat panel hosted by MainWindow."""
+
+    PANEL_WIDTH = 520
 
     def __init__(self, main_window):
         super().__init__(main_window)
@@ -85,7 +104,8 @@ class AiAssistantPanel(QFrame):
         self._worker: Optional[_ChatWorker] = None
         self._streaming_buf = ''
         self.setObjectName('mbtAiPanel')
-        self.setFixedWidth(420)
+        self.setMinimumWidth(self.PANEL_WIDTH)
+        self.setFixedWidth(self.PANEL_WIDTH)
         self.hide()
         self._build()
         self.refresh_theme()
@@ -102,23 +122,24 @@ class AiAssistantPanel(QFrame):
 
         # Header
         hdr = QFrame(); hdr.setObjectName('mbtAiHdr')
-        hl = QHBoxLayout(hdr); hl.setContentsMargins(14, 10, 10, 10); hl.setSpacing(8)
+        hl = QHBoxLayout(hdr); hl.setContentsMargins(18, 14, 14, 14); hl.setSpacing(10)
         self._title = QLabel('MBT AI')
         self._title.setObjectName('mbtAiTitle')
-        self._sub = QLabel('Assistant')
+        self._sub = QLabel('Dashboard Assistant')
         self._sub.setObjectName('mbtAiSub')
-        tit_col = QVBoxLayout(); tit_col.setSpacing(0)
+        tit_col = QVBoxLayout(); tit_col.setSpacing(2)
         tit_col.addWidget(self._title); tit_col.addWidget(self._sub)
         hl.addLayout(tit_col, 1)
 
-        self._new_btn = QPushButton('＋'); self._new_btn.setFixedSize(32, 32)
+        self._new_btn = QPushButton('+'); self._new_btn.setFixedSize(36, 36)
         self._new_btn.setToolTip('New conversation')
         self._new_btn.clicked.connect(self.new_chat)
-        self._hist_btn = QPushButton('☰'); self._hist_btn.setFixedSize(32, 32)
-        self._hist_btn.setToolTip('History')
+        self._hist_btn = QPushButton('≡'); self._hist_btn.setFixedSize(36, 36)
+        self._hist_btn.setToolTip('Chat history')
         self._hist_btn.setCheckable(True)
         self._hist_btn.clicked.connect(self._toggle_history)
-        self._close_btn = QPushButton('✕'); self._close_btn.setFixedSize(32, 32)
+        self._close_btn = QPushButton('×'); self._close_btn.setFixedSize(36, 36)
+        self._close_btn.setToolTip('Close assistant')
         self._close_btn.clicked.connect(self.close_panel)
         for b in (self._new_btn, self._hist_btn, self._close_btn):
             b.setCursor(Qt.PointingHandCursor)
@@ -138,7 +159,7 @@ class AiAssistantPanel(QFrame):
         # History list
         self._hist_list = QListWidget()
         self._hist_list.setObjectName('mbtAiHist')
-        self._hist_list.setFixedWidth(150)
+        self._hist_list.setFixedWidth(170)
         self._hist_list.hide()
         self._hist_list.itemClicked.connect(self._load_history_item)
         body.addWidget(self._hist_list)
@@ -153,16 +174,21 @@ class AiAssistantPanel(QFrame):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._chat_host = QWidget()
         self._chat_lay = QVBoxLayout(self._chat_host)
-        self._chat_lay.setContentsMargins(12, 12, 12, 12)
-        self._chat_lay.setSpacing(10)
+        self._chat_lay.setContentsMargins(16, 16, 16, 16)
+        self._chat_lay.setSpacing(12)
         self._chat_lay.addStretch(1)
         self._scroll.setWidget(self._chat_host)
         cl.addWidget(self._scroll, 1)
 
-        # Suggestions
-        self._sug_row = QHBoxLayout(); self._sug_row.setContentsMargins(10, 4, 10, 4)
-        self._sug_row.setSpacing(6)
-        cl.addLayout(self._sug_row)
+        # Suggestions — stacked full-width so labels never truncate
+        sug_wrap = QFrame(); sug_wrap.setObjectName('mbtAiSugWrap')
+        self._sug_col = QVBoxLayout(sug_wrap)
+        self._sug_col.setContentsMargins(14, 8, 14, 8)
+        self._sug_col.setSpacing(8)
+        self._sug_label = QLabel('TRY ASKING')
+        self._sug_label.setObjectName('mbtAiSugLabel')
+        self._sug_col.addWidget(self._sug_label)
+        cl.addWidget(sug_wrap)
 
         # Typing
         self._typing = QLabel('MBT AI is thinking…')
@@ -172,16 +198,18 @@ class AiAssistantPanel(QFrame):
 
         # Composer
         comp = QFrame(); comp.setObjectName('mbtAiComposer')
-        cpl = QHBoxLayout(comp); cpl.setContentsMargins(10, 8, 10, 10); cpl.setSpacing(8)
+        cpl = QHBoxLayout(comp); cpl.setContentsMargins(14, 12, 14, 14); cpl.setSpacing(10)
         self._input = QTextEdit()
-        self._input.setPlaceholderText('Ask about sales, stock, customers…')
-        self._input.setFixedHeight(64)
+        self._input.setPlaceholderText(
+            'Ask about sales, stock, customers, or this screen…')
+        self._input.setFixedHeight(76)
         self._input.setObjectName('mbtAiInput')
         self._send = QPushButton('Send')
         self._send.setObjectName('mbtAiSend')
         self._send.setCursor(Qt.PointingHandCursor)
-        self._send.setFixedHeight(64)
-        self._send.setFixedWidth(72)
+        self._send.setFixedHeight(76)
+        self._send.setMinimumWidth(88)
+        self._send.setFixedWidth(96)
         self._send.clicked.connect(self._on_send)
         cpl.addWidget(self._input, 1)
         cpl.addWidget(self._send)
@@ -196,24 +224,32 @@ class AiAssistantPanel(QFrame):
 
     def _empty_hint(self):
         tip = QLabel(
-            'Ask a question about this screen.\n'
-            'Answers use permission-filtered shop data.\n'
-            'AI never changes stock or sales without your approval.'
+            '<p style="margin:0 0 10px 0;"><b>Ask anything about this screen</b></p>'
+            '<p style="margin:0 0 8px 0;">Answers use your shop data — filtered by your role.</p>'
+            '<p style="margin:0;">MBT AI never changes stock, sales, or money '
+            'without your explicit approval.</p>'
         )
         tip.setObjectName('mbtAiHint')
         tip.setWordWrap(True)
         tip.setAlignment(Qt.AlignCenter)
+        tip.setTextFormat(Qt.RichText)
+        tip.setMinimumHeight(120)
         self._chat_lay.insertWidget(self._chat_lay.count() - 1, tip)
         self._hint = tip
 
     def set_module(self, module: str):
         self._module = (module or 'dashboard').lower()
-        self._sub.setText(f'{self._module.replace("_", " ").title()} · Assistant')
+        label = _MODULE_LABELS.get(
+            self._module,
+            f'{self._module.replace("_", " ").title()} Assistant',
+        )
+        self._sub.setText(label)
         self._reload_suggestions()
 
     def _reload_suggestions(self):
-        while self._sug_row.count():
-            item = self._sug_row.takeAt(0)
+        # Keep header label; clear chip buttons only
+        while self._sug_col.count() > 1:
+            item = self._sug_col.takeAt(1)
             w = item.widget()
             if w:
                 w.deleteLater()
@@ -221,9 +257,14 @@ class AiAssistantPanel(QFrame):
             b = QPushButton(s)
             b.setObjectName('mbtAiChip')
             b.setCursor(Qt.PointingHandCursor)
+            b.setMinimumHeight(40)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setStyleSheet('')  # theme QSS applies
+            # Elide-proof: full text + tooltip
+            b.setToolTip(s)
+            b.setText(s)
             b.clicked.connect(lambda _, t=s: self._use_suggestion(t))
-            self._sug_row.addWidget(b)
-        self._sug_row.addStretch(1)
+            self._sug_col.addWidget(b)
         self.refresh_theme()
 
     def _use_suggestion(self, text: str):
@@ -244,49 +285,63 @@ class AiAssistantPanel(QFrame):
                 background:{p['card2']}; border-bottom:1px solid {p['border']};
             }}
             QLabel#mbtAiTitle {{
-                color:{p['text']}; font-size:15px; font-weight:800; background:transparent;
+                color:{p['text']}; font-size:18px; font-weight:800; background:transparent;
             }}
             QLabel#mbtAiSub {{
-                color:{p['text2']}; font-size:11px; background:transparent;
+                color:{p['text2']}; font-size:13px; font-weight:600; background:transparent;
             }}
             QPushButton#mbtAiIconBtn {{
                 background:{p['input']}; color:{p['text']}; border:1px solid {p['border']};
-                border-radius:8px; font-size:14px;
+                border-radius:9px; font-size:15px;
             }}
             QPushButton#mbtAiIconBtn:hover {{ border-color:{p['gold']}; color:{p['gold']}; }}
             QLabel#mbtAiBanner {{
                 background:{qss_alpha(p['warn'], 0.18)}; color:{p['warn']};
-                padding:8px 12px; font-size:12px; font-weight:600;
+                padding:10px 14px; font-size:13px; font-weight:600;
                 border-bottom:1px solid {qss_alpha(p['warn'], 0.35)};
             }}
             QLabel#mbtAiTyping {{
-                color:{p['gold']}; font-size:12px; padding:4px 14px; background:transparent;
+                color:{p['gold']}; font-size:13px; font-weight:600;
+                padding:6px 16px; background:transparent;
             }}
             QLabel#mbtAiHint {{
-                color:{p['muted']}; font-size:12px; padding:24px; background:transparent;
+                color:{p['text2']}; font-size:15px;
+                padding:24px 22px; background:transparent;
+            }}
+            QFrame#mbtAiSugWrap {{
+                background:{p['card2']}; border-top:1px solid {p['border']};
+            }}
+            QLabel#mbtAiSugLabel {{
+                color:{p['muted']}; font-size:12px; font-weight:800;
+                letter-spacing:1px; background:transparent; border:none;
+                padding:0 2px 4px 2px;
             }}
             QFrame#mbtAiComposer {{
                 background:{p['card2']}; border-top:1px solid {p['border']};
             }}
             QTextEdit#mbtAiInput {{
-                background:{p['input']}; color:{p['text']}; border:1px solid {p['border']};
-                border-radius:10px; padding:8px; font-size:13px;
+                background:{p['input']}; color:{p['text']}; border:1.5px solid {p['border']};
+                border-radius:12px; padding:10px 12px; font-size:15px;
             }}
             QTextEdit#mbtAiInput:focus {{ border-color:{p['gold']}; }}
             QPushButton#mbtAiSend {{
                 background:{p['gold']}; color:{p.get('gold_fg', '#0A0F1A')};
-                border:none; border-radius:10px; font-weight:800; font-size:13px;
+                border:none; border-radius:12px; font-weight:800; font-size:15px;
             }}
             QPushButton#mbtAiSend:hover {{ background:{p.get('gold_lt', p['gold'])}; }}
             QPushButton#mbtAiSend:disabled {{ background:{p['border']}; color:{p['muted']}; }}
             QPushButton#mbtAiChip {{
-                background:{p['card2']}; color:{p['text2']}; border:1px solid {p['border']};
-                border-radius:12px; padding:4px 10px; font-size:11px;
+                background:{p['input']}; color:{p['text']}; border:1px solid {p['border']};
+                border-radius:10px; padding:12px 16px; font-size:14px; font-weight:600;
+                text-align:left;
             }}
-            QPushButton#mbtAiChip:hover {{ border-color:{p['gold']}; color:{p['gold']}; }}
+            QPushButton#mbtAiChip:hover {{
+                border-color:{p['gold']}; color:{p['gold']};
+                background:{qss_alpha(p['gold'], 0.10)};
+            }}
             QListWidget#mbtAiHist {{
                 background:{p['card2']}; color:{p['text']}; border:none;
-                border-right:1px solid {p['border']}; font-size:12px;
+                border-right:1px solid {p['border']}; font-size:13px;
             }}
             QScrollArea {{ background:transparent; border:none; }}
             """
@@ -587,15 +642,15 @@ class _Bubble(QFrame):
             border = p['border']
         self.setStyleSheet(
             f"QFrame {{ background:{bg}; border:1px solid {border}; border-radius:12px; }}"
-            f"QLabel#mbtAiWho {{ color:{p['muted']}; font-size:10px; font-weight:700;"
+            f"QLabel#mbtAiWho {{ color:{p['muted']}; font-size:11px; font-weight:700;"
             f" background:transparent; border:none; }}"
-            f"QLabel {{ color:{p['text']}; font-size:13px; background:transparent; border:none; }}"
+            f"QLabel {{ color:{p['text']}; font-size:14px; background:transparent; border:none; }}"
             f"QPushButton#mbtAiMini {{ background:transparent; color:{p['text2']}; border:none;"
-            f" font-size:11px; padding:2px 6px; }}"
+            f" font-size:12px; padding:4px 8px; }}"
             f"QPushButton#mbtAiMini:hover {{ color:{p['gold']}; }}"
             f"QPushButton#mbtAiAction {{ background:{qss_alpha(p['info'], 0.15)}; color:{p['info']};"
             f" border:1px solid {qss_alpha(p['info'], 0.4)}; border-radius:8px;"
-            f" padding:6px 10px; font-size:12px; font-weight:600; text-align:left; }}"
+            f" padding:8px 12px; font-size:13px; font-weight:600; text-align:left; }}"
         )
 
 
