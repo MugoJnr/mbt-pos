@@ -1,4 +1,4 @@
-"""
+﻿"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-19-v2.3.92"
-APP_VERSION   = "2.3.92"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-19-v2.3.93"
+APP_VERSION   = "2.3.93"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -155,7 +155,7 @@ class LoginDialog(QDialog):
         self.setWindowIcon(icon)
         self.setFixedSize(460, 580)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        # Inherit live QApplication ThemeManager sheet — do NOT freeze a copy
+        # Inherit live QApplication ThemeManager sheet â€” do NOT freeze a copy
         # (stale DARK QSS on the dialog caused light-mode hybrid on login).
         self.setStyleSheet('')
         self._build()
@@ -425,14 +425,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MBT POS - MugoByte Technologies")
         self.setWindowIcon(icon)
         self.setMinimumSize(1200, 720)
-        # Do NOT freeze a copy of MBT_STYLESHEET on the window — it blocks ThemeManager
+        # Do NOT freeze a copy of MBT_STYLESHEET on the window â€” it blocks ThemeManager
         # light/dark updates (QApp sheet never reaches #sidebar / #topbar). Inherit QApp.
         self.setStyleSheet('')
 
         self._db_path = get_db_path()
 
         # Apply saved theme BEFORE building widgets. Re-applying light QSS after
-        # 11 tabs exist re-polishes the whole tree and freezes Windows 25–80s
+        # 11 tabs exist re-polishes the whole tree and freezes Windows 25â€“80s
         # (Responding=False). Build once under the correct palette instead.
         self._boot_is_light = self._read_theme_pref()
         try:
@@ -443,7 +443,7 @@ class MainWindow(QMainWindow):
             log.warning(f'boot theme: {e}')
             self._boot_is_light = bool(ThemeManager.is_light())
 
-        # UI first — services second (never block render)
+        # UI first â€” services second (never block render)
         self._build_ui()
         try:
             from desktop.utils.audio_manager import get_audio
@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         # Lazy tabs: only build the first page before paint. Eagerly constructing
-        # all 11 tabs under light QSS freezes Windows (Not Responding) for 40–80s
+        # all 11 tabs under light QSS freezes Windows (Not Responding) for 40â€“80s
         # and blocks QA/theme evidence dumps.
         self._tabs = {}
         self._tab_kw = dict(
@@ -478,7 +478,7 @@ class MainWindow(QMainWindow):
         self._ensure_tab('dashboard')
         # Paint shell chrome from live C (sidebar/topbar need WA_StyledBackground tint)
         self._refresh_chrome_styles()
-        # Floating AI assistant (every screen) — vendor-managed OpenRouter; offline-safe
+        # Floating AI assistant (every screen) â€” vendor-managed OpenRouter; offline-safe
         self._install_ai_assistant()
 
         self.signals.connection_changed.connect(self._on_conn)
@@ -495,7 +495,7 @@ class MainWindow(QMainWindow):
             if hasattr(dash, 'theme_changed'):
                 dash.theme_changed.connect(self._apply_app_theme)
 
-        # Paint chrome first — defer first-tab show so the maximized frame paints
+        # Paint chrome first â€” defer first-tab show so the maximized frame paints
         self.showMaximized()
         # Optional evidence dumps: set MBT_QA_THEME=1 before RUN_DEV
         if os.environ.get('MBT_QA_THEME', '').strip() in ('1', 'true', 'yes'):
@@ -539,7 +539,7 @@ class MainWindow(QMainWindow):
             if hasattr(w, 'sale_completed'):
                 if 'dashboard' in self._tabs and hasattr(self._tabs['dashboard'], '_load'):
                     w.sale_completed.connect(self._tabs['dashboard']._load)
-                # reports may not exist yet — reconnect in _ensure_tab('reports') if needed
+                # reports may not exist yet â€” reconnect in _ensure_tab('reports') if needed
             if hasattr(w, 'theme_changed'):
                 w.theme_changed.connect(self._apply_app_theme)
         if tid == 'reports' and 'sales' in self._tabs:
@@ -589,7 +589,7 @@ class MainWindow(QMainWindow):
                     os.path.join(out, '05_content_center.png'), 'PNG')
             mode = 'light' if ThemeManager.is_light() else 'dark'
             log.info('QA theme evidence dump (%s) -> %s (%dx%d)', mode, out, w, h)
-            # Late dump after dashboard paints (no auto POS nav — that raced warm-tabs)
+            # Late dump after dashboard paints (no auto POS nav â€” that raced warm-tabs)
             QTimer.singleShot(1200, self._qa_dump_theme_evidence_late)
         except Exception as e:
             log.warning('QA evidence dump: %s', e)
@@ -607,7 +607,7 @@ class MainWindow(QMainWindow):
             log.warning('QA late dump: %s', e)
 
     def _qa_dump_sales_evidence(self):
-        """Optional — call manually / from tests; not auto-chained (avoids hang)."""
+        """Optional â€” call manually / from tests; not auto-chained (avoids hang)."""
         try:
             out = os.path.join(
                 os.path.expanduser('~'), 'OneDrive', 'Desktop',
@@ -974,7 +974,7 @@ class MainWindow(QMainWindow):
         root.addWidget(right, 1)
 
     def _build_sidebar(self):
-        # AppShell sidebar — 240px (matches theme QSS), logo + brand, gold active rail
+        # AppShell sidebar â€” 240px (matches theme QSS), logo + brand, gold active rail
         sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(240)
         # QWidget backgrounds need styled-background or light QSS never paints
         sb.setAttribute(Qt.WA_StyledBackground, True)
@@ -982,7 +982,7 @@ class MainWindow(QMainWindow):
         self._sidebar = sb
         sl = QVBoxLayout(sb); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
 
-        # Logo block — HD mark + MBT / POS SYSTEM
+        # Logo block â€” HD mark + MBT / POS SYSTEM
         lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(80)
         ll = QHBoxLayout(lw)
         ll.setContentsMargins(16, 12, 16, 12); ll.setSpacing(12)
@@ -998,7 +998,7 @@ class MainWindow(QMainWindow):
 
         sl.addSpacing(8)
 
-        # Navigation — scrollable when many tabs / short displays
+        # Navigation â€” scrollable when many tabs / short displays
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
@@ -1122,7 +1122,7 @@ class MainWindow(QMainWindow):
 
     def _build_statusbar(self):
         bar = QWidget(); bar.setObjectName("statusBar"); bar.setFixedHeight(36)
-        # QWidget ignores QSS backgrounds unless styled-background is on —
+        # QWidget ignores QSS backgrounds unless styled-background is on â€”
         # without this, light mode can leave a dark parent/chrome strip.
         bar.setAttribute(Qt.WA_StyledBackground, True)
         bar.setAutoFillBackground(True)
@@ -1296,7 +1296,7 @@ class MainWindow(QMainWindow):
             fab.show()
             fab.raise_()
         self._position_ai_chrome()
-        # POS stack/tabs never unloaded — user returns to same place
+        # POS stack/tabs never unloaded â€” user returns to same place
 
     def _position_ai_chrome(self):
         if getattr(self, '_ai_ws_active', False):
@@ -1329,7 +1329,7 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_theme_change(self, is_light: bool):
-        """ThemeToggleBtn / sales / dashboard — single apply path via _sync_theme_ui."""
+        """ThemeToggleBtn / sales / dashboard â€” single apply path via _sync_theme_ui."""
         self._sync_theme_ui(is_light, persist=True)
 
     def _load_saved_theme(self):
@@ -1425,13 +1425,13 @@ class MainWindow(QMainWindow):
         self._theme_gen = getattr(self, '_theme_gen', 0) + 1
         gen = self._theme_gen
         t0 = time.perf_counter()
-        # Freeze paints while QApp stylesheet re-polishes — cuts Not Responding time
+        # Freeze paints while QApp stylesheet re-polishes â€” cuts Not Responding time
         self.setUpdatesEnabled(False)
         try:
             ThemeManager.apply(is_light, force=True)
             # Clear any leftover window-level QSS so QApplication theme reaches chrome
             self.setStyleSheet('')
-            # ThemeManager already set QApplication stylesheet — do NOT also
+            # ThemeManager already set QApplication stylesheet â€” do NOT also
             # self.setStyleSheet(full sheet) (second full polish was a major lag source).
 
             if hasattr(self, '_theme_btn') and hasattr(self._theme_btn, '_refresh_theme'):
@@ -1457,7 +1457,7 @@ class MainWindow(QMainWindow):
                     break
 
             # Scope findChildren walk to visible page + sidebar QWidget only
-            # (never pass self._nav — that is a dict of buttons, not a QWidget)
+            # (never pass self._nav â€” that is a dict of buttons, not a QWidget)
             try:
                 from desktop.utils.widgets import refresh_themed_widgets
                 if cur is not None:
@@ -1491,7 +1491,7 @@ class MainWindow(QMainWindow):
             self._theme_pending_light = is_light
             self._theme_persist = persist
             self._theme_pending_gen = gen
-            # Unlock immediately — deferred work must not block the toggle
+            # Unlock immediately â€” deferred work must not block the toggle
             self._theme_switching = False
             QTimer.singleShot(0, self._theme_apply_pending_tabs)
         except Exception as e:
@@ -1753,10 +1753,10 @@ class MainWindow(QMainWindow):
             'Could not open the web dashboard.\n\n'
             f'Local URL ({local_url}) is not responding yet.\n\n'
             'Try again in a few seconds. If it still fails:\n'
-            '• Allow MBT POS through Windows Firewall (port 5050)\n'
-            '• Wait for Cloudflare remote setup in Settings, then use your\n'
+            'â€¢ Allow MBT POS through Windows Firewall (port 5050)\n'
+            'â€¢ Wait for Cloudflare remote setup in Settings, then use your\n'
             '  shop URL (https://yourshop.mugobyte.com)\n'
-            '• Desktop POS sales still work without the web dashboard',
+            'â€¢ Desktop POS sales still work without the web dashboard',
         )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
@@ -1777,8 +1777,8 @@ def _start_web_dashboard():
     """
     Start embedded web dashboard + Cloudflare tunnel in a background thread.
 
-    Must never block the Qt main thread — tunnel restart / remote HTTPS checks
-    can take 1–3 minutes and previously froze splash/login (Not Responding).
+    Must never block the Qt main thread â€” tunnel restart / remote HTTPS checks
+    can take 1â€“3 minutes and previously froze splash/login (Not Responding).
     Desktop POS uses direct SQLite and does not need Flask to be ready.
     """
     global _web_svc
@@ -1790,7 +1790,7 @@ def _start_web_dashboard():
         try:
             try:
                 from backend.cloudflare_setup import bootstrap_cloudflared
-                # Local file copy only — no DNS / network (those blocked splash before)
+                # Local file copy only â€” no DNS / network (those blocked splash before)
                 bootstrap_cloudflared()
             except Exception:
                 pass
@@ -1801,7 +1801,7 @@ def _start_web_dashboard():
             if ok:
                 log.info(f"Web dashboard: {svc.url}")
             else:
-                log.warning("Web dashboard could not start — desktop POS still works")
+                log.warning("Web dashboard could not start â€” desktop POS still works")
         except Exception as e:
             log.warning(f"Web dashboard: {e}")
 
@@ -1881,7 +1881,7 @@ def main():
         app.setFont(QFont(primary, 13))
     except Exception:
         app.setFont(QFont('Segoe UI', 13))
-    # Rebuild QSS now that fonts (and QApp) are ready — use saved light/dark so
+    # Rebuild QSS now that fonts (and QApp) are ready â€” use saved light/dark so
     # login + MainWindow are not built dark then re-polished to light (80s freeze).
     _boot_light = False
     try:

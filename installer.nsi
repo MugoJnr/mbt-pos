@@ -1,4 +1,4 @@
-; MBT POS - NSIS Installer Script
+﻿; MBT POS - NSIS Installer Script
 ; MugoByte Technologies | mugobyte.com
 ; Builds a professional Windows installer from dist\MBT_POS.exe
 
@@ -31,7 +31,7 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 
-; Finish page — no auto-launch (update launcher restarts the app)
+; Finish page â€” no auto-launch (update launcher restarts the app)
 !define MUI_FINISHPAGE_SHOWREADME ""
 !define MUI_FINISHPAGE_LINK "mugobyte.com"
 !define MUI_FINISHPAGE_LINK_LOCATION "https://mugobyte.com"
@@ -49,7 +49,7 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 
 !insertmacro MUI_LANGUAGE "English"
 
-; Kill running POS + tunnel before install — cloudflared locks _internal\cloudflared.exe
+; Kill running POS + tunnel before install â€” cloudflared locks _internal\cloudflared.exe
 Function .onInit
     ExecWait 'taskkill /F /IM MBT_POS.exe' $0
     ExecWait 'taskkill /F /IM cloudflared.exe' $0
@@ -62,7 +62,7 @@ FunctionEnd
 VIProductVersion "1.0.0.0"
 VIAddVersionKey "ProductName"     "MBT POS"
 VIAddVersionKey "CompanyName"     "MugoByte Technologies"
-VIAddVersionKey "LegalCopyright"  "© 2026 MugoByte Technologies"
+VIAddVersionKey "LegalCopyright"  "Â© 2026 MugoByte Technologies"
 VIAddVersionKey "FileDescription" "MBT POS Installer"
 VIAddVersionKey "FileVersion"     "1.0.0"
 VIAddVersionKey "ProductVersion"  "1.0.0"
@@ -102,7 +102,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "2.3.92"
+        "DisplayVersion"       "2.3.93"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"
