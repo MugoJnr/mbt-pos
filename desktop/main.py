@@ -1,4 +1,4 @@
-﻿"""
+"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-19-v2.3.94"
-APP_VERSION   = "2.3.94"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-19-v2.3.95"
+APP_VERSION   = "2.3.95"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():

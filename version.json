@@ -1,8 +1,8 @@
 {
-  "version": "2.3.94",
-  "build": "PROD-2026-07-19-v2.3.94",
+  "version": "2.3.95",
+  "build": "PROD-2026-07-19-v2.3.95",
   "build_date": "2026-07-19",
-  "release_notes": "Premium Current Sale 2-column checkout UI (CartLineRow/CustomerCard). Includes v2.3.93 web POS layout.",
+  "release_notes": "Cashier finance authz (own_sales scope) + setup_wizard SyntaxError fix (ddb4239). Includes Current Sale redesign and web POS layout.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

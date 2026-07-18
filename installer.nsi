@@ -1,4 +1,4 @@
-﻿; MBT POS - NSIS Installer Script
+; MBT POS - NSIS Installer Script
 ; MugoByte Technologies | mugobyte.com
 ; Builds a professional Windows installer from dist\MBT_POS.exe
 
@@ -102,7 +102,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "2.3.94"
+        "DisplayVersion"       "2.3.95"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"
