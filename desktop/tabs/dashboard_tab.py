@@ -40,7 +40,7 @@ def _qs(css): return css  # passthrough \u2014 just for readability
 class _KPI(AnimatedKPI):
     """Dashboard KPI \u2014 AnimatedKPI with theme apply_mode shim."""
 
-    def __init__(self, label, icon, value='\u2014', sub='', accent=None, is_light=False):
+    def __init__(self, label, icon, value='--', sub='', accent=None, is_light=False):
         super().__init__(label=label, icon=icon, value=value, sub=sub, accent=accent)
         self._is_light = is_light
         apply_card_shadow(self)
@@ -161,7 +161,7 @@ def _status_row(label, value, color, is_light=False):
     w = QWidget(); w.setStyleSheet("background:transparent;")
     row = QHBoxLayout(w); row.setContentsMargins(0, 4, 0, 4); row.setSpacing(8)
 
-    dot = QLabel("\u25cf")
+    dot = QLabel("*")
     dot.setStyleSheet(
         f"color:{color}; font-size:13px; background:transparent; border:none;")
     lbl = QLabel(label)
@@ -243,7 +243,7 @@ class DashboardTab(QWidget):
         rest = today.strftime('%B %d, %Y')
         self._date_lbl.setText(
             f'<span style="color:{p["gold"]};font-weight:600">{weekday}</span>'
-            f'<span style="color:{p["muted"]}">  \u00b7  </span>'
+            f'<span style="color:{p["muted"]}"> | </span>'
             f'<span style="color:{p["text2"]}">{rest}</span>')
         self._title_lbl = QLabel('Good Morning')
         self._title_lbl.setStyleSheet(
@@ -284,8 +284,8 @@ class DashboardTab(QWidget):
         # -- KPI ROW 1 - Sales ---
         kr1 = QHBoxLayout(); kr1.setSpacing(16)
         self._k_sales = _KPI("Today's Sales",   '$', '0',   'Transactions', p['gold'],   self._is_light)
-        self._k_rev   = _KPI("Today's Revenue", '\u25c6', '\u2014',   'Gross income',  p['ok'],     self._is_light)
-        self._k_avg   = _KPI("Avg Transaction", '\u25b2', '\u2014',   'Per receipt',   p['info'],   self._is_light)
+        self._k_rev   = _KPI("Today's Revenue", '*', '--',   'Gross income',  p['ok'],     self._is_light)
+        self._k_avg   = _KPI("Avg Transaction", '^', '--',   'Per receipt',   p['info'],   self._is_light)
         self._k_low   = _KPI("Low Stock",        '!', '0',   'Items to restock', p['err'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
@@ -293,8 +293,8 @@ class DashboardTab(QWidget):
 
         # -- KPI ROW 2 - Debt ---
         kr2 = QHBoxLayout(); kr2.setSpacing(16)
-        self._k_debt_out  = _KPI("Outstanding Debt",    '=', '\u2014', 'unpaid',        p['err'],  self._is_light)
-        self._k_debt_col  = _KPI("Collected Today",     '\u2713', '\u2014', 'debt payments', p['ok'],   self._is_light)
+        self._k_debt_out  = _KPI("Outstanding Debt",    '=', '--', 'unpaid',        p['err'],  self._is_light)
+        self._k_debt_col  = _KPI("Collected Today",     '+', '--', 'debt payments', p['ok'],   self._is_light)
         self._k_customers = _KPI("Customers w/ Debt",   '@', '0', 'accounts',      p['warn'], self._is_light)
         self._k_overdue   = _KPI("Overdue",             '*', '0', 'past due date', p['err'],  self._is_light)
         for k in (self._k_debt_out, self._k_debt_col, self._k_customers, self._k_overdue):
@@ -304,8 +304,8 @@ class DashboardTab(QWidget):
         # -- KPI ROW 3 - Internal Consumption ---
         kr3 = QHBoxLayout(); kr3.setSpacing(18)
         self._k_cons = _KPI(
-            'Internal Consumption Today', '\u25a3', '0',
-            'items \u00b7 cost', p['info'], self._is_light)
+            'Internal Consumption Today', '#', '0',
+            'items | cost', p['info'], self._is_light)
         self._k_cons.setCursor(Qt.PointingHandCursor)
         self._k_cons.setToolTip('Open Internal Consumption report')
         self._k_cons.mousePressEvent = lambda e: self._open_consumption_report()
@@ -316,10 +316,10 @@ class DashboardTab(QWidget):
         # -- CHARTS ROW ---
         charts = QHBoxLayout(); charts.setSpacing(18)
         self._trend_chart = GoldLineChart(height=168)
-        self._trend_card = ChartCard('Sales \u00b7 Last 7 Days', self._trend_chart)
+        self._trend_card = ChartCard('Sales | Last 7 Days', self._trend_chart)
         apply_card_shadow(self._trend_card)
         self._pay_chart = PaymentBars()
-        self._pay_card = ChartCard('By Payment \u00b7 7 Days', self._pay_chart)
+        self._pay_card = ChartCard('By Payment | 7 Days', self._pay_chart)
         apply_card_shadow(self._pay_card)
         charts.addWidget(self._trend_card, 3)
         charts.addWidget(self._pay_card, 2)
@@ -338,7 +338,7 @@ class DashboardTab(QWidget):
         actions = [
             ('$', 'New Sale',   'gold',  'sales'),
             ('#', 'Inventory',  'ok',    'inventory'),
-            ('\u25c6', 'Debt',       'info',  'debt'),
+            ('*', 'Debt',       'info',  'debt'),
             ('%', 'Reports',    'warn',  'reports'),
         ]
         self._qa_btns = []
@@ -390,7 +390,7 @@ class DashboardTab(QWidget):
         else:
             self._void_btn = None
 
-        ref_btn = QPushButton('\u21bb')
+        ref_btn = QPushButton('R')
         ref_btn.setFixedSize(32, 32)
         ref_btn.setCursor(Qt.PointingHandCursor)
         ref_btn.setStyleSheet(
@@ -478,7 +478,7 @@ class DashboardTab(QWidget):
         self._st_net_w,  self._st_net,  self._st_net_dot  = _status_row('Internet',      'Online',  p['ok'],   self._is_light)
         self._st_lic_w,  self._st_lic,  self._st_lic_dot  = _status_row('License',       'Active',  p['ok'],   self._is_light)
         self._st_bak_w,  self._st_bak,  self._st_bak_dot  = _status_row('Backup',        'OK',      p['ok'],   self._is_light)
-        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Cloud Sync',    '\u2014',       p['muted'],self._is_light)
+        self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Cloud Sync',    '--',       p['muted'],self._is_light)
         self._st_ver_w,  self._st_ver,  self._st_ver_dot  = _status_row('Version',       'v2.3',    p['info'], self._is_light)
         for w in (self._st_db_w, self._st_api_w, self._st_prn_w, self._st_net_w,
                   self._st_lic_w, self._st_bak_w, self._st_sync_w, self._st_ver_w):
@@ -489,10 +489,10 @@ class DashboardTab(QWidget):
         self._ai_card = _Card(self._is_light)
         ail = self._ai_card.body(margins=(18, 16, 18, 16), spacing=10)
         hdr_ai = QHBoxLayout()
-        self._ai_title = QLabel('\u2726  AI Insights')
+        self._ai_title = QLabel('*  AI Insights')
         self._ai_title.setStyleSheet(
             f"color:{p['text']}; font-size:15px; font-weight:700; background:transparent; border:none;")
-        self._ai_refresh = QPushButton('\u21bb')
+        self._ai_refresh = QPushButton('R')
         self._ai_refresh.setFixedSize(28, 28)
         self._ai_refresh.setCursor(Qt.PointingHandCursor)
         self._ai_refresh.setToolTip('Refresh AI insights')
@@ -503,7 +503,7 @@ class DashboardTab(QWidget):
         self._ai_banner.setWordWrap(True)
         self._ai_banner.hide()
         ail.addWidget(self._ai_banner)
-        self._ai_summary = QLabel('Loading insights\u2026')
+        self._ai_summary = QLabel('Loading insights...')
         self._ai_summary.setWordWrap(True)
         self._ai_summary.setStyleSheet(
             f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
@@ -577,7 +577,7 @@ class DashboardTab(QWidget):
         self._root_lay.addLayout(body, 1)
 
         # Footer
-        self._footer = QLabel('MBT POS  \u00b7  MugoByte Technologies  \u00b7  mugobyte.com')
+        self._footer = QLabel('MBT POS | MugoByte Technologies | mugobyte.com')
         self._footer.setAlignment(Qt.AlignCenter)
         self._footer.setStyleSheet(
             f"color:{p['muted']}; font-size:11px; "
@@ -681,7 +681,7 @@ class DashboardTab(QWidget):
         rest = today.strftime('%d %B %Y')
         self._date_lbl.setText(
             f'<span style="color:{p["gold"]};font-weight:600">{weekday}</span>'
-            f'<span style="color:{p["muted"]}">  \u00b7  </span>'
+            f'<span style="color:{p["muted"]}"> | </span>'
             f'<span style="color:{p["text2"]}">{rest}</span>')
         self._date_lbl.setStyleSheet("background:transparent; border:none;")
         self._title_lbl.setStyleSheet(
@@ -793,7 +793,7 @@ class DashboardTab(QWidget):
             self._currency = cfg.get('currency_symbol', 'KES')
             headline, sub = time_greeting(name)
             self._title_lbl.setText(headline)
-            self._shop_lbl.setText(f'{shop}  \u00b7  {sub}')
+            self._shop_lbl.setText(f'{shop} | {sub}')
         except Exception:
             pass
         QTimer.singleShot(0, self._load)
@@ -845,7 +845,7 @@ class DashboardTab(QWidget):
         self._ai_recs.setText(
             'Recommendations:\n' + '\n'.join(f'* {r}' for r in recs[:4]) if recs else '')
         src = data.get('source') or ''
-        self._ai_title.setText(f'\u2726  AI Insights' + (f'  \u00b7  {src}' if src else ''))
+        self._ai_title.setText(f'*  AI Insights' + (f' | {src}' if src else ''))
 
     def refresh(self):
         self._load()
@@ -963,7 +963,7 @@ class DashboardTab(QWidget):
                 total_col = p['muted'] if voided else p['ok']
                 self._tbl.setItem(i, 3, tbl_right(
                     f"{cur} {float(s.get('total', 0)):,.2f}", total_col))
-                st_label = 'x Voided' if voided else '\u2713 Done'
+                st_label = 'x Voided' if voided else '+ Done'
                 st_color = p['err'] if voided else p['ok']
                 self._tbl.setItem(i, 4, tbl_center(st_label, st_color))
 
@@ -974,7 +974,7 @@ class DashboardTab(QWidget):
                 self._sales_empty.setVisible(not has)
             self._tbl_footer.setText(
                 f"  {n} transaction{'s' if n != 1 else ''} today" +
-                (f"  \u00b7  Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
+                (f" | Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
             self._on_sale_selected()
 
             # Activity feed from recent sales
@@ -1000,7 +1000,7 @@ class DashboardTab(QWidget):
             )
             total_7 = sum(float(t.get('revenue') or 0) for t in trend)
             self._trend_card.set_title(
-                f"Sales \u00b7 Last 7 Days  \u00b7  {cur} {total_7:,.0f}")
+                f"Sales | Last 7 Days | {cur} {total_7:,.0f}")
         except Exception as e:
             log.warning(f"Dashboard sales trend: {e}")
 
@@ -1023,8 +1023,8 @@ class DashboardTab(QWidget):
         from datetime import datetime as _dt
         now_s = _dt.now().strftime('%H:%M')
         for lbl, text, color in (
-            (self._st_db, 'OK \u00b7 ' + now_s, p2['ok']),
-            (self._st_api, 'Online \u00b7 <40ms', p2['ok']),
+            (self._st_db, 'OK | ' + now_s, p2['ok']),
+            (self._st_api, 'Online | <40ms', p2['ok']),
             (self._st_prn, 'Ready', p2['ok']),
             (self._st_net, 'Online', p2['ok']),
             (self._st_lic, 'Active', p2['ok']),
@@ -1058,12 +1058,12 @@ class DashboardTab(QWidget):
             who = s.get('cashier_name') or 'Cashier'
             rcpt = s.get('receipt_number') or ''
             total = float(s.get('total', 0) or 0)
-            row = QLabel(f"\u2713  {who} completed Sale {rcpt}  \u00b7  {cur} {total:,.0f}")
+            row = QLabel(f"+  {who} completed Sale {rcpt} | {cur} {total:,.0f}")
             row.setWordWrap(True)
             row.setStyleSheet(
                 f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
             lay.addWidget(row)
-        bak = QLabel('\u2713  Database ready  \u00b7  Backup OK')
+        bak = QLabel('+  Database ready | Backup OK')
         bak.setStyleSheet(
             f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
         lay.addWidget(bak)
@@ -1140,7 +1140,7 @@ class DashboardTab(QWidget):
         headers = ['Receipt', 'Time', 'Cashier', 'Total', 'Status']
         from desktop.utils.theme import apply_themed_dialog, C as TC
         dlg = QDialog(self)
-        dlg.setWindowTitle(f'Sale \u2014 {receipt}')
+        dlg.setWindowTitle(f'Sale - {receipt}')
         dlg.setMinimumWidth(400)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)

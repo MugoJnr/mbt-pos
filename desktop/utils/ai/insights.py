@@ -24,7 +24,7 @@ def _heuristic_insights(api, user) -> Dict[str, Any]:
         today = str(date.today())
         sales = api.get_sales(start=today, end=today) if hasattr(api, 'get_sales') else []
         total = sum(float(s.get('total') or s.get('final_total') or 0) for s in (sales or []))
-        summary = f"Today: {len(sales or [])} sales · approx revenue {total:,.2f}."
+        summary = f"Today: {len(sales or [])} sales | approx revenue {total:,.2f}."
         products = api.get_products() if hasattr(api, 'get_products') else []
         low = 0
         for p in products or []:
@@ -79,7 +79,7 @@ def get_dashboard_insights(api, user, *, force: bool = False) -> Dict[str, Any]:
     if not conn.configured or not conn.online:
         data = _heuristic_insights(api, user)
         if not conn.configured:
-            data['banner'] = 'AI not configured — showing local insights.'
+            data['banner'] = 'AI not configured - showing local insights.'
         else:
             data['banner'] = OFFLINE_BANNER
         _CACHE.update({'ts': now, 'data': data, 'user': uid})

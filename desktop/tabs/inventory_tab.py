@@ -6,7 +6,7 @@ from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 
 _log = logging.getLogger('inventory')
-from desktop.utils.theme   import C, qss_alpha
+from desktop.utils.theme   import C, qss_alpha, apply_themed_dialog
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
                                     tbl_right, tbl_center, page_layout, PageChrome,
@@ -625,7 +625,7 @@ class _ProdDlg(QDialog):
             stk_info = QLabel(
                 f"<b>{stk_val}</b>  "
                 f"<span style='color:{C['muted']};font-size:12px;'>"
-                f"(Use the âš- Adjust Stock button to change stock quantity)</span>")
+                f"(Use the Adjust Stock button to change stock quantity)</span>")
             stk_info.setTextFormat(Qt.RichText)
             stk_info.setStyleSheet(f"color:{C['text']}; font-size:14px; background:transparent;")
             lay.addRow(lbl('Current Stock'), stk_info)

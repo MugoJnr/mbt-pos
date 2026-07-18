@@ -103,7 +103,7 @@ class ToastNotification(QFrame):
             "gold": C["gold"],
         }
         color = tone_map.get(tone, C["ok"])
-        dot = QLabel("●")
+        dot = QLabel("*")
         dot.setStyleSheet(f"color:{color}; font-size:12px; background:transparent; border:none;")
         msg = QLabel(message)
         msg.setStyleSheet(
@@ -271,7 +271,7 @@ class AnimatedKPI(QFrame):
         self,
         label: str,
         icon: str,
-        value: str = "—",
+        value: str = "--",
         sub: str = "",
         accent: Optional[str] = None,
         parent=None,

@@ -93,27 +93,7 @@ class PaymentVarianceDialog(QDialog):
         enable_tip = self._settings.get('variance_enable_tips', '1') == '1'
         enable_tr = self._settings.get('variance_enable_transport', '1') == '1'
 
-        for key, label in HANDLING_OPTIONS:
-            rb = QRadioButton(label)
-            rb.setStyleSheet(f"color:{C['text']};font-size:13px;background:transparent;")
-            if key == 'deposit' and not enable_dep:
-                rb.setEnabled(False)
-                rb.setToolTip('Deposits disabled in Settings → Payment Variance')
-            if key == 'tip' and not enable_tip:
-                rb.setEnabled(False)
-                rb.setToolTip('Tips disabled in Settings → Payment Variance')
-            if key == 'transport' and not enable_tr:
-                rb.setEnabled(False)
-                rb.setToolTip('Transport fee disabled in Settings → Payment Variance')
-            if key == 'advance' and not enable_dep:
-                rb.setEnabled(False)
-            self._group.addButton(rb)
-            self._radios[key] = rb
-            lay.addWidget(rb)
-            rb.toggled.connect(self._on_option)
-
-        self._radios['return_change'].setChecked(True)
-
+        # Build misc fields BEFORE connecting toggled — setChecked fires immediately.
         self._misc_box = QWidget()
         ml = QVBoxLayout(self._misc_box)
         ml.setContentsMargins(24, 0, 0, 0)
@@ -122,14 +102,35 @@ class PaymentVarianceDialog(QDialog):
         self._misc_cat.setMinimumHeight(36)
         self._misc_cat.addItems(MISC_CATEGORIES)
         self._misc_reason = QLineEdit()
-        self._misc_reason.setPlaceholderText('Reason required for Miscellaneous…')
+        self._misc_reason.setPlaceholderText('Reason required for Miscellaneous...')
         self._misc_reason.setMinimumHeight(36)
         ml.addWidget(QLabel('Category'))
         ml.addWidget(self._misc_cat)
         ml.addWidget(QLabel('Reason'))
         ml.addWidget(self._misc_reason)
         self._misc_box.hide()
+
+        for key, label in HANDLING_OPTIONS:
+            rb = QRadioButton(label)
+            rb.setStyleSheet(f"color:{C['text']};font-size:13px;background:transparent;")
+            if key == 'deposit' and not enable_dep:
+                rb.setEnabled(False)
+                rb.setToolTip('Deposits disabled in Settings -> Payment Variance')
+            if key == 'tip' and not enable_tip:
+                rb.setEnabled(False)
+                rb.setToolTip('Tips disabled in Settings -> Payment Variance')
+            if key == 'transport' and not enable_tr:
+                rb.setEnabled(False)
+                rb.setToolTip('Transport fee disabled in Settings -> Payment Variance')
+            if key == 'advance' and not enable_dep:
+                rb.setEnabled(False)
+            self._group.addButton(rb)
+            self._radios[key] = rb
+            lay.addWidget(rb)
+            rb.toggled.connect(self._on_option)
+
         lay.addWidget(self._misc_box)
+        self._radios['return_change'].setChecked(True)
 
         notes_lbl = QLabel('Notes (optional)')
         notes_lbl.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
@@ -149,11 +150,15 @@ class PaymentVarianceDialog(QDialog):
         btns.addWidget(ok)
         lay.addLayout(btns)
 
+        apply_themed_dialog(self)
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.clear_modal_on_close(self)
 
     def _on_option(self, checked=False):
-        self._misc_box.setVisible(self._radios['miscellaneous'].isChecked())
+        box = getattr(self, '_misc_box', None)
+        if box is None:
+            return
+        box.setVisible(self._radios['miscellaneous'].isChecked())
 
     def _selected_handling(self):
         for key, rb in self._radios.items():
