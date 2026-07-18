@@ -159,6 +159,7 @@ class SalesTab(QWidget):
         # Disc = KES per line. Wide enough for stepper + value.
         hdr = self._ctbl.horizontalHeader()
         hdr.setMinimumSectionSize(40)
+        self._ctbl.verticalHeader().setMinimumSectionSize(56)
         self._ctbl.setColumnWidth(0, 200)
         for ci, w in [(1, 128), (2, 90), (3, 128), (4, 92), (5, 42)]:
             hdr.setSectionResizeMode(ci, QHeaderView.Fixed)
@@ -1120,7 +1121,7 @@ class SalesTab(QWidget):
         return '#0C1828' if light else '#F5F7FA'
 
     def _refresh_cart(self):
-        from desktop.utils.pos_light_theme import fmt, SPINBOX, REMOVE_BTN, L
+        from desktop.utils.pos_light_theme import fmt, SPINBOX, REMOVE_BTN, L, CART_ROW_H
         from desktop.utils.theme import DARK, LIGHT, ThemeManager
         from desktop.utils.widgets import apply_table_row_backgrounds, tbl_item
         self._ctbl.setRowCount(0)
@@ -1165,7 +1166,7 @@ class SalesTab(QWidget):
             cell_wrap = QWidget()
             cell_wrap.setStyleSheet('background:transparent;border:none;')
             cw_lay = QHBoxLayout(cell_wrap)
-            cw_lay.setContentsMargins(2, 2, 2, 2)
+            cw_lay.setContentsMargins(2, 6, 2, 6)
             cw_lay.setSpacing(0)
             cw_lay.addWidget(qty, 0, Qt.AlignCenter)
             self._ctbl.setCellWidget(i, 1, cell_wrap)
@@ -1185,7 +1186,7 @@ class SalesTab(QWidget):
             disc_wrap = QWidget()
             disc_wrap.setStyleSheet('background:transparent;border:none;')
             dw_lay = QHBoxLayout(disc_wrap)
-            dw_lay.setContentsMargins(2, 2, 2, 2)
+            dw_lay.setContentsMargins(2, 6, 2, 6)
             dw_lay.setSpacing(0)
             dw_lay.addWidget(disc, 0, Qt.AlignCenter)
             self._ctbl.setCellWidget(i, 3, disc_wrap)
@@ -1203,7 +1204,8 @@ class SalesTab(QWidget):
             rm.setCursor(Qt.PointingHandCursor)
             rm.clicked.connect(lambda _, idx=i: self._rm(idx))
             self._ctbl.setCellWidget(i, 5, rm)
-            self._ctbl.setRowHeight(i, 48)
+            # Match CART_ROW_H from theme (64) — was forcing 48 and clamping against default 56
+            self._ctbl.setRowHeight(i, CART_ROW_H)
 
         apply_table_row_backgrounds(self._ctbl)
 

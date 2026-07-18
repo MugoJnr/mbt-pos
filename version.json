@@ -1,6 +1,6 @@
 {
-  "version": "2.3.90",
-  "build": "PROD-2026-07-18-v2.3.90",
+  "version": "2.3.91",
+  "build": "PROD-2026-07-18-v2.3.91",
   "build_date": "2026-07-18",
   "release_notes": "Desktop-first UI polish: MainWindow + all 14 sidebar tabs (nav chrome, PageChrome, 20/18 rhythm, touch POS). Web Command Center design system also updated. Presentation only.",
   "github_repo": "MugoJnr/mbt-pos",

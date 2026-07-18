@@ -101,7 +101,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "2.3.90"
+        "DisplayVersion"       "2.3.91"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"

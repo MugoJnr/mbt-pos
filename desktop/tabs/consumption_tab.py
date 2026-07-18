@@ -13,12 +13,16 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
-from desktop.utils.theme import C, qss_alpha, RADIUS
+from desktop.utils.theme import C, qss_alpha, RADIUS, TOUCH_MIN
 from desktop.utils.widgets import (
     Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn, GhostBtn,
     Badge, SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
     lovable_tab_qss, wrap_table_card, retint_table_items, apply_table_row_backgrounds,
 )
+
+# Touch-friendly line-item / search-result density (presentation only)
+LINE_ROW_H = max(48, TOUCH_MIN)
+PROD_LIST_ITEM_H = max(44, TOUCH_MIN)
 from desktop.utils.security import has_permission, require_permission
 from desktop.utils.option_lists import CONSUMPTION_REASONS
 from desktop.utils.select_controls import (
@@ -143,12 +147,24 @@ def _style_table_spin(spin):
     """Theme-safe spin for table cells — no up/down chrome (avoids light-mode gray blocks)."""
     r = RADIUS.get('md', 8)
     spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+    spin.setMinimumHeight(36)
     spin.setStyleSheet(
         f"QDoubleSpinBox {{"
         f"background:{C['input']}; color:{C['text']};"
         f"border:1px solid {C['border']}; border-radius:{r}px;"
-        f"padding:4px 8px; }}"
+        f"padding:6px 10px; font-size:13px; min-height:36px; }}"
         f"QDoubleSpinBox:focus {{ border-color:{C['gold']}; }}")
+
+
+def _cell_wrap(widget, *, h_margin=4, v_margin=4):
+    """Center a cell widget inside the row so text/controls share vertical rhythm."""
+    wrap = QWidget()
+    wrap.setStyleSheet('background:transparent; border:none;')
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(h_margin, v_margin, h_margin, v_margin)
+    lay.setSpacing(0)
+    lay.addWidget(widget, 0, Qt.AlignCenter)
+    return wrap
 
 
 def _field_label(text):
@@ -341,8 +357,9 @@ class _CreatePane(QWidget):
 
         self._prod_list = QListWidget()
         self._prod_list.setObjectName('mbtConsProdList')
-        self._prod_list.setMaximumHeight(132)
-        self._prod_list.setMinimumHeight(88)
+        self._prod_list.setMaximumHeight(PROD_LIST_ITEM_H * 3 + 24)
+        self._prod_list.setMinimumHeight(PROD_LIST_ITEM_H * 2 + 16)
+        self._prod_list.setUniformItemSizes(True)
         self._prod_list.itemDoubleClicked.connect(self._add_from_list)
         self._prod_list.itemActivated.connect(self._add_from_list)
         ll.addWidget(self._prod_list)
@@ -354,7 +371,8 @@ class _CreatePane(QWidget):
 
         self._tbl = make_table(
             ['Product', 'Stock', 'Qty', 'Unit Cost', 'Total Cost', ''],
-            stretch_col=0, row_height=44)
+            stretch_col=0, row_height=LINE_ROW_H)
+        self._tbl.verticalHeader().setMinimumSectionSize(LINE_ROW_H)
         for col, w in ((1, 70), (2, 100), (3, 120), (4, 120), (5, 56)):
             self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._tbl.setColumnWidth(col, w)
@@ -482,13 +500,15 @@ class _CreatePane(QWidget):
 
     def _style_prod_list(self):
         r = RADIUS.get('md', 8)
+        ih = PROD_LIST_ITEM_H
         self._prod_list.setStyleSheet(
             f"QListWidget#mbtConsProdList {{"
             f"background:{C['input']}; color:{C['text']};"
             f"border:1px solid {C['border']}; border-radius:{r}px;"
-            f"outline:0; padding:4px; }}"
+            f"outline:0; padding:4px; font-size:13px; }}"
             f"QListWidget#mbtConsProdList::item {{"
-            f"padding:8px 10px; border-radius:6px; margin:1px 2px; }}"
+            f"min-height:{ih - 4}px; padding:10px 12px;"
+            f"border-radius:6px; margin:2px; }}"
             f"QListWidget#mbtConsProdList::item:selected {{"
             f"background:{qss_alpha(C['gold'], 0.18)}; color:{C['gold']}; }}"
             f"QListWidget#mbtConsProdList::item:hover:!selected {{"
@@ -506,6 +526,8 @@ class _CreatePane(QWidget):
             stock = _fmt_qty(p.get('stock'))
             item = QListWidgetItem(f"{name}  ·  stock {stock}" + (f"  ·  {sku}" if sku else ''))
             item.setData(Qt.UserRole, p)
+            # Fusion often ignores QSS padding alone — SizeHint enforces touch row height
+            item.setSizeHint(QSize(0, PROD_LIST_ITEM_H))
             self._prod_list.addItem(item)
             shown += 1
             if shown >= 40:
@@ -533,8 +555,11 @@ class _CreatePane(QWidget):
         for r in range(self._tbl.rowCount()):
             for c in (2, 3):
                 w = self._tbl.cellWidget(r, c)
-                if isinstance(w, QDoubleSpinBox):
-                    _style_table_spin(w)
+                if w is None:
+                    continue
+                spins = [w] if isinstance(w, QDoubleSpinBox) else w.findChildren(QDoubleSpinBox)
+                for spin in spins:
+                    _style_table_spin(spin)
         retint_table_items(self._tbl)
         apply_table_row_backgrounds(self._tbl)
 
@@ -620,31 +645,31 @@ class _CreatePane(QWidget):
             qty_spin.setRange(0.001, max_stock)
             qty_spin.setDecimals(3)
             qty_spin.setValue(min(float(line['quantity']), max_stock))
-            qty_spin.setMinimumHeight(32)
             qty_spin.setToolTip(f"Max {_fmt_qty(max_stock)} (on hand)")
             _style_table_spin(qty_spin)
             qty_spin.valueChanged.connect(lambda v, idx=i: self._on_qty(idx, v))
-            self._tbl.setCellWidget(i, 2, qty_spin)
+            self._tbl.setCellWidget(i, 2, _cell_wrap(qty_spin))
 
             cost_spin = QDoubleSpinBox()
             cost_spin.setRange(0, 1_000_000_000)
             cost_spin.setDecimals(2)
             cost_spin.setPrefix(f'{cur} ')
             cost_spin.setValue(float(line['unit_cost']))
-            cost_spin.setMinimumHeight(32)
             _style_table_spin(cost_spin)
             cost_spin.valueChanged.connect(lambda v, idx=i: self._on_cost(idx, v))
-            self._tbl.setCellWidget(i, 3, cost_spin)
+            self._tbl.setCellWidget(i, 3, _cell_wrap(cost_spin))
 
             line_tot = float(line['quantity']) * float(line['unit_cost'])
             total += line_tot
             self._tbl.setItem(i, 4, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
 
-            rm = GhostBtn('✕', 32)
+            rm = GhostBtn('✕', 36)
             rm.setFixedWidth(44)
             rm.setToolTip('Remove line')
             rm.clicked.connect(lambda _, idx=i: self._remove_line(idx))
-            self._tbl.setCellWidget(i, 5, rm)
+            self._tbl.setCellWidget(i, 5, _cell_wrap(rm, h_margin=2, v_margin=4))
+            # Cell widgets can shrink Fusion rows below defaultSectionSize — lock height
+            self._tbl.setRowHeight(i, LINE_ROW_H)
 
         self._total_lbl.setText(f'Total Cost Used: {cur} {total:,.2f}')
         apply_table_row_backgrounds(self._tbl)
