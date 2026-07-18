@@ -1,8 +1,19 @@
-﻿# MBT Business Command Center — Implementation Report
+# MBT Business Command Center - Implementation Report
 
-**Version:** **2.3.87** (shipped)  
+**Version:** **2.3.88** (shipped)  
 **Ship date:** 2026-07-18  
-**Setup:** `MBT_POS_Setup_v2.3.87.exe` (GitHub release `v2.3.87`)
+**Setup:** `MBT_POS_Setup_v2.3.88.exe` (GitHub release `v2.3.88`)
+
+## Patch 2.3.88 (AI chat sales)
+
+AI Command Center chat returned **0 sales** while Insights showed real totals because chat used `api=None`. Fixed with `_WebPosApi` shim, `_cc_today_snapshot` from SQLite, and factual sales answers grounded in the same totals as Insights.
+
+---
+
+## Prior: 2.3.87
+
+**Version:** **2.3.87**  
+**Setup:** `MBT_POS_Setup_v2.3.87.exe`
 
 ## Ship status
 

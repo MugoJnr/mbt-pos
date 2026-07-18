@@ -95,6 +95,92 @@ def _trs(rows):
     return [dict(r) for r in rows]
 
 
+class _WebPosApi:
+    """Minimal API so desktop AI context builder can read live POS data over Flask."""
+
+    def get_settings(self):
+        db = _get_db()
+        try:
+            rows = db.execute("SELECT key, value FROM system_settings").fetchall()
+            return {r['key']: r['value'] for r in rows}
+        except Exception:
+            return {}
+
+    def get_sales(self, start=None, end=None):
+        db = _get_db()
+        q = (
+            "SELECT id, receipt_number, cashier_id, cashier_name, total, status, created_at "
+            "FROM sales WHERE COALESCE(status,'completed')='completed'"
+        )
+        params = []
+        if start:
+            q += " AND date(created_at)>=?"
+            params.append(str(start)[:10])
+        if end:
+            q += " AND date(created_at)<=?"
+            params.append(str(end)[:10])
+        q += " ORDER BY created_at DESC LIMIT 500"
+        rows = db.execute(q, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d['receipt_no'] = d.get('receipt_number')
+            d['cashier'] = d.get('cashier_name')
+            d['user_id'] = d.get('cashier_id')
+            out.append(d)
+        return out
+
+    def get_products(self):
+        db = _get_db()
+        try:
+            rows = db.execute(
+                "SELECT id, name, sku, barcode, stock, min_stock, quantity, reorder_level, is_active "
+                "FROM products WHERE COALESCE(is_active,1)=1"
+            ).fetchall()
+        except Exception:
+            rows = db.execute(
+                "SELECT id, name, sku, barcode, stock, min_stock, is_active "
+                "FROM products WHERE COALESCE(is_active,1)=1"
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if 'quantity' not in d or d.get('quantity') is None:
+                d['quantity'] = d.get('stock')
+            if 'reorder_level' not in d or d.get('reorder_level') is None:
+                d['reorder_level'] = d.get('min_stock')
+            out.append(d)
+        return out
+
+
+def _cc_today_snapshot():
+    """Authoritative today stats for Command Center AI (never invent numbers)."""
+    db = _get_db()
+    today = str(date.today())
+    sales_n = int(db.execute(
+        "SELECT COUNT(*) FROM sales WHERE date(created_at)=? AND COALESCE(status,'completed')='completed'",
+        (today,),
+    ).fetchone()[0])
+    rev = float((db.execute(
+        "SELECT COALESCE(SUM(total),0) FROM sales "
+        "WHERE date(created_at)=? AND COALESCE(status,'completed')='completed'",
+        (today,),
+    ).fetchone() or [0])[0])
+    try:
+        low = int(db.execute(
+            "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock"
+        ).fetchone()[0])
+    except Exception:
+        low = 0
+    return {
+        'today': today,
+        'sales_count': sales_n,
+        'revenue': rev,
+        'low_stock': low,
+        'currency': 'KES',
+    }
+
+
 @web.route('/api/customers', methods=['GET'])
 def list_customers():
     from backend.app import token_required
@@ -1467,7 +1553,7 @@ def ai_insights():
                 )
                 result = svc.chat(
                     user_message=prompt,
-                    api=None,
+                    api=_WebPosApi(),
                     user=g.current_user,
                     module='dashboard',
                     history=[],
@@ -1504,6 +1590,34 @@ def ai_chat():
         message = (data.get('message') or '').strip()
         if not message:
             return jsonify({'error': 'message required'}), 400
+        snap = _cc_today_snapshot()
+        ml = message.lower()
+        factual_sales = any(k in ml for k in (
+            'sale', 'sales', 'revenue', 'today', 'transaction', 'turnover',
+        )) and not any(k in ml for k in ('why', 'how to', 'improve', 'forecast', 'trend'))
+
+        def _sales_reply():
+            return (
+                f"Today's sales: {snap['sales_count']} transaction(s), "
+                f"{snap['currency']} {snap['revenue']:,.2f} revenue."
+            )
+
+        # Exact shop numbers always come from SQLite — never from the model alone
+        if factual_sales:
+            return jsonify({
+                'reply': _sales_reply(),
+                'source': 'local',
+                'snapshot': snap,
+            })
+
+        ground = (
+            f"GROUND TRUTH (authoritative POS DB for {snap['today']}; "
+            f"use these exact numbers — do not invent):\n"
+            f"- Today's sales count: {snap['sales_count']}\n"
+            f"- Today's revenue: {snap['currency']} {snap['revenue']:,.2f}\n"
+            f"- Low-stock products: {snap['low_stock']}\n\n"
+            f"Operator question: {message}"
+        )
         reply = None
         source = 'local'
         try:
@@ -1513,8 +1627,8 @@ def ai_chat():
             if conn.configured and conn.online:
                 svc = get_ai_service()
                 result = svc.chat(
-                    user_message=message,
-                    api=None,
+                    user_message=ground,
+                    api=_WebPosApi(),
                     user=g.current_user,
                     module=data.get('module') or 'dashboard',
                     history=data.get('history') or [],
@@ -1522,36 +1636,29 @@ def ai_chat():
                     use_stream=False,
                 )
                 reply = (result.get('text') or '').strip()
-                source = 'ai'
-        except Exception as e:
+                if reply and not result.get('error'):
+                    source = 'ai'
+                else:
+                    reply = None
+        except Exception:
             reply = None
-            err = str(e)
         if not reply:
-            # Heuristic replies for command-center questions
-            db = _get_db()
-            today = str(date.today())
-            rev = float((db.execute(
-                "SELECT COALESCE(SUM(total),0) FROM sales "
-                "WHERE date(created_at)=? AND status='completed'",
-                (today,),
-            ).fetchone() or [0])[0])
-            low = db.execute(
-                "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
-            ).fetchone()[0]
-            ml = message.lower()
+            low = snap['low_stock']
             if 'stock' in ml or 'inventory' in ml:
                 reply = f'{low} product(s) are at or below reorder level. Open Inventory to review.'
-            elif 'sale' in ml or 'revenue' in ml or 'today' in ml:
-                reply = f"Today's revenue is {rev:,.2f}. Check Live Monitoring for cashier breakdown."
             elif 'backup' in ml:
                 reply = 'Open Backup Center to view last backup status or trigger a manual backup.'
             elif 'debt' in ml or 'credit' in ml:
                 reply = 'Open Debt Management for outstanding balances and collections.'
             else:
                 reply = (
-                    f"Local assistant: today's revenue is {rev:,.2f}. "
+                    f"{_sales_reply()} "
                     f'{low} low-stock item(s). Ask about sales, stock, debt, or backup.'
                 )
             source = 'local'
-        return jsonify({'reply': reply, 'source': source})
+        return jsonify({
+            'reply': reply,
+            'source': source,
+            'snapshot': snap,
+        })
     return _inner()
