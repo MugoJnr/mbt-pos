@@ -98,7 +98,21 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarContent({
+  onNavigate,
+  showTodaySummary = false,
+  todaySales = 0,
+  todayOrders = 0,
+  todayProfit = 0,
+  versionLabel,
+}: {
+  onNavigate?: () => void;
+  showTodaySummary?: boolean;
+  todaySales?: number;
+  todayOrders?: number;
+  todayProfit?: number;
+  versionLabel?: string;
+}) {
   const location = useLocation();
   const { user, logout } = useAuth();
   const displayName = user?.full_name || user?.username || "Staff";
@@ -112,8 +126,8 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           MBT
         </div>
         <div className="leading-tight min-w-0">
-          <div className="font-display font-extrabold text-gold text-lg tracking-wide">MBT</div>
-          <div className="text-eyebrow text-text2">Command Center</div>
+          <div className="font-display font-extrabold text-gold text-lg tracking-wide">MBT POS</div>
+          <div className="text-eyebrow text-text2">SYSTEM</div>
         </div>
       </div>
 
@@ -139,17 +153,28 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
                       className={cn(
                         "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-ui min-h-[40px]",
                         active
-                          ? "bg-hover text-gold font-semibold shadow-sm"
+                          ? showTodaySummary
+                            ? "bg-info/15 text-info font-semibold shadow-sm"
+                            : "bg-hover text-gold font-semibold shadow-sm"
                           : "text-text2 hover:text-text hover:bg-hover/50",
                       )}
                     >
                       <span
                         className={cn(
                           "absolute left-0 top-2 bottom-2 w-[3px] rounded-r transition-ui",
-                          active ? "bg-gold" : "bg-transparent group-hover:bg-border2",
+                          active
+                            ? showTodaySummary
+                              ? "bg-info"
+                              : "bg-gold"
+                            : "bg-transparent group-hover:bg-border2",
                         )}
                       />
-                      <Icon className={cn("h-4 w-4 shrink-0", active && "text-gold")} />
+                      <Icon
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          active && (showTodaySummary ? "text-info" : "text-gold"),
+                        )}
+                      />
                       <span className="truncate">{item.label}</span>
                     </Link>
                   );
@@ -160,7 +185,30 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </nav>
 
+      {showTodaySummary ? (
+        <div className="mx-2.5 mb-2 rounded-xl border border-border bg-card/80 p-3 space-y-1.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-fg">
+            Today&apos;s Summary
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span className="text-text2">Sales</span>
+            <span className="font-semibold text-text tabular-nums">{KES(todaySales)}</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span className="text-text2">Orders</span>
+            <span className="font-semibold text-text tabular-nums">{todayOrders}</span>
+          </div>
+          <div className="flex justify-between text-[12px]">
+            <span className="text-text2">Profit</span>
+            <span className="font-semibold text-ok tabular-nums">{KES(todayProfit)}</span>
+          </div>
+        </div>
+      ) : null}
+
       <div className="px-3 py-3.5 border-t border-border bg-panel/50">
+        {versionLabel ? (
+          <div className="text-[10px] font-mono text-muted-fg mb-2">{versionLabel}</div>
+        ) : null}
         <div className="text-sm font-semibold text-text truncate">{displayName}</div>
         <div className="text-eyebrow text-gold mb-2.5 mt-0.5">{role}</div>
         <button
@@ -172,6 +220,17 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </button>
       </div>
     </>
+  );
+}
+
+function HwDot({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Circle className="h-2 w-2 fill-ok text-ok" />
+      <span>
+        {label}: <span className="text-ok">Connected</span>
+      </span>
+    </span>
   );
 }
 
@@ -203,7 +262,7 @@ function OnlineBadge() {
   );
 }
 
-function GlobalSearch() {
+function GlobalSearch({ wide = false }: { wide?: boolean }) {
   const navigate = useNavigate();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -252,7 +311,13 @@ function GlobalSearch() {
   }, []);
 
   return (
-    <div ref={wrapRef} className="relative hidden md:block w-[220px] lg:w-[280px]">
+    <div
+      ref={wrapRef}
+      className={cn(
+        "relative hidden md:block",
+        wide ? "w-[280px] lg:w-[380px]" : "w-[220px] lg:w-[280px]",
+      )}
+    >
       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text2 pointer-events-none" />
       <input
         ref={inputRef}
@@ -260,12 +325,20 @@ function GlobalSearch() {
         onChange={(e) => {
           setQ(e.target.value);
           setOpen(true);
+          if (wide) {
+            window.dispatchEvent(
+              new CustomEvent("mbt-pos-query", { detail: e.target.value }),
+            );
+          }
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Search…  /"
-        className="h-9 w-full rounded-lg bg-input border border-border pl-8 pr-3 text-sm text-text placeholder:text-muted-fg focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25"
+        placeholder={wide ? "Search products by name, barcode or SKU…" : "Search…  /"}
+        className="h-9 w-full rounded-lg bg-input border border-border pl-8 pr-14 text-sm text-text placeholder:text-muted-fg focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25"
       />
-      {open && q.trim().length >= 2 ? (
+      <kbd className="absolute right-2 top-1/2 -translate-y-1/2 hidden lg:inline-flex items-center rounded border border-border bg-card2 px-1.5 py-0.5 text-[10px] font-mono text-muted-fg">
+        Ctrl K
+      </kbd>
+      {open && q.trim().length >= 2 && !wide ? (
         <div className="absolute top-full left-0 right-0 mt-1.5 z-50 rounded-lg border border-border bg-card shadow-lg max-h-[360px] overflow-y-auto">
           {searchQ.isFetching ? (
             <div className="px-3 py-3 text-xs text-text2">Searching…</div>
@@ -305,12 +378,23 @@ function GlobalSearch() {
   );
 }
 
-export function AppShell({ title, children }: { title: string; children: ReactNode }) {
+export function AppShell({
+  title,
+  children,
+  density = "default",
+}: {
+  title: string;
+  children: ReactNode;
+  /** POS floor uses full-bleed panels + hardware strip */
+  density?: "default" | "pos";
+}) {
   const now = useClock();
   const location = useLocation();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const isPos = density === "pos";
 
   const versionQ = useQuery({
     queryKey: ["app-version"],
@@ -322,10 +406,39 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
     queryFn: () => GET<{ unread?: number }>("/notifications", { limit: "1" }),
     refetchInterval: 45_000,
   });
+  const todayQ = useQuery({
+    queryKey: ["sales-today"],
+    queryFn: () => {
+      const d = new Date().toISOString().slice(0, 10);
+      return GET<{
+        sales_total?: number;
+        orders?: number;
+        profit?: number;
+        total?: number;
+        count?: number;
+        revenue?: number;
+      }>("/reports/summary", { start: d, end: d });
+    },
+    enabled: isPos,
+    refetchInterval: 60_000,
+    retry: 0,
+  });
   const unread = Number(notifQ.data?.unread || 0);
-  const ver = versionQ.data?.version || "2.3.89";
-  const build = versionQ.data?.build || "PROD-2026-07-18-v2.3.89";
+  const ver = versionQ.data?.version || "2.3.92";
+  const build = versionQ.data?.build || "PROD-2026-07-19-v2.3.92";
   const exe = versionQ.data?.exe || "MBT_POS.exe";
+  const displayName = user?.full_name || user?.username || "Staff";
+  const initials = displayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() || "")
+    .join("") || "MB";
+  const todaySales = Number(
+    todayQ.data?.sales_total ?? todayQ.data?.total ?? todayQ.data?.revenue ?? 0,
+  );
+  const todayOrders = Number(todayQ.data?.orders ?? todayQ.data?.count ?? 0);
+  const todayProfit = Number(todayQ.data?.profit ?? 0);
 
   const dateStr = now
     ? now.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" })
@@ -374,7 +487,13 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
       <div className="flex flex-1 min-h-0">
         {/* Desktop Sidebar */}
         <aside className="hidden lg:flex w-[240px] shrink-0 flex-col bg-sidebar border-r border-border">
-          <SidebarContent />
+          <SidebarContent
+            showTodaySummary={isPos}
+            todaySales={todaySales}
+            todayOrders={todayOrders}
+            todayProfit={todayProfit}
+            versionLabel={`MBT POS v${ver}`}
+          />
         </aside>
 
         {/* Mobile drawer */}
@@ -392,14 +511,21 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
               >
                 <X className="h-4 w-4" />
               </button>
-              <SidebarContent onNavigate={() => setMobileOpen(false)} />
+              <SidebarContent
+                onNavigate={() => setMobileOpen(false)}
+                showTodaySummary={isPos}
+                todaySales={todaySales}
+                todayOrders={todayOrders}
+                todayProfit={todayProfit}
+                versionLabel={`MBT POS v${ver}`}
+              />
             </aside>
           </div>
         )}
 
         {/* Main */}
         <div className="flex-1 min-w-0 flex flex-col bg-surface">
-          <header className="h-14 shrink-0 flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-6 border-b border-border bg-panel/70 backdrop-blur-sm sticky top-0 z-20">
+          <header className="h-14 shrink-0 flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-5 border-b border-border bg-panel/70 backdrop-blur-sm sticky top-0 z-20">
             <div className="flex items-center gap-2.5 min-w-0">
               <button
                 onClick={() => setMobileOpen(true)}
@@ -413,8 +539,18 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
               </div>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-2.5 text-sm">
-              <GlobalSearch />
+              <GlobalSearch wide={isPos} />
               <OnlineBadge />
+              {isPos ? (
+                <div className="hidden md:inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5">
+                  <div className="h-7 w-7 rounded-full bg-info/20 text-info text-[10px] font-bold grid place-items-center">
+                    {initials}
+                  </div>
+                  <span className="text-xs font-medium text-text max-w-[100px] truncate">
+                    {displayName}
+                  </span>
+                </div>
+              ) : null}
               <Link
                 to="/notifications"
                 className="relative inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg border border-border bg-card text-text hover:bg-hover transition-ui"
@@ -442,18 +578,42 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
             </div>
           </header>
 
-          <main className="flex-1 min-h-0 overflow-y-auto scrollbar-thin overflow-x-hidden pb-[76px] lg:pb-0">
-            <div key={location.pathname} className="p-3 sm:p-6 max-w-[1400px] page-enter">
+          <main
+            className={cn(
+              "flex-1 min-h-0 overflow-y-auto scrollbar-thin overflow-x-hidden",
+              isPos ? "pb-[52px] lg:pb-9" : "pb-[76px] lg:pb-0",
+            )}
+          >
+            <div
+              key={location.pathname}
+              className={cn(
+                "page-enter",
+                isPos ? "p-2.5 sm:p-3 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
+              )}
+            >
               {children}
             </div>
           </main>
 
-          <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-1 px-3 sm:px-6 py-1.5 border-t border-border bg-panel/60 text-[11px] text-text2">
-            <span>MBT POS · MugoByte Technologies</span>
-            <span className="font-mono truncate" title="Press / to search · g then d for dashboard">
-              v{ver} · {build} · EXE:{exe}
-            </span>
-          </footer>
+          {isPos ? (
+            <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-3 px-4 py-1.5 border-t border-border bg-panel/80 text-[11px] text-text2">
+              <div className="flex items-center gap-4">
+                <HwDot label="Barcode Scanner" />
+                <HwDot label="Receipt Printer" />
+                <HwDot label="Cash Drawer" />
+              </div>
+              <span className="font-mono truncate">
+                Last Sync: just now · v{ver}
+              </span>
+            </footer>
+          ) : (
+            <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-1 px-3 sm:px-6 py-1.5 border-t border-border bg-panel/60 text-[11px] text-text2">
+              <span>MBT POS · MugoByte Technologies</span>
+              <span className="font-mono truncate" title="Press / to search · g then d for dashboard">
+                v{ver} · {build} · EXE:{exe}
+              </span>
+            </footer>
+          )}
         </div>
       </div>
 
