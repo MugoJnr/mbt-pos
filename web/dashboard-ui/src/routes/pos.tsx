@@ -20,6 +20,9 @@ import {
   Printer,
   Eye,
   Package,
+  Gift,
+  Minus,
+  Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -44,6 +47,18 @@ type Product = {
   image_url?: string;
 };
 
+type Customer = {
+  id: number;
+  name?: string;
+  phone?: string;
+  customer_type?: string;
+  type?: string;
+  wallet_balance?: number;
+  loyalty_points?: number;
+  outstanding_balance?: number;
+  balance?: number;
+};
+
 type Line = {
   product_id: number;
   product_name: string;
@@ -54,13 +69,15 @@ type Line = {
   total: number;
 };
 
-const PAGE_SIZE = 9;
+const PAGE_SIZE = 12;
 const PAY_METHODS = [
-  { k: "Cash", i: Banknote, accent: "ok" as const },
-  { k: "M-Pesa", i: Smartphone, accent: "ok" as const },
-  { k: "Card", i: CreditCard, accent: "info" as const },
-  { k: "Bank", i: Building2, accent: "info" as const },
-  { k: "Split", i: SplitSquareVertical, accent: "gold" as const },
+  { k: "Cash", i: Banknote, accent: "ok" as const, enabled: true },
+  { k: "M-Pesa", i: Smartphone, accent: "ok" as const, enabled: true },
+  { k: "Card", i: CreditCard, accent: "info" as const, enabled: true },
+  { k: "Bank", i: Building2, accent: "info" as const, enabled: true },
+  { k: "Split", i: SplitSquareVertical, accent: "gold" as const, enabled: true },
+  /** Future-ready stub — not backed by checkout API yet */
+  { k: "Gift Card", i: Gift, accent: "muted" as const, enabled: false },
 ];
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000] as const;
 
@@ -81,7 +98,7 @@ function POS() {
   const [recentIds, setRecentIds] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [page, setPage] = useState(1);
-  const [customerLabel] = useState("Walk-in Customer");
+  const [customerId, setCustomerId] = useState<number | "">("");
 
   const productsQ = useQuery({
     queryKey: ["products"],
@@ -91,10 +108,20 @@ function POS() {
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
   });
+  const customersQ = useQuery({
+    queryKey: ["customers"],
+    queryFn: () => GET<Customer[]>("/customers"),
+  });
 
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
+  const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
   const currency = settingsQ.data?.currency_symbol || "KES";
   const taxRate = (parseFloat(settingsQ.data?.tax_rate || "0") || 0) / 100;
+
+  const selectedCustomer = useMemo(
+    () => (customerId === "" ? null : customers.find((c) => c.id === customerId) || null),
+    [customers, customerId],
+  );
 
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.category || "General").filter(Boolean));
@@ -132,14 +159,16 @@ function POS() {
     return () => window.removeEventListener("mbt-pos-query", onPosQuery);
   }, []);
 
-  const subtotal = cart.reduce((s, l) => s + l.total, 0);
-  const disc = Math.min(discount, subtotal);
+  const subtotal = cart.reduce((s, l) => s + l.unit_price * l.quantity, 0);
+  const lineDisc = cart.reduce((s, l) => s + (l.discount || 0), 0);
+  const disc = Math.min(discount + lineDisc, subtotal);
   const taxable = Math.max(0, subtotal - disc);
   const tax = Math.round(taxable * taxRate * 100) / 100;
   const total = Math.max(0, taxable + tax);
   const paid = parseFloat(amount) || 0;
   const change = Math.max(0, paid - total);
   const itemCount = cart.reduce((s, l) => s + l.quantity, 0);
+  const showTender = payment === "Cash" || payment === "Split" || payment === "M-Pesa";
 
   const add = (p: Product) => {
     if (Number(p.stock) <= 0) return;
@@ -154,7 +183,11 @@ function POS() {
         }
         return c.map((l) =>
           l.product_id === p.id
-            ? { ...l, quantity, total: Math.round(quantity * l.unit_price * 100) / 100 }
+            ? {
+                ...l,
+                quantity,
+                total: Math.round((quantity * l.unit_price - (l.discount || 0)) * 100) / 100,
+              }
             : l,
         );
       }
@@ -182,7 +215,7 @@ function POS() {
               ? {
                   ...l,
                   quantity,
-                  total: Math.round(quantity * l.unit_price * 100) / 100,
+                  total: Math.round((quantity * l.unit_price - (l.discount || 0)) * 100) / 100,
                 }
               : l,
           ),
@@ -238,8 +271,10 @@ function POS() {
   const checkout = useMutation({
     mutationFn: async () => {
       if (!cart.length) throw new Error("Add items first");
-      const method = payment === "Split" ? "Cash" : payment;
-      if (method !== "Credit Sale" && paid < total) {
+      if (payment === "Gift Card") throw new Error("Gift Card is not available yet");
+      const method =
+        payment === "Split" ? "Cash" : payment === "Bank" ? "Bank Transfer" : payment;
+      if (method !== "Credit Sale" && paid < total && showTender) {
         throw new Error("Amount paid is less than total");
       }
       const res = await POST<{ success?: boolean; error?: string; receipt_number?: string }>(
@@ -251,9 +286,10 @@ function POS() {
           tax,
           total,
           payment_method: method.toLowerCase(),
-          amount_paid: method === "Credit Sale" ? 0 : paid,
-          change_amount: Math.max(0, paid - total),
+          amount_paid: method === "Credit Sale" ? 0 : paid || total,
+          change_amount: Math.max(0, (paid || total) - total),
           note: note || undefined,
+          customer_id: customerId || undefined,
         },
       );
       if (!res?.success) throw new Error(res?.error || "Sale failed");
@@ -283,11 +319,16 @@ function POS() {
   const catPills = categories.filter(Boolean);
   const visibleCats = catPills.slice(0, 5);
   const moreCats = catPills.slice(5);
+  const wallet = Number(selectedCustomer?.wallet_balance || 0);
+  const outstanding = Number(
+    selectedCustomer?.outstanding_balance ?? selectedCustomer?.balance ?? 0,
+  );
+  const loyalty = selectedCustomer?.loyalty_points;
 
   return (
     <AppShell title="Point of Sale" density="pos">
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_minmax(300px,340px)_minmax(300px,360px)] gap-3 min-h-[calc(100vh-7.5rem)]">
-        {/* ── Products ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(380px,0.95fr)] gap-3 min-h-[calc(100vh-7.5rem)]">
+        {/* ── LEFT: Products ───────────────────────────────────── */}
         <Card className="flex flex-col overflow-hidden min-h-[420px]">
           <div className="p-3 border-b border-border flex flex-col gap-2.5 bg-panel/30">
             <div className="flex items-center gap-2 flex-wrap">
@@ -344,7 +385,7 @@ function POS() {
                     setRecentOnly((v) => !v);
                     setFavOnly(false);
                   }}
-                  title="Recent"
+                  title="Recently sold"
                 >
                   <Clock className="h-3.5 w-3.5" />
                 </ToolToggle>
@@ -443,7 +484,7 @@ function POS() {
                       className={cn(
                         "h-8 min-w-8 px-2 rounded-md text-xs font-semibold border transition-ui",
                         pageSafe === n
-                          ? "border-info bg-info/15 text-info"
+                          ? "border-gold bg-gold/15 text-gold"
                           : "border-border bg-card2 text-text2 hover:text-text",
                       )}
                     >
@@ -458,7 +499,7 @@ function POS() {
               <Button
                 variant="secondary"
                 size="sm"
-                className="shrink-0 border-info/40 text-info hover:bg-info/10"
+                className="shrink-0"
                 disabled={pageSafe >= pageCount}
                 onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
               >
@@ -468,19 +509,21 @@ function POS() {
           ) : null}
         </Card>
 
-        {/* ── Current Sale (cart) ──────────────────────────────── */}
+        {/* ── RIGHT: Cart + Customer + Summary + Payment ───────── */}
         <Card className="flex flex-col overflow-hidden min-h-[360px] xl:max-h-[calc(100vh-7.5rem)]">
           <div className="p-3 border-b border-border flex items-center justify-between gap-2 bg-panel/30">
             <div>
-              <h2 className="text-[14px] font-semibold text-text">Current Sale</h2>
-              <div className="text-[11px] text-text2">Selected Items ({itemCount})</div>
+              <h2 className="text-[15px] font-semibold text-text">Current Sale</h2>
+              <div className="text-[11px] text-text2">
+                {itemCount} item{itemCount === 1 ? "" : "s"} in cart
+              </div>
             </div>
             <div className="flex items-center gap-1.5">
               {held?.length ? (
                 <button
                   type="button"
                   onClick={restoreHeld}
-                  className="h-8 px-2 rounded-lg border border-info/40 text-[11px] font-semibold text-info hover:bg-info/10 transition-ui"
+                  className="min-h-11 px-3 rounded-xl border border-info/40 text-[12px] font-semibold text-info hover:bg-info/10 transition-ui"
                 >
                   Resume
                 </button>
@@ -488,248 +531,312 @@ function POS() {
               <button
                 type="button"
                 onClick={holdSale}
-                className="h-8 px-2.5 rounded-lg border border-warn/45 text-[11px] font-semibold text-warn hover:bg-warn/10 inline-flex items-center gap-1 transition-ui"
+                className="min-h-11 px-3 rounded-xl border border-warn/45 text-[12px] font-semibold text-warn hover:bg-warn/10 inline-flex items-center gap-1.5 transition-ui"
               >
-                <PauseCircle className="h-3.5 w-3.5" /> Hold Sale
+                <PauseCircle className="h-4 w-4" /> Hold
               </button>
               <button
                 type="button"
                 onClick={clearCart}
-                className="h-8 px-2.5 rounded-lg border border-err/45 text-[11px] font-semibold text-err hover:bg-err/10 transition-ui"
+                className="min-h-11 px-3 rounded-xl border border-err/45 text-[12px] font-semibold text-err hover:bg-err/10 transition-ui"
               >
-                Clear Cart
+                Clear
               </button>
             </div>
           </div>
 
-          <div className="px-3 py-1.5 border-b border-border/60 grid grid-cols-[1fr_52px_64px_52px_64px_28px] gap-1 text-[10px] uppercase tracking-wide text-muted-fg font-semibold">
-            <span>Item</span>
-            <span className="text-center">Qty</span>
-            <span className="text-right">Price</span>
-            <span className="text-right">Disc</span>
-            <span className="text-right">Total</span>
-            <span />
-          </div>
-
-          <div className="flex-1 overflow-y-auto scrollbar-thin min-h-[100px]">
-            {cart.length === 0 ? (
-              <EmptyState
-                icon={<ShoppingBag className="h-6 w-6" />}
-                title="Cart is empty"
-                description="Tap a product to add it."
-                className="py-12"
-              />
-            ) : (
-              cart.map((l) => (
-                <div
-                  key={l.product_id}
-                  className="grid grid-cols-[1fr_52px_64px_52px_64px_28px] gap-1 items-center px-3 py-2.5 border-b border-border/40"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Thumb name={l.product_name} small />
-                    <div className="min-w-0">
-                      <div className="text-[12px] font-medium text-text truncate leading-tight">
-                        {l.product_name}
+          <div className="flex-1 overflow-y-auto scrollbar-thin min-h-0">
+            <div className="p-3 space-y-2.5 border-b border-border/60">
+              {cart.length === 0 ? (
+                <EmptyState
+                  icon={<ShoppingBag className="h-6 w-6" />}
+                  title="Cart is empty"
+                  description="Tap a product to add it."
+                  className="py-10"
+                />
+              ) : (
+                cart.map((l) => (
+                  <div
+                    key={l.product_id}
+                    className="rounded-xl border border-border bg-card2/80 hover:border-gold/40 px-3 py-3 transition-ui"
+                  >
+                    <div className="flex gap-3">
+                      <Thumb name={l.product_name} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-semibold text-text leading-snug line-clamp-2">
+                          {l.product_name}
+                        </div>
+                        <div className="text-[11px] text-muted-fg font-mono mt-0.5">
+                          {l.sku || `#${l.product_id}`}
+                        </div>
+                        <div className="text-[12px] text-text2 mt-1 tabular-nums">
+                          {KES(l.unit_price, currency)} each
+                        </div>
                       </div>
-                      <div className="text-[10px] text-text2 font-mono truncate">
-                        {l.sku || `#${l.product_id}`}
+                      <div className="text-right shrink-0">
+                        <div className="text-[15px] font-extrabold text-text tabular-nums">
+                          {KES(l.total, currency)}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setQty(l.product_id, 0)}
+                          className="mt-2 ml-auto h-11 w-11 inline-flex items-center justify-center rounded-xl text-err hover:bg-err/10 transition-ui"
+                          aria-label="Remove"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <div className="inline-flex items-center rounded-xl border border-border bg-input overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setQty(l.product_id, l.quantity - 1)}
+                          className="h-11 w-11 grid place-items-center text-text hover:bg-hover active:scale-95 transition-ui"
+                          aria-label="Decrease"
+                        >
+                          <Minus className="h-4 w-4" />
+                        </button>
+                        <span className="min-w-[2.25rem] text-center text-[14px] font-bold tabular-nums text-text">
+                          {l.quantity}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setQty(l.product_id, l.quantity + 1)}
+                          className="h-11 w-11 grid place-items-center text-text hover:bg-hover active:scale-95 transition-ui"
+                          aria-label="Increase"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      </div>
+                      <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-muted-fg">
+                        Disc
+                        <input
+                          type="number"
+                          value={l.discount || ""}
+                          onChange={(e) =>
+                            setLineDiscount(l.product_id, parseFloat(e.target.value) || 0)
+                          }
+                          className="h-11 w-24 rounded-xl border border-border bg-input px-2 text-[13px] text-right text-text tabular-nums"
+                          placeholder="0"
+                        />
+                      </label>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setQty(l.product_id, l.quantity - 1)}
-                      className="h-7 w-7 rounded-md border border-border bg-input text-text text-sm hover:bg-hover transition-ui"
-                      aria-label="Decrease"
-                    >
-                      −
-                    </button>
-                    <span className="w-5 text-center text-[12px] font-bold text-text tabular-nums">
-                      {l.quantity}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setQty(l.product_id, l.quantity + 1)}
-                      className="h-7 w-7 rounded-md border border-border bg-input text-text text-sm hover:bg-hover transition-ui"
-                      aria-label="Increase"
-                    >
-                      +
-                    </button>
+                ))
+              )}
+            </div>
+
+            <div className="p-3 border-b border-border/60">
+              <div className="rounded-xl border border-border bg-card2/70 p-3">
+                <div className="flex items-start gap-3">
+                  <div className="h-11 w-11 rounded-full bg-gold/15 text-gold grid place-items-center shrink-0 border border-gold/30">
+                    <UserRound className="h-5 w-5" />
                   </div>
-                  <div className="text-[11px] text-right tabular-nums text-text2">
-                    {KES(l.unit_price, currency)}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] text-muted-fg uppercase tracking-wide font-bold">
+                      Customer
+                    </div>
+                    <div className="text-sm font-bold text-text truncate">
+                      {selectedCustomer?.name || "Walk-in Customer"}
+                    </div>
+                    <div className="text-[12px] text-text2 truncate mt-0.5">
+                      {selectedCustomer
+                        ? [
+                            selectedCustomer.phone,
+                            selectedCustomer.customer_type || selectedCustomer.type,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "No phone on file"
+                        : "Cash customer · no account"}
+                    </div>
+                    {selectedCustomer &&
+                    (wallet > 0.009 || outstanding > 0.009 || loyalty != null) ? (
+                      <div className="text-[11px] text-ok font-semibold mt-1 truncate">
+                        {[
+                          loyalty != null && loyalty !== "" ? `Loyalty ${loyalty}` : null,
+                          wallet > 0.009 ? `Credit ${KES(wallet, currency)}` : null,
+                          outstanding > 0.009 ? `Due ${KES(outstanding, currency)}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    ) : null}
                   </div>
-                  <input
-                    type="number"
-                    value={l.discount || ""}
-                    onChange={(e) => setLineDiscount(l.product_id, parseFloat(e.target.value) || 0)}
-                    className="h-7 w-full rounded-md border border-border bg-input px-1 text-[11px] text-right text-text tabular-nums"
-                    placeholder="0"
-                  />
-                  <div className="text-[12px] font-semibold text-right tabular-nums text-text">
-                    {KES(l.total, currency)}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setQty(l.product_id, 0)}
-                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-text2 hover:text-err hover:bg-err/10 transition-ui"
-                    aria-label="Remove"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
                 </div>
-              ))
-            )}
-          </div>
-
-          <div className="border-t border-border px-3 py-2.5">
-            {showNote ? (
-              <Input
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="Sale note…"
-                className="h-9 text-sm mb-1"
-                autoFocus
-              />
-            ) : null}
-            <button
-              type="button"
-              onClick={() => setShowNote((v) => !v)}
-              className="inline-flex items-center gap-1.5 text-[12px] font-medium text-info hover:text-info/80 transition-ui"
-            >
-              <StickyNote className="h-3.5 w-3.5" />
-              {showNote ? "Hide note" : "+ Add Note to Sale"}
-            </button>
-          </div>
-        </Card>
-
-        {/* ── Checkout ─────────────────────────────────────────── */}
-        <Card className="flex flex-col overflow-hidden min-h-[360px] xl:max-h-[calc(100vh-7.5rem)]">
-          <div className="p-3 border-b border-border flex items-center justify-between gap-2 bg-panel/30">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="h-9 w-9 rounded-full bg-info/20 text-info grid place-items-center shrink-0">
-                <UserRound className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[11px] text-muted-fg uppercase tracking-wide">Customer</div>
-                <div className="text-sm font-semibold text-text truncate">{customerLabel}</div>
+                <Select
+                  value={customerId === "" ? "" : String(customerId)}
+                  onChange={(e) =>
+                    setCustomerId(e.target.value ? Number(e.target.value) : "")
+                  }
+                  className="mt-3 min-h-11 h-11 text-sm"
+                >
+                  <option value="">Walk-in Customer</option>
+                  {customers.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name || `Customer #${c.id}`}
+                      {c.phone ? ` · ${c.phone}` : ""}
+                    </option>
+                  ))}
+                </Select>
               </div>
             </div>
-            <button
-              type="button"
-              className="h-8 px-2.5 rounded-lg border border-border text-[11px] font-semibold text-text2 hover:text-text hover:bg-hover transition-ui"
-              onClick={() => toast.message("Customer picker — coming in a follow-up")}
-            >
-              Change
-            </button>
-          </div>
 
-          <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-3">
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-fg mb-2">
-                Order Summary
+            <div className="p-3 space-y-4">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-muted-fg mb-2">
+                  Order Summary
+                </div>
+                <div className="space-y-2">
+                  <Row label="Subtotal" value={KES(subtotal, currency)} />
+                  <div className="flex items-center justify-between text-sm gap-3">
+                    <span className="text-text2 shrink-0">Cart discount</span>
+                    <Input
+                      type="number"
+                      value={discount || ""}
+                      onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
+                      className="h-11 w-28 text-right"
+                      placeholder="0"
+                    />
+                  </div>
+                  {disc > 0 ? (
+                    <Row label="You save" value={`− ${KES(disc, currency)}`} tone="ok" />
+                  ) : null}
+                  <Row
+                    label={`Tax (${(taxRate * 100).toFixed(0)}%)`}
+                    value={KES(tax, currency)}
+                  />
+                  <div className="flex items-center justify-between pt-2 border-t border-border">
+                    <span className="text-[15px] font-bold text-text">Grand Total</span>
+                    <span
+                      key={total}
+                      className="text-[1.85rem] font-extrabold text-gold tabular-nums tracking-tight leading-none transition-transform duration-200"
+                    >
+                      {KES(total, currency)}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Row label="Subtotal" value={KES(subtotal, currency)} />
-                <div className="flex items-center justify-between text-sm gap-3">
-                  <span className="text-text2 shrink-0">Discount</span>
+
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-wide text-muted-fg mb-2">
+                  Payment Method
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {PAY_METHODS.map((m) => {
+                    const Icon = m.i;
+                    const active = payment === m.k;
+                    return (
+                      <button
+                        key={m.k}
+                        type="button"
+                        disabled={!m.enabled}
+                        title={
+                          m.enabled
+                            ? m.k
+                            : "Gift Card / Store Credit — coming soon (future-ready stub)"
+                        }
+                        onClick={() => m.enabled && setPayment(m.k)}
+                        className={cn(
+                          "min-h-[56px] rounded-xl border text-[11px] font-semibold flex flex-col items-center justify-center gap-1 transition-ui px-1",
+                          !m.enabled &&
+                            "border-dashed border-border2 bg-panel/40 text-muted-fg cursor-not-allowed opacity-70",
+                          m.enabled &&
+                            active &&
+                            m.accent === "ok" &&
+                            "border-ok bg-ok/12 text-ok",
+                          m.enabled &&
+                            active &&
+                            m.accent === "info" &&
+                            "border-info bg-info/12 text-info",
+                          m.enabled &&
+                            active &&
+                            m.accent === "gold" &&
+                            "border-gold bg-gold/15 text-gold shadow-gold",
+                          m.enabled &&
+                            !active &&
+                            "border-border bg-card2 text-text2 hover:text-text hover:border-gold/40",
+                        )}
+                      >
+                        <Icon className="h-4 w-4" />
+                        <span className="leading-tight text-center">
+                          {m.k === "Gift Card" ? "Gift*" : m.k}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {showTender ? (
+                <div className="space-y-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-muted-fg">
+                    {payment === "M-Pesa" ? "Amount Received" : "Amount Tendered"}
+                  </div>
                   <Input
                     type="number"
-                    value={discount || ""}
-                    onChange={(e) => setDiscount(parseFloat(e.target.value) || 0)}
-                    className="h-9 w-28 text-right"
-                    placeholder="0"
+                    placeholder="0.00"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    className="min-h-[44px] h-11 text-[16px] font-semibold tabular-nums"
                   />
-                </div>
-                {disc > 0 ? (
-                  <Row label="Discount applied" value={`− ${KES(disc, currency)}`} tone="ok" />
-                ) : null}
-                <Row
-                  label={`Tax (${(taxRate * 100).toFixed(0)}%)`}
-                  value={KES(tax, currency)}
-                />
-                <div className="flex items-center justify-between pt-2 border-t border-border">
-                  <span className="text-sm font-semibold text-text tracking-wide">Total</span>
-                  <span className="text-[1.65rem] font-extrabold text-gold tabular-nums tracking-tight leading-none">
-                    {KES(total, currency)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-fg mb-2">
-                Payment Method
-              </div>
-              <div className="grid grid-cols-5 gap-1.5">
-                {PAY_METHODS.map((m) => {
-                  const Icon = m.i;
-                  const active = payment === m.k;
-                  return (
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {QUICK_AMOUNTS.map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setAmount(String(n))}
+                        className={cn(
+                          "h-11 rounded-xl border text-[11px] font-semibold transition-ui",
+                          amount === String(n)
+                            ? "border-gold bg-gold/15 text-gold"
+                            : "border-border bg-card2 text-text2 hover:text-text",
+                        )}
+                      >
+                        {n}
+                      </button>
+                    ))}
                     <button
-                      key={m.k}
                       type="button"
-                      onClick={() => setPayment(m.k)}
-                      className={cn(
-                        "min-h-[56px] rounded-xl border text-[10px] font-semibold flex flex-col items-center justify-center gap-1 transition-ui px-0.5",
-                        active
-                          ? m.accent === "ok"
-                            ? "border-ok bg-ok/12 text-ok shadow-[0_0_0_1px_color-mix(in_oklab,var(--ok)_35%,transparent)]"
-                            : m.accent === "info"
-                              ? "border-info bg-info/12 text-info"
-                              : "border-gold bg-gold/15 text-gold shadow-gold"
-                          : "border-border bg-card2 text-text2 hover:text-text hover:border-border2",
-                      )}
+                      onClick={() => setAmount(total > 0 ? String(total.toFixed(2)) : "")}
+                      className="h-11 rounded-xl border border-border bg-card2 text-[11px] font-semibold text-text2 hover:text-text transition-ui"
                     >
-                      <Icon className="h-3.5 w-3.5" />
-                      <span className="leading-tight text-center">{m.k === "Split" ? "Split" : m.k}</span>
+                      Exact
                     </button>
-                  );
-                })}
-              </div>
-            </div>
+                  </div>
+                  <div className="flex items-center justify-between rounded-xl border border-ok/25 bg-ok/8 px-4 py-3">
+                    <span className="text-sm font-semibold text-text2">Change Due</span>
+                    <span className="text-2xl font-extrabold text-ok tabular-nums">
+                      {KES(change, currency)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border bg-panel/40 px-4 py-3 text-[12px] text-text2">
+                  {payment === "Card" || payment === "Bank"
+                    ? "No cash tender needed for this method."
+                    : "Select Cash, M-Pesa, or Split to enter tender."}
+                </div>
+              )}
 
-            <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-fg">
-                Amount Tendered
-              </div>
-              <Input
-                type="number"
-                placeholder="0.00"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="min-h-[44px] h-11 text-[16px] font-semibold tabular-nums"
-              />
-              <div className="grid grid-cols-5 gap-1.5">
-                {QUICK_AMOUNTS.map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setAmount(String(n))}
-                    className={cn(
-                      "h-9 rounded-lg border text-[11px] font-semibold transition-ui",
-                      amount === String(n)
-                        ? "border-gold bg-gold/15 text-gold"
-                        : "border-border bg-card2 text-text2 hover:text-text",
-                    )}
-                  >
-                    {n}
-                  </button>
-                ))}
+              <div>
+                {showNote ? (
+                  <Input
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    placeholder="Sale note…"
+                    className="h-11 text-sm mb-2"
+                    autoFocus
+                  />
+                ) : null}
                 <button
                   type="button"
-                  onClick={() => setAmount(total > 0 ? String(total.toFixed(2)) : "")}
-                  className="h-9 rounded-lg border border-border bg-card2 text-[11px] font-semibold text-text2 hover:text-text transition-ui"
+                  onClick={() => setShowNote((v) => !v)}
+                  className="inline-flex items-center gap-1.5 text-[12px] font-medium text-gold hover:text-gold/80 transition-ui"
                 >
-                  Exact
+                  <StickyNote className="h-3.5 w-3.5" />
+                  {showNote ? "Hide note" : "+ Add Note to Sale"}
                 </button>
-              </div>
-              <div className="flex items-center justify-between rounded-xl border border-ok/25 bg-ok/8 px-3 py-2.5">
-                <span className="text-sm text-text2">Change</span>
-                <span className="text-lg font-extrabold text-ok tabular-nums">
-                  {KES(change, currency)}
-                </span>
               </div>
             </div>
           </div>
@@ -739,16 +846,16 @@ function POS() {
               <button
                 type="button"
                 onClick={() => toast.message("Receipt preview — use desktop POS for full print")}
-                className="min-h-[40px] rounded-xl border border-border bg-card2 text-[11px] font-semibold text-text2 hover:text-text inline-flex items-center justify-center gap-1.5 transition-ui"
+                className="min-h-[44px] rounded-xl border border-border bg-card2 text-[12px] font-semibold text-text2 hover:text-text inline-flex items-center justify-center gap-1.5 transition-ui"
               >
-                <Eye className="h-3.5 w-3.5" /> Preview (F9)
+                <Eye className="h-4 w-4" /> Preview
               </button>
               <button
                 type="button"
                 onClick={() => toast.message("Reprint — use desktop POS for hardware printer")}
-                className="min-h-[40px] rounded-xl border border-border bg-card2 text-[11px] font-semibold text-text2 hover:text-text inline-flex items-center justify-center gap-1.5 transition-ui"
+                className="min-h-[44px] rounded-xl border border-border bg-card2 text-[12px] font-semibold text-text2 hover:text-text inline-flex items-center justify-center gap-1.5 transition-ui"
               >
-                <Printer className="h-3.5 w-3.5" /> Reprint (F10)
+                <Printer className="h-4 w-4" /> Reprint
               </button>
             </div>
             <Button
@@ -790,7 +897,7 @@ function CatPill({
       className={cn(
         "shrink-0 min-h-[34px] px-3 rounded-full text-xs font-semibold border transition-ui",
         active
-          ? "border-info bg-info/15 text-info"
+          ? "border-gold bg-gold/15 text-gold"
           : "border-border bg-card2 text-text2 hover:text-text",
       )}
     >
@@ -839,14 +946,14 @@ function Thumb({ name, small }: { name: string; small?: boolean }) {
   return (
     <div
       className={cn(
-        "shrink-0 rounded-lg bg-panel border border-border grid place-items-center text-muted-fg",
-        small ? "h-8 w-8" : "h-10 w-10",
+        "shrink-0 rounded-xl bg-panel border border-border grid place-items-center text-muted-fg",
+        small ? "h-8 w-8" : "h-12 w-12",
       )}
     >
       {small ? (
         <span className="text-[9px] font-bold">{initials || "?"}</span>
       ) : (
-        <Package className="h-4 w-4 opacity-70" />
+        <span className="text-[11px] font-bold text-gold/90">{initials || "?"}</span>
       )}
     </div>
   );

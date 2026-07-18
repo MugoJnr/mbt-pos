@@ -5,11 +5,11 @@ from PyQt5.QtGui     import *
 from datetime        import datetime
 from desktop.utils.theme   import C, ThemeManager, qss_alpha, RADIUS, PADDING, GAP
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
-                                    DangerBtn, IconBtn,
-                                    make_table, tbl_item, tbl_right)
+                                    DangerBtn, IconBtn)
 from desktop.utils.pos_components import (
-    ProductCard, ProductGrid, QuantityControl, PaymentSegment, SummaryCard,
-    CustomerSelector, PosSearchBar, safe_price as _safe_price,
+    ProductCard, ProductGrid, PaymentSegment, SummaryCard,
+    CustomerCard, CartList, PosSearchBar,
+    safe_price as _safe_price,
     fmt_stock_short as _fmt_stock_short, round_qty, refresh_pos_components,
 )
 from desktop.utils.option_lists import POS_PAYMENT_METHODS
@@ -154,79 +154,20 @@ class SalesTab(QWidget):
         cart_body = QWidget()
         cbl = QVBoxLayout(cart_body); cbl.setContentsMargins(16, 12, 16, 16); cbl.setSpacing(12)
 
-        self._ctbl = make_table(['Item', 'Qty', 'Price', 'Disc', 'Total', ''],
-                                stretch_col=0, row_height=56)
-        # Disc = KES per line. Wide enough for stepper + value.
-        hdr = self._ctbl.horizontalHeader()
-        hdr.setMinimumSectionSize(40)
-        self._ctbl.verticalHeader().setMinimumSectionSize(56)
-        self._ctbl.setColumnWidth(0, 200)
-        for ci, w in [(1, 128), (2, 90), (3, 128), (4, 92), (5, 42)]:
-            hdr.setSectionResizeMode(ci, QHeaderView.Fixed)
-            self._ctbl.setColumnWidth(ci, w)
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        self._ctbl.setWordWrap(False)
-        self._ctbl.setTextElideMode(Qt.ElideRight)
-        self._ctbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # Widgets own interaction — row selection paints ugly nested boxes
-        self._ctbl.setAlternatingRowColors(False)
-        self._ctbl.setSelectionMode(QAbstractItemView.NoSelection)
-        self._ctbl.setFocusPolicy(Qt.NoFocus)
-        self._ctbl.setMinimumHeight(220)
-        self._ctbl.setMaximumHeight(320)
-        cbl.addWidget(self._ctbl)
+        # Modern cart rows (not spreadsheet). Keep _ctbl=None for legacy theme guards.
+        self._ctbl = None
+        self._cart_list = CartList()
+        self._cart_list.qtyChanged.connect(self._qty)
+        self._cart_list.discChanged.connect(self._set_line_disc)
+        self._cart_list.removeClicked.connect(self._rm)
+        cbl.addWidget(self._cart_list)
 
-        # Totals (SummaryCard + KES disc edit)
-        self._summary = SummaryCard()
-        self._tot_frame = self._summary
-        self._sub_lbl = self._summary._sub_lbl
-        self._tax_lbl = self._summary._tax_lbl
-        self._tot_lbl = self._summary._tot_lbl
-        self._total_hdr = self._summary._total_hdr
-        self._disc_lbl = self._summary.disc_label
-
-        disc_row = QHBoxLayout(); disc_row.setContentsMargins(0, 0, 0, 0)
-        self._disc_lbl.setToolTip(
-            'Cart discount in KES. You can also set Disc per item in the cart table.')
-        self._disc = _KesEdit()
-        self._disc.setObjectName('cartDisc')
-        self._disc.setText('0.00')
-        self._disc.setFixedWidth(150)
-        self._disc.setMinimumHeight(38)
-        self._disc.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._disc.setPlaceholderText('0')
-        self._disc.setToolTip('Click, type e.g. 60, press Enter')
-        self._disc.setStyleSheet(
-            f"QLineEdit#cartDisc{{"
-            f"background:{C['input']};color:{C['text']};"
-            f"border:1.5px solid {C['border2']};border-radius:8px;"
-            f"padding:4px 8px;font-size:14px;font-weight:700;}}"
-            f"QLineEdit#cartDisc:focus{{border-color:{C['gold']};}}"
-        )
-        self._disc.editingFinished.connect(self._commit_cart_disc)
-        self._disc.returnPressed.connect(self._commit_cart_disc)
-        self._summary.disc_edit = self._disc
-        # Insert disc row before tax (index 1 is after subtotal)
-        disc_row.addWidget(self._disc_lbl); disc_row.addStretch(); disc_row.addWidget(self._disc)
-        self._summary._body.insertLayout(1, disc_row)
-        cbl.addWidget(self._summary)
-
-        # Payment method toggles (Cash / M-Pesa / Card) + full combo for other methods
-        self._pay_seg = PaymentSegment()
-        self._pay_seg.methodChanged.connect(self._select_pay_method)
-        self._pay_btns = self._pay_seg._btns
-        cbl.addWidget(self._pay_seg)
-
-        # Customer for credit / debt notes
-        cust_row = QHBoxLayout(); cust_row.setSpacing(8)
-        self._cust_lbl = QLabel('Customer')
-        self._cust_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:13px;background:transparent;")
-        self._customer = CustomerSelector()
+        # Customer card (selector + live balance / loyalty when API provides it)
+        self._cust_card = CustomerCard()
+        self._customer = self._cust_card.selector
         self._customer.currentIndexChanged.connect(self._on_customer_changed)
-        cust_row.addWidget(self._cust_lbl)
-        cust_row.addWidget(self._customer, 1)
-        cbl.addLayout(cust_row)
+        self._cust_lbl = None
+        cbl.addWidget(self._cust_card)
 
         # Store credit apply row (shown when customer has wallet balance)
         self._credit_frame = QFrame()
@@ -252,6 +193,54 @@ class SalesTab(QWidget):
         cfl.addWidget(self._apply_all_credit_btn)
         self._credit_frame.hide()
         cbl.addWidget(self._credit_frame)
+
+        # Totals (SummaryCard + KES disc edit)
+        self._summary = SummaryCard()
+        self._tot_frame = self._summary
+        self._sub_lbl = self._summary._sub_lbl
+        self._tax_lbl = self._summary._tax_lbl
+        self._tot_lbl = self._summary._tot_lbl
+        self._total_hdr = self._summary._total_hdr
+        self._disc_lbl = self._summary.disc_label
+
+        disc_row = QHBoxLayout(); disc_row.setContentsMargins(0, 0, 0, 0)
+        self._disc_lbl.setToolTip(
+            'Cart discount in KES. You can also set Disc per line in the cart.')
+        self._disc = _KesEdit()
+        self._disc.setObjectName('cartDisc')
+        self._disc.setText('0.00')
+        self._disc.setFixedWidth(150)
+        self._disc.setMinimumHeight(38)
+        self._disc.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._disc.setPlaceholderText('0')
+        self._disc.setToolTip('Click, type e.g. 60, press Enter')
+        self._disc.setStyleSheet(
+            f"QLineEdit#cartDisc{{"
+            f"background:{C['input']};color:{C['text']};"
+            f"border:1.5px solid {C['border2']};border-radius:8px;"
+            f"padding:4px 8px;font-size:14px;font-weight:700;}}"
+            f"QLineEdit#cartDisc:focus{{border-color:{C['gold']};}}"
+        )
+        self._disc.editingFinished.connect(self._commit_cart_disc)
+        self._disc.returnPressed.connect(self._commit_cart_disc)
+        self._summary.disc_edit = self._disc
+        # After Order Summary header + Subtotal (index 2)
+        disc_row.addWidget(self._disc_lbl); disc_row.addStretch(); disc_row.addWidget(self._disc)
+        self._summary._body.insertLayout(2, disc_row)
+        cbl.addWidget(self._summary)
+
+        # Payment tiles (Cash / M-Pesa / Card / Bank / Split) + full combo for other methods
+        pay_hdr = QLabel('Payment Method')
+        pay_hdr.setObjectName('posPayHdr')
+        pay_hdr.setStyleSheet(
+            f"color:{C['muted']};font-size:11px;font-weight:800;letter-spacing:0.6px;"
+            f"background:transparent;")
+        self._pay_hdr = pay_hdr
+        cbl.addWidget(pay_hdr)
+        self._pay_seg = PaymentSegment()
+        self._pay_seg.methodChanged.connect(self._select_pay_method)
+        self._pay_btns = self._pay_seg._btns
+        cbl.addWidget(self._pay_seg)
 
         pay = QHBoxLayout(); pay.setSpacing(8)
         self._pay_lbl = QLabel('Method')
@@ -360,15 +349,23 @@ class SalesTab(QWidget):
         self._split_frame.hide()
         cbl.addWidget(self._split_frame)
 
-        chg = QHBoxLayout()
-        self._chg_lbl = QLabel('Change')
+        self._chg_frame = QFrame()
+        self._chg_frame.setObjectName('posChangeDue')
+        self._chg_frame.setStyleSheet(
+            f"QFrame#posChangeDue{{background:{qss_alpha(C['ok'], 0.10)};"
+            f"border:1px solid {qss_alpha(C['ok'], 0.28)};border-radius:12px;}}")
+        chg = QHBoxLayout(self._chg_frame)
+        chg.setContentsMargins(14, 12, 14, 12)
+        self._chg_lbl = QLabel('Change Due')
         self._chg_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:13px;background:transparent;")
+            f"color:{C['text2']};font-size:13px;font-weight:700;background:transparent;")
         self._chg = QLabel('KES 0.00')
         self._chg.setStyleSheet(
-            f"color:{C['ok']};font-size:15px;font-weight:700;background:transparent;")
-        chg.addWidget(self._chg_lbl); chg.addWidget(self._chg); chg.addStretch()
-        cbl.addLayout(chg)
+            f"color:{C['ok']};font-size:22px;font-weight:900;background:transparent;")
+        chg.addWidget(self._chg_lbl)
+        chg.addStretch()
+        chg.addWidget(self._chg)
+        cbl.addWidget(self._chg_frame)
 
         self._mpesa_frame = QFrame()
         self._mpesa_frame.setStyleSheet(
@@ -569,6 +566,8 @@ class SalesTab(QWidget):
             self._paid.setVisible(visible)
         if hasattr(self, '_cash_paid_lbl'):
             self._cash_paid_lbl.setVisible(visible)
+        if hasattr(self, '_chg_frame'):
+            self._chg_frame.setVisible(visible)
         if hasattr(self, '_chg_lbl'):
             self._chg_lbl.setVisible(visible)
         if hasattr(self, '_chg'):
@@ -712,19 +711,25 @@ class SalesTab(QWidget):
     def _on_customer_changed(self, *_args):
         cust_id = self._customer.selected_id() if hasattr(self, '_customer') else None
         bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
+        cust = None
+        if cust_id:
+            try:
+                for c in (self.api.get_customers() or []):
+                    if c.get('id') == cust_id:
+                        cust = c
+                        break
+            except Exception:
+                cust = None
+        if hasattr(self, '_cust_card') and self._cust_card is not None:
+            try:
+                self._cust_card.set_customer(cust, walk_in=not cust_id)
+            except Exception:
+                pass
         # Credit customer summary tooltip (balance / limit / outstanding)
         try:
             from desktop.utils.auto_fill import AutoFillService
             cfg = self._cfg() if hasattr(self, '_cfg') else (self.config_getter() or {})
             if cust_id and AutoFillService.enabled(cfg, 'autofill_credit_customer_info'):
-                cust = None
-                try:
-                    for c in (self.api.get_customers() or []):
-                        if c.get('id') == cust_id:
-                            cust = c
-                            break
-                except Exception:
-                    cust = None
                 summary = AutoFillService.credit_customer_summary(cust, cfg)
                 hint = AutoFillService.format_credit_customer_hint(
                     summary, self._currency)
@@ -768,10 +773,13 @@ class SalesTab(QWidget):
         self._credit_spin.setValue(min(bal, self._total))
 
     def _on_payment_changed(self, method: str):
-        if hasattr(self, '_pay_seg') and method in ('Cash', 'M-Pesa', 'Card'):
+        seg_keys = ('Cash', 'M-Pesa', 'Card', 'Bank Transfer', 'Mixed')
+        if hasattr(self, '_pay_seg') and method in seg_keys:
             self._pay_seg.select(method, emit=False)
         if hasattr(self, '_pay_btns'):
             for k, b in self._pay_btns.items():
+                if not b.isEnabled():
+                    continue
                 b.blockSignals(True)
                 b.setChecked(k == method)
                 b.blockSignals(False)
@@ -1106,6 +1114,7 @@ class SalesTab(QWidget):
             'product_id':   p['id'],
             'product_name': p.get('name', ''),
             'sku':          p.get('sku', '') or '',
+            'category':     p.get('category') or 'General',
             'quantity':     1.0,
             'unit_price':   p.get('price', 0),
             'discount':     0.0,
@@ -1121,94 +1130,10 @@ class SalesTab(QWidget):
         return '#0C1828' if light else '#F5F7FA'
 
     def _refresh_cart(self):
-        from desktop.utils.pos_light_theme import fmt, SPINBOX, REMOVE_BTN, L, CART_ROW_H
-        from desktop.utils.theme import DARK, LIGHT, ThemeManager
-        from desktop.utils.widgets import apply_table_row_backgrounds, tbl_item
-        self._ctbl.setRowCount(0)
-        light = bool(getattr(self, '_is_light', False) or ThemeManager.is_light())
-        item_color = self._cart_fg()
-        # Keep table QSS in sync — no ::item selection chrome (NoSelection)
-        if light:
-            self._ctbl.setStyleSheet(fmt(
-                "QTableWidget{{background:#FFFFFF;border:2px solid {border2};"
-                "border-radius:10px;color:{text};font-size:{font_cart};font-weight:700;"
-                "gridline-color:transparent;outline:0;}}"
-                "QTableWidget::item{{color:{text};padding:8px 10px;background:transparent;}}"
-                "QTableWidget::item:selected{{background:transparent;color:{text};}}"
-                "QHeaderView::section{{background:{card2};color:{text};font-size:{font_cart_head};"
-                "font-weight:800;letter-spacing:0.6px;padding:10px 8px;border:none;"
-                "border-bottom:2px solid {border2};}}"
-            ))
-        else:
-            self._ctbl.setStyleSheet(
-                f"QTableWidget{{background:{DARK['card']};border:1px solid {DARK['border2']};"
-                f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
-                f"gridline-color:transparent;outline:0;}}"
-                f"QTableWidget::item{{color:#F5F7FA;padding:8px 10px;background:transparent;}}"
-                f"QTableWidget::item:selected{{background:transparent;color:#F5F7FA;}}"
-                f"QHeaderView::section{{background:{DARK['panel']};color:#C5D0E0;"
-                f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
-                f"border:none;border-bottom:1px solid {DARK['border2']};}}"
-            )
-        for i, item in enumerate(self.cart):
-            self._ctbl.insertRow(i)
-            full_name = item['product_name']
-            # Plain item (no nested QLabel box) — ThemeTableDelegate elides
-            name_it = tbl_item(full_name, color=item_color)
-            name_it.setToolTip(full_name)
-            name_it.setFlags(name_it.flags() & ~Qt.ItemIsEditable)
-            self._ctbl.setItem(i, 0, name_it)
-
-            # Qty — flat QuantityControl (shared light/dark)
-            qty = QuantityControl(
-                value=float(item['quantity']), step=0.25, minimum=0.25, width=124)
-            qty.valueChanged.connect(lambda v, idx=i: self._qty(idx, v))
-            cell_wrap = QWidget()
-            cell_wrap.setStyleSheet('background:transparent;border:none;')
-            cw_lay = QHBoxLayout(cell_wrap)
-            cw_lay.setContentsMargins(2, 6, 2, 6)
-            cw_lay.setSpacing(0)
-            cw_lay.addWidget(qty, 0, Qt.AlignCenter)
-            self._ctbl.setCellWidget(i, 1, cell_wrap)
-            self._ctbl.setItem(i, 2, tbl_right(f'{item["unit_price"]:,.2f}', color=item_color))
-
-            # Disc — same stepper chrome as Qty (no nested boxes)
+        for item in self.cart:
             self._apply_line_total(item)
-            disc = QuantityControl(
-                value=float(item.get('discount') or 0),
-                step=10.0,
-                minimum=0.0,
-                maximum=999999.0,
-                snap=False,
-                width=124,
-            )
-            disc.valueChanged.connect(lambda v, idx=i: self._set_line_disc(idx, v))
-            disc_wrap = QWidget()
-            disc_wrap.setStyleSheet('background:transparent;border:none;')
-            dw_lay = QHBoxLayout(disc_wrap)
-            dw_lay.setContentsMargins(2, 6, 2, 6)
-            dw_lay.setSpacing(0)
-            dw_lay.addWidget(disc, 0, Qt.AlignCenter)
-            self._ctbl.setCellWidget(i, 3, disc_wrap)
-
-            self._ctbl.setItem(i, 4, tbl_right(f'{item["total"]:,.2f}', color=item_color))
-            rm = QPushButton('✕')
-            if self._is_light:
-                rm.setStyleSheet(fmt(REMOVE_BTN))
-            else:
-                rm.setStyleSheet(
-                    f"QPushButton{{background:{C['err_dim']};color:{C['err']};"
-                    f"border:1px solid {qss_alpha(C['err'], 0.40)};border-radius:6px;"
-                    f"font-weight:800;font-size:14px;min-width:32px;min-height:30px;padding:2px 6px;}}"
-                    f"QPushButton:hover{{background:{C['err']};color:#fff;}}")
-            rm.setCursor(Qt.PointingHandCursor)
-            rm.clicked.connect(lambda _, idx=i: self._rm(idx))
-            self._ctbl.setCellWidget(i, 5, rm)
-            # Match CART_ROW_H from theme (64) — was forcing 48 and clamping against default 56
-            self._ctbl.setRowHeight(i, CART_ROW_H)
-
-        apply_table_row_backgrounds(self._ctbl)
-
+        if hasattr(self, '_cart_list') and self._cart_list is not None:
+            self._cart_list.set_items(self.cart, currency=self._currency)
         n = len(self.cart)
         self._cnt.setText(f"{n} item{'s' if n != 1 else ''}")
         self._recalc()
@@ -1242,17 +1167,16 @@ class SalesTab(QWidget):
         item = self.cart[idx]
         gross = self._line_gross(item)
         if gross <= 0:
-            # Can't discount a zero-price line — keep at 0 and tip the cashier
             item['discount'] = 0.0
             item['total'] = 0.0
-            color = self._cart_fg()
-            self._ctbl.setItem(idx, 4, tbl_right('0.00', color=color))
+            if hasattr(self, '_cart_list'):
+                self._cart_list.update_row(idx, item)
             self._recalc()
             return
         item['discount'] = float(v)
         self._apply_line_total(item)
-        color = self._cart_fg()
-        self._ctbl.setItem(idx, 4, tbl_right(f'{item["total"]:,.2f}', color=color))
+        if hasattr(self, '_cart_list'):
+            self._cart_list.update_row(idx, item)
         self._recalc()
 
     def _bump_line_disc(self, idx, delta):
@@ -1265,19 +1189,8 @@ class SalesTab(QWidget):
         new_d = max(0.0, min(gross, float(item.get('discount') or 0) + float(delta)))
         item['discount'] = round(new_d, 2)
         self._apply_line_total(item)
-        disc_w = self._ctbl.cellWidget(idx, 3)
-        if disc_w:
-            qc = disc_w.findChild(QuantityControl)
-            if qc is not None:
-                qc.setValue(item['discount'])
-            else:
-                ed = disc_w.findChild(QLineEdit)
-                if ed:
-                    ed.blockSignals(True)
-                    ed.setText(f"{item['discount']:.2f}")
-                    ed.blockSignals(False)
-        color = self._cart_fg()
-        self._ctbl.setItem(idx, 4, tbl_right(f'{item["total"]:,.2f}', color=color))
+        if hasattr(self, '_cart_list'):
+            self._cart_list.update_row(idx, item)
         self._recalc()
 
     def _qty(self, idx, v):
@@ -1285,18 +1198,8 @@ class SalesTab(QWidget):
             q = round_qty(v, 0.25)
             self.cart[idx]['quantity'] = round(q, 2)
             self._apply_line_total(self.cart[idx])
-            # Keep Disc field in sync without full refresh
-            disc_w = self._ctbl.cellWidget(idx, 3)
-            if disc_w:
-                ed = disc_w.findChild(QLineEdit, 'lineDisc')
-                if ed is None:
-                    ed = disc_w.findChild(QLineEdit)
-                if ed:
-                    ed.blockSignals(True)
-                    ed.setText(f"{float(self.cart[idx].get('discount') or 0):.2f}")
-                    ed.blockSignals(False)
-            color = self._cart_fg()
-            self._ctbl.setItem(idx, 4, tbl_right(f'{self.cart[idx]["total"]:,.2f}', color=color))
+            if hasattr(self, '_cart_list'):
+                self._cart_list.update_row(idx, self.cart[idx])
             self._recalc()
 
     def _change_qty(self, idx, delta):
@@ -1349,9 +1252,12 @@ class SalesTab(QWidget):
         tax = round(max(0, sub - dis) * rate, 2)
         tot = round(max(0, sub - dis) + tax, 2)
         self._subtotal = sub; self._discount = dis; self._tax = tax; self._total = tot
-        self._sub_lbl.setText(f'{cur} {sub:,.2f}')
-        self._tax_lbl.setText(f'{cur} {tax:,.2f}')
-        self._tot_lbl.setText(f'{cur} {tot:,.2f}')
+        if hasattr(self, '_summary') and hasattr(self._summary, 'set_amounts'):
+            self._summary.set_amounts(cur, sub, tax, tot, discount=dis)
+        else:
+            self._sub_lbl.setText(f'{cur} {sub:,.2f}')
+            self._tax_lbl.setText(f'{cur} {tax:,.2f}')
+            self._tot_lbl.setText(f'{cur} {tot:,.2f}')
         # Cap credit apply to new total
         if self._credit_to_apply > tot:
             self._credit_to_apply = tot
@@ -1396,7 +1302,7 @@ class SalesTab(QWidget):
             L.get('warn', C.get('warn', '#E8A838')) if self._is_light
             else C.get('warn', '#E8A838')
         )
-        chg_sz = FS['change'] if self._is_light else '16px'
+        chg_sz = FS['change'] if self._is_light else '22px'
 
         if method == 'Part Payment':
             rem = max(0.0, round(due - paid, 2))

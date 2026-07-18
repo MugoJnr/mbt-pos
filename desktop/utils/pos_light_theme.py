@@ -476,6 +476,10 @@ def apply_light(sales_tab) -> None:
         chdr.setStyleSheet(f"border-bottom:1px solid {L['border']};")
     if getattr(t, '_cust_lbl', None):
         t._cust_lbl.setStyleSheet(_label_style('text2', 'label'))
+    if getattr(t, '_cust_card', None) and hasattr(t._cust_card, 'refresh_theme'):
+        t._cust_card.refresh_theme()
+    if getattr(t, '_cart_list', None) and hasattr(t._cart_list, 'refresh_theme'):
+        t._cart_list.refresh_theme()
     if getattr(t, '_gw', None) is not None:
         t._gw.setStyleSheet("background:transparent;")
 
@@ -484,9 +488,10 @@ def apply_light(sales_tab) -> None:
     if getattr(t, '_cnt', None):
         t._cnt.setStyleSheet(_label_style('muted', 'caption') + ' font-weight:600;')
 
-    t._ctbl.setStyleSheet(fmt(CART_TABLE))
-    t._ctbl.setAlternatingRowColors(True)
-    t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
+    if getattr(t, '_ctbl', None) is not None:
+        t._ctbl.setStyleSheet(fmt(CART_TABLE))
+        t._ctbl.setAlternatingRowColors(True)
+        t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
 
     t._tot_frame.setStyleSheet(fmt(TOTALS_FRAME))
     for lbl in (getattr(t, '_sub_lbl', None), getattr(t, '_tax_lbl', None)):
@@ -615,6 +620,10 @@ def apply_dark(sales_tab) -> None:
     if getattr(t, '_cust_lbl', None):
         t._cust_lbl.setStyleSheet(
             f"color:{D['text2']};font-size:13px;background:transparent;")
+    if getattr(t, '_cust_card', None) and hasattr(t._cust_card, 'refresh_theme'):
+        t._cust_card.refresh_theme()
+    if getattr(t, '_cart_list', None) and hasattr(t._cart_list, 'refresh_theme'):
+        t._cart_list.refresh_theme()
     if getattr(t, '_gw', None) is not None:
         t._gw.setStyleSheet(f"background:{D['card']};")
 
@@ -625,16 +634,17 @@ def apply_dark(sales_tab) -> None:
         t._cnt.setStyleSheet(
             f"color:{D['muted']}; font-size:13px; font-weight:600; background:transparent;")
 
-    t._ctbl.setStyleSheet(
-        f"QTableWidget{{background:{D['card']};border:1px solid {D['border2']};"
-        f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
-        f"alternate-background-color:{D['card2']};gridline-color:transparent;}}"
-        f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;}}"
-        f"QHeaderView::section{{background:{D['panel']};color:#C5D0E0;"
-        f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
-        f"border:none;border-bottom:1px solid {D['border2']};}}"
-    )
-    t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
+    if getattr(t, '_ctbl', None) is not None:
+        t._ctbl.setStyleSheet(
+            f"QTableWidget{{background:{D['card']};border:1px solid {D['border2']};"
+            f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
+            f"alternate-background-color:{D['card2']};gridline-color:transparent;}}"
+            f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;}}"
+            f"QHeaderView::section{{background:{D['panel']};color:#C5D0E0;"
+            f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
+            f"border:none;border-bottom:1px solid {D['border2']};}}"
+        )
+        t._ctbl.verticalHeader().setDefaultSectionSize(CART_ROW_H)
 
     t._tot_frame.setStyleSheet(
         f"QFrame#posTotFrame{{background:{D['panel']};border:1px solid {D['border2']};"
