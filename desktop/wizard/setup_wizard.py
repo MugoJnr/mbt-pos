@@ -1243,7 +1243,10 @@ class SetupWizard(QDialog):
                 'telegram_bot_token':   bot_token,
                 'auto_report_daily':    '1',
                 'auto_report_weekly':   '0',
-                'auto_report_interval_hours': '4',\n                'auto_db_backup': '1',\n                'auto_local_db_backup': '1',\n                'auto_local_db_backup_interval_hours': '6',
+                'auto_report_interval_hours': '4',
+                'auto_db_backup': '1',
+                'auto_local_db_backup': '1',
+                'auto_local_db_backup_interval_hours': '6',
                 'mpesa_mode':           'manual',
                 'mpesa_business_name':  self._data.get('shop_name', 'My Shop'),
             }

@@ -121,15 +121,18 @@ def _user_can(module, user=None):
     if role in ('admin', 'superadmin'):
         return True
     tabs = _user_tabs(user)
+    # Keep POS ops usable for cashiers (sales → product lookup) without granting
+    # finance/management tabs via loose aliases (reports←dashboard, etc.).
     aliases = {
-        'sales': {'dashboard', 'sales', 'reports', 'pos'},
-        'inventory': {'inventory', 'sales'},
+        'sales': {'dashboard', 'sales', 'pos'},
+        'inventory': {'inventory', 'sales'},  # product search for POS only; use inventory_value for $
+        'inventory_value': {'inventory', 'accounting', 'reports'},
         'debt': {'debt', 'customers'},
-        'reports': {'reports', 'dashboard'},
+        'reports': {'reports'},
         'users': {'users'},
         'audit': {'security', 'users'},
         'backup': {'backup', 'settings', 'diagnostics'},
-        'customers': {'debt', 'customers', 'sales'},
+        'customers': {'debt', 'customers'},
         'payments': {'sales', 'reports', 'debt'},
     }
     need = aliases.get(module, {module})
@@ -267,7 +270,7 @@ def _cc_today_snapshot(user=None):
         low = 0
 
     profit = _today_profit(db, today) if _user_can('reports', user) else None
-    inv_val = _inventory_value(db) if _user_can('inventory', user) else None
+    inv_val = _inventory_value(db) if _user_can('inventory_value', user) else None
     debt_out = None
     overdue = 0
     if _user_can('debt', user):
@@ -365,6 +368,8 @@ def list_customers():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('customers') and not _user_can('debt') and not _user_can('sales'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         q  = request.args.get('q', '').strip()
         if q:
@@ -388,7 +393,13 @@ def list_customers():
                 "AND di.status NOT IN ('paid','cancelled') "
                 "WHERE c.is_active=1 GROUP BY c.id ORDER BY c.name"
             ).fetchall()
-        return jsonify(_trs(rows))
+        # Cashiers may look up customers for sales, but hide shop-wide debt totals
+        out = _trs(rows)
+        if not _user_can('debt') and not _user_can('reports'):
+            for row in out:
+                row.pop('total_outstanding', None)
+                row.pop('open_invoices', None)
+        return jsonify(out)
     return _inner()
 
 
@@ -461,6 +472,8 @@ def debt_summary():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('debt'):
+            return jsonify({'error': 'Forbidden'}), 403
         db    = _get_db()
         today = str(date.today())
         out   = _tr(db.execute("SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices WHERE status NOT IN ('paid','cancelled')").fetchone())
@@ -1143,21 +1156,33 @@ def cc_summary():
         db = _get_db()
         _ensure_command_center_schema(db)
         today = str(date.today())
-        sales = _tr(db.execute("""
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
+        params = [today]
+        if role == 'cashier' and user.get('id'):
+            sales_clause += " AND cashier_id=?"
+            params.append(user['id'])
+        sales = _tr(db.execute(f"""
             SELECT COUNT(*) as txns, COALESCE(SUM(total),0) as revenue,
                    COALESCE(AVG(total),0) as avg_txn,
                    COALESCE(SUM(discount),0) as discounts
-            FROM sales WHERE date(created_at)=? AND status='completed'
-        """, (today,)).fetchone()) or {}
-        debt = _tr(db.execute(
-            "SELECT COALESCE(SUM(balance),0) as total FROM debt_invoices "
-            "WHERE status NOT IN ('paid','cancelled')"
-        ).fetchone()) or {}
-        profit = _today_profit(db, today)
-        inv_val = _inventory_value(db)
-        month_rev = _month_revenue(db)
-        expenses = _month_expenses_proxy(db)
-        cash_flow = float(sales.get('revenue') or 0) - expenses / max(date.today().day, 1)
+            FROM sales WHERE {sales_clause}
+        """, params).fetchone()) or {}
+        debt_total = None
+        if _user_can('debt', user):
+            debt = _tr(db.execute(
+                "SELECT COALESCE(SUM(balance),0) as total FROM debt_invoices "
+                "WHERE status NOT IN ('paid','cancelled')"
+            ).fetchone()) or {}
+            debt_total = float(debt.get('total') or 0)
+        profit = _today_profit(db, today) if _user_can('reports', user) else None
+        inv_val = _inventory_value(db) if _user_can('inventory_value', user) else None
+        month_rev = _month_revenue(db) if _user_can('reports', user) else None
+        expenses = _month_expenses_proxy(db) if _user_can('reports', user) or _user_can('accounting', user) else None
+        cash_flow = None
+        if expenses is not None:
+            cash_flow = float(sales.get('revenue') or 0) - float(expenses) / max(date.today().day, 1)
         return jsonify({
             'today': {
                 'revenue': float(sales.get('revenue') or 0),
@@ -1169,8 +1194,9 @@ def cc_summary():
             'monthly_revenue': month_rev,
             'expenses': expenses,
             'inventory_value': inv_val,
-            'outstanding_debts': float(debt.get('total') or 0),
+            'outstanding_debts': debt_total,
             'cash_flow': cash_flow,
+            'scope': 'own_sales' if role == 'cashier' else 'shop',
         })
     return _inner()
 
@@ -1534,6 +1560,8 @@ def backup_status():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('backup'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         history = _trs(db.execute(
@@ -1893,6 +1921,15 @@ def _sales_where(filt, alias='s'):
         f"COALESCE({p}status,'completed')='completed'",
     ]
     params = [filt['start'], filt['end']]
+    # Cashiers only see their own receipts unless they have reports tab
+    try:
+        user = getattr(g, 'current_user', None) or {}
+        role = (user.get('role') or '').lower()
+        if role == 'cashier' and user.get('id') and not _user_can('reports', user):
+            clauses.append(f"{p}cashier_id=?")
+            params.append(user['id'])
+    except Exception:
+        pass
     if filt.get('employee'):
         clauses.append(f"({p}cashier_name LIKE ? OR CAST({p}cashier_id AS TEXT)=?)")
         params.extend([f"%{filt['employee']}%", filt['employee']])
