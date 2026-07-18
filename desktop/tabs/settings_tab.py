@@ -309,6 +309,17 @@ class SettingsTab(QWidget):
         FormRow('', self.auto_report_daily, rf)
         FormRow('', self.auto_report_weekly, rf)
         FormRow('', self.auto_db_backup, rf)
+        try:
+            from backend.local_db_backup import local_backup_status, get_local_backup_dir
+            st = local_backup_status()
+            self._local_bak_lbl = QLabel(
+                f"Local auto-backup: {st.get('last_at') or 'pending'} · {get_local_backup_dir()}")
+            self._local_bak_lbl.setWordWrap(True)
+            self._local_bak_lbl.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
+            FormRow('', self._local_bak_lbl, rf)
+        except Exception:
+            pass
+
         rf.addRow(rep_hint)
         self._send_report_now_btn = SecondaryBtn('Send Today\'s Report Now', 40)
         self._send_report_now_btn.clicked.connect(self._send_report_now)

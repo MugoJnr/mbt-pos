@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-18-v2.3.91"
-APP_VERSION   = "2.3.91"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-19-v2.3.92"
+APP_VERSION   = "2.3.92"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -703,12 +703,27 @@ class MainWindow(QMainWindow):
             log.warning(f"Auto Cloudflare: {e}")
 
         try:
+            from desktop.utils.ai.config import ensure_vendor_ai_seeded
+            ensure_vendor_ai_seeded()
+        except Exception as e:
+            log.warning(f"Vendor AI seed: {e}")
+
+        try:
             from backend.cloud_backup import start_cloud_backup_service
             from backend.cloud_backup.device_manager import get_or_create_device_id
             get_or_create_device_id()
             start_cloud_backup_service()
         except Exception as e:
             log.warning(f"Cloud backup service: {e}")
+
+        try:
+            from backend.local_db_backup import start_local_backup_scheduler
+            start_local_backup_scheduler(
+                config_getter=lambda: self.api.get_settings() if hasattr(self, 'api') else {},
+                api=getattr(self, 'api', None),
+            )
+        except Exception as e:
+            log.warning(f"Local DB backup: {e}")
 
         # Pass license service to license tab if it exists
         if 'license' in self._tabs and self._svc_lic:
@@ -1629,21 +1644,26 @@ class MainWindow(QMainWindow):
 
     def _on_auto_cloudflare_failed(self, result: dict):
         role = self.user_data.get('user', {}).get('role', '')
-        if role not in ('admin', 'superadmin'):
-            return
         err = result.get('error') or ''
         if isinstance(result.get('errors'), list) and result['errors']:
             err = str(result['errors'][0])
         if not err:
             return
-        def _show():
-            QMessageBox.warning(
-                self, 'Remote Dashboard Setup',
-                'Remote dashboard could not auto-configure.\n\n'
-                f'{err}\n\n'
-                'This is usually a vendor API-token issue (deploy.local.json), '
-                'not something cashiers fix with Cloudflare login.')
-        QTimer.singleShot(0, _show)
+        # Non-blocking: status in Settings + log only (no OK MessageBox on boot)
+        log.warning('Remote dashboard auto-configure failed: %s', err)
+        def _ui():
+            if 'settings' in self._tabs and hasattr(self._tabs['settings'], '_refresh_cf_status'):
+                try:
+                    self._tabs['settings']._refresh_cf_status()
+                except Exception:
+                    pass
+            # Admins still see a toast-style status, not a modal OK dialog
+            try:
+                if role in ('admin', 'superadmin') and hasattr(self, '_set_status'):
+                    self._set_status(f'Remote dashboard: {err[:120]}')
+            except Exception:
+                pass
+        QTimer.singleShot(0, _ui)
 
     def _on_sync(self, s: str):
         self._sync_lbl.setText(

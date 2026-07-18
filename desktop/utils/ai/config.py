@@ -164,6 +164,41 @@ def _read_key_from_local_json() -> str:
         return ''
 
 
+
+def _read_key_from_deploy() -> str:
+    """Vendor-bundled key (same pattern as Cloudflare/Telegram in deploy.local.json)."""
+    try:
+        from config.deploy import load_deploy_config
+        d = load_deploy_config() or {}
+        for key in ('openrouter_api_key', 'MBT_OPENROUTER_API_KEY', 'openai_api_key'):
+            v = str(d.get(key) or '').strip()
+            if v:
+                return v
+    except Exception as e:
+        log.debug('deploy AI key: %s', e)
+    return ''
+
+
+def ensure_vendor_ai_seeded() -> bool:
+    """If a deploy-bundled key exists and AppData has none, seed DPAPI/local JSON."""
+    if _read_key_from_bin() or _read_key_from_local_json():
+        return True
+    key = (
+        (os.environ.get('MBT_OPENROUTER_API_KEY') or '').strip()
+        or (os.environ.get('OPENROUTER_API_KEY') or '').strip()
+        or (os.environ.get('OPENAI_API_KEY') or '').strip()
+        or _read_key_from_deploy()
+    )
+    if not key:
+        return False
+    try:
+        save_vendor_api_key(key)
+        return True
+    except Exception as e:
+        log.warning('ensure_vendor_ai_seeded: %s', e)
+        return False
+
+
 def resolve_api_key() -> str:
     for env_name in (
         'MBT_OPENROUTER_API_KEY',
@@ -176,7 +211,10 @@ def resolve_api_key() -> str:
     key = _read_key_from_bin()
     if key:
         return key
-    return _read_key_from_local_json()
+    key = _read_key_from_local_json()
+    if key:
+        return key
+    return _read_key_from_deploy()
 
 
 def model_for_domain(domain: str) -> str:

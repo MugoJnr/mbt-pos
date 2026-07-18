@@ -21,7 +21,8 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 !include "WinVer.nsh"
 !include "x64.nsh"
 
-!define MUI_ABORTWARNING
+; Soft install: skip abort confirmation MessageBox
+;!define MUI_ABORTWARNING
 !define MUI_ICON "assets\mbt_icon.ico"
 !define MUI_UNICON "assets\mbt_icon.ico"
 !define MUI_WELCOMEFINISHPAGE_BITMAP_NOSTRETCH
@@ -101,7 +102,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "2.3.91"
+        "DisplayVersion"       "2.3.92"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"

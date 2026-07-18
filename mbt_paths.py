@@ -72,7 +72,7 @@ def get_init_flag_path() -> str:
 
 def ensure_data_dirs(root: str = None) -> str:
     root = root or get_project_root()
-    for name in ('logs', 'data', 'config', 'exports'):
+    for name in ('logs', 'data', 'config', 'exports', 'backups'):
         os.makedirs(os.path.join(root, name), exist_ok=True)
     _write_path_marker(root)
     return root

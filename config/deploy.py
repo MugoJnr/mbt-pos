@@ -140,3 +140,15 @@ def shop_settings_defaults() -> dict:
         'cash_rounding_apply_card': '0',
         'cash_rounding_apply_bank': '0',
     }
+
+
+def verify_ai_key() -> tuple[bool, str]:
+    """Soft build check — OpenRouter key in deploy.local enables AI zero-setup."""
+    tok = (load_deploy_config().get('openrouter_api_key') or '').strip()
+    if not tok:
+        return False, (
+            'openrouter_api_key missing — shop installs will show AI offline until '
+            'vendor seeds AppData vendor_ai.bin or sets MBT_OPENROUTER_API_KEY')
+    if len(tok) < 20:
+        return False, 'openrouter_api_key looks too short'
+    return True, 'OpenRouter vendor key present in deploy config'

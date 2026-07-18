@@ -26,12 +26,14 @@ import {
   GitBranch,
   Sparkles,
   MoreHorizontal,
+  Search,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "./theme";
 import { useAuth } from "@/lib/auth";
 import { GET } from "@/lib/api";
+import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
@@ -201,6 +203,108 @@ function OnlineBadge() {
   );
 }
 
+function GlobalSearch() {
+  const navigate = useNavigate();
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const searchQ = useQuery({
+    queryKey: ["global-search", q],
+    queryFn: () =>
+      GET<{ results: any[] }>("/search", { q }),
+    enabled: q.trim().length >= 2,
+  });
+  const results = searchQ.data?.results || [];
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) {
+        if (e.key === "Escape") {
+          setOpen(false);
+          (e.target as HTMLElement).blur();
+        }
+        return;
+      }
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        setOpen(true);
+        inputRef.current?.focus();
+      }
+      if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setOpen(true);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <div ref={wrapRef} className="relative hidden md:block w-[220px] lg:w-[280px]">
+      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text2 pointer-events-none" />
+      <input
+        ref={inputRef}
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder="Search…  /"
+        className="h-9 w-full rounded-lg bg-input border border-border pl-8 pr-3 text-sm text-text placeholder:text-muted-fg focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25"
+      />
+      {open && q.trim().length >= 2 ? (
+        <div className="absolute top-full left-0 right-0 mt-1.5 z-50 rounded-lg border border-border bg-card shadow-lg max-h-[360px] overflow-y-auto">
+          {searchQ.isFetching ? (
+            <div className="px-3 py-3 text-xs text-text2">Searching…</div>
+          ) : results.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-text2">No matches</div>
+          ) : (
+            <ul className="py-1">
+              {results.map((r: any) => (
+                <li key={`${r.type}-${r.id}`}>
+                  <button
+                    type="button"
+                    className="w-full text-left px-3 py-2.5 hover:bg-hover transition-ui"
+                    onClick={() => {
+                      setOpen(false);
+                      setQ("");
+                      navigate({ to: r.href || "/" });
+                    }}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-text truncate">{r.title}</span>
+                      <span className="text-[10px] uppercase tracking-wide text-muted-fg shrink-0">
+                        {r.type}
+                      </span>
+                    </div>
+                    <div className="text-xs text-text2 truncate">
+                      {r.subtitle}
+                      {r.meta != null && r.type !== "user" ? ` · ${KES(r.meta)}` : ""}
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AppShell({ title, children }: { title: string; children: ReactNode }) {
   const now = useClock();
   const location = useLocation();
@@ -238,11 +342,6 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) {
-        return;
-      }
-      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        navigate({ to: "/" });
         return;
       }
       if (e.key === "g" || e.key === "G") {
@@ -314,6 +413,7 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
               </div>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-2.5 text-sm">
+              <GlobalSearch />
               <OnlineBadge />
               <Link
                 to="/notifications"
@@ -350,7 +450,7 @@ export function AppShell({ title, children }: { title: string; children: ReactNo
 
           <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-1 px-3 sm:px-6 py-1.5 border-t border-border bg-panel/60 text-[11px] text-text2">
             <span>MBT POS · MugoByte Technologies</span>
-            <span className="font-mono truncate" title="Press / for dashboard · g then d">
+            <span className="font-mono truncate" title="Press / to search · g then d for dashboard">
               v{ver} · {build} · EXE:{exe}
             </span>
           </footer>

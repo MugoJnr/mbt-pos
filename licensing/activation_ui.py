@@ -363,9 +363,7 @@ class ActivationDialog(QDialog):
             ok, msg = self.engine.activate_with_key(key)
             self._set_result(msg, error=not ok)
             if ok:
-                QMessageBox.information(
-                    self, "Activated",
-                    f"{msg}\n\nThe application will now start.")
+                # Inline result label already shows success — no extra OK MessageBox
                 self.accept()
         finally:
             self._act_btn.setEnabled(True)

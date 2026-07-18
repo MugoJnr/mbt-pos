@@ -1,8 +1,8 @@
 {
-  "version": "2.3.91",
-  "build": "PROD-2026-07-18-v2.3.91",
-  "build_date": "2026-07-18",
-  "release_notes": "Desktop-first UI polish: MainWindow + all 14 sidebar tabs (nav chrome, PageChrome, 20/18 rhythm, touch POS). Web Command Center design system also updated. Presentation only.",
+  "version": "2.3.92",
+  "build": "PROD-2026-07-19-v2.3.92",
+  "build_date": "2026-07-19",
+  "release_notes": "Enterprise Command Center: real reports/exports, AI authorized context, search, live security/license. AI ready after install (vendor OpenRouter key). Cash excess opens PaymentVarianceDialog (Return Change default). Local auto DB backups. Fewer install OK prompts.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

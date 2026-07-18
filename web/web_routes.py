@@ -95,8 +95,49 @@ def _trs(rows):
     return [dict(r) for r in rows]
 
 
+def _user_tabs(user=None):
+    user = user or getattr(g, 'current_user', None) or {}
+    raw = user.get('tab_permissions')
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or '[]')
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        raw = []
+    role = (user.get('role') or 'cashier').lower()
+    if role in ('admin', 'superadmin', 'manager'):
+        return set(raw) | {
+            'dashboard', 'sales', 'inventory', 'reports', 'debt', 'users',
+            'settings', 'security', 'accounting', 'backup',
+        }
+    return set(raw or ['dashboard', 'sales'])
+
+
+def _user_can(module, user=None):
+    """Permission gate for AI / search surfaces (mirrors desktop tab access)."""
+    user = user or getattr(g, 'current_user', None) or {}
+    role = (user.get('role') or 'cashier').lower()
+    if role in ('admin', 'superadmin'):
+        return True
+    tabs = _user_tabs(user)
+    aliases = {
+        'sales': {'dashboard', 'sales', 'reports', 'pos'},
+        'inventory': {'inventory', 'sales'},
+        'debt': {'debt', 'customers'},
+        'reports': {'reports', 'dashboard'},
+        'users': {'users'},
+        'audit': {'security', 'users'},
+        'backup': {'backup', 'settings', 'diagnostics'},
+        'customers': {'debt', 'customers', 'sales'},
+        'payments': {'sales', 'reports', 'debt'},
+    }
+    need = aliases.get(module, {module})
+    return bool(tabs & need) or role == 'manager'
+
+
 class _WebPosApi:
-    """Minimal API so desktop AI context builder can read live POS data over Flask."""
+    """API shim so desktop AI context builder can read live POS data over Flask."""
 
     def get_settings(self):
         db = _get_db()
@@ -109,7 +150,8 @@ class _WebPosApi:
     def get_sales(self, start=None, end=None):
         db = _get_db()
         q = (
-            "SELECT id, receipt_number, cashier_id, cashier_name, total, status, created_at "
+            "SELECT id, receipt_number, cashier_id, cashier_name, total, discount, tax, "
+            "payment_method, status, created_at "
             "FROM sales WHERE COALESCE(status,'completed')='completed'"
         )
         params = []
@@ -119,6 +161,11 @@ class _WebPosApi:
         if end:
             q += " AND date(created_at)<=?"
             params.append(str(end)[:10])
+        user = getattr(g, 'current_user', None) or {}
+        role = (user.get('role') or '').lower()
+        if role == 'cashier' and user.get('id'):
+            q += " AND cashier_id=?"
+            params.append(user['id'])
         q += " ORDER BY created_at DESC LIMIT 500"
         rows = db.execute(q, params).fetchall()
         out = []
@@ -131,10 +178,13 @@ class _WebPosApi:
         return out
 
     def get_products(self):
+        if not _user_can('inventory'):
+            return []
         db = _get_db()
         try:
             rows = db.execute(
-                "SELECT id, name, sku, barcode, stock, min_stock, quantity, reorder_level, is_active "
+                "SELECT id, name, sku, barcode, category, price, cost_price, stock, min_stock, "
+                "quantity, reorder_level, unit, is_active "
                 "FROM products WHERE COALESCE(is_active,1)=1"
             ).fetchall()
         except Exception:
@@ -152,33 +202,162 @@ class _WebPosApi:
             out.append(d)
         return out
 
+    def get_customers(self, q=None):
+        if not _user_can('customers'):
+            return []
+        db = _get_db()
+        if q:
+            like = f'%{q}%'
+            rows = db.execute(
+                "SELECT id, name, phone, email FROM customers "
+                "WHERE name LIKE ? OR phone LIKE ? OR email LIKE ? LIMIT 50",
+                (like, like, like),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT id, name, phone, email FROM customers ORDER BY name LIMIT 100"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
-def _cc_today_snapshot():
+    def get_debt_summary(self):
+        if not _user_can('debt'):
+            return {}
+        db = _get_db()
+        row = _tr(db.execute(
+            "SELECT COUNT(*) as open_invoices, COALESCE(SUM(balance),0) as outstanding "
+            "FROM debt_invoices WHERE status NOT IN ('paid','cancelled')"
+        ).fetchone()) or {}
+        return row
+
+
+def _cfg_currency(db=None):
+    db = db or _get_db()
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key='currency_symbol'"
+        ).fetchone()
+        return (row[0] if row and row[0] else 'KES')
+    except Exception:
+        return 'KES'
+
+
+def _cc_today_snapshot(user=None):
     """Authoritative today stats for Command Center AI (never invent numbers)."""
     db = _get_db()
     today = str(date.today())
+    user = user or getattr(g, 'current_user', None) or {}
+    role = (user.get('role') or '').lower()
+    sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
+    params = [today]
+    if role == 'cashier' and user.get('id'):
+        sales_clause += " AND cashier_id=?"
+        params.append(user['id'])
+
     sales_n = int(db.execute(
-        "SELECT COUNT(*) FROM sales WHERE date(created_at)=? AND COALESCE(status,'completed')='completed'",
-        (today,),
+        f"SELECT COUNT(*) FROM sales WHERE {sales_clause}", params,
     ).fetchone()[0])
     rev = float((db.execute(
-        "SELECT COALESCE(SUM(total),0) FROM sales "
-        "WHERE date(created_at)=? AND COALESCE(status,'completed')='completed'",
-        (today,),
+        f"SELECT COALESCE(SUM(total),0) FROM sales WHERE {sales_clause}", params,
     ).fetchone() or [0])[0])
     try:
         low = int(db.execute(
             "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock"
-        ).fetchone()[0])
+        ).fetchone()[0]) if _user_can('inventory', user) else 0
     except Exception:
         low = 0
+
+    profit = _today_profit(db, today) if _user_can('reports', user) else None
+    inv_val = _inventory_value(db) if _user_can('inventory', user) else None
+    debt_out = None
+    overdue = 0
+    if _user_can('debt', user):
+        debt_out = float((db.execute(
+            "SELECT COALESCE(SUM(balance),0) FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled')"
+        ).fetchone() or [0])[0])
+        overdue = int(db.execute(
+            "SELECT COUNT(*) FROM debt_invoices WHERE status NOT IN ('paid','cancelled') "
+            "AND due_date IS NOT NULL AND due_date < date('now')"
+        ).fetchone()[0])
+
+    by_pay = []
+    if _user_can('payments', user) or _user_can('sales', user):
+        by_pay = _trs(db.execute(
+            f"SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total),0) as total "
+            f"FROM sales WHERE {sales_clause} GROUP BY payment_method ORDER BY total DESC",
+            params,
+        ).fetchall())
+
+    top = []
+    if _user_can('reports', user) or _user_can('sales', user):
+        top = _trs(db.execute("""
+            SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
+            FROM sale_items si JOIN sales s ON si.sale_id=s.id
+            WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+            GROUP BY si.product_name ORDER BY revenue DESC LIMIT 5
+        """, (today,)).fetchall())
+
+    low_names = []
+    if _user_can('inventory', user) and low:
+        low_names = [
+            r[0] for r in db.execute(
+                "SELECT name FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock "
+                "ORDER BY stock ASC LIMIT 8"
+            ).fetchall()
+        ]
+
     return {
         'today': today,
         'sales_count': sales_n,
         'revenue': rev,
         'low_stock': low,
-        'currency': 'KES',
+        'low_stock_names': low_names,
+        'currency': _cfg_currency(db),
+        'profit': profit,
+        'inventory_value': inv_val,
+        'outstanding_debt': debt_out,
+        'overdue_invoices': overdue,
+        'by_payment': by_pay,
+        'top_products': top,
+        'monthly_revenue': _month_revenue(db) if _user_can('reports', user) else None,
+        'scope': 'own_sales' if role == 'cashier' else 'shop',
     }
+
+
+def _authorized_context_text(snap=None, user=None):
+    """Permission-filtered ground truth block for AI prompts."""
+    snap = snap or _cc_today_snapshot(user)
+    cur = snap.get('currency') or 'KES'
+    lines = [
+        f"GROUND TRUTH for {snap['today']} (authoritative SQLite; do not invent numbers):",
+        f"- Scope: {snap.get('scope', 'shop')}",
+        f"- Sales count: {snap['sales_count']}",
+        f"- Revenue: {cur} {float(snap['revenue']):,.2f}",
+    ]
+    if snap.get('profit') is not None:
+        lines.append(f"- Est. profit: {cur} {float(snap['profit']):,.2f}")
+    if snap.get('monthly_revenue') is not None:
+        lines.append(f"- Month revenue: {cur} {float(snap['monthly_revenue']):,.2f}")
+    if snap.get('inventory_value') is not None:
+        lines.append(f"- Inventory value: {cur} {float(snap['inventory_value']):,.2f}")
+        lines.append(f"- Low-stock SKUs: {snap.get('low_stock') or 0}")
+        names = snap.get('low_stock_names') or []
+        if names:
+            lines.append(f"- Low-stock examples: {', '.join(names[:6])}")
+    if snap.get('outstanding_debt') is not None:
+        lines.append(f"- Outstanding debt: {cur} {float(snap['outstanding_debt']):,.2f}")
+        lines.append(f"- Overdue invoices: {snap.get('overdue_invoices') or 0}")
+    for p in (snap.get('by_payment') or [])[:6]:
+        lines.append(
+            f"- Pay {p.get('payment_method') or 'cash'}: "
+            f"{int(p.get('count') or 0)} tx · {cur} {float(p.get('total') or 0):,.2f}"
+        )
+    for t in (snap.get('top_products') or [])[:5]:
+        lines.append(
+            f"- Top {t.get('product_name')}: qty {float(t.get('qty_sold') or 0):g} · "
+            f"{cur} {float(t.get('revenue') or 0):,.2f}"
+        )
+    return '\n'.join(lines)
 
 
 @web.route('/api/customers', methods=['GET'])
@@ -1506,40 +1685,37 @@ def ai_insights():
     from backend.app import token_required
     @token_required
     def _inner():
-        db = _get_db()
-        today = str(date.today())
-        sales_n = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE date(created_at)=? AND status='completed'",
-            (today,),
-        ).fetchone()[0]
-        rev = float((db.execute(
-            "SELECT COALESCE(SUM(total),0) FROM sales "
-            "WHERE date(created_at)=? AND status='completed'",
-            (today,),
-        ).fetchone() or [0])[0])
-        low = db.execute(
-            "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
-        ).fetchone()[0]
-        overdue = db.execute(
-            "SELECT COUNT(*) FROM debt_invoices WHERE status NOT IN ('paid','cancelled') "
-            "AND due_date IS NOT NULL AND due_date < date('now')"
-        ).fetchone()[0]
+        snap = _cc_today_snapshot(g.current_user)
+        cur = snap.get('currency') or 'KES'
+        sales_n = snap['sales_count']
+        rev = float(snap['revenue'] or 0)
+        low = int(snap.get('low_stock') or 0)
+        overdue = int(snap.get('overdue_invoices') or 0)
         alerts, recs = [], []
-        if low:
+        if low and _user_can('inventory'):
             alerts.append(f'{low} product(s) at or below reorder level.')
+            names = snap.get('low_stock_names') or []
+            if names:
+                alerts.append('Examples: ' + ', '.join(names[:4]))
             recs.append('Open Inventory and review low-stock items.')
-        if overdue:
+        if overdue and _user_can('debt'):
             alerts.append(f'{overdue} overdue credit account(s).')
             recs.append('Review Debt Management for collections.')
         if sales_n == 0:
             alerts.append('No sales recorded yet today.')
             recs.append('Start a sale from Point of Sale when ready.')
+        if snap.get('outstanding_debt') and float(snap['outstanding_debt']) > 0 and _user_can('debt'):
+            recs.append(
+                f"Outstanding credit: {cur} {float(snap['outstanding_debt']):,.2f}."
+            )
         if not alerts:
             alerts.append('No urgent local alerts detected.')
         if not recs:
             recs.append('Keep recording sales; refresh for deeper insights.')
-        summary = f'Today: {sales_n} sales · revenue {rev:,.2f}.'
-        # Attempt real AI if available
+        summary = f"Today: {sales_n} sales · {cur} {rev:,.2f}"
+        if snap.get('profit') is not None:
+            summary += f" · est. profit {cur} {float(snap['profit']):,.2f}"
+        summary += '.'
         source = 'local'
         try:
             from desktop.utils.ai.connectivity import get_connectivity
@@ -1548,7 +1724,7 @@ def ai_insights():
             if conn.configured and conn.online:
                 svc = get_ai_service()
                 prompt = (
-                    f'POS context: {summary} Low stock: {low}. Overdue debts: {overdue}. '
+                    f'{_authorized_context_text(snap)}\n'
                     'Reply JSON only: {"summary":"...","alerts":["..."],"recommendations":["..."]}'
                 )
                 result = svc.chat(
@@ -1577,6 +1753,7 @@ def ai_insights():
             'recommendations': recs[:5],
             'source': source,
             'offline': source == 'local',
+            'snapshot': snap,
         })
     return _inner()
 
@@ -1590,34 +1767,63 @@ def ai_chat():
         message = (data.get('message') or '').strip()
         if not message:
             return jsonify({'error': 'message required'}), 400
-        snap = _cc_today_snapshot()
+        snap = _cc_today_snapshot(g.current_user)
+        cur = snap.get('currency') or 'KES'
         ml = message.lower()
-        factual_sales = any(k in ml for k in (
-            'sale', 'sales', 'revenue', 'today', 'transaction', 'turnover',
-        )) and not any(k in ml for k in ('why', 'how to', 'improve', 'forecast', 'trend'))
 
         def _sales_reply():
-            return (
+            parts = [
                 f"Today's sales: {snap['sales_count']} transaction(s), "
-                f"{snap['currency']} {snap['revenue']:,.2f} revenue."
-            )
+                f"{cur} {float(snap['revenue']):,.2f} revenue"
+            ]
+            if snap.get('profit') is not None:
+                parts.append(f"est. profit {cur} {float(snap['profit']):,.2f}")
+            if snap.get('scope') == 'own_sales':
+                parts.append('(your receipts only)')
+            return '. '.join(parts) + '.'
 
         # Exact shop numbers always come from SQLite — never from the model alone
-        if factual_sales:
-            return jsonify({
-                'reply': _sales_reply(),
-                'source': 'local',
-                'snapshot': snap,
-            })
+        factual = None
+        if any(k in ml for k in ('sale', 'sales', 'revenue', 'turnover', 'transaction')) and not any(
+            k in ml for k in ('why', 'how to', 'improve', 'forecast')
+        ):
+            factual = _sales_reply()
+        elif any(k in ml for k in ('profit', 'margin')) and snap.get('profit') is not None:
+            factual = f"Today's estimated profit: {cur} {float(snap['profit']):,.2f}."
+        elif any(k in ml for k in ('stock', 'inventory', 'reorder')) and _user_can('inventory'):
+            names = snap.get('low_stock_names') or []
+            factual = (
+                f"{snap.get('low_stock') or 0} product(s) at/below reorder. "
+                + (f"Examples: {', '.join(names)}. " if names else '')
+                + (
+                    f"Inventory value {cur} {float(snap['inventory_value']):,.2f}."
+                    if snap.get('inventory_value') is not None else ''
+                )
+            )
+        elif any(k in ml for k in ('debt', 'credit', 'overdue', 'receivable')) and _user_can('debt'):
+            factual = (
+                f"Outstanding debt: {cur} {float(snap.get('outstanding_debt') or 0):,.2f}. "
+                f"Overdue invoices: {snap.get('overdue_invoices') or 0}."
+            )
+        elif any(k in ml for k in ('payment', 'mpesa', 'cash', 'card')) and snap.get('by_payment'):
+            bits = [
+                f"{(p.get('payment_method') or 'cash')}: {cur} {float(p.get('total') or 0):,.2f}"
+                for p in snap['by_payment']
+            ]
+            factual = 'Today by payment — ' + '; '.join(bits) + '.'
+        elif any(k in ml for k in ('top product', 'best sell', 'bestseller', 'top sell')) and snap.get('top_products'):
+            bits = [
+                f"{t.get('product_name')} ({cur} {float(t.get('revenue') or 0):,.2f})"
+                for t in snap['top_products'][:5]
+            ]
+            factual = 'Top products today: ' + '; '.join(bits) + '.'
+        elif 'month' in ml and snap.get('monthly_revenue') is not None:
+            factual = f"This month's revenue: {cur} {float(snap['monthly_revenue']):,.2f}."
 
-        ground = (
-            f"GROUND TRUTH (authoritative POS DB for {snap['today']}; "
-            f"use these exact numbers — do not invent):\n"
-            f"- Today's sales count: {snap['sales_count']}\n"
-            f"- Today's revenue: {snap['currency']} {snap['revenue']:,.2f}\n"
-            f"- Low-stock products: {snap['low_stock']}\n\n"
-            f"Operator question: {message}"
-        )
+        if factual:
+            return jsonify({'reply': factual.strip(), 'source': 'local', 'snapshot': snap})
+
+        ground = f"{_authorized_context_text(snap)}\n\nOperator question: {message}"
         reply = None
         source = 'local'
         try:
@@ -1643,17 +1849,14 @@ def ai_chat():
         except Exception:
             reply = None
         if not reply:
-            low = snap['low_stock']
-            if 'stock' in ml or 'inventory' in ml:
-                reply = f'{low} product(s) are at or below reorder level. Open Inventory to review.'
-            elif 'backup' in ml:
+            if 'backup' in ml:
                 reply = 'Open Backup Center to view last backup status or trigger a manual backup.'
-            elif 'debt' in ml or 'credit' in ml:
-                reply = 'Open Debt Management for outstanding balances and collections.'
+            elif 'health' in ml or 'sync' in ml:
+                reply = 'Open System Health for scored checks (DB, storage, cloud, sync, AI).'
             else:
                 reply = (
                     f"{_sales_reply()} "
-                    f'{low} low-stock item(s). Ask about sales, stock, debt, or backup.'
+                    f"Ask about sales, profit, stock, debt, payments, or top products."
                 )
             source = 'local'
         return jsonify({
@@ -1661,4 +1864,589 @@ def ai_chat():
             'source': source,
             'snapshot': snap,
         })
+    return _inner()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# REPORTS DATA / EXPORT / SEARCH / LICENSE
+# ══════════════════════════════════════════════════════════════════════════
+
+def _report_filters_from_request():
+    start = (request.args.get('start') or str(date.today()))[:10]
+    end = (request.args.get('end') or start)[:10]
+    return {
+        'start': start,
+        'end': end,
+        'employee': (request.args.get('employee') or '').strip(),
+        'payment': (request.args.get('payment') or '').strip(),
+        'category': (request.args.get('category') or '').strip(),
+        'customer': (request.args.get('customer') or '').strip(),
+        'q': (request.args.get('q') or '').strip(),
+    }
+
+
+def _sales_where(filt, alias='s'):
+    """Build WHERE for completed sales with optional filters. Returns (sql, params)."""
+    p = alias + '.' if alias else ''
+    clauses = [
+        f"date({p}created_at) BETWEEN ? AND ?",
+        f"COALESCE({p}status,'completed')='completed'",
+    ]
+    params = [filt['start'], filt['end']]
+    if filt.get('employee'):
+        clauses.append(f"({p}cashier_name LIKE ? OR CAST({p}cashier_id AS TEXT)=?)")
+        params.extend([f"%{filt['employee']}%", filt['employee']])
+    if filt.get('payment'):
+        clauses.append(f"LOWER(COALESCE({p}payment_method,'')) = LOWER(?)")
+        params.append(filt['payment'])
+    if filt.get('q'):
+        clauses.append(f"({p}receipt_number LIKE ? OR {p}cashier_name LIKE ?)")
+        like = f"%{filt['q']}%"
+        params.extend([like, like])
+    return ' AND '.join(clauses), params
+
+
+def _query_report_bundle(db, filt):
+    where, params = _sales_where(filt, 's')
+    sales = _trs(db.execute(f"""
+        SELECT s.id, s.receipt_number, s.cashier_id, s.cashier_name, s.total, s.discount,
+               s.tax, s.payment_method, s.status, s.created_at, s.customer_id
+        FROM sales s WHERE {where}
+        ORDER BY s.created_at DESC LIMIT 5000
+    """, params).fetchall())
+
+    if filt.get('category'):
+        cat = filt['category']
+        ids = {
+            r[0] for r in db.execute("""
+                SELECT DISTINCT s.id FROM sales s
+                JOIN sale_items si ON si.sale_id=s.id
+                LEFT JOIN products p ON p.id=si.product_id
+                WHERE """ + where.replace('s.', 's.') + """
+                AND (LOWER(COALESCE(p.category,''))=LOWER(?)
+                     OR LOWER(COALESCE(si.product_name,'')) LIKE ?)
+            """, params + [cat, f'%{cat.lower()}%']).fetchall()
+        }
+        sales = [s for s in sales if s['id'] in ids]
+
+    if filt.get('customer'):
+        like = f"%{filt['customer']}%"
+        cust_ids = {
+            r[0] for r in db.execute(
+                "SELECT id FROM customers WHERE name LIKE ? OR phone LIKE ?",
+                (like, like),
+            ).fetchall()
+        }
+        sales = [s for s in sales if s.get('customer_id') in cust_ids]
+
+    summary = {
+        'total_transactions': len(sales),
+        'total_revenue': sum(float(s.get('total') or 0) for s in sales),
+        'total_discounts': sum(float(s.get('discount') or 0) for s in sales),
+        'total_tax': sum(float(s.get('tax') or 0) for s in sales),
+        'avg_transaction': 0.0,
+    }
+    if summary['total_transactions']:
+        summary['avg_transaction'] = summary['total_revenue'] / summary['total_transactions']
+
+    # Rebuild aggregates from filtered sales ids when category/customer filters applied
+    sale_ids = [s['id'] for s in sales]
+    top_products, by_payment, hourly, cashiers = [], [], [], []
+    if sale_ids:
+        placeholders = ','.join('?' * len(sale_ids))
+        top_products = _trs(db.execute(f"""
+            SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
+            FROM sale_items si WHERE si.sale_id IN ({placeholders})
+            GROUP BY si.product_name ORDER BY revenue DESC LIMIT 50
+        """, sale_ids).fetchall())
+        pay_map, hour_map, cash_map = {}, {}, {}
+        for s in sales:
+            pm = (s.get('payment_method') or 'cash').lower()
+            pay_map.setdefault(pm, {'payment_method': pm, 'count': 0, 'total': 0.0})
+            pay_map[pm]['count'] += 1
+            pay_map[pm]['total'] += float(s.get('total') or 0)
+            hr = str(s.get('created_at') or '')[11:13] or '00'
+            hour_map.setdefault(hr, {'hour': hr, 'count': 0, 'total': 0.0})
+            hour_map[hr]['count'] += 1
+            hour_map[hr]['total'] += float(s.get('total') or 0)
+            cn = s.get('cashier_name') or '—'
+            cash_map.setdefault(cn, {'cashier_name': cn, 'count': 0, 'total': 0.0})
+            cash_map[cn]['count'] += 1
+            cash_map[cn]['total'] += float(s.get('total') or 0)
+        by_payment = sorted(pay_map.values(), key=lambda x: -x['total'])
+        hourly = [hour_map[k] for k in sorted(hour_map.keys())]
+        cashiers = sorted(cash_map.values(), key=lambda x: -x['total'])
+    else:
+        where2, params2 = _sales_where(filt, '')
+        top_products = _trs(db.execute(f"""
+            SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
+            FROM sale_items si JOIN sales ON si.sale_id=sales.id
+            WHERE {where2.replace('created_at', 'sales.created_at').replace('status', 'sales.status')}
+            GROUP BY si.product_name ORDER BY revenue DESC LIMIT 50
+        """, params2).fetchall()) if False else []
+
+    employees = [r[0] for r in db.execute(
+        "SELECT DISTINCT cashier_name FROM sales WHERE cashier_name IS NOT NULL "
+        "AND cashier_name!='' ORDER BY cashier_name"
+    ).fetchall()]
+    payments = [r[0] for r in db.execute(
+        "SELECT DISTINCT payment_method FROM sales WHERE payment_method IS NOT NULL "
+        "ORDER BY payment_method"
+    ).fetchall()]
+    categories = []
+    try:
+        categories = [r[0] for r in db.execute(
+            "SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category!='' "
+            "ORDER BY category"
+        ).fetchall()]
+    except Exception:
+        pass
+
+    shop = 'MBT POS'
+    try:
+        row = db.execute("SELECT value FROM system_settings WHERE key='shop_name'").fetchone()
+        if row and row[0]:
+            shop = row[0]
+    except Exception:
+        pass
+
+    return {
+        'filters': filt,
+        'shop_name': shop,
+        'currency': _cfg_currency(db),
+        'summary': summary,
+        'sales': sales,
+        'top_products': top_products,
+        'by_payment': by_payment,
+        'hourly': hourly,
+        'cashiers': cashiers,
+        'meta': {
+            'employees': employees,
+            'payment_methods': payments,
+            'categories': categories,
+        },
+    }
+
+
+def _build_simple_pdf(title, shop, period, lines, currency='KES'):
+    """Minimal branded PDF (no extra deps) — valid PDF 1.4 text document."""
+    import io
+
+    def esc(s):
+        return str(s).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+
+    content_lines = [
+        'BT',
+        '/F1 16 Tf',
+        '50 780 Td',
+        f'({esc(shop)}) Tj',
+        '0 -24 Td',
+        '/F1 12 Tf',
+        f'({esc(title)}) Tj',
+        '0 -16 Td',
+        f'({esc(period)}) Tj',
+        '0 -28 Td',
+        '/F1 10 Tf',
+    ]
+    y_steps = 0
+    for line in lines[:70]:
+        content_lines.append(f'({esc(line[:110])}) Tj')
+        content_lines.append('0 -13 Td')
+        y_steps += 1
+    content_lines.append('ET')
+    stream = '\n'.join(content_lines).encode('latin-1', 'replace')
+
+    objs = []
+    objs.append(b'1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n')
+    objs.append(b'2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n')
+    objs.append(
+        b'3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
+        b'/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj\n'
+    )
+    objs.append(
+        f'4 0 obj<< /Length {len(stream)} >>stream\n'.encode()
+        + stream + b'\nendstream\nendobj\n'
+    )
+    objs.append(b'5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n')
+
+    out = io.BytesIO()
+    out.write(b'%PDF-1.4\n')
+    offsets = [0]
+    for obj in objs:
+        offsets.append(out.tell())
+        out.write(obj)
+    xref = out.tell()
+    out.write(f'xref\n0 {len(offsets)}\n'.encode())
+    out.write(b'0000000000 65535 f \n')
+    for off in offsets[1:]:
+        out.write(f'{off:010d} 00000 n \n'.encode())
+    out.write(
+        f'trailer<< /Size {len(offsets)} /Root 1 0 R >>\n'
+        f'startxref\n{xref}\n%%EOF\n'.encode()
+    )
+    return out.getvalue()
+
+
+@web.route('/api/reports/data', methods=['GET'])
+def reports_data():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('reports') and not _user_can('sales'):
+            return jsonify({'error': 'Forbidden'}), 403
+        db = _get_db()
+        filt = _report_filters_from_request()
+        bundle = _query_report_bundle(db, filt)
+        # Cap sales in JSON for UI; full set available via export
+        ui_sales = bundle['sales'][:500]
+        return jsonify({
+            **{k: v for k, v in bundle.items() if k != 'sales'},
+            'sales': ui_sales,
+            'sales_truncated': len(bundle['sales']) > 500,
+            'sales_total': len(bundle['sales']),
+        })
+    return _inner()
+
+
+@web.route('/api/reports/export', methods=['GET'])
+def reports_export():
+    from backend.app import token_required
+    from flask import Response, send_file
+    import io
+    import tempfile
+
+    @token_required
+    def _inner():
+        fmt = (request.args.get('format') or 'xlsx').lower().strip()
+        if fmt not in ('xlsx', 'csv', 'pdf', 'html'):
+            return jsonify({'error': 'format must be xlsx, csv, pdf, or html'}), 400
+        db = _get_db()
+        who = (g.current_user or {}).get('full_name') or (g.current_user or {}).get('username') or 'Web'
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if (request.args.get('inventory') or '') in ('1', 'true', 'yes'):
+            if not _user_can('inventory'):
+                return jsonify({'error': 'Forbidden'}), 403
+            products = _WebPosApi().get_products()
+            shop = 'MBT POS'
+            try:
+                row = db.execute(
+                    "SELECT value FROM system_settings WHERE key='shop_name'"
+                ).fetchone()
+                if row and row[0]:
+                    shop = row[0]
+            except Exception:
+                pass
+            cur = _cfg_currency(db)
+            if fmt == 'csv':
+                buf = io.StringIO()
+                import csv as _csv
+                w = _csv.writer(buf)
+                w.writerow(['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Min', 'Unit'])
+                for p in products:
+                    w.writerow([
+                        p.get('name'), p.get('sku'), p.get('category'),
+                        p.get('price'), p.get('cost_price'), p.get('stock'),
+                        p.get('min_stock'), p.get('unit') or 'pcs',
+                    ])
+                data = ('\ufeff' + buf.getvalue()).encode('utf-8')
+                return Response(
+                    data, mimetype='text/csv; charset=utf-8',
+                    headers={
+                        'Content-Disposition':
+                            f'attachment; filename="MBT_Inventory_{stamp}.csv"'
+                    },
+                )
+            try:
+                from backend.report_export_service import export_inventory_snapshot
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                tmp.close()
+                path = export_inventory_snapshot(
+                    products, shop_name=shop, currency=cur,
+                    generated_by=who, output_path=tmp.name,
+                )
+            except Exception:
+                from backend.report_export_service import export_tabular_xlsx
+                rows = [
+                    [
+                        p.get('name'), p.get('sku'), p.get('category'),
+                        float(p.get('price') or 0), float(p.get('cost_price') or 0),
+                        float(p.get('stock') or 0), float(p.get('min_stock') or 0),
+                        p.get('unit') or 'pcs',
+                    ]
+                    for p in products
+                ]
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                tmp.close()
+                path = export_tabular_xlsx(
+                    title='Inventory',
+                    headers=['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Min', 'Unit'],
+                    rows=rows,
+                    kinds=['text', 'text', 'text', 'currency', 'currency', 'qty', 'qty', 'text'],
+                    shop_name=shop, generated_by=who, currency=cur, output_path=tmp.name,
+                )
+            return send_file(
+                path, as_attachment=True,
+                download_name=f'MBT_Inventory_{stamp}.xlsx',
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+
+        if not _user_can('reports') and not _user_can('sales'):
+            return jsonify({'error': 'Forbidden'}), 403
+        filt = _report_filters_from_request()
+        bundle = _query_report_bundle(db, filt)
+        shop = bundle['shop_name']
+        cur = bundle['currency']
+        period = f"{filt['start']} to {filt['end']}"
+        filt_desc = ', '.join(
+            f'{k}={v}' for k, v in filt.items()
+            if v and k not in ('start', 'end')
+        ) or 'All sales'
+        summary = bundle['summary']
+        sales = bundle['sales']
+
+        if fmt == 'html':
+            rows_html = ''.join(
+                f"<tr><td>{s.get('receipt_number')}</td><td>{(s.get('created_at') or '')[:16]}</td>"
+                f"<td>{s.get('cashier_name') or ''}</td><td>{s.get('payment_method') or ''}</td>"
+                f"<td style='text-align:right'>{cur} {float(s.get('total') or 0):,.2f}</td></tr>"
+                for s in sales[:2000]
+            )
+            html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Sales Report — {shop}</title>
+<style>
+body{{font-family:Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px}}
+h1{{color:#f8fafc}} table{{width:100%;border-collapse:collapse;margin-top:16px}}
+th,td{{padding:8px 10px;border-bottom:1px solid #334155;font-size:13px}}
+th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
+.kpi{{display:inline-block;margin:8px 16px 8px 0}} .kpi b{{display:block;font-size:20px;color:#fbbf24}}
+@media print{{body{{background:#fff;color:#111}} th,td{{border-color:#ccc}}}}
+</style></head><body>
+<h1>{shop}</h1>
+<div>Sales Report · {period} · {filt_desc}</div>
+<div class="kpi"><span>Revenue</span><b>{cur} {summary['total_revenue']:,.2f}</b></div>
+<div class="kpi"><span>Transactions</span><b>{summary['total_transactions']}</b></div>
+<div class="kpi"><span>Avg</span><b>{cur} {summary['avg_transaction']:,.2f}</b></div>
+<table><thead><tr><th>Receipt</th><th>When</th><th>Cashier</th><th>Pay</th><th>Total</th></tr></thead>
+<tbody>{rows_html or '<tr><td colspan=5>No sales</td></tr>'}</tbody></table>
+<p style="margin-top:24px;font-size:12px;opacity:.6">MBT POS · Generated {datetime.now().isoformat(timespec='seconds')} · {who}</p>
+<script>window.onload=function(){{if(location.search.indexOf('print=1')>=0)window.print()}}</script>
+</body></html>"""
+            return Response(
+                html, mimetype='text/html',
+                headers={'Content-Disposition': f'inline; filename="MBT_Report_{stamp}.html"'},
+            )
+
+        if fmt == 'csv':
+            buf = io.StringIO()
+            import csv as _csv
+            w = _csv.writer(buf)
+            w.writerow(['MBT POS Sales Report', shop, period, filt_desc])
+            w.writerow([])
+            w.writerow(['Receipt', 'Date', 'Cashier', 'Payment', 'Discount', 'Tax', 'Total', 'Status'])
+            for s in sales:
+                w.writerow([
+                    s.get('receipt_number'), s.get('created_at'), s.get('cashier_name'),
+                    s.get('payment_method'), s.get('discount'), s.get('tax'),
+                    s.get('total'), s.get('status'),
+                ])
+            w.writerow([])
+            w.writerow(['TOTAL', '', '', '', summary['total_discounts'], summary['total_tax'],
+                        summary['total_revenue'], f"{summary['total_transactions']} txns"])
+            data = ('\ufeff' + buf.getvalue()).encode('utf-8')
+            return Response(
+                data, mimetype='text/csv; charset=utf-8',
+                headers={'Content-Disposition': f'attachment; filename="MBT_Sales_{stamp}.csv"'},
+            )
+
+        if fmt == 'pdf':
+            lines = [
+                f"Revenue: {cur} {summary['total_revenue']:,.2f}",
+                f"Transactions: {summary['total_transactions']}",
+                f"Average: {cur} {summary['avg_transaction']:,.2f}",
+                f"Discounts: {cur} {summary['total_discounts']:,.2f}",
+                f"Filters: {filt_desc}",
+                '',
+                'Top products:',
+            ]
+            for t in (bundle.get('top_products') or [])[:15]:
+                lines.append(
+                    f"  {t.get('product_name')}: qty {float(t.get('qty_sold') or 0):g} · "
+                    f"{cur} {float(t.get('revenue') or 0):,.2f}"
+                )
+            lines.append('')
+            lines.append('Recent receipts:')
+            for s in sales[:40]:
+                lines.append(
+                    f"  {s.get('receipt_number')}  {(s.get('created_at') or '')[:16]}  "
+                    f"{s.get('cashier_name') or ''}  {cur} {float(s.get('total') or 0):,.2f}"
+                )
+            lines.append('')
+            lines.append(f'Generated by {who} · MBT POS')
+            pdf = _build_simple_pdf('Sales Report', shop, period, lines, cur)
+            return Response(
+                pdf, mimetype='application/pdf',
+                headers={'Content-Disposition': f'attachment; filename="MBT_Sales_{stamp}.pdf"'},
+            )
+
+        # xlsx — prefer shared export engine when possible
+        try:
+            from backend.export_engine import export_sales_report
+            items_by_sale = {}
+            if sales:
+                ids = [s['id'] for s in sales]
+                # chunk IN queries
+                for i in range(0, len(ids), 400):
+                    chunk = ids[i:i + 400]
+                    ph = ','.join('?' * len(chunk))
+                    for row in db.execute(
+                        f"SELECT * FROM sale_items WHERE sale_id IN ({ph})", chunk
+                    ).fetchall():
+                        d = dict(row)
+                        items_by_sale.setdefault(d['sale_id'], []).append(d)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+            tmp.close()
+            path = export_sales_report(
+                sales, items_by_sale, shop_name=shop,
+                start_date=filt['start'], end_date=filt['end'],
+                output_path=tmp.name, currency=cur,
+                products_data=_WebPosApi().get_products() if _user_can('inventory') else None,
+                generated_by=who, filters=filt_desc,
+            )
+            return send_file(
+                path, as_attachment=True,
+                download_name=f'MBT_Sales_{stamp}.xlsx',
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+        except Exception:
+            from backend.report_export_service import export_tabular_xlsx
+            rows = [
+                [
+                    s.get('receipt_number'), s.get('created_at'), s.get('cashier_name'),
+                    s.get('payment_method'), float(s.get('discount') or 0),
+                    float(s.get('tax') or 0), float(s.get('total') or 0),
+                    s.get('status'),
+                ]
+                for s in sales
+            ]
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+            tmp.close()
+            path = export_tabular_xlsx(
+                title='Sales Report',
+                headers=['Receipt', 'Date', 'Cashier', 'Payment', 'Discount', 'Tax', 'Total', 'Status'],
+                rows=rows,
+                kinds=['text', 'datetime', 'text', 'text', 'currency', 'currency', 'currency', 'text'],
+                shop_name=shop, period=period, generated_by=who, filters=filt_desc,
+                currency=cur, output_path=tmp.name,
+                total_cols={5: (summary['total_discounts'], 'currency'),
+                            6: (summary['total_tax'], 'currency'),
+                            7: (summary['total_revenue'], 'currency')},
+            )
+            return send_file(
+                path, as_attachment=True,
+                download_name=f'MBT_Sales_{stamp}.xlsx',
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+    return _inner()
+
+
+@web.route('/api/search', methods=['GET'])
+def global_search():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        q = (request.args.get('q') or '').strip()
+        if len(q) < 2:
+            return jsonify({'results': [], 'q': q})
+        like = f'%{q}%'
+        db = _get_db()
+        results = []
+        if _user_can('sales') or _user_can('reports'):
+            for r in db.execute("""
+                SELECT id, receipt_number, total, cashier_name, created_at
+                FROM sales WHERE receipt_number LIKE ? OR cashier_name LIKE ?
+                ORDER BY created_at DESC LIMIT 8
+            """, (like, like)).fetchall():
+                results.append({
+                    'type': 'sale', 'id': r['id'],
+                    'title': r['receipt_number'] or f"Sale #{r['id']}",
+                    'subtitle': f"{r['cashier_name'] or ''} · {r['created_at']}",
+                    'meta': float(r['total'] or 0),
+                    'href': '/reports',
+                })
+        if _user_can('inventory'):
+            for r in db.execute("""
+                SELECT id, name, sku, stock, price FROM products
+                WHERE COALESCE(is_active,1)=1 AND (name LIKE ? OR sku LIKE ? OR barcode LIKE ?)
+                ORDER BY name LIMIT 8
+            """, (like, like, like)).fetchall():
+                results.append({
+                    'type': 'product', 'id': r['id'],
+                    'title': r['name'],
+                    'subtitle': f"SKU {r['sku'] or '—'} · stock {r['stock']}",
+                    'meta': float(r['price'] or 0),
+                    'href': '/inventory',
+                })
+        if _user_can('customers') or _user_can('debt'):
+            for r in db.execute("""
+                SELECT id, name, phone FROM customers
+                WHERE name LIKE ? OR phone LIKE ? OR email LIKE ?
+                ORDER BY name LIMIT 8
+            """, (like, like, like)).fetchall():
+                results.append({
+                    'type': 'customer', 'id': r['id'],
+                    'title': r['name'],
+                    'subtitle': r['phone'] or '',
+                    'href': '/debt',
+                })
+        if _user_can('users'):
+            for r in db.execute("""
+                SELECT id, username, full_name, role FROM users
+                WHERE username LIKE ? OR full_name LIKE ?
+                LIMIT 5
+            """, (like, like)).fetchall():
+                results.append({
+                    'type': 'user', 'id': r['id'],
+                    'title': r['full_name'] or r['username'],
+                    'subtitle': f"{r['role']} · @{r['username']}",
+                    'href': '/users',
+                })
+        return jsonify({'results': results, 'q': q})
+    return _inner()
+
+
+@web.route('/api/license/status', methods=['GET'])
+def license_status():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        role = (g.current_user or {}).get('role', '')
+        if role not in ('admin', 'superadmin', 'manager'):
+            return jsonify({'error': 'Forbidden'}), 403
+        info = {
+            'state': 'unknown',
+            'is_valid': False,
+            'plan': '—',
+            'plan_name': 'Unavailable',
+            'days_remaining': None,
+            'expiry_date': None,
+            'device_id': None,
+            'source': 'fallback',
+        }
+        try:
+            from licensing.license_engine import LicenseEngine
+            engine = LicenseEngine(_BASE_DIR)
+            engine.revalidate()
+            info = engine.get_status_dict()
+            info['source'] = 'license_engine'
+        except Exception as e:
+            info['error'] = str(e)
+            # Soft fallback from version / settings
+            ver = _app_version_info()
+            info.update({
+                'plan_name': 'MBT POS',
+                'state': 'unknown',
+                'version': ver.get('version'),
+            })
+        return jsonify(info)
     return _inner()

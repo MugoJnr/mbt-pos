@@ -17,7 +17,7 @@ function AiPage() {
   const [messages, setMessages] = useState<Msg[]>([
     {
       role: "assistant",
-      text: "Ask about today's sales, stock, debt, or backups. Uses live AI when configured; otherwise local heuristics.",
+      text: "Ask about today's sales, profit, stock, debt, payments, or top products. Answers use live POS data you are allowed to see.",
       source: "local",
     },
   ]);

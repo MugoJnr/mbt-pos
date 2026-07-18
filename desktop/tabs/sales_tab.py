@@ -1574,7 +1574,12 @@ class SalesTab(QWidget):
         else:
             excess = round(paid_now - due, 2) if not is_debt else 0.0
 
-        if self._is_till_method(pay_method) and variance_enabled and excess > 0.009:
+        _cash_like_excess = (
+            pay_method == 'Cash'
+            or (hasattr(self, '_is_split_method') and self._is_split_method(pay_method))
+        )
+        if variance_enabled and excess > 0.009 and (
+                self._is_till_method(pay_method) or _cash_like_excess):
             from desktop.dialogs.payment_variance_dialog import PaymentVarianceDialog
             cust_name = ''
             if cust_id and hasattr(self, '_customer'):
@@ -1617,7 +1622,7 @@ class SalesTab(QWidget):
                 'advance': 'Advance Payment',
                 'miscellaneous': 'Miscellaneous',
             }.get(variance_payload['handling'], variance_payload['handling'])
-            if QMessageBox.question(
+            if self._is_till_method(pay_method) and QMessageBox.question(
                 self, 'Confirm M-Pesa',
                 f'Confirm customer paid {self._currency} {paid_now:,.2f} via M-Pesa?\n\n'
                 f'Sale: {self._currency} {self._total:,.2f}\n'
@@ -1633,7 +1638,7 @@ class SalesTab(QWidget):
                 return
             # Variance disabled: treat excess as change returned (do not inflate sales)
             change_amount = max(0.0, excess)
-        elif not is_debt:
+        elif not is_debt and not variance_payload:
             if self._is_split_method(pay_method) and elec_now > 0.009:
                 change_amount = max(0.0, round(cash_paid_now - self._cash_due_amount(), 2))
             else:

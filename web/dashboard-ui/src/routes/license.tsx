@@ -1,87 +1,131 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { KeyRound, Cpu, CalendarClock, ShieldCheck } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, Input, PageHeader, SectionTitle } from "@/components/ui-kit";
+import { Badge, Card, PageHeader, SectionTitle, Skeleton } from "@/components/ui-kit";
+import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/license")({
   component: License,
 });
 
+function toneForState(state?: string): "ok" | "warn" | "err" | "muted" | "gold" {
+  const s = (state || "").toLowerCase();
+  if (s === "active" || s === "expiring") return "ok";
+  if (s === "warning" || s === "critical") return "warn";
+  if (s === "expired" || s === "tampered" || s === "inactive") return "err";
+  if (s === "unactivated") return "muted";
+  return "gold";
+}
+
 function License() {
+  const licQ = useQuery({
+    queryKey: ["license-status"],
+    queryFn: () => GET<any>("/license/status"),
+  });
+  const versionQ = useQuery({
+    queryKey: ["app-version"],
+    queryFn: () => GET<any>("/version"),
+  });
+
+  const lic = licQ.data || {};
+  const err = lic.error && !lic.plan_name ? lic.error : null;
+  const forbidden = lic.error === "Forbidden";
+  const state = String(lic.state || "unknown");
+  const planName = lic.plan_name || lic.plan || "—";
+  const expiry = lic.expiry_date || "—";
+  const device = lic.device_id || "—";
+  const days = lic.days_remaining;
+  const ver = versionQ.data?.version || "—";
+
   return (
     <AppShell title="License">
       <PageHeader
         eyebrow="Admin"
         title="License & Subscription"
-        description="Plan status and activation for this installation."
+        description="Live status from this installation’s license engine."
       />
-      <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
-        <Card className="p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="h-11 w-11 rounded-md grid place-items-center bg-gold/15 text-gold">
-              <ShieldCheck className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-[10px] tracking-[0.18em] font-semibold text-text2 uppercase">
-                Current Plan
+      {forbidden ? (
+        <Card className="p-6 text-sm text-text2">
+          Manager or admin access is required to view license details.
+        </Card>
+      ) : licQ.isLoading ? (
+        <Card className="p-6 space-y-3">
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="h-20 w-full" />
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-4">
+          <Card className="p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="h-11 w-11 rounded-md grid place-items-center bg-gold/15 text-gold">
+                <ShieldCheck className="h-5 w-5" />
               </div>
-              <div className="text-xl font-bold text-text">MBT POS · Business</div>
-            </div>
-            <div className="ml-auto">
-              <Badge tone="ok">ACTIVE</Badge>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-            <Info icon={<CalendarClock className="h-4 w-4" />} label="Expiry" value="14 Aug 2027" />
-            <Info icon={<Cpu className="h-4 w-4" />} label="Hardware ID" value="HW-8F3A-2C41-90BD" mono />
-            <Info icon={<KeyRound className="h-4 w-4" />} label="License Key" value="MBT-BSN-••••-4A9K" mono />
-          </div>
-
-          <SectionTitle>Activate a new key</SectionTitle>
-          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 mb-3">
-            <Input placeholder="XXXX-XXXX-XXXX-XXXX" />
-            <Button variant="primary">Activate</Button>
-          </div>
-          <p className="text-xs text-text2">
-            You can also request activation via Telegram. Send your Hardware ID to
-            <span className="text-gold font-semibold"> @MugoByteSupport</span>.
-          </p>
-        </Card>
-
-        <Card className="p-6">
-          <SectionTitle>Renew / Upgrade</SectionTitle>
-          <ul className="space-y-2 mb-4 text-sm">
-            {[
-              ["Starter", "KES 6,000/yr"],
-              ["Business", "KES 18,000/yr", true],
-              ["Enterprise", "KES 42,000/yr"],
-            ].map(([n, p, current]) => (
-              <li
-                key={n as string}
-                className={`flex items-center justify-between rounded-md border p-3 ${
-                  current ? "border-gold bg-gold/10" : "border-border bg-card2"
-                }`}
-              >
-                <div>
-                  <div className="text-sm font-semibold text-text">{n}</div>
-                  <div className="text-xs text-text2">{p}</div>
+              <div>
+                <div className="text-[10px] tracking-[0.18em] font-semibold text-text2 uppercase">
+                  Current Plan
                 </div>
-                {current ? (
-                  <Badge tone="gold">Current</Badge>
-                ) : (
-                  <Button size="sm" variant="secondary">
-                    Select
-                  </Button>
-                )}
+                <div className="text-xl font-bold text-text">{planName}</div>
+              </div>
+              <div className="ml-auto">
+                <Badge tone={toneForState(state)}>{state.toUpperCase()}</Badge>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+              <Info
+                icon={<CalendarClock className="h-4 w-4" />}
+                label="Expiry"
+                value={
+                  expiry +
+                  (days != null && days !== "" ? ` · ${days}d left` : "")
+                }
+              />
+              <Info
+                icon={<Cpu className="h-4 w-4" />}
+                label="Hardware / Device"
+                value={String(device)}
+                mono
+              />
+              <Info
+                icon={<KeyRound className="h-4 w-4" />}
+                label="App version"
+                value={`v${ver}`}
+                mono
+              />
+            </div>
+
+            <SectionTitle>Activation</SectionTitle>
+            <p className="text-sm text-text2 leading-relaxed">
+              Activate or renew licenses from the desktop License tab or via Telegram support
+              (@MugoByteSupport). This page shows the verified status for the current machine
+              {lic.source ? ` (source: ${lic.source})` : ""}.
+            </p>
+            {err || lic.error ? (
+              <p className="text-xs text-warn mt-3">
+                Note: {String(err || lic.error)}
+              </p>
+            ) : null}
+          </Card>
+
+          <Card className="p-6">
+            <SectionTitle>Validity</SectionTitle>
+            <ul className="space-y-2 text-sm text-text2">
+              <li>
+                Valid for use:{" "}
+                <strong className="text-text">{lic.is_valid ? "Yes" : "No"}</strong>
               </li>
-            ))}
-          </ul>
-          <Button variant="primary" className="w-full">
-            Renew License
-          </Button>
-        </Card>
-      </div>
+              <li>
+                Activation date:{" "}
+                <strong className="text-text">{lic.activation_date || "—"}</strong>
+              </li>
+              <li>
+                Plan code: <strong className="text-text font-mono">{lic.plan || "—"}</strong>
+              </li>
+            </ul>
+          </Card>
+        </div>
+      )}
     </AppShell>
   );
 }
