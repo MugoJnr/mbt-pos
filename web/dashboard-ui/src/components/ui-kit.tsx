@@ -148,18 +148,20 @@ export function KpiCard({
   return (
     <div className="relative rounded-xl border border-border bg-card shadow-card overflow-hidden">
       <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${bar}`} />
-      <div className="p-4 flex items-start gap-3">
+      <div className="p-3.5 sm:p-4 flex items-start gap-3">
         <div className={`h-10 w-10 rounded-full grid place-items-center shrink-0 ${iconBg}`}>
           {icon}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-[10px] tracking-[0.18em] font-semibold text-text2 uppercase truncate">
             {label}
           </div>
-          <div className={`text-2xl font-extrabold leading-tight mt-0.5 ${valueColor}`}>
+          <div
+            className={`text-xl sm:text-2xl font-extrabold leading-tight mt-0.5 tabular-nums truncate ${valueColor}`}
+          >
             {value}
           </div>
-          <div className="text-xs text-text2">{sub}</div>
+          {sub ? <div className="text-xs text-text2 mt-0.5 truncate">{sub}</div> : null}
         </div>
       </div>
     </div>

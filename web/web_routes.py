@@ -647,3 +647,911 @@ new Chart(document.getElementById('payChart'), {{
             }
         )
     return _inner()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# COMMAND CENTER — Approvals, Notifications, Health, Backup, Live, AI
+# ══════════════════════════════════════════════════════════════════════════
+
+_APPROVAL_TYPES = (
+    'void', 'refund', 'large_discount', 'price_override',
+    'stock_adjust', 'expense', 'credit',
+)
+
+
+def _ensure_command_center_schema(db):
+    """Create durable tables used by the web command center (idempotent)."""
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS cc_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        details TEXT DEFAULT '',
+        amount REAL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by TEXT DEFAULT '',
+        requested_by_id INTEGER,
+        reviewed_by TEXT DEFAULT '',
+        reviewed_by_id INTEGER,
+        review_note TEXT DEFAULT '',
+        meta_json TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_cc_approvals_status ON cc_approvals(status);
+
+    CREATE TABLE IF NOT EXISTS cc_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT DEFAULT '',
+        severity TEXT DEFAULT 'info',
+        is_read INTEGER DEFAULT 0,
+        link TEXT DEFAULT '',
+        meta_json TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_cc_notifications_created ON cc_notifications(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS cc_backup_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        status TEXT NOT NULL,
+        reason TEXT DEFAULT 'manual',
+        path TEXT DEFAULT '',
+        size_bytes INTEGER DEFAULT 0,
+        detail TEXT DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS cc_branches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        is_current INTEGER DEFAULT 0,
+        address TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
+        meta_json TEXT DEFAULT '{}',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    # Seed default branch if empty
+    n = db.execute("SELECT COUNT(*) FROM cc_branches").fetchone()[0]
+    if not n:
+        shop = 'Main Branch'
+        try:
+            row = db.execute(
+                "SELECT value FROM system_settings WHERE key='shop_name'"
+            ).fetchone()
+            if row and row[0]:
+                shop = str(row[0])
+        except Exception:
+            pass
+        db.execute(
+            "INSERT INTO cc_branches (code, name, is_active, is_current) VALUES (?,?,1,1)",
+            ('MAIN', shop),
+        )
+    db.commit()
+
+
+def _app_version_info():
+    """Read version.json next to package root; fall back to known release."""
+    ver_path = os.path.join(_BASE_DIR, 'version.json')
+    info = {
+        'version': '2.3.87',
+        'build': 'PROD-2026-07-18-v2.3.87',
+        'build_date': '2026-07-18',
+        'exe': 'MBT_POS.exe',
+    }
+    try:
+        if os.path.isfile(ver_path):
+            with open(ver_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            info['version'] = data.get('version') or info['version']
+            info['build'] = data.get('build') or info['build']
+            info['build_date'] = data.get('build_date') or info['build_date']
+    except Exception:
+        pass
+    return info
+
+
+def _push_notification(db, ntype, title, body='', severity='info', link=''):
+    db.execute(
+        "INSERT INTO cc_notifications (type, title, body, severity, link) VALUES (?,?,?,?,?)",
+        (ntype, title, body, severity, link),
+    )
+
+
+def _today_profit(db, day=None):
+    day = day or str(date.today())
+    row = db.execute("""
+        SELECT COALESCE(SUM(
+            si.total - (si.quantity * COALESCE(p.cost_price, 0))
+        ), 0) AS profit
+        FROM sale_items si
+        JOIN sales s ON si.sale_id = s.id
+        LEFT JOIN products p ON si.product_id = p.id
+        WHERE date(s.created_at)=? AND s.status='completed'
+    """, (day,)).fetchone()
+    return float(row[0] if row else 0)
+
+
+def _inventory_value(db):
+    row = db.execute("""
+        SELECT COALESCE(SUM(stock * COALESCE(NULLIF(cost_price,0), price, 0)), 0)
+        FROM products WHERE is_active=1
+    """).fetchone()
+    return float(row[0] if row else 0)
+
+
+def _month_revenue(db):
+    today = date.today()
+    start = today.replace(day=1).isoformat()
+    end = today.isoformat()
+    row = db.execute("""
+        SELECT COALESCE(SUM(total),0) FROM sales
+        WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+    """, (start, end)).fetchone()
+    return float(row[0] if row else 0)
+
+
+def _month_expenses_proxy(db):
+    """Best-effort expenses from accounting tables if present; else 0."""
+    try:
+        tables = {
+            r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if 'acc_journal_lines' in tables and 'acc_accounts' in tables:
+            today = date.today()
+            start = today.replace(day=1).isoformat()
+            row = db.execute("""
+                SELECT COALESCE(SUM(jl.debit), 0)
+                FROM acc_journal_lines jl
+                JOIN acc_accounts a ON a.id = jl.account_id
+                JOIN acc_journal_entries je ON je.id = jl.entry_id
+                WHERE a.type='expense' AND date(je.entry_date) BETWEEN ? AND ?
+            """, (start, today.isoformat())).fetchone()
+            return float(row[0] if row else 0)
+        if 'expenses' in tables:
+            today = date.today()
+            start = today.replace(day=1).isoformat()
+            row = db.execute("""
+                SELECT COALESCE(SUM(amount),0) FROM expenses
+                WHERE date(created_at) BETWEEN ? AND ?
+            """, (start, today.isoformat())).fetchone()
+            return float(row[0] if row else 0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _seed_live_notifications(db):
+    """Generate a few situational notifications if the feed is empty today."""
+    today = str(date.today())
+    cnt = db.execute(
+        "SELECT COUNT(*) FROM cc_notifications WHERE date(created_at)=?",
+        (today,),
+    ).fetchone()[0]
+    if cnt:
+        return
+    low = db.execute(
+        "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
+    ).fetchone()[0]
+    if low:
+        _push_notification(
+            db, 'low_stock', f'{low} product(s) low on stock',
+            'Review Inventory and restock soon.', 'warn', '/inventory',
+        )
+    big = db.execute("""
+        SELECT receipt_number, total FROM sales
+        WHERE date(created_at)=? AND status='completed' AND total>=5000
+        ORDER BY total DESC LIMIT 1
+    """, (today,)).fetchone()
+    if big:
+        _push_notification(
+            db, 'large_sale', f'Large sale {big[0]}',
+            f'Receipt total {float(big[1]):,.2f}', 'info', '/reports',
+        )
+    pending_sync = db.execute(
+        "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+    ).fetchone()[0]
+    if pending_sync:
+        _push_notification(
+            db, 'sync', f'{pending_sync} sync item(s) pending',
+            'Cloud sync queue has unsent items.', 'warn', '/live',
+        )
+    db.commit()
+
+
+@web.route('/api/version', methods=['GET'])
+def api_version():
+    return jsonify(_app_version_info())
+
+
+@web.route('/api/command-center/summary', methods=['GET'])
+def cc_summary():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        today = str(date.today())
+        sales = _tr(db.execute("""
+            SELECT COUNT(*) as txns, COALESCE(SUM(total),0) as revenue,
+                   COALESCE(AVG(total),0) as avg_txn,
+                   COALESCE(SUM(discount),0) as discounts
+            FROM sales WHERE date(created_at)=? AND status='completed'
+        """, (today,)).fetchone()) or {}
+        debt = _tr(db.execute(
+            "SELECT COALESCE(SUM(balance),0) as total FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled')"
+        ).fetchone()) or {}
+        profit = _today_profit(db, today)
+        inv_val = _inventory_value(db)
+        month_rev = _month_revenue(db)
+        expenses = _month_expenses_proxy(db)
+        cash_flow = float(sales.get('revenue') or 0) - expenses / max(date.today().day, 1)
+        return jsonify({
+            'today': {
+                'revenue': float(sales.get('revenue') or 0),
+                'transactions': int(sales.get('txns') or 0),
+                'avg_transaction': float(sales.get('avg_txn') or 0),
+                'discounts': float(sales.get('discounts') or 0),
+                'profit': profit,
+            },
+            'monthly_revenue': month_rev,
+            'expenses': expenses,
+            'inventory_value': inv_val,
+            'outstanding_debts': float(debt.get('total') or 0),
+            'cash_flow': cash_flow,
+        })
+    return _inner()
+
+
+@web.route('/api/approvals', methods=['GET'])
+def list_approvals():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        status = (request.args.get('status') or '').strip()
+        clauses, params = [], []
+        if status:
+            clauses.append('status=?')
+            params.append(status)
+        where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+        rows = db.execute(
+            f"SELECT * FROM cc_approvals {where} ORDER BY "
+            f"CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, "
+            f"created_at DESC LIMIT 200",
+            params,
+        ).fetchall()
+        return jsonify({'approvals': _trs(rows)})
+    return _inner()
+
+
+@web.route('/api/approvals', methods=['POST'])
+def create_approval():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        atype = (data.get('type') or '').strip().lower()
+        if atype not in _APPROVAL_TYPES:
+            return jsonify({'error': f'Invalid type. Allowed: {", ".join(_APPROVAL_TYPES)}'}), 400
+        title = (data.get('title') or atype.replace('_', ' ').title()).strip()
+        details = (data.get('details') or '').strip()
+        try:
+            amount = float(data.get('amount') or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        user = g.current_user
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        cur = db.execute(
+            "INSERT INTO cc_approvals "
+            "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+            "VALUES (?,?,?,?, 'pending',?,?,?)",
+            (
+                atype, title, details, amount,
+                user.get('full_name') or user.get('username') or '',
+                user.get('id'),
+                json.dumps(data.get('meta') or {}),
+            ),
+        )
+        _push_notification(
+            db, atype, f'Approval requested: {title}',
+            details or f'{atype} · {amount}', 'info', '/approvals',
+        )
+        db.commit()
+        return jsonify({'success': True, 'id': cur.lastrowid})
+    return _inner()
+
+
+def _review_approval(aid, action):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if g.current_user.get('role') not in ('admin', 'superadmin', 'manager'):
+            return jsonify({'error': 'Manager or admin access required'}), 403
+        data = request.json or {}
+        note = (data.get('note') or '').strip()
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        row = _tr(db.execute("SELECT * FROM cc_approvals WHERE id=?", (aid,)).fetchone())
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        if row['status'] != 'pending':
+            return jsonify({'error': f"Already {row['status']}"}), 400
+        user = g.current_user
+        status = 'approved' if action == 'approve' else 'rejected'
+        db.execute(
+            "UPDATE cc_approvals SET status=?, reviewed_by=?, reviewed_by_id=?, "
+            "review_note=?, updated_at=? WHERE id=?",
+            (
+                status,
+                user.get('full_name') or user.get('username') or '',
+                user.get('id'),
+                note,
+                datetime.now().isoformat(),
+                aid,
+            ),
+        )
+        _push_notification(
+            db, row['type'], f"Approval {status}: {row['title']}",
+            note or row.get('details') or '',
+            'ok' if status == 'approved' else 'warn',
+            '/approvals',
+        )
+        db.commit()
+        return jsonify({'success': True, 'status': status})
+    return _inner()
+
+
+@web.route('/api/approvals/<int:aid>/approve', methods=['POST'])
+def approve_approval(aid):
+    return _review_approval(aid, 'approve')
+
+
+@web.route('/api/approvals/<int:aid>/reject', methods=['POST'])
+def reject_approval(aid):
+    return _review_approval(aid, 'reject')
+
+
+@web.route('/api/notifications', methods=['GET'])
+def list_notifications():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        _seed_live_notifications(db)
+        limit = min(int(request.args.get('limit') or 50), 200)
+        rows = db.execute(
+            "SELECT * FROM cc_notifications ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        unread = db.execute(
+            "SELECT COUNT(*) FROM cc_notifications WHERE is_read=0"
+        ).fetchone()[0]
+        return jsonify({'notifications': _trs(rows), 'unread': unread})
+    return _inner()
+
+
+@web.route('/api/notifications/<int:nid>/read', methods=['POST'])
+def mark_notification_read(nid):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        db.execute("UPDATE cc_notifications SET is_read=1 WHERE id=?", (nid,))
+        db.commit()
+        return jsonify({'success': True})
+    return _inner()
+
+
+@web.route('/api/notifications/read-all', methods=['POST'])
+def mark_all_notifications_read():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        db.execute("UPDATE cc_notifications SET is_read=1 WHERE is_read=0")
+        db.commit()
+        return jsonify({'success': True})
+    return _inner()
+
+
+@web.route('/api/health/detail', methods=['GET'])
+def health_detail():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        import shutil
+        import time as _time
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        checks = []
+        score = 0
+        max_score = 0
+
+        def add(key, label, ok, detail, weight=1, warn=False):
+            nonlocal score, max_score
+            max_score += weight
+            if ok and not warn:
+                score += weight
+                state = 'healthy'
+            elif ok and warn:
+                score += weight * 0.5
+                state = 'warn'
+            else:
+                state = 'err'
+            checks.append({
+                'key': key, 'label': label, 'state': state,
+                'detail': detail, 'weight': weight,
+            })
+
+        # DB
+        try:
+            sales_n = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            add('db', 'Database', True, f'SQLite OK · {sales_n} sales records', 2)
+        except Exception as e:
+            add('db', 'Database', False, str(e), 2)
+
+        # Storage
+        try:
+            usage = shutil.disk_usage(_BASE_DIR)
+            free_gb = usage.free / (1024 ** 3)
+            total_gb = usage.total / (1024 ** 3)
+            warn = free_gb < 5
+            add('storage', 'Storage', free_gb > 1,
+                f'{free_gb:.1f} GB free of {total_gb:.1f} GB', 1, warn=warn)
+        except Exception as e:
+            add('storage', 'Storage', False, str(e), 1)
+
+        # Cloud / backup
+        cloud_ok = False
+        cloud_detail = 'Cloud backup not configured'
+        try:
+            from backend.cloud_backup.paths import is_cloud_configured, is_logged_in, load_json, backup_state_path
+            if is_cloud_configured():
+                cloud_ok = True
+                st = load_json(backup_state_path(), {})
+                last = st.get('last_success_at') or st.get('last_attempt_at') or 'never'
+                cloud_detail = f"Configured · logged_in={is_logged_in()} · last={last}"
+                if not is_logged_in():
+                    add('cloud', 'Cloud', True, cloud_detail, 1, warn=True)
+                else:
+                    add('cloud', 'Cloud', True, cloud_detail, 1)
+            else:
+                add('cloud', 'Cloud', True, cloud_detail, 1, warn=True)
+        except Exception as e:
+            add('cloud', 'Cloud', False, str(e), 1)
+
+        # AI
+        try:
+            from desktop.utils.ai.connectivity import get_connectivity
+            conn = get_connectivity()
+            if conn.configured and conn.online:
+                add('ai', 'AI', True, 'AI configured and online', 1)
+            elif conn.configured:
+                add('ai', 'AI', True, 'AI configured but offline', 1, warn=True)
+            else:
+                add('ai', 'AI', True, 'AI not configured — local insights only', 1, warn=True)
+        except Exception:
+            add('ai', 'AI', True, 'AI module unavailable — heuristics only', 1, warn=True)
+
+        # Backups (local history)
+        try:
+            last_bak = _tr(db.execute(
+                "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 1"
+            ).fetchone())
+            if last_bak:
+                age_warn = last_bak.get('status') != 'ok'
+                add('backups', 'Backups', True,
+                    f"Last {last_bak.get('status')} at {last_bak.get('created_at')}",
+                    1, warn=age_warn)
+            else:
+                add('backups', 'Backups', True, 'No local backup history yet', 1, warn=True)
+        except Exception as e:
+            add('backups', 'Backups', False, str(e), 1)
+
+        # Sync
+        try:
+            pending = db.execute(
+                "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+            ).fetchone()[0]
+            add('sync', 'Sync', True,
+                f'{pending} pending item(s)', 1, warn=pending > 0)
+        except Exception as e:
+            add('sync', 'Sync', False, str(e), 1)
+
+        # API (self)
+        t0 = _time.perf_counter()
+        _ = datetime.now().isoformat()
+        ms = int((_time.perf_counter() - t0) * 1000)
+        add('api', 'API', True, f'Responding · ~{ms} ms', 1)
+
+        # Security
+        try:
+            inactive = db.execute(
+                "SELECT COUNT(*) FROM users WHERE is_active=0"
+            ).fetchone()[0]
+            admins = db.execute(
+                "SELECT COUNT(*) FROM users WHERE role IN ('admin','superadmin') AND is_active=1"
+            ).fetchone()[0]
+            add('security', 'Security', admins > 0,
+                f'{admins} admin(s) · {inactive} disabled user(s)', 1,
+                warn=admins == 0)
+        except Exception as e:
+            add('security', 'Security', False, str(e), 1)
+
+        pct = int(round(100 * score / max_score)) if max_score else 0
+        overall = 'healthy' if pct >= 85 else ('warn' if pct >= 60 else 'err')
+        return jsonify({
+            'score': pct,
+            'overall': overall,
+            'checks': checks,
+            'time': datetime.now().isoformat(),
+            'version': _app_version_info(),
+        })
+    return _inner()
+
+
+@web.route('/api/live', methods=['GET'])
+def live_monitor():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        today = str(date.today())
+        sales = _tr(db.execute("""
+            SELECT COUNT(*) as txns, COALESCE(SUM(total),0) as revenue
+            FROM sales WHERE date(created_at)=? AND status='completed'
+        """, (today,)).fetchone()) or {}
+        cashiers = _trs(db.execute("""
+            SELECT cashier_name as name, COUNT(*) as txns, COALESCE(SUM(total),0) as revenue
+            FROM sales WHERE date(created_at)=? AND status='completed'
+            GROUP BY cashier_name ORDER BY revenue DESC
+        """, (today,)).fetchall())
+        online_users = _trs(db.execute("""
+            SELECT id, username, full_name, role, last_login
+            FROM users WHERE is_active=1
+            ORDER BY last_login DESC LIMIT 20
+        """).fetchall())
+        pending_sync = db.execute(
+            "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+        ).fetchone()[0]
+        last_bak = _tr(db.execute(
+            "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 1"
+        ).fetchone())
+        pending_approvals = db.execute(
+            "SELECT COUNT(*) FROM cc_approvals WHERE status='pending'"
+        ).fetchone()[0]
+        ai_status = {'configured': False, 'online': False, 'label': 'Local heuristics'}
+        try:
+            from desktop.utils.ai.connectivity import get_connectivity
+            conn = get_connectivity()
+            ai_status = {
+                'configured': bool(conn.configured),
+                'online': bool(conn.online),
+                'label': (
+                    'Online' if conn.configured and conn.online
+                    else ('Offline' if conn.configured else 'Not configured')
+                ),
+            }
+        except Exception:
+            pass
+        return jsonify({
+            'sales_today': {
+                'transactions': int(sales.get('txns') or 0),
+                'revenue': float(sales.get('revenue') or 0),
+            },
+            'cashiers': cashiers,
+            'online_users': online_users,
+            'sync': {'pending': pending_sync},
+            'backup': last_bak or {'status': 'unknown'},
+            'ai': ai_status,
+            'pending_approvals': pending_approvals,
+            'refreshed_at': datetime.now().isoformat(),
+        })
+    return _inner()
+
+
+@web.route('/api/backup/status', methods=['GET'])
+def backup_status():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        history = _trs(db.execute(
+            "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 30"
+        ).fetchall())
+        last = history[0] if history else None
+        cloud = {'configured': False, 'logged_in': False, 'state': {}}
+        try:
+            from backend.cloud_backup.paths import (
+                is_cloud_configured, is_logged_in, load_json, backup_state_path,
+            )
+            cloud = {
+                'configured': is_cloud_configured(),
+                'logged_in': is_logged_in(),
+                'state': load_json(backup_state_path(), {}),
+            }
+        except Exception as e:
+            cloud['error'] = str(e)
+        return jsonify({
+            'last': last,
+            'next_hint': 'Manual or scheduled via desktop Cloud Backup',
+            'cloud': cloud,
+            'history': history,
+        })
+    return _inner()
+
+
+@web.route('/api/backup/run', methods=['POST'])
+def backup_run():
+    from backend.app import token_required, DB_PATH
+    @token_required
+    def _inner():
+        if g.current_user.get('role') not in ('admin', 'superadmin', 'manager'):
+            return jsonify({'error': 'Manager or admin access required'}), 403
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        reason = (request.json or {}).get('reason') or 'manual_web'
+        detail = ''
+        status = 'ok'
+        path = ''
+        size_bytes = 0
+
+        # Prefer cloud backup when available
+        try:
+            from backend.cloud_backup import get_sync_manager
+            from backend.cloud_backup.paths import is_cloud_configured, is_logged_in
+            if is_cloud_configured() and is_logged_in():
+                result = get_sync_manager().run_backup(reason=reason)
+                if result.get('ok'):
+                    detail = 'Cloud backup completed'
+                    path = result.get('object_path') or result.get('path') or ''
+                    size_bytes = int(result.get('size') or result.get('enc_size') or 0)
+                else:
+                    status = 'queued' if result.get('queued') else 'error'
+                    detail = result.get('error') or 'Cloud backup failed'
+            else:
+                raise RuntimeError('cloud_unavailable')
+        except Exception:
+            # Local snapshot fallback
+            try:
+                import shutil
+                bak_dir = os.path.join(_BASE_DIR, 'data', 'backups')
+                os.makedirs(bak_dir, exist_ok=True)
+                stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                path = os.path.join(bak_dir, f'mbt_pos_{stamp}.db')
+                src = DB_PATH
+                if os.path.isfile(src):
+                    shutil.copy2(src, path)
+                    size_bytes = os.path.getsize(path)
+                    detail = 'Local SQLite snapshot created'
+                else:
+                    status = 'error'
+                    detail = f'DB not found at {src}'
+            except Exception as e:
+                status = 'error'
+                detail = str(e)
+
+        db.execute(
+            "INSERT INTO cc_backup_history (status, reason, path, size_bytes, detail) "
+            "VALUES (?,?,?,?,?)",
+            (status, reason, path, size_bytes, detail),
+        )
+        sev = 'ok' if status == 'ok' else 'err'
+        _push_notification(
+            db, 'backup', f'Backup {status}', detail, sev, '/backup',
+        )
+        db.commit()
+        return jsonify({
+            'success': status in ('ok', 'queued'),
+            'status': status,
+            'path': path,
+            'size_bytes': size_bytes,
+            'detail': detail,
+        })
+    return _inner()
+
+
+@web.route('/api/branches', methods=['GET'])
+def list_branches():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        rows = _trs(db.execute(
+            "SELECT * FROM cc_branches WHERE is_active=1 ORDER BY is_current DESC, name"
+        ).fetchall())
+        # Attach lightweight comparison metrics for current shop (same DB)
+        today = str(date.today())
+        rev = float((db.execute(
+            "SELECT COALESCE(SUM(total),0) FROM sales "
+            "WHERE date(created_at)=? AND status='completed'",
+            (today,),
+        ).fetchone() or [0])[0])
+        for r in rows:
+            if r.get('is_current'):
+                r['today_revenue'] = rev
+                r['products'] = db.execute(
+                    "SELECT COUNT(*) FROM products WHERE is_active=1"
+                ).fetchone()[0]
+            else:
+                r['today_revenue'] = None
+                r['products'] = None
+        return jsonify({'branches': rows})
+    return _inner()
+
+
+@web.route('/api/branches/<int:bid>/select', methods=['POST'])
+def select_branch(bid):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        row = _tr(db.execute(
+            "SELECT * FROM cc_branches WHERE id=? AND is_active=1", (bid,)
+        ).fetchone())
+        if not row:
+            return jsonify({'error': 'Branch not found'}), 404
+        db.execute("UPDATE cc_branches SET is_current=0")
+        db.execute("UPDATE cc_branches SET is_current=1 WHERE id=?", (bid,))
+        db.commit()
+        return jsonify({'success': True, 'branch': row})
+    return _inner()
+
+
+@web.route('/api/ai/insights', methods=['GET'])
+def ai_insights():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        db = _get_db()
+        today = str(date.today())
+        sales_n = db.execute(
+            "SELECT COUNT(*) FROM sales WHERE date(created_at)=? AND status='completed'",
+            (today,),
+        ).fetchone()[0]
+        rev = float((db.execute(
+            "SELECT COALESCE(SUM(total),0) FROM sales "
+            "WHERE date(created_at)=? AND status='completed'",
+            (today,),
+        ).fetchone() or [0])[0])
+        low = db.execute(
+            "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
+        ).fetchone()[0]
+        overdue = db.execute(
+            "SELECT COUNT(*) FROM debt_invoices WHERE status NOT IN ('paid','cancelled') "
+            "AND due_date IS NOT NULL AND due_date < date('now')"
+        ).fetchone()[0]
+        alerts, recs = [], []
+        if low:
+            alerts.append(f'{low} product(s) at or below reorder level.')
+            recs.append('Open Inventory and review low-stock items.')
+        if overdue:
+            alerts.append(f'{overdue} overdue credit account(s).')
+            recs.append('Review Debt Management for collections.')
+        if sales_n == 0:
+            alerts.append('No sales recorded yet today.')
+            recs.append('Start a sale from Point of Sale when ready.')
+        if not alerts:
+            alerts.append('No urgent local alerts detected.')
+        if not recs:
+            recs.append('Keep recording sales; refresh for deeper insights.')
+        summary = f'Today: {sales_n} sales · revenue {rev:,.2f}.'
+        # Attempt real AI if available
+        source = 'local'
+        try:
+            from desktop.utils.ai.connectivity import get_connectivity
+            from desktop.utils.ai.service import get_ai_service
+            conn = get_connectivity()
+            if conn.configured and conn.online:
+                svc = get_ai_service()
+                prompt = (
+                    f'POS context: {summary} Low stock: {low}. Overdue debts: {overdue}. '
+                    'Reply JSON only: {"summary":"...","alerts":["..."],"recommendations":["..."]}'
+                )
+                result = svc.chat(
+                    user_message=prompt,
+                    api=None,
+                    user=g.current_user,
+                    module='dashboard',
+                    history=[],
+                    stream_callback=None,
+                    use_stream=False,
+                )
+                text = (result.get('text') or '').strip()
+                import re
+                m = re.search(r'\{.*\}', text, re.S)
+                if m:
+                    parsed = json.loads(m.group(0))
+                    summary = str(parsed.get('summary') or summary)
+                    alerts = list(parsed.get('alerts') or alerts)[:5]
+                    recs = list(parsed.get('recommendations') or recs)[:5]
+                    source = 'ai'
+        except Exception:
+            pass
+        return jsonify({
+            'summary': summary,
+            'alerts': alerts[:5],
+            'recommendations': recs[:5],
+            'source': source,
+            'offline': source == 'local',
+        })
+    return _inner()
+
+
+@web.route('/api/ai/chat', methods=['POST'])
+def ai_chat():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        message = (data.get('message') or '').strip()
+        if not message:
+            return jsonify({'error': 'message required'}), 400
+        reply = None
+        source = 'local'
+        try:
+            from desktop.utils.ai.connectivity import get_connectivity
+            from desktop.utils.ai.service import get_ai_service
+            conn = get_connectivity()
+            if conn.configured and conn.online:
+                svc = get_ai_service()
+                result = svc.chat(
+                    user_message=message,
+                    api=None,
+                    user=g.current_user,
+                    module=data.get('module') or 'dashboard',
+                    history=data.get('history') or [],
+                    stream_callback=None,
+                    use_stream=False,
+                )
+                reply = (result.get('text') or '').strip()
+                source = 'ai'
+        except Exception as e:
+            reply = None
+            err = str(e)
+        if not reply:
+            # Heuristic replies for command-center questions
+            db = _get_db()
+            today = str(date.today())
+            rev = float((db.execute(
+                "SELECT COALESCE(SUM(total),0) FROM sales "
+                "WHERE date(created_at)=? AND status='completed'",
+                (today,),
+            ).fetchone() or [0])[0])
+            low = db.execute(
+                "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
+            ).fetchone()[0]
+            ml = message.lower()
+            if 'stock' in ml or 'inventory' in ml:
+                reply = f'{low} product(s) are at or below reorder level. Open Inventory to review.'
+            elif 'sale' in ml or 'revenue' in ml or 'today' in ml:
+                reply = f"Today's revenue is {rev:,.2f}. Check Live Monitoring for cashier breakdown."
+            elif 'backup' in ml:
+                reply = 'Open Backup Center to view last backup status or trigger a manual backup.'
+            elif 'debt' in ml or 'credit' in ml:
+                reply = 'Open Debt Management for outstanding balances and collections.'
+            else:
+                reply = (
+                    f"Local assistant: today's revenue is {rev:,.2f}. "
+                    f'{low} low-stock item(s). Ask about sales, stock, debt, or backup.'
+                )
+            source = 'local'
+        return jsonify({'reply': reply, 'source': source})
+    return _inner()

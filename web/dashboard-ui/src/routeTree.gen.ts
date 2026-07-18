@@ -14,11 +14,18 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecurityRouteImport } from './routes/security'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as PosRouteImport } from './routes/pos'
+import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as NotesRouteImport } from './routes/notes'
+import { Route as LiveRouteImport } from './routes/live'
 import { Route as LicenseRouteImport } from './routes/license'
 import { Route as InventoryRouteImport } from './routes/inventory'
+import { Route as HealthRouteImport } from './routes/health'
 import { Route as DiagnosticsRouteImport } from './routes/diagnostics'
 import { Route as DebtRouteImport } from './routes/debt'
+import { Route as BranchesRouteImport } from './routes/branches'
+import { Route as BackupRouteImport } from './routes/backup'
+import { Route as ApprovalsRouteImport } from './routes/approvals'
+import { Route as AiRouteImport } from './routes/ai'
 import { Route as IndexRouteImport } from './routes/index'
 
 const UsersRoute = UsersRouteImport.update({
@@ -46,9 +53,19 @@ const PosRoute = PosRouteImport.update({
   path: '/pos',
   getParentRoute: () => rootRouteImport,
 } as any)
+const NotificationsRoute = NotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const NotesRoute = NotesRouteImport.update({
   id: '/notes',
   path: '/notes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LiveRoute = LiveRouteImport.update({
+  id: '/live',
+  path: '/live',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LicenseRoute = LicenseRouteImport.update({
@@ -61,6 +78,11 @@ const InventoryRoute = InventoryRouteImport.update({
   path: '/inventory',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HealthRoute = HealthRouteImport.update({
+  id: '/health',
+  path: '/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DiagnosticsRoute = DiagnosticsRouteImport.update({
   id: '/diagnostics',
   path: '/diagnostics',
@@ -71,6 +93,26 @@ const DebtRoute = DebtRouteImport.update({
   path: '/debt',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BranchesRoute = BranchesRouteImport.update({
+  id: '/branches',
+  path: '/branches',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BackupRoute = BackupRouteImport.update({
+  id: '/backup',
+  path: '/backup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApprovalsRoute = ApprovalsRouteImport.update({
+  id: '/approvals',
+  path: '/approvals',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AiRoute = AiRouteImport.update({
+  id: '/ai',
+  path: '/ai',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -79,11 +121,18 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
+  '/approvals': typeof ApprovalsRoute
+  '/backup': typeof BackupRoute
+  '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
+  '/live': typeof LiveRoute
   '/notes': typeof NotesRoute
+  '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
@@ -92,11 +141,18 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
+  '/approvals': typeof ApprovalsRoute
+  '/backup': typeof BackupRoute
+  '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
+  '/live': typeof LiveRoute
   '/notes': typeof NotesRoute
+  '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
@@ -106,11 +162,18 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/ai': typeof AiRoute
+  '/approvals': typeof ApprovalsRoute
+  '/backup': typeof BackupRoute
+  '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
+  '/live': typeof LiveRoute
   '/notes': typeof NotesRoute
+  '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
@@ -121,11 +184,18 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/ai'
+    | '/approvals'
+    | '/backup'
+    | '/branches'
     | '/debt'
     | '/diagnostics'
+    | '/health'
     | '/inventory'
     | '/license'
+    | '/live'
     | '/notes'
+    | '/notifications'
     | '/pos'
     | '/reports'
     | '/security'
@@ -134,11 +204,18 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/ai'
+    | '/approvals'
+    | '/backup'
+    | '/branches'
     | '/debt'
     | '/diagnostics'
+    | '/health'
     | '/inventory'
     | '/license'
+    | '/live'
     | '/notes'
+    | '/notifications'
     | '/pos'
     | '/reports'
     | '/security'
@@ -147,11 +224,18 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/ai'
+    | '/approvals'
+    | '/backup'
+    | '/branches'
     | '/debt'
     | '/diagnostics'
+    | '/health'
     | '/inventory'
     | '/license'
+    | '/live'
     | '/notes'
+    | '/notifications'
     | '/pos'
     | '/reports'
     | '/security'
@@ -161,11 +245,18 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AiRoute: typeof AiRoute
+  ApprovalsRoute: typeof ApprovalsRoute
+  BackupRoute: typeof BackupRoute
+  BranchesRoute: typeof BranchesRoute
   DebtRoute: typeof DebtRoute
   DiagnosticsRoute: typeof DiagnosticsRoute
+  HealthRoute: typeof HealthRoute
   InventoryRoute: typeof InventoryRoute
   LicenseRoute: typeof LicenseRoute
+  LiveRoute: typeof LiveRoute
   NotesRoute: typeof NotesRoute
+  NotificationsRoute: typeof NotificationsRoute
   PosRoute: typeof PosRoute
   ReportsRoute: typeof ReportsRoute
   SecurityRoute: typeof SecurityRoute
@@ -210,11 +301,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PosRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/notifications': {
+      id: '/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof NotificationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/notes': {
       id: '/notes'
       path: '/notes'
       fullPath: '/notes'
       preLoaderRoute: typeof NotesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/live': {
+      id: '/live'
+      path: '/live'
+      fullPath: '/live'
+      preLoaderRoute: typeof LiveRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/license': {
@@ -231,6 +336,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InventoryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/health': {
+      id: '/health'
+      path: '/health'
+      fullPath: '/health'
+      preLoaderRoute: typeof HealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/diagnostics': {
       id: '/diagnostics'
       path: '/diagnostics'
@@ -245,6 +357,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DebtRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/branches': {
+      id: '/branches'
+      path: '/branches'
+      fullPath: '/branches'
+      preLoaderRoute: typeof BranchesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/backup': {
+      id: '/backup'
+      path: '/backup'
+      fullPath: '/backup'
+      preLoaderRoute: typeof BackupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/approvals': {
+      id: '/approvals'
+      path: '/approvals'
+      fullPath: '/approvals'
+      preLoaderRoute: typeof ApprovalsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ai': {
+      id: '/ai'
+      path: '/ai'
+      fullPath: '/ai'
+      preLoaderRoute: typeof AiRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -257,11 +397,18 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AiRoute: AiRoute,
+  ApprovalsRoute: ApprovalsRoute,
+  BackupRoute: BackupRoute,
+  BranchesRoute: BranchesRoute,
   DebtRoute: DebtRoute,
   DiagnosticsRoute: DiagnosticsRoute,
+  HealthRoute: HealthRoute,
   InventoryRoute: InventoryRoute,
   LicenseRoute: LicenseRoute,
+  LiveRoute: LiveRoute,
   NotesRoute: NotesRoute,
+  NotificationsRoute: NotificationsRoute,
   PosRoute: PosRoute,
   ReportsRoute: ReportsRoute,
   SecurityRoute: SecurityRoute,

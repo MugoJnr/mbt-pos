@@ -1,8 +1,10 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { Play, Download, RotateCw, CheckCircle2, HelpCircle } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Play, Download, RotateCw, CheckCircle2, HelpCircle, HeartPulse } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card } from "@/components/ui-kit";
+import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/diagnostics")({
   component: Diagnostics,
@@ -10,67 +12,106 @@ export const Route = createFileRoute("/diagnostics")({
 
 const TABS = ["Diagnostic Log", "App Log", "Sync Queue"] as const;
 
-const LOGS: Record<(typeof TABS)[number], string[]> = {
-  "Diagnostic Log": [
-    "[04:26:05] Running diagnostics…",
-    "[04:26:05] DB connection: OK (sqlite 3.42, 1407 sales records)",
-    "[04:26:06] Disk: 842.1 GB free of 1.0 TB",
-    "[04:26:06] Log files: normal size (12.4 MB)",
-    "[04:26:07] API backend: ping 218 ms",
-    "[04:26:07] Printer COM3: not responding — check cable",
-    "[04:26:08] Overall: WARNING",
-  ],
-  "App Log": [
-    "[04:25:12] MBT POS started v2.3.21",
-    "[04:25:14] User 'edmus' authenticated (superadmin)",
-    "[04:25:18] Cache warmed — 42 categories, 1,283 products",
-    "[04:25:31] Sale RCP-10421 completed (KES 1,240)",
-    "[04:25:44] Telegram report sent",
-  ],
-  "Sync Queue": [
-    "[QUEUED] sale.upload RCP-10422 attempt 1/5",
-    "[QUEUED] inventory.adjust SKU=FRT-2323 delta=-4",
-    "[DONE] sale.upload RCP-10420",
-    "[DONE] customer.upsert Kiptoo Farms",
-  ],
-};
-
 function Diagnostics() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Diagnostic Log");
+  const healthQ = useQuery({
+    queryKey: ["health-detail"],
+    queryFn: () => GET<any>("/health/detail"),
+  });
+  const syncQ = useQuery({
+    queryKey: ["sync-pending"],
+    queryFn: () => GET<any[]>("/sync/pending"),
+  });
+  const versionQ = useQuery({
+    queryKey: ["app-version"],
+    queryFn: () => GET<any>("/version"),
+  });
+
+  const checks = Array.isArray(healthQ.data?.checks) ? healthQ.data.checks : [];
+  const syncItems = Array.isArray(syncQ.data) ? syncQ.data : [];
+  const now = new Date().toLocaleTimeString("en-GB", { hour12: false });
+
+  const logs: Record<(typeof TABS)[number], string[]> = {
+    "Diagnostic Log": [
+      `[${now}] Running diagnostics…`,
+      ...checks.map(
+        (c: any) =>
+          `[${now}] ${c.label}: ${String(c.state).toUpperCase()} — ${c.detail}`,
+      ),
+      `[${now}] Overall score: ${healthQ.data?.score ?? "—"} (${healthQ.data?.overall || "—"})`,
+    ],
+    "App Log": [
+      `[${now}] MBT POS web dashboard v${versionQ.data?.version || "2.3.87"}`,
+      `[${now}] Build ${versionQ.data?.build || "—"}`,
+      `[${now}] Health API: ${healthQ.isSuccess ? "ok" : healthQ.isError ? "error" : "…"}`,
+    ],
+    "Sync Queue":
+      syncItems.length === 0
+        ? [`[${now}] Sync queue empty`]
+        : syncItems.slice(0, 40).map(
+            (i: any) =>
+              `[${i.status || "QUEUED"}] ${i.action || i.type || "item"} id=${i.id}`,
+          ),
+  };
 
   return (
     <AppShell title="Diagnostics">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h2 className="text-xl font-bold text-text">System Diagnostics</h2>
-        <div className="flex items-center gap-2">
-          <Button variant="primary">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/health">
+            <Button variant="primary">
+              <HeartPulse className="h-4 w-4" /> Health Score
+            </Button>
+          </Link>
+          <Button variant="secondary" onClick={() => healthQ.refetch()}>
             <Play className="h-4 w-4" /> Run Check
           </Button>
-          <Button variant="secondary">
+          <Button variant="ghost" disabled title="Export via desktop logs">
             <Download className="h-4 w-4" /> Export
           </Button>
-          <Button variant="ghost">
+          <Button variant="ghost" disabled>
             <RotateCw className="h-4 w-4" /> Rotate Logs
           </Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <HealthCard label="Database" state="healthy" note="DB OK — 1407 sales records" />
-        <HealthCard label="Disk Space" state="healthy" note="842.1 GB free" />
-        <HealthCard label="Log Files" state="healthy" note="Log files normal" />
-        <HealthCard label="Backend Process" state="unknown" note="No recent ping" />
+        {(checks.length ? checks.slice(0, 4) : [
+          { label: "Database", state: "unknown", detail: "Loading…" },
+          { label: "Storage", state: "unknown", detail: "Loading…" },
+          { label: "API", state: "unknown", detail: "Loading…" },
+          { label: "Sync", state: "unknown", detail: "Loading…" },
+        ]).map((c: any) => (
+          <HealthCard
+            key={c.key || c.label}
+            label={c.label}
+            state={c.state === "healthy" ? "healthy" : c.state === "warn" ? "warn" : c.state === "err" ? "err" : "unknown"}
+            note={c.detail || c.note || ""}
+          />
+        ))}
       </div>
 
-      <div className="text-warn font-semibold text-sm mb-4">Overall: WARNING</div>
+      <div
+        className={`font-semibold text-sm mb-4 ${
+          healthQ.data?.overall === "healthy"
+            ? "text-ok"
+            : healthQ.data?.overall === "warn"
+              ? "text-warn"
+              : "text-text2"
+        }`}
+      >
+        Overall: {String(healthQ.data?.overall || "…").toUpperCase()} · score{" "}
+        {healthQ.data?.score ?? "—"}
+      </div>
 
       <Card className="overflow-hidden">
-        <div className="flex border-b border-border">
+        <div className="flex overflow-x-auto border-b border-border">
           {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`relative px-4 py-3 text-sm font-semibold ${
+              className={`relative px-4 py-3 text-sm font-semibold whitespace-nowrap min-h-[44px] ${
                 tab === t ? "text-gold" : "text-text2 hover:text-text"
               }`}
             >
@@ -80,15 +121,10 @@ function Diagnostics() {
           ))}
         </div>
 
-        <pre className="font-mono text-[12.5px] leading-relaxed p-5 bg-app text-text2 min-h-[320px] whitespace-pre-wrap">
-          {LOGS[tab].join("\n")}
+        <pre className="font-mono text-[12.5px] leading-relaxed p-5 bg-app text-text2 min-h-[280px] whitespace-pre-wrap overflow-x-auto">
+          {logs[tab].join("\n")}
         </pre>
       </Card>
-
-      <div className="mt-3 text-center text-xs text-text2 font-mono">
-        Platform: Windows 10 <span className="text-muted-fg mx-2">·</span> Python 3.11.9
-        <span className="text-muted-fg mx-2">·</span> PID: 17956
-      </div>
     </AppShell>
   );
 }
@@ -105,7 +141,13 @@ function HealthCard({
   const tone =
     state === "healthy" ? "ok" : state === "warn" ? "warn" : state === "err" ? "err" : "muted";
   const text =
-    state === "healthy" ? "HEALTHY" : state === "warn" ? "WARNING" : state === "err" ? "FAILING" : "UNKNOWN";
+    state === "healthy"
+      ? "HEALTHY"
+      : state === "warn"
+        ? "WARNING"
+        : state === "err"
+          ? "FAILING"
+          : "UNKNOWN";
   const Icon = state === "healthy" ? CheckCircle2 : HelpCircle;
   return (
     <Card className="p-4">
