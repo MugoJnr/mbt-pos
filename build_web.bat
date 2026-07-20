@@ -5,6 +5,13 @@ cd /d "%~dp0"
 
 set "UI_DIR=%~dp0web\dashboard-ui"
 
+if /I "%MBT_SKIP_WEB_REBUILD%"=="1" (
+  if exist "%UI_DIR%\dist\index.html" (
+    echo  [OK] Skipping web rebuild (MBT_SKIP_WEB_REBUILD=1^)
+    exit /b 0
+  )
+)
+
 echo.
 echo  ============================================================
 echo    MBT POS - Web Dashboard Build
