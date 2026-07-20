@@ -318,39 +318,47 @@ def emoji_tile_pixmap(
             _PIXMAP_CACHE[cache_key] = pm
             return pm
 
-    # Fallback: QLabel colour emoji (works on some platforms)
+    # Fallback: draw a plain ASCII letter — never depend on colour emoji fonts.
+    # (PyQt5 on Windows often paints emoji as mojibake without Segoe UI Emoji.)
     p.end()
     try:
-        from PyQt5.QtWidgets import QLabel, QApplication
-        from PyQt5.QtGui import QFontDatabase
-        if QApplication.instance() is not None:
-            if not getattr(emoji_tile_pixmap, '_font_ready', False):
-                for fp in (r'C:\Windows\Fonts\seguiemj.ttf', r'C:\Windows\Fonts\Seguiemj.ttf'):
-                    if os.path.isfile(fp):
-                        QFontDatabase.addApplicationFont(fp)
-                emoji_tile_pixmap._font_ready = True
-            lbl = QLabel(emoji)
-            lbl.setFixedSize(size, size)
-            lbl.setAlignment(Qt.AlignCenter)
-            border_css = (
-                f'border:{max(2, size // 28)}px solid {border};'
-                if selected else 'border:none;'
-            )
-            font_px = max(16, int(size * 0.48))
-            lbl.setStyleSheet(
-                f'QLabel {{ background:{bg}; {border_css} '
-                f'border-radius:{r}px; font-size:{font_px}px; }}'
-            )
-            f = QFont('Segoe UI Emoji')
-            f.setPixelSize(font_px)
-            lbl.setFont(f)
-            lbl.ensurePolished()
-            lbl.show()
-            grabbed = lbl.grab()
-            lbl.hide()
-            lbl.deleteLater()
-            _PIXMAP_CACHE[cache_key] = grabbed
-            return grabbed
+        from PyQt5.QtGui import QFont, QFontMetrics
+        letter = '?'
+        # Prefer a single BMP letter from the emoji string context; else '?'
+        for ch in (emoji or ''):
+            if ch.isascii() and ch.isalnum():
+                letter = ch.upper()
+                break
+        if letter == '?' and emoji:
+            # Stable letter from emoji codepoint hash so tiles stay distinct
+            letter = chr(ord('A') + (sum(ord(c) for c in emoji) % 26))
+        p2 = QPainter(pm)
+        p2.setRenderHint(QPainter.Antialiasing)
+        p2.setBrush(QColor(bg))
+        if selected:
+            pen = QPen(QColor(border))
+            pen.setWidth(max(2, size // 28))
+            p2.setPen(pen)
+        else:
+            p2.setPen(Qt.NoPen)
+        inset = max(1, size // 32) if selected else 0
+        p2.drawRoundedRect(inset, inset, size - 2 * inset, size - 2 * inset, r, r)
+        font_px = max(14, int(size * 0.42))
+        f = QFont('Segoe UI')
+        f.setPixelSize(font_px)
+        f.setBold(True)
+        p2.setFont(f)
+        # Dark text on light tile / light on dark
+        try:
+            r_c, g_c, b_c, _ = QColor(bg).getRgb()
+            lum = (0.299 * r_c + 0.587 * g_c + 0.114 * b_c) / 255.0
+            p2.setPen(QColor('#0F172A' if lum > 0.55 else '#F8FAFC'))
+        except Exception:
+            p2.setPen(QColor('#0F172A'))
+        p2.drawText(pm.rect(), Qt.AlignCenter, letter)
+        p2.end()
+        _PIXMAP_CACHE[cache_key] = pm
+        return pm
     except Exception:
         pass
 

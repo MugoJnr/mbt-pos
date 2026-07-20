@@ -42,7 +42,7 @@ class SettingsTab(QWidget):
         lay.addLayout(intro)
 
         # ── Shop information (Lovable section card) ───────────────────────────
-        sg, sf_body = section_card('🏪', 'Shop Information', 'Displayed on receipts and reports')
+        sg, sf_body = section_card('*', 'Shop Information', 'Displayed on receipts and reports')
         sf = make_form(); sf_w = QWidget(); sf_w.setLayout(sf)
         self.shop_name    = Field('Required — shown on receipts and reports')
         self.shop_address = Field('Street or area (optional)')
@@ -60,7 +60,7 @@ class SettingsTab(QWidget):
         lay.addWidget(sg)
 
         # ── Receipt & printing ────────────────────────────────────────────────
-        pg, pf_body = section_card('🖨', 'Receipt Printing', 'Thermal printer and receipt layout')
+        pg, pf_body = section_card('=', 'Receipt Printing', 'Thermal printer and receipt layout')
         pf = make_form(); pf_w = QWidget(); pf_w.setLayout(pf)
         self.receipt_footer = Field('Thank you for shopping with us!')
         self.auto_print = QCheckBox('Auto-print receipt after each sale')
@@ -76,7 +76,7 @@ class SettingsTab(QWidget):
         lay.addWidget(pg)
 
         # ── M-Pesa (per shop — no customer accounts) ───────────────────────────
-        mg, mf_body = section_card('📱', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
+        mg, mf_body = section_card('$', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
         mf = make_form(); mf_w = QWidget(); mf_w.setLayout(mf)
         self.mpesa_mode = QComboBox()
         self.mpesa_mode.setMinimumHeight(42)
@@ -99,7 +99,7 @@ class SettingsTab(QWidget):
         lay.addWidget(mg)
 
         # ── Payment Variance (M-Pesa / Till excess) ───────────────────────────
-        vg, vf_body = section_card('⚖', 'Payment Variance', 'Excess M-Pesa / Till payment handling')
+        vg, vf_body = section_card('=', 'Payment Variance', 'Excess M-Pesa / Till payment handling')
         vf = make_form(); vf_w = QWidget(); vf_w.setLayout(vf)
         self.variance_enabled = QCheckBox('Enable payment variance handling on Till / M-Pesa')
         self.variance_enabled.setMinimumHeight(36)
@@ -140,7 +140,7 @@ class SettingsTab(QWidget):
 
         # ── Cash Rounding (Sales) ─────────────────────────────────────────────
         from desktop.utils.cash_rounding_service import MODE_LABELS
-        cg, cf_body = section_card('🪙', 'Cash Rounding', 'Sales — round final cash amount only')
+        cg, cf_body = section_card('$', 'Cash Rounding', 'Sales — round final cash amount only')
         cf = make_form(); cf_w = QWidget(); cf_w.setLayout(cf)
         self.cash_rounding_enabled = QCheckBox('Enable cash rounding')
         self.cash_rounding_enabled.setMinimumHeight(36)
@@ -185,7 +185,7 @@ class SettingsTab(QWidget):
 
         # ── Category Visual Settings ───────────────────────────────────────────
         cvg, cv_body = section_card(
-            '🎨', 'Category Visual Settings',
+            '*', 'Category Visual Settings',
             'Offline icons & tiles for POS and inventory')
         cvf = make_form(); cv_w = QWidget(); cv_w.setLayout(cvf)
         from desktop.utils.category_visuals import load_visual_prefs
@@ -235,7 +235,7 @@ class SettingsTab(QWidget):
         lay.addWidget(cvg)
 
         # ── Workflow / After Sale defaults ────────────────────────────────────
-        wg, wf_body = section_card('🔄', 'Workflow', 'After Sale defaults for POS checkout')
+        wg, wf_body = section_card('>', 'Workflow', 'After Sale defaults for POS checkout')
         wform = make_form(); wf_w = QWidget(); wf_w.setLayout(wform)
         self.after_sale_default_customer = QComboBox()
         self.after_sale_default_customer.setMinimumHeight(42)
@@ -291,7 +291,7 @@ class SettingsTab(QWidget):
         lay.addWidget(wg)
 
         # ── Automatic reports ─────────────────────────────────────────────────
-        rg, rf_body = section_card('📊', 'Automatic Telegram Reports', 'Auto-schedule daily reports')
+        rg, rf_body = section_card('*', 'Automatic Telegram Reports', 'Auto-schedule daily reports')
         rf = make_form(); rf_w = QWidget(); rf_w.setLayout(rf)
         self.auto_report_daily = QCheckBox('Send daily sales report (Excel) to Telegram')
         self.auto_report_daily.setMinimumHeight(36)
@@ -331,7 +331,7 @@ class SettingsTab(QWidget):
         lay.addWidget(rg)
 
         # ── Telegram notifications ─────────────────────────────────────────────
-        tg, tg_body = section_card('💬', 'Telegram Notifications', 'Connect bot for reports and keys')
+        tg, tg_body = section_card('*', 'Telegram Notifications', 'Connect bot for reports and keys')
         _tg_lay = QVBoxLayout(); _tg_lay.setContentsMargins(0, 0, 0, 0); _tg_lay.setSpacing(14)
 
         # Status row — shows whether Telegram is connected or not
@@ -421,7 +421,7 @@ class SettingsTab(QWidget):
         lay.addWidget(tg)
 
         # ── Remote web dashboard (Cloudflare) ─────────────────────────────────
-        wg, wg_body = section_card('☁', 'Remote Web Dashboard', 'Sync sales and inventory to the cloud')
+        wg, wg_body = section_card('*', 'Remote Web Dashboard', 'Sync sales and inventory to the cloud')
         _wg_lay = QVBoxLayout(); _wg_lay.setContentsMargins(0, 0, 0, 0); _wg_lay.setSpacing(14)
 
         self._cf_status_row = QFrame()
@@ -561,7 +561,7 @@ class SettingsTab(QWidget):
         role = self.user.get('user', {}).get('role', '')
         if role in ('admin', 'superadmin'):
             lay.addWidget(SecuritySettingsTab(self.api, self.user, self.config_getter))
-            vg, vg_body = section_card('🚫', 'Void Completed Sale', 'Cancel a sale by receipt number')
+            vg, vg_body = section_card('X', 'Void Completed Sale', 'Cancel a sale by receipt number')
             vinfo = QLabel(
                 'Cancel a completed sale by receipt number. Stock is restored automatically.\n'
                 'Pick a standardized void reason (Other requires specify). Requires Super-Admin PIN.\n'
@@ -1642,7 +1642,7 @@ class SecuritySettingsTab(QWidget):
         from desktop.utils.widgets import page_layout, section_card
         lay, _ = page_layout(self, margins=(0, 0, 0, 0), spacing=12)
         from PyQt5.QtWidgets import QFormLayout
-        grp, body = section_card('🔐', 'Super-Admin PIN', 'Required for stock adjust, voids, and overrides')
+        grp, body = section_card('!', 'Super-Admin PIN', 'Required for stock adjust, voids, and overrides')
         fl  = QFormLayout(); fl_w = QWidget(); fl_w.setLayout(fl)
 
         info = QLabel(

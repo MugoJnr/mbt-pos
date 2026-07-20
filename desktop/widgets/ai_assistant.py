@@ -87,14 +87,14 @@ _MODULE_LABELS = {
 }
 
 _QUICK_ACTIONS = [
-    ('Analyze sales today', 'sales', '📊'),
-    ('Inventory health check', 'inventory', '📦'),
-    ('Customer / debt insights', 'debt', '👥'),
-    ('Explain this screen', 'context', '◎'),
-    ('Detect problems', 'diagnostics', '⚠'),
-    ('Generate report ideas', 'reports', '📄'),
-    ('Reorder suggestions', 'inventory', '↻'),
-    ('Accounting checklist', 'accounting', '📒'),
+    ('Analyze sales today', 'sales', '$'),
+    ('Inventory health check', 'inventory', '#'),
+    ('Customer / debt insights', 'debt', '@'),
+    ('Explain this screen', 'context', 'o'),
+    ('Detect problems', 'diagnostics', '!'),
+    ('Generate report ideas', 'reports', '*'),
+    ('Reorder suggestions', 'inventory', '>'),
+    ('Accounting checklist', 'accounting', '='),
 ]
 
 
@@ -605,7 +605,7 @@ class AiAssistantPanel(QFrame):
             uid = str(u.get('id') or u.get('username') or '')
             for row in get_conversation_store().list(uid)[:6]:
                 title = row.get('title') or 'Chat'
-                item = QListWidgetItem(('📌 ' if row.get('pinned') else '') + title)
+                item = QListWidgetItem(('* ' if row.get('pinned') else '') + title)
                 item.setData(Qt.UserRole, row)
                 self._home_recent.addItem(item)
         except Exception:
@@ -791,7 +791,7 @@ class AiAssistantPanel(QFrame):
     def _on_conn(self):
         st = get_ai_service().status()
         if st.get('banner'):
-            self._banner.setText('⚠  ' + st['banner'])
+            self._banner.setText('!  ' + st['banner'])
             self._banner.show()
         else:
             self._banner.hide()
@@ -836,7 +836,7 @@ class AiAssistantPanel(QFrame):
                 title = row.get('title') or 'Chat'
                 if q and q not in title.lower():
                     continue
-                item = QListWidgetItem(('📌 ' if row.get('pinned') else '') + title)
+                item = QListWidgetItem(('* ' if row.get('pinned') else '') + title)
                 item.setData(Qt.UserRole, row)
                 if row.get('pinned'):
                     self._ws_pinned.addItem(item)
@@ -979,7 +979,7 @@ class AiAssistantPanel(QFrame):
             f'Payload: {action.payload}')
         self._add_bubble(
             'assistant',
-            f'✅ You approved **{action.action}**. Open the related module to apply.',
+            f'OK — You approved **{action.action}**. Open the related module to apply.',
         )
 
 
@@ -1056,7 +1056,7 @@ class _Bubble(QFrame):
         for act in actions or []:
             if not isinstance(act, ProposedAction):
                 continue
-            b = QPushButton(f'⚡ {act.summary or act.action}')
+            b = QPushButton(f'> {act.summary or act.action}')
             b.setObjectName('copilotActionBtn')
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _, a=act: self.panel and self.panel._prompt_action(a))

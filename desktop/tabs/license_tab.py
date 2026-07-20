@@ -25,14 +25,14 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerB
 # ── State styling map (Lovable semantic tokens — read C at render time) ────────
 def _state_style(state: str):
     styles = {
-        'active':       (C['ok'],    '✓  ACTIVE',       'License is valid and active.'),
-        'expiring':     (C['warn'],  '⚠  EXPIRING SOON', 'Subscription expires in less than 14 days.'),
-        'warning':      (C['warn'],  '⚠  WARNING',       'Subscription expires in 7 days or less.'),
-        'critical':     (C['err'],   '⚠  CRITICAL',      'Subscription expires in 3 days or less!'),
-        'expired':      (C['err'],   '✗  EXPIRED',        'Your subscription has expired. Renew to continue.'),
-        'inactive':     (C['muted'], '○  INACTIVE',       'License has been deactivated.'),
-        'tampered':     (C['err'],   '✗  TAMPERED',       'License integrity check failed. Contact support.'),
-        'unactivated':  (C['muted'], '○  NOT ACTIVATED',  'Activate your license to use MBT POS.'),
+        'active':       (C['ok'],    'OK  ACTIVE',       'License is valid and active.'),
+        'expiring':     (C['warn'],  '!  EXPIRING SOON', 'Subscription expires in less than 14 days.'),
+        'warning':      (C['warn'],  '!  WARNING',       'Subscription expires in 7 days or less.'),
+        'critical':     (C['err'],   '!  CRITICAL',      'Subscription expires in 3 days or less!'),
+        'expired':      (C['err'],   'X  EXPIRED',        'Your subscription has expired. Renew to continue.'),
+        'inactive':     (C['muted'], 'o  INACTIVE',       'License has been deactivated.'),
+        'tampered':     (C['err'],   'X  TAMPERED',       'License integrity check failed. Contact support.'),
+        'unactivated':  (C['muted'], 'o  NOT ACTIVATED',  'Activate your license to use MBT POS.'),
     }
     return styles.get(state, (C['muted'], state.upper(), ''))
 
@@ -145,7 +145,7 @@ class LicenseTab(QWidget):
         self.warn_bar.hide()
         wl = QHBoxLayout(self.warn_bar)
         wl.setContentsMargins(14, 0, 14, 0)
-        self.warn_icon = QLabel("⚠")
+        self.warn_icon = QLabel("!")
         self.warn_icon.setStyleSheet("font-size:16px;")
         self.warn_text = QLabel("")
         self.warn_text.setStyleSheet(f"color:{C['warn']}; font-size:12px; font-weight:600;")
@@ -162,7 +162,7 @@ class LicenseTab(QWidget):
         # ── KPI cards row ─────────────────────────────────────────────────────
         kpi_row = QHBoxLayout()
         kpi_row.setSpacing(12)
-        self.card_plan    = _LicCard('📦', 'Subscription Plan', '—',         C['gold'])
+        self.card_plan    = _LicCard('*', 'Subscription Plan', '—',         C['gold'])
         self.card_days    = _LicCard('⏳', 'Days Remaining',    '—',         C['info'])
         self.card_expiry  = _LicCard('📅', 'Expiry Date',       '—',         C['text2'])
         self.card_sync    = _LicCard('🔄', 'Last Sync',         'Never',     C['ok'])
@@ -383,7 +383,7 @@ class LicenseTab(QWidget):
         color, label_txt, sub_txt = _state_style(state)
 
         # Banner
-        self.state_icon.setText('✓' if state == 'active' else ('✗' if state in ('expired','tampered') else '⚠'))
+        self.state_icon.setText('OK' if state == 'active' else ('X' if state in ('expired','tampered') else '!'))
         self.state_icon.setStyleSheet(f"font-size:26px; color:{color};")
         self.state_label.setText(label_txt)
         self.state_label.setStyleSheet(f"color:{color}; font-size:15px; font-weight:700;")
@@ -408,7 +408,7 @@ class LicenseTab(QWidget):
         if state in ('expiring', 'warning', 'critical'):
             urgency = {
                 'expiring': f"Your subscription expires in {days} days. Renew to avoid interruption.",
-                'warning':  f"⚠  Only {days} days remaining. Please renew your subscription soon.",
+                'warning':  f"!  Only {days} days remaining. Please renew your subscription soon.",
                 'critical': f"🚨  URGENT: License expires in {days} days!",
             }
             self.warn_text.setText(urgency.get(state, ''))
@@ -589,7 +589,7 @@ class LicenseTab(QWidget):
         """Called on main thread when a key arrives via Telegram."""
         self.tg_listen_btn.setEnabled(True)
         self.tg_listen_btn.setText('Wait for Key via Telegram')
-        self.tg_status_lbl.setText(f'✓  Key received via Telegram — activating…')
+        self.tg_status_lbl.setText(f'OK  Key received via Telegram — activating…')
         self.tg_status_lbl.setStyleSheet(f"color:{C['ok']}; font-size:11px;")
         self.key_input.setText(key)
         # Auto-trigger activation

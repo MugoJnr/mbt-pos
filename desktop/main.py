@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "PROD-2026-07-20-v2.3.96"
-APP_VERSION   = "2.3.96"   # must match GitHub release tag vX.Y.Z / version.json
+APP_BUILD_TAG = "PROD-2026-07-20-v2.3.97"
+APP_VERSION   = "2.3.97"   # must match GitHub release tag vX.Y.Z / version.json
 
 
 def install_crash_handler():
@@ -1002,21 +1002,22 @@ class MainWindow(QMainWindow):
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
+        # Icons: BMP geometric / ASCII only — never emoji (mojibake on some Windows PCs).
         tabs  = [
             ('dashboard',   '\u229e',  'Dashboard'),
             ('sales',       '\u2295',  'Point of Sale'),
             ('inventory',   '\u25a4',  'Inventory'),
             ('consumption', '\u25a3',  'Internal Consumption'),
-            ('debt',        '\U0001f4b0', 'Debt Management'),
+            ('debt',        '$',       'Debt Management'),
             ('accounting',  '\u2395',  'Accounting'),
             ('reports',     '\u25a6',  'Reports'),
             ('notes',       '\u2261',  'Notes'),
-            ('ai_ops',      '\u2726',  'AI Operations'),
+            ('ai_ops',      '*',       'AI Operations'),
             ('admin',       '\u229b',  'Users && Access'),
-            ('settings',    '\u2699',  'Settings'),
-            ('security',    '\U0001f510', 'Security'),
+            ('settings',    '#',       'Settings'),
+            ('security',    '!',       'Security'),
             ('license',     '\u25c8',  'License'),
-            ('diagnostics', '\u2692',  'Diagnostics'),
+            ('diagnostics', '+',       'Diagnostics'),
         ]
         nav_scroll = QScrollArea()
         nav_scroll.setWidgetResizable(True)

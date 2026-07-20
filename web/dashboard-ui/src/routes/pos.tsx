@@ -16,7 +16,6 @@ import {
   PauseCircle,
   StickyNote,
   ArrowRight,
-  UserRound,
   Printer,
   Eye,
   Package,
@@ -99,6 +98,7 @@ function POS() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [page, setPage] = useState(1);
   const [customerId, setCustomerId] = useState<number | "">("");
+  const [customerPickerOpen, setCustomerPickerOpen] = useState(false);
 
   const productsQ = useQuery({
     queryKey: ["products"],
@@ -266,6 +266,8 @@ function POS() {
     setDiscount(0);
     setAmount("");
     setNote("");
+    setCustomerId("");
+    setCustomerPickerOpen(false);
   };
 
   const checkout = useMutation({
@@ -319,11 +321,6 @@ function POS() {
   const catPills = categories.filter(Boolean);
   const visibleCats = catPills.slice(0, 5);
   const moreCats = catPills.slice(5);
-  const wallet = Number(selectedCustomer?.wallet_balance || 0);
-  const outstanding = Number(
-    selectedCustomer?.outstanding_balance ?? selectedCustomer?.balance ?? 0,
-  );
-  const loyalty = selectedCustomer?.loyalty_points;
 
   return (
     <AppShell title="Point of Sale" density="pos">
@@ -640,59 +637,64 @@ function POS() {
               )}
             </div>
 
-            <div className="p-3 border-b border-border/60">
-              <div className="rounded-xl border border-border bg-card2/70 p-3">
-                <div className="flex items-start gap-3">
-                  <div className="h-11 w-11 rounded-full bg-gold/15 text-gold grid place-items-center shrink-0 border border-gold/30">
-                    <UserRound className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] text-muted-fg uppercase tracking-wide font-bold">
-                      Customer
-                    </div>
-                    <div className="text-sm font-bold text-text truncate">
-                      {selectedCustomer?.name || "Walk-in Customer"}
-                    </div>
-                    <div className="text-[12px] text-text2 truncate mt-0.5">
-                      {selectedCustomer
-                        ? [
-                            selectedCustomer.phone,
-                            selectedCustomer.customer_type || selectedCustomer.type,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ") || "No phone on file"
-                        : "Cash customer · no account"}
-                    </div>
-                    {selectedCustomer &&
-                    (wallet > 0.009 || outstanding > 0.009 || loyalty != null) ? (
-                      <div className="text-[11px] text-ok font-semibold mt-1 truncate">
-                        {[
-                          loyalty != null && loyalty !== "" ? `Loyalty ${loyalty}` : null,
-                          wallet > 0.009 ? `Credit ${KES(wallet, currency)}` : null,
-                          outstanding > 0.009 ? `Due ${KES(outstanding, currency)}` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </div>
-                    ) : null}
-                  </div>
+            <div className="px-3 py-2 border-b border-border/60">
+              <button
+                type="button"
+                onClick={() => setCustomerPickerOpen((v) => !v)}
+                className={
+                  "w-full min-h-11 rounded-xl border px-3 text-left text-[13px] font-extrabold transition-ui " +
+                  (selectedCustomer
+                    ? "border-gold bg-gold/10 text-text"
+                    : "border-border bg-card2 text-text hover:border-gold/50")
+                }
+              >
+                <span className="block truncate">
+                  {selectedCustomer
+                    ? [
+                        selectedCustomer.name || `Customer #${selectedCustomer.id}`,
+                        selectedCustomer.phone,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : "Walk-in Customer"}
+                </span>
+                <span className="block text-[11px] font-semibold text-muted-fg mt-0.5">
+                  {selectedCustomer
+                    ? "Tap to change or clear"
+                    : "Tap to choose saved customer"}
+                </span>
+              </button>
+              {customerPickerOpen ? (
+                <div className="mt-2 rounded-xl border border-border bg-card p-2 space-y-2">
+                  <Select
+                    value={customerId === "" ? "" : String(customerId)}
+                    onChange={(e) => {
+                      setCustomerId(e.target.value ? Number(e.target.value) : "");
+                      setCustomerPickerOpen(false);
+                    }}
+                    className="min-h-11 h-11 text-sm"
+                    autoFocus
+                  >
+                    <option value="">Walk-in Customer</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name || `Customer #${c.id}`}
+                        {c.phone ? ` · ${c.phone}` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerId("");
+                      setCustomerPickerOpen(false);
+                    }}
+                    className="w-full min-h-10 rounded-lg text-[12px] font-bold text-muted-fg hover:bg-hover"
+                  >
+                    Reset to Walk-in
+                  </button>
                 </div>
-                <Select
-                  value={customerId === "" ? "" : String(customerId)}
-                  onChange={(e) =>
-                    setCustomerId(e.target.value ? Number(e.target.value) : "")
-                  }
-                  className="mt-3 min-h-11 h-11 text-sm"
-                >
-                  <option value="">Walk-in Customer</option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name || `Customer #${c.id}`}
-                      {c.phone ? ` · ${c.phone}` : ""}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+              ) : null}
             </div>
 
             <div className="p-3 space-y-4">

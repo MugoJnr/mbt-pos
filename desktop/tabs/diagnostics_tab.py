@@ -29,7 +29,7 @@ class DiagnosticsTab(QWidget):
         actions = QWidget()
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(10)
         run=PrimaryBtn('▶  Run Check', 40); run.clicked.connect(self.run_check)
-        copy=SecondaryBtn('📋  Copy Errors', 40); copy.clicked.connect(self._copy_errors)
+        copy=SecondaryBtn('Copy Errors', 40); copy.clicked.connect(self._copy_errors)
         exp=SecondaryBtn('⬇  Export', 40); exp.clicked.connect(self._export)
         rot=GhostBtn('↺  Rotate Logs', 40); rot.clicked.connect(self._rotate)
         ar.addWidget(run); ar.addWidget(copy); ar.addWidget(exp); ar.addWidget(rot)
@@ -218,7 +218,7 @@ class DiagnosticsTab(QWidget):
 
     def _render(self, report):
         colors={'healthy':C['ok'],'warning':C['warn'],'critical':C['err'],'error':C['err']}
-        icons={'healthy':'✓','warning':'⚠','critical':'✗','error':'✗'}
+        icons={'healthy':'OK','warning':'!','critical':'X','error':'X'}
         r = RADIUS['lg']
         for name,(card,st,ms) in self._cards.items():
             chk=report.get('checks',{}).get(name,{}); s=chk.get('status','unknown'); col=colors.get(s,C['text2'])
@@ -244,7 +244,7 @@ class DiagnosticsTab(QWidget):
             checks['disk_space']=('healthy' if fg>1 else 'warning',f'{fg:.1f}GB free')
         except: pass
         colors={'healthy':C['ok'],'warning':C['warn'],'error':C['err']}
-        icons={'healthy':'✓','warning':'⚠','error':'✗'}
+        icons={'healthy':'OK','warning':'!','error':'X'}
         r = RADIUS['lg']
         for name,(card,st,ms) in self._cards.items():
             s,m=checks.get(name,('unknown','—')); col=colors.get(s,C['text2'])

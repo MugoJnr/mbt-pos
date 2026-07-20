@@ -512,7 +512,7 @@ class AiFullWorkspace(QFrame):
         box.exec_()
         if box.clickedButton() == cancel:
             return
-        self._add_bubble('assistant', f'✅ Approved **{action.action}**. Apply from the related POS module.')
+        self._add_bubble('assistant', f'OK — Approved **{action.action}**. Apply from the related POS module.')
 
     def _on_send(self):
         msg = (self._input.toPlainText() or '').strip()

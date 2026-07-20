@@ -162,8 +162,9 @@ class SalesTab(QWidget):
         self._cart_list.removeClicked.connect(self._rm)
         cbl.addWidget(self._cart_list)
 
-        # Customer card (selector + live balance / loyalty when API provides it)
+        # Compact customer chip (opens picker — frees cart vertical space)
         self._cust_card = CustomerCard()
+        self._cust_card.set_api(self.api)
         self._customer = self._cust_card.selector
         self._customer.currentIndexChanged.connect(self._on_customer_changed)
         self._cust_lbl = None
@@ -404,11 +405,11 @@ class SalesTab(QWidget):
         fl.setSpacing(8)
 
         br = QHBoxLayout(); br.setSpacing(10)
-        self._clr_btn = DangerBtn('🗑', 40); self._clr_btn.setFixedWidth(44)
+        self._clr_btn = DangerBtn('X', 40); self._clr_btn.setFixedWidth(44)
         self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
-        self._prv_btn = SecondaryBtn('🖨  Preview', 40)
+        self._prv_btn = SecondaryBtn('Preview', 40)
         self._prv_btn.clicked.connect(self._preview)
-        self._reprint_btn = SecondaryBtn('🖨  Reprint', 40)
+        self._reprint_btn = SecondaryBtn('Reprint', 40)
         self._reprint_btn.setToolTip('Reprint a completed receipt')
         self._reprint_btn.clicked.connect(self._reprint_receipt)
         br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
@@ -424,7 +425,7 @@ class SalesTab(QWidget):
             self._void_btn = None
         fl.addLayout(br)
 
-        self._charge_btn = PrimaryBtn('🛒  Complete Sale', 56)
+        self._charge_btn = PrimaryBtn('$  Complete Sale', 56)
         self._charge_btn.setMinimumHeight(56)
         self._charge_btn.clicked.connect(self._process)
         fl.addWidget(self._charge_btn)
@@ -881,6 +882,9 @@ class SalesTab(QWidget):
                 c.get('id'): float(c.get('wallet_balance') or 0)
                 for c in customers if c.get('id')
             }
+            if hasattr(self, '_cust_card') and self._cust_card is not None:
+                self._cust_card.set_api(self.api)
+                self._cust_card.set_customers_cache(customers)
             if hasattr(self, '_customer'):
                 self._customer.load_customers(customers)
                 self._on_customer_changed()
@@ -1809,7 +1813,7 @@ class SalesTab(QWidget):
                 if bal <= 0.009:
                     msg += '\n✓ Fully paid'
                 else:
-                    msg += '\n⚠ Outstanding balance due'
+                    msg += '\n! Outstanding balance due'
                 QMessageBox.information(self, 'Sale Complete', msg)
             else:
                 err = (res or {}).get('error', 'Failed to create debt invoice.')

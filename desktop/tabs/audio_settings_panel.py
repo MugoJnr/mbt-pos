@@ -58,7 +58,7 @@ class AudioSettingsPanel(QWidget):
         root.setSpacing(14)
 
         # Appearance / Audio main
-        grp, body = section_card('🔊', 'Audio Experience',
+        grp, body = section_card('*', 'Audio Experience',
                                  'Offline sounds · themes · volumes · collision modes')
         form = QVBoxLayout()
         form.setSpacing(10)
@@ -210,7 +210,7 @@ class AudioSettingsPanel(QWidget):
         root.addWidget(grp)
 
         # Diagnostics
-        dgrp, dbody = section_card('🩺', 'Audio Diagnostics',
+        dgrp, dbody = section_card('+', 'Audio Diagnostics',
                                    'Pack status, missing files, last events, test each')
         self.diag_theme = QLabel('')
         self.diag_theme.setStyleSheet(f"color:{C['text']}; font-size:13px; background:transparent;")

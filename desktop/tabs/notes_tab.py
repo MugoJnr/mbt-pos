@@ -76,7 +76,7 @@ class _NoteRow(QWidget):
         self._title.setFont(f)
         top.addWidget(self._title, 1)
 
-        self._pin = QLabel('📌')
+        self._pin = QLabel('*')
         self._pin.setObjectName('noteRowPin')
         self._pin.setFixedWidth(16)
         self._pin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -211,7 +211,7 @@ class NotesTab(QWidget):
         self._tin.textChanged.connect(self._on_edit)
         hl.addWidget(self._tin, 1)
 
-        self._pin_btn = GhostBtn('📌', 36)
+        self._pin_btn = GhostBtn('*', 36)
         self._pin_btn.setFixedWidth(40)
         self._pin_btn.setToolTip('Pin / unpin note')
         self._pin_btn.clicked.connect(self._toggle_pin)
@@ -223,7 +223,7 @@ class NotesTab(QWidget):
         self._sv.clicked.connect(self._save)
         hl.addWidget(self._sv)
 
-        self._dl = GhostBtn('🗑', 36)
+        self._dl = GhostBtn('X', 36)
         self._dl.setFixedWidth(40)
         self._dl.setToolTip('Delete note')
         self._dl.clicked.connect(self._delete)
@@ -462,7 +462,7 @@ class NotesTab(QWidget):
         self._loading = False
         self._dirty = False
         pinned = bool(int(n.get('pinned') or 0))
-        self._pin_btn.setText('📌' if pinned else '📍')
+        self._pin_btn.setText('*' if pinned else 'o')
         self._pin_btn.setToolTip('Unpin note' if pinned else 'Pin note')
         edited = _fmt_edited(n.get('updated_at') or n.get('created_at'))
         self._meta.setText(f'Last edited · {edited}' if edited else '')
@@ -501,7 +501,7 @@ class NotesTab(QWidget):
         self._loading = False
         self._meta.setText('New note — unsaved')
         self._status.setText('')
-        self._pin_btn.setText('📍')
+        self._pin_btn.setText('o')
         self._pin_btn.setToolTip('Pin note')
         self._set_editor_enabled(True)
         self._pin_btn.setEnabled(False)

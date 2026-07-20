@@ -12,6 +12,7 @@ from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
 from desktop.utils.theme import C, RADIUS, PADDING, GAP, TOUCH_MIN, qss_alpha
+from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
 
 
 # ── Category visual language ──────────────────────────────────────────────────
@@ -151,16 +152,19 @@ class CategoryIcon(QLabel):
                 return
         except Exception:
             pass
-        emoji, accent = category_visual(self._category)
+        # Never paint raw emoji as QLabel text — mojibake on many Windows PCs.
+        # Twemoji PNG / SVG paths above are preferred; letter tile is the safe fallback.
+        _, accent = category_visual(self._category)
         if self._meta.get('accent_color'):
             accent = self._meta['accent_color']
+        letter = (self._category or '?').strip()[:1].upper() or '?'
         self.setPixmap(QPixmap())
-        self.setText(emoji)
+        self.setText(letter)
         r = self._size // 2
         self.setStyleSheet(
             f"QLabel {{ background:{qss_alpha(accent, 0.18)}; color:{accent}; "
-            f"border-radius:{r}px; font-size:{max(16, self._size // 2)}px; "
-            f"border:none; }}")
+            f"border-radius:{r}px; font-size:{max(14, self._size // 2)}px; "
+            f"font-weight:800; border:none; }}")
 
 
 # ── StockBadge ────────────────────────────────────────────────────────────────
@@ -691,8 +695,8 @@ class CartList(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setMinimumHeight(260)
-        self._scroll.setMaximumHeight(420)
+        self._scroll.setMinimumHeight(280)
+        self._scroll.setMaximumHeight(520)
         self._scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
 
         self._body = QWidget()
@@ -810,13 +814,14 @@ class PaymentSegment(QWidget):
         lay.setVerticalSpacing(8)
         self._btns = {}
         for i, (key, label, enabled) in enumerate(self.TILES):
+            # ASCII / plain labels — emoji fonts are unreliable across Windows PCs
             pretty = {
-                'Cash': '💵  Cash',
-                'M-Pesa': '📱  M-Pesa',
-                'Card': '💳  Card',
-                'Bank Transfer': '🏦  Bank',
-                'Mixed': '🔀  Split',
-                'Gift Card': '🎁  Gift*',
+                'Cash': 'Cash',
+                'M-Pesa': 'M-Pesa',
+                'Card': 'Card',
+                'Bank Transfer': 'Bank',
+                'Mixed': 'Split',
+                'Gift Card': 'Gift*',
             }.get(key, label)
             b = PaymentButton(key, pretty, enabled=enabled, secondary=not enabled)
             if enabled:
@@ -975,103 +980,201 @@ class SummaryCard(QFrame):
 # ── CustomerCard ──────────────────────────────────────────────────────────────
 
 class CustomerCard(QFrame):
-    """Clean customer summary + embedded CustomerSelector (Change / Add)."""
+    """
+    Compact customer chip for Current Sale — saves cart vertical space.
+    Click opens picker: Walk-in | saved customers | Add new.
+    Keeps an embedded CustomerSelector for sales_tab API compatibility.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posCustomerCard')
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self._api = None
+        self._customers_cache = []
+
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        top = QHBoxLayout()
-        top.setSpacing(12)
-        self._avatar = QLabel('W')
-        self._avatar.setObjectName('posCustAvatar')
-        self._avatar.setFixedSize(44, 44)
-        self._avatar.setAlignment(Qt.AlignCenter)
-        top.addWidget(self._avatar)
-
-        meta = QVBoxLayout()
-        meta.setSpacing(2)
-        self._name_lbl = QLabel('Walk-in Customer')
-        self._name_lbl.setObjectName('posCustName')
-        self._phone_lbl = QLabel('No phone · Walk-in')
-        self._phone_lbl.setObjectName('posCustMeta')
-        self._extra_lbl = QLabel('')
-        self._extra_lbl.setObjectName('posCustExtra')
-        self._extra_lbl.hide()
-        meta.addWidget(self._name_lbl)
-        meta.addWidget(self._phone_lbl)
-        meta.addWidget(self._extra_lbl)
-        top.addLayout(meta, 1)
-        lay.addLayout(top)
-
+        # Hidden selector — sales_tab talks to this (load/select/walk-in/signals)
         self.selector = CustomerSelector()
-        lay.addWidget(self.selector)
+        self.selector.hide()
+        self.selector.currentIndexChanged.connect(self._sync_chip_from_selector)
+
+        self._btn = QPushButton('Walk-in Customer')
+        self._btn.setObjectName('posCustChip')
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.setMinimumHeight(TOUCH_MIN)
+        self._btn.setToolTip('Tap to choose a saved customer or add a new one')
+        self._btn.clicked.connect(self._open_picker)
+        lay.addWidget(self._btn)
+
         self.refresh_theme()
 
+    def set_api(self, api):
+        """Optional — enables Add Customer from the chip picker."""
+        self._api = api
+
+    def set_customers_cache(self, customers: list):
+        self._customers_cache = list(customers or [])
+
     def set_customer(self, customer: dict = None, *, walk_in=False):
-        """Update summary from a customer dict (or walk-in). Does not fake data."""
+        """Update chip label from a customer dict (or walk-in)."""
         if walk_in or not customer:
-            self._avatar.setText('W')
-            self._name_lbl.setText('Walk-in Customer')
-            self._phone_lbl.setText('Cash customer · no account')
-            self._extra_lbl.hide()
+            self._btn.setText('Walk-in Customer')
             self.refresh_theme()
             return
         name = (customer.get('name') or 'Customer').strip()
         phone = (customer.get('phone') or '').strip()
-        ctype = (customer.get('customer_type') or customer.get('type') or '').strip()
-        loyalty = customer.get('loyalty_points')
+        label = f'{name}  ·  {phone}' if phone else name
         wallet = float(customer.get('wallet_balance') or 0)
-        outstanding = customer.get('outstanding_balance')
-        if outstanding is None:
-            outstanding = customer.get('balance')
-        try:
-            outstanding = float(outstanding) if outstanding is not None else None
-        except (TypeError, ValueError):
-            outstanding = None
-        initials = ''.join(w[0] for w in name.split()[:2] if w).upper() or 'C'
-        self._avatar.setText(initials[:2])
-        self._name_lbl.setText(name)
-        bits = []
-        if phone:
-            bits.append(phone)
-        if ctype:
-            bits.append(ctype)
-        self._phone_lbl.setText(' · '.join(bits) if bits else 'No phone on file')
-        extras = []
-        if loyalty is not None and str(loyalty).strip() != '':
-            try:
-                extras.append(f'Loyalty {int(float(loyalty))}')
-            except (TypeError, ValueError):
-                extras.append(f'Loyalty {loyalty}')
         if wallet > 0.009:
-            extras.append(f'Store credit {wallet:,.2f}')
-        if outstanding is not None and outstanding > 0.009:
-            extras.append(f'Outstanding {outstanding:,.2f}')
-        if extras:
-            self._extra_lbl.setText(' · '.join(extras))
-            self._extra_lbl.show()
-        else:
-            self._extra_lbl.hide()
+            label = f'{label}  ·  Credit {wallet:,.0f}'
+        self._btn.setText(label)
         self.refresh_theme()
 
+    def _sync_chip_from_selector(self, *_args):
+        cid = self.selector.selected_id()
+        if not cid:
+            self.set_customer(None, walk_in=True)
+            return
+        cust = None
+        for c in self._customers_cache:
+            if c.get('id') == cid:
+                cust = c
+                break
+        if cust:
+            self.set_customer(cust, walk_in=False)
+        else:
+            # Fallback to combo display text
+            text = (self.selector.currentText() or 'Customer').split('  ·  ')[0].strip()
+            if 'walk-in' in text.lower():
+                self.set_customer(None, walk_in=True)
+            else:
+                self._btn.setText(text or 'Customer')
+                self.refresh_theme()
+
+    def _open_picker(self):
+        from desktop.dialogs.credit_customer_dialogs import (
+            CustomerPickerDialog, QuickCustomerDialog,
+        )
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QLabel
+
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle('Customer')
+        dlg.setMinimumWidth(420)
+        from desktop.utils.theme import apply_themed_dialog
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(22, 20, 22, 20)
+        lay.setSpacing(12)
+        tip = QLabel('Choose who this sale is for. Cart stays intact.')
+        tip.setWordWrap(True)
+        tip.setStyleSheet(
+            f"color:{C['text2']};font-size:12px;background:transparent;")
+        lay.addWidget(tip)
+
+        walk = PrimaryBtn('Walk-in Customer', 48)
+        walk.clicked.connect(lambda: self._pick_walk_in(dlg))
+        lay.addWidget(walk)
+
+        existing = PrimaryBtn('Select Saved Customer', 48)
+        existing.setStyleSheet(
+            f"QPushButton{{background:{C['card2']};color:{C['gold']};"
+            f"border:2px solid {C['gold']};border-radius:10px;"
+            f"font-size:15px;font-weight:800;}}"
+            f"QPushButton:hover{{background:{qss_alpha(C['gold'], 0.12)};}}")
+        existing.clicked.connect(lambda: self._pick_existing(dlg))
+        lay.addWidget(existing)
+
+        create = SecondaryBtn('+  Add New Customer', 44)
+        create.clicked.connect(lambda: self._pick_create(dlg))
+        lay.addWidget(create)
+
+        cancel = SecondaryBtn('Cancel', 40)
+        cancel.clicked.connect(dlg.reject)
+        lay.addWidget(cancel)
+
+        from desktop.utils.state_reset import StateResetManager
+        StateResetManager.clear_modal_on_close(dlg)
+        dlg.exec_()
+
+    def _pick_walk_in(self, dlg):
+        self.selector.select_walk_in()
+        self.set_customer(None, walk_in=True)
+        dlg.accept()
+
+    def _pick_existing(self, parent_dlg):
+        from desktop.dialogs.credit_customer_dialogs import CustomerPickerDialog
+        api = self._api
+        if api is None:
+            # Try parent SalesTab
+            w = self.window()
+            api = getattr(w, 'api', None) or getattr(self.parent(), 'api', None)
+        if api is None:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, 'Customers', 'Customer list is not available yet.')
+            return
+        picker = CustomerPickerDialog(self.window(), api)
+        if picker.exec_() != picker.Accepted:
+            return
+        cid = picker.selected_id
+        if cid is None:
+            return
+        # Refresh selector list if needed, then select
+        try:
+            customers = api.get_customers() or []
+            self.set_customers_cache(customers)
+            self.selector.load_customers(customers)
+        except Exception:
+            pass
+        if hasattr(self.selector, 'select_customer'):
+            self.selector.select_customer(cid)
+        else:
+            idx = self.selector.findData(cid)
+            if idx >= 0:
+                self.selector.setCurrentIndex(idx)
+        parent_dlg.accept()
+
+    def _pick_create(self, parent_dlg):
+        from desktop.dialogs.credit_customer_dialogs import QuickCustomerDialog
+        api = self._api
+        if api is None:
+            w = self.window()
+            api = getattr(w, 'api', None) or getattr(self.parent(), 'api', None)
+        if api is None:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, 'Customers', 'Cannot add customer — API unavailable.')
+            return
+        create = QuickCustomerDialog(self.window(), api)
+        if create.exec_() != create.Accepted:
+            return
+        cid = create.customer_id
+        if not cid:
+            return
+        try:
+            customers = api.get_customers() or []
+            self.set_customers_cache(customers)
+            self.selector.load_customers(customers)
+            self.selector.select_customer(cid)
+        except Exception:
+            pass
+        parent_dlg.accept()
+
     def refresh_theme(self):
+        walk_in = 'walk-in' in (self._btn.text() or '').lower()
+        border = C['gold'] if not walk_in else C['border']
+        bg = qss_alpha(C['gold'], 0.12) if not walk_in else C['card2']
         self.setStyleSheet(
-            f"QFrame#posCustomerCard{{background:{C['card2']};border:1px solid {C['border']};"
-            f"border-radius:{RADIUS['lg']}px;}}"
-            f"QLabel#posCustAvatar{{background:{qss_alpha(C['gold'], 0.16)};color:{C['gold']};"
-            f"border:1px solid {qss_alpha(C['gold'], 0.35)};border-radius:22px;"
-            f"font-size:14px;font-weight:800;}}"
-            f"QLabel#posCustName{{color:{C['text']};font-size:14px;font-weight:800;"
-            f"background:transparent;}}"
-            f"QLabel#posCustMeta{{color:{C['text2']};font-size:12px;font-weight:600;"
-            f"background:transparent;}}"
-            f"QLabel#posCustExtra{{color:{C['ok']};font-size:11px;font-weight:700;"
-            f"background:transparent;}}"
+            f"QFrame#posCustomerCard{{background:transparent;border:none;}}"
+            f"QPushButton#posCustChip{{background:{bg};color:{C['text']};"
+            f"border:1.5px solid {border};border-radius:{RADIUS['md']}px;"
+            f"font-size:13px;font-weight:800;text-align:left;padding:0 14px;"
+            f"min-height:{TOUCH_MIN}px;}}"
+            f"QPushButton#posCustChip:hover{{border-color:{C['gold']};"
+            f"background:{qss_alpha(C['gold'], 0.14)};}}"
+            f"QPushButton#posCustChip:pressed{{background:{qss_alpha(C['gold'], 0.20)};}}"
         )
         if hasattr(self.selector, 'refresh_theme'):
             self.selector.refresh_theme()
@@ -1097,10 +1200,10 @@ class CustomerSelector(QComboBox):
             le.setPlaceholderText('Search customer…')
             le.textEdited.connect(self._filter)
             # Leading search + trailing chevron (QSS often hides native arrow)
-            self._search_act = QAction('🔍', self)
+            self._search_act = QAction('>', self)
             self._search_act.setToolTip('Type to search customers')
             le.addAction(self._search_act, QLineEdit.LeadingPosition)
-            self._drop_act = QAction('▾', self)
+            self._drop_act = QAction('v', self)
             self._drop_act.setToolTip('Browse customers')
             self._drop_act.triggered.connect(self.showPopup)
             le.addAction(self._drop_act, QLineEdit.TrailingPosition)
@@ -1265,10 +1368,10 @@ class CustomerSelector(QComboBox):
 # ── PosSearchBar ──────────────────────────────────────────────────────────────
 
 class PosSearchBar(QLineEdit):
-    """Search / barcode field — 🔍 placeholder, Enter submits scan."""
+    """Search / barcode field — Enter submits scan. ASCII placeholder (no emoji)."""
     submitted = pyqtSignal(str)
 
-    def __init__(self, placeholder='🔍  Search or scan barcode…', parent=None):
+    def __init__(self, placeholder='Search or scan barcode...', parent=None):
         super().__init__(parent)
         self.setObjectName('mbtSearchBar')
         self.setPlaceholderText(placeholder)

@@ -441,7 +441,7 @@ class SetupWizard(QDialog):
         lay.addSpacing(8)
 
         detect_row = QHBoxLayout()
-        detect_btn = SecondaryBtn("🔍  Detect Printers", 40)
+        detect_btn = SecondaryBtn("Detect Printers", 40)
         detect_btn.setFixedWidth(180)
         detect_btn.clicked.connect(self._detect_printers)
 
@@ -463,7 +463,7 @@ class SetupWizard(QDialog):
         form.addRow(fl2, self.w_auto_print)
         lay.addLayout(form)
 
-        test_btn = SecondaryBtn("🖨  Print Test Page", 40)
+        test_btn = SecondaryBtn("Print Test Page", 40)
         test_btn.setFixedWidth(180)
         test_btn.clicked.connect(self._test_print)
         lay.addWidget(test_btn)

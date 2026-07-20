@@ -48,7 +48,7 @@ class SecurityTab(QWidget):
             ('Audit Log', 'Enabled', C['ok']),
         ):
             c = Card(); cl = c.layout_h((16, 14, 16, 14), 12)
-            ic = QLabel('🔐')
+            ic = QLabel('!')
             ic.setFixedSize(40, 40); ic.setAlignment(Qt.AlignCenter)
             ic.setStyleSheet(
                 f"background:{qss_alpha(C['gold'], 0.13)}; color:{C['gold']}; border-radius:8px; "
@@ -74,7 +74,7 @@ class SecurityTab(QWidget):
             f"QFrame{{background:{qss_alpha(C['gold'], 0.07)};border:1px solid {qss_alpha(C['gold'], 0.25)};"
             f"border-radius:10px;}}")
         wl = QHBoxLayout(warn); wl.setContentsMargins(18, 12, 18, 12)
-        wl.addWidget(QLabel('🔐'))
+        wl.addWidget(QLabel('!'))
         info = QLabel(
             '<b>Super-Admin Security Panel</b> — '
             'Actions here are logged and irreversible. Use with care.')
@@ -321,7 +321,7 @@ class SecurityTab(QWidget):
         self._void_receipt = QLineEdit(); self._void_receipt.setPlaceholderText(
             'Receipt number  e.g. RCP-20260520-0001')
         self._void_receipt.setMinimumHeight(38); vl.addWidget(self._void_receipt, 1)
-        void_btn = DangerBtn('🗑  Void Sale', 42); void_btn.clicked.connect(self._void_sale)
+        void_btn = DangerBtn('Void Sale', 42); void_btn.clicked.connect(self._void_sale)
         vl.addWidget(void_btn)
         lay.addWidget(void_frame)
 

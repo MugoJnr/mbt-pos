@@ -60,7 +60,7 @@ class AiOpsTab(QWidget):
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
         self._refresh_btn = PrimaryBtn('↻  Refresh Health', 40)
         self._refresh_btn.clicked.connect(self.refresh_health)
-        self._support_btn = SecondaryBtn('📦  Support Report', 40)
+        self._support_btn = SecondaryBtn('*  Support Report', 40)
         self._support_btn.clicked.connect(self._support_report)
         ar.addWidget(self._refresh_btn)
         ar.addWidget(self._support_btn)
@@ -239,7 +239,7 @@ class AiOpsTab(QWidget):
         )
         info.setWordWrap(True)
         lay.addWidget(info)
-        btn = PrimaryBtn('📦  Generate Support Package', 40)
+        btn = PrimaryBtn('*  Generate Support Package', 40)
         btn.clicked.connect(self._support_report)
         lay.addWidget(btn)
         self._support_out = QLabel('')
@@ -266,7 +266,7 @@ class AiOpsTab(QWidget):
     def _apply_theme_bits(self):
         st = self._ops.ai_status()
         if st.get('banner'):
-            self._banner.setText('⚠  ' + st['banner'])
+            self._banner.setText('!  ' + st['banner'])
             self._banner.setStyleSheet(
                 f"color:{C['warn']}; background:{qss_alpha(C['warn'], 0.15)};"
                 f" padding:10px 12px; border-radius:8px; font-weight:600;")

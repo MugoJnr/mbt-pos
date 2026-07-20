@@ -16,12 +16,12 @@ from desktop.utils.option_lists import USER_ROLES, USER_ROLE_LABELS
 from desktop.utils.select_controls import Select
 
 ALL_TABS = ALL_DESKTOP_TABS
-TAB_LABELS = {'dashboard':'⊞ Dashboard','sales':'🛒 Point of Sale','inventory':'📦 Inventory',
-              'consumption':'▣ Internal Consumption',
-              'debt':'💰 Debt','accounting':'📒 Accounting',
-              'reports':'📊 Reports','notes':'📝 Notes','settings':'⚙ Settings',
-              'admin':'👥 Users','license':'🔑 License','diagnostics':'🔧 Diagnostics',
-              'security':'🔐 Security'}
+TAB_LABELS = {'dashboard':'+ Dashboard','sales':'+ Point of Sale','inventory':'# Inventory',
+              'consumption':'# Internal Consumption',
+              'debt':'$ Debt','accounting':'= Accounting',
+              'reports':'* Reports','notes':'= Notes','settings':'# Settings',
+              'admin':'@ Users','license':'* License','diagnostics':'+ Diagnostics',
+              'security':'! Security','ai_ops':'* AI Operations'}
 
 class AdminTab(QWidget):
     def __init__(self, api, user, db_path, config_getter):
