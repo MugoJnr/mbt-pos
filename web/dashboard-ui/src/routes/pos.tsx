@@ -587,12 +587,15 @@ function POS() {
                         </button>
                       </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-3">
-                      <div className="inline-flex items-center rounded-xl border border-border bg-input overflow-hidden">
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="inline-flex items-center gap-2 rounded-xl border border-border bg-input px-2 py-1.5 min-h-11">
+                        <span className="text-[11px] font-extrabold uppercase tracking-wide text-muted-fg shrink-0 pl-1">
+                          Qty
+                        </span>
                         <button
                           type="button"
                           onClick={() => setQty(l.product_id, l.quantity - 1)}
-                          className="h-11 w-11 grid place-items-center text-text hover:bg-hover active:scale-95 transition-ui"
+                          className="h-11 w-11 grid place-items-center rounded-lg text-text hover:bg-hover active:scale-95 transition-ui"
                           aria-label="Decrease"
                         >
                           <Minus className="h-4 w-4" />
@@ -603,24 +606,34 @@ function POS() {
                         <button
                           type="button"
                           onClick={() => setQty(l.product_id, l.quantity + 1)}
-                          className="h-11 w-11 grid place-items-center text-text hover:bg-hover active:scale-95 transition-ui"
+                          className="h-11 w-11 grid place-items-center rounded-lg text-text hover:bg-hover active:scale-95 transition-ui"
                           aria-label="Increase"
                         >
                           <Plus className="h-4 w-4" />
                         </button>
                       </div>
-                      <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-muted-fg">
-                        Disc
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-gold/50 bg-gold/10 px-3 min-h-11">
+                        <span className="text-[11px] font-extrabold text-gold shrink-0 whitespace-nowrap">
+                          Discount ({currency})
+                        </span>
                         <input
                           type="number"
+                          min={0}
+                          step={10}
                           value={l.discount || ""}
                           onChange={(e) =>
                             setLineDiscount(l.product_id, parseFloat(e.target.value) || 0)
                           }
-                          className="h-11 w-24 rounded-xl border border-border bg-input px-2 text-[13px] text-right text-text tabular-nums"
-                          placeholder="0"
+                          className="h-11 flex-1 min-w-0 rounded-lg border border-border bg-input px-2 text-[14px] font-bold text-right text-text tabular-nums"
+                          placeholder="0.00"
+                          aria-label={`Line discount in ${currency}`}
                         />
                       </label>
+                      {(l.discount || 0) > 0.009 ? (
+                        <div className="sm:col-span-2 text-[11px] font-extrabold text-ok">
+                          Save {KES(l.discount || 0, currency)} on this item
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ))

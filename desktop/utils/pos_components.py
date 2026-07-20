@@ -515,15 +515,18 @@ class CartLineRow(QFrame):
         self._currency = currency or 'KES'
         self.setObjectName('posCartLine')
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setMinimumHeight(76)
+        self.setMinimumHeight(118)
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(12, 10, 10, 10)
-        root.setSpacing(12)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(12)
 
         cat = self._item.get('category') or 'General'
         self._thumb = CategoryIcon(cat, size=48)
-        root.addWidget(self._thumb, 0, Qt.AlignTop)
+        top.addWidget(self._thumb, 0, Qt.AlignTop)
 
         info = QVBoxLayout()
         info.setSpacing(2)
@@ -540,38 +543,7 @@ class CartLineRow(QFrame):
         self._unit_lbl.setObjectName('posCartUnit')
         info.addWidget(self._unit_lbl)
         info.addStretch(1)
-        root.addLayout(info, 1)
-
-        controls = QVBoxLayout()
-        controls.setSpacing(6)
-        controls.setContentsMargins(0, 0, 0, 0)
-        qty_row = QHBoxLayout()
-        qty_row.setSpacing(8)
-        qty_cap = QLabel('Qty')
-        qty_cap.setObjectName('posCartCap')
-        self._qty = QuantityControl(
-            value=float(self._item.get('quantity') or 1),
-            step=0.25, minimum=0.25, width=148, touch=True)
-        self._qty.valueChanged.connect(self.qtyChanged.emit)
-        qty_row.addWidget(qty_cap)
-        qty_row.addWidget(self._qty)
-        qty_row.addStretch(1)
-        controls.addLayout(qty_row)
-
-        disc_row = QHBoxLayout()
-        disc_row.setSpacing(8)
-        disc_cap = QLabel('Disc')
-        disc_cap.setObjectName('posCartCap')
-        self._disc = QuantityControl(
-            value=float(self._item.get('discount') or 0),
-            step=10.0, minimum=0.0, maximum=999999.0,
-            snap=False, width=148, touch=True)
-        self._disc.valueChanged.connect(self.discChanged.emit)
-        disc_row.addWidget(disc_cap)
-        disc_row.addWidget(self._disc)
-        disc_row.addStretch(1)
-        controls.addLayout(disc_row)
-        root.addLayout(controls)
+        top.addLayout(info, 1)
 
         totals = QVBoxLayout()
         totals.setSpacing(4)
@@ -580,16 +552,60 @@ class CartLineRow(QFrame):
         self._line_total.setObjectName('posCartLineTot')
         self._line_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         totals.addWidget(self._line_total)
+        self._save_lbl = QLabel('')
+        self._save_lbl.setObjectName('posCartSave')
+        self._save_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._save_lbl.hide()
+        totals.addWidget(self._save_lbl)
         totals.addStretch(1)
-        root.addLayout(totals)
+        top.addLayout(totals)
 
-        self._rm = QPushButton('✕')
+        self._rm = QPushButton('Remove')
         self._rm.setObjectName('posCartRemove')
-        self._rm.setFixedSize(TOUCH_MIN, TOUCH_MIN)
+        self._rm.setMinimumHeight(TOUCH_MIN)
+        self._rm.setMinimumWidth(84)
         self._rm.setCursor(Qt.PointingHandCursor)
         self._rm.setToolTip('Remove line')
         self._rm.clicked.connect(self.removeClicked.emit)
-        root.addWidget(self._rm, 0, Qt.AlignTop)
+        top.addWidget(self._rm, 0, Qt.AlignTop)
+        root.addLayout(top)
+
+        # Qty + Discount on one clear action strip (touch-friendly, high contrast)
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+
+        qty_box = QFrame()
+        qty_box.setObjectName('posCartQtyBox')
+        ql = QHBoxLayout(qty_box)
+        ql.setContentsMargins(10, 8, 10, 8)
+        ql.setSpacing(8)
+        qty_cap = QLabel('Qty')
+        qty_cap.setObjectName('posCartCap')
+        self._qty = QuantityControl(
+            value=float(self._item.get('quantity') or 1),
+            step=0.25, minimum=0.25, width=148, touch=True)
+        self._qty.valueChanged.connect(self.qtyChanged.emit)
+        ql.addWidget(qty_cap)
+        ql.addWidget(self._qty, 1)
+        actions.addWidget(qty_box, 1)
+
+        disc_box = QFrame()
+        disc_box.setObjectName('posCartDiscBox')
+        dl = QHBoxLayout(disc_box)
+        dl.setContentsMargins(10, 8, 10, 8)
+        dl.setSpacing(8)
+        disc_cap = QLabel('Discount (KES)')
+        disc_cap.setObjectName('posCartDiscCap')
+        self._disc = QuantityControl(
+            value=float(self._item.get('discount') or 0),
+            step=10.0, minimum=0.0, maximum=999999.0,
+            snap=False, width=148, touch=True)
+        self._disc.valueChanged.connect(self.discChanged.emit)
+        dl.addWidget(disc_cap)
+        dl.addWidget(self._disc, 1)
+        actions.addWidget(disc_box, 1)
+
+        root.addLayout(actions)
 
         self._sync_labels()
         self.refresh_theme()
@@ -598,8 +614,14 @@ class CartLineRow(QFrame):
         cur = self._currency
         up = float(self._item.get('unit_price') or 0)
         tot = float(self._item.get('total') or 0)
+        disc = float(self._item.get('discount') or 0)
         self._unit_lbl.setText(f'{cur} {up:,.2f} each')
         self._line_total.setText(f'{cur} {tot:,.2f}')
+        if disc > 0.009:
+            self._save_lbl.setText(f'Save {cur} {disc:,.2f}')
+            self._save_lbl.show()
+        else:
+            self._save_lbl.hide()
 
     def update_item(self, item: dict):
         self._item = item or {}
@@ -623,19 +645,27 @@ class CartLineRow(QFrame):
             f"border-radius:{RADIUS['lg']}px;}}"
             f"QFrame#posCartLine:hover{{border-color:{qss_alpha(C['gold'], 0.45)};"
             f"background:{C['hover']};}}"
+            f"QFrame#posCartQtyBox{{background:{C['input']};border:1px solid {C['border']};"
+            f"border-radius:10px;}}"
+            f"QFrame#posCartDiscBox{{background:{qss_alpha(C['gold'], 0.10)};"
+            f"border:1px solid {qss_alpha(C['gold'], 0.55)};border-radius:10px;}}"
             f"QLabel#posCartName{{color:{C['text']};font-size:14px;font-weight:700;"
             f"background:transparent;}}"
             f"QLabel#posCartSku{{color:{C['muted']};font-size:11px;font-weight:600;"
             f"background:transparent;}}"
             f"QLabel#posCartUnit{{color:{C['text2']};font-size:12px;font-weight:600;"
             f"background:transparent;}}"
-            f"QLabel#posCartCap{{color:{C['muted']};font-size:11px;font-weight:700;"
+            f"QLabel#posCartCap{{color:{C['muted']};font-size:11px;font-weight:800;"
             f"background:transparent;min-width:28px;}}"
+            f"QLabel#posCartDiscCap{{color:{C['gold']};font-size:11px;font-weight:800;"
+            f"background:transparent;}}"
             f"QLabel#posCartLineTot{{color:{C['text']};font-size:16px;font-weight:800;"
             f"background:transparent;min-width:96px;}}"
+            f"QLabel#posCartSave{{color:{C['ok']};font-size:11px;font-weight:800;"
+            f"background:transparent;}}"
             f"QPushButton#posCartRemove{{background:{C['err_dim']};color:{C['err']};"
-            f"border:1px solid {qss_alpha(C['err'], 0.40)};border-radius:10px;"
-            f"font-weight:800;font-size:14px;}}"
+            f"border:1px solid {qss_alpha(C['err'], 0.45)};border-radius:10px;"
+            f"font-weight:800;font-size:12px;padding:0 10px;}}"
             f"QPushButton#posCartRemove:hover{{background:{C['err']};color:#FFFFFF;}}"
         )
         for qc in (self._qty, self._disc):
@@ -661,8 +691,8 @@ class CartList(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setMinimumHeight(220)
-        self._scroll.setMaximumHeight(360)
+        self._scroll.setMinimumHeight(260)
+        self._scroll.setMaximumHeight(420)
         self._scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
 
         self._body = QWidget()
