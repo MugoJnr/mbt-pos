@@ -39,7 +39,7 @@ def _load_deploy_local_files() -> dict:
     return merged
 
 # Shop-facing Telegram bot (@mbt_admin1_bot) — override per build via deploy.local.json
-_DEFAULT_BOT = '8342651179:AAE_JPNBUxWz9dkz49Ldr9sySwsabpx1IwQ'
+_DEFAULT_BOT = ''  # set via config/deploy.local.json or MBT_BOT_TOKEN (never commit secrets)
 _DEFAULT_DEVELOPER_CHAT = '8293620725'
 
 

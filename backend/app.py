@@ -381,7 +381,7 @@ def init_db():
         'shop_address': '',
         'shop_phone': '',
         'shop_email': '',
-        'telegram_bot_token': '8342651179:AAE_JPNBUxWz9dkz49Ldr9sySwsabpx1IwQ',
+        'telegram_bot_token': '',  # filled from config.deploy below
         'telegram_chat_id': '',       # customer's own chat ID (for receiving keys)
         'developer_chat_id': '8293620725',      # YOUR Telegram ID — hardcoded for @mugobyte_technologies
         'currency_symbol': 'KES',
@@ -393,6 +393,14 @@ def init_db():
         'printer_port': 'USB',
         'auto_print': '1',
     }
+    try:
+        from config.deploy import shop_settings_defaults
+        _dep = shop_settings_defaults()
+        for _k in ('telegram_bot_token', 'developer_chat_id', 'telegram_chat_id'):
+            if _k in _dep and (_dep.get(_k) or '').strip():
+                defaults[_k] = _dep[_k]
+    except Exception:
+        pass
     for k, v in defaults.items():
         cur.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 

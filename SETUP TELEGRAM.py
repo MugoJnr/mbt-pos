@@ -21,8 +21,14 @@ import requests
 from datetime import datetime
 
 # Pre-configured for @mbt_admin1_bot
-BOT_TOKEN = "8342651179:AAE_JPNBUxWz9dkz49Ldr9sySwsabpx1IwQ"
-BOT_NAME  = "@mbt_admin1_bot"
+try:
+    from config.deploy import load_deploy_config
+    _cfg = load_deploy_config()
+    BOT_TOKEN = (_cfg.get("telegram_bot_token") or "").strip()
+    BOT_NAME = "@" + (_cfg.get("telegram_bot_username") or "mbt_admin1_bot").lstrip("@")
+except Exception:
+    BOT_TOKEN = ""
+    BOT_NAME = "@mbt_admin1_bot"
 BASE_URL  = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Path to settings DB (relative to this file = project root)
