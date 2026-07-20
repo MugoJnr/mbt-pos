@@ -385,7 +385,8 @@ class SecurityTab(QWidget):
             self._audit_tbl.setRowCount(0)
             action_colors = {
                 'VOID_SALE': C['warn'], 'STOCK_ADJUSTED': C['gold'],
-                'DELETE_DEBT': C['err'], 'CANCEL_INVOICE': C['muted'],
+                'DELETE_DEBT': C['err'], 'WRITE_OFF_DEBT': C['warn'],
+                'CANCEL_INVOICE': C['muted'],
                 'SUPERADMIN_PIN_FAIL': C['err'], 'STOCK_ADJUST_BLOCKED': C['err'],
                 'INTERNAL_USE': C['info'], 'INTERNAL_USE_VOID': C['warn'],
                 'CREATE_CONSUMPTION': C['info'], 'VOID_CONSUMPTION': C['warn'],

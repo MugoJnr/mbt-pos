@@ -2938,15 +2938,16 @@ class APIClient:
 
     def delete_debt_invoice(self, invoice_id: int, reason: str) -> dict:
         """
-        Delete an unpaid open debt (invoice). Superadmin only.
+        Clear an open debt invoice. Superadmin only.
 
-        Safe rules:
-          - Block paid / cancelled invoices
-          - Block if any amount has already been collected (amount_paid > 0)
-          - If linked to a POS sale: void that sale (same restock path as void_sale)
-          - If orphan (no sale_id): cancel invoice only (nothing to restock)
+        Paths:
+          - Unpaid (amount_paid ≈ 0): void linked POS sale (full restock), or
+            cancel orphan / already-voided sale invoice.
+          - Partial (amount_paid > 0, balance > 0): write off remaining balance
+            only — keep sale, sale_items, payments, and products. No restock
+            (unpaid quantity share is ambiguous after mixed payments).
 
-        Audit logs who deleted, reason, invoice/sale ids, and restock quantities.
+        Blocked: fully paid, already cancelled/written_off.
         """
         if self._role != 'superadmin':
             _audit(self._user_id, self._username,
@@ -2967,23 +2968,58 @@ class APIClient:
                 return {'error': 'Invoice not found'}
 
             status = (inv.get('status') or '').lower()
-            if status == 'cancelled':
+            if status in ('cancelled', 'written_off'):
                 return {'error': 'Debt is already cancelled.'}
             if status == 'paid':
                 return {'error': 'Fully paid debts cannot be deleted.'}
 
-            paid_amt = float(inv.get('amount_paid') or 0)
-            if paid_amt > 0.009:
-                return {
-                    'error': (
-                        f'This debt has {paid_amt:,.2f} already collected. '
-                        f'Delete is only allowed on unpaid debts. '
-                        f'Refund collections first, or use Void Sale if needed.'
-                    )
-                }
+            paid_amt = round(float(inv.get('amount_paid') or 0), 2)
+            balance = round(float(inv.get('balance') or 0), 2)
+            total_amt = round(float(inv.get('total_amount') or 0), 2)
+            if balance <= 0.009:
+                return {'error': 'Fully paid debts cannot be deleted.'}
 
             sale_id = inv.get('sale_id')
             inv_num = inv.get('invoice_number') or ''
+            now = datetime.now().isoformat()
+
+            # ── Partial debt: write off remaining balance only ──────────────
+            if paid_amt > 0.009:
+                note = (
+                    f"WRITTEN_OFF remaining {balance:,.2f} "
+                    f"(paid {paid_amt:,.2f} of {total_amt:,.2f} kept): {reason}"
+                )
+                prev_notes = (inv.get('notes') or '').strip()
+                if prev_notes:
+                    note = f"{prev_notes}\n{note}"
+                db.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
+                    "updated_at=? WHERE id=?",
+                    (note, now, invoice_id)
+                )
+                db.commit()
+                _audit(
+                    self._user_id, self._username, 'WRITE_OFF_DEBT', 'debt',
+                    f"inv={inv_num} invoice_id={invoice_id} sale_id={sale_id} "
+                    f"paid={paid_amt} written_off={balance} total={total_amt} "
+                    f"restock=none reason={reason}"
+                )
+                return {
+                    'success': True,
+                    'invoice_id': invoice_id,
+                    'sale_id': int(sale_id) if sale_id else None,
+                    'mode': 'write_off',
+                    'amount_paid': paid_amt,
+                    'written_off': balance,
+                    'restocked': False,
+                    'restock': [],
+                    'message': (
+                        'Remaining balance written off. Payments and sale history '
+                        'kept. Stock not restocked for partial debts.'
+                    ),
+                }
+
+            # ── Unpaid (amount_paid ≈ 0): existing void / cancel path ───────
             restock = []
 
             if not sale_id:
@@ -2992,7 +3028,7 @@ class APIClient:
                     "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
                     "updated_at=? WHERE id=?",
                     (f"DELETED (orphan, no linked sale): {reason}",
-                     datetime.now().isoformat(), invoice_id)
+                     now, invoice_id)
                 )
                 db.commit()
                 _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
@@ -3002,6 +3038,7 @@ class APIClient:
                     'success': True,
                     'invoice_id': invoice_id,
                     'sale_id': None,
+                    'mode': 'delete_unpaid',
                     'restocked': False,
                     'restock': [],
                     'message': 'Orphan debt cancelled (no linked sale to restock).',
@@ -3017,8 +3054,7 @@ class APIClient:
                 db.execute(
                     "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
                     "updated_at=? WHERE id=?",
-                    (f"{note}{reason}",
-                     datetime.now().isoformat(), invoice_id)
+                    (f"{note}{reason}", now, invoice_id)
                 )
                 db.commit()
                 _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
@@ -3028,6 +3064,7 @@ class APIClient:
                     'success': True,
                     'invoice_id': invoice_id,
                     'sale_id': sale_id,
+                    'mode': 'delete_unpaid',
                     'restocked': False,
                     'restock': [],
                     'message': (
@@ -3058,7 +3095,7 @@ class APIClient:
         finally:
             db.close()
 
-        # Linked live sale — reuse void_sale restock + cancel path
+        # Linked live unpaid sale — reuse void_sale restock + cancel path
         void_reason = f"DELETE_DEBT inv={inv_num}: {reason}"
         res = self.void_sale(int(sale_id), void_reason, force_with_payments=False)
         if res.get('error'):
@@ -3075,6 +3112,7 @@ class APIClient:
             'success': True,
             'invoice_id': invoice_id,
             'sale_id': int(sale_id),
+            'mode': 'delete_unpaid',
             'restocked': True,
             'restock': restock,
             'message': 'Debt deleted and stock restored via void sale.',

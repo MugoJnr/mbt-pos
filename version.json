@@ -1,8 +1,8 @@
 {
-  "version": "2.3.97",
-  "build": "PROD-2026-07-20-v2.3.97",
+  "version": "2.3.98",
+  "build": "PROD-2026-07-20-v2.3.98",
   "build_date": "2026-07-20",
-  "release_notes": "ASCII-safe UI icons for cross-PC Windows visibility; compact Walk-in Customer chip on Current Sale; Delete Debt + restock (superadmin PIN + reason).",
+  "release_notes": "Delete Debt supports partial write-off (keep payments/sale/products; no restock). Unpaid path still voids + restocks. Superadmin PIN + reason required.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

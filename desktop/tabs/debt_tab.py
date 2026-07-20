@@ -508,15 +508,21 @@ class _InvoicesTab(QWidget):
                 lambda _, inv_id=inv['id']: self._view_history(inv_id))
             cl.addWidget(view_btn)
 
-            # Delete only for unpaid open debts (superadmin + PIN)
+            # Delete / write-off for open debts with remaining balance (superadmin + PIN)
+            bal_amt = float(inv.get('balance') or 0)
             paid_amt = float(inv.get('amount_paid') or 0)
-            if (status not in ('paid', 'cancelled') and paid_amt <= 0.009
+            if (status not in ('paid', 'cancelled', 'written_off')
+                    and bal_amt > 0.009
                     and self._can_delete_debt()):
-                del_btn = QPushButton('Delete')
+                del_btn = QPushButton('Write Off' if paid_amt > 0.009 else 'Delete')
                 del_btn.setMinimumHeight(34)
                 del_btn.setMinimumWidth(70)
                 del_btn.setCursor(Qt.PointingHandCursor)
-                del_btn.setToolTip('Delete unpaid debt and restock linked sale items')
+                del_btn.setToolTip(
+                    'Write off remaining balance (payments kept, no restock)'
+                    if paid_amt > 0.009 else
+                    'Delete unpaid debt and restock linked sale items'
+                )
                 del_btn.setStyleSheet(
                     f"QPushButton{{background:{qss_alpha(C['err'], 0.13)};color:{C['err']};"
                     f"border:1px solid {qss_alpha(C['err'], 0.40)};border-radius:6px;"
@@ -600,6 +606,7 @@ class _InvoicesTab(QWidget):
             invoice_number=inv.get('invoice_number') or '',
             customer_name=inv.get('customer_name') or '',
             balance=float(inv.get('balance') or 0),
+            amount_paid=float(inv.get('amount_paid') or 0),
             currency=self.p._currency,
             user=self.p.user,
         )
@@ -1420,17 +1427,20 @@ class _SaleDebtDetailDialog(QDialog):
             f"<b style='color:{C['err']};'>Outstanding:</b> {_fmt(bal, cur)}<br>"
             f"<b>Status:</b> {_status_label(status)}"
         )
-        # Show delete only for unpaid open debts when user is superadmin
+        # Show delete/write-off for open debts with remaining balance (superadmin)
         try:
             from desktop.utils.security import can_delete_debt
             st = (status or '').lower()
             show_del = (
                 bool(self.invoice_id)
                 and can_delete_debt(self.p.user)
-                and st not in ('paid', 'cancelled')
-                and paid <= 0.009
+                and st not in ('paid', 'cancelled', 'written_off')
+                and bal > 0.009
             )
             self._del_btn.setVisible(show_del)
+            if show_del:
+                self._del_btn.setText(
+                    'Write Off Debt…' if paid > 0.009 else 'Delete Debt…')
         except Exception:
             self._del_btn.setVisible(False)
 
@@ -1452,6 +1462,7 @@ class _SaleDebtDetailDialog(QDialog):
             invoice_number=debt.get('invoice_number') or '',
             customer_name=debt.get('customer_name') or '',
             balance=float(debt.get('balance') or 0),
+            amount_paid=float(debt.get('amount_paid') or 0),
             currency=self.p._currency,
             user=self.p.user,
         )

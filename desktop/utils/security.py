@@ -207,17 +207,17 @@ def can_void_sales(user: dict) -> bool:
 
 
 def can_delete_debt(user: dict) -> bool:
-    """True if user may delete unpaid debts (superadmin only)."""
+    """True if user may delete/write-off open debts (superadmin only)."""
     return has_permission(user, 'debt.delete')
 
 
 class DeleteDebtDialog:
-    """Simple confirm dialog: required reason for deleting an unpaid debt."""
+    """Simple confirm dialog: required reason for clearing an open debt."""
 
     @staticmethod
     def ask(parent_widget=None, *, invoice_number: str = '',
             customer_name: str = '', balance: float = 0.0,
-            currency: str = 'KES') -> str:
+            amount_paid: float = 0.0, currency: str = 'KES') -> str:
         """
         Returns reason string, or None if cancelled.
         """
@@ -229,26 +229,42 @@ class DeleteDebtDialog:
         from desktop.utils.theme import C, apply_themed_dialog
         from desktop.utils.select_controls import CONTROL_HEIGHT
 
+        paid = float(amount_paid or 0)
+        bal = float(balance or 0)
+        is_partial = paid > 0.009
+
         dlg = QDialog(parent_widget)
-        dlg.setWindowTitle('Delete Debt')
+        dlg.setWindowTitle('Write Off Debt' if is_partial else 'Delete Debt')
         dlg.setMinimumWidth(440)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        title = QLabel('Delete Debt')
+        title = QLabel('Write Off Debt' if is_partial else 'Delete Debt')
         title.setStyleSheet(
             f"color:{C['text']};font-size:18px;font-weight:700;background:transparent;")
         lay.addWidget(title)
 
-        bal_txt = f"{currency} {float(balance or 0):,.2f}"
-        hint = QLabel(
-            f'This will cancel unpaid invoice <b>{invoice_number or "?"}</b>'
-            f' ({customer_name or "customer"}) — balance {bal_txt}.<br><br>'
-            f'If the debt is linked to a POS credit sale, that sale is voided '
-            f'and stock is restored. Requires Super-Admin PIN.'
-        )
+        bal_txt = f"{currency} {bal:,.2f}"
+        paid_txt = f"{currency} {paid:,.2f}"
+        if is_partial:
+            hint = QLabel(
+                f'Clear remaining balance on invoice <b>{invoice_number or "?"}</b>'
+                f' ({customer_name or "customer"}).<br><br>'
+                f'Paid kept: <b>{paid_txt}</b> &nbsp;|&nbsp; '
+                f'Write off: <b>{bal_txt}</b><br><br>'
+                f'Payments kept. Remaining balance cleared. '
+                f'Stock not restocked for partial debts.<br>'
+                f'Requires Super-Admin PIN.'
+            )
+        else:
+            hint = QLabel(
+                f'This will cancel unpaid invoice <b>{invoice_number or "?"}</b>'
+                f' ({customer_name or "customer"}) — balance {bal_txt}.<br><br>'
+                f'If the debt is linked to a POS credit sale, that sale is voided '
+                f'and stock is restored. Requires Super-Admin PIN.'
+            )
         hint.setWordWrap(True)
         hint.setTextFormat(Qt.RichText)
         hint.setStyleSheet(
@@ -260,7 +276,11 @@ class DeleteDebtDialog:
             f"color:{C['muted']};font-size:12px;font-weight:600;background:transparent;")
         lay.addWidget(reason_lbl)
         reason_edit = QLineEdit()
-        reason_edit.setPlaceholderText('Why is this debt being deleted?')
+        reason_edit.setPlaceholderText(
+            'Why is this remaining balance being written off?'
+            if is_partial else
+            'Why is this debt being deleted?'
+        )
         reason_edit.setMinimumHeight(CONTROL_HEIGHT)
         lay.addWidget(reason_edit)
 
@@ -272,7 +292,9 @@ class DeleteDebtDialog:
 
         def _accept():
             if not reason_edit.text().strip():
-                QMessageBox.warning(dlg, 'Required', 'Enter a reason to delete this debt.')
+                QMessageBox.warning(
+                    dlg, 'Required',
+                    'Enter a reason to clear this debt.')
                 reason_edit.setFocus()
                 return
             dlg.accept()
@@ -287,11 +309,12 @@ class DeleteDebtDialog:
 
 def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
                        invoice_number: str = '', customer_name: str = '',
-                       balance: float = 0.0, currency: str = 'KES',
+                       balance: float = 0.0, amount_paid: float = 0.0,
+                       currency: str = 'KES',
                        user: dict = None) -> bool:
     """
-    Reason → super-admin PIN → delete_debt_invoice.
-    Returns True when the debt was deleted successfully.
+    Reason → super-admin PIN → delete_debt_invoice (void unpaid / write-off partial).
+    Returns True when the debt was cleared successfully.
     """
     from PyQt5.QtWidgets import QMessageBox
 
@@ -303,18 +326,23 @@ def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
         invoice_number=invoice_number,
         customer_name=customer_name,
         balance=balance,
+        amount_paid=amount_paid,
         currency=currency,
     )
     if not reason:
         return False
 
     label = invoice_number or f'#{invoice_id}'
-    if not ask_superadmin_pin(api, parent_widget, reason=f'Delete debt {label}'):
+    pin_reason = (
+        f'Write off debt {label}' if float(amount_paid or 0) > 0.009
+        else f'Delete debt {label}'
+    )
+    if not ask_superadmin_pin(api, parent_widget, reason=pin_reason):
         return False
 
     res = api.delete_debt_invoice(int(invoice_id), reason)
     if res and res.get('success'):
-        msg = res.get('message') or 'Debt deleted.'
+        msg = res.get('message') or 'Debt cleared.'
         if res.get('restocked') and res.get('restock'):
             lines = [
                 f"  • {r.get('product_name') or ('#' + str(r.get('product_id')))}: "
@@ -322,12 +350,16 @@ def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
                 for r in res['restock']
             ]
             msg += '\n\nStock restored:\n' + '\n'.join(lines)
-        QMessageBox.information(parent_widget, 'Debt Deleted', msg)
+        title = (
+            'Debt Written Off' if res.get('mode') == 'write_off'
+            else 'Debt Deleted'
+        )
+        QMessageBox.information(parent_widget, title, msg)
         return True
 
     QMessageBox.critical(
         parent_widget, 'Error',
-        (res or {}).get('error', 'Failed to delete debt.'))
+        (res or {}).get('error', 'Failed to clear debt.'))
     return False
 
 
