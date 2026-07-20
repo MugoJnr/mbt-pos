@@ -83,7 +83,7 @@ _PERMISSIONS = {
         'license.manage',
         'security.override',
         'debt.view', 'debt.create', 'debt.collect',
-        'debt.customer_manage', 'debt.cancel',
+        'debt.customer_manage', 'debt.cancel', 'debt.delete',
         'consumption.create', 'consumption.void',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
@@ -204,6 +204,131 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
 def can_void_sales(user: dict) -> bool:
     """True if user may void completed sales (manager / admin / superadmin)."""
     return has_permission(user, 'sales.void')
+
+
+def can_delete_debt(user: dict) -> bool:
+    """True if user may delete unpaid debts (superadmin only)."""
+    return has_permission(user, 'debt.delete')
+
+
+class DeleteDebtDialog:
+    """Simple confirm dialog: required reason for deleting an unpaid debt."""
+
+    @staticmethod
+    def ask(parent_widget=None, *, invoice_number: str = '',
+            customer_name: str = '', balance: float = 0.0,
+            currency: str = 'KES') -> str:
+        """
+        Returns reason string, or None if cancelled.
+        """
+        from PyQt5.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+            QDialogButtonBox, QMessageBox,
+        )
+        from PyQt5.QtCore import Qt
+        from desktop.utils.theme import C, apply_themed_dialog
+        from desktop.utils.select_controls import CONTROL_HEIGHT
+
+        dlg = QDialog(parent_widget)
+        dlg.setWindowTitle('Delete Debt')
+        dlg.setMinimumWidth(440)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        title = QLabel('Delete Debt')
+        title.setStyleSheet(
+            f"color:{C['text']};font-size:18px;font-weight:700;background:transparent;")
+        lay.addWidget(title)
+
+        bal_txt = f"{currency} {float(balance or 0):,.2f}"
+        hint = QLabel(
+            f'This will cancel unpaid invoice <b>{invoice_number or "?"}</b>'
+            f' ({customer_name or "customer"}) — balance {bal_txt}.<br><br>'
+            f'If the debt is linked to a POS credit sale, that sale is voided '
+            f'and stock is restored. Requires Super-Admin PIN.'
+        )
+        hint.setWordWrap(True)
+        hint.setTextFormat(Qt.RichText)
+        hint.setStyleSheet(
+            f"color:{C['text2']};font-size:13px;background:transparent;")
+        lay.addWidget(hint)
+
+        reason_lbl = QLabel('Reason (required)')
+        reason_lbl.setStyleSheet(
+            f"color:{C['muted']};font-size:12px;font-weight:600;background:transparent;")
+        lay.addWidget(reason_lbl)
+        reason_edit = QLineEdit()
+        reason_edit.setPlaceholderText('Why is this debt being deleted?')
+        reason_edit.setMinimumHeight(CONTROL_HEIGHT)
+        lay.addWidget(reason_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_btn = buttons.button(QDialogButtonBox.Ok)
+        if ok_btn:
+            ok_btn.setText('Continue')
+        buttons.rejected.connect(dlg.reject)
+
+        def _accept():
+            if not reason_edit.text().strip():
+                QMessageBox.warning(dlg, 'Required', 'Enter a reason to delete this debt.')
+                reason_edit.setFocus()
+                return
+            dlg.accept()
+
+        buttons.accepted.connect(_accept)
+        lay.addWidget(buttons)
+
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        return reason_edit.text().strip() or None
+
+
+def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
+                       invoice_number: str = '', customer_name: str = '',
+                       balance: float = 0.0, currency: str = 'KES',
+                       user: dict = None) -> bool:
+    """
+    Reason → super-admin PIN → delete_debt_invoice.
+    Returns True when the debt was deleted successfully.
+    """
+    from PyQt5.QtWidgets import QMessageBox
+
+    if user is not None and not require_permission(user, 'debt.delete', parent_widget):
+        return False
+
+    reason = DeleteDebtDialog.ask(
+        parent_widget,
+        invoice_number=invoice_number,
+        customer_name=customer_name,
+        balance=balance,
+        currency=currency,
+    )
+    if not reason:
+        return False
+
+    label = invoice_number or f'#{invoice_id}'
+    if not ask_superadmin_pin(api, parent_widget, reason=f'Delete debt {label}'):
+        return False
+
+    res = api.delete_debt_invoice(int(invoice_id), reason)
+    if res and res.get('success'):
+        msg = res.get('message') or 'Debt deleted.'
+        if res.get('restocked') and res.get('restock'):
+            lines = [
+                f"  • {r.get('product_name') or ('#' + str(r.get('product_id')))}: "
+                f"+{float(r.get('quantity') or 0):g}"
+                for r in res['restock']
+            ]
+            msg += '\n\nStock restored:\n' + '\n'.join(lines)
+        QMessageBox.information(parent_widget, 'Debt Deleted', msg)
+        return True
+
+    QMessageBox.critical(
+        parent_widget, 'Error',
+        (res or {}).get('error', 'Failed to delete debt.'))
+    return False
 
 
 class VoidSaleDialog:

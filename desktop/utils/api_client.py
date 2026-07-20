@@ -2936,6 +2936,151 @@ class APIClient:
         finally:
             db.close()
 
+    def delete_debt_invoice(self, invoice_id: int, reason: str) -> dict:
+        """
+        Delete an unpaid open debt (invoice). Superadmin only.
+
+        Safe rules:
+          - Block paid / cancelled invoices
+          - Block if any amount has already been collected (amount_paid > 0)
+          - If linked to a POS sale: void that sale (same restock path as void_sale)
+          - If orphan (no sale_id): cancel invoice only (nothing to restock)
+
+        Audit logs who deleted, reason, invoice/sale ids, and restock quantities.
+        """
+        if self._role != 'superadmin':
+            _audit(self._user_id, self._username,
+                   'DELETE_DEBT_DENIED', 'debt',
+                   f"invoice_id={invoice_id} role={self._role}")
+            return {'error': 'Only superadmin can delete debts.'}
+
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'A deletion reason is required.'}
+
+        db = _db()
+        try:
+            inv = _row(db.execute(
+                "SELECT * FROM debt_invoices WHERE id=?", (invoice_id,)
+            ))
+            if not inv:
+                return {'error': 'Invoice not found'}
+
+            status = (inv.get('status') or '').lower()
+            if status == 'cancelled':
+                return {'error': 'Debt is already cancelled.'}
+            if status == 'paid':
+                return {'error': 'Fully paid debts cannot be deleted.'}
+
+            paid_amt = float(inv.get('amount_paid') or 0)
+            if paid_amt > 0.009:
+                return {
+                    'error': (
+                        f'This debt has {paid_amt:,.2f} already collected. '
+                        f'Delete is only allowed on unpaid debts. '
+                        f'Refund collections first, or use Void Sale if needed.'
+                    )
+                }
+
+            sale_id = inv.get('sale_id')
+            inv_num = inv.get('invoice_number') or ''
+            restock = []
+
+            if not sale_id:
+                # Orphan invoice — cancel only
+                db.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
+                    "updated_at=? WHERE id=?",
+                    (f"DELETED (orphan, no linked sale): {reason}",
+                     datetime.now().isoformat(), invoice_id)
+                )
+                db.commit()
+                _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
+                       f"inv={inv_num} invoice_id={invoice_id} sale_id=none "
+                       f"restock=none reason={reason}")
+                return {
+                    'success': True,
+                    'invoice_id': invoice_id,
+                    'sale_id': None,
+                    'restocked': False,
+                    'restock': [],
+                    'message': 'Orphan debt cancelled (no linked sale to restock).',
+                }
+
+            sale = db.execute(
+                "SELECT id, status, receipt_number FROM sales WHERE id=?",
+                (sale_id,)
+            ).fetchone()
+            if not sale or sale['status'] == 'voided':
+                note = ('DELETED (sale missing): ' if not sale
+                        else 'DELETED (sale already voided): ')
+                db.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
+                    "updated_at=? WHERE id=?",
+                    (f"{note}{reason}",
+                     datetime.now().isoformat(), invoice_id)
+                )
+                db.commit()
+                _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
+                       f"inv={inv_num} invoice_id={invoice_id} sale_id={sale_id} "
+                       f"restock=none reason={reason}")
+                return {
+                    'success': True,
+                    'invoice_id': invoice_id,
+                    'sale_id': sale_id,
+                    'restocked': False,
+                    'restock': [],
+                    'message': (
+                        'Debt cancelled (linked sale missing).'
+                        if not sale else
+                        'Debt cancelled (linked sale was already voided).'
+                    ),
+                }
+
+            items = db.execute(
+                "SELECT si.product_id, si.quantity, p.name as product_name "
+                "FROM sale_items si "
+                "LEFT JOIN products p ON p.id=si.product_id "
+                "WHERE si.sale_id=?",
+                (sale_id,)
+            ).fetchall()
+            for it in items:
+                if it['product_id']:
+                    restock.append({
+                        'product_id': it['product_id'],
+                        'product_name': it['product_name'] or '',
+                        'quantity': float(it['quantity'] or 0),
+                    })
+        except Exception as e:
+            db.rollback()
+            logger.error(f"delete_debt_invoice preview: {e}", exc_info=True)
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+        # Linked live sale — reuse void_sale restock + cancel path
+        void_reason = f"DELETE_DEBT inv={inv_num}: {reason}"
+        res = self.void_sale(int(sale_id), void_reason, force_with_payments=False)
+        if res.get('error'):
+            return res
+
+        restock_summary = '; '.join(
+            f"{r['product_name'] or ('#' + str(r['product_id']))} +{r['quantity']:g}"
+            for r in restock
+        ) or 'none'
+        _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
+               f"inv={inv_num} invoice_id={invoice_id} sale_id={sale_id} "
+               f"restock=[{restock_summary}] reason={reason}")
+        return {
+            'success': True,
+            'invoice_id': invoice_id,
+            'sale_id': int(sale_id),
+            'restocked': True,
+            'restock': restock,
+            'message': 'Debt deleted and stock restored via void sale.',
+            'void': res,
+        }
+
     # ── INTERNAL STOCK CONSUMPTION ──────────────────────────────────────────────
 
     CONSUMPTION_REASONS = (

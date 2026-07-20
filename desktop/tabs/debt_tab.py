@@ -395,7 +395,7 @@ class _InvoicesTab(QWidget):
              'Status', 'Due Date', 'Actions'],
             stretch_col=1, row_height=52)
         for ci, w in [(0, 140), (2, 130), (3, 110), (4, 110), (5, 110),
-                      (6, 110), (7, 110), (8, 230)]:
+                      (6, 110), (7, 110), (8, 320)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.cellClicked.connect(self._on_row_clicked)
         lay.addWidget(self._tbl)
@@ -508,6 +508,24 @@ class _InvoicesTab(QWidget):
                 lambda _, inv_id=inv['id']: self._view_history(inv_id))
             cl.addWidget(view_btn)
 
+            # Delete only for unpaid open debts (superadmin + PIN)
+            paid_amt = float(inv.get('amount_paid') or 0)
+            if (status not in ('paid', 'cancelled') and paid_amt <= 0.009
+                    and self._can_delete_debt()):
+                del_btn = QPushButton('Delete')
+                del_btn.setMinimumHeight(34)
+                del_btn.setMinimumWidth(70)
+                del_btn.setCursor(Qt.PointingHandCursor)
+                del_btn.setToolTip('Delete unpaid debt and restock linked sale items')
+                del_btn.setStyleSheet(
+                    f"QPushButton{{background:{qss_alpha(C['err'], 0.13)};color:{C['err']};"
+                    f"border:1px solid {qss_alpha(C['err'], 0.40)};border-radius:6px;"
+                    f"font-size:12px;font-weight:700;padding:4px 10px;}}"
+                    f"QPushButton:hover{{background:{C['err']};color:#fff;}}")
+                del_btn.clicked.connect(
+                    lambda _, inv_row=inv: self._delete_debt(inv_row))
+                cl.addWidget(del_btn)
+
             cl.addStretch()
             self._tbl.setCellWidget(i, 8, cell)
 
@@ -534,7 +552,12 @@ class _InvoicesTab(QWidget):
         receipt = item.data(Qt.UserRole + 2) or ''
         if sale_id:
             dlg = _SaleDebtDetailDialog(self.p, sale_id=sale_id, invoice_id=inv_id)
-            dlg.exec_()
+            if dlg.exec_() == QDialog.Accepted:
+                self.refresh()
+                try:
+                    self.p._overview_tab.refresh()
+                except Exception:
+                    pass
         elif inv_id:
             self._view_history(inv_id)
         else:
@@ -561,6 +584,31 @@ class _InvoicesTab(QWidget):
     def _view_history(self, invoice_id):
         dlg = _InvoiceHistoryDialog(self.p, invoice_id)
         dlg.exec_()
+
+    def _can_delete_debt(self) -> bool:
+        try:
+            from desktop.utils.security import can_delete_debt
+            return can_delete_debt(self.p.user)
+        except Exception:
+            return False
+
+    def _delete_debt(self, inv: dict):
+        from desktop.utils.security import prompt_delete_debt
+        ok = prompt_delete_debt(
+            self.p.api, self,
+            int(inv['id']),
+            invoice_number=inv.get('invoice_number') or '',
+            customer_name=inv.get('customer_name') or '',
+            balance=float(inv.get('balance') or 0),
+            currency=self.p._currency,
+            user=self.p.user,
+        )
+        if ok:
+            self.refresh()
+            try:
+                self.p._overview_tab.refresh()
+            except Exception:
+                pass
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -1322,9 +1370,17 @@ class _SaleDebtDetailDialog(QDialog):
         br = QHBoxLayout()
         hist = PrimaryBtn("View Debt History", 42)
         hist.clicked.connect(self._open_history)
+        br.addWidget(hist, 1)
+
+        self._del_btn = DangerBtn("Delete Debt…", 42)
+        self._del_btn.setToolTip(
+            "Delete unpaid debt (restocks linked sale). Super-Admin PIN required.")
+        self._del_btn.clicked.connect(self._delete_debt)
+        self._del_btn.setVisible(False)
+        br.addWidget(self._del_btn, 1)
+
         close = SecondaryBtn("Close", 42)
         close.clicked.connect(self.close)
-        br.addWidget(hist, 1)
         br.addWidget(close, 1)
         lay.addLayout(br)
 
@@ -1344,6 +1400,7 @@ class _SaleDebtDetailDialog(QDialog):
                 debt = {}
         if debt and not self.invoice_id:
             self.invoice_id = debt.get("id")
+        self._debt = debt
         method = (sale.get("payment_method") or "credit").replace("_", " ").title()
         cust = sale.get("customer_name") or debt.get("customer_name") or "?"
         original = float(sale.get("debt_original") or debt.get("total_amount") or sale.get("total") or 0)
@@ -1363,6 +1420,19 @@ class _SaleDebtDetailDialog(QDialog):
             f"<b style='color:{C['err']};'>Outstanding:</b> {_fmt(bal, cur)}<br>"
             f"<b>Status:</b> {_status_label(status)}"
         )
+        # Show delete only for unpaid open debts when user is superadmin
+        try:
+            from desktop.utils.security import can_delete_debt
+            st = (status or '').lower()
+            show_del = (
+                bool(self.invoice_id)
+                and can_delete_debt(self.p.user)
+                and st not in ('paid', 'cancelled')
+                and paid <= 0.009
+            )
+            self._del_btn.setVisible(show_del)
+        except Exception:
+            self._del_btn.setVisible(False)
 
     def _open_history(self):
         if not self.invoice_id:
@@ -1370,3 +1440,20 @@ class _SaleDebtDetailDialog(QDialog):
             return
         dlg = _InvoiceHistoryDialog(self.p, int(self.invoice_id))
         dlg.exec_()
+
+    def _delete_debt(self):
+        if not self.invoice_id:
+            return
+        debt = getattr(self, '_debt', None) or {}
+        from desktop.utils.security import prompt_delete_debt
+        ok = prompt_delete_debt(
+            self.p.api, self,
+            int(self.invoice_id),
+            invoice_number=debt.get('invoice_number') or '',
+            customer_name=debt.get('customer_name') or '',
+            balance=float(debt.get('balance') or 0),
+            currency=self.p._currency,
+            user=self.p.user,
+        )
+        if ok:
+            self.accept()
