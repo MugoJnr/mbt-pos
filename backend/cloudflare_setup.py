@@ -2496,7 +2496,7 @@ def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
 
     cf = find_cloudflared_exe()
     add('cloudflared.exe', cf is not None, str(cf) if cf else 'not found',
-        'Reinstall MBT POS or run setup from Settings → Remote Web Dashboard')
+        'Reinstall MBT POS or run setup from Settings → Live Dashboard')
 
     add('Cloudflare login / API',
         has_cloudflare_login() or bool(_get_cloudflare_api_token()) or bool(_get_tunnel_run_token()),

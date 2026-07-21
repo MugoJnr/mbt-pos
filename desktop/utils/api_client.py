@@ -14,6 +14,7 @@ import hashlib
 import logging
 import jwt
 from datetime import datetime, date
+from runtime_security import get_jwt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def _get_export_dir() -> str:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-SECRET_KEY = "MBT_POS_SECRET_2024_MUGOBYTE"
+SECRET_KEY = get_jwt_secret()
 
 
 # ── Password helpers (must match backend/app.py) ────────────────────────────────
@@ -384,8 +385,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         except Exception:
             defaults = {
                 'shop_name': 'My Shop', 'shop_address': '', 'shop_phone': '',
-                'shop_email': '', 'telegram_bot_token': '', 'telegram_chat_id': '',
-                'developer_chat_id': '', 'currency_symbol': 'KES', 'tax_rate': '0',
+                'shop_email': '', 'currency_symbol': 'KES', 'tax_rate': '0',
                 'receipt_footer': 'Thank you for shopping with us!',
                 'theme': 'dark', 'sync_interval': '30',
                 'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
@@ -441,39 +441,12 @@ def _ensure_schema(conn: sqlite3.Connection):
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
-    # Upgrade path: fill empty Telegram fields from build-time deploy config
-    try:
-        from config.deploy import load_deploy_config
-        deploy = load_deploy_config()
-        for key in ('telegram_bot_token', 'developer_chat_id'):
-            row = conn.execute(
-                "SELECT value FROM system_settings WHERE key=?", (key,)
-            ).fetchone()
-            if not row or not str(row[0] or '').strip():
-                val = str(deploy.get(key, '') or '').strip()
-                if val:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
-                        (key, val),
-                    )
-    except Exception:
-        deploy = {}
-        try:
-            from config.deploy import load_deploy_config
-            deploy = load_deploy_config()
-        except Exception:
-            pass
-        for key in ('telegram_bot_token', 'developer_chat_id'):
-            row = conn.execute(
-                "SELECT value FROM system_settings WHERE key=?", (key,)
-            ).fetchone()
-            if not row or not str(row[0] or '').strip():
-                val = str(deploy.get(key, '') or '').strip()
-                if val:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
-                        (key, val),
-                    )
+    # Telegram settings are retired — clear any leftover keys on upgrade.
+    for key in ('telegram_bot_token', 'telegram_chat_id', 'developer_chat_id'):
+        conn.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            (key, ''),
+        )
     conn.commit()
 
 
@@ -1933,6 +1906,141 @@ class APIClient:
 
     # ── SALES EDITING / VOID ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _void_restore_ref(sale_id: int) -> str:
+        return f"VOID_sale={int(sale_id)}"
+
+    def _has_void_restore(self, db, sale_id: int) -> bool:
+        """True if stock was already restored for this sale (idempotency)."""
+        ref = self._void_restore_ref(sale_id)
+        row = db.execute(
+            "SELECT 1 FROM stock_movements WHERE movement_type='VOID_RESTORE' "
+            "AND (reference=? OR reference LIKE ?) LIMIT 1",
+            (ref, f"%sale={int(sale_id)}%")
+        ).fetchone()
+        return bool(row)
+
+    def _restock_sale_items(
+        self, db, sale_id: int, *, receipt: str = '', reason: str = '',
+        movement_type: str = 'VOID_RESTORE', skip_if_restored: bool = True,
+    ) -> list:
+        """
+        Restore product stock for every line on a sale.
+        When skip_if_restored and VOID_RESTORE already logged, returns preview
+        without double-applying stock.
+        """
+        sale_id = int(sale_id)
+        items = db.execute(
+            "SELECT si.*, p.name AS live_name FROM sale_items si "
+            "LEFT JOIN products p ON p.id=si.product_id WHERE si.sale_id=?",
+            (sale_id,)
+        ).fetchall()
+        preview = []
+        for item in items:
+            pid = item['product_id']
+            if not pid:
+                continue
+            qty = float(item['quantity'] or 0)
+            if qty <= 0:
+                continue
+            name = (item['live_name'] or item['product_name'] or '') or f'#{pid}'
+            preview.append({
+                'product_id': int(pid),
+                'product_name': name,
+                'quantity': qty,
+            })
+
+        if (
+            skip_if_restored
+            and movement_type == 'VOID_RESTORE'
+            and self._has_void_restore(db, sale_id)
+        ):
+            for r in preview:
+                r['already_restored'] = True
+            return preview
+
+        now = datetime.now().isoformat()
+        ref = (
+            self._void_restore_ref(sale_id)
+            if movement_type == 'VOID_RESTORE'
+            else f"{movement_type}_sale={sale_id}"
+        )
+        rn = receipt or str(sale_id)
+        applied = []
+        for item in items:
+            pid = item['product_id']
+            if not pid:
+                continue
+            qty = float(item['quantity'] or 0)
+            if qty <= 0:
+                continue
+            prod = db.execute(
+                "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+            ).fetchone()
+            if not prod:
+                continue
+            old_stock = float(prod['stock'] or 0)
+            new_stock = old_stock + qty
+            db.execute(
+                "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                (new_stock, now, pid)
+            )
+            db.execute(
+                "INSERT INTO stock_movements "
+                "(product_id,product_name,movement_type,qty_before,qty_change,"
+                "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (pid, prod['name'], movement_type,
+                 old_stock, qty, new_stock, ref,
+                 reason or f"Stock restored: sale {rn}",
+                 self._user_id, self._username or 'admin')
+            )
+            applied.append({
+                'product_id': int(pid),
+                'product_name': prod['name'],
+                'quantity': qty,
+            })
+        return applied
+
+    def _deduct_sale_items_stock(
+        self, db, sale_id: int, items: list, *, receipt: str = '',
+        movement_type: str = 'SALE_EDIT',
+    ) -> None:
+        """Deduct stock for edited/new sale lines. Raises ValueError if insufficient."""
+        now = datetime.now().isoformat()
+        rn = receipt or str(sale_id)
+        for item in items:
+            pid = item.get('product_id')
+            if not pid:
+                continue
+            qty = float(item.get('quantity') or 0)
+            if qty <= 0:
+                continue
+            prod = db.execute(
+                "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+            ).fetchone()
+            if not prod:
+                raise ValueError(f"Product #{pid} not found for stock deduct.")
+            current = float(prod['stock'] or 0)
+            if current + 1e-9 < qty:
+                raise ValueError(
+                    f"Insufficient stock for '{prod['name']}': "
+                    f"need {qty:g}, available {current:g}"
+                )
+            new_stock = current - qty
+            db.execute(
+                "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                (new_stock, now, pid)
+            )
+            db.execute(
+                "INSERT INTO stock_movements "
+                "(product_id,product_name,movement_type,qty_before,qty_change,"
+                "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (int(pid), prod['name'], movement_type,
+                 current, -qty, new_stock, rn,
+                 f"Sale edit deduct: {rn}",
+                 self._user_id, self._username or 'admin')
+            )
+
     def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False) -> dict:
         """
         Void a completed sale. Manager / admin / superadmin.
@@ -1953,8 +2061,10 @@ class APIClient:
                 "SELECT * FROM sales WHERE id=?", (sale_id,)
             ).fetchone()
             if not sale:
+                db.rollback()
                 return {'error': 'Sale not found'}
             if sale['status'] == 'voided':
+                db.rollback()
                 return {'error': 'Sale already voided'}
 
             # Credit-sale debt payment check
@@ -1983,34 +2093,14 @@ class APIClient:
                     ),
                 }
 
-            items = db.execute(
-                "SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)
-            ).fetchall()
-
-            # Restore stock for each item
-            for item in items:
-                pid = item['product_id']
-                if pid:
-                    prod = db.execute(
-                        "SELECT id,name,stock FROM products WHERE id=?", (pid,)
-                    ).fetchone()
-                    if prod:
-                        old_stock = prod['stock']
-                        new_stock = old_stock + item['quantity']
-                        db.execute(
-                            "UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                            (new_stock, datetime.now().isoformat(), pid)
-                        )
-                        db.execute(
-                            "INSERT INTO stock_movements "
-                            "(product_id,product_name,movement_type,qty_before,qty_change,"
-                            "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                            (pid, prod['name'], 'VOID_RESTORE',
-                             old_stock, item['quantity'], new_stock,
-                             f"VOID_sale={sale_id}",
-                             f"Stock restored: sale {sale['receipt_number']} voided",
-                             self._user_id, self._username or 'admin')
-                        )
+            # Restore stock (idempotent — no double VOID_RESTORE)
+            self._restock_sale_items(
+                db, sale_id,
+                receipt=sale['receipt_number'] or '',
+                reason=f"Stock restored: sale {sale['receipt_number']} voided",
+                movement_type='VOID_RESTORE',
+                skip_if_restored=True,
+            )
 
             # Cancel linked debt invoices for this sale (keep payment history)
             debt_rows = db.execute(
@@ -2143,6 +2233,305 @@ class APIClient:
         finally:
             db.close()
 
+    def edit_sale(self, sale_id: int, data: dict) -> dict:
+        """
+        Super Admin only — full receipt edit.
+        Updates quantities, prices, discounts, payment method, customer,
+        add/remove lines; recalculates totals; adjusts inventory and debt;
+        reverses/reposts accounting; logs sale_edits + audit.
+        """
+        if self._role != 'superadmin':
+            _audit(self._user_id, self._username,
+                   'EDIT_SALE_DENIED', 'sales',
+                   f"sale_id={sale_id} role={self._role}")
+            return {'error': 'Only Super Admin can edit sales.'}
+
+        reason = (data.get('reason') or '').strip()
+        if not reason:
+            return {'error': 'An edit reason is required.'}
+
+        new_items = data.get('items')
+        if new_items is not None:
+            if not isinstance(new_items, list) or not new_items:
+                return {'error': 'Sale must have at least one line item.'}
+
+        db = _db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            sale = db.execute(
+                "SELECT * FROM sales WHERE id=?", (sale_id,)
+            ).fetchone()
+            if not sale:
+                db.rollback()
+                return {'error': 'Sale not found'}
+            if (sale['status'] or '').lower() != 'completed':
+                db.rollback()
+                return {'error': 'Only completed sales can be edited.'}
+
+            rn = sale['receipt_number'] or str(sale_id)
+            old_items = _rows(db.execute(
+                "SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)
+            ))
+
+            # Snapshot header for audit
+            old_snap = {
+                'subtotal': float(sale['subtotal'] or 0),
+                'discount': float(sale['discount'] or 0),
+                'tax': float(sale['tax'] or 0),
+                'total': float(sale['total'] or 0),
+                'payment_method': sale['payment_method'] or '',
+                'amount_paid': float(sale['amount_paid'] or 0),
+                'customer_id': sale['customer_id'],
+                'items': [
+                    {
+                        'product_id': it.get('product_id'),
+                        'product_name': it.get('product_name'),
+                        'quantity': float(it.get('quantity') or 0),
+                        'unit_price': float(it.get('unit_price') or 0),
+                        'discount': float(it.get('discount') or 0),
+                        'total': float(it.get('total') or 0),
+                    }
+                    for it in old_items
+                ],
+            }
+
+            # Normalize new items
+            if new_items is None:
+                new_items = old_snap['items']
+            normalized = []
+            for raw in new_items:
+                pid = raw.get('product_id')
+                qty = round(float(raw.get('quantity') or 0), 4)
+                price = round(float(raw.get('unit_price') or 0), 4)
+                disc = round(float(raw.get('discount') or 0), 4)
+                if qty <= 0:
+                    continue
+                name = (raw.get('product_name') or '').strip()
+                sku = (raw.get('sku') or '').strip()
+                if pid:
+                    prod = db.execute(
+                        "SELECT name, sku FROM products WHERE id=?", (pid,)
+                    ).fetchone()
+                    if prod:
+                        name = name or (prod['name'] or '')
+                        sku = sku or (prod['sku'] or '')
+                line_total = round(max(0.0, qty * price - disc), 2)
+                normalized.append({
+                    'product_id': int(pid) if pid else None,
+                    'product_name': name or 'Item',
+                    'sku': sku,
+                    'quantity': qty,
+                    'unit_price': price,
+                    'discount': disc,
+                    'total': line_total,
+                })
+            if not normalized:
+                db.rollback()
+                return {'error': 'Sale must have at least one line item.'}
+
+            subtotal = round(sum(i['quantity'] * i['unit_price'] for i in normalized), 2)
+            item_disc = round(sum(i['discount'] for i in normalized), 2)
+            header_disc = data.get('discount')
+            if header_disc is None:
+                header_disc = float(sale['discount'] or 0)
+            else:
+                header_disc = round(float(header_disc or 0), 2)
+            # Prefer explicit header discount; if only line discounts, keep sale.discount
+            # as header and keep line discounts in items (same as create_sale pattern).
+            tax = data.get('tax')
+            if tax is None:
+                tax = float(sale['tax'] or 0)
+            else:
+                tax = round(float(tax or 0), 2)
+            total = round(
+                float(data['total']) if data.get('total') is not None
+                else max(0.0, subtotal - header_disc - item_disc + tax),
+                2
+            )
+
+            payment_method = data.get('payment_method')
+            if payment_method is None:
+                payment_method = sale['payment_method'] or 'cash'
+            payment_method = str(payment_method).strip() or 'cash'
+
+            customer_id = data.get('customer_id') if 'customer_id' in data else sale['customer_id']
+            if customer_id is not None and customer_id != '':
+                customer_id = int(customer_id)
+            else:
+                customer_id = None
+
+            amount_paid = data.get('amount_paid')
+            method_l = payment_method.lower()
+            is_credit = method_l in ('credit sale', 'credit', 'part payment')
+            if amount_paid is None:
+                if is_credit and method_l != 'part payment':
+                    amount_paid = 0.0
+                else:
+                    amount_paid = float(sale['amount_paid'] or 0)
+            amount_paid = round(float(amount_paid or 0), 2)
+            if not is_credit and amount_paid < 0.009:
+                amount_paid = total
+
+            # Inventory: restore old lines then deduct new (no double VOID_RESTORE)
+            self._restock_sale_items(
+                db, sale_id, receipt=rn,
+                reason=f"Sale edit reverse stock: {rn} — {reason}",
+                movement_type='SALE_EDIT_RESTORE',
+                skip_if_restored=False,
+            )
+            db.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
+            for it in normalized:
+                db.execute(
+                    "INSERT INTO sale_items "
+                    "(sale_id,product_id,product_name,sku,quantity,unit_price,discount,total) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (sale_id, it['product_id'], it['product_name'], it['sku'],
+                     it['quantity'], it['unit_price'], it['discount'], it['total'])
+                )
+            self._deduct_sale_items_stock(
+                db, sale_id, normalized, receipt=rn, movement_type='SALE_EDIT'
+            )
+
+            now = datetime.now().isoformat()
+            db.execute(
+                "UPDATE sales SET subtotal=?, discount=?, tax=?, total=?, "
+                "payment_method=?, amount_paid=?, customer_id=?, "
+                "original_total=?, notes=?, change_amount=? WHERE id=?",
+                (
+                    subtotal, header_disc, tax, total, payment_method, amount_paid,
+                    customer_id, total,
+                    ((sale['notes'] or '') + f' | EDITED: {reason}').strip(' |'),
+                    max(0.0, amount_paid - total) if not is_credit else float(sale['change_amount'] or 0),
+                    sale_id,
+                )
+            )
+
+            # Linked debt invoice sync
+            debt = db.execute(
+                "SELECT * FROM debt_invoices WHERE sale_id=? "
+                "AND LOWER(COALESCE(status,'')) NOT IN ('cancelled','written_off') "
+                "ORDER BY id DESC LIMIT 1",
+                (sale_id,)
+            ).fetchone()
+            if is_credit and customer_id:
+                paid = float(debt['amount_paid'] or 0) if debt else 0.0
+                if paid > total + 0.009:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'Debt payments ({paid:,.2f}) exceed new sale total '
+                            f'({total:,.2f}). Reduce payments first.'
+                        )
+                    }
+                bal = round(max(0.0, total - paid), 2)
+                status = 'paid' if bal <= 0.009 else ('partial' if paid > 0.009 else 'unpaid')
+                if debt:
+                    db.execute(
+                        "UPDATE debt_invoices SET customer_id=?, total_amount=?, "
+                        "balance=?, status=?, updated_at=?, notes=? WHERE id=?",
+                        (
+                            customer_id, total, bal, status, now,
+                            f"{(debt['notes'] or '').strip()}\nEDITED: {reason}".strip(),
+                            debt['id'],
+                        )
+                    )
+                else:
+                    inv_num = f"INV-EDIT-{sale_id}-{datetime.now().strftime('%H%M%S')}"
+                    cust_name = ''
+                    if customer_id:
+                        crow = db.execute(
+                            "SELECT name FROM customers WHERE id=?", (customer_id,)
+                        ).fetchone()
+                        if crow:
+                            cust_name = crow['name'] or ''
+                    db.execute(
+                        "INSERT INTO debt_invoices "
+                        "(invoice_number,sale_id,receipt_number,customer_id,customer_name,"
+                        "total_amount,amount_paid,balance,status,notes,created_at,updated_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (inv_num, sale_id, rn, customer_id, cust_name or 'Customer',
+                         total, 0.0, total, 'unpaid',
+                         f'Created on sale edit: {reason}', now, now)
+                    )
+            elif debt and not is_credit:
+                # Switched off credit — cancel open debt if unpaid
+                paid = float(debt['amount_paid'] or 0)
+                if paid > 0.009:
+                    db.rollback()
+                    return {
+                        'error': (
+                            'Cannot remove credit payment method while debt '
+                            f'payments ({paid:,.2f}) exist.'
+                        )
+                    }
+                db.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, "
+                    "notes=?, updated_at=? WHERE id=?",
+                    (f"CANCELLED on sale edit (no longer credit): {reason}",
+                     now, debt['id'])
+                )
+
+            # Field-level sale_edits
+            def _log_edit(edit_type, field, old_v, new_v):
+                if str(old_v) == str(new_v):
+                    return
+                db.execute(
+                    "INSERT INTO sale_edits "
+                    "(sale_id,edited_by_id,edited_by_name,edit_type,"
+                    "field_name,old_value,new_value,reason) VALUES (?,?,?,?,?,?,?,?)",
+                    (sale_id, self._user_id, self._username or 'admin',
+                     edit_type, field, str(old_v), str(new_v), reason)
+                )
+
+            _log_edit('EDIT', 'total', old_snap['total'], total)
+            _log_edit('EDIT', 'discount', old_snap['discount'], header_disc)
+            _log_edit('EDIT', 'payment_method', old_snap['payment_method'], payment_method)
+            _log_edit('EDIT', 'customer_id', old_snap['customer_id'], customer_id)
+            _log_edit('EDIT', 'amount_paid', old_snap['amount_paid'], amount_paid)
+            _log_edit(
+                'EDIT_ITEMS', 'items',
+                json.dumps(old_snap['items'], default=str),
+                json.dumps(normalized, default=str),
+            )
+
+            try:
+                from desktop.utils.accounting_hooks import (
+                    reverse_sale_journal, post_sale_journal,
+                )
+                reverse_sale_journal(
+                    db, sale_id, reason=f'Sale edit: {reason}',
+                    user_id=self._user_id, username=self._username or 'admin',
+                    safe=True)
+                post_sale_journal(
+                    db, sale_id,
+                    user_id=self._user_id, username=self._username or 'admin',
+                    safe=True)
+            except Exception as _je:
+                logger.error('edit_sale accounting: %s', _je, exc_info=True)
+
+            db.commit()
+            _audit(
+                self._user_id, self._username, 'EDIT_SALE', 'sales',
+                f"sale_id={sale_id} receipt={rn} total={old_snap['total']}→{total} "
+                f"method={payment_method} reason={reason}"
+            )
+            return {
+                'success': True,
+                'sale_id': sale_id,
+                'receipt_number': rn,
+                'total': total,
+                'items': normalized,
+            }
+        except ValueError as e:
+            db.rollback()
+            return {'error': str(e)}
+        except Exception as e:
+            db.rollback()
+            logger.error(f"edit_sale: {e}", exc_info=True)
+            return {'error': str(e)}
+        finally:
+            db.close()
+
     def get_stock_movements(self, product_id=None, limit=200) -> list:
         db = _db()
         try:
@@ -2220,10 +2609,58 @@ class APIClient:
                        COALESCE(SUM(discount),0) as total_discounts,
                        COALESCE(SUM(tax),0) as total_tax,
                        COALESCE(SUM(CASE WHEN LOWER(COALESCE(payment_method,''))='cash'
-                                         THEN amount_paid ELSE 0 END),0) as cash_received
+                                         THEN amount_paid ELSE 0 END),0) as cash_received,
+                       /* Money actually received on sales (excludes unpaid credit totals) */
+                       COALESCE(SUM(
+                           CASE
+                             WHEN LOWER(COALESCE(payment_method,'')) IN
+                                  ('credit sale','credit')
+                                  AND COALESCE(amount_paid,0) < 0.01
+                             THEN 0
+                             ELSE COALESCE(amount_paid,0) - COALESCE(change_amount,0)
+                           END
+                       ),0) as collected_from_sales,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,'')) IN
+                              ('credit sale','credit','part payment')
+                         THEN total ELSE 0 END),0) as credit_sales_total,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,'')) IN
+                              ('credit sale','credit')
+                              AND COALESCE(amount_paid,0) < 0.01
+                         THEN total ELSE 0 END),0) as credit_sales_outstanding,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,''))='cash'
+                         THEN COALESCE(amount_paid,0) - COALESCE(change_amount,0)
+                         ELSE 0 END),0) as cash_sales_collected,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,'')) IN
+                              ('m-pesa','mpesa','mobile money')
+                         THEN COALESCE(amount_paid,0) ELSE 0 END),0) as mpesa_collected,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,''))='card'
+                         THEN COALESCE(amount_paid,0) ELSE 0 END),0) as card_collected,
+                       COALESCE(SUM(CASE
+                         WHEN LOWER(COALESCE(payment_method,'')) IN
+                              ('bank transfer','bank','bank payment')
+                         THEN COALESCE(amount_paid,0) ELSE 0 END),0) as bank_collected
                 FROM sales WHERE date(created_at) BETWEEN ? AND ?
                 AND status='completed'
             """, (start, end)))
+
+            debt_collected_row = _row(db.execute("""
+                SELECT COALESCE(SUM(amount),0) as debt_collected
+                FROM debt_payments
+                WHERE date(created_at) BETWEEN ? AND ?
+            """, (start, end)))
+            debt_collected = float((debt_collected_row or {}).get('debt_collected') or 0)
+
+            summary = dict(summary or {})
+            collected_sales = float(summary.get('collected_from_sales') or 0)
+            # Today's Revenue (Collected) = tender received on sales + debt collections
+            summary['debt_collected'] = debt_collected
+            summary['collected_revenue'] = round(collected_sales + debt_collected, 2)
+            summary['total_sales'] = float(summary.get('total_revenue') or 0)
 
             top_products = _rows(db.execute("""
                 SELECT si.product_name,
@@ -2942,12 +3379,14 @@ class APIClient:
 
         Paths:
           - Unpaid (amount_paid ≈ 0): void linked POS sale (full restock), or
-            cancel orphan / already-voided sale invoice.
+            cancel orphan / already-voided sale invoice and recover stock if
+            VOID_RESTORE was never applied.
           - Partial (amount_paid > 0, balance > 0): write off remaining balance
             only — keep sale, sale_items, payments, and products. No restock
-            (unpaid quantity share is ambiguous after mixed payments).
+            (goods were delivered; unpaid share is a receivable write-off).
 
         Blocked: fully paid, already cancelled/written_off.
+        Entire unpaid void/restock path is transactional (void_sale BEGIN/COMMIT).
         """
         if self._role != 'superadmin':
             _audit(self._user_id, self._username,
@@ -2981,7 +3420,21 @@ class APIClient:
 
             sale_id = inv.get('sale_id')
             inv_num = inv.get('invoice_number') or ''
+            receipt_hint = (inv.get('receipt_number') or '').strip()
             now = datetime.now().isoformat()
+
+            # Resolve sale_id from receipt when missing
+            if not sale_id and receipt_hint:
+                linked = db.execute(
+                    "SELECT id, status, receipt_number FROM sales WHERE receipt_number=?",
+                    (receipt_hint,)
+                ).fetchone()
+                if linked:
+                    sale_id = linked['id']
+                    db.execute(
+                        "UPDATE debt_invoices SET sale_id=? WHERE id=? AND sale_id IS NULL",
+                        (sale_id, invoice_id)
+                    )
 
             # ── Partial debt: write off remaining balance only ──────────────
             if paid_amt > 0.009:
@@ -3019,11 +3472,8 @@ class APIClient:
                     ),
                 }
 
-            # ── Unpaid (amount_paid ≈ 0): existing void / cancel path ───────
-            restock = []
-
+            # ── Unpaid: orphan / missing / already-voided ───────────────────
             if not sale_id:
-                # Orphan invoice — cancel only
                 db.execute(
                     "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
                     "updated_at=? WHERE id=?",
@@ -3048,13 +3498,12 @@ class APIClient:
                 "SELECT id, status, receipt_number FROM sales WHERE id=?",
                 (sale_id,)
             ).fetchone()
-            if not sale or sale['status'] == 'voided':
-                note = ('DELETED (sale missing): ' if not sale
-                        else 'DELETED (sale already voided): ')
+
+            if not sale:
                 db.execute(
                     "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
                     "updated_at=? WHERE id=?",
-                    (f"{note}{reason}", now, invoice_id)
+                    (f"DELETED (sale missing): {reason}", now, invoice_id)
                 )
                 db.commit()
                 _audit(self._user_id, self._username, 'DELETE_DEBT', 'debt',
@@ -3067,13 +3516,62 @@ class APIClient:
                     'mode': 'delete_unpaid',
                     'restocked': False,
                     'restock': [],
+                    'message': 'Debt cancelled (linked sale missing).',
+                }
+
+            if sale['status'] == 'voided':
+                # Recover stock if void never restored inventory
+                db.execute("BEGIN IMMEDIATE")
+                had_restore = self._has_void_restore(db, int(sale_id))
+                restock = self._restock_sale_items(
+                    db, int(sale_id),
+                    receipt=sale['receipt_number'] or '',
+                    reason=(
+                        f"DELETE_DEBT recover stock inv={inv_num}: {reason}"
+                    ),
+                    movement_type='VOID_RESTORE',
+                    skip_if_restored=True,
+                )
+                applied = [r for r in restock if not r.get('already_restored')]
+                already = had_restore or (
+                    bool(restock) and all(r.get('already_restored') for r in restock)
+                )
+                db.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
+                    "updated_at=? WHERE id=?",
+                    (f"DELETED (sale already voided): {reason}", now, invoice_id)
+                )
+                db.commit()
+                did_restock = bool(applied)
+                restock_summary = '; '.join(
+                    f"{r['product_name'] or ('#' + str(r['product_id']))} +{r['quantity']:g}"
+                    for r in (applied or restock)
+                ) or 'none'
+                _audit(
+                    self._user_id, self._username, 'DELETE_DEBT', 'debt',
+                    f"inv={inv_num} invoice_id={invoice_id} sale_id={sale_id} "
+                    f"restock=[{restock_summary}] "
+                    f"recover={'yes' if did_restock else ('already' if already else 'none')} "
+                    f"reason={reason}"
+                )
+                return {
+                    'success': True,
+                    'invoice_id': invoice_id,
+                    'sale_id': int(sale_id),
+                    'mode': 'delete_unpaid',
+                    'restocked': did_restock or already,
+                    'restock': applied or restock,
                     'message': (
-                        'Debt cancelled (linked sale missing).'
-                        if not sale else
+                        'Debt cancelled; stock recovered for voided sale.'
+                        if did_restock else
+                        'Debt cancelled (linked sale was already voided; stock already restored).'
+                        if already else
                         'Debt cancelled (linked sale was already voided).'
                     ),
                 }
 
+            # Preview restock list for response (live completed sale)
+            restock = []
             items = db.execute(
                 "SELECT si.product_id, si.quantity, p.name as product_name "
                 "FROM sale_items si "
@@ -3089,17 +3587,37 @@ class APIClient:
                         'quantity': float(it['quantity'] or 0),
                     })
         except Exception as e:
-            db.rollback()
+            try:
+                db.rollback()
+            except Exception:
+                pass
             logger.error(f"delete_debt_invoice preview: {e}", exc_info=True)
             return {'error': str(e)}
         finally:
             db.close()
 
-        # Linked live unpaid sale — reuse void_sale restock + cancel path
+        # Linked live unpaid sale — void_sale (transactional restock + cancel debt)
         void_reason = f"DELETE_DEBT inv={inv_num}: {reason}"
         res = self.void_sale(int(sale_id), void_reason, force_with_payments=False)
         if res.get('error'):
             return res
+
+        # Ensure invoice cancelled even if void's debt cancel missed this id
+        db2 = _db()
+        try:
+            row = db2.execute(
+                "SELECT status FROM debt_invoices WHERE id=?", (invoice_id,)
+            ).fetchone()
+            if row and (row['status'] or '').lower() not in ('cancelled', 'written_off'):
+                db2.execute(
+                    "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, "
+                    "updated_at=? WHERE id=?",
+                    (f"DELETED via void sale: {reason}",
+                     datetime.now().isoformat(), invoice_id)
+                )
+                db2.commit()
+        finally:
+            db2.close()
 
         restock_summary = '; '.join(
             f"{r['product_name'] or ('#' + str(r['product_id']))} +{r['quantity']:g}"

@@ -1,7 +1,7 @@
 # Web Dashboard Gap Analysis
 
-**Audited:** 2026-07-19  
-**Tip baseline:** 2.3.91 (not bumped this session)  
+**Audited:** 2026-07-19
+**Tip baseline:** 2.3.91 (not bumped this session)
 **Scope:** `web/dashboard-ui` + `web/web_routes.py` + shared `/api/*` in `backend/app.py`
 
 ## Counts (post-session)

@@ -38,16 +38,16 @@ def _get_export_dir():
 
 class ReportsTab(QWidget):
     # Signals for thread-safe UI updates
-    _tg_progress = pyqtSignal(str)
-    _tg_done     = pyqtSignal(bool, str)
+    _report_progress = pyqtSignal(str)
+    _report_done     = pyqtSignal(bool, str)
 
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
         self._last_export_path = None
-        self._tg_progress.connect(self._on_tg_progress)
-        self._tg_done.connect(self._on_tg_done)
+        self._report_progress.connect(self._on_report_progress)
+        self._report_done.connect(self._on_report_done)
         self._build()
 
     # ── UI ─────────────────────────────────────────────────────────────────────
@@ -60,9 +60,10 @@ class ReportsTab(QWidget):
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
         self._exp_btn = PrimaryBtn('⬇  Export Excel', 40)
         self._exp_btn.clicked.connect(self._export)
-        self._tg_btn = SecondaryBtn('✈  Telegram', 40)
-        self._tg_btn.clicked.connect(self._send_telegram)
-        ar.addWidget(self._tg_btn); ar.addWidget(self._exp_btn)
+        self._email_btn = SecondaryBtn('✉  Email Report', 40)
+        self._email_btn.setToolTip('Send via cloud notification / email (Telegram permanently removed)')
+        self._email_btn.clicked.connect(self._send_cloud_report)
+        ar.addWidget(self._email_btn); ar.addWidget(self._exp_btn)
         intro, _ = page_intro('Reports', 'Sales, cash rounding, payment variance, products and payment breakdown.', actions)
         lay.addLayout(intro)
 
@@ -577,45 +578,39 @@ class ReportsTab(QWidget):
         finally:
             self._exp_btn.setEnabled(True); self._exp_btn.setText('⬇  Export Excel')
 
-    # ── Telegram ──────────────────────────────────────────────────────────────
+    # ── Cloud / email report (Telegram permanently removed) ───────────────────
 
-    def _send_telegram(self):
-        cfg     = self.config_getter() or {}
-        token   = cfg.get('telegram_bot_token','').strip()
-        chat_id = cfg.get('telegram_chat_id','').strip()
-        if not token or not chat_id:
-            QMessageBox.warning(self, 'Not Connected',
-                'Your Telegram is not connected.\n'
-                'Go to Settings → Telegram & click Connect My Telegram.')
-            return
+    def _send_cloud_report(self):
         start = self._s.date().toString(DATE_API_FMT)
         end   = self._e.date().toString(DATE_API_FMT)
-        if QMessageBox.question(self, 'Send via Telegram',
-                f'Export and send report ({start} → {end}) to your Telegram?',
+        if QMessageBox.question(self, 'Send Report',
+                f'Generate and send report ({start} → {end}) via cloud notifications / email?',
                 QMessageBox.Yes|QMessageBox.No) != QMessageBox.Yes:
             return
 
-        self._tg_btn.setEnabled(False); self._tg_btn.setText('Sending…')
+        self._email_btn.setEnabled(False); self._email_btn.setText('Sending…')
         self._set_status('Preparing report…', ok=None)
 
-        sys.path.insert(0, _PR)
-        from backend.telegram_reporter import send_report_for_range
-        send_report_for_range(
-            self.api, self.config_getter, start, end,
-            on_progress=lambda msg: self._tg_progress.emit(msg),
-            on_done=lambda ok, msg: self._tg_done.emit(ok, msg),
-        )
+        from backend.cloud.report_engine import ReportEngine
+        from mbt_paths import get_db_path
+        import threading
 
-    def _on_tg_progress(self, msg: str):
+        def _run():
+            engine = ReportEngine(get_db_path(), config_getter=self.config_getter)
+            ok, msg = engine.send_report_now('custom')
+            self._report_done.emit(ok, msg)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_report_progress(self, msg: str):
         self._set_status(msg, ok=None)
 
-    def _on_tg_done(self, ok: bool, msg: str):
-        self._tg_btn.setEnabled(True); self._tg_btn.setText('✈  Send via Telegram')
-        self._set_status(('✓ ' if ok else '✗ ') + msg.split('\n')[0], ok=ok)
+    def _on_report_done(self, ok: bool, msg: str):
+        self._email_btn.setEnabled(True); self._email_btn.setText('✉  Email Report')
+        self._set_status(('✓ ' if ok else '✗ ') + (msg or '').split('\n')[0], ok=ok)
         if ok:
-            QMessageBox.information(self, 'Sent ✓', msg)
+            QMessageBox.information(self, 'Report Sent', msg or 'Report queued.')
         else:
-            QMessageBox.critical(self, 'Send Failed', msg)
+            QMessageBox.warning(self, 'Send Failed', msg or 'Could not send report.')
 
     def _set_status(self, msg: str, ok=None):
         color = C['ok'] if ok is True else C['err'] if ok is False else C['text2']

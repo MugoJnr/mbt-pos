@@ -4,7 +4,7 @@ MBT POS — Daily report delivery queue + idempotency store
 Statuses: PENDING → SENDING → SENT | FAILED | RETRYING
 
 One SENT row per (business_key, report_date, report_type) prevents duplicate
-Telegram delivery across restarts and duplicate scheduler instances.
+Portal / email report delivery across restarts and duplicate scheduler instances.
 """
 from __future__ import annotations
 
@@ -90,9 +90,6 @@ def business_key_from_cfg(cfg: dict | None) -> str:
     shop = (cfg.get('shop_name') or '').strip().lower()
     if shop:
         return f'shop:{shop}'
-    chat = (cfg.get('telegram_chat_id') or '').strip()
-    if chat:
-        return f'chat:{chat}'
     return 'default'
 
 

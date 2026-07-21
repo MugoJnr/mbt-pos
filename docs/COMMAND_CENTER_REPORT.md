@@ -1,7 +1,7 @@
 # MBT Business Command Center - Implementation Report
 
-**Version:** **2.3.88** (shipped)  
-**Ship date:** 2026-07-18  
+**Version:** **2.3.88** (shipped)
+**Ship date:** 2026-07-18
 **Setup:** `MBT_POS_Setup_v2.3.88.exe` (GitHub release `v2.3.88`)
 
 ## Patch 2.3.88 (AI chat sales)
@@ -12,7 +12,7 @@ AI Command Center chat returned **0 sales** while Insights showed real totals be
 
 ## Prior: 2.3.87
 
-**Version:** **2.3.87**  
+**Version:** **2.3.87**
 **Setup:** `MBT_POS_Setup_v2.3.87.exe`
 
 ## Ship status
@@ -111,4 +111,3 @@ Existing `GET /api/health` unchanged (ping).
 - `web/dashboard-ui/src/components/app-shell.tsx`, `ui-kit.tsx`
 - `web/dashboard-ui/src/routes/` â€” index + new pages + diagnostics
 - `docs/COMMAND_CENTER_REPORT.md` â€” this file
-

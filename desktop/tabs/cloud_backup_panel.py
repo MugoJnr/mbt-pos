@@ -1,5 +1,5 @@
 """
-MBT POS — Settings → MBT Cloud Backup panel
+MBT POS — Settings → Cloud Backup panel
 Theme-aware (Light/Dark via C tokens). Local-first; internet only for sync.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ class CloudBackupPanel(QWidget):
         root.setSpacing(14)
 
         grp, body = section_card(
-            '☁', 'MBT Cloud Backup',
+            '☁', 'Cloud Backup',
             'Encrypted offline-first backups to Supabase · disaster recovery')
         form = QVBoxLayout()
         form.setSpacing(12)
@@ -310,19 +310,19 @@ class CloudBackupPanel(QWidget):
                     self, 'Restore complete',
                     'Database restored. Please restart MBT POS.')
             else:
-                QMessageBox.information(self, 'MBT Cloud', payload.get('message') or 'Success')
+                QMessageBox.information(self, 'MugoByte Platform', payload.get('message') or 'Success')
         else:
             err = payload.get('error') or 'Failed'
             if payload.get('queued'):
                 self._msg.setText(f'Queued offline: {err}')
             else:
-                QMessageBox.warning(self, 'MBT Cloud', err)
+                QMessageBox.warning(self, 'MugoByte Platform', err)
         self.refresh()
 
     def _on_worker_err(self, err: str):
         self._set_busy(False)
         self._msg.setText(err)
-        QMessageBox.warning(self, 'MBT Cloud', err)
+        QMessageBox.warning(self, 'MugoByte Platform', err)
         self.refresh()
 
     def _run(self, op: str, fn):
@@ -356,7 +356,7 @@ class CloudBackupPanel(QWidget):
     def _create_business(self):
         email, pw, name = self.email.text().strip(), self.password.text(), self.biz_name.text().strip()
         if not email or not pw:
-            QMessageBox.warning(self, 'MBT Cloud', 'Email and password required.')
+            QMessageBox.warning(self, 'MugoByte Platform', 'Email and password required.')
             return
 
         def fn():
@@ -369,7 +369,7 @@ class CloudBackupPanel(QWidget):
     def _login(self):
         email, pw = self.email.text().strip(), self.password.text()
         if not email or not pw:
-            QMessageBox.warning(self, 'MBT Cloud', 'Email and password required.')
+            QMessageBox.warning(self, 'MugoByte Platform', 'Email and password required.')
             return
 
         def fn():
@@ -418,7 +418,7 @@ class CloudBackupPanel(QWidget):
     def _restore_selected(self):
         row = self.table.currentRow()
         if row < 0 or row >= len(self._backups):
-            QMessageBox.information(self, 'MBT Cloud', 'Select a backup row first.')
+            QMessageBox.information(self, 'MugoByte Platform', 'Select a backup row first.')
             return
         bak = self._backups[row]
         reply = QMessageBox.question(
@@ -470,5 +470,5 @@ class CloudBackupPanel(QWidget):
     def _logout(self):
         from backend.cloud_backup.auth_service import logout
         logout()
-        self._msg.setText('Disconnected from MBT Cloud.')
+        self._msg.setText('Disconnected from MugoByte Platform.')
         self.refresh()

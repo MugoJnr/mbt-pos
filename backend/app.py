@@ -7,10 +7,14 @@ import sys
 import json
 import sqlite3
 import logging
+import secrets
+import time
+import threading
 from datetime import datetime, date
 from flask import Flask, request, jsonify, g
 from functools import wraps
 import jwt
+from runtime_security import get_jwt_secret
 
 try:
     from flask_cors import CORS
@@ -18,15 +22,15 @@ try:
 except ImportError:
     _has_cors = False
 
-import hashlib as _hashlib, os as _os2
-
 def hash_pw(pw):
-    """Always use salt:sha256 — works without bcrypt on all platforms."""
-    salt = _os2.urandom(16).hex()
-    return salt + ':' + _hashlib.sha256((salt + pw).encode()).hexdigest()
+    """Hash new passwords with bcrypt; legacy hashes remain readable."""
+    import bcrypt
+    raw = pw.encode() if isinstance(pw, str) else pw
+    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=12)).decode()
 
 def check_pw(pw, h):
-    """Detect hash format first to avoid bcrypt Invalid salt error."""
+    """Verify bcrypt or the legacy salt:sha256 format."""
+    import hashlib
     h = h.decode() if isinstance(h, bytes) else h
     pw_str = pw.decode() if isinstance(pw, bytes) else pw
     # bcrypt hashes start with $2b$, $2a$, $2y$
@@ -41,18 +45,100 @@ def check_pw(pw, h):
     if len(parts) != 2:
         return False
     salt, stored = parts
-    return _hashlib.sha256((salt + pw_str).encode()).hexdigest() == stored
+    actual = hashlib.sha256((salt + pw_str).encode()).hexdigest()
+    return secrets.compare_digest(actual, stored)
 
 app = Flask(__name__)
+_login_attempts = {}
+_login_attempts_lock = threading.Lock()
+_LOGIN_WINDOW_SECONDS = int(os.environ.get('MBT_LOGIN_WINDOW_SECONDS', '300'))
+_LOGIN_MAX_ATTEMPTS = int(os.environ.get('MBT_LOGIN_MAX_ATTEMPTS', '10'))
+
+
+def _login_rate_limited(client_key: str) -> tuple[bool, int]:
+    """Small fixed-window limiter for the local/Portal login edge."""
+    now = time.time()
+    with _login_attempts_lock:
+        attempts = [
+            ts for ts in _login_attempts.get(client_key, [])
+            if now - ts < _LOGIN_WINDOW_SECONDS
+        ]
+        _login_attempts[client_key] = attempts
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            retry_after = max(1, int(_LOGIN_WINDOW_SECONDS - (now - attempts[0])))
+            return True, retry_after
+        attempts.append(now)
+        return False, 0
+
+
+def _clear_login_attempts(client_key: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts.pop(client_key, None)
+
+
+_ALLOWED_ORIGINS = {
+    origin.strip().rstrip('/')
+    for origin in os.environ.get(
+        'MBT_CORS_ORIGINS',
+        'https://portal.mugobyte.com,http://127.0.0.1:5173,http://127.0.0.1:5174',
+    ).split(',')
+    if origin.strip()
+}
 if _has_cors:
-    CORS(app)
+    CORS(
+        app,
+        origins=sorted(_ALLOWED_ORIGINS),
+        allow_headers=['Content-Type', 'Authorization', 'X-Request-ID'],
+        methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+        supports_credentials=False,
+    )
 else:
     @app.after_request
     def _cors(r):
-        r.headers['Access-Control-Allow-Origin']  = '*'
-        r.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
-        r.headers['Access-Control-Allow-Methods'] = 'GET,POST,PUT,DELETE,OPTIONS'
+        origin = request.headers.get('Origin', '').rstrip('/')
+        if origin in _ALLOWED_ORIGINS:
+            r.headers['Access-Control-Allow-Origin'] = origin
+            r.headers['Vary'] = 'Origin'
+        r.headers['Access-Control-Allow-Headers'] = (
+            'Content-Type,Authorization,X-Request-ID'
+        )
+        r.headers['Access-Control-Allow-Methods'] = (
+            'GET,POST,PUT,PATCH,DELETE,OPTIONS'
+        )
         return r
+
+
+@app.before_request
+def _request_context():
+    g.request_id = request.headers.get('X-Request-ID') or secrets.token_hex(12)
+
+
+@app.after_request
+def _security_headers(response):
+    response.headers['X-Request-ID'] = getattr(g, 'request_id', '')
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = (
+        'camera=(), microphone=(), geolocation=(), payment=()'
+    )
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self' https://*.supabase.co; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    )
+    if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https':
+        response.headers['Strict-Transport-Security'] = (
+            'max-age=63072000; includeSubDomains; preload'
+        )
+    if request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
 
 BUNDLE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = BUNDLE_DIR  # PyInstaller bundle root (_internal when frozen onedir)
@@ -73,7 +159,7 @@ except Exception:
     DB_PATH = os.path.join(BUNDLE_DIR, 'data', 'mbt_pos.db')
     CONFIG_PATH = os.path.join(BUNDLE_DIR, 'config', 'settings.json')
     LOG_PATH = os.path.join(BUNDLE_DIR, 'logs', 'backend.log')
-SECRET_KEY = "MBT_POS_SECRET_2024_MUGOBYTE"
+SECRET_KEY = get_jwt_secret()
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
@@ -365,11 +451,13 @@ def init_db():
             (dept_name,),
         )
 
-    # Default shop owner (wizard normally creates this; fallback for API-only init)
+    # Production never creates a known default credential. API-only development
+    # may opt in with an explicit, non-empty bootstrap password.
+    bootstrap_password = os.environ.get('MBT_BOOTSTRAP_ADMIN_PASSWORD', '')
     existing = cur.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-    if not existing:
+    if not existing and bootstrap_password:
         from roles import default_tab_permissions
-        pw_hash = hash_pw('admin123')
+        pw_hash = hash_pw(bootstrap_password)
         cur.execute("""INSERT INTO users (username, password_hash, role, full_name, tab_permissions)
                        VALUES (?, ?, ?, ?, ?)""",
                     ('admin', pw_hash, 'superadmin', 'Shop Owner',
@@ -381,9 +469,6 @@ def init_db():
         'shop_address': '',
         'shop_phone': '',
         'shop_email': '',
-        'telegram_bot_token': '',  # filled from config.deploy below
-        'telegram_chat_id': '',       # customer's own chat ID (for receiving keys)
-        'developer_chat_id': '8293620725',      # YOUR Telegram ID — hardcoded for @mugobyte_technologies
         'currency_symbol': 'KES',
         'tax_rate': '0',
         'receipt_footer': 'Thank you for shopping with us!',
@@ -392,15 +477,12 @@ def init_db():
         'printer_name': '',
         'printer_port': 'USB',
         'auto_print': '1',
+        'auto_report_daily': '1',
+        'auto_report_weekly': '1',
+        'auto_report_interval_hours': '4',
+        'auto_db_backup': '1',
+        'auto_db_backup_interval_hours': '24',
     }
-    try:
-        from config.deploy import shop_settings_defaults
-        _dep = shop_settings_defaults()
-        for _k in ('telegram_bot_token', 'developer_chat_id', 'telegram_chat_id'):
-            if _k in _dep and (_dep.get(_k) or '').strip():
-                defaults[_k] = _dep[_k]
-    except Exception:
-        pass
     for k, v in defaults.items():
         cur.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 
@@ -576,6 +658,76 @@ def init_db():
         """)
     except Exception:
         pass
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        entity_type TEXT NOT NULL,
+        row_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        processed_at TEXT
+    )
+    """)
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending "
+        "ON sync_outbox(processed_at, available_at, id)"
+    )
+    # Triggers make the outbox transactional: domain data and its sync event
+    # commit or roll back together. Missing optional tables are skipped.
+    sync_tables = {
+        'products': 'product',
+        'sales': 'sale',
+        'sale_items': 'sale_item',
+        'customers': 'customer',
+        'suppliers': 'supplier',
+        'expenses': 'expense',
+        'purchases': 'purchase',
+        'purchase_items': 'purchase_item',
+        'employees': 'employee',
+        'users': 'user',
+        'branches': 'branch',
+        'audit_log': 'audit_log',
+        'system_settings': 'setting',
+    }
+    existing_tables = {
+        row[0] for row in cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    for table_name, entity_type in sync_tables.items():
+        if table_name not in existing_tables:
+            continue
+        columns = {
+            row[1] for row in cur.execute(
+                f'PRAGMA table_info("{table_name}")'
+            ).fetchall()
+        }
+        row_key_new = 'NEW.id' if 'id' in columns else 'NEW.key'
+        row_key_old = 'OLD.id' if 'id' in columns else 'OLD.key'
+        for suffix, timing, operation, row_key in (
+            ('insert', 'AFTER INSERT', 'upsert', row_key_new),
+            ('update', 'AFTER UPDATE', 'upsert', row_key_new),
+            ('delete', 'AFTER DELETE', 'delete', row_key_old),
+        ):
+            trigger_name = f'sync_{table_name}_{suffix}'
+            cur.execute(f'''
+                CREATE TRIGGER IF NOT EXISTS "{trigger_name}"
+                {timing} ON "{table_name}"
+                BEGIN
+                  INSERT INTO sync_outbox(
+                    event_id, entity_type, row_id, operation
+                  ) VALUES (
+                    lower(hex(randomblob(16))),
+                    '{entity_type}',
+                    CAST({row_key} AS TEXT),
+                    '{operation}'
+                  );
+                END
+            ''')
 
     db.commit()
     db.close()
@@ -588,24 +740,59 @@ def token_required(f):
         token = request.headers.get('Authorization', '').replace('Bearer ', '')
         if not token:
             return jsonify({'error': 'Token required'}), 401
+        # 1) Local Flask JWT (desktop POS / local users)
         try:
             data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
             db = get_db()
             user = db.execute("SELECT * FROM users WHERE id=? AND is_active=1",
                               (data['user_id'],)).fetchone()
-            if not user:
-                return jsonify({'error': 'Invalid token'}), 401
-            g.current_user = dict(user)
+            if user:
+                g.current_user = dict(user)
+                g.auth_provider = 'local'
+                return f(*args, **kwargs)
+        except Exception:
+            pass
+        # 2) Supabase JWT (MugoByte Platform cloud auth)
+        try:
+            from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config
+            if is_cloud_configured():
+                import requests as _req
+                cfg = load_cloud_config()
+                r = _req.get(
+                    f"{(cfg.get('supabase_url') or '').rstrip('/')}/auth/v1/user",
+                    headers={
+                        'apikey': cfg.get('anon_key') or '',
+                        'Authorization': f'Bearer {token}',
+                    },
+                    timeout=10,
+                )
+                if r.status_code < 400:
+                    u = r.json() or {}
+                    meta = u.get('user_metadata') or {}
+                    app_meta = u.get('app_metadata') or {}
+                    g.current_user = {
+                        'id': u.get('id'),
+                        'username': (u.get('email') or '').split('@')[0] or 'cloud',
+                        'full_name': meta.get('full_name') or meta.get('name') or (u.get('email') or ''),
+                        'email': u.get('email') or '',
+                        # Platform roles are server-controlled app metadata.
+                        # Organization ownership is checked through org_members.
+                        'role': app_meta.get('platform_role') or 'member',
+                        'tab_permissions': '[]',
+                        'is_active': 1,
+                    }
+                    g.auth_provider = 'supabase'
+                    return f(*args, **kwargs)
         except Exception as e:
-            return jsonify({'error': 'Invalid token'}), 401
-        return f(*args, **kwargs)
+            logger.debug('Supabase token check: %s', e)
+        return jsonify({'error': 'Invalid token'}), 401
     return decorated
 
 
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if g.current_user.get('role') not in ('admin', 'superadmin'):
+        if g.current_user.get('role') not in ('admin', 'superadmin', 'platform_admin'):
             return jsonify({'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return token_required(decorated)
@@ -651,6 +838,12 @@ def login():
     data = request.json or {}
     username = (data.get('username') or '').strip()
     password = data.get('password', '').encode()
+    client_key = f"{request.remote_addr or 'unknown'}:{username.lower()}"
+    limited, retry_after = _login_rate_limited(client_key)
+    if limited:
+        response = jsonify({'error': 'Too many login attempts. Try again later.'})
+        response.headers['Retry-After'] = str(retry_after)
+        return response, 429
 
     db = get_db()
     # Case-insensitive username (Admin == admin == ADMIN)
@@ -662,15 +855,24 @@ def login():
     if not user or not check_pw(password.decode() if isinstance(password,bytes) else data.get('password',''), user['password_hash']):
         return jsonify({'error': 'Invalid credentials'}), 401
 
-    db.execute("UPDATE users SET last_login=? WHERE id=?",
-               (datetime.now().isoformat(), user['id']))
+    _clear_login_attempts(client_key)
+    password_text = password.decode() if isinstance(password, bytes) else str(password)
+    if not str(user['password_hash']).startswith(('$2b$', '$2a$', '$2y$')):
+        db.execute(
+            "UPDATE users SET password_hash=?, last_login=? WHERE id=?",
+            (hash_pw(password_text), datetime.now().isoformat(), user['id']),
+        )
+    else:
+        db.execute("UPDATE users SET last_login=? WHERE id=?",
+                   (datetime.now().isoformat(), user['id']))
     db.commit()
 
     token = jwt.encode({
         'user_id': user['id'],
         'username': user['username'],
         'role': user['role'],
-        'exp': datetime.utcnow().timestamp() + 86400 * 7
+        'iat': int(time.time()),
+        'exp': int(time.time()) + int(os.environ.get('MBT_JWT_TTL_SECONDS', '28800')),
     }, SECRET_KEY, algorithm='HS256')
 
     perms = json.loads(user['tab_permissions'] or '[]')
@@ -728,7 +930,20 @@ def create_user():
                (data['username'], pw_hash, new_role,
                 data.get('full_name'), data.get('email'), json.dumps(perms)))
     db.commit()
-    log_action('CREATE_USER', 'admin', f"Created user: {data['username']}")
+    log_action('CREATE_USER', 'admin', f"Created user: {data['username']} role={new_role}")
+    # Flag suspicious privilege creation
+    if new_role in ('superadmin', 'admin'):
+        try:
+            from backend.cloud.platform_service import publish_security_event
+            actor = g.current_user.get('username') or g.current_user.get('id')
+            publish_security_event(
+                None,
+                f'Privileged account created: {data["username"]}',
+                f'Role={new_role} by {actor}',
+                {'username': data['username'], 'role': new_role, 'actor': str(actor), 'event': 'CREATE_USER'},
+            )
+        except Exception:
+            pass
     return jsonify({'success': True})
 
 
@@ -774,7 +989,29 @@ def update_user(uid):
         values.append(uid)
         db.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", values)
         db.commit()
-    log_action('UPDATE_USER', 'admin', f"Updated user id={uid}")
+    role_changed = 'role' in data and data['role'] != target['role']
+    elevated = role_changed and data.get('role') in ('admin', 'superadmin')
+    log_action('UPDATE_USER', 'admin', f"Updated user id={uid} role={new_role}")
+    if elevated or data.get('is_active') == 0:
+        try:
+            from backend.cloud.platform_service import publish_security_event
+            actor_name = g.current_user.get('username') or g.current_user.get('id')
+            title = 'User privilege change' if elevated else 'User deactivated'
+            publish_security_event(
+                None,
+                title,
+                f'User id={uid} ({target.get("username")}) → role={new_role} by {actor_name}',
+                {
+                    'user_id': uid,
+                    'username': target.get('username'),
+                    'old_role': target.get('role'),
+                    'new_role': new_role,
+                    'actor': str(actor_name),
+                    'event': 'UPDATE_USER',
+                },
+            )
+        except Exception:
+            pass
     return jsonify({'success': True})
 
 
@@ -1147,7 +1384,7 @@ def health():
     return jsonify({'status': 'ok', 'time': datetime.now().isoformat(), 'system': 'MBT POS'})
 
 
-# ── Web Dashboard Blueprint (optional; used by web_launcher.py) ──────────────
+# ── Live Dashboard Blueprint (optional; used by web_launcher.py) ──────────────
 # Load web_routes.py from the filesystem bundle path so HOT_APPLY can update the
 # React SPA routes without a full PyInstaller rebuild (PYZ would otherwise win).
 try:
@@ -1169,7 +1406,13 @@ except Exception as _e:
     logger.warning(f"Web blueprint not loaded: {_e}")
 
 
-if __name__ == '__main__':
+def create_app():
+    """Gunicorn application factory for the always-on Portal origin."""
     init_db()
+    return app
+
+
+if __name__ == '__main__':
+    create_app()
     port = int(os.environ.get('PORT', os.environ.get('FLASK_PORT', 5050)))
     app.run(host='0.0.0.0', port=port, debug=False)

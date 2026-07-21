@@ -21,8 +21,8 @@ the following terms:
    MugoByte Technologies at all times.
 
 4. SUPPORT
-   Support is provided during the active license period via Telegram
-   (@mbt_admin1_bot), WhatsApp and phone (+254 112 863 252), and email
+   Support is provided during the active license period via MugoByte Workspace
+   (portal.mugobyte.com), WhatsApp and phone (+254 112 863 252), and email
    (admin@mugobyte.com).
 
 5. LIMITATION OF LIABILITY

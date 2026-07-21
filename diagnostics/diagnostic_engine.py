@@ -69,7 +69,7 @@ class DiagnosticEngine(threading.Thread):
             ('database', self._check_database),
             ('disk_space', self._check_disk_space),
             ('log_files', self._check_log_files),
-            ('telegram', self._check_telegram),
+            ('cloud', self._check_cloud),
             ('tunnel', self._check_tunnel),
             ('backend_process', self._check_backend),
         ]
@@ -134,24 +134,16 @@ class DiagnosticEngine(threading.Thread):
         except Exception as e:
             return {'status': 'warning', 'message': str(e)}
 
-    def _check_telegram(self):
-        """Bot token + chat readiness (does not expose secrets)."""
+    def _check_cloud(self):
+        """MBT Cloud connectivity (replaces Telegram check)."""
         try:
-            cfg = self.config_getter() or {}
-            token = (cfg.get('telegram_bot_token') or '').strip()
-            chat = (cfg.get('telegram_chat_id') or cfg.get('developer_chat_id') or '').strip()
-            if not token:
-                try:
-                    from config.deploy import load_deploy_config
-                    token = (load_deploy_config().get('telegram_bot_token') or '').strip()
-                    chat = chat or (load_deploy_config().get('developer_chat_id') or '').strip()
-                except Exception:
-                    pass
-            if not token:
-                return {'status': 'warning', 'message': 'Telegram bot token missing'}
-            if not chat:
-                return {'status': 'warning', 'message': 'Bot token set — shop chat ID not linked'}
-            return {'status': 'healthy', 'message': 'Telegram configured (token + chat)'}
+            from backend.cloud_backup.paths import is_cloud_configured, load_identity
+            if is_cloud_configured():
+                ident = load_identity()
+                if ident.get('access_token') or ident.get('business_id'):
+                    return {'status': 'healthy', 'message': 'MugoByte Platform connected'}
+                return {'status': 'warning', 'message': 'Cloud configured but not logged in'}
+            return {'status': 'warning', 'message': 'MugoByte Platform not configured (optional)'}
         except Exception as e:
             return {'status': 'warning', 'message': str(e)}
 

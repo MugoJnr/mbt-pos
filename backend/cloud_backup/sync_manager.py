@@ -8,6 +8,7 @@ connectivity returns.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import shutil
@@ -16,8 +17,9 @@ import tempfile
 import threading
 import time
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
+import requests
 
 from mbt_paths import configure_sqlite_connection, get_db_path
 
@@ -217,6 +219,8 @@ class SyncManager:
             cfg = load_cloud_config()
             interval_min = max(1, int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN))
             try:
+                if is_logged_in() and is_cloud_configured():
+                    self.flush_entity_outbox()
                 self.flush_offline_queue()
                 if cfg.get('enabled') and is_logged_in() and is_cloud_configured():
                     state = load_json(backup_state_path(), {})
@@ -236,6 +240,137 @@ class SyncManager:
                 logger.warning('Cloud backup loop: %s', e)
                 self._last_error = str(e)
             self._stop.wait(min(60, interval_min * 60))
+
+    def flush_entity_outbox(self, limit: int = 100) -> int:
+        """Push one transactional, idempotent entity batch to the Portal API."""
+        ident = load_identity()
+        org_id = str(ident.get('org_id') or '')
+        token = str(ident.get('access_token') or '')
+        device_id = get_or_create_device_id()
+        if not org_id or not token:
+            return 0
+
+        conn = sqlite3.connect(get_db_path(), timeout=10)
+        configure_sqlite_connection(conn)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT * FROM sync_outbox "
+                "WHERE processed_at IS NULL AND available_at <= CURRENT_TIMESTAMP "
+                "ORDER BY id LIMIT ?",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            table_for_entity = {
+                'product': 'products',
+                'sale': 'sales',
+                'sale_item': 'sale_items',
+                'customer': 'customers',
+                'supplier': 'suppliers',
+                'expense': 'expenses',
+                'purchase': 'purchases',
+                'purchase_item': 'purchase_items',
+                'employee': 'employees',
+                'user': 'users',
+                'branch': 'branches',
+                'audit_log': 'audit_log',
+                'setting': 'system_settings',
+            }
+            entities = []
+            event_ids = []
+            for event in rows:
+                event_ids.append(event['event_id'])
+                entity_type = event['entity_type']
+                table = table_for_entity.get(entity_type)
+                payload = {}
+                deleted = event['operation'] == 'delete'
+                if table and not deleted:
+                    key_column = 'key' if table == 'system_settings' else 'id'
+                    current = conn.execute(
+                        f'SELECT * FROM "{table}" WHERE "{key_column}"=?',
+                        (event['row_id'],),
+                    ).fetchone()
+                    if current:
+                        payload = dict(current)
+                    else:
+                        deleted = True
+                canonical = json.dumps(
+                    payload,
+                    sort_keys=True,
+                    separators=(',', ':'),
+                    default=str,
+                )
+                entities.append({
+                    'branch_id': ident.get('branch_id') or '',
+                    'entity_type': entity_type,
+                    'source_id': str(event['row_id']),
+                    'source_version': int(event['id']),
+                    'source_updated_at': (
+                        payload.get('updated_at')
+                        or payload.get('created_at')
+                        or event['created_at']
+                    ),
+                    'payload': payload,
+                    'payload_hash': hashlib.sha256(canonical.encode()).hexdigest(),
+                    'deleted': deleted,
+                })
+
+            batch_key = hashlib.sha256(
+                f"{org_id}:{device_id}:{','.join(event_ids)}".encode()
+            ).hexdigest()
+            portal_url = os.environ.get(
+                'MBT_PORTAL_URL',
+                'https://portal.mugobyte.com',
+            ).rstrip('/')
+            response = requests.post(
+                f'{portal_url}/api/cloud/sync/batch',
+                headers={
+                    'Authorization': f'Bearer {token}',
+                    'Content-Type': 'application/json',
+                    'X-Request-ID': batch_key[:24],
+                },
+                json={
+                    'org_id': org_id,
+                    'device_id': device_id,
+                    'idempotency_key': batch_key,
+                    'entities': entities,
+                },
+                timeout=60,
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f'Entity sync failed ({response.status_code}): '
+                    f'{response.text[:200]}'
+                )
+            placeholders = ','.join('?' for _ in event_ids)
+            conn.execute(
+                f"UPDATE sync_outbox SET processed_at=CURRENT_TIMESTAMP, "
+                f"last_error=NULL WHERE event_id IN ({placeholders})",
+                event_ids,
+            )
+            conn.commit()
+            self._last_status = f'Synced {len(event_ids)} changes'
+            return len(event_ids)
+        except Exception as error:
+            if 'rows' in locals() and rows:
+                retry_at = datetime.now() + timedelta(
+                    seconds=min(3600, 30 * (2 ** min(int(rows[0]['attempts']), 7)))
+                )
+                ids = [row['id'] for row in rows]
+                placeholders = ','.join('?' for _ in ids)
+                conn.execute(
+                    f"UPDATE sync_outbox SET attempts=attempts+1, last_error=?, "
+                    f"available_at=? WHERE id IN ({placeholders})",
+                    [str(error)[:500], retry_at.strftime('%Y-%m-%d %H:%M:%S'), *ids],
+                )
+                conn.commit()
+            self._last_error = str(error)
+            logger.warning('Entity outbox sync deferred: %s', error)
+            return 0
+        finally:
+            conn.close()
 
     def enqueue_offline(self, item: dict) -> None:
         q = load_json(offline_queue_path(), {'items': []})
@@ -290,7 +425,7 @@ class SyncManager:
             if not is_cloud_configured():
                 return {'ok': False, 'error': 'Cloud not configured (cloud_config.json)'}
             if not is_logged_in():
-                return {'ok': False, 'error': 'Not signed in to MBT Cloud'}
+                return {'ok': False, 'error': 'Not signed in to MugoByte Platform'}
 
             self._emit('Creating database snapshot…', 10)
             zip_path, tmp_dir = create_sqlite_snapshot()
@@ -311,7 +446,7 @@ class SyncManager:
             object_path = f'{business_id}/{device["device_id"]}/{stamp}.mbtenc'
 
             client = SupabaseClient()
-            self._emit('Uploading to MBT Cloud…', 55)
+            self._emit('Uploading to MugoByte Platform…', 55)
             try:
                 client.upload_file(object_path, enc_path, content_type='application/octet-stream')
             except (SupabaseError, OSError, ConnectionError) as e:

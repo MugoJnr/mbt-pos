@@ -284,12 +284,21 @@ class DashboardTab(QWidget):
         # -- KPI ROW 1 - Sales ---
         kr1 = QHBoxLayout(); kr1.setSpacing(16)
         self._k_sales = _KPI("Today's Sales",   '$', '0',   'Transactions', p['gold'],   self._is_light)
-        self._k_rev   = _KPI("Today's Revenue", '*', '--',   'Gross income',  p['ok'],     self._is_light)
+        self._k_rev   = _KPI("Today's Revenue (Collected)", '*', '--',
+                             'Cash in hand today',  p['ok'],     self._is_light)
         self._k_avg   = _KPI("Avg Transaction", '^', '--',   'Per receipt',   p['info'],   self._is_light)
         self._k_low   = _KPI("Low Stock",        '!', '0',   'Items to restock', p['err'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
         self._root_lay.addLayout(kr1)
+
+        # Collected revenue tender breakdown (cash flow vs credit)
+        self._rev_break = QLabel('')
+        self._rev_break.setWordWrap(True)
+        self._rev_break.setStyleSheet(
+            f"color:{p['text2']};font-size:12px;background:transparent;border:none;"
+            f"padding:0 4px 4px 4px;")
+        self._root_lay.addWidget(self._rev_break)
 
         # -- KPI ROW 2 - Debt ---
         kr2 = QHBoxLayout(); kr2.setSpacing(16)
@@ -297,7 +306,10 @@ class DashboardTab(QWidget):
         self._k_debt_col  = _KPI("Collected Today",     '+', '--', 'debt payments', p['ok'],   self._is_light)
         self._k_customers = _KPI("Customers w/ Debt",   '@', '0', 'accounts',      p['warn'], self._is_light)
         self._k_overdue   = _KPI("Overdue",             '*', '0', 'past due date', p['err'],  self._is_light)
-        for k in (self._k_debt_out, self._k_debt_col, self._k_customers, self._k_overdue):
+        self._k_credit_out = _KPI("Credit Sales (Outstanding)", '#', '--',
+                                  'unpaid credit today', p['warn'], self._is_light)
+        for k in (self._k_debt_out, self._k_debt_col, self._k_customers,
+                  self._k_overdue, self._k_credit_out):
             kr2.addWidget(k)
         self._root_lay.addLayout(kr2)
 
@@ -701,11 +713,17 @@ class DashboardTab(QWidget):
             (self._k_debt_col, p['ok']),
             (self._k_customers,p['warn']),
             (self._k_overdue,  p['err']),
+            (self._k_credit_out, p['warn']),
             (self._k_cons,     p['info']),
         ]
         for kpi, acc in kpi_map:
             kpi._accent = acc
             kpi.apply_mode(self._is_light)
+
+        if getattr(self, '_rev_break', None) is not None:
+            self._rev_break.setStyleSheet(
+                f"color:{p['text2']};font-size:12px;background:transparent;border:none;"
+                f"padding:0 4px 4px 4px;")
 
         # Cards
         for card in (self._sales_card, self._top_card, self._qa_card, self._st_card,
@@ -871,18 +889,39 @@ class DashboardTab(QWidget):
         # -- Sales KPIs ---
         today_tx = 0
         today_rev = 0.0
+        today_collected = 0.0
         try:
             d = self.api.get_report_summary(start, end)
             if d:
                 s = d.get('summary', {})
                 today_tx = int(s.get('total_transactions', 0))
-                today_rev = float(s.get('total_revenue', 0))
+                today_rev = float(s.get('total_revenue', 0) or 0)
+                today_collected = float(
+                    s.get('collected_revenue', s.get('collected_from_sales', 0)) or 0)
                 avg = float(s.get('avg_transaction', 0))
                 self._k_sales.set_value(str(today_tx))
-                self._k_rev.set_value(f"{cur} {today_rev:,.0f}")
+                # Primary revenue card = money actually received (excludes unpaid credit)
+                self._k_rev.set_value(f"{cur} {today_collected:,.0f}")
                 self._k_avg.set_value(f"{cur} {avg:,.0f}")
                 period_lbl = self._period.current_label() if hasattr(self, '_period') else 'Period'
                 self._k_sales.set_sub(period_lbl or 'Transactions')
+                cash_c = float(s.get('cash_sales_collected') or s.get('cash_received') or 0)
+                mpesa_c = float(s.get('mpesa_collected') or 0)
+                card_c = float(s.get('card_collected') or 0)
+                bank_c = float(s.get('bank_collected') or 0)
+                debt_c = float(s.get('debt_collected') or 0)
+                credit_out = float(s.get('credit_sales_outstanding') or 0)
+                if hasattr(self, '_k_credit_out'):
+                    self._k_credit_out.set_value(f"{cur} {credit_out:,.0f}")
+                    self._k_credit_out.set_sub('not in collected revenue')
+                if hasattr(self, '_rev_break'):
+                    self._rev_break.setText(
+                        f"Cash {cur} {cash_c:,.0f}  ·  Mobile Money {cur} {mpesa_c:,.0f}  ·  "
+                        f"Card {cur} {card_c:,.0f}  ·  Bank {cur} {bank_c:,.0f}  ·  "
+                        f"Debt Collections {cur} {debt_c:,.0f}  ·  "
+                        f"Credit Sales (Outstanding) {cur} {credit_out:,.0f}  ·  "
+                        f"Total Sales {cur} {today_rev:,.0f}"
+                    )
         except Exception as e:
             log.warning(f"Dashboard KPI: {e}")
 
@@ -892,7 +931,8 @@ class DashboardTab(QWidget):
             yd = self.api.get_report_summary(yday, yday) or {}
             ys = (yd.get('summary') or {})
             y_tx = int(ys.get('total_transactions', 0) or 0)
-            y_rev = float(ys.get('total_revenue', 0) or 0)
+            y_rev = float(
+                ys.get('collected_revenue', ys.get('collected_from_sales', 0)) or 0)
 
             def _pct(cur_v, prev_v):
                 if prev_v <= 0:
@@ -901,10 +941,13 @@ class DashboardTab(QWidget):
 
             if key == 'today':
                 self._k_sales.set_trend(_pct(today_tx, y_tx))
-                self._k_rev.set_trend(_pct(today_rev, y_rev))
-                self._k_rev.set_sub('vs yesterday')
+                self._k_rev.set_trend(_pct(today_collected, y_rev))
+                self._k_rev.set_sub('vs yesterday · excludes unpaid credit')
             else:
-                self._k_rev.set_sub(self._period.current_label() if hasattr(self, '_period') else '')
+                self._k_rev.set_sub(
+                    (self._period.current_label() if hasattr(self, '_period') else '')
+                    + ' · excludes unpaid credit'
+                )
         except Exception as e:
             log.warning(f"Dashboard trends: {e}")
         # -- Low stock ---

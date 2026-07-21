@@ -1,5 +1,5 @@
 """
-AES-256-GCM encryption for MBT Cloud Backup payloads.
+AES-256-GCM encryption for Cloud Backup payloads.
 
 Uses cryptography if installed; otherwise Windows CNG (bcrypt.dll) via ctypes.
 Keys are derived with PBKDF2-HMAC-SHA256 from a business secret + salt.

@@ -1,7 +1,7 @@
 # MBT POS — Enterprise Autonomous Production Loop Report
 
-**Date:** 2026-07-20  
-**Tip version:** **2.3.96** (`6151569`)  
+**Date:** 2026-07-20
+**Tip version:** **2.3.96** (`6151569`)
 **Design authority:** Current implementation + approved screenshots (no Figma URL)
 
 ## Cycle summary
@@ -35,21 +35,21 @@ Not a full “enterprise Ready” gate until cloud login E2E, printer, and live 
 
 ## Remaining risks
 
-1. Cloud login/upload not fully proven on this PC in the last E2E attempts  
-2. No Figma SoT for pixel QA  
-3. Printer / M-Pesa live paths not re-verified this cycle  
+1. Cloud login/upload not fully proven on this PC in the last E2E attempts
+2. No Figma SoT for pixel QA
+3. Printer / M-Pesa live paths not re-verified this cycle
 4. Multi-branch revenue still partial (prior gap doc)
 
 ## Recommendations
 
-1. Install **MBT_POS_Setup_v2.3.96.exe** on shop PCs (close POS first)  
-2. Complete Settings → MBT Cloud Backup Create Business / sign-in once per shop  
-3. Paste Figma URL when available for screen-by-screen visual lock  
-4. Run one live M-Pesa + one print receipt on a shop till before wide rollout  
+1. Install **MBT_POS_Setup_v2.3.96.exe** on shop PCs (close POS first)
+2. Complete Settings → MBT Cloud Backup Create Business / sign-in once per shop
+3. Paste Figma URL when available for screen-by-screen visual lock
+4. Run one live M-Pesa + one print receipt on a shop till before wide rollout
 
 ## Deploy checklist
 
-- [x] Code on `main` (2.3.96)  
-- [x] Setup built & on Desktop  
-- [x] GitHub release `v2.3.96` Latest  
+- [x] Code on `main` (2.3.96)
+- [x] Setup built & on Desktop
+- [x] GitHub release `v2.3.96` Latest
 - [x] Packaged `Discount (KES)` confirmed in `_internal`

@@ -42,7 +42,8 @@ def get_project_root() -> str:
         _migrate_legacy_data(root)
         return root
     # Development: use the same AppData store as the installed app when present,
-    # so Cloudflare/Telegram/DB paths are not split between repo and %LOCALAPPDATA%.
+    # so Cloudflare, notification, and DB paths are not split between the repo
+    # and %LOCALAPPDATA%.
     appdata = _user_data_root()
     appdata_db = os.path.join(appdata, 'data', 'mbt_pos.db')
     if _db_has_shop_data(appdata_db):
@@ -82,10 +83,11 @@ def _write_path_marker(root: str):
     """Help support find the live database path."""
     try:
         marker = os.path.join(root, 'data', 'DATA_LOCATION.txt')
+        db_path = os.path.join(root, 'data', 'mbt_pos.db')
         with open(marker, 'w', encoding='utf-8') as f:
             f.write(
                 'MBT POS stores all shop data here.\n'
-                f'Database: {get_db_path()}\n'
+                f'Database: {db_path}\n'
                 f'Root: {root}\n'
             )
     except Exception:

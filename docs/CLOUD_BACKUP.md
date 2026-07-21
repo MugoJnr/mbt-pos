@@ -64,7 +64,7 @@ Or set env vars: `MBT_SUPABASE_URL`, `MBT_SUPABASE_ANON_KEY` (optional `MBT_SUPA
 
 ## Restore
 
-Settings → MBT Cloud Backup → pick a backup → Restore.  
+Settings → MBT Cloud Backup → pick a backup → Restore.
 A copy of the current DB is saved as `mbt_pos.pre_restore_*.db` before replace. Restart POS after restore.
 
 ## Optional dependency

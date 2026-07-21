@@ -160,10 +160,11 @@ class ActivationDialog(QDialog):
         self._act_btn.clicked.connect(self._activate)
         al.addWidget(self._act_btn)
 
-        self._tg_btn = QPushButton("Wait for Key (Telegram)")
-        _style_success(self._tg_btn)
-        self._tg_btn.clicked.connect(self._start_tg_listen)
-        al.addWidget(self._tg_btn)
+        self._cloud_btn = QPushButton("Activate with Cloud Key")
+        _style_success(self._cloud_btn)
+        self._cloud_btn.setToolTip("Use a license key from portal.mugobyte.com (Telegram removed)")
+        self._cloud_btn.clicked.connect(self._focus_key_field)
+        al.addWidget(self._cloud_btn)
 
         exit_btn = QPushButton("Exit Application")
         _style_secondary(exit_btn)
@@ -272,8 +273,7 @@ class ActivationDialog(QDialog):
         content.addWidget(key_card)
 
         tg_note = self._hint(
-            "Telegram option: message @mbt_admin1_bot, then tap "
-            "\"Wait for Key (Telegram)\" at the top.")
+            "Get a license key from portal.mugobyte.com (Licenses), then paste it above and Activate.")
         content.addWidget(tg_note)
 
         self._result_lbl = QLabel("")
@@ -376,120 +376,28 @@ class ActivationDialog(QDialog):
             f"color:{color}; font-size:12px; background:transparent;")
 
     def _get_bot_token(self) -> str:
-        try:
-            import sqlite3
-            from backend.telegram_hub import resolve_bot_token
-            db_path = get_db_path()
-            cfg = {}
-            if os.path.exists(db_path):
-                db = sqlite3.connect(db_path)
-                rows = db.execute(
-                    "SELECT key, value FROM system_settings "
-                    "WHERE key IN ('telegram_bot_token', 'shop_name')"
-                ).fetchall()
-                db.close()
-                cfg = {k: v for k, v in rows}
-            return resolve_bot_token(cfg)
-        except Exception:
-            pass
-        try:
-            from config.deploy import load_deploy_config
-            return (load_deploy_config().get('telegram_bot_token') or '').strip()
-        except Exception:
-            return ''
+        return ''  # Telegram removed — use license key or cloud activation
 
-    def _early_cfg(self) -> dict:
+    def _focus_key_field(self):
+        self._set_result(
+            'Paste your cloud license key from portal.mugobyte.com, then click Activate.',
+            error=False,
+        )
         try:
-            import sqlite3
-            db_path = get_db_path()
-            if os.path.exists(db_path):
-                db = sqlite3.connect(db_path)
-                rows = db.execute("SELECT key, value FROM system_settings").fetchall()
-                db.close()
-                return {k: v for k, v in rows}
+            self._key_input.setFocus()
+            self._key_input.selectAll()
         except Exception:
             pass
-        try:
-            from config.deploy import shop_settings_defaults
-            return shop_settings_defaults()
-        except Exception:
-            return {}
 
     def _start_tg_listen(self):
-        if self._tg_polling:
-            return
-        token = self._get_bot_token()
-        if not token:
-            QMessageBox.warning(
-                self, "Not Ready",
-                "Bot token is not configured.\n"
-                "Contact MugoByte Technologies.")
-            return
-
-        try:
-            from backend.telegram_hub import resolve_bot_username, get_hub, start_hub
-            bot = resolve_bot_username()
-        except Exception:
-            from backend.telegram_hub import get_hub, start_hub
-            bot = 'mbt_admin1_bot'
-
-        if not get_hub():
-            start_hub(self._early_cfg)
-
-        self._tg_polling = True
-        self._tg_btn.setEnabled(False)
-        self._tg_btn.setText("Listening…")
-        self._tg_status.setText(
-            f"Open Telegram, message @{bot}, then wait here…")
-        self._tg_status.setStyleSheet(
-            f"color:{C['warn']}; font-size:12px; background:transparent;")
-
-        hub = get_hub()
-
-        def on_update(upd: dict) -> bool:
-            if not self._tg_polling:
-                return True
-            text = (upd.get('message', {}) or {}).get('text', '').strip()
-            key = None
-            if text.startswith('/send_key '):
-                key = text[len('/send_key '):].strip()
-            elif '.' in text and len(text) > 40 and ' ' not in text:
-                key = text
-            if key:
-                self._chat_id_found.emit(key)
-                return True
-            return False
-
-        hub._advance_offset_past_backlog(token)
-        hub.begin_capture(on_update, 300)
-
-        def _timer():
-            deadline = time.time() + 300
-            while self._tg_polling and time.time() < deadline:
-                time.sleep(1)
-            if self._tg_polling:
-                self._tg_timeout.emit()
-                hub.end_capture()
-
-        threading.Thread(target=_timer, daemon=True).start()
+        self._focus_key_field()
 
     def _on_chat_found(self, key: str):
-        self._tg_polling = False
-        self._tg_btn.setEnabled(True)
-        self._tg_btn.setText("Wait for Key (Telegram)")
-        self._tg_status.setText("Key received — activating…")
-        self._tg_status.setStyleSheet(
-            f"color:{C['ok']}; font-size:12px; background:transparent;")
         self._key_input.setText(key)
         self._activate()
 
     def _on_tg_timeout(self):
-        self._tg_polling = False
-        self._tg_btn.setEnabled(True)
-        self._tg_btn.setText("Wait for Key (Telegram)")
-        self._tg_status.setText("Timed out — paste your key above or try again.")
-        self._tg_status.setStyleSheet(
-            f"color:{C['err']}; font-size:12px; background:transparent;")
+        self._set_result('Paste your license key above.', error=True)
 
 
 def show_activation_screen(device_id, engine):

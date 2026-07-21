@@ -146,6 +146,7 @@ echo  [2/5] Installing dependencies (2-5 minutes^)...
     "PyQt5-sip>=12.11" ^
     "pyjwt>=2.8" ^
     "bcrypt>=4.0" ^
+    "cryptography>=41.0" ^
     "requests>=2.31" ^
     "openpyxl>=3.1" ^
     "pyserial>=3.5" ^
@@ -185,24 +186,28 @@ echo  [OK] tools\cloudflared.exe ready.
 echo.
 
 :: ════════════════════════════════════════════════════════════════
-:: STEP 2c — Verify Telegram + config ship inside installer
+:: STEP 2c — Verify safe config code (secrets are runtime-only)
 :: ════════════════════════════════════════════════════════════════
-echo  [2c/5] Verifying Telegram bot and config folder...
+echo  [2c/5] Verifying safe runtime config...
 cd /d "%SOURCE_DIR%"
-"%PY_EXE%" -c "import sys; sys.path.insert(0,'.'); from config.deploy import verify_installer_bundle; ok,msg=verify_installer_bundle(); print('  [OK] Telegram',msg) if ok else sys.exit(msg)"
+"%PY_EXE%" -c "import sys; sys.path.insert(0,'.'); from config.deploy import verify_installer_bundle; ok,msg=verify_installer_bundle(); print('  [OK]',msg) if ok else sys.exit(msg)"
 if errorlevel 1 (
     echo  [ERROR] Installer bundle check failed.
-    echo  Ensure config\deploy.py exists and has telegram_bot_token set.
+    echo  Ensure config\deploy.py exists.
     pause & exit /b 1
 )
 echo.
 
 :: ════════════════════════════════════════════════════════════════
-:: STEP 2d — Cloudflare API token (automatic remote on shop PCs)
+:: STEP 2d — Secret safety gate
 :: ════════════════════════════════════════════════════════════════
-echo  [2d/5] Cloudflare API token for auto remote dashboard...
+echo  [2d/5] Verifying secrets are not bundled...
 cd /d "%SOURCE_DIR%"
-"%PY_EXE%" config\write_deploy_local.py
+"%PY_EXE%" -c "import pathlib,sys; p=pathlib.Path('mbt_pos.spec').read_text(encoding='utf-8'); bad=[x for x in ('deploy.local.json','cloud_config.json','vendor_ai.bin') if \"'\"+x+\"'\" in p and 'allowed_files' not in p]; sys.exit('Unsafe secret file in spec: '+','.join(bad)) if bad else print('  [OK] Runtime secrets excluded from installer')"
+if errorlevel 1 (
+    echo  [ERROR] Secret safety gate failed.
+    pause & exit /b 1
+)
 echo.
 
 :: ════════════════════════════════════════════════════════════════

@@ -97,8 +97,8 @@ function License() {
 
             <SectionTitle>Activation</SectionTitle>
             <p className="text-sm text-text2 leading-relaxed">
-              Activate or renew licenses from the desktop License tab or via Telegram support
-              (@MugoByteSupport). This page shows the verified status for the current machine
+              Activate or renew licenses from the desktop License tab or MugoByte Workspace
+              (portal.mugobyte.com). This page shows the verified status for the current machine
               {lic.source ? ` (source: ${lic.source})` : ""}.
             </p>
             {err || lic.error ? (

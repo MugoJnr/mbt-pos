@@ -1,5 +1,5 @@
 """
-MBT Cloud Backup & Restore (Supabase) — local-first disaster recovery.
+Cloud Backup & Restore (Supabase) — local-first disaster recovery.
 
 v1: encrypted full SQLite snapshots to Supabase Storage + metadata rows,
 device registration, business auth, Settings dashboard, setup-wizard hooks.

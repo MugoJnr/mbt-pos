@@ -1,0 +1,45 @@
+{
+  "company": "MugoByte Technologies",
+  "brand": "MugoByte",
+  "platform": "MugoByte Platform",
+  "workspace": "MugoByte Workspace",
+  "pos_product": "MBT POS",
+  "pos_cloud": "MBT POS Cloud",
+  "live_dashboard": "Live Dashboard",
+  "portal_host": "portal.mugobyte.com",
+  "portal_url": "https://portal.mugobyte.com",
+  "support_url": "https://portal.mugobyte.com/support",
+  "docs_url": "https://docs.mugobyte.com",
+  "privacy_url": "https://mugobyte.com/privacy",
+  "terms_url": "https://mugobyte.com/terms",
+  "email_from": "MugoByte Platform <noreply@mugobyte.com>",
+  "email_from_canonical": "MugoByte Platform <noreply@mugobyte.com>",
+  "site_name": "MugoByte Platform",
+  "copyright": "\u00a9 {year} MugoByte Technologies",
+  "tagline_platform": "One Account. Every MugoByte Product.",
+  "tagline_live": "Live operational dashboard",
+  "product_description": "Professional Point of Sale System",
+  "forbidden_public": [
+    "MBT Cloud",
+    "Web Dashboard",
+    "Command Center",
+    "MugoByte Portal",
+    "POS Dashboard",
+    "onboarding@resend.dev"
+  ],
+  "title_patterns": {
+    "workspace_home": "MugoByte Workspace | MugoByte",
+    "live_home": "Live Dashboard | MugoByte",
+    "sign_in": "Sign In | MugoByte",
+    "register": "Create Account | MugoByte",
+    "downloads": "Downloads | MugoByte",
+    "settings": "Settings | MugoByte",
+    "admin": "Platform Administration | MugoByte",
+    "reports": "Reports | MugoByte"
+  },
+  "assets": {
+    "company_mark_svg": "favicon.svg",
+    "pos_product_logo": "brand/mbt_logo_hd.png",
+    "pos_product_icon": "brand/mbt_icon.png"
+  }
+}

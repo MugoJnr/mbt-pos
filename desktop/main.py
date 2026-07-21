@@ -42,7 +42,7 @@ log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
 APP_BUILD_TAG = "PROD-2026-07-20-v2.3.99"
-APP_VERSION   = "2.3.99"   # must match GitHub release tag vX.Y.Z / version.json
+APP_VERSION   = "3.0.0"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -662,14 +662,15 @@ class MainWindow(QMainWindow):
             log.warning(f"Diagnostics: {e}")
 
         try:
-            from backend.telegram_reporter import (
-                start_report_scheduler, validate_telegram_config,
+            from backend.cloud.report_engine import (
+                start_report_scheduler, validate_report_config,
             )
             cfg0 = self._cfg() or {}
-            for w in validate_telegram_config(cfg0):
+            for w in validate_report_config(cfg0):
                 log.warning('Daily reports config: %s', w)
+            from mbt_paths import get_db_path
             self._svc_sched = start_report_scheduler(
-                self.api, self._cfg,
+                get_db_path(), self._cfg,
                 is_online_getter=lambda: getattr(self._svc_net, 'is_connected', False),
             )
         except Exception as e:
@@ -1750,7 +1751,7 @@ class MainWindow(QMainWindow):
         log.warning('Web dashboard unavailable (local + remote)')
         QMessageBox.warning(
             self,
-            'Web Dashboard',
+            'Live Dashboard',
             'Could not open the web dashboard.\n\n'
             f'Local URL ({local_url}) is not responding yet.\n\n'
             'Try again in a few seconds. If it still fails:\n'
@@ -1914,10 +1915,15 @@ def main():
         log.error(f"DB init: {e}")
 
     try:
-        from backend.telegram_hub import start_hub
-        start_hub(lambda: APIClient(BACKEND_URL).get_settings() or {})
+        from backend.cloud.device_service import get_device_service
+        from backend.cloud.command_center import get_command_center
+        from mbt_paths import get_db_path
+        get_device_service(lambda: APIClient(BACKEND_URL).get_settings() or {}).start_heartbeat()
+        get_command_center(get_db_path(), lambda: APIClient(BACKEND_URL).get_settings() or {}).start_poller(
+            lambda: __import__('backend.cloud_backup.device_manager', fromlist=['get_or_create_device_id']).get_or_create_device_id()
+        )
     except Exception as e:
-        log.warning(f"Telegram hub: {e}")
+        log.warning(f"Cloud services: {e}")
 
     splash.set_status("Starting web dashboard...", 55)
     QApplication.processEvents()

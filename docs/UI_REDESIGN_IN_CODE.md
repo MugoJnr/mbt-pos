@@ -1,8 +1,8 @@
 # MBT POS — UI Redesign In Code (Desktop-First)
 
-**Date:** 2026-07-18  
-**Version tip:** **2.3.89** (in `version.json`; Setup not rebuilt yet)  
-**Priority:** **Desktop POS first** (MainWindow + all 14 sidebar tabs), then web.  
+**Date:** 2026-07-18
+**Version tip:** **2.3.89** (in `version.json`; Setup not rebuilt yet)
+**Priority:** **Desktop POS first** (MainWindow + all 14 sidebar tabs), then web.
 **Rule:** Presentation only — no business-logic / API / auth / calculation / DB / route changes.
 
 > Note: Earlier agent reports that said “desktop is theme-only / web-first” are **outdated**. The working tree now includes a full desktop tab rhythm pass (see git diff under `desktop/`).
@@ -51,8 +51,8 @@ Also updated earlier in the same tip: Command Center tokens (`#0B1220` / `#FBBF2
 
 ## Gaps / next
 
-1. Deeper visual redesign of dense desktop dialogs (still functional).  
-2. Rebuild **Setup v2.3.89** so the installed EXE picks up desktop polish (frozen EXE ignores hot `.py`).  
+1. Deeper visual redesign of dense desktop dialogs (still functional).
+2. Rebuild **Setup v2.3.89** so the installed EXE picks up desktop polish (frozen EXE ignores hot `.py`).
 3. Optional Figma URL for pixel-perfect follow-up.
 
 ---

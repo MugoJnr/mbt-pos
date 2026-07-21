@@ -59,9 +59,9 @@ class DiagnosticsTab(QWidget):
             self._cards[name]=(card,st,ms); cr.addWidget(card)
         lay.addLayout(cr)
 
-        # Row 2: shop connectivity (Telegram + Cloudflare tunnel)
+        # Row 2: shop connectivity (Portal notifications + Cloudflare tunnel)
         cr2=QHBoxLayout(); cr2.setSpacing(12)
-        for name, label in [('telegram','Telegram'), ('tunnel','Cloudflare Tunnel')]:
+        for name, label in [('portal','Portal Notifications'), ('tunnel','Cloudflare Tunnel')]:
             card=Card(); cl=card.layout_v((16,14,16,14),6)
             tl=QLabel(label.upper())
             tl.setStyleSheet(
@@ -305,7 +305,7 @@ class DiagnosticsTab(QWidget):
                             # Redact likely tokens
                             safe = ln
                             if 'bot' in ln.lower() and ':' in ln:
-                                safe = '[redacted telegram line]\n'
+                                safe = '[redacted secret line]\n'
                             if 'cfut_' in ln or 'cfat_' in ln:
                                 safe = '[redacted cloudflare token line]\n'
                             lines.append(f'[{name}] {safe.rstrip()}')

@@ -37,7 +37,7 @@ class SecurityTab(QWidget):
         from desktop.utils.widgets import page_intro
         intro, _ = page_intro(
             'Security',
-            'PIN policy, stock audit, sale voids, and full audit log.')
+            'PIN policy, stock audit, sale voids/edits, and full audit log.')
         lay.addLayout(intro)
 
         # Status KPI strip
@@ -323,6 +323,9 @@ class SecurityTab(QWidget):
         self._void_receipt.setMinimumHeight(38); vl.addWidget(self._void_receipt, 1)
         void_btn = DangerBtn('Void Sale', 42); void_btn.clicked.connect(self._void_sale)
         vl.addWidget(void_btn)
+        edit_btn = PrimaryBtn('Edit Sale', 42); edit_btn.clicked.connect(self._edit_sale)
+        edit_btn.setToolTip('Super Admin only — edit quantities, prices, payment, customer')
+        vl.addWidget(edit_btn)
         lay.addWidget(void_frame)
 
         self._edits_tbl = make_table(
@@ -339,6 +342,21 @@ class SecurityTab(QWidget):
             return
         if prompt_void_sale(self.api, self, receipt_prefill=receipt):
             self._void_receipt.clear()
+            self._load_edits()
+
+    def _edit_sale(self):
+        from desktop.dialogs.edit_sale_dialog import prompt_edit_sale
+        cfg = {}
+        try:
+            cfg = self.config_getter() or {}
+        except Exception:
+            cfg = {}
+        currency = cfg.get('currency', 'KES') or 'KES'
+        receipt = self._void_receipt.text().strip()
+        if prompt_edit_sale(
+            self.api, self, receipt_prefill=receipt,
+            currency=currency, user=self.user,
+        ):
             self._load_edits()
 
     def _load_edits(self):

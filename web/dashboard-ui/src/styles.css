@@ -5,7 +5,7 @@
 @custom-variant dark (&:is(.dark, .dark *));
 
 /* ============================================================
- * MBT POS — Design System v2 (Command Center)
+ * MBT POS — Design System v2 (Live Dashboard)
  * Gold identity · navy operational · dense but elegant
  * Themes: dark (default) | light + data-variant prep
  * ============================================================ */
@@ -393,4 +393,18 @@
     animation: none;
     background: var(--card2);
   }
+}
+
+.brand-interactive {
+  cursor: pointer;
+  transition: transform var(--duration-base, 180ms) var(--ease-out, ease),
+    box-shadow var(--duration-base, 180ms) var(--ease-out, ease);
+}
+.brand-interactive:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -12px rgba(0, 0, 0, 0.45);
+}
+.brand-interactive:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--gold) 70%, transparent);
+  outline-offset: 2px;
 }

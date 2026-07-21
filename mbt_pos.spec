@@ -24,6 +24,23 @@ def _web_datas_without_node_modules():
             out.append((src, rel_root))
     return out
 
+
+def _safe_config_datas():
+    """Bundle config code and public templates, never deployment secrets."""
+    config_root = os.path.join(HERE, 'config')
+    allowed_files = {
+        '__init__.py',
+        'deploy.py',
+        'cloud_config.example.json',
+        'deploy.local.json.example',
+        'web_config.json',
+    }
+    return [
+        (os.path.join(config_root, name), 'config')
+        for name in sorted(allowed_files)
+        if os.path.isfile(os.path.join(config_root, name))
+    ]
+
 a = Analysis(
     [os.path.join(HERE, 'launcher.py')],
     pathex=[HERE],
@@ -36,8 +53,7 @@ a = Analysis(
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
         (os.path.join(HERE, 'version.json'), '.'),
-        (os.path.join(HERE, 'config'),       'config'),
-    ] + _web_datas_without_node_modules() + (
+    ] + _safe_config_datas() + _web_datas_without_node_modules() + (
         [(os.path.join(HERE, 'web_launcher.py'), '.')]
         if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []
     ),
@@ -62,9 +78,12 @@ a = Analysis(
         'licensing.activation_ui',
         'licensing.license_engine',
         'licensing.license_service',
-        'licensing.telegram_admin',
+        'licensing.license_service',
+        'backend.cloud.notification_engine',
+        'backend.cloud.report_engine',
+        'backend.cloud.device_service',
+        'backend.cloud.command_center',
         'backend.export_engine',
-        'backend.telegram_reporter',
         'backend.internet_monitor',
         'diagnostics.diagnostic_engine',
         'printing.printer_engine',
@@ -77,7 +96,6 @@ a = Analysis(
         'backend.app',
         'backend.web_service',
         'backend.cloudflare_setup',
-        'backend.telegram_hub',
         'backend.updater',
         'config.deploy',
         'backend.db_backup',
@@ -113,6 +131,9 @@ exe = EXE(
     entitlements_file=None,
     icon=os.path.join(HERE, 'assets', 'mbt_icon.ico')
          if os.path.exists(os.path.join(HERE, 'assets', 'mbt_icon.ico'))
+         else None,
+    version=os.path.join(HERE, 'file_version_info.txt')
+         if os.path.exists(os.path.join(HERE, 'file_version_info.txt'))
          else None,
 )
 

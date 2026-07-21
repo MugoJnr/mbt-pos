@@ -60,10 +60,10 @@ function AiPage() {
   }
 
   return (
-    <AppShell title="AI Command Center">
+    <AppShell title="AI Center">
       <PageHeader
-        eyebrow="Command"
-        title="AI Command Center"
+        eyebrow="Intelligence"
+        title="AI Center"
         icon={<Sparkles className="h-4 w-4" />}
         description="Insights and chat for remote operators"
       />

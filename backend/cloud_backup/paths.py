@@ -1,5 +1,5 @@
 """
-AppData paths for MBT Cloud Backup config & identity.
+AppData paths for Cloud Backup config & identity.
 Never commit real keys — only example files live in the repo.
 """
 from __future__ import annotations
@@ -7,9 +7,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import base64
+import hashlib
 from typing import Any
+from cryptography.fernet import Fernet, InvalidToken
 
 from mbt_paths import ensure_data_dirs, get_project_root
+from runtime_security import get_jwt_secret
 
 logger = logging.getLogger('cloud_backup.paths')
 
@@ -107,8 +111,31 @@ def save_cloud_config(cfg: dict) -> None:
     save_json(cloud_config_path(), cfg)
 
 
+def _identity_cipher() -> Fernet:
+    material = hashlib.sha256(
+        (get_jwt_secret() + ':cloud-identity:v1').encode()
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(material))
+
+
+def _protect(value: str) -> str:
+    if not value:
+        return ''
+    return _identity_cipher().encrypt(value.encode()).decode()
+
+
+def _unprotect(value: str) -> str:
+    if not value:
+        return ''
+    try:
+        return _identity_cipher().decrypt(value.encode()).decode()
+    except (InvalidToken, ValueError):
+        logger.warning('Protected cloud identity token could not be decrypted')
+        return ''
+
+
 def load_identity() -> dict[str, Any]:
-    return load_json(cloud_identity_path(), {
+    identity = load_json(cloud_identity_path(), {
         'device_id': '',
         'business_id': '',
         'business_name': '',
@@ -120,10 +147,30 @@ def load_identity() -> dict[str, Any]:
         'cloud_skipped': False,
         'created_at': '',
     })
+    migrated = False
+    for name in ('access_token', 'refresh_token', 'activation_token'):
+        protected_name = f'{name}_protected'
+        plaintext = str(identity.get(name) or '')
+        if plaintext:
+            identity[protected_name] = _protect(plaintext)
+            identity[name] = ''
+            migrated = True
+        identity[name] = _unprotect(str(identity.get(protected_name) or ''))
+    if migrated:
+        save_identity(identity)
+    return identity
 
 
 def save_identity(identity: dict) -> None:
-    save_json(cloud_identity_path(), identity)
+    stored = dict(identity)
+    for name in ('access_token', 'refresh_token', 'activation_token'):
+        plaintext = str(stored.pop(name, '') or '')
+        protected_name = f'{name}_protected'
+        if plaintext:
+            stored[protected_name] = _protect(plaintext)
+        elif protected_name not in stored:
+            stored[protected_name] = ''
+    save_json(cloud_identity_path(), stored)
 
 
 def is_cloud_configured() -> bool:

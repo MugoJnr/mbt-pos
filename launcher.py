@@ -43,10 +43,10 @@ def _early_settings_cfg() -> dict:
             return {}
 
 
-def _start_telegram_hub():
+def _start_cloud_services():
     try:
-        from backend.telegram_hub import start_hub
-        start_hub(_early_settings_cfg)
+        from backend.cloud.device_service import get_device_service
+        get_device_service(_early_settings_cfg).start_heartbeat()
     except Exception:
         pass
 
@@ -74,7 +74,7 @@ def check_license():
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    _start_telegram_hub()
+    _start_cloud_services()
     check_license()
     from desktop.main import main
     main()

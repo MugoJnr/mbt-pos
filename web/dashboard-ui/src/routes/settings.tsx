@@ -74,8 +74,6 @@ function Settings() {
         receipt_footer: form.receipt_footer || "",
         currency_symbol: form.currency_symbol || "KES",
         tax_rate: form.tax_rate || "0",
-        telegram_bot_token: form.telegram_bot_token || "",
-        telegram_chat_id: form.telegram_chat_id || "",
       };
       const res = await PUT<{ success?: boolean; error?: string }>("/settings", payload);
       if (!res?.success) throw new Error(res?.error || "Save failed");
@@ -195,23 +193,12 @@ function Settings() {
 
         <Section
           icon={<MessageSquare className="h-5 w-5" />}
-          title="Telegram Reports"
-          desc="Optional bot credentials for scheduled reports"
+          title="Cloud Notifications"
+          desc="Reports and alerts are delivered through Portal Notifications and email — Telegram has been permanently removed."
         >
-          <Field label="Bot Token">
-            <Input
-              type="password"
-              value={form.telegram_bot_token || ""}
-              onChange={(e) => set("telegram_bot_token", e.target.value)}
-              placeholder="Leave blank to keep"
-            />
-          </Field>
-          <Field label="Chat ID">
-            <Input
-              value={form.telegram_chat_id || ""}
-              onChange={(e) => set("telegram_chat_id", e.target.value)}
-            />
-          </Field>
+          <p className="text-sm text-text2">
+            Manage inbox preferences in the MugoByte Workspace under Notifications.
+          </p>
         </Section>
       </div>
     </AppShell>

@@ -69,12 +69,21 @@ class SupabaseClient:
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    def sign_up(self, email: str, password: str, metadata: dict | None = None) -> dict:
+    def sign_up(
+        self,
+        email: str,
+        password: str,
+        metadata: dict | None = None,
+        redirect_to: str = '',
+    ) -> dict:
         payload = {'email': email, 'password': password}
         if metadata:
             payload['data'] = metadata
         r = self._session.post(
-            self._url('/auth/v1/signup'),
+            self._url(
+                '/auth/v1/signup'
+                + (f'?redirect_to={requests.utils.quote(redirect_to, safe="")}' if redirect_to else '')
+            ),
             headers=self._headers(),
             json=payload,
             timeout=DEFAULT_TIMEOUT,
@@ -83,7 +92,7 @@ class SupabaseClient:
             self._raise(r, 'Sign up')
         return r.json()
 
-    def sign_in(self, email: str, password: str) -> dict:
+    def sign_in(self, email: str, password: str, *, persist: bool = True) -> dict:
         r = self._session.post(
             self._url('/auth/v1/token?grant_type=password'),
             headers=self._headers(),
@@ -93,14 +102,14 @@ class SupabaseClient:
         if r.status_code >= 400:
             self._raise(r, 'Sign in')
         data = r.json()
-        # Persist tokens
-        ident = load_identity()
-        ident['access_token'] = data.get('access_token') or ''
-        ident['refresh_token'] = data.get('refresh_token') or ''
-        user = data.get('user') or {}
-        ident['user_id'] = user.get('id') or ident.get('user_id') or ''
-        ident['email'] = email
-        save_identity(ident)
+        if persist:
+            ident = load_identity()
+            ident['access_token'] = data.get('access_token') or ''
+            ident['refresh_token'] = data.get('refresh_token') or ''
+            user = data.get('user') or {}
+            ident['user_id'] = user.get('id') or ident.get('user_id') or ''
+            ident['email'] = email
+            save_identity(ident)
         return data
 
     def refresh_session(self) -> dict:

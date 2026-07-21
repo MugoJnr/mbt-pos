@@ -1,15 +1,11 @@
 """
-MBT POS — Telegram Database Backup
+MBT POS — Cloud Database Backup
 MugoByte Technologies | mugobyte.com
 
 Creates a consistent SQLite snapshot (safe while POS is running),
-compresses it, and sends to Telegram for disaster recovery.
+compresses it, and uploads to MBT Cloud (Supabase Storage).
 
-Recipients (default):
-  • Shop owner chat  (telegram_chat_id)
-  • Developer chat   (developer_chat_id) — you keep a copy if the PC is lost
-
-Telegram document limit ≈ 50 MB — backups over ~48 MB are skipped with a warning.
+Replaces Telegram document delivery.
 """
 import hashlib
 import logging
@@ -20,43 +16,23 @@ import threading
 import zipfile
 from datetime import datetime
 
-from mbt_paths import configure_sqlite_connection, get_db_path, get_project_root
+from mbt_paths import configure_sqlite_connection, get_db_path
 
 logger = logging.getLogger('db_backup')
 
-TELEGRAM_MAX_BYTES = 48 * 1024 * 1024   # stay under Telegram's 50 MB cap
 DEFAULT_INTERVAL_HRS = 24
 
 
-def _backup_recipients(cfg: dict) -> list[tuple[str, str]]:
-    """Unique chat IDs: (chat_id, label)."""
-    seen: set[str] = set()
-    out: list[tuple[str, str]] = []
-    for key, label in (
-        ('telegram_chat_id', 'shop'),
-        ('developer_chat_id', 'developer'),
-    ):
-        cid = str(cfg.get(key) or '').strip()
-        if cid and cid not in seen:
-            seen.add(cid)
-            out.append((cid, label))
-    return out
-
-
 def create_db_backup_zip(db_path: str = None) -> tuple[str, int, str]:
-    """
-    Snapshot DB via SQLite backup API, zip it.
-    Returns (zip_path, byte_size, content_hash).
-    """
+    """Snapshot DB via SQLite backup API, zip it. Returns (zip_path, byte_size, content_hash)."""
     db_path = db_path or get_db_path()
     if not os.path.isfile(db_path):
         raise FileNotFoundError(f'Database not found: {db_path}')
 
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    shop_safe = 'mbt_pos'
     tmp_dir = tempfile.mkdtemp(prefix='mbt_db_bak_')
     snap_db = os.path.join(tmp_dir, 'mbt_pos.db')
-    zip_name = f'MBT_POS_DB_{shop_safe}_{stamp}.zip'
+    zip_name = f'MBT_POS_DB_{stamp}.zip'
     zip_path = os.path.join(tmp_dir, zip_name)
 
     src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=30)
@@ -93,19 +69,6 @@ def create_db_backup_zip(db_path: str = None) -> tuple[str, int, str]:
     return zip_path, size, content_hash
 
 
-def _backup_caption(shop: str, size: int, device_hint: str, reason: str) -> str:
-    mb = size / (1024 * 1024)
-    return (
-        f'💾 <b>Database Backup — {shop}</b>\n'
-        f'When: {datetime.now().strftime("%Y-%m-%d %H:%M")}\n'
-        f'Size: {mb:.2f} MB\n'
-        f'Trigger: {reason}\n'
-        f'Device: <code>{device_hint}</code>\n'
-        f'Unzip → place <code>mbt_pos.db</code> in AppData data folder.\n'
-        f'<i>MugoByte Technologies · mugobyte.com</i>'
-    )
-
-
 def _device_hint() -> str:
     try:
         from licensing.license_engine import LicenseEngine
@@ -120,73 +83,39 @@ def send_db_backup_now(
     api=None,
     on_progress=None,
     on_done=None,
-    extra_chat_ids: list[str] = None,
     reason: str = 'manual',
 ) -> None:
-    """Export + send DB backup in a background thread."""
+    """Export + upload DB backup to cloud in a background thread."""
 
     def _run():
-        from backend.telegram_hub import resolve_bot_token
-        from backend.telegram_reporter import _send_document, _send_message, _telegram_preflight
-
         cfg = config_getter() or {}
-        token = resolve_bot_token(cfg)
         shop = cfg.get('shop_name', 'My Shop')
-
-        recipients = list(_backup_recipients(cfg))
-        if extra_chat_ids:
-            seen = {c for c, _ in recipients}
-            for cid in extra_chat_ids:
-                cid = str(cid or '').strip()
-                if cid and cid not in seen:
-                    seen.add(cid)
-                    recipients.append((cid, 'admin'))
-
-        if not token:
-            if on_done:
-                on_done(False, 'Bot token not configured.')
-            return
-        if not recipients:
-            if on_done:
-                on_done(False, 'No Telegram chat configured. Connect Telegram in Settings.')
-            return
-
         zip_path = ''
+
         try:
             if on_progress:
                 on_progress('Creating database snapshot…')
             zip_path, size, digest = create_db_backup_zip()
 
-            if size > TELEGRAM_MAX_BYTES:
-                msg = (
-                    f'⚠️ DB backup too large for Telegram ({size / (1024 * 1024):.1f} MB). '
-                    f'Copy manually from:\n{get_db_path()}'
-                )
-                for cid, _ in recipients:
-                    _send_message(token, cid, msg)
-                if on_done:
-                    on_done(False, msg)
-                return
+            uploaded = False
+            try:
+                from backend.cloud_backup.paths import is_cloud_configured
+                if is_cloud_configured():
+                    from backend.cloud_backup.sync_manager import SyncManager
+                    mgr = SyncManager()
+                    if on_progress:
+                        on_progress('Uploading to MugoByte Platform…')
+                    mgr.run_backup_now(reason=reason)
+                    uploaded = True
+            except Exception as e:
+                logger.warning('Cloud upload failed, keeping local copy: %s', e)
 
-            caption = _backup_caption(shop, size, _device_hint(), reason)
-            ok_any = False
-            errors: list[str] = []
+            from backend.cloud.notification_engine import get_notification_engine
+            engine = get_notification_engine(config_getter=config_getter)
+            detail = f'{shop} · {size / (1024 * 1024):.2f} MB · {"cloud" if uploaded else "local"}'
+            engine.publish_backup(True, detail)
 
-            for cid, label in recipients:
-                if on_progress:
-                    on_progress(f'Sending backup to {label}…')
-                ok, pre_err = _telegram_preflight(token, cid)
-                if not ok:
-                    errors.append(f'{label}: {pre_err}')
-                    continue
-                ok, err = _send_document(token, cid, zip_path, caption, retries=3)
-                if ok:
-                    ok_any = True
-                    logger.info('DB backup sent to %s (%s)', label, cid)
-                else:
-                    errors.append(f'{label}: {err}')
-
-            if ok_any and api:
+            if api:
                 try:
                     api.update_settings({
                         'last_db_backup_at': datetime.now().isoformat(timespec='seconds'),
@@ -195,17 +124,16 @@ def send_db_backup_now(
                 except Exception as e:
                     logger.warning('Could not persist backup timestamp: %s', e)
 
-            if ok_any:
-                msg = f'Database backup sent ({size / (1024 * 1024):.2f} MB)'
-                if errors:
-                    msg += '\nPartial: ' + '; '.join(errors)
-                if on_done:
-                    on_done(True, msg)
-            else:
-                if on_done:
-                    on_done(False, '; '.join(errors) or 'Send failed.')
+            msg = f'Database backup {"uploaded to cloud" if uploaded else "saved locally"} ({size / (1024 * 1024):.2f} MB)'
+            if on_done:
+                on_done(True, msg)
         except Exception as e:
             logger.error('send_db_backup_now: %s', e, exc_info=True)
+            try:
+                from backend.cloud.notification_engine import get_notification_engine
+                get_notification_engine(config_getter=config_getter).publish_backup(False, str(e))
+            except Exception:
+                pass
             if on_done:
                 on_done(False, str(e))
         finally:
@@ -223,8 +151,6 @@ def send_db_backup_now(
 
 def should_send_scheduled_backup(cfg: dict, last_sent_at: datetime | None) -> bool:
     if cfg.get('auto_db_backup', '1') != '1':
-        return False
-    if not _backup_recipients(cfg):
         return False
     try:
         hrs = float(cfg.get('auto_db_backup_interval_hours', DEFAULT_INTERVAL_HRS))

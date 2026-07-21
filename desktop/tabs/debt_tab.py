@@ -616,6 +616,20 @@ class _InvoicesTab(QWidget):
                 self.p._overview_tab.refresh()
             except Exception:
                 pass
+            # Refresh inventory totals immediately when stock was restored
+            try:
+                mw = self.window()
+                tabs = getattr(mw, '_tabs', None) or {}
+                inv = tabs.get('inventory')
+                if inv is not None and hasattr(inv, 'refresh'):
+                    inv.refresh()
+                elif inv is not None and hasattr(inv, '_load'):
+                    inv._load()
+                dash = tabs.get('dashboard')
+                if dash is not None and hasattr(dash, '_load'):
+                    dash._load()
+            except Exception:
+                pass
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -1468,3 +1482,14 @@ class _SaleDebtDetailDialog(QDialog):
         )
         if ok:
             self.accept()
+            try:
+                mw = self.window()
+                tabs = getattr(mw, '_tabs', None) or {}
+                inv = tabs.get('inventory')
+                if inv is not None and hasattr(inv, 'refresh'):
+                    inv.refresh()
+                dash = tabs.get('dashboard')
+                if dash is not None and hasattr(dash, '_load'):
+                    dash._load()
+            except Exception:
+                pass

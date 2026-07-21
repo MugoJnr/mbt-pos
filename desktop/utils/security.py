@@ -201,6 +201,11 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
     return verify_superadmin_pin(pin, api, parent_widget, log_attempt=True)
 
 
+def can_edit_sales(user: dict) -> bool:
+    """True if user may edit completed sale receipts (superadmin / sales.edit)."""
+    return has_permission(user, 'sales.edit')
+
+
 def can_void_sales(user: dict) -> bool:
     """True if user may void completed sales (manager / admin / superadmin)."""
     return has_permission(user, 'sales.void')

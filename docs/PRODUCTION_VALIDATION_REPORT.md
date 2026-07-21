@@ -1,9 +1,9 @@
 # MBT POS — Production Validation Report
 
-**Date:** 2026-07-19  
-**Validator:** Lead QA / Security / Performance / Release (automated session)  
-**Workspace tip:** `extracted/mbt_pos` @ `2.3.94` (`PROD-2026-07-19-v2.3.94`)  
-**Evidence:** `C:\Users\mugoj\OneDrive\Desktop\QA_PROD_VALIDATION\`  
+**Date:** 2026-07-19
+**Validator:** Lead QA / Security / Performance / Release (automated session)
+**Workspace tip:** `extracted/mbt_pos` @ `2.3.94` (`PROD-2026-07-19-v2.3.94`)
+**Evidence:** `C:\Users\mugoj\OneDrive\Desktop\QA_PROD_VALIDATION\`
 
 ---
 

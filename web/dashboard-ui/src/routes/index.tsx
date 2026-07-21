@@ -290,7 +290,7 @@ function Dashboard() {
             <span>{rest.join(" ")}</span>
           </div>
           <h2 className="text-display text-text mt-1">Welcome back, {name}</h2>
-          <div className="text-sm text-text2 mt-0.5">Executive Overview · Command Center</div>
+          <div className="text-sm text-text2 mt-0.5">Executive Overview · Live Dashboard</div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 shadow-card">

@@ -26,6 +26,55 @@ from backend.cloud_backup.sync_manager import _app_version
 logger = logging.getLogger('cloud_backup.auth')
 
 
+def _register_device_for_business(business: dict, user_id: str, email: str, session: dict) -> None:
+    """Register this desktop into Portal devices (pending approval) and persist org_id."""
+    from urllib.parse import quote
+
+    from backend.cloud.platform_service import (
+        ensure_org_for_business,
+        register_or_refresh_device,
+    )
+
+    device = get_device_info()
+    business_id = business.get('id') or ''
+    business_name = business.get('name') or 'My Business'
+    try:
+        org = ensure_org_for_business(business, user_id)
+        register_or_refresh_device(
+            org['id'],
+            device_id=device['device_id'],
+            business_id=business_id or None,
+            computer_name=device.get('hostname') or '',
+            hostname=device.get('hostname') or '',
+            platform_str=device.get('platform') or '',
+            mbt_version=_app_version(),
+            hardware_fingerprint=device.get('device_id') or '',
+            actor_user_id=user_id,
+        )
+        ident = update_business_identity(
+            business_id=business_id,
+            business_name=business_name,
+            user_id=user_id,
+            email=email,
+            access_token=session.get('access_token') or '',
+            refresh_token=session.get('refresh_token') or '',
+        )
+        ident['org_id'] = org['id']
+        save_identity(ident)
+    except Exception as e:
+        logger.warning('Device register: %s', e)
+        try:
+            SupabaseClient().register_device(
+                business_id,
+                device['device_id'],
+                hostname=device.get('hostname') or '',
+                platform_str=device.get('platform') or '',
+                mbt_version=_app_version(),
+            )
+        except Exception as e2:
+            logger.warning('Legacy device register: %s', e2)
+
+
 def create_business(
     email: str,
     password: str,
@@ -35,8 +84,8 @@ def create_business(
         raise SupabaseError('Configure Supabase URL + anon key first (cloud_config.json)')
     email = (email or '').strip().lower()
     business_name = (business_name or '').strip() or 'My Business'
-    if len(password or '') < 6:
-        raise SupabaseError('Password must be at least 6 characters')
+    if len(password or '') < 12:
+        raise SupabaseError('Password must be at least 12 characters')
 
     client = SupabaseClient()
     # Sign up (may already exist — then sign in)
@@ -60,17 +109,7 @@ def create_business(
     if not business_id:
         raise SupabaseError('Could not create/find business row')
 
-    device = get_device_info()
-    try:
-        client.register_device(
-            business_id,
-            device['device_id'],
-            hostname=device.get('hostname') or '',
-            platform_str=device.get('platform') or '',
-            mbt_version=_app_version(),
-        )
-    except Exception as e:
-        logger.warning('Device register: %s', e)
+    _register_device_for_business(biz if isinstance(biz, dict) else {'id': business_id, 'name': business_name}, user_id, email, session)
 
     ident = update_business_identity(
         business_id=business_id,
@@ -84,6 +123,13 @@ def create_business(
     _, ident = ensure_identity_key_material(ident, password=password)
     if not ident.get('encryption_salt'):
         ident['encryption_salt'] = generate_salt()
+    if not ident.get('org_id'):
+        try:
+            from backend.cloud.platform_service import ensure_org_for_business
+            org = ensure_org_for_business({'id': business_id, 'name': business_name}, user_id)
+            ident['org_id'] = org.get('id')
+        except Exception:
+            pass
     save_identity(ident)
 
     cfg = load_cloud_config()
@@ -123,17 +169,7 @@ def login_existing(email: str, password: str) -> dict[str, Any]:
     business_id = biz.get('id') or ''
     business_name = biz.get('name') or 'My Business'
 
-    device = get_device_info()
-    try:
-        client.register_device(
-            business_id,
-            device['device_id'],
-            hostname=device.get('hostname') or '',
-            platform_str=device.get('platform') or '',
-            mbt_version=_app_version(),
-        )
-    except Exception as e:
-        logger.warning('Device register: %s', e)
+    _register_device_for_business(biz if isinstance(biz, dict) else {'id': business_id, 'name': business_name}, user_id, email, session)
 
     ident = update_business_identity(
         business_id=business_id,

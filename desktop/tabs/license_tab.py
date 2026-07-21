@@ -298,25 +298,27 @@ class LicenseTab(QWidget):
 
         al.addSpacing(6)
 
-        # ── Telegram key-push status ──────────────────────────────────────────
-        tg_hdr = QLabel("ACTIVATION VIA TELEGRAM")
-        tg_hdr.setStyleSheet(
+        # ── Portal activation (Telegram permanently removed) ──────────────────
+        portal_hdr = QLabel("ACTIVATION VIA MUGOBYTE PORTAL")
+        portal_hdr.setStyleSheet(
             f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
-        al.addWidget(tg_hdr)
+        al.addWidget(portal_hdr)
 
-        self.tg_status_lbl = QLabel("Waiting for key from MugoByte Technologies…")
+        self.tg_status_lbl = QLabel(
+            "Get your license key from portal.mugobyte.com → Licenses, then paste it above. "
+            "Device registration and limits are managed in the Portal.")
         self.tg_status_lbl.setStyleSheet(
             f"color:{C['text']}; font-size:11px;")
         self.tg_status_lbl.setWordWrap(True)
         al.addWidget(self.tg_status_lbl)
 
         tg_btn_row = QHBoxLayout()
-        self.tg_listen_btn = SuccessBtn("Wait for Key via Telegram", 44)
+        self.tg_listen_btn = SuccessBtn("Open Portal Licenses", 44)
         self.tg_listen_btn.setObjectName("successBtn")
         self.tg_listen_btn.setMinimumHeight(44)
         self.tg_listen_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.tg_listen_btn.setCursor(Qt.PointingHandCursor)
-        self.tg_listen_btn.clicked.connect(self._start_tg_listen)
+        self.tg_listen_btn.clicked.connect(self._open_portal_licenses)
         tg_btn_row.addWidget(self.tg_listen_btn, 1)
         al.addLayout(tg_btn_row)
 
@@ -518,86 +520,13 @@ class LicenseTab(QWidget):
 
     def _open_renewal(self):
         import webbrowser
-        webbrowser.open("https://mugobyte.com/renew")
+        webbrowser.open("https://portal.mugobyte.com/license")
 
-    # ── Telegram key-push listener ─────────────────────────────────────────────
-
-    def _start_tg_listen(self):
-        """Poll the Telegram bot for 5 minutes waiting for a key from the developer."""
-        import threading, requests, time
-        cfg   = self.config_getter() or {}
-        token = cfg.get('telegram_bot_token', '').strip()
-        if not token:
-            QMessageBox.warning(self, 'Not Configured',
-                'Telegram Bot Token is not set.\nAsk MugoByte Technologies to confirm setup.')
-            return
-
-        self.tg_listen_btn.setEnabled(False)
-        self.tg_listen_btn.setText('Listening for key…')
-        self.tg_status_lbl.setText('⏳  Listening — developer will send key within 5 minutes…')
-        self.tg_status_lbl.setStyleSheet(f"color:{C['warn']}; font-size:11px;")
-
-        def _poll():
-            deadline = time.time() + 300   # 5 minutes
-            offset   = 0
-            api_base = f'https://api.telegram.org/bot{token}'
-            try:
-                # get current offset so we only see NEW messages
-                r = requests.get(f'{api_base}/getUpdates',
-                                  params={'timeout': 1, 'limit': 1}, timeout=5)
-                if r.ok:
-                    updates = r.json().get('result', [])
-                    if updates:
-                        offset = updates[-1]['update_id'] + 1
-            except Exception:
-                pass
-
-            while time.time() < deadline:
-                try:
-                    r = requests.get(
-                        f'{api_base}/getUpdates',
-                        params={'timeout': 20, 'offset': offset,
-                                'allowed_updates': ['message']},
-                        timeout=25,
-                    )
-                    if not r.ok:
-                        time.sleep(5); continue
-                    for upd in r.json().get('result', []):
-                        offset = upd['update_id'] + 1
-                        text   = upd.get('message', {}).get('text', '')
-                        # Developer pushes:  /send_key <key>
-                        # or just pastes a key that looks like XXXX-XXXX-XXXX-XXXX
-                        key = None
-                        if text.startswith('/send_key '):
-                            key = text[len('/send_key '):].strip()
-                        elif len(text) >= 20 and ' ' not in text and '-' in text:
-                            key = text.strip()
-                        if key:
-                            QTimer.singleShot(0, lambda k=key: self._tg_key_received(k))
-                            return
-                except requests.exceptions.Timeout:
-                    continue
-                except Exception as e:
-                    time.sleep(5)
-
-            # Timed out
-            QTimer.singleShot(0, self._tg_listen_timeout)
-
-        threading.Thread(target=_poll, daemon=True).start()
-
-    def _tg_key_received(self, key: str):
-        """Called on main thread when a key arrives via Telegram."""
-        self.tg_listen_btn.setEnabled(True)
-        self.tg_listen_btn.setText('Wait for Key via Telegram')
-        self.tg_status_lbl.setText(f'OK  Key received via Telegram — activating…')
+    def _open_portal_licenses(self):
+        """Open Portal license center — Telegram key-push permanently removed."""
+        import webbrowser
+        webbrowser.open("https://portal.mugobyte.com/license")
+        self.tg_status_lbl.setText(
+            "Opened portal.mugobyte.com/license — paste your key above to activate this device.")
         self.tg_status_lbl.setStyleSheet(f"color:{C['ok']}; font-size:11px;")
-        self.key_input.setText(key)
-        # Auto-trigger activation
-        self._activate()
-
-    def _tg_listen_timeout(self):
-        self.tg_listen_btn.setEnabled(True)
-        self.tg_listen_btn.setText('Wait for Key via Telegram')
-        self.tg_status_lbl.setText('⏰  Timed out. Ask MugoByte to send the key and try again.')
-        self.tg_status_lbl.setStyleSheet(f"color:{C['err']}; font-size:11px;")
 

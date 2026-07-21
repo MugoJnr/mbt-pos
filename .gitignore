@@ -30,7 +30,19 @@ config/cloud_config.json
 node_modules/
 web/dashboard-ui/node_modules/
 web/dashboard-ui/.tanstack/
+.pytest_cache/
 
+/_*.py
+/_*.bat
+/_*.ps1
+/_*.txt
+/_*.json
+/_*.png
+/_*.log
+/capture_*.txt
+/tab_crash_log.txt
+/ui_verify_screenshots/
+/config/CLOUDFLARE_TOKEN.md
 
 config/vendor_ai.local.json
 config/vendor_ai.bin

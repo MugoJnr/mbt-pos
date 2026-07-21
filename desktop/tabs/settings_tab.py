@@ -291,19 +291,18 @@ class SettingsTab(QWidget):
         lay.addWidget(wg)
 
         # ── Automatic reports ─────────────────────────────────────────────────
-        rg, rf_body = section_card('*', 'Automatic Telegram Reports', 'Auto-schedule daily reports')
+        rg, rf_body = section_card('*', 'Automatic Reports & Backups', 'Auto-schedule via MugoByte Platform notification center')
         rf = make_form(); rf_w = QWidget(); rf_w.setLayout(rf)
-        self.auto_report_daily = QCheckBox('Send daily sales report (Excel) to Telegram')
+        self.auto_report_daily = QCheckBox('Send daily sales report to notification center')
         self.auto_report_daily.setMinimumHeight(36)
         self.auto_report_weekly = QCheckBox('Also send weekly summary (last 7 days)')
         self.auto_report_weekly.setMinimumHeight(36)
         self.auto_db_backup = QCheckBox(
-            'Send daily database backup to Telegram (disaster recovery)')
+            'Automatic database backup to MugoByte Platform (disaster recovery)')
         self.auto_db_backup.setMinimumHeight(36)
         rep_hint = QLabel(
-            'Requires Telegram connected below. One daily Excel report per shop per date '
-            '(queued offline, sent when online, catch-up for missed days). '
-            'Database backups go to your Telegram and the developer copy once every 24 hours.')
+            'Reports and backups are delivered to the MugoByte Platform notification center '
+            'and dashboard. Configure cloud login in the Cloud Backup section below.')
         rep_hint.setWordWrap(True)
         rep_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         FormRow('', self.auto_report_daily, rf)
@@ -330,23 +329,22 @@ class SettingsTab(QWidget):
         rf_body.addWidget(rf_w)
         lay.addWidget(rg)
 
-        # ── Telegram notifications ─────────────────────────────────────────────
-        tg, tg_body = section_card('*', 'Telegram Notifications', 'Connect bot for reports and keys')
+        # ── Cloud Notifications ────────────────────────────────────────────────
+        tg, tg_body = section_card('*', 'Cloud Notifications', 'MugoByte Platform notification center')
         _tg_lay = QVBoxLayout(); _tg_lay.setContentsMargins(0, 0, 0, 0); _tg_lay.setSpacing(14)
 
-        # Status row — shows whether Telegram is connected or not
         self._tg_status_row = QFrame()
         self._tg_status_row.setStyleSheet(
             f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};"
             f"border-radius:10px;padding:0;}}")
         sr = QHBoxLayout(self._tg_status_row)
         sr.setContentsMargins(16, 12, 16, 12); sr.setSpacing(12)
-        self._tg_icon  = QLabel('○')
-        self._tg_icon.setStyleSheet("font-size:22px; background:transparent;")
-        self._tg_title = QLabel('Telegram not connected')
+        self._tg_icon  = QLabel('✓')
+        self._tg_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
+        self._tg_title = QLabel('MugoByte Platform Notification Center')
         self._tg_title.setStyleSheet(
             f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
-        self._tg_sub   = QLabel('Connect to receive reports and license keys via Telegram.')
+        self._tg_sub   = QLabel('Reports, backups, and alerts are delivered to your cloud dashboard.')
         self._tg_sub.setStyleSheet(
             f"color:{C['text2']}; font-size:12px; background:transparent;")
         sc = QVBoxLayout(); sc.setSpacing(2)
@@ -354,65 +352,15 @@ class SettingsTab(QWidget):
         sr.addWidget(self._tg_icon); sr.addLayout(sc, 1)
         _tg_lay.addWidget(self._tg_status_row)
 
-        # Step card — how to connect
-        step_card = QFrame()
-        step_card.setStyleSheet(
-            f"QFrame{{background:{C['card']};border:1px solid {C['border2']};"
-            f"border-radius:10px;}}")
-        sl = QVBoxLayout(step_card)
-        sl.setContentsMargins(18, 14, 18, 14); sl.setSpacing(10)
-
-        how_lbl = QLabel('HOW TO CONNECT')
-        how_lbl.setStyleSheet(
-            f"color:{C['muted']}; font-size:10px; font-weight:700; "
-            f"letter-spacing:1.5px; background:transparent;")
-        sl.addWidget(how_lbl)
-
-        steps_lbl = QLabel(
-            '1.  Open Telegram on your phone or PC\n'
-            '2.  Search for  <b>@mbt_admin1_bot</b>  and tap Start\n'
-            '3.  Send any message (e.g. "Hello")\n'
-            '4.  Click  <b>Connect My Telegram</b>  below — done!'
-        )
-        self._steps_lbl = steps_lbl
-        steps_lbl.setTextFormat(Qt.RichText)
-        steps_lbl.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; line-height:1.6; background:transparent;")
-        sl.addWidget(steps_lbl)
-
-        # Connect button row
-        btn_row = QHBoxLayout(); btn_row.setSpacing(10)
-        self._connect_btn = PrimaryBtn('📲  Connect My Telegram', 44)
-        self._connect_btn.clicked.connect(self._start_connect)
-
-        self._disconnect_btn = SecondaryBtn('Disconnect', 44)
-        self._disconnect_btn.clicked.connect(self._disconnect)
-        self._disconnect_btn.hide()
-
-        self._test_tg_btn = SecondaryBtn('✉  Send Test Message', 44)
-        self._test_tg_btn.clicked.connect(self._test_tg)
-        self._test_tg_btn.hide()
-
-        btn_row.addWidget(self._connect_btn)
-        btn_row.addWidget(self._test_tg_btn)
-        btn_row.addWidget(self._disconnect_btn)
-        btn_row.addStretch()
-        sl.addLayout(btn_row)
-
-        # Progress / feedback label (hidden until connecting)
-        self._tg_progress = QLabel('')
-        self._tg_progress.setStyleSheet(
-            f"color:{C['warn']}; font-size:12px; background:transparent;")
-        self._tg_progress.hide()
-        sl.addWidget(self._tg_progress)
-
-        _tg_lay.addWidget(step_card)
-
-        # Hidden field — stores the chat ID internally, not shown to user
+        # Hidden legacy fields (kept for backward compat, not shown)
         self.tg_chat     = QLineEdit(); self.tg_chat.hide()
         self.dev_chat    = QLineEdit(); self.dev_chat.hide()
         self.tg_token    = QLineEdit(); self.tg_token.hide()
         self.sync_interval = QSpinBox(); self.sync_interval.hide()
+        self._connect_btn = SecondaryBtn('', 1); self._connect_btn.hide()
+        self._disconnect_btn = SecondaryBtn('', 1); self._disconnect_btn.hide()
+        self._test_tg_btn = SecondaryBtn('', 1); self._test_tg_btn.hide()
+        self._tg_progress = QLabel(''); self._tg_progress.hide()
         _tg_lay.addWidget(self.tg_chat)
         _tg_lay.addWidget(self.dev_chat)
         _tg_lay.addWidget(self.tg_token)
@@ -421,7 +369,7 @@ class SettingsTab(QWidget):
         lay.addWidget(tg)
 
         # ── Remote web dashboard (Cloudflare) ─────────────────────────────────
-        wg, wg_body = section_card('*', 'Remote Web Dashboard', 'Sync sales and inventory to the cloud')
+        wg, wg_body = section_card('*', 'Live Dashboard', 'Sync sales and inventory to the cloud')
         _wg_lay = QVBoxLayout(); _wg_lay.setContentsMargins(0, 0, 0, 0); _wg_lay.setSpacing(14)
 
         self._cf_status_row = QFrame()
@@ -542,7 +490,7 @@ class SettingsTab(QWidget):
         wg_body.addLayout(_wg_lay)
         lay.addWidget(wg)
 
-        # ── MBT Cloud Backup (Supabase encrypted snapshots) ───────────────────
+        # ── Cloud Backup (Supabase encrypted snapshots) ───────────────────
         try:
             from desktop.tabs.cloud_backup_panel import CloudBackupPanel
             self._cloud_panel = CloudBackupPanel(self)
@@ -601,34 +549,11 @@ class SettingsTab(QWidget):
 
     def refresh(self):
         cfg = self.api.get_settings() or {}
-        deploy = {}
-        bot_user = 'mbt_admin1_bot'
-        tok = cfg.get('telegram_bot_token', '')
         try:
             from config.deploy import load_deploy_config
-            from backend.telegram_hub import resolve_bot_token, resolve_bot_username
-            deploy = load_deploy_config()
-            bot_user = resolve_bot_username(cfg)
-            self._bot_username = bot_user
-            tok = resolve_bot_token(cfg) or tok
+            load_deploy_config()
         except Exception:
-            self._bot_username = bot_user
-
-        if tok and not cfg.get('telegram_bot_token'):
-            self.tg_token.setText(tok)
-        elif cfg.get('telegram_bot_token'):
-            self.tg_token.setText(cfg.get('telegram_bot_token', ''))
-        elif deploy.get('telegram_bot_token'):
-            self.tg_token.setText(deploy.get('telegram_bot_token', ''))
-
-        # Update connect instructions with the configured bot name
-        if hasattr(self, '_steps_lbl'):
-            self._steps_lbl.setText(
-                '1.  Open Telegram on your phone or PC\n'
-                f'2.  Search for  <b>@{bot_user}</b>  and tap Start\n'
-                '3.  Send any message (e.g. "Hello")\n'
-                '4.  Click  <b>Connect My Telegram</b>  below — done!'
-            )
+            pass
         self.shop_name.setText(cfg.get('shop_name', ''))
         self.shop_address.setText(cfg.get('shop_address', ''))
         self.shop_phone.setText(cfg.get('shop_phone', ''))
@@ -638,11 +563,6 @@ class SettingsTab(QWidget):
         self.receipt_footer.setText(cfg.get('receipt_footer', 'Thank you for shopping with us!'))
         self.auto_print.setChecked(cfg.get('auto_print', '1') == '1')
         self.printer_port.setText(cfg.get('printer_port', ''))
-        if not self.tg_token.text().strip():
-            self.tg_token.setText(tok or cfg.get('telegram_bot_token', ''))
-        self.tg_chat.setText(cfg.get('telegram_chat_id', ''))
-        dev = cfg.get('developer_chat_id', '') or deploy.get('developer_chat_id', '')
-        self.dev_chat.setText(str(dev))
         self.sync_interval.setValue(int(cfg.get('sync_interval', 30) or 30))
         self.mpesa_till.setText(cfg.get('mpesa_till', ''))
         self.mpesa_paybill.setText(cfg.get('mpesa_paybill', ''))
@@ -795,24 +715,20 @@ class SettingsTab(QWidget):
         if not hasattr(self, '_rh_connected'):
             return
         try:
-            from backend.telegram_reporter import get_report_health
-            h = get_report_health(self.config_getter)
+            from backend.cloud.report_engine import get_report_health
+            h = get_report_health(self.config_getter())
         except Exception as e:
             self._rh_connected.setText(f'Connected: error ({e})')
             self._rh_sched.setText('Scheduler: —')
             return
 
-        connected = h.get('telegram_connected')
-        hub = h.get('hub_state') or ''
-        warn = h.get('config_warnings') or []
+        connected = h.get('connected', True)
         if connected:
-            self._rh_connected.setText(
-                f'Connected: Yes  ·  Hub: {hub or "ok"}')
+            self._rh_connected.setText('Connected: Yes — MugoByte Platform notification center')
             self._rh_connected.setStyleSheet(
                 f"color:{C['ok']}; font-size:12px; background:transparent;")
         else:
-            tip = warn[0] if warn else 'Connect Telegram below'
-            self._rh_connected.setText(f'Connected: No — {tip}')
+            self._rh_connected.setText('Connected: No — check cloud configuration')
             self._rh_connected.setStyleSheet(
                 f"color:{C['warn']}; font-size:12px; background:transparent;")
 
@@ -1253,146 +1169,6 @@ class SettingsTab(QWidget):
                 f'{mark}: {c.get("name")} ({c.get("detail", "")}){fix}')
         self._refresh_cf_status()
 
-    def _refresh_tg_status(self):
-        chat_id = self.tg_chat.text().strip()
-        if chat_id:
-            self._tg_icon.setText('✓')
-            self._tg_icon.setStyleSheet(f"font-size:22px; color:{C['ok']}; background:transparent;")
-            self._tg_title.setText('Telegram connected')
-            self._tg_title.setStyleSheet(
-                f"color:{C['ok']}; font-size:14px; font-weight:700; background:transparent;")
-            self._tg_sub.setText(
-                f'Chat ID: {chat_id}  ·  Reports and keys will be sent to your Telegram.')
-            self._tg_status_row.setStyleSheet(
-                f"QFrame{{background:{C['ok_dim']};border:1px solid {qss_alpha(C['ok'], 0.25)};"
-                f"border-radius:10px;}}")
-            self._connect_btn.hide()
-            self._test_tg_btn.show()
-            self._disconnect_btn.show()
-        else:
-            self._tg_icon.setText('○')
-            self._tg_icon.setStyleSheet(f"font-size:22px; color:{C['muted']}; background:transparent;")
-            self._tg_title.setText('Telegram not connected')
-            self._tg_title.setStyleSheet(
-                f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
-            self._tg_sub.setText('Connect to receive reports and license keys via Telegram.')
-            self._tg_status_row.setStyleSheet(
-                f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};"
-                f"border-radius:10px;}}")
-            self._connect_btn.show()
-            self._test_tg_btn.hide()
-            self._disconnect_btn.hide()
-
-    # ── Telegram connect flow ─────────────────────────────────────────────────
-
-    def _start_connect(self):
-        if self._polling:
-            return
-        from backend.telegram_hub import resolve_bot_token, wait_for_chat_message
-
-        cfg = self.api.get_settings() or {}
-        token = resolve_bot_token(cfg) or self.tg_token.text().strip()
-        if token and not self.tg_token.text().strip():
-            self.tg_token.setText(token)
-        if not token:
-            QMessageBox.warning(
-                self, 'Telegram Not Ready',
-                'Telegram could not start.\n\n'
-                'Close MBT POS completely, open it again, then click Connect.\n'
-                'If this continues, reinstall from the latest MBT_POS_Setup.exe.')
-            return
-
-        import requests
-        try:
-            r = requests.get(f'https://api.telegram.org/bot{token}/getMe', timeout=12)
-            if not r.ok:
-                QMessageBox.warning(
-                    self, 'Telegram Error',
-                    'Could not reach the MugoByte Telegram bot.\n\n'
-                    'Check your internet connection and try again.')
-                return
-        except Exception:
-            QMessageBox.warning(
-                self, 'Telegram Blocked',
-                'This PC cannot reach Telegram (api.telegram.org).\n\n'
-                'Your internet may work, but Telegram is blocked on this network.\n'
-                'Turn on VPN on this computer, then try Connect again.')
-            return
-
-        bot = getattr(self, '_bot_username', 'mbt_admin1_bot')
-        self._polling = True
-        self._connect_btn.setEnabled(False)
-        self._connect_btn.setText('Waiting…')
-        self._tg_progress.setText(
-            f'⏳  Open Telegram, message @{bot}, then wait here…')
-        self._tg_progress.setStyleSheet(
-            f"color:{C['warn']}; font-size:12px; background:transparent;")
-        self._tg_progress.show()
-
-        welcome = (
-            "✅ <b>MBT POS connected!</b>\n"
-            "Hello {name} — your Telegram is now linked.\n"
-            "You'll receive sales reports and license keys here.\n"
-            "<i>MugoByte Technologies</i>"
-        )
-
-        def on_chat(chat_id, _msg):
-            self._chat_found.emit(chat_id)
-
-        def on_err(msg):
-            self._chat_error.emit(msg)
-
-        def on_to():
-            self._chat_timeout.emit()
-
-        threading.Thread(
-            target=wait_for_chat_message,
-            args=(self.config_getter, on_chat, on_to, on_err, 180, welcome),
-            daemon=True,
-        ).start()
-
-    def _on_chat_found(self, chat_id: str):
-        self._polling = False
-        self.tg_chat.setText(chat_id)
-        self._tg_progress.hide()
-        self._connect_btn.setEnabled(True)
-        self._connect_btn.setText('📲  Connect My Telegram')
-        # Auto-save the chat ID immediately
-        self._save_silent()
-        self._refresh_tg_status()
-        self._tg_progress.setText('✓ Telegram connected successfully.')
-        self._tg_progress.setStyleSheet(
-            f"color:{C['ok']}; font-size:12px; background:transparent;")
-        self._tg_progress.show()
-
-    def _on_chat_timeout(self):
-        self._polling = False
-        self._connect_btn.setEnabled(True)
-        self._connect_btn.setText('📲  Connect My Telegram')
-        self._tg_progress.setText(
-            '⏰  Timed out — send a message to @mbt_admin1_bot and try again.')
-        self._tg_progress.setStyleSheet(
-            f"color:{C['err']}; font-size:12px; background:transparent;")
-
-    def _on_chat_error(self, msg: str):
-        self._polling = False
-        self._connect_btn.setEnabled(True)
-        self._connect_btn.setText('📲  Connect My Telegram')
-        self._tg_progress.setText(f'Error: {msg}')
-        self._tg_progress.setStyleSheet(
-            f"color:{C['err']}; font-size:12px; background:transparent;")
-        self._tg_progress.show()
-
-    def _disconnect(self):
-        reply = QMessageBox.question(self, 'Disconnect Telegram',
-            'Remove your Telegram connection?\n'
-            'You will no longer receive reports or keys via Telegram.',
-            QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.tg_chat.setText('')
-            self._save_silent()
-            self._refresh_tg_status()
-
     # ── Save ──────────────────────────────────────────────────────────────────
 
     def _common_payload(self):
@@ -1405,9 +1181,6 @@ class SettingsTab(QWidget):
             'receipt_footer':      self.receipt_footer.text().strip(),
             'auto_print':          '1' if self.auto_print.isChecked() else '0',
             'printer_port':        self.printer_port.text().strip(),
-            'telegram_bot_token':  self.tg_token.text().strip(),
-            'telegram_chat_id':    self.tg_chat.text().strip(),
-            'developer_chat_id':   self.dev_chat.text().strip(),
             'sync_interval':       str(self.sync_interval.value()),
             'mpesa_mode':          'stk' if self.mpesa_mode.currentIndex() == 1 else 'manual',
             'mpesa_till':          self.mpesa_till.text().strip(),
@@ -1540,15 +1313,14 @@ class SettingsTab(QWidget):
             QMessageBox.critical(self, 'Error', str(e))
 
     def _send_report_now(self):
-        chat = self.tg_chat.text().strip()
-        if not chat:
-            QMessageBox.warning(self, 'Telegram Required',
-                'Connect Telegram first to receive reports.'); return
         self._send_report_now_btn.setEnabled(False)
         self._send_report_now_btn.setText('Sending…')
-        from backend.telegram_reporter import send_report_now
+        from backend.cloud.report_engine import ReportEngine
+        from mbt_paths import get_db_path
 
-        def on_done(ok, msg):
+        def _run():
+            engine = ReportEngine(get_db_path(), config_getter=self.config_getter)
+            ok, msg = engine.send_report_now('daily')
             def _ui():
                 self._send_report_now_btn.setEnabled(True)
                 self._send_report_now_btn.setText('Send Today\'s Report Now')
@@ -1557,15 +1329,9 @@ class SettingsTab(QWidget):
                 else:
                     QMessageBox.warning(self, 'Report', msg)
             QTimer.singleShot(0, _ui)
-
-        send_report_now(self.api, self.config_getter, on_done=on_done)
+        threading.Thread(target=_run, daemon=True).start()
 
     def _send_backup_now(self):
-        chat = self.tg_chat.text().strip()
-        if not chat:
-            QMessageBox.warning(self, 'Telegram Required',
-                'Connect Telegram first to receive database backups.')
-            return
         self._send_backup_now_btn.setEnabled(False)
         self._send_backup_now_btn.setText('Backing up…')
         from backend.db_backup import send_db_backup_now
@@ -1583,26 +1349,16 @@ class SettingsTab(QWidget):
         send_db_backup_now(self.config_getter, api=self.api, on_done=on_done, reason='manual')
 
     def _test_tg(self):
-        try:
-            sys.path.insert(0, _PR)
-            from backend.internet_monitor import send_telegram_message
-            token   = self.tg_token.text().strip()
-            chat    = self.tg_chat.text().strip()
-            if not token or not chat:
-                QMessageBox.warning(self, 'Not Connected',
-                    'Connect your Telegram first.'); return
-            shop = self.shop_name.text().strip() or 'MBT POS'
-            ok = send_telegram_message(
-                token, chat,
-                f"✅ <b>Test — {shop}</b>\nTelegram is working correctly.\n"
-                f"<i>MugoByte Technologies</i>")
-            if ok:
-                QMessageBox.information(self, 'Sent ✓', 'Test message sent to your Telegram!')
-            else:
-                QMessageBox.critical(self, 'Failed',
-                    'Could not send. Check your internet connection.')
-        except Exception as e:
-            QMessageBox.critical(self, 'Error', str(e))
+        pass  # Telegram removed — notifications via cloud center
+
+    def _start_connect(self):
+        pass  # Telegram removed
+
+    def _disconnect(self):
+        pass  # Telegram removed
+
+    def _refresh_tg_status(self):
+        pass  # Cloud notification center always active
 
     def _void_sale(self):
         from desktop.utils.security import prompt_void_sale

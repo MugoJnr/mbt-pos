@@ -23,13 +23,12 @@ INIT_FLAG = get_init_flag_path()
 
 STEPS = [
     ("Welcome",          "Welcome to MBT POS"),
+    ("Portal Account",   "Sign In or Create Account"),
+    ("License",          "Register Device & Activate"),
     ("Shop Info",        "Your Shop Details"),
-    ("Admin Account",    "Create Admin Account"),
+    ("Admin Account",    "Create Local Admin"),
     ("Printer Setup",    "Printer Configuration"),
-    ("License",          "License Activation"),
-    ("Telegram & Sync",  "Remote Monitoring"),
-    ("Remote Web",       "Remote Web Dashboard"),
-    ("Cloud Backup",     "MBT Cloud Backup"),
+    ("Live Dashboard",   "Live Dashboard"),
     ("Complete",         "Setup Complete"),
 ]
 
@@ -256,20 +255,20 @@ class SetupWizard(QDialog):
     # ── Pages ───────────────────────────────────────────────────────────────────
 
     def _build_pages(self):
+        # Portal-first: Account → License/Device → local shop init → Live Dashboard
         raw_pages = [
             self._page_welcome(),
+            self._page_portal_account(),
+            self._page_license(),
             self._page_shop(),
             self._page_admin(),
             self._page_printer(),
-            self._page_license(),
-            self._page_telegram(),
             self._page_remote_web(),
-            self._page_cloud_backup(),
             self._page_complete(),
         ]
         # Scroll long steps so footer nav buttons are never covered by content.
         self._pages = [
-            self._scroll_page(p) if i in (3, 4, 5, 6, 7) else p
+            self._scroll_page(p) if i in (1, 2, 5, 6) else p
             for i, p in enumerate(raw_pages)
         ]
         for p in self._pages:
@@ -312,16 +311,22 @@ class SetupWizard(QDialog):
                         _pm.scaled(360, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                     break
 
-        t1 = QLabel("Welcome to MBT POS System")
+        t1 = QLabel("Welcome to MBT POS")
         t1.setAlignment(Qt.AlignCenter)
         t1.setStyleSheet(f"color:{C['text']}; font-size:26px; font-weight:800; background:transparent;")
 
-        t2 = QLabel("Professional Point of Sale for your business.\nThis wizard will set up your system in under 5 minutes.")
+        t2 = QLabel(
+            "Professional Point of Sale for your business.\n\n"
+            "Portal-first setup: create or sign in at portal.mugobyte.com,\n"
+            "verify your email, register this device, then activate your license.\n\n"
+            "There is no free trial and no Telegram. After activation,\n"
+            "sales continue offline with a configurable grace period."
+        )
         t2.setAlignment(Qt.AlignCenter)
-        t2.setStyleSheet(f"color:{C['text2']}; font-size:15px; line-height:1.6; background:transparent;")
+        t2.setStyleSheet(f"color:{C['text2']}; font-size:14px; line-height:1.6; background:transparent;")
         t2.setWordWrap(True)
 
-        brand = QLabel("MUGOBYTE TECHNOLOGIES  ·  mugobyte.com")
+        brand = QLabel("MUGOBYTE TECHNOLOGIES  ·  portal.mugobyte.com")
         brand.setAlignment(Qt.AlignCenter)
         brand.setStyleSheet(f"color:{C['muted']}; font-size:12px; letter-spacing:2px; background:transparent;")
 
@@ -506,11 +511,14 @@ class SetupWizard(QDialog):
             self.w_printer_status.setText(f"Printer not available — skip and configure later.")
             self.w_printer_status.setStyleSheet(f"color:{C['warn']}; font-size:13px;")
 
-    # Page 5 — License
+    # Page — License + device registration
     def _page_license(self):
         w, lay = self._page_container()
-        lay.addWidget(_label("License Activation", 22, bold=True))
-        lay.addWidget(_label("Activate your MBT POS license. You can skip this and activate later.", 14, color=C['text2']))
+        lay.addWidget(_label("Register Device & Activate", 22, bold=True))
+        lay.addWidget(_label(
+            "This PC is registered to your Portal organization. Activate with your Portal license — "
+            "no trial mode and no manual serial codes.",
+            14, color=C['text2']))
         lay.addSpacing(8)
 
         # Device ID display
@@ -530,23 +538,27 @@ class SetupWizard(QDialog):
         dv = QLabel(did_display)
         dv.setStyleSheet(f"color:{C['gold']}; font-size:13px; font-family:Consolas;")
         dv.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        hint = QLabel("Share this ID with MugoByte Technologies to receive your license key.")
+        hint = QLabel("Visible in Portal → Devices. An organization admin must approve new devices.")
         hint.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
         df.addWidget(dl); df.addWidget(dv); df.addWidget(hint)
         lay.addWidget(dev_frame)
         lay.addSpacing(8)
 
+        reg_btn = SecondaryBtn("Register Device with Portal", 42)
+        reg_btn.clicked.connect(self._register_device_now)
+        lay.addWidget(reg_btn, 0, Qt.AlignLeft)
+
         form = QFormLayout()
         form.setSpacing(14)
         self.w_license_key = QLineEdit()
-        self.w_license_key.setPlaceholderText("Paste license key here  (or skip to activate later)")
+        self.w_license_key.setPlaceholderText("Paste your Portal license key")
         self.w_license_key.setFont(QFont('Consolas', 12))
         self.w_license_key.setMinimumHeight(44)
         fl = QLabel("License Key"); fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
         form.addRow(fl, self.w_license_key)
         lay.addLayout(form)
 
-        act_btn = PrimaryBtn("✓  Validate Key", 44)
+        act_btn = PrimaryBtn("✓  Activate License", 44)
         act_btn.setObjectName("primaryBtn")
         act_btn.setMinimumHeight(44)
         act_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -559,14 +571,32 @@ class SetupWizard(QDialog):
         lay.addStretch()
         return w
 
+    def _register_device_now(self):
+        try:
+            from backend.cloud.device_service import get_device_service
+            ok, msg = get_device_service(lambda: self._data).register()
+            self.w_lic_status.setText(("✓ " if ok else "✗ ") + msg)
+            self.w_lic_status.setStyleSheet(
+                f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:600;")
+            self._data['device_registered'] = bool(ok)
+        except Exception as e:
+            self.w_lic_status.setText(f"Device registration failed: {e}")
+            self.w_lic_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
+
     def _validate_license(self):
         key = self.w_license_key.text().strip()
         if not key:
+            self.w_lic_status.setText("License key is required.")
+            self.w_lic_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
             return
         try:
+            self._register_device_now()
             from licensing.license_engine import LicenseEngine
             engine = LicenseEngine(PROJECT_ROOT)
             ok, msg = engine.activate_with_key(key)
+            if ok:
+                self._data['license_key'] = key
+                self._data['license_activated'] = True
             self.w_lic_status.setText(("✓ " if ok else "✗ ") + msg)
             self.w_lic_status.setStyleSheet(
                 f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:600;")
@@ -574,29 +604,26 @@ class SetupWizard(QDialog):
             self.w_lic_status.setText(f"Validation error: {e}")
             self.w_lic_status.setStyleSheet(f"color:{C['warn']}; font-size:13px;")
 
-    # Page 6 — Telegram
-    def _page_telegram(self):
+    def _page_telegram_removed(self):
+        """Legacy stub — Telegram permanently removed from onboarding."""
         w, lay = self._page_container()
-        lay.addWidget(_label("Remote Monitoring  (Optional)", 22, bold=True))
+        lay.addWidget(_label("MugoByte Workspace", 22, bold=True))
         lay.addWidget(_label(
-            "Get sales reports and license updates on your phone. You can skip this and set it up later in Settings.",
+            "Manage licenses, devices, downloads and support at portal.mugobyte.com.\n"
+            "Telegram has been permanently removed — use Portal notifications and email.",
             14, color=C['text2']))
         lay.addSpacing(8)
-
-        try:
-            from config.deploy import load_deploy_config
-            bot_user = (load_deploy_config().get('telegram_bot_username') or 'mbt_admin1_bot').lstrip('@')
-        except Exception:
-            bot_user = 'mbt_admin1_bot'
 
         info = QFrame()
         info.setStyleSheet(f"background:{C['card']}; border:1px solid {C['border']}; border-radius:8px;")
         il = QVBoxLayout(info)
         il.setContentsMargins(16, 12, 16, 12)
         il.addWidget(_label(
-            f"1. Open Telegram and message  @{bot_user}\n"
-            f"2. Send any message (e.g. Hello)\n"
-            f"3. Click Connect My Telegram below",
+            "Recommended flow:\n"
+            "1. Create or sign in at portal.mugobyte.com\n"
+            "2. Download the latest installer from Downloads\n"
+            "3. Activate this device with your Portal license key\n"
+            "4. Live shop ops stay on {shop}.mugobyte.com (separate from Portal)",
             13, color=C['text2']))
         lay.addWidget(info)
         lay.addSpacing(8)
@@ -604,11 +631,11 @@ class SetupWizard(QDialog):
         self.w_tg_chat_id = _field("")
         self.w_tg_chat_id.hide()
 
-        connect_btn = PrimaryBtn("Connect My Telegram", 44)
-        connect_btn.clicked.connect(self._start_tg_connect)
-        lay.addWidget(connect_btn)
+        open_btn = PrimaryBtn("Open Portal Download Center", 44)
+        open_btn.clicked.connect(self._start_tg_connect)
+        lay.addWidget(open_btn)
 
-        self.w_tg_status = QLabel("Optional — connect now or skip to the next step.")
+        self.w_tg_status = QLabel("Optional — open Portal now, or continue and finish later in Settings.")
         self.w_tg_status.setWordWrap(True)
         self.w_tg_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
         lay.addWidget(self.w_tg_status)
@@ -616,69 +643,15 @@ class SetupWizard(QDialog):
         return w
 
     def _start_tg_connect(self):
-        if self._tg_polling:
-            return
-        from config.deploy import load_deploy_config
-        from backend.telegram_hub import resolve_bot_token, resolve_bot_username, wait_for_chat_message
+        import webbrowser
+        webbrowser.open("https://portal.mugobyte.com/downloads")
+        self.w_tg_status.setText("Opened portal.mugobyte.com/downloads — notifications use Portal + email.")
+        self.w_tg_status.setStyleSheet(f"color:{C['ok']}; font-size:13px;")
 
-        bot_user = resolve_bot_username({})
-        token = resolve_bot_token({})
-        if not token:
-            self.w_tg_status.setText(
-                "Telegram is not ready yet. Click Continue, finish setup, then use Settings → Connect.")
-            self.w_tg_status.setStyleSheet(f"color:{C['warn']}; font-size:13px;")
-            return
-
-        import requests
-        try:
-            r = requests.get(f'https://api.telegram.org/bot{token}/getMe', timeout=12)
-            if not r.ok:
-                self.w_tg_status.setText("Could not reach Telegram. Check internet and try again.")
-                self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
-                return
-        except Exception:
-            self.w_tg_status.setText(
-                "Telegram is blocked on this network. Turn on VPN on this PC, then try again.")
-            self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
-            return
-
-        self._tg_polling = True
-        self.w_tg_status.setText(f"Waiting — send any message to @{bot_user} on Telegram…")
-        self.w_tg_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
-        QApplication.processEvents()
-
-        def config_getter():
-            return {
-                'telegram_bot_token': resolve_bot_token({}),
-                'shop_name': self._data.get('shop_name') or self.w_shop_name.text().strip() or 'My Shop',
-            }
-
-        def on_chat(chat_id, _msg):
-            self._tg_polling = False
-            self.w_tg_chat_id.setText(str(chat_id))
-            self.w_tg_status.setText(f"Connected! Chat ID saved.")
-            self.w_tg_status.setStyleSheet(f"color:{C['ok']}; font-size:13px;")
-
-        def on_err(msg):
-            self._tg_polling = False
-            self.w_tg_status.setText(msg)
-            self.w_tg_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
-
-        def on_to():
-            self._tg_polling = False
-            self.w_tg_status.setText("Timed out. You can connect later in Settings → Telegram.")
-
-        import threading
-        threading.Thread(
-            target=wait_for_chat_message,
-            args=(config_getter, on_chat, on_to, on_err, 60),
-            daemon=True,
-        ).start()
-
-    # Page 7 — Remote Web Dashboard (Cloudflare / mugobyte.com)
+    # Page 7 — Live Dashboard (Cloudflare / mugobyte.com)
     def _page_remote_web(self):
         w, lay = self._page_container()
-        lay.addWidget(_label("Remote Web Dashboard", 22, bold=True))
+        lay.addWidget(_label("Live Dashboard", 22, bold=True))
         lay.addWidget(_label(
             "View shop sales and inventory from anywhere via your mugobyte.com link. "
             "Local access (same Wi‑Fi) works without Cloudflare.",
@@ -889,39 +862,41 @@ class SetupWizard(QDialog):
                 'ok' if c.get('ok') else 'error',
                 f'{mark}: {c.get("name")} ({c.get("detail", "")}){fix}')
 
-    # Page 8 — MBT Cloud Backup (optional — never blocks cashiers)
-    def _page_cloud_backup(self):
+    # Page — Portal Account (required for new installs)
+    def _page_portal_account(self):
         w, lay = self._page_container()
-        lay.addWidget(_label("MBT Cloud Backup", 22, True))
+        lay.addWidget(_label("Portal Account", 22, True))
         lay.addWidget(_label(
-            "Encrypted offline-first backups to the cloud. Optional — "
-            "cashiers can Continue offline and sell without internet.",
+            "Create an account or sign in to MugoByte Workspace. Email verification is required. "
+            "This device will appear under Portal → Devices for approval.",
             13, color=C['text2']))
         lay.addSpacing(12)
 
+        open_btn = SecondaryBtn("Open portal.mugobyte.com", 40)
+        open_btn.clicked.connect(
+            lambda: __import__('webbrowser').open('https://portal.mugobyte.com/register'))
+        lay.addWidget(open_btn, 0, Qt.AlignLeft)
+        lay.addSpacing(8)
+
         self.w_cloud_email = _field("Business email")
-        self.w_cloud_pw = _field("Password", password=True)
-        self.w_cloud_biz = _field("Business name (for Create New)")
+        self.w_cloud_pw = _field("Password (12+ characters)", password=True)
+        self.w_cloud_biz = _field("Business name (for Create Account)")
         for f in (self.w_cloud_email, self.w_cloud_pw, self.w_cloud_biz):
             lay.addWidget(f)
             lay.addSpacing(8)
 
         btn_row = QHBoxLayout()
-        create_btn = PrimaryBtn("Create New Business", 42)
+        create_btn = PrimaryBtn("Create Account", 42)
         create_btn.clicked.connect(self._cloud_create)
-        login_btn = SecondaryBtn("Login Existing", 42)
+        login_btn = SecondaryBtn("Sign In", 42)
         login_btn.clicked.connect(self._cloud_login)
-        skip_btn = SecondaryBtn("Continue Offline", 42)
-        skip_btn.clicked.connect(self._cloud_skip)
         btn_row.addWidget(create_btn)
         btn_row.addWidget(login_btn)
-        btn_row.addWidget(skip_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
         self.w_cloud_status = _label(
-            "Skip anytime — local POS always works. Configure Supabase keys in "
-            "AppData cloud_config.json (see docs/CLOUD_BACKUP.md).",
+            "Internet required. After create/sign-in, verify your email if prompted, then continue.",
             12, color=C['muted'])
         lay.addSpacing(10)
         lay.addWidget(self.w_cloud_status)
@@ -933,22 +908,32 @@ class SetupWizard(QDialog):
         pw = self.w_cloud_pw.text()
         name = self.w_cloud_biz.text().strip() or self._data.get('shop_name') or 'My Business'
         if not email or not pw:
-            self.w_cloud_status.setText("Email and password required (or Continue Offline).")
+            self.w_cloud_status.setText("Email and password are required.")
+            return
+        if len(pw) < 12:
+            self.w_cloud_status.setText("Password must be at least 12 characters.")
             return
         try:
             from backend.cloud_backup.auth_service import create_business
             from backend.cloud_backup.paths import is_cloud_configured
             if not is_cloud_configured():
                 self.w_cloud_status.setText(
-                    "Supabase not configured yet — place cloud_config.json in AppData, "
-                    "or Continue Offline and set up later in Settings.")
+                    "Cloud credentials missing on this PC. Contact MugoByte support — "
+                    "installer should ship production Portal config.")
                 self._data['cloud_mode'] = 'skipped_unconfigured'
                 return
             r = create_business(email, pw, name)
             self._data['cloud_mode'] = 'created'
             self._data['cloud_business_id'] = r.get('business_id')
+            self._data['portal_notifications'] = True
+            try:
+                from backend.cloud.device_service import get_device_service
+                get_device_service(lambda: self._data).register()
+            except Exception:
+                pass
             self.w_cloud_status.setText(
-                f"Business ready · device {r.get('device_id')}. Continue to finish setup.")
+                f"Account ready · device {r.get('device_id')}. "
+                "If email verification is required, confirm it before activating a license.")
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud create failed: {e}")
 
@@ -956,22 +941,28 @@ class SetupWizard(QDialog):
         email = self.w_cloud_email.text().strip()
         pw = self.w_cloud_pw.text()
         if not email or not pw:
-            self.w_cloud_status.setText("Email and password required (or Continue Offline).")
+            self.w_cloud_status.setText("Email and password are required.")
             return
         try:
             from backend.cloud_backup.auth_service import login_existing
             from backend.cloud_backup.paths import is_cloud_configured
             if not is_cloud_configured():
                 self.w_cloud_status.setText(
-                    "Supabase not configured — Continue Offline, then Settings → Cloud Backup.")
+                    "Cloud credentials missing on this PC. Contact MugoByte support.")
                 return
             r = login_existing(email, pw)
             self._data['cloud_mode'] = 'login'
             self._data['cloud_business_id'] = r.get('business_id')
+            self._data['portal_notifications'] = True
+            try:
+                from backend.cloud.device_service import get_device_service
+                get_device_service(lambda: self._data).register()
+            except Exception:
+                pass
             if r.get('has_backups'):
                 n = len(r.get('backups') or [])
                 self.w_cloud_status.setText(
-                    f"Logged in — {n} backup(s) found. Restore from Settings after launch "
+                    f"Signed in — {n} backup(s) found. Restore from Settings after launch "
                     "(or use Restore Latest there).")
                 reply = QMessageBox.question(
                     self, "Restore from cloud?",
@@ -990,19 +981,15 @@ class SetupWizard(QDialog):
                         self.w_cloud_status.setText(f"Restore later in Settings: {re}")
             else:
                 self.w_cloud_status.setText(
-                    f"Logged in · device {r.get('device_id')}. No backups yet.")
+                    f"Signed in · device {r.get('device_id')}. Continue to activate license.")
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud login failed: {e}")
 
     def _cloud_skip(self):
-        try:
-            from backend.cloud_backup.auth_service import skip_cloud
-            skip_cloud()
-        except Exception:
-            pass
-        self._data['cloud_mode'] = 'offline'
+        """Fresh installs cannot skip Portal account creation."""
         self.w_cloud_status.setText(
-            "Continuing offline — you can enable Cloud Backup anytime in Settings.")
+            "Portal account is required for new installations. Sign in or create an account.")
+        self.w_cloud_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
 
     # Page 9 — Complete
     def _page_complete(self):
@@ -1046,21 +1033,21 @@ class SetupWizard(QDialog):
         self._prog.setValue(step)
         self._back_btn.setEnabled(step > 0)
 
-        skippable = step in (3, 4, 5, 6, 7)
+        # Printer + Live Dashboard remain optional; Portal + License are required.
+        skippable = step in (5, 6)
         self._skip_btn.setVisible(skippable)
 
-        if step == 6:
-            self._refresh_cf_subdomain()
-
-        if step == 7:
-            # Prefill business name from shop info
+        if step == 1:
             if hasattr(self, 'w_cloud_biz') and not self.w_cloud_biz.text().strip():
-                self.w_cloud_biz.setText(self._data.get('shop_name') or self.w_shop_name.text().strip())
+                self.w_cloud_biz.setText(self._data.get('shop_name') or '')
             try:
                 from backend.cloud_backup.device_manager import get_or_create_device_id
                 get_or_create_device_id()
             except Exception:
                 pass
+
+        if step == 6:
+            self._refresh_cf_subdomain()
 
         if step == len(STEPS) - 1:
             self._next_btn.setText("Launch POS  →")
@@ -1101,10 +1088,20 @@ class SetupWizard(QDialog):
     def _validate_step(self) -> bool:
         step = self._step
         if step == 1:
+            mode = self._data.get('cloud_mode')
+            if mode not in ('created', 'login'):
+                self._show_err("Sign in or create a Portal account before continuing.")
+                return False
+        elif step == 2:
+            key = self.w_license_key.text().strip()
+            if not key and not self._data.get('license_activated'):
+                self._show_err("Activate your Portal license key to continue. There is no trial mode.")
+                return False
+        elif step == 3:
             if not self.w_shop_name.text().strip():
                 self._show_err("Shop name is required.")
                 return False
-        elif step == 2:
+        elif step == 4:
             u = self.w_admin_user.text().strip()
             p = self.w_admin_pw.text()
             p2 = self.w_admin_pw2.text()
@@ -1122,22 +1119,23 @@ class SetupWizard(QDialog):
     def _collect_step(self):
         step = self._step
         if step == 1:
+            self._data['portal_notifications'] = True
+            self._data['telegram_chat_id'] = ''
+        elif step == 2:
+            self._data['license_key'] = self.w_license_key.text().strip()
+        elif step == 3:
             self._data['shop_name']     = self.w_shop_name.text().strip()
             self._data['shop_address']  = self.w_shop_location.text().strip()
             self._data['shop_phone']    = self.w_shop_phone.text().strip()
             self._data['currency']      = self.w_currency.currentText()
-        elif step == 2:
+        elif step == 4:
             self._data['admin_user']    = self.w_admin_user.text().strip() or 'admin'
             self._data['admin_pw']      = self.w_admin_pw.text()
             self._data['admin_pin']     = self.w_admin_pin.text().strip()
-        elif step == 3:
+        elif step == 5:
             sel = self.w_printer_list.currentText()
             self._data['printer_port']  = sel if sel != "— Select printer —" else self.w_printer_port.text().strip()
             self._data['auto_print']    = '1' if self.w_auto_print.isChecked() else '0'
-        elif step == 4:
-            self._data['license_key']   = self.w_license_key.text().strip()
-        elif step == 5:
-            self._data['telegram_chat_id'] = self.w_tg_chat_id.text().strip()
         elif step == 6:
             remote = self._cf_mode_remote.isChecked()
             sub = self._wizard_subdomain()
@@ -1160,16 +1158,13 @@ class SetupWizard(QDialog):
                     save_web_config({'remote_enabled': False})
             except Exception:
                 pass
-        elif step == 7:
-            if 'cloud_mode' not in self._data:
-                self._data['cloud_mode'] = 'skipped'
 
     def _update_summary(self):
         shop = self._data.get('shop_name', '(not set)')
         user = self._data.get('admin_user', 'admin')
         prt  = self._data.get('printer_port', 'Not configured')
         lic  = 'Activated' if self._data.get('license_key') else 'Pending'
-        tg   = 'Connected' if self._data.get('telegram_chat_id') else 'Skipped'
+        notif = 'Portal + Email'
         if self._data.get('remote_web'):
             dom = self._data.get('remote_domain') or ''
             if not dom and self._data.get('tunnel_subdomain'):
@@ -1192,7 +1187,7 @@ class SetupWizard(QDialog):
             cloud += ' · restored'
         self.w_summary.setText(
             f"Shop: {shop}  ·  Admin: {user}\n"
-            f"Printer: {prt}  ·  License: {lic}  ·  Telegram: {tg}\n"
+            f"Printer: {prt}  ·  License: {lic}  ·  Notifications: {notif}\n"
             f"Web dashboard: {web}\n"
             f"{cloud}"
         )
@@ -1228,19 +1223,13 @@ class SetupWizard(QDialog):
             except Exception:
                 deploy = {}
                 extra  = {}
-            from backend.telegram_hub import resolve_bot_token
-            bot_token = resolve_bot_token({
-                'telegram_bot_token': deploy.get('telegram_bot_token', '') or extra.get('telegram_bot_token', ''),
-            })
             settings = {
                 'shop_name':            self._data.get('shop_name', 'My Shop'),
                 'shop_address':         self._data.get('shop_address', ''),
                 'shop_phone':           self._data.get('shop_phone', ''),
                 'currency_symbol':      self._data.get('currency', 'KES'),
-                'telegram_chat_id':     self._data.get('telegram_chat_id', ''),
                 'printer_port':         self._data.get('printer_port', ''),
                 'auto_print':           self._data.get('auto_print', '1'),
-                'telegram_bot_token':   bot_token,
                 'auto_report_daily':    '1',
                 'auto_report_weekly':   '0',
                 'auto_report_interval_hours': '4',

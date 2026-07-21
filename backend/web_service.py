@@ -1,5 +1,5 @@
 """
-MBT POS — Embedded Web Dashboard Service
+MBT POS — Embedded Live Dashboard Service
 MugoByte Technologies | mugobyte.com
 
 Starts the Flask web dashboard in-process when the desktop app launches.

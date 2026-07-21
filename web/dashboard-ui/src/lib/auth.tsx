@@ -93,14 +93,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
         className="relative w-full max-w-sm rounded-2xl border border-border bg-card/95 p-8 shadow-elevated backdrop-blur-sm animate-in fade-in zoom-in-95 duration-300"
       >
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-xl bg-gold text-xl font-black text-[color:var(--gold-fg)] shadow-[0_4px_20px_rgba(242,168,0,0.35)]">
-            MBT
-          </div>
+          <img
+            src="/favicon.svg"
+            alt="MugoByte"
+            className="mx-auto mb-3 h-14 w-14 rounded-xl shadow-[0_4px_20px_rgba(242,168,0,0.25)]"
+            draggable={false}
+          />
           <div className="text-[10px] tracking-[0.22em] font-semibold text-gold uppercase mb-1">
-            Command Center
+            Live Dashboard
           </div>
           <h1 className="text-xl font-extrabold text-text tracking-tight">Sign in</h1>
-          <p className="mt-1 text-sm text-text2">MugoByte POS · secure remote access</p>
+          <p className="mt-1 text-sm text-text2">MBT POS · secure remote access</p>
         </div>
         {err ? (
           <div className="mb-4 rounded-lg border border-err/40 bg-err/10 px-3 py-2.5 text-sm text-err">

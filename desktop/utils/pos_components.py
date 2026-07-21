@@ -1023,15 +1023,30 @@ class CustomerCard(QFrame):
         """Update chip label from a customer dict (or walk-in)."""
         if walk_in or not customer:
             self._btn.setText('Walk-in Customer')
+            self._btn.setToolTip('Tap to choose a saved customer or add a new one')
             self.refresh_theme()
             return
         name = (customer.get('name') or 'Customer').strip()
         phone = (customer.get('phone') or '').strip()
         label = f'{name}  ·  {phone}' if phone else name
         wallet = float(customer.get('wallet_balance') or 0)
-        if wallet > 0.009:
+        owing = float(customer.get('total_outstanding') or 0)
+        limit = float(customer.get('credit_limit') or 0)
+        if owing > 0.009:
+            label = f'{label}  ·  Debt {owing:,.0f}'
+        elif wallet > 0.009:
             label = f'{label}  ·  Credit {wallet:,.0f}'
+        tip_bits = [name]
+        if phone:
+            tip_bits.append(phone)
+        if owing > 0.009:
+            tip_bits.append(f'Outstanding debt: {owing:,.2f}')
+        if limit > 0.009:
+            tip_bits.append(f'Credit limit: {limit:,.2f}')
+        if wallet > 0.009:
+            tip_bits.append(f'Store credit: {wallet:,.2f}')
         self._btn.setText(label)
+        self._btn.setToolTip(' · '.join(tip_bits))
         self.refresh_theme()
 
     def _sync_chip_from_selector(self, *_args):
@@ -1129,12 +1144,30 @@ class CustomerCard(QFrame):
             self.selector.load_customers(customers)
         except Exception:
             pass
+        applied = False
         if hasattr(self.selector, 'select_customer'):
-            self.selector.select_customer(cid)
-        else:
+            applied = bool(self.selector.select_customer(cid))
+        if not applied:
             idx = self.selector.findData(cid)
+            if idx < 0:
+                idx = self.selector.findData(int(cid))
             if idx >= 0:
+                self.selector.blockSignals(True)
+                self.selector.setCurrentIndex(0 if idx != 0 else min(1, self.selector.count() - 1))
+                self.selector.blockSignals(False)
                 self.selector.setCurrentIndex(idx)
+                applied = True
+        cust = next(
+            (c for c in self._customers_cache
+             if c.get('id') == cid or c.get('id') == int(cid)),
+            None,
+        )
+        self.set_customer(cust, walk_in=False)
+        # Ensure SalesTab handlers run even if combo index was unchanged
+        try:
+            self.selector.currentIndexChanged.emit(self.selector.currentIndex())
+        except Exception:
+            pass
         parent_dlg.accept()
 
     def _pick_create(self, parent_dlg):
@@ -1158,6 +1191,16 @@ class CustomerCard(QFrame):
             self.set_customers_cache(customers)
             self.selector.load_customers(customers)
             self.selector.select_customer(cid)
+            cust = next(
+                (c for c in customers
+                 if c.get('id') == cid or c.get('id') == int(cid)),
+                None,
+            )
+            self.set_customer(cust, walk_in=False)
+            try:
+                self.selector.currentIndexChanged.emit(self.selector.currentIndex())
+            except Exception:
+                pass
         except Exception:
             pass
         parent_dlg.accept()
@@ -1251,11 +1294,37 @@ class CustomerSelector(QComboBox):
         self._rebuild(keep=keep, query=text)
 
     def select_customer(self, customer_id):
-        """Select by id after reload; rebuild full list first."""
-        self._rebuild(keep=customer_id, query='')
-        idx = self.findData(customer_id)
-        if idx >= 0:
-            self.setCurrentIndex(idx)
+        """
+        Select by id after reload; rebuild full list first.
+        Always emits currentIndexChanged so SalesTab applies debt/credit profile
+        even when the combo was already on Walk-in or the same index.
+        """
+        if customer_id is None:
+            self.select_walk_in()
+            return False
+        try:
+            cid = int(customer_id)
+        except (TypeError, ValueError):
+            cid = customer_id
+        self._rebuild(keep=None, query='')
+        idx = self.findData(cid)
+        if idx < 0:
+            idx = self.findData(customer_id)
+        if idx < 0:
+            return False
+        # Force a real index change so Qt emits currentIndexChanged
+        other = 0 if idx != 0 else (1 if self.count() > 1 else -1)
+        self.blockSignals(True)
+        if other >= 0:
+            self.setCurrentIndex(other)
+        self.blockSignals(False)
+        self.setCurrentIndex(idx)
+        le = self.lineEdit()
+        if le is not None:
+            le.blockSignals(True)
+            le.setText(self.itemText(idx) or '')
+            le.blockSignals(False)
+        return True
 
     def selected_id(self):
         return self.currentData()
@@ -1281,6 +1350,11 @@ class CustomerSelector(QComboBox):
                 le.blockSignals(False)
         finally:
             self.blockSignals(False)
+        # Notify listeners (chip + SalesTab) that Walk-in is active
+        try:
+            self.currentIndexChanged.emit(self.currentIndex())
+        except Exception:
+            pass
 
     def mousePressEvent(self, event):
         # Clicking the field opens the list (picker affordance)

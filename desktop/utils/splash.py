@@ -5,7 +5,8 @@ MugoByte Technologies | mugobyte.com
 from PyQt5.QtWidgets import QWidget, QApplication
 from PyQt5.QtCore    import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF
 from PyQt5.QtGui     import (QPainter, QColor, QFont, QLinearGradient,
-                              QRadialGradient, QPen, QBrush, QPainterPath)
+                              QRadialGradient, QPen, QBrush, QPainterPath, QPixmap)
+import os
 
 
 def _app_version():
@@ -13,7 +14,17 @@ def _app_version():
         from desktop.main import APP_VERSION
         return APP_VERSION
     except Exception:
-        return '2.3'
+        return '3.0.0'
+
+
+def _logo_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, '..', '..'))
+    for name in ('mbt_logo_hd.png', 'mbt_icon_256.png', 'mbt_icon.png'):
+        p = os.path.join(root, 'assets', name)
+        if os.path.isfile(p):
+            return p
+    return ''
 
 
 class SplashScreen(QWidget):
@@ -23,6 +34,7 @@ class SplashScreen(QWidget):
         self._status   = 'Starting'
         self._dots     = 0
         self._pulse    = 0
+        self._logo = QPixmap(_logo_path()) if _logo_path() else QPixmap()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.SplashScreen)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(520, 340)
@@ -99,20 +111,25 @@ class SplashScreen(QWidget):
         p.setBrush(QBrush(badge))
         p.drawEllipse(QRectF(w / 2 - 70, 20, 140, 120))
 
-        # Brand mark
-        lf = QFont('Segoe UI', 52, QFont.Black)
-        lf.setLetterSpacing(QFont.AbsoluteSpacing, 6)
-        p.setFont(lf)
-        p.setPen(QColor(0, 0, 0, 70))
-        p.drawText(QRect(2, 36, w, 72), Qt.AlignHCenter | Qt.AlignVCenter, 'MBT')
-        p.setPen(QColor('#FFB830'))
-        p.drawText(QRect(0, 34, w, 72), Qt.AlignHCenter | Qt.AlignVCenter, 'MBT')
+        # Brand mark / product logo
+        if not self._logo.isNull():
+            scaled = self._logo.scaled(160, 90, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            lx = (w - scaled.width()) // 2
+            p.drawPixmap(lx, 28, scaled)
+        else:
+            lf = QFont('Segoe UI', 52, QFont.Black)
+            lf.setLetterSpacing(QFont.AbsoluteSpacing, 6)
+            p.setFont(lf)
+            p.setPen(QColor(0, 0, 0, 70))
+            p.drawText(QRect(2, 36, w, 72), Qt.AlignHCenter | Qt.AlignVCenter, 'MBT')
+            p.setPen(QColor('#FFB830'))
+            p.drawText(QRect(0, 34, w, 72), Qt.AlignHCenter | Qt.AlignVCenter, 'MBT')
 
         tf = QFont('Segoe UI', 10, QFont.DemiBold)
         tf.setLetterSpacing(QFont.AbsoluteSpacing, 4)
         p.setFont(tf)
         p.setPen(QColor('#8FA8C4'))
-        p.drawText(QRect(0, 108, w, 22), Qt.AlignHCenter, 'POINT OF SALE')
+        p.drawText(QRect(0, 118, w, 22), Qt.AlignHCenter, 'MBT POS')
 
         bf = QFont('Segoe UI', 11, QFont.Bold)
         p.setFont(bf)

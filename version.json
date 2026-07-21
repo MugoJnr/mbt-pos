@@ -1,8 +1,8 @@
 {
-  "version": "2.3.99",
-  "build": "PROD-2026-07-20-v2.3.99",
-  "build_date": "2026-07-20",
-  "release_notes": "Embed shop Telegram bot token via deploy.local for zero-setup production installs (@mbt_admin1_bot).",
+  "version": "3.0.0",
+  "build": "RC-2026-07-21-v3.0.0-rc1",
+  "build_date": "2026-07-21",
+  "release_notes": "MugoByte Platform 3.0.0 RC1: Portal-first onboarding, multi-tenant organizations, cloud licensing, approved-device synchronization, Live Dashboard, and portal.mugobyte.com.",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",

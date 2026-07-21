@@ -1,5 +1,5 @@
 """
-MBT POS — Web Dashboard Routes
+MBT POS — Live Dashboard Routes
 MugoByte Technologies | mugobyte.com
 
 Adds to the existing Flask backend:
@@ -22,12 +22,72 @@ _HERE     = os.path.dirname(os.path.abspath(__file__))
 _BASE_DIR = os.path.dirname(_HERE)
 _WEB_DIR  = _HERE
 _TMPL_DIR = os.path.join(_HERE, 'templates')
-_DIST_DIR = os.path.join(_HERE, 'dashboard-ui', 'dist')
+_PLATFORM_DIST = os.path.join(_HERE, 'mugobyte-platform', 'dist')
+_LEGACY_DIST   = os.path.join(_HERE, 'dashboard-ui', 'dist')
+_DIST_DIR = _LEGACY_DIST  # default Live Dashboard (shop tunnel)
 _LEGACY   = os.path.join(_TMPL_DIR, 'dashboard.legacy.html')
+
+# Hosts that always receive the MugoByte Workspace SPA (cloud account launcher).
+_PORTAL_HOSTS = frozenset({
+    'portal.mugobyte.com',
+    'www.portal.mugobyte.com',
+})
+
+
+def _request_wants_portal() -> bool:
+    """
+    Decide which SPA to serve without merging the two apps.
+
+    Portal: portal.mugobyte.com, ?app=portal, MBT_WEB_APP=portal
+    Live Dashboard: shop tunnels, localhost default, ?app=live
+    """
+    try:
+        app = (request.args.get('app') or '').strip().lower()
+    except RuntimeError:
+        app = ''
+    if app in ('portal', 'platform'):
+        return True
+    if app in ('live', 'dashboard', 'pos', 'command-center'):
+        return False
+    env = (os.environ.get('MBT_WEB_APP') or '').strip().lower()
+    if env in ('portal', 'platform'):
+        return True
+    if env in ('live', 'dashboard', 'pos'):
+        return False
+    try:
+        host = (request.host or '').split(':')[0].strip().lower()
+    except RuntimeError:
+        host = ''
+    if host in _PORTAL_HOSTS:
+        return True
+    # Shop tunnels and localhost → Live Dashboard (local SQLite ops)
+    return False
 
 
 def _dist_ready():
-    return os.path.isfile(os.path.join(_DIST_DIR, 'index.html'))
+    return (
+        os.path.isfile(os.path.join(_PLATFORM_DIST, 'index.html'))
+        or os.path.isfile(os.path.join(_LEGACY_DIST, 'index.html'))
+    )
+
+
+def _active_dist_dir():
+    """Serve Portal or Live Dashboard independently based on Host / override."""
+    want_portal = _request_wants_portal()
+    portal_ok = os.path.isfile(os.path.join(_PLATFORM_DIST, 'index.html'))
+    live_ok = os.path.isfile(os.path.join(_LEGACY_DIST, 'index.html'))
+    if want_portal and portal_ok:
+        return _PLATFORM_DIST
+    if live_ok:
+        return _LEGACY_DIST
+    if portal_ok:
+        return _PLATFORM_DIST
+    return _LEGACY_DIST
+
+
+def _spa_app_name():
+    d = _active_dist_dir()
+    return 'portal' if d == _PLATFORM_DIST else 'live-dashboard'
 
 
 # ── Serve SPA ─────────────────────────────────────────────────────────────
@@ -35,7 +95,7 @@ def _dist_ready():
 @web.route('/')
 def index():
     if _dist_ready():
-        return send_from_directory(_DIST_DIR, 'index.html')
+        return send_from_directory(_active_dist_dir(), 'index.html')
     # Fallback to legacy single-file SPA if React dist not built yet
     if os.path.isfile(_LEGACY):
         return send_from_directory(_TMPL_DIR, 'dashboard.legacy.html')
@@ -47,7 +107,7 @@ def index():
 
 @web.route('/assets/<path:filename>')
 def spa_assets(filename):
-    assets = os.path.join(_DIST_DIR, 'assets')
+    assets = os.path.join(_active_dist_dir(), 'assets')
     if not os.path.isdir(assets):
         abort(404)
     return send_from_directory(assets, filename)
@@ -64,17 +124,1109 @@ def spa_fallback(spa_path):
     if spa_path.startswith('api/') or spa_path == 'api':
         abort(404)
     # Prefer real files from dist (favicon, etc.)
-    candidate = os.path.join(_DIST_DIR, spa_path)
+    dist_dir = _active_dist_dir()
+    candidate = os.path.join(dist_dir, spa_path)
     if _dist_ready() and os.path.isfile(candidate):
-        return send_from_directory(_DIST_DIR, spa_path)
+        return send_from_directory(dist_dir, spa_path)
     if _dist_ready():
-        return send_from_directory(_DIST_DIR, 'index.html')
+        return send_from_directory(_active_dist_dir(), 'index.html')
     abort(404)
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # CUSTOMERS API
 # ══════════════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════════════
+# MUGOBYTE PLATFORM API
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _platform_demo_orgs(user=None):
+    """No fake orgs in production — empty until a real organization exists."""
+    return []
+
+
+def _platform_live_orgs(user=None):
+    """Prefer live Supabase organizations; fall back to local shop identity."""
+    try:
+        from backend.cloud_backup.paths import is_cloud_configured, load_identity
+        from backend.cloud.platform_service import list_organizations_for_user
+        if is_cloud_configured():
+            uid = None
+            u = user or getattr(g, 'current_user', None) or {}
+            if u.get('id') and not isinstance(u.get('id'), int):
+                uid = str(u['id'])
+            if not uid:
+                ident = load_identity()
+                uid = ident.get('user_id') or None
+            orgs = list_organizations_for_user(uid)
+            if orgs:
+                return orgs
+            # Local shop name as primary until cloud org exists
+            cfg = {}
+            try:
+                db = _get_db()
+                rows = db.execute("SELECT key, value FROM system_settings WHERE key IN ('shop_name')").fetchall()
+                cfg = {r[0]: r[1] for r in rows}
+            except Exception:
+                pass
+            shop = cfg.get('shop_name') or 'My Business'
+            return [{'id': 'local-primary', 'name': shop, 'slug': 'local', 'role': 'owner', 'is_primary': True}]
+    except Exception:
+        pass
+    return _platform_demo_orgs(user)
+
+
+def _platform_demo_apps(user=None):
+    """Product registry for Portal My Products — unlimited future apps."""
+    role = ((user or getattr(g, 'current_user', None) or {}).get('role') or 'cashier').lower()
+    can_admin = role in ('admin', 'superadmin', 'manager', 'owner')
+    try:
+        ver = _app_version_info().get('version')
+    except Exception:
+        ver = None
+    return [
+        {
+            'id': 'mbt-pos',
+            'name': 'MBT POS',
+            'description': 'Cloud licenses, devices, backups, reports history and account tools. Live shop ops open via your tunnel dashboard.',
+            'icon': 'pos',
+            'status': 'active',
+            'launch_url': '/pos',
+            'permission': 'owner' if can_admin else 'employee',
+            'category': 'Retail',
+            'version': ver,
+        },
+        {
+            'id': 'exam-hub',
+            'name': 'Exam Hub',
+            'description': 'Students, teachers, exams, results and school reports.',
+            'icon': 'exam',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Education',
+        },
+        {
+            'id': 'erp',
+            'name': 'ERP',
+            'description': 'Enterprise resource planning for operations and finance.',
+            'icon': 'erp',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Operations',
+        },
+        {
+            'id': 'crm',
+            'name': 'CRM',
+            'description': 'Customer relationships, pipelines and follow-ups.',
+            'icon': 'crm',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Sales',
+        },
+        {
+            'id': 'hr',
+            'name': 'HR',
+            'description': 'People, attendance and payroll preparation.',
+            'icon': 'hr',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'People',
+        },
+        {
+            'id': 'inventory',
+            'name': 'Inventory Cloud',
+            'description': 'Multi-branch stock visibility and replenishment planning.',
+            'icon': 'inventory',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Operations',
+        },
+        {
+            'id': 'accounting',
+            'name': 'Accounting',
+            'description': 'Cloud ledgers, periods and financial statements.',
+            'icon': 'accounting',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Finance',
+        },
+        {
+            'id': 'payroll',
+            'name': 'Payroll',
+            'description': 'Salaries, statutory deductions and payslips.',
+            'icon': 'payroll',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Finance',
+        },
+        {
+            'id': 'school',
+            'name': 'School',
+            'description': 'Admissions, fees and school administration.',
+            'icon': 'school',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Education',
+        },
+        {
+            'id': 'hospital',
+            'name': 'Hospital',
+            'description': 'Clinics, patient records and billing.',
+            'icon': 'hospital',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Health',
+        },
+        {
+            'id': 'farm',
+            'name': 'Farm Management',
+            'description': 'Farms, harvests, inventory and cooperative trading.',
+            'icon': 'agriculture',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Agriculture',
+        },
+        {
+            'id': 'trading',
+            'name': 'Trading Platform',
+            'description': 'Wholesale trading, pricing and partner networks.',
+            'icon': 'trading',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Commerce',
+        },
+        {
+            'id': 'media',
+            'name': 'MB Media',
+            'description': 'Brand assets, campaigns and content for your businesses.',
+            'icon': 'media',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Marketing',
+        },
+        {
+            'id': 'ai',
+            'name': 'AI Hub',
+            'description': 'Insights, forecasting and assistants across products.',
+            'icon': 'ai',
+            'status': 'active',
+            'launch_url': '/ai',
+            'permission': 'owner' if can_admin else 'employee',
+            'category': 'Insights',
+            'version': 'Beta',
+        },
+        {
+            'id': 'marketplace',
+            'name': 'Marketplace',
+            'description': 'Discover and install additional MugoByte products.',
+            'icon': 'marketplace',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Platform',
+        },
+        {
+            'id': 'developer',
+            'name': 'Developer Console',
+            'description': 'API keys, webhooks and integration tooling.',
+            'icon': 'developer',
+            'status': 'coming_soon',
+            'launch_url': '#',
+            'permission': 'disabled',
+            'category': 'Platform',
+        },
+    ]
+
+
+@web.route('/api/platform/spa', methods=['GET'])
+def platform_spa_info():
+    """Debug / health: which SPA this host would receive."""
+    return jsonify({
+        'app': _spa_app_name(),
+        'portal_host': _request_wants_portal(),
+        'host': (request.host or '').split(':')[0],
+        'portal_dist_ready': os.path.isfile(os.path.join(_PLATFORM_DIST, 'index.html')),
+        'live_dist_ready': os.path.isfile(os.path.join(_LEGACY_DIST, 'index.html')),
+    })
+
+
+@web.route('/api/platform/organizations', methods=['GET'])
+def platform_organizations():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        return jsonify({'organizations': _platform_live_orgs(getattr(g, 'current_user', None))})
+    return _inner()
+
+
+@web.route('/api/platform/applications', methods=['GET'])
+def platform_applications():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        return jsonify({'applications': _platform_demo_apps()})
+    return _inner()
+
+
+@web.route('/api/platform/marketplace', methods=['GET'])
+def platform_marketplace():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        return jsonify({'marketplace': [
+            {**app, 'installed': app['id'] == 'mbt-pos', 'update_available': False}
+            for app in _platform_demo_apps()
+        ]})
+    return _inner()
+
+
+# ── MBT Cloud Auth + Licensing APIs ───────────────────────────────────────────
+
+_REFRESH_COOKIE = 'mbt_refresh'
+
+
+def _secure_cookie() -> bool:
+    return (
+        request.is_secure
+        or request.headers.get('X-Forwarded-Proto') == 'https'
+        or request.host.split(':', 1)[0] not in {'localhost', '127.0.0.1'}
+    )
+
+
+@web.route('/api/cloud/config', methods=['GET'])
+def cloud_config_public():
+    try:
+        from backend.cloud.platform_service import cloud_public_config
+        return jsonify(cloud_public_config())
+    except Exception as e:
+        return jsonify({'configured': False, 'error': str(e)})
+
+
+@web.route('/api/cloud/auth/login', methods=['POST'])
+def cloud_auth_login():
+    data = request.json or {}
+    email = (data.get('email') or data.get('username') or '').strip().lower()
+    password = data.get('password') or ''
+    if not email or not password:
+        return jsonify({'error': 'Email and password required'}), 400
+    try:
+        from backend.app import _clear_login_attempts, _login_rate_limited
+        client_key = f"{request.remote_addr or 'unknown'}:{email}"
+        limited, retry_after = _login_rate_limited(client_key)
+        if limited:
+            response = jsonify({'error': 'Too many login attempts. Try again later.'})
+            response.headers['Retry-After'] = str(retry_after)
+            return response, 429
+        from backend.cloud.platform_service import cloud_sign_in
+        from backend.cloud_backup.paths import is_cloud_configured
+        if not is_cloud_configured():
+            return jsonify({'error': 'Cloud not configured'}), 503
+        result = cloud_sign_in(email, password)
+        refresh_token = result.pop('refresh_token', '')
+        response = jsonify(result)
+        if refresh_token:
+            response.set_cookie(
+                _REFRESH_COOKIE,
+                refresh_token,
+                httponly=True,
+                secure=_secure_cookie(),
+                samesite='Lax',
+                max_age=60 * 60 * 24 * 30,
+                path='/api/cloud/auth',
+            )
+        _clear_login_attempts(client_key)
+        return response
+    except Exception as e:
+        return jsonify({'error': 'Invalid email, password, or unverified account'}), 401
+
+
+@web.route('/api/cloud/auth/register', methods=['POST'])
+def cloud_auth_register():
+    data = request.json or {}
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+    full_name = data.get('full_name') or data.get('name') or ''
+    business_name = data.get('business_name') or data.get('organization') or 'My Business'
+    if not email or not password:
+        return jsonify({'error': 'Email and password required'}), 400
+    if len(password) < 12:
+        return jsonify({'error': 'Password must be at least 12 characters'}), 400
+    try:
+        from backend.cloud.platform_service import cloud_sign_up
+        from backend.cloud_backup.paths import is_cloud_configured
+        if not is_cloud_configured():
+            return jsonify({'error': 'Cloud not configured'}), 503
+        result = cloud_sign_up(email, password, full_name, business_name)
+        return jsonify(result), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@web.route('/api/cloud/auth/forgot-password', methods=['POST'])
+def cloud_auth_forgot():
+    data = request.json or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'error': 'Email required'}), 400
+    try:
+        from backend.cloud.platform_service import cloud_forgot_password
+        ok = cloud_forgot_password(email)
+        # Always return success to avoid email enumeration
+        return jsonify({'ok': True, 'sent': ok, 'message': 'If that email exists, a reset link was sent.'})
+    except Exception as e:
+        return jsonify({'ok': True, 'sent': False, 'message': 'If that email exists, a reset link was sent.'})
+
+
+@web.route('/api/cloud/auth/resend-verification', methods=['POST'])
+def cloud_auth_resend_verification():
+    data = request.json or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email or '@' not in email:
+        return jsonify({'error': 'Email required'}), 400
+    try:
+        from backend.cloud.platform_service import cloud_resend_verification
+        from backend.cloud_backup.paths import is_cloud_configured
+        if not is_cloud_configured():
+            return jsonify({'error': 'Cloud not configured'}), 503
+        ok = cloud_resend_verification(email)
+        # Always return success to avoid email enumeration
+        return jsonify({
+            'ok': True,
+            'sent': ok,
+            'message': 'If that email needs verification, a new link was sent.',
+        })
+    except Exception:
+        return jsonify({
+            'ok': True,
+            'sent': False,
+            'message': 'If that email needs verification, a new link was sent.',
+        })
+
+
+@web.route('/api/cloud/auth/refresh', methods=['POST'])
+def cloud_auth_refresh():
+    refresh_token = request.cookies.get(_REFRESH_COOKIE, '')
+    if not refresh_token:
+        return jsonify({'error': 'Refresh session required'}), 401
+    try:
+        from backend.cloud.platform_service import cloud_refresh_session
+        session = cloud_refresh_session(refresh_token)
+        response = jsonify({
+            'token': session.get('access_token'),
+            'expires_in': session.get('expires_in'),
+        })
+        rotated = session.get('refresh_token')
+        if rotated:
+            response.set_cookie(
+                _REFRESH_COOKIE,
+                rotated,
+                httponly=True,
+                secure=_secure_cookie(),
+                samesite='Lax',
+                max_age=60 * 60 * 24 * 30,
+                path='/api/cloud/auth',
+            )
+        return response
+    except Exception:
+        response = jsonify({'error': 'Session expired'})
+        response.delete_cookie(_REFRESH_COOKIE, path='/api/cloud/auth')
+        return response, 401
+
+
+@web.route('/api/cloud/auth/logout', methods=['POST'])
+def cloud_auth_logout():
+    response = jsonify({'ok': True})
+    response.delete_cookie(_REFRESH_COOKIE, path='/api/cloud/auth')
+    return response
+
+
+@web.route('/api/cloud/auth/update-password', methods=['POST'])
+def cloud_auth_update_password():
+    data = request.json or {}
+    recovery_token = (data.get('recovery_token') or '').strip()
+    password = data.get('password') or ''
+    if not recovery_token or len(password) < 12:
+        return jsonify({
+            'error': 'Recovery token and a password of at least 12 characters are required'
+        }), 400
+    try:
+        from backend.cloud.platform_service import cloud_update_password
+        cloud_update_password(recovery_token, password)
+        return jsonify({'ok': True})
+    except Exception:
+        return jsonify({'error': 'Recovery link is invalid or expired'}), 400
+
+
+def _cloud_user_id():
+    """Prefer authenticated request user (Supabase UUID), else desktop identity."""
+    user = getattr(g, 'current_user', {}) or {}
+    uid = user.get('id')
+    if uid and not isinstance(uid, int):
+        return str(uid)
+    try:
+        from backend.cloud_backup.paths import load_identity
+        return load_identity().get('user_id') or ''
+    except Exception:
+        return ''
+
+
+def _resolve_request_org_id(explicit: str = '', *, admin: bool = False) -> str:
+    """Resolve and authorize an org before any service-role Supabase access."""
+    uid = _cloud_user_id()
+    if explicit:
+        from backend.cloud.platform_service import require_org_access
+        require_org_access(uid, explicit, admin=admin)
+        return explicit
+    try:
+        from backend.cloud.platform_service import list_organizations_for_user
+        orgs = list_organizations_for_user(uid or None)
+        if orgs:
+            org_id = orgs[0]['id']
+            if admin:
+                from backend.cloud.platform_service import require_org_access
+                require_org_access(uid, org_id, admin=True)
+            return org_id
+    except Exception:
+        raise
+    return ''
+
+
+def _cloud_exception(error: Exception, fallback_status: int = 400):
+    status = 403 if isinstance(error, PermissionError) else fallback_status
+    message = str(error) if status == 403 else 'Cloud request failed'
+    return jsonify({'error': message}), status
+
+
+def _authorize_license(license_id: str, *, admin: bool = False) -> str:
+    from backend.cloud.platform_service import license_org_id
+
+    org_id = license_org_id(license_id)
+    if not org_id:
+        raise LookupError('License not found')
+    _resolve_request_org_id(org_id, admin=admin)
+    return org_id
+
+
+@web.route('/api/cloud/licenses', methods=['GET'])
+def cloud_licenses_list():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        org_id = request.args.get('org_id') or ''
+        try:
+            from backend.cloud.platform_service import list_licenses_for_org
+            org_id = _resolve_request_org_id(org_id)
+            if not org_id:
+                return jsonify({'licenses': []})
+            return jsonify({'licenses': list_licenses_for_org(org_id), 'org_id': org_id})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses', methods=['POST'])
+def cloud_licenses_create():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        org_id = data.get('org_id') or ''
+        plan = data.get('plan') or 'monthly'
+        notes = data.get('notes') or ''
+        try:
+            from backend.cloud.license_server import get_license_server
+            org_id = _resolve_request_org_id(org_id, admin=True)
+            if not org_id:
+                return jsonify({'error': 'No organization'}), 400
+            lic = get_license_server().create_license(org_id, plan=plan, notes=notes)
+            return jsonify({'ok': True, 'license': lic}), 201
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/activate', methods=['POST'])
+def cloud_licenses_activate():
+    """Activate a license after authenticated organization authorization."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        license_key = (data.get('license_key') or data.get('key') or '').strip()
+        device_id = (data.get('device_id') or '').strip()
+        if not license_key:
+            return jsonify({'error': 'license_key required'}), 400
+        if not device_id:
+            try:
+                from backend.cloud_backup.device_manager import get_or_create_device_id
+                device_id = get_or_create_device_id()
+            except Exception:
+                return jsonify({'error': 'device_id required'}), 400
+        try:
+            from backend.cloud.platform_service import (
+                activate_license_on_device,
+                license_key_org_id,
+            )
+            org_id = license_key_org_id(license_key)
+            if not org_id:
+                return jsonify({'error': 'License not found'}), 404
+            _resolve_request_org_id(org_id, admin=True)
+            result = activate_license_on_device(license_key, device_id, org_id)
+            return jsonify(result)
+        except Exception as e:
+            return _cloud_exception(e)
+
+    return _inner()
+
+
+@web.route('/api/cloud/devices', methods=['GET'])
+def cloud_devices_list():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        org_id = request.args.get('org_id') or ''
+        try:
+            from backend.cloud.platform_service import list_devices_for_org
+            org_id = _resolve_request_org_id(org_id)
+            if not org_id:
+                return jsonify({'devices': []})
+            return jsonify({'devices': list_devices_for_org(org_id), 'org_id': org_id})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+@web.route('/api/cloud/devices/register', methods=['POST'])
+def cloud_devices_register():
+    """Desktop self-registration into the org device roster (pending approval)."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        org_id = (data.get('org_id') or '').strip()
+        device_id = (data.get('device_id') or '').strip()
+        try:
+            if not device_id:
+                from backend.cloud_backup.device_manager import get_or_create_device_id
+                device_id = get_or_create_device_id()
+            org_id = _resolve_request_org_id(org_id)
+            if not org_id:
+                return jsonify({'error': 'org_id required'}), 400
+            from backend.cloud.platform_service import register_or_refresh_device
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = register_or_refresh_device(
+                org_id,
+                device_id=device_id,
+                business_id=(data.get('business_id') or None),
+                computer_name=data.get('computer_name') or data.get('hostname') or '',
+                hostname=data.get('hostname') or '',
+                platform_str=data.get('platform') or '',
+                mbt_version=data.get('mbt_version') or '',
+                os_info=data.get('os_info') or '',
+                hardware_fingerprint=data.get('hardware_fingerprint') or '',
+                branch=data.get('branch') or '',
+                actor_user_id=actor or None,
+            )
+            return jsonify({'ok': True, 'device': row})
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+def _device_action_target():
+    data = request.json or {}
+    org_id = (data.get('org_id') or request.args.get('org_id') or '').strip()
+    device_id = (
+        data.get('device_id')
+        or data.get('id')
+        or request.args.get('device_id')
+        or ''
+    ).strip()
+    return org_id, device_id, data
+
+
+@web.route('/api/cloud/devices/<device_id>/approve', methods=['POST'])
+def cloud_device_approve(device_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, _, data = _device_action_target()
+            org_id = _resolve_request_org_id(org_id, admin=True)
+            from backend.cloud.platform_service import set_device_approval
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = set_device_approval(
+                org_id,
+                device_id,
+                approve=True,
+                actor_user_id=actor or None,
+                reason=(data.get('reason') or ''),
+            )
+            return jsonify({'ok': True, 'device': row})
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/devices/<device_id>/reject', methods=['POST'])
+def cloud_device_reject(device_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, _, data = _device_action_target()
+            org_id = _resolve_request_org_id(org_id, admin=True)
+            from backend.cloud.platform_service import set_device_approval
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = set_device_approval(
+                org_id,
+                device_id,
+                approve=False,
+                actor_user_id=actor or None,
+                reason=(data.get('reason') or ''),
+            )
+            return jsonify({'ok': True, 'device': row})
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/devices/<device_id>/rename', methods=['POST'])
+def cloud_device_rename(device_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, _, data = _device_action_target()
+            org_id = _resolve_request_org_id(org_id, admin=True)
+            from backend.cloud.platform_service import rename_device
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = rename_device(
+                org_id,
+                device_id,
+                data.get('computer_name') or data.get('name') or '',
+                actor_user_id=actor or None,
+            )
+            return jsonify({'ok': True, 'device': row})
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/devices/<device_id>/deactivate', methods=['POST'])
+def cloud_device_deactivate(device_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, _, data = _device_action_target()
+            org_id = _resolve_request_org_id(org_id, admin=True)
+            from backend.cloud.platform_service import deactivate_device
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = deactivate_device(
+                org_id,
+                device_id,
+                actor_user_id=actor or None,
+                reason=(data.get('reason') or ''),
+            )
+            return jsonify({'ok': True, 'device': row})
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/devices/events', methods=['GET'])
+def cloud_device_events():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id = _resolve_request_org_id(request.args.get('org_id') or '')
+            if not org_id:
+                return jsonify({'events': []})
+            from backend.cloud.platform_service import list_device_events
+            limit = request.args.get('limit') or 50
+            return jsonify({'events': list_device_events(org_id, limit=int(limit)), 'org_id': org_id})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+@web.route('/api/cloud/sync/batch', methods=['POST'])
+def cloud_sync_batch():
+    """Ingest one authenticated, idempotent desktop outbox batch."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        org_id = (data.get('org_id') or '').strip()
+        device_id = (data.get('device_id') or '').strip()
+        idempotency_key = (data.get('idempotency_key') or '').strip()
+        entities = data.get('entities')
+        if not org_id or not device_id or len(idempotency_key) < 8:
+            return jsonify({
+                'error': 'org_id, device_id and idempotency_key are required'
+            }), 400
+        if not isinstance(entities, list) or not 1 <= len(entities) <= 500:
+            return jsonify({'error': 'entities must contain 1 to 500 items'}), 400
+        try:
+            _resolve_request_org_id(org_id)
+            from backend.cloud.platform_service import ingest_sync_batch
+            return jsonify(ingest_sync_batch(
+                org_id,
+                device_id,
+                idempotency_key,
+                entities,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/bootstrap', methods=['POST'])
+def cloud_bootstrap():
+    """Ensure an unlicensed organization exists for the cloud identity."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud_backup.paths import is_cloud_configured
+            from backend.cloud.platform_service import (
+                list_organizations_for_user, ensure_org_for_business, service_select, service_insert,
+            )
+            if not is_cloud_configured():
+                return jsonify({'error': 'Cloud not configured'}), 503
+            uid = _cloud_user_id()
+            if not uid:
+                return jsonify({'error': 'Not logged into cloud'}), 401
+            from urllib.parse import quote
+            user = getattr(g, 'current_user', {}) or {}
+            biz = service_select('businesses', f'owner_user_id=eq.{quote(uid, safe="")}&select=*&limit=1')
+            if not biz:
+                name = (user.get('full_name') or user.get('email') or 'My Business').split('@')[0]
+                biz_row = service_insert('businesses', {
+                    'name': f"{name}'s Business",
+                    'owner_user_id': uid,
+                })
+                biz = [biz_row] if isinstance(biz_row, dict) else biz_row
+            if biz:
+                ensure_org_for_business(biz[0] if isinstance(biz, list) else biz, uid)
+            orgs = list_organizations_for_user(uid)
+            return jsonify({'ok': True, 'organizations': orgs})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/revoke', methods=['POST'])
+def cloud_license_revoke(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import admin_revoke_license
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_revoke_license(license_id, actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/suspend', methods=['POST'])
+def cloud_license_suspend(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import admin_suspend_license
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_suspend_license(license_id, actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/renew', methods=['POST'])
+def cloud_license_renew(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        days = int(data.get('days') or 30)
+        try:
+            from backend.cloud.platform_service import admin_renew_license
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_renew_license(license_id, days=days, actor=actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/force-validate', methods=['POST'])
+def cloud_license_force_validate(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import admin_force_validate
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_force_validate(license_id, actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/transfer', methods=['POST'])
+def cloud_license_transfer(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        old_id = (data.get('old_device_id') or '').strip()
+        new_id = (data.get('new_device_id') or '').strip()
+        if not old_id or not new_id:
+            return jsonify({'error': 'old_device_id and new_device_id required'}), 400
+        try:
+            from backend.cloud.platform_service import admin_transfer_license
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_transfer_license(license_id, old_id, new_id, actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/<license_id>/history', methods=['GET'])
+def cloud_license_history(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import list_license_history
+            _authorize_license(license_id)
+            return jsonify({'history': list_license_history(license_id)})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+@web.route('/api/cloud/commands', methods=['POST'])
+def cloud_issue_command():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        device_id = (data.get('device_id') or '').strip()
+        command = (data.get('command') or '').strip()
+        params = data.get('params') or {}
+        try:
+            from backend.cloud.command_center import get_command_center, COMMANDS
+            org_id = _resolve_request_org_id(data.get('org_id') or '', admin=True)
+            if not org_id or not device_id or not command:
+                return jsonify({'error': 'org_id, device_id, command required'}), 400
+            if command not in COMMANDS:
+                return jsonify({'error': f'Unknown command', 'allowed': list(COMMANDS.keys())}), 400
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            row = get_command_center().issue_command(org_id, device_id, command, params, actor)
+            return jsonify({'ok': True, 'command': row}), 201
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/security-events', methods=['GET'])
+def cloud_security_events():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import service_select
+            from urllib.parse import quote
+            org_id = _resolve_request_org_id(request.args.get('org_id') or '')
+            q = 'select=*&order=created_at.desc&limit=100'
+            if org_id:
+                q = f'org_id=eq.{quote(org_id, safe="")}&{q}'
+            rows = service_select('audit_logs', q) or []
+            # Also license history for org licenses
+            history = []
+            if org_id:
+                lics = service_select('licenses', f'org_id=eq.{quote(org_id, safe="")}&select=id,license_key') or []
+                for lic in lics[:10]:
+                    hist = service_select(
+                        'license_history',
+                        f'license_id=eq.{quote(lic["id"], safe="")}&select=*&order=created_at.desc&limit=20',
+                    ) or []
+                    for h in hist:
+                        h['license_key'] = lic.get('license_key')
+                        history.append(h)
+            return jsonify({'audit_logs': rows, 'license_history': history, 'org_id': org_id})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+@web.route('/api/cloud/updates', methods=['GET'])
+def cloud_updates_list():
+    """List published app updates (Portal Admin / desktop check)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        current = (request.args.get('current_version') or '').strip()
+        try:
+            from backend.cloud.update_center import get_update_center
+            from backend.cloud.platform_service import service_select
+            center = get_update_center()
+            latest = center.check_for_update(current) if current else None
+            rows = service_select(
+                'app_updates',
+                'select=*&order=published_at.desc&limit=50',
+            ) or []
+            return jsonify({
+                'updates': rows,
+                'latest_for_client': latest,
+                'update_available': bool(latest),
+            })
+        except Exception as e:
+            return jsonify({'updates': [], 'latest_for_client': None,
+                            'update_available': False, 'error': str(e)})
+    return _inner()
+
+
+@web.route('/api/cloud/updates', methods=['POST'])
+def cloud_updates_publish():
+    """Publish a new desktop version (superadmin)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        user = getattr(g, 'current_user', None) or {}
+        role = (user.get('role') or '').lower()
+        if role not in ('superadmin', 'admin', 'platform_admin'):
+            return jsonify({'error': 'Platform administrator only'}), 403
+        data = request.json or {}
+        version = (data.get('version') or '').strip()
+        url = (data.get('download_url') or '').strip()
+        checksum = (data.get('checksum') or data.get('checksum_sha256') or '').strip()
+        if not version or not url:
+            return jsonify({'error': 'version and download_url required'}), 400
+        try:
+            from backend.cloud.update_center import get_update_center
+            row = get_update_center().publish_update(
+                version, url, checksum,
+                release_notes=data.get('release_notes') or '',
+                is_mandatory=bool(data.get('is_mandatory')),
+                published_by=str(user.get('id') or user.get('username') or ''),
+            )
+            if not row:
+                return jsonify({'error': 'Publish failed'}), 500
+            return jsonify({'ok': True, 'update': row}), 201
+        except Exception as e:
+            return jsonify({'error': str(e)}), 400
+    return _inner()
+
+
+@web.route('/api/cloud/reports', methods=['GET'])
+def cloud_reports_history():
+    """Cloud-stored report history (Portal Report Center). Not live POS sales."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        org_id = _resolve_request_org_id(request.args.get('org_id') or '')
+        try:
+            from backend.cloud.platform_service import service_select
+            from urllib.parse import quote
+            q = 'select=*&order=created_at.desc&limit=100'
+            if org_id:
+                q = f'org_id=eq.{quote(org_id, safe="")}&{q}'
+            rows = service_select('reports', q) or []
+            return jsonify({'reports': rows, 'org_id': org_id})
+        except Exception as e:
+            return jsonify({'reports': [], 'org_id': org_id, 'error': str(e)})
+    return _inner()
+
+
+# ── Mobile-ready cloud API surface (no mobile UI yet) ─────────────────────────
+
+@web.route('/api/cloud/v1/health', methods=['GET'])
+def cloud_v1_health():
+    email_ok = False
+    cloud_ok = False
+    try:
+        from backend.cloud_backup.paths import is_cloud_configured
+        cloud_ok = bool(is_cloud_configured())
+    except Exception:
+        pass
+    try:
+        from backend.cloud.email_service import _resend_api_key
+        email_ok = bool(_resend_api_key())
+    except Exception:
+        email_ok = bool(os.environ.get('RESEND_API_KEY'))
+    return jsonify({
+        'ok': True,
+        'service': 'mugobyte-cloud-v1',
+        'cloudConfigured': cloud_ok,
+        'emailConfigured': email_ok,
+        'spa': _spa_app_name(),
+    })
+
+
+@web.route('/api/cloud/v1/licenses', methods=['GET'])
+def cloud_v1_licenses():
+    return cloud_licenses_list()
+
+
+@web.route('/api/cloud/v1/devices', methods=['GET'])
+def cloud_v1_devices():
+    return cloud_devices_list()
+
+
+@web.route('/api/cloud/v1/notifications', methods=['GET'])
+def cloud_v1_notifications():
+    """Portal/mobile notification feed — prefers cloud table, else empty."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        org_id = _resolve_request_org_id(request.args.get('org_id') or '')
+        try:
+            from backend.cloud.platform_service import service_select
+            from urllib.parse import quote
+            q = 'select=*&order=created_at.desc&limit=100'
+            if org_id:
+                q = f'org_id=eq.{quote(org_id, safe="")}&{q}'
+            rows = service_select('notifications', q) or []
+            return jsonify({'notifications': rows, 'unread': sum(
+                1 for r in rows if not r.get('is_read') and not r.get('read_at')
+            )})
+        except Exception as e:
+            return jsonify({'notifications': [], 'unread': 0, 'error': str(e)})
+    return _inner()
+
 
 def _get_db():
     """Get DB from Flask g (reuse backend connection if available)."""
@@ -245,7 +1397,7 @@ def _cfg_currency(db=None):
 
 
 def _cc_today_snapshot(user=None):
-    """Authoritative today stats for Command Center AI (never invent numbers)."""
+    """Authoritative today stats for Live Dashboard AI (never invent numbers)."""
     db = _get_db()
     today = str(date.today())
     user = user or getattr(g, 'current_user', None) or {}

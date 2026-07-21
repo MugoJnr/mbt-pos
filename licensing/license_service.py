@@ -3,7 +3,7 @@ MBT POS — Background License Service
 MugoByte Technologies | mugobyte.com
 
 Orchestrates: offline validation, remote sync, tamper detection,
-Telegram admin listener, expiry enforcement.
+cloud device registration, expiry enforcement.
 Runs silently — zero UI interference.
 """
 import os
@@ -22,13 +22,15 @@ from licensing.license_engine import (
     STATE_UNACTIVATED, STATE_INACTIVE,
     _MASTER_SECRET, _verify_sig,
 )
-from licensing.telegram_admin import TelegramAdminListener
-from backend.telegram_hub import start_hub, stop_hub, resolve_bot_token
 
 logger = logging.getLogger('license_service')
 
-SYNC_INTERVAL     = 6 * 3600    # sync every 6 hours when online
+SYNC_INTERVAL     = 6 * 3600    # cloud validate every 6 hours when online
 VALIDATE_INTERVAL = 300          # re-validate every 5 minutes offline
+OFFLINE_GRACE_DAYS = 7           # must phone home within this window
+FORCE_ONLINE_CHECK_HOURS = 24    # attempt cloud validate at least daily when online
+
+
 class LicenseService(threading.Thread):
     """
     Master background service. One instance per app lifetime.
@@ -44,25 +46,21 @@ class LicenseService(threading.Thread):
 
         self.engine    = LicenseEngine(project_root)
         self._stop     = threading.Event()
-        self._tg_admin : Optional[TelegramAdminListener] = None
         self._last_sync = 0
         self._last_state= None
         self._connected = False
+        self._tamper_alerted = False
 
     def stop(self):
         self._stop.set()
-        if self._tg_admin:
-            self._tg_admin.stop()
-        stop_hub()
 
     def run(self):
         logger.info("License service started")
-        self._start_telegram_admin()
 
-        # Brief delay then send device registration to developer
+        # Brief delay then register device with cloud
         self._stop.wait(8)
         if not self._stop.is_set():
-            self._send_device_registration()
+            self._register_device_with_cloud()
 
         while not self._stop.is_set():
             try:
@@ -73,26 +71,49 @@ class LicenseService(threading.Thread):
 
         logger.info("License service stopped")
 
+    def _grace_days(self) -> int:
+        cfg = self.config_getter() or {}
+        try:
+            return max(1, int(cfg.get('license_offline_grace_days') or OFFLINE_GRACE_DAYS))
+        except Exception:
+            return OFFLINE_GRACE_DAYS
+
     def _tick(self):
-        # 1. Re-validate locally
+        # 1. Re-validate locally (tamper / expiry / device bind)
+        prev = self._last_state
         self.engine.revalidate()
         new_state = self.engine.state
 
-        # 2. Fire callback if state changed
+        # 2. Offline grace — require internet confirmation after N days
+        allowed, grace_msg = self.engine.enforce_offline_grace(self._grace_days())
+        if not allowed:
+            new_state = self.engine.state
+            logger.warning(grace_msg)
+
+        # 3. Fire callback if state changed
         if new_state != self._last_state:
             self._last_state = new_state
+            if new_state == STATE_TAMPERED and not self._tamper_alerted:
+                self._tamper_alerted = True
+                self.send_tamper_alert()
             if self.on_state_change:
                 try:
-                    self.on_state_change(new_state, self.engine.get_status_dict())
+                    status = self.engine.get_status_dict()
+                    status['grace_message'] = grace_msg
+                    self.on_state_change(new_state, status)
                 except Exception:
                     pass
 
-        # 3. Try remote sync if online and interval elapsed
+        # 4. Cloud validate when online
         now = int(time.time())
-        if now - self._last_sync > SYNC_INTERVAL:
+        check_interval = min(SYNC_INTERVAL, FORCE_ONLINE_CHECK_HOURS * 3600)
+        if now - self._last_sync > check_interval:
             if self._check_internet():
                 self._do_remote_sync()
                 self._last_sync = now
+            else:
+                # Still enforce grace even when offline
+                self.engine.enforce_offline_grace(self._grace_days())
 
     def _check_internet(self) -> bool:
         import socket
@@ -108,7 +129,7 @@ class LicenseService(threading.Thread):
         return False
 
     def _do_remote_sync(self):
-        """Apply queued config pushes and log sync — inbound Telegram uses the hub."""
+        """Phone home: validate license with MugoByte Platform and sync expiry/status."""
         try:
             now = int(time.time())
 
@@ -117,12 +138,43 @@ class LicenseService(threading.Thread):
                 self._apply_remote_config(pushed_cfg)
                 self.engine.store.set('remote_config_push', None)
 
+            # Cloud license validation (revoked / suspended / expiry sync)
+            self._cloud_validate_license()
+
             self.engine.store.set('last_sync_ts', now)
             self.engine.store.log('SYNC', f'Remote sync OK at {datetime.now().strftime("%H:%M")}')
             logger.info("License sync complete")
+            self._register_device_with_cloud()
 
         except Exception as e:
             logger.warning(f"Remote sync error: {e}")
+
+    def _cloud_validate_license(self):
+        """Confirm this device's license is still valid in Supabase."""
+        try:
+            from backend.cloud_backup.paths import is_cloud_configured
+            if not is_cloud_configured():
+                # No cloud — treat local-only installs as OK for grace clock
+                self.engine.store.set('last_cloud_ok_ts', int(time.time()))
+                return
+            key = self.engine.store.get('cloud_license_key') or (self.engine._license_data or {}).get('license_key')
+            if not key:
+                # Local signed key only — stamp OK so offline grace doesn't false-lock
+                self.engine.store.set('last_cloud_ok_ts', int(time.time()))
+                self.engine.store.set('last_cloud_check_ts', int(time.time()))
+                return
+            from backend.cloud.license_server import get_license_server
+            from backend.cloud_backup.device_manager import get_or_create_device_id
+            device_id = get_or_create_device_id() or self.engine.device_id
+            ok, msg, data = get_license_server().validate(key, device_id)
+            self.engine.apply_cloud_validation(ok, data, msg)
+            if not ok:
+                logger.warning('Cloud license invalid: %s', msg)
+                self._on_remote_state_change()
+            else:
+                logger.info('Cloud license validated: %s', msg)
+        except Exception as e:
+            logger.debug('Cloud validate skipped: %s', e)
 
     def _handle_license_push(self, text: str):
         """Process __LICPUSH__ / __LICEXTEND__ / __LICREVOKE__ from the Telegram hub."""
@@ -182,25 +234,25 @@ class LicenseService(threading.Thread):
         except Exception as e:
             logger.warning(f"Remote config apply error: {e}")
 
-    def _start_telegram_admin(self):
+    def _register_device_with_cloud(self):
+        """Register device with MugoByte Platform (Portal device roster)."""
         try:
-            hub = start_hub(self.config_getter)
-            hub.set_license_push_handler(self._handle_license_push)
-            self._tg_admin = TelegramAdminListener(
-                self.engine, self.config_getter,
-                on_state_change=self._on_remote_state_change,
-                hub=hub)
+            if not self._check_internet():
+                return
+            from backend.cloud.device_service import get_device_service
+            svc = get_device_service(self.config_getter)
+            ok, msg = svc.register()
+            if ok:
+                logger.info('Device registered with cloud: %s', msg)
+            else:
+                logger.debug('Cloud device registration skipped: %s', msg)
         except Exception as e:
-            logger.warning(f"Telegram admin start error: {e}")
+            logger.debug('Cloud device registration error: %s', e)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def _on_remote_state_change(self):
-        """
-        Called immediately by TelegramAdminListener after any state-altering
-        remote command (activate / extend / revoke).  Triggers a full revalidate
-        so the UI updates within seconds instead of waiting for the 5-min tick.
-        """
+        """Called after remote license state change. Triggers revalidation."""
         try:
             self.engine.revalidate()
             new_state = self.engine.state
@@ -233,113 +285,18 @@ class LicenseService(threading.Thread):
     def days_remaining(self) -> int:
         return self.engine.days_remaining
 
-    def _send_device_registration(self):
-        """
-        Automatically send device ID + shop info to the DEVELOPER's Telegram
-        so they can activate the license without asking the customer for anything.
-        Sends once on first boot, then once per day if still unactivated.
-        """
-        try:
-            # Only send if we have internet
-            if not self._check_internet():
-                return
-
-            cfg        = self.config_getter() or {}
-            token      = resolve_bot_token(cfg)
-            dev_chat   = cfg.get('developer_chat_id', '').strip()
-            shop_name  = cfg.get('shop_name', 'Unnamed Shop')
-            cust_chat  = cfg.get('telegram_chat_id', '').strip()
-
-            # No developer chat ID — still log; developer can use /device_id via bot
-            if not token:
-                logger.info('Device registration skipped: no bot token configured')
-                return
-            if not dev_chat:
-                logger.info('Device registration skipped: no developer_chat_id (set in deploy or Settings)')
-                return
-
-            store     = self.engine.store
-            device_id = self.engine.device_id
-            state     = self.engine.state
-            last_sent = store.get('last_device_report_ts', 0)
-            now       = int(time.time())
-
-            # Send on first boot OR daily if not yet activated
-            already_active = state in ('active', 'expiring', 'warning', 'critical')
-            hours_since    = (now - last_sent) / 3600
-
-            if last_sent and (already_active or hours_since < 23):
-                return   # already sent recently and activated — skip
-
-            status_icon = {
-                'active':      '✅ ACTIVE',
-                'expiring':    '⚠️ EXPIRING SOON',
-                'warning':     '⚠️ WARNING',
-                'critical':    '🚨 CRITICAL',
-                'expired':     '❌ EXPIRED',
-                'unactivated': '🔴 NOT ACTIVATED',
-                'inactive':    '⚫ INACTIVE',
-                'tampered':    '🚨 TAMPERED',
-            }.get(state, state.upper())
-
-            divider = "-" * 26
-            not_set = "not set"
-            ts_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cust_chat_display = cust_chat if cust_chat else not_set
-            msg = (
-                "&#x1F4F2; <b>MBT POS - Device Check-In</b>\n"
-                + f"{divider}\n"
-                + f"Shop:      <b>{shop_name}</b>\n"
-                + f"Status:    {status_icon}\n"
-                + f"Days left: {self.engine.days_remaining}\n"
-                + f"{divider}\n"
-                + "<b>Device ID (for license key):</b>\n"
-                + f"<code>{device_id}</code>\n"
-                + f"{divider}\n"
-                + f"Customer Chat ID: <code>{cust_chat_display}</code>\n"
-                + f"Time: {ts_str}\n"
-                + f"{divider}\n"
-                + "<i>Activate: /activate_license trial</i> (30d) "
-                + "<i>or /activate_license basic</i> (365d)\n"
-                + "<i>MugoByte Technologies</i>"
-            )
-
-            resp = requests.post(
-                f'https://api.telegram.org/bot{token}/sendMessage',
-                json={'chat_id': dev_chat, 'text': msg, 'parse_mode': 'HTML'},
-                timeout=10,
-            )
-
-            if resp.ok:
-                store.set('last_device_report_ts', now)
-                store.log('DEVICE_REPORTED', f'Sent to developer chat {dev_chat[:6]}…')
-                logger.info(f'Device registration sent to developer (shop={shop_name})')
-            else:
-                logger.warning(f'Device registration send failed: {resp.text[:100]}')
-
-        except Exception as e:
-            logger.warning(f'Device registration error: {e}')
-
     def send_tamper_alert(self):
-        """Send Telegram alert if tamper is detected."""
+        """Send tamper alert via notification engine."""
         try:
-            cfg      = self.config_getter() or {}
-            token    = (cfg.get('telegram_bot_token') or '').strip()
-            chat_id  = cfg.get('telegram_chat_id', '')
-            shop     = cfg.get('shop_name', 'MBT POS')
-            if not chat_id:
-                return
-            msg = (
-                f"🚨 <b>TAMPER ALERT — {shop}</b>\n"
-                f"Device: <code>{self.engine.masked_device_id}</code>\n"
-                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Action: License tamper detected — system locked\n"
-                f"<i>MugoByte Technologies</i>"
-            )
-            requests.post(
-                f'https://api.telegram.org/bot{token}/sendMessage',
-                json={'chat_id': chat_id, 'text': msg, 'parse_mode': 'HTML'},
-                timeout=10,
+            from backend.cloud.notification_engine import get_notification_engine
+            cfg = self.config_getter() or {}
+            shop = cfg.get('shop_name', 'MBT POS')
+            engine = get_notification_engine(config_getter=self.config_getter)
+            engine.publish(
+                'tamper',
+                f'TAMPER ALERT — {shop}',
+                f'Device: {self.engine.masked_device_id} · License tamper detected — system locked',
+                'error',
             )
         except Exception:
             pass

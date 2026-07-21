@@ -1,4 +1,4 @@
-app = 'mbt-trading'
+app = 'mbt-portal'
 primary_region = 'jnb'
 
 [build]
@@ -6,7 +6,9 @@ primary_region = 'jnb'
 
 [env]
   MBT_DATA_ROOT = '/data'
+  MBT_ENV = 'production'
   PORT = '8080'
+  MBT_CORS_ORIGINS = 'https://portal.mugobyte.com,https://www.portal.mugobyte.com'
 
 [http_service]
   internal_port = 8080
@@ -14,6 +16,13 @@ primary_region = 'jnb'
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = '20s'
+    interval = '15s'
+    method = 'GET'
+    path = '/api/health'
+    timeout = '5s'
 
 [[mounts]]
   source = 'mbt_data'

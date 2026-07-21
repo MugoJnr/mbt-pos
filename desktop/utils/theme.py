@@ -1,5 +1,5 @@
 """
-MBT POS — Design System v8  (Command Center / Figma brief aligned)
+MBT POS — Design System v8 (Live Dashboard / Figma brief aligned)
 MugoByte Technologies | mugobyte.com
 
 Two complete themes: DARK (default) + LIGHT

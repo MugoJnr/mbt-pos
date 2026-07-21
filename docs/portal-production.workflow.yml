@@ -1,0 +1,48 @@
+name: Portal Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'web/**'
+      - 'config/**'
+      - 'deploy/**'
+      - 'mbt_paths.py'
+      - 'runtime_security.py'
+      - 'fly.toml'
+      - '.github/workflows/portal-production.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/mugobyte-platform/package-lock.json
+
+      - name: Build Portal SPA
+        working-directory: web/mugobyte-platform
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Live Dashboard SPA
+        working-directory: web/dashboard-ui
+        run: |
+          npm ci
+          npm run build
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy Fly monolith
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --config fly.toml

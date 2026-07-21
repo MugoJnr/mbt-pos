@@ -711,16 +711,26 @@ class SalesTab(QWidget):
 
     def _on_customer_changed(self, *_args):
         cust_id = self._customer.selected_id() if hasattr(self, '_customer') else None
-        bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
         cust = None
         if cust_id:
             try:
                 for c in (self.api.get_customers() or []):
-                    if c.get('id') == cust_id:
+                    if c.get('id') == cust_id or c.get('id') == int(cust_id):
                         cust = c
                         break
             except Exception:
                 cust = None
+            if cust is not None:
+                try:
+                    self._wallet_by_customer[cust_id] = float(
+                        cust.get('wallet_balance') or 0)
+                    if hasattr(self, '_cust_card') and self._cust_card is not None:
+                        self._cust_card.set_customers_cache(
+                            getattr(self._cust_card, '_customers_cache', []) or [cust]
+                        )
+                except Exception:
+                    pass
+        bal = float(self._wallet_by_customer.get(cust_id) or 0) if cust_id else 0.0
         if hasattr(self, '_cust_card') and self._cust_card is not None:
             try:
                 self._cust_card.set_customer(cust, walk_in=not cust_id)
@@ -736,6 +746,12 @@ class SalesTab(QWidget):
                     summary, self._currency)
                 if hasattr(self, '_customer'):
                     self._customer.setToolTip(hint or '')
+                if hasattr(self, '_cust_card') and self._cust_card is not None:
+                    try:
+                        self._cust_card._btn.setToolTip(
+                            hint or self._cust_card._btn.toolTip())
+                    except Exception:
+                        pass
             elif hasattr(self, '_customer'):
                 self._customer.setToolTip('')
         except Exception:

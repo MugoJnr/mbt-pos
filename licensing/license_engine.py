@@ -7,20 +7,18 @@ Offline-first license validation with:
   • Time-rollback detection (local + remote anchor)
   • Anti-copy: token is cryptographically bound to THIS device's fingerprint
   • Tamper → immediate lock on first confirmed attack
-  • Remote activation / revoke / extend via signed Telegram commands
+  • Remote activation / revoke / extend via Portal command center
 """
 import os, sys, json, time, uuid, hashlib, hmac, base64
 import sqlite3, platform, threading, logging, requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
+from runtime_security import get_activation_hmac_secret
 
 logger = logging.getLogger('license_engine')
 
-# ── Master secret — baked at build time, never changes ────────────────────────
-_MASTER_SECRET = b'MBT$MUGOBYTE$2024$LICENSE$ENGINE$SECRET$NEVER$EXPOSE$THIS$KEY!'
-
-# Developer Telegram IDs allowed to send admin commands
-ADMIN_TELEGRAM_IDS = {8293620725}
+# Local license HMAC material — prefer env / per-install secret.
+_MASTER_SECRET = get_activation_hmac_secret().encode('utf-8')
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 PLANS = {
@@ -422,7 +420,10 @@ def _fetch_trusted_time() -> Optional[int]:
 
 class LicenseEngine:
 
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str | None = None):
+        if not project_root:
+            from mbt_paths import get_project_root
+            project_root = get_project_root()
         self.project_root  = project_root
         self.device_id     = resolve_device_id()
         self.store         = LicenseStore(self.device_id)
@@ -436,20 +437,6 @@ class LicenseEngine:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_from_store(self):
-        # Sync developer chat ID from app DB
-        try:
-            from mbt_paths import get_db_path
-            db_path = get_db_path()
-            if os.path.exists(db_path):
-                db  = sqlite3.connect(db_path)
-                row = db.execute(
-                    "SELECT value FROM system_settings WHERE key='developer_chat_id'"
-                ).fetchone()
-                if row and row[0]:
-                    ADMIN_TELEGRAM_IDS.add(int(row[0]))
-                db.close()
-        except Exception: pass
-
         token = self.store.get('license_token')
         if not token:
             # Revoke must survive revalidate() — empty token alone looks
@@ -556,8 +543,12 @@ class LicenseEngine:
         return ok
 
     def activate_with_key(self, key_str: str) -> Tuple[bool, str]:
+        key_str = (key_str or '').strip()
         data = decode_license_key(key_str)
         if not data:
+            # Cloud keys look like MBT-TRI-XXXX-XXXX-XXXX (not locally signed).
+            if key_str.upper().startswith('MBT-') and key_str.count('-') >= 2:
+                return self._activate_cloud_key(key_str)
             return False, "Invalid or tampered license key."
 
         # Key must be issued for THIS device
@@ -601,8 +592,88 @@ class LicenseEngine:
         plan_name = PLANS.get(lic['plan'], {}).get('name', lic['plan'])
         return True, f"License activated! Plan: {plan_name} ({allocated} days)"
 
+    def _activate_cloud_key(self, key_str: str) -> Tuple[bool, str]:
+        """Validate + activate a MugoByte Platform license key, then mirror locally."""
+        try:
+            from backend.cloud.platform_service import activate_license_on_device
+            from backend.cloud_backup.device_manager import get_or_create_device_id
+            device_id = get_or_create_device_id() or self.device_id
+            result = activate_license_on_device(key_str, device_id)
+            if result.get('ok'):
+                lic = result.get('license') or {}
+                activation = result.get('activation') or {}
+                ok, message = self.activate_from_cloud(
+                    plan=lic.get('plan') or activation.get('plan') or 'trial',
+                    expires_at=(
+                        lic.get('expires_at')
+                        or activation.get('expires_at')
+                    ),
+                    license_key=key_str,
+                    source='mbt_cloud',
+                )
+                if ok:
+                    return True, message
+                return False, message
+            return False, result.get('message') or 'Cloud activation failed'
+        except Exception as e:
+            logger.warning('Cloud key activation failed: %s', e)
+            return False, str(e)
+
+    def activate_from_cloud(
+        self,
+        *,
+        plan: str = 'trial',
+        expires_at: str | None = None,
+        license_key: str = '',
+        duration_days: int | None = None,
+        source: str = 'mbt_cloud',
+    ) -> Tuple[bool, str]:
+        """Mirror a server-validated cloud license onto this device (no local key signature)."""
+        local_now = int(time.time())
+        allocated = duration_days
+        if not allocated and expires_at:
+            try:
+                exp = datetime.fromisoformat(str(expires_at).replace('Z', '+00:00'))
+                allocated = max(1, int((exp.timestamp() - local_now) // 86400) + 1)
+            except Exception:
+                allocated = None
+        if not allocated:
+            allocated = int(PLANS.get(plan, {}).get('days') or 30)
+
+        lic = {
+            'device_id': self.device_id,
+            'plan': plan or 'trial',
+            'issued_at': local_now,
+            'expires_at': local_now + allocated * 86400,
+            'duration_days': allocated,
+            'activated_at': local_now,
+            'issued_by': 'MugoByte Platform',
+            'license_key': license_key,
+            'source': source,
+            'version': 2,
+        }
+        with self._lock:
+            _write_cached_device_id(self.device_id)
+            token = encrypt_payload(lic, self.device_id)
+            self.store.set('license_token', token)
+            self.store.set('last_checked_ts', local_now)
+            self.store.set('highest_ts_seen', local_now)
+            self.store.set('tampered', False)
+            self.store.set('revoked', False)
+            if license_key:
+                self.store.set('cloud_license_key', license_key)
+            self._license_data = lic
+            self._tamper_count = 0
+            self._evaluate_state()
+            self.store.log(
+                'CLOUD_ACTIVATED',
+                f"Plan={lic['plan']} Days={allocated} Key={license_key[:16]}…",
+            )
+        plan_name = PLANS.get(lic['plan'], {}).get('name', lic['plan'])
+        return True, f"Cloud license activated! Plan: {plan_name} ({allocated} days)"
+
     def activate_from_remote(self, payload: dict) -> Tuple[bool, str]:
-        """Activate via signed remote payload (Telegram command)."""
+        """Activate via signed remote payload (legacy / command center)."""
         sig = payload.pop('sig', '')
         raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
         if not _verify_sig(raw, sig):
@@ -636,34 +707,125 @@ class LicenseEngine:
                 f"Expires={payload.get('expires_at')}")
         return True, f"Remote activation successful ({allocated} days)."
 
-    def extend(self, extra_days: int, sig: str) -> Tuple[bool, str]:
-        raw = f"extend:{extra_days}:{self.device_id}".encode()
-        if not _verify_sig(raw, sig):
-            return False, "Invalid extension signature."
-        with self._lock:
-            if not self._license_data: return False, "No active license to extend."
-            self._license_data['expires_at'] += extra_days * 86400
-            local_now = int(time.time())
-            token = encrypt_payload(self._license_data, self.device_id)
-            self.store.set('license_token', token)
-            if local_now > self.store.get('highest_ts_seen', 0):
-                self.store.set('highest_ts_seen', local_now)
-            self._evaluate_state()
-            self.store.log('EXTENDED', f"+{extra_days} days")
-        return True, f"License extended by {extra_days} days."
-
     def revoke(self, sig: str) -> Tuple[bool, str]:
         raw = f"revoke:{self.device_id}".encode()
         if not _verify_sig(raw, sig):
             return False, "Invalid revocation signature."
+        return self.revoke_from_cloud(reason='Revoked by administrator (signed)')
+
+    def revoke_from_cloud(self, reason: str = 'Revoked by MugoByte Platform') -> Tuple[bool, str]:
+        """Trusted cloud/admin revoke — no local signature required."""
         with self._lock:
             self.store.set('license_token', '')
             self.store.set('tampered', False)
             self.store.set('revoked', True)
+            self.store.set('cloud_license_key', '')
             self._license_data = {}
             self._state = STATE_INACTIVE
-            self.store.log('REVOKED', 'Revoked by administrator')
+            self.store.log('REVOKED', reason)
         return True, "License revoked."
+
+    def extend(self, extra_days: int, sig: str) -> Tuple[bool, str]:
+        raw = f"extend:{extra_days}:{self.device_id}".encode()
+        if not _verify_sig(raw, sig):
+            return False, "Invalid extension signature."
+        return self.extend_from_cloud(extra_days, reason='Extended (signed)')
+
+    def extend_from_cloud(self, extra_days: int, reason: str = 'Extended by MugoByte Platform',
+                          expires_at: str | None = None) -> Tuple[bool, str]:
+        """Trusted cloud extend — add days or set absolute expiry from server."""
+        with self._lock:
+            if not self._license_data and not expires_at:
+                return False, "No active license to extend."
+            local_now = int(time.time())
+            if expires_at:
+                try:
+                    exp = datetime.fromisoformat(str(expires_at).replace('Z', '+00:00'))
+                    new_exp = int(exp.timestamp())
+                except Exception:
+                    return False, "Invalid expires_at from cloud"
+                if not self._license_data:
+                    # Rebuild minimal license from cloud renew
+                    self._license_data = {
+                        'device_id': self.device_id,
+                        'plan': 'basic',
+                        'issued_at': local_now,
+                        'activated_at': local_now,
+                        'source': 'mbt_cloud',
+                        'version': 2,
+                    }
+                self._license_data['expires_at'] = new_exp
+                extra_days = max(1, (new_exp - local_now) // 86400)
+            else:
+                if not self._license_data:
+                    return False, "No active license to extend."
+                self._license_data['expires_at'] = int(self._license_data.get('expires_at') or local_now) + int(extra_days) * 86400
+            self._license_data['duration_days'] = max(
+                1, (int(self._license_data['expires_at']) - int(self._license_data.get('activated_at') or local_now)) // 86400
+            )
+            token = encrypt_payload(self._license_data, self.device_id)
+            self.store.set('license_token', token)
+            self.store.set('revoked', False)
+            self.store.set('tampered', False)
+            if local_now > self.store.get('highest_ts_seen', 0):
+                self.store.set('highest_ts_seen', local_now)
+            self._evaluate_state()
+            self.store.log('EXTENDED', f"+{extra_days} days · {reason}")
+        return True, f"License extended by {extra_days} days."
+
+    def apply_cloud_validation(self, ok: bool, payload: dict | None = None, message: str = '') -> Tuple[bool, str]:
+        """Apply result of CloudLicenseServer.validate / status check."""
+        now = int(time.time())
+        self.store.set('last_cloud_ok_ts', now if ok else self.store.get('last_cloud_ok_ts', 0))
+        self.store.set('last_cloud_check_ts', now)
+        if not ok:
+            status = (payload or {}).get('status') or message
+            if 'revok' in str(status).lower() or 'suspend' in str(status).lower() or 'invalid' in str(message).lower():
+                self.revoke_from_cloud(reason=f'Cloud validation failed: {message or status}')
+                return False, message or 'License invalid on cloud'
+            self.store.set('requires_online', True)
+            self.store.log('CLOUD_VALIDATE_FAIL', message or str(status))
+            return False, message or 'Cloud validation failed'
+        # Sync expiry from cloud if provided
+        if payload and payload.get('expires_at'):
+            try:
+                self.extend_from_cloud(0, reason='Cloud revalidation sync', expires_at=payload['expires_at'])
+            except Exception:
+                pass
+        self.store.set('requires_online', False)
+        self.store.set('offline_lock', False)
+        self.store.log('CLOUD_VALIDATE_OK', message or 'Valid')
+        return True, 'Valid'
+
+    def enforce_offline_grace(self, grace_days: int = 7) -> Tuple[bool, str]:
+        """
+        Force online confirmation after grace_days without a successful cloud check.
+        Returns (still_allowed, message).
+        """
+        last_ok = int(self.store.get('last_cloud_ok_ts') or 0)
+        # First cloud sync: seed last_ok on first successful online path only
+        if not last_ok:
+            # Allow until first opportunity; stamp "activation" as baseline if licensed
+            act = (self._license_data or {}).get('activated_at') or 0
+            last_ok = int(act) if act else int(time.time())
+            self.store.set('last_cloud_ok_ts', last_ok)
+        now = int(time.time())
+        offline_secs = now - last_ok
+        grace_secs = max(1, int(grace_days)) * 86400
+        if offline_secs <= grace_secs:
+            self.store.set('offline_lock', False)
+            return True, f'Offline OK ({offline_secs // 86400}d / {grace_days}d grace)'
+        with self._lock:
+            self.store.set('offline_lock', True)
+            self.store.set('requires_online', True)
+            self.store.log(
+                'OFFLINE_GRACE_EXCEEDED',
+                f'{offline_secs // 86400} days without cloud confirmation (limit {grace_days})',
+            )
+            # Soft-lock: mark inactive until online validate succeeds
+            if self._state not in (STATE_TAMPERED, STATE_INACTIVE):
+                self._state = STATE_CRITICAL
+        return False, f'Must connect to internet — offline for {offline_secs // 86400} days (limit {grace_days})'
 
     # ── State ──────────────────────────────────────────────────────────────────
 
@@ -677,11 +839,18 @@ class LicenseEngine:
             if self.store.get('revoked') and not self._license_data:
                 self._state = STATE_INACTIVE
                 return STATE_INACTIVE
+            if self.store.get('offline_lock'):
+                self._state = STATE_CRITICAL
+                return STATE_CRITICAL
             self._evaluate_state()
             return self._state
 
     @property
     def is_valid(self) -> bool:
+        if self.store.get('offline_lock') or self.store.get('revoked'):
+            return False
+        if self.store.get('tampered'):
+            return False
         return self.state in (STATE_ACTIVE, STATE_EXPIRING, STATE_WARNING, STATE_CRITICAL)
 
     @property
@@ -715,6 +884,10 @@ class LicenseEngine:
 
     def get_status_dict(self) -> dict:
         st = self.state
+        lic = self._license_data or {}
+        last_ok = int(self.store.get('last_cloud_ok_ts') or 0)
+        last_check = int(self.store.get('last_cloud_check_ts') or 0)
+        offline_days = max(0, (int(time.time()) - last_ok) // 86400) if last_ok else 0
         return {
             'state':           st,
             'is_valid':        self.is_valid,
@@ -726,8 +899,19 @@ class LicenseEngine:
             'device_id':       self.masked_device_id,
             'last_sync':       self.store.get('last_sync_ts', 0),
             'tamper_count':    self._tamper_count,
+            'source':          lic.get('source') or ('mbt_cloud' if lic.get('license_key') else 'license_engine'),
+            'license_key':     lic.get('license_key') or self.store.get('cloud_license_key') or '',
+            'revoked':         bool(self.store.get('revoked')),
+            'tampered':        bool(self.store.get('tampered')),
+            'requires_online': bool(self.store.get('requires_online') or self.store.get('offline_lock')),
+            'offline_lock':    bool(self.store.get('offline_lock')),
+            'last_cloud_ok':   last_ok,
+            'last_cloud_check': last_check,
+            'offline_days':    offline_days,
         }
 
     def revalidate(self):
         with self._lock:
             self._load_from_store()
+            self._evaluate_state()
+            return self._state

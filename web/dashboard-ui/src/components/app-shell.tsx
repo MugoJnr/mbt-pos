@@ -35,6 +35,9 @@ import { useAuth } from "@/lib/auth";
 import { GET } from "@/lib/api";
 import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { BrandLogo } from "@/components/brand/BrandLogo";
+import { useDocumentTitle } from "@/hooks/use-document-title";
+import { LIVE_PRODUCT, pageTitle } from "@/lib/brand";
 
 type NavItem = {
   to: string;
@@ -121,14 +124,8 @@ function SidebarContent({
 
   return (
     <>
-      <div className="px-4 py-5 border-b border-border flex items-center gap-3">
-        <div className="grid h-11 w-11 place-items-center rounded-xl bg-gold text-sm font-black text-[color:var(--gold-fg)] shadow-gold">
-          MBT
-        </div>
-        <div className="leading-tight min-w-0">
-          <div className="font-display font-extrabold text-gold text-lg tracking-wide">MBT POS</div>
-          <div className="text-eyebrow text-text2">SYSTEM</div>
-        </div>
+      <div className="px-4 py-5 border-b border-border">
+        <BrandLogo to="/" title="MBT POS" subtitle="Live Dashboard" />
       </div>
 
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2.5">
@@ -440,6 +437,8 @@ export function AppShell({
   const todayOrders = Number(todayQ.data?.orders ?? todayQ.data?.count ?? 0);
   const todayProfit = Number(todayQ.data?.profit ?? 0);
 
+  useDocumentTitle(pageTitle(LIVE_PRODUCT, title));
+
   const dateStr = now
     ? now.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" })
     : "";
@@ -608,7 +607,7 @@ export function AppShell({
             </footer>
           ) : (
             <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-1 px-3 sm:px-6 py-1.5 border-t border-border bg-panel/60 text-[11px] text-text2">
-              <span>MBT POS · MugoByte Technologies</span>
+              <span>MugoByte Technologies · Live Dashboard · © {new Date().getFullYear()}</span>
               <span className="font-mono truncate" title="Press / to search · g then d for dashboard">
                 v{ver} · {build} · EXE:{exe}
               </span>

@@ -24,6 +24,20 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: false,
+    chunkSizeWarningLimit: 1100,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom"],
+          tanstack: [
+            "@tanstack/react-router",
+            "@tanstack/react-query",
+            "@tanstack/router-core",
+          ],
+          icons: ["lucide-react"],
+        },
+      },
+    },
   },
   server: {
     port: 5173,
