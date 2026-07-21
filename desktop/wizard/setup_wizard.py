@@ -923,6 +923,20 @@ class SetupWizard(QDialog):
                 self._data['cloud_mode'] = 'skipped_unconfigured'
                 return
             r = create_business(email, pw, name)
+            if r.get('verification_required'):
+                self._data['cloud_mode'] = 'awaiting_verification'
+                self._data['cloud_email'] = email
+                sent = ' Verification email sent.' if r.get('email_sent') else (
+                    ' Open portal.mugobyte.com/verify-email and click Resend.')
+                self.w_cloud_status.setText(
+                    f"Account created for {email}.{sent} "
+                    "Confirm the email, then click Sign In here to continue.")
+                try:
+                    __import__('webbrowser').open(
+                        f'https://portal.mugobyte.com/verify-email?email={email}')
+                except Exception:
+                    pass
+                return
             self._data['cloud_mode'] = 'created'
             self._data['cloud_business_id'] = r.get('business_id')
             self._data['portal_notifications'] = True
@@ -932,8 +946,7 @@ class SetupWizard(QDialog):
             except Exception:
                 pass
             self.w_cloud_status.setText(
-                f"Account ready · device {r.get('device_id')}. "
-                "If email verification is required, confirm it before activating a license.")
+                f"Account ready · device {r.get('device_id')}. Continue to activate license.")
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud create failed: {e}")
 

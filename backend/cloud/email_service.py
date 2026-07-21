@@ -175,14 +175,33 @@ def send_verification_email(db_path: str, email: str) -> bool:
     name = _site_name()
     raw = _create_token(db_path, email, 'email_verification', ttl_hours=24)
     verify_url = f'{SITE_URL}/verify-email?token={raw}'
+    return send_confirm_link_email(email, verify_url)
+
+
+def send_confirm_link_email(email: str, confirm_url: str, *, subject: str = '', title: str = '') -> bool:
+    """Send a branded email with an absolute Auth action link."""
+    name = _site_name()
+    title = title or f'Verify your {name} email'
+    subject = subject or title
     body = f"""
     <p>Hello,</p>
     <p>Thanks for joining {name}. Confirm your email to access MugoByte Workspace.</p>
-    <p><a href="{verify_url}" style="display:inline-block;margin:12px 0;padding:10px 18px;background:#3b82f6;color:#fff;border-radius:8px;text-decoration:none;">Verify email address</a></p>
+    <p><a href="{confirm_url}" style="display:inline-block;margin:12px 0;padding:10px 18px;background:#3b82f6;color:#fff;border-radius:8px;text-decoration:none;">Continue</a></p>
+    <p>If the button does not work, copy this link into your browser:</p>
+    <p style="word-break:break-all;font-size:12px;color:#94a3b8;">{confirm_url}</p>
     <p>This link expires in 24 hours.</p>
     """
-    html = _branded_shell(f'Verify your {name} email', body)
-    return _sync_send(email, f'Verify your {name} email', html)
+    if 'reset' in subject.lower() or 'password' in subject.lower():
+        body = f"""
+        <p>Hello,</p>
+        <p>We received a request to reset your {name} password.</p>
+        <p><a href="{confirm_url}" style="display:inline-block;margin:12px 0;padding:10px 18px;background:#3b82f6;color:#fff;border-radius:8px;text-decoration:none;">Reset password</a></p>
+        <p style="word-break:break-all;font-size:12px;color:#94a3b8;">{confirm_url}</p>
+        <p>This link expires in 1 hour. If you did not request this, ignore this email.</p>
+        """
+        title = subject
+    html = _branded_shell(title, body)
+    return _sync_send(email, subject, html)
 
 
 def send_notification_email(to: str, title: str, body: str) -> bool:

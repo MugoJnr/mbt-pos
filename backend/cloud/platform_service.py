@@ -330,9 +330,57 @@ def cloud_sign_in(email: str, password: str) -> dict:
     }
 
 
+def _auth_redirect() -> str:
+    return 'https://portal.mugobyte.com/auth/callback'
+
+
+def _send_supabase_confirm_email(
+    email: str,
+    *,
+    link_type: str = 'signup',
+    password: str = '',
+    metadata: dict | None = None,
+) -> bool:
+    """Generate a GoTrue action link and deliver it via Resend (reliable path)."""
+    try:
+        client = _svc()
+        redirect = (
+            'https://portal.mugobyte.com/reset-password'
+            if link_type == 'recovery'
+            else _auth_redirect()
+        )
+        data = client.generate_auth_link(
+            email=email,
+            link_type=link_type,
+            redirect_to=redirect,
+            password=password,
+            metadata=metadata,
+        )
+        action = (
+            data.get('action_link')
+            or (data.get('properties') or {}).get('action_link')
+            or ''
+        )
+        if not action:
+            logger.warning('generate_link returned no action_link for %s', email)
+            return False
+        from backend.cloud.email_service import send_confirm_link_email
+        if link_type == 'recovery':
+            return bool(send_confirm_link_email(
+                email, action,
+                subject='Reset your MugoByte Platform password',
+                title='Reset your password',
+            ))
+        return bool(send_confirm_link_email(email, action))
+    except Exception as e:
+        logger.warning('confirm email via Resend failed for %s: %s', email, e)
+        return False
+
+
 def cloud_sign_up(email: str, password: str, full_name: str = '', business_name: str = '') -> dict:
     """Create an unconfirmed Supabase user and require email verification."""
     client = _svc()
+    email = (email or '').strip().lower()
     business_name = (business_name or '').strip() or 'My Business'
     meta = {
         'full_name': full_name or email.split('@')[0],
@@ -342,23 +390,39 @@ def cloud_sign_up(email: str, password: str, full_name: str = '', business_name:
         email,
         password,
         metadata=meta,
-        redirect_to='https://portal.mugobyte.com/auth/callback',
+        redirect_to=_auth_redirect(),
     )
     if session.get('access_token'):
         raise SupabaseError(
             'Email confirmation is disabled in Supabase; production requires it.',
             503,
         )
+    # Always deliver confirmation ourselves via Resend so signup does not depend
+    # solely on Supabase SMTP template delivery (often silent / delayed).
+    sent = _send_supabase_confirm_email(
+        email, link_type='signup', password=password, metadata=meta,
+    )
+    if not sent:
+        # Existing unconfirmed users: magiclink / signup regenerate
+        sent = _send_supabase_confirm_email(email, link_type='magiclink')
     return {
         'ok': True,
         'verification_required': True,
         'email': email,
-        'message': 'Check your email to verify the account, then sign in.',
+        'email_sent': bool(sent),
+        'message': (
+            'Check your email to verify the account, then sign in.'
+            if sent else
+            'Account created. If you do not see a verification email, use Resend on the verify page.'
+        ),
     }
 
 
 def cloud_forgot_password(email: str) -> bool:
-    """Trigger Supabase password recovery email."""
+    """Trigger password recovery — prefer Resend action link, fall back to Auth mailer."""
+    email = (email or '').strip().lower()
+    if _send_supabase_confirm_email(email, link_type='recovery'):
+        return True
     client = _svc()
     redirect = 'https://portal.mugobyte.com/reset-password'
     r = client._session.post(
@@ -371,9 +435,16 @@ def cloud_forgot_password(email: str) -> bool:
 
 
 def cloud_resend_verification(email: str) -> bool:
-    """Resend Supabase signup confirmation email via Auth /resend."""
+    """Resend confirmation via Resend action link (primary) + Auth /resend fallback."""
+    email = (email or '').strip().lower()
+    # Existing accounts cannot use type=signup generate_link — magiclink works for
+    # both unconfirmed and confirmed users and still lands on /auth/callback.
+    if _send_supabase_confirm_email(email, link_type='magiclink'):
+        return True
+    if _send_supabase_confirm_email(email, link_type='signup'):
+        return True
     client = _svc()
-    redirect = 'https://portal.mugobyte.com/auth/callback'
+    redirect = _auth_redirect()
     r = client._session.post(
         client._url('/auth/v1/resend'),
         headers=client._headers(),
@@ -385,7 +456,6 @@ def cloud_resend_verification(email: str) -> bool:
         timeout=30,
     )
     if r.status_code >= 400:
-        # Fallback shape used by some GoTrue versions
         r2 = client._session.post(
             client._url('/auth/v1/resend'),
             headers=client._headers(),

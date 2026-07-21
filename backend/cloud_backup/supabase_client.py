@@ -76,9 +76,12 @@ class SupabaseClient:
         metadata: dict | None = None,
         redirect_to: str = '',
     ) -> dict:
-        payload = {'email': email, 'password': password}
+        payload: dict[str, Any] = {'email': email, 'password': password}
         if metadata:
             payload['data'] = metadata
+        if redirect_to:
+            payload['email_redirect_to'] = redirect_to
+            payload['redirect_to'] = redirect_to
         r = self._session.post(
             self._url(
                 '/auth/v1/signup'
@@ -90,6 +93,37 @@ class SupabaseClient:
         )
         if r.status_code >= 400:
             self._raise(r, 'Sign up')
+        return r.json()
+
+    def generate_auth_link(
+        self,
+        *,
+        email: str,
+        link_type: str = 'signup',
+        redirect_to: str = 'https://portal.mugobyte.com/auth/callback',
+        password: str = '',
+        metadata: dict | None = None,
+    ) -> dict:
+        """Admin generate_link — returns action_link for reliable Resend delivery."""
+        if not self.service:
+            raise SupabaseError('Service role key required to generate auth links', 503)
+        payload: dict[str, Any] = {
+            'type': link_type,
+            'email': email,
+            'options': {'redirect_to': redirect_to},
+        }
+        if password:
+            payload['password'] = password
+        if metadata:
+            payload['data'] = metadata
+        r = self._session.post(
+            self._url('/auth/v1/admin/generate_link'),
+            headers=self._headers(use_service=True),
+            json=payload,
+            timeout=DEFAULT_TIMEOUT,
+        )
+        if r.status_code >= 400:
+            self._raise(r, 'Generate auth link')
         return r.json()
 
     def sign_in(self, email: str, password: str, *, persist: bool = True) -> dict:

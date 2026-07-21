@@ -87,20 +87,28 @@ def create_business(
     if len(password or '') < 12:
         raise SupabaseError('Password must be at least 12 characters')
 
-    client = SupabaseClient()
-    # Sign up (may already exist — then sign in)
-    user_id = ''
-    try:
-        signup = client.sign_up(email, password, metadata={'business_name': business_name})
-        user = signup.get('user') or signup
-        user_id = (user.get('id') if isinstance(user, dict) else '') or ''
-        # Some projects disable auto-confirm; try sign-in anyway
-    except SupabaseError as e:
-        logger.info('Sign up note: %s — trying sign in', e)
+    # Portal-first path: create unconfirmed Auth user + deliver verification email.
+    # Do NOT auto-sign-in — license/device steps require a verified account.
+    from backend.cloud.platform_service import cloud_sign_up
 
+    result = cloud_sign_up(email, password, full_name='', business_name=business_name)
+    if result.get('verification_required'):
+        return {
+            'ok': True,
+            'verification_required': True,
+            'email': email,
+            'business_name': business_name,
+            'email_sent': bool(result.get('email_sent')),
+            'message': result.get('message')
+            or 'Check your email to verify the account, then Sign In here.',
+            'device_id': get_or_create_device_id(),
+        }
+
+    # Confirmed session already returned (should not happen in production).
+    client = SupabaseClient()
     session = client.sign_in(email, password)
     user = session.get('user') or {}
-    user_id = user.get('id') or user_id
+    user_id = user.get('id') or ''
     if not user_id:
         raise SupabaseError('Auth succeeded but no user id returned')
 
@@ -109,7 +117,12 @@ def create_business(
     if not business_id:
         raise SupabaseError('Could not create/find business row')
 
-    _register_device_for_business(biz if isinstance(biz, dict) else {'id': business_id, 'name': business_name}, user_id, email, session)
+    _register_device_for_business(
+        biz if isinstance(biz, dict) else {'id': business_id, 'name': business_name},
+        user_id,
+        email,
+        session,
+    )
 
     ident = update_business_identity(
         business_id=business_id,
@@ -119,7 +132,6 @@ def create_business(
         access_token=session.get('access_token') or '',
         refresh_token=session.get('refresh_token') or '',
     )
-    # Ensure encryption salt
     _, ident = ensure_identity_key_material(ident, password=password)
     if not ident.get('encryption_salt'):
         ident['encryption_salt'] = generate_salt()

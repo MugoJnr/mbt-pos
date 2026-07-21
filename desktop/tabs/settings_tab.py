@@ -12,20 +12,12 @@ _PR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 
 
 class SettingsTab(QWidget):
-    # Signal fired on main thread when chat ID is found
-    _chat_found    = pyqtSignal(str)
-    _chat_timeout  = pyqtSignal()
-    _chat_error    = pyqtSignal(str)
-
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
         self._polling = False
         self._cf_setup_running = False
-        self._chat_found.connect(self._on_chat_found)
-        self._chat_timeout.connect(self._on_chat_timeout)
-        self._chat_error.connect(self._on_chat_error)
         self._build()
 
     # ── Build UI ──────────────────────────────────────────────────────────────
