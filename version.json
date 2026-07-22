@@ -1,12 +1,12 @@
 {
   "version": "3.0.3",
-  "build": "RC-2026-07-22-v3.0.3",
+  "build": "RC-2026-07-22-v3.0.3-certified",
   "build_date": "2026-07-22",
-  "release_notes": "MBT POS 3.0.3 production gate: product returns (partial restock + refund sale), suppliers + receive stock, approvals escalate, durable hold, Focus mode, Ctrl+K search, settings/receipt hardening, and expanded production test gates.\n\n[checksum_sha256: a5ebe08b64e0a0a5929dd0ba0f6e6c0cf403523d279d9358701c3428bc725fa1]",
+  "release_notes": "MBT POS 3.0.3 certified installer: SetRegView 64 registry fix, FileVersion 3.0.3, silent upgrade/uninstall/reinstall verified, customer journey PASS.\n\n[checksum_sha256: 280bedd874764bd7d57eaf9fe95746ebfd0e0cef5f9dc5134500d6ce4d3ff0c3]",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
-  "checksum_sha256": "a5ebe08b64e0a0a5929dd0ba0f6e6c0cf403523d279d9358701c3428bc725fa1",
+  "checksum_sha256": "280bedd874764bd7d57eaf9fe95746ebfd0e0cef5f9dc5134500d6ce4d3ff0c3",
   "checksum_note": "Publish SHA-256 in GitHub release notes as [checksum_sha256: <hex>] and/or upload MBT_POS_Setup.exe.sha256 sidecar. Required for unattended install.",
   "min_required_version": "1.0.0",
   "force_update": false
