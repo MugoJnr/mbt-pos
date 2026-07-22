@@ -1,4 +1,4 @@
-"""
+﻿"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-07-22-v3.0.3"
-APP_VERSION   = "3.0.3"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-07-22-v3.0.4"
+APP_VERSION   = "3.0.4"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -85,7 +85,7 @@ from desktop.tabs.sales_tab         import SalesTab
 from desktop.tabs.inventory_tab     import InventoryTab
 from desktop.tabs.consumption_tab   import ConsumptionTab
 from desktop.tabs.debt_tab          import DebtTab
-from desktop.tabs.accounting_tab    import AccountingTab
+from desktop.tabs.finance_tab       import FinanceTab, AccountingTab
 from desktop.tabs.reports_tab       import ReportsTab
 from desktop.tabs.notes_tab         import NotesTab
 from desktop.tabs.admin_tab         import AdminTab
@@ -474,7 +474,7 @@ class MainWindow(QMainWindow):
             'inventory':   InventoryTab,
             'consumption': ConsumptionTab,
             'debt':        DebtTab,
-            'accounting':  AccountingTab,
+            'accounting':  FinanceTab,
             'reports':     ReportsTab,
             'notes':       NotesTab,
             'admin':       AdminTab,
@@ -1312,7 +1312,7 @@ class MainWindow(QMainWindow):
             ('inventory',   '\u25a4',  'Inventory'),
             ('consumption', '\u25a3',  'Internal Consumption'),
             ('debt',        '$',       'Debt Management'),
-            ('accounting',  '\u2395',  'Accounting'),
+            ('accounting',  '\u2395',  'Finance'),
             ('reports',     '\u25a6',  'Reports'),
             ('notes',       '\u2261',  'Notes'),
             ('ai_ops',      '*',       'AI Operations'),
@@ -1400,11 +1400,11 @@ class MainWindow(QMainWindow):
         self._update_btn.hide()
         lay.addWidget(self._update_btn)
 
-        web_btn = QPushButton("Access POS through web dashboard")
+        web_btn = QPushButton("Live Dashboard")
         web_btn.setObjectName("refreshBtn")
         web_btn.setCursor(Qt.PointingHandCursor)
         web_btn.setToolTip(
-            "Opens the web dashboard in your browser.\n"
+            "Open the live web dashboard in your browser.\n"
             "Uses local http://127.0.0.1:5050 when available;\n"
             "falls back to your mugobyte.com remote URL if configured.")
         web_btn.clicked.connect(self._open_web_dashboard)
@@ -1498,7 +1498,7 @@ class MainWindow(QMainWindow):
         'dashboard':'Dashboard', 'sales':'Point of Sale', 'inventory':'Inventory',
         'consumption':'Internal Consumption',
         'debt':'Debt Management',
-        'accounting':'Accounting',
+        'accounting':'Finance',
         'reports':'Reports', 'notes':'Notes', 'ai_ops':'AI Operations',
         'admin':'Users & Access',
         'settings':'Settings', 'security':'Security & Super-Admin',
@@ -1507,12 +1507,20 @@ class MainWindow(QMainWindow):
 
     def _goto(self, tid: str):
         prev = getattr(self, '_active_tab_id', None)
-        # Leaving sales while maximized — restore shell chrome
-        if prev == 'sales' and tid != 'sales' and getattr(self, '_pos_focus_mode', False):
+        # Leaving sales while maximized — restore shell chrome + cart split
+        if prev == 'sales' and tid != 'sales':
             sales = self._tabs.get('sales')
-            if sales is not None and hasattr(sales, 'set_focus_mode'):
-                sales.set_focus_mode(False)
-            else:
+            if sales is not None:
+                if getattr(self, '_pos_focus_mode', False) and hasattr(sales, 'set_focus_mode'):
+                    sales.set_focus_mode(False)
+                elif getattr(self, '_pos_focus_mode', False):
+                    self.set_pos_focus_mode(False)
+                if hasattr(sales, 'set_cart_maximized'):
+                    try:
+                        sales.set_cart_maximized(False)
+                    except Exception:
+                        pass
+            elif getattr(self, '_pos_focus_mode', False):
                 self.set_pos_focus_mode(False)
         if prev and prev != tid and prev in getattr(self, '_tabs', {}):
             try:
@@ -1581,9 +1589,7 @@ class MainWindow(QMainWindow):
             log.debug('pos focus Esc shortcut: %s', e)
 
     def _exit_pos_focus_mode(self):
-        """Esc / restore — sync SalesTab button then restore chrome."""
-        if not getattr(self, '_pos_focus_mode', False):
-            return
+        """Esc / restore — cart maximize first, then sync SalesTab focus chrome."""
         try:
             app = QApplication.instance()
             if app is not None and app.activeModalWidget() is not None:
@@ -1591,6 +1597,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         sales = self._tabs.get('sales') if hasattr(self, '_tabs') else None
+        if sales is not None and getattr(sales, '_cart_maximized', False):
+            if hasattr(sales, 'set_cart_maximized'):
+                sales.set_cart_maximized(False)
+            return
+        if not getattr(self, '_pos_focus_mode', False):
+            return
         if sales is not None and hasattr(sales, 'set_focus_mode'):
             sales.set_focus_mode(False)
         else:

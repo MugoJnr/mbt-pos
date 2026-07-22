@@ -156,8 +156,8 @@ class NotesTab(QWidget):
         self._search = SearchBar('Search notes…')
         self._search.textChanged.connect(self._filter)
         tl.addWidget(self._search, 1)
-        self._add_btn = PrimaryBtn('+', 34)
-        self._add_btn.setFixedWidth(34)
+        self._add_btn = PrimaryBtn('+ New', 34)
+        self._add_btn.setMinimumWidth(72)
         self._add_btn.setToolTip('New note (Ctrl+N)')
         self._add_btn.clicked.connect(self._new)
         tl.addWidget(self._add_btn)
@@ -407,14 +407,21 @@ class NotesTab(QWidget):
                 select_row = i
 
         self._list.blockSignals(False)
+        if select_row < 0 and notes and self._nid is None:
+            select_row = 0
         if select_row >= 0:
             self._list.setCurrentRow(select_row)
+            # Ensure editor loads even if row was already current
+            item = self._list.item(select_row)
+            if item is not None:
+                n = self._find_note(item.data(Qt.UserRole))
+                if n:
+                    self._load_note(n)
         elif self._nid is None:
             self._show_editor_empty()
         elif keep_id is not None and select_row < 0:
             # Deleted / filtered out
             self._show_editor_empty()
-
     def _find_note(self, nid):
         return next((x for x in self.notes if x.get('id') == nid), None)
 

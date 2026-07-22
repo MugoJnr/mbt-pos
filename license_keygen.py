@@ -1,13 +1,15 @@
 """
-MBT POS — License Key Generator
-MugoByte Technologies | mugobyte.com
+MBT POS — Legacy Offline License Key Generator (DISABLED BY DEFAULT)
 
-DEVELOPER TOOL — run on your own machine to generate license keys for customers.
-Never share this file with customers.
+Production licensing is online-only via portal.mugobyte.com (MBT-… keys).
+This tool generates local signed keys that POS will reject unless
+MBT_ALLOW_LOCAL_KEYS=1 is set on the customer machine.
 
-Usage:
-    python license_keygen.py --device-id <id> --plan basic --days 365
-    python license_keygen.py --interactive
+Do not use for customer licenses. Issue keys from the Portal / license server.
+
+Emergency override (dev/tests only):
+    set MBT_ALLOW_LOCAL_KEYGEN=1
+    python license_keygen.py --force --device-id <id> --plan basic --days 365
 """
 import sys
 import os
@@ -22,12 +24,34 @@ from licensing.license_engine import (
 )
 
 
+def _local_keygen_allowed(force: bool = False) -> bool:
+    if force:
+        return True
+    return (os.environ.get('MBT_ALLOW_LOCAL_KEYGEN') or '').strip() in (
+        '1', 'true', 'TRUE', 'yes', 'YES',
+    )
+
+
+def _refuse_and_exit():
+    print()
+    print("=" * 60)
+    print("  Local keygen is DISABLED.")
+    print("  Issue online keys from portal.mugobyte.com")
+    print("  (Admin -> Licenses / license server).")
+    print()
+    print("  Dev override only:")
+    print("    set MBT_ALLOW_LOCAL_KEYGEN=1")
+    print("    python license_keygen.py --force ...")
+    print("=" * 60)
+    print()
+    sys.exit(2)
+
+
 def banner():
     print()
     print("=" * 60)
-    print("  MBT POS — License Key Generator")
-    print("  MugoByte Technologies | mugobyte.com")
-    print("  DEVELOPER TOOL — CONFIDENTIAL")
+    print("  MBT POS — Legacy Key Generator (NOT for production)")
+    print("  Prefer portal.mugobyte.com online MBT-… keys")
     print("=" * 60)
     print()
 
@@ -150,14 +174,21 @@ def interactive():
 
 def main():
     if len(sys.argv) == 1:
+        if not _local_keygen_allowed():
+            _refuse_and_exit()
         interactive()
         return
 
-    parser = argparse.ArgumentParser(description='MBT POS License Key Generator')
-    parser.add_argument('--device-id', required=True, help='Device fingerprint from customer')
+    parser = argparse.ArgumentParser(
+        description='Legacy offline keygen (disabled; use Portal online keys)')
+    parser.add_argument('--device-id', help='Device fingerprint from customer')
     parser.add_argument('--plan', default='basic', choices=list(PLANS.keys()))
     parser.add_argument('--days', type=int, default=365)
     parser.add_argument('--verify', metavar='KEY', help='Verify an existing key')
+    parser.add_argument(
+        '--force', action='store_true',
+        help='Allow local keygen despite online-only policy (dev/tests only)',
+    )
     args = parser.parse_args()
 
     if args.verify:
@@ -168,9 +199,16 @@ def main():
             print("INVALID")
         return
 
+    if not args.device_id:
+        parser.error('--device-id is required unless --verify is used')
+
+    if not _local_keygen_allowed(force=args.force):
+        _refuse_and_exit()
+
     key, exp = generate(args.device_id, args.plan, args.days)
     print(f"KEY={key}")
     print(f"EXPIRES={exp}")
+    print("NOTE: POS rejects this key unless MBT_ALLOW_LOCAL_KEYS=1 on the device.")
 
 
 if __name__ == '__main__':

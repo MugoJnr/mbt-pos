@@ -59,6 +59,7 @@ class SalesTab(QWidget):
         self._paid_programmatic = False
         self._held = None  # park/resume single slot (session + durable JSON)
         self._focus_mode = False  # session-only; MainWindow hides sidebar/topbar
+        self._cart_maximized = False  # hide product grid; cart fills Sales tab
         try:
             from desktop.utils.held_sale import load_held_sale
             self._held = load_held_sale()
@@ -74,6 +75,7 @@ class SalesTab(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(PADDING, 18, PADDING, 18)
         root.setSpacing(GAP)
+        self._root_lay = root
 
         # ── LEFT: product browser (modular ProductGrid) ───────────────────────
         self._left_panel = QFrame()
@@ -162,8 +164,17 @@ class SalesTab(QWidget):
         self._cart_hdr = hdr
         ch = QHBoxLayout(hdr); ch.setContentsMargins(16, 14, 16, 14)
         self._sale_hdr = H2('Current Sale')
-        ch.addWidget(self._sale_hdr); ch.addStretch()
-        self._cnt = Caption('0 items'); ch.addWidget(self._cnt)
+        ch.addWidget(self._sale_hdr)
+        ch.addStretch()
+        self._cnt = Caption('0 items')
+        ch.addWidget(self._cnt)
+        self._cart_max_btn = SecondaryBtn('Review', 36)
+        self._cart_max_btn.setMinimumWidth(110)
+        self._cart_max_btn.setMinimumHeight(40)
+        self._cart_max_btn.setToolTip(
+            'Enlarge the cart to review and edit many items. Esc or Restore to add products again.')
+        self._cart_max_btn.clicked.connect(self._toggle_cart_maximized)
+        ch.addWidget(self._cart_max_btn)
         rl.addWidget(hdr)
 
         cart_body = QWidget()
@@ -175,7 +186,7 @@ class SalesTab(QWidget):
         self._cart_list.qtyChanged.connect(self._qty)
         self._cart_list.discChanged.connect(self._set_line_disc)
         self._cart_list.removeClicked.connect(self._rm)
-        cbl.addWidget(self._cart_list)
+        cbl.addWidget(self._cart_list, 1)  # stretch — grows in Review / Maximize
 
         # Compact customer chip (opens picker — frees cart vertical space)
         self._cust_card = CustomerCard()
@@ -464,7 +475,7 @@ class SalesTab(QWidget):
         rp_outer.addWidget(foot)
         root.addWidget(self._right_panel, 5)
 
-    # ── POS focus / maximize (session-only) ───────────────────────────────────
+    # ── POS focus / cart maximize (session-only) ──────────────────────────────
 
     def _toggle_focus_mode(self):
         self.set_focus_mode(not bool(getattr(self, '_focus_mode', False)))
@@ -482,6 +493,94 @@ class SalesTab(QWidget):
                 'Restore sidebar and top bar' if enabled else
                 'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
         self.focus_mode_toggled.emit(enabled)
+
+    def _toggle_cart_maximized(self):
+        self.set_cart_maximized(not bool(getattr(self, '_cart_maximized', False)))
+
+    def set_cart_maximized(self, enabled: bool):
+        """Review mode: cart fills the sales tab so long carts are easy to confirm/edit."""
+        enabled = bool(enabled)
+        if bool(getattr(self, '_cart_maximized', False)) == enabled:
+            return
+        self._cart_maximized = enabled
+        left = getattr(self, '_left_panel', None)
+        cart = getattr(self, '_right_panel', None)
+        root = getattr(self, '_root_lay', None)
+        clist = getattr(self, '_cart_list', None)
+
+        if left is not None:
+            left.setVisible(not enabled)
+
+        if cart is not None:
+            if enabled:
+                # Clear fixed width from split layout so cart can fill the tab
+                cart.setMinimumWidth(480)
+                cart.setMaximumWidth(16777215)
+                sp = cart.sizePolicy()
+                sp.setHorizontalPolicy(QSizePolicy.Expanding)
+                sp.setHorizontalStretch(1)
+                cart.setSizePolicy(sp)
+                if root is not None:
+                    root.setStretchFactor(cart, 1)
+                    if left is not None:
+                        root.setStretchFactor(left, 0)
+            else:
+                cart.setMinimumWidth(740)
+                cart.setMaximumWidth(920)
+                cart.setFixedWidth(880)
+                sp = cart.sizePolicy()
+                sp.setHorizontalPolicy(QSizePolicy.Fixed)
+                cart.setSizePolicy(sp)
+                if root is not None:
+                    root.setStretchFactor(cart, 5)
+                    if left is not None:
+                        root.setStretchFactor(left, 6)
+
+        if clist is not None and hasattr(clist, 'set_expanded'):
+            clist.set_expanded(enabled)
+
+        hdr = getattr(self, '_sale_hdr', None)
+        if hdr is not None:
+            try:
+                hdr.setText('Review Cart' if enabled else 'Current Sale')
+            except Exception:
+                pass
+
+        btn = getattr(self, '_cart_max_btn', None)
+        if btn is not None:
+            btn.setText('Restore' if enabled else 'Review')
+            btn.setToolTip(
+                'Return to product picker' if enabled else
+                'Enlarge the cart to review and edit many items. Esc or Restore to add products again.')
+
+        try:
+            sc = getattr(self, '_cart_max_esc', None)
+            if enabled:
+                if sc is None:
+                    sc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+                    sc.setContext(Qt.WidgetWithChildrenShortcut)
+                    sc.activated.connect(self._exit_cart_or_focus)
+                    self._cart_max_esc = sc
+                sc.setEnabled(True)
+            elif sc is not None:
+                sc.setEnabled(False)
+        except Exception:
+            pass
+
+        try:
+            self.updateGeometry()
+            if cart is not None:
+                cart.updateGeometry()
+        except Exception:
+            pass
+
+    def _exit_cart_or_focus(self):
+        """Esc: restore cart first, then POS focus chrome."""
+        if getattr(self, '_cart_maximized', False):
+            self.set_cart_maximized(False)
+            return
+        if getattr(self, '_focus_mode', False):
+            self.set_focus_mode(False)
 
     def _select_pay_method(self, method: str):
         if hasattr(self, '_pay_seg'):

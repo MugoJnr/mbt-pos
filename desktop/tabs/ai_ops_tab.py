@@ -303,8 +303,12 @@ class AiOpsTab(QWidget):
             return
         self._refresh_btn.setEnabled(False)
         self._score_sub.setText(busy_msg)
+        self._ops_generation = getattr(self, '_ops_generation', 0) + 1
+        gen = self._ops_generation
 
         def _ok(result):
+            if gen != getattr(self, '_ops_generation', 0):
+                return
             self._refresh_btn.setEnabled(True)
             try:
                 on_ok(result)
@@ -312,14 +316,28 @@ class AiOpsTab(QWidget):
                 QMessageBox.warning(self, 'Ops', str(e))
 
         def _fail(err):
+            if gen != getattr(self, '_ops_generation', 0):
+                return
             self._refresh_btn.setEnabled(True)
             self._score_sub.setText('Error')
             QMessageBox.warning(self, 'Ops failed', err)
+
+        def _timeout():
+            if gen != getattr(self, '_ops_generation', 0):
+                return
+            if self._worker and self._worker.isRunning():
+                self._score_sub.setText('Timed out — click Refresh Health to retry.')
+                self._refresh_btn.setEnabled(True)
+                try:
+                    self._worker.terminate()
+                except Exception:
+                    pass
 
         self._worker = _Worker(fn, self)
         self._worker.done.connect(_ok)
         self._worker.failed.connect(_fail)
         self._worker.start()
+        QTimer.singleShot(25000, _timeout)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 

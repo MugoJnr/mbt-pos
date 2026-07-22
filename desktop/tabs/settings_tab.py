@@ -173,6 +173,75 @@ class SettingsTab(QWidget):
         cf_body.addWidget(cf_w)
         lay.addWidget(cg)
 
+        # ── Finance (canonical finance config) ────────────────────────────────
+        fg, ff_body = section_card(
+            '\u2395', 'Finance',
+            'Currency, tax, fiscal year, accounts, and profit rules')
+        ff = make_form(); ff_w = QWidget(); ff_w.setLayout(ff)
+        self.fin_currency = QComboBox(); self.fin_currency.setMinimumHeight(40)
+        for c in ['KES', 'USD', 'EUR', 'GBP', 'TZS', 'UGX', 'ZAR']:
+            self.fin_currency.addItem(c)
+        self.fin_tax_rate = QDoubleSpinBox()
+        self.fin_tax_rate.setRange(0, 100)
+        self.fin_tax_rate.setDecimals(1)
+        self.fin_tax_rate.setSuffix(' %')
+        self.fin_tax_rate.setMinimumHeight(40)
+        self.fin_receipt_tax = QCheckBox('Show tax line on receipts')
+        self.fin_receipt_tax.setMinimumHeight(36)
+        self.fin_fy_month = QComboBox(); self.fin_fy_month.setMinimumHeight(40)
+        for i, name in enumerate(
+            ['January', 'February', 'March', 'April', 'May', 'June',
+             'July', 'August', 'September', 'October', 'November', 'December'],
+            start=1):
+            self.fin_fy_month.addItem(name, str(i))
+        self.fin_method = QComboBox(); self.fin_method.setMinimumHeight(40)
+        self.fin_method.addItem('Accrual (recommended for inventory shops)', 'accrual')
+        self.fin_method.addItem('Cash basis', 'cash')
+        self.fin_costing = QComboBox(); self.fin_costing.setMinimumHeight(40)
+        self.fin_costing.addItem('Weighted average cost', 'weighted_avg')
+        self.fin_costing.addItem('FIFO (first in, first out)', 'fifo')
+        self.fin_cash_acct = Field('1000')
+        self.fin_mpesa_acct = Field('1010')
+        self.fin_bank_acct = Field('1020')
+        self.fin_expense_cats = Field('6000,6100,6900 — expense account codes')
+        self.fin_opening_note = Field('Optional note for opening balances / capital')
+        self.fin_profit_cogs = QCheckBox('Gross profit uses inventory COGS from sales')
+        self.fin_profit_cogs.setMinimumHeight(36)
+        self.fin_profit_tips = QCheckBox('Include tips / transport in net profit reports')
+        self.fin_profit_tips.setMinimumHeight(36)
+        self.fin_round_off = QCheckBox('Use cash round-off rules (see Cash Rounding above)')
+        self.fin_round_off.setMinimumHeight(36)
+        for lbl, w in [
+            ('Currency', self.fin_currency),
+            ('Tax rate', self.fin_tax_rate),
+            ('', self.fin_receipt_tax),
+            ('Fiscal year starts', self.fin_fy_month),
+            ('Accounting method', self.fin_method),
+            ('Inventory costing', self.fin_costing),
+            ('Default Cash account', self.fin_cash_acct),
+            ('Default M-Pesa account', self.fin_mpesa_acct),
+            ('Default Bank account', self.fin_bank_acct),
+            ('Expense categories (codes)', self.fin_expense_cats),
+            ('Opening balances note', self.fin_opening_note),
+            ('', self.fin_profit_cogs),
+            ('', self.fin_profit_tips),
+            ('', self.fin_round_off),
+        ]:
+            FormRow(lbl, w, ff)
+        fin_hint = QLabel(
+            'These values persist in system settings and survive restart. '
+            'Default Cash / M-Pesa / Bank codes must match Chart of Accounts. '
+            'Cash Rounding (above) controls till round-off behaviour.')
+        fin_hint.setWordWrap(True)
+        fin_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        ff.addRow(fin_hint)
+        open_fin = SecondaryBtn('Open Finance Module', 40)
+        open_fin.setFixedWidth(200)
+        open_fin.clicked.connect(self._open_finance_module)
+        ff.addRow(QLabel(''), open_fin)
+        ff_body.addWidget(ff_w)
+        lay.addWidget(fg)
+
         # ── Category Visual Settings ───────────────────────────────────────────
         cvg, cv_body = section_card(
             '*', 'Category Visual Settings',
@@ -595,6 +664,33 @@ class SettingsTab(QWidget):
                     float(cfg.get('cash_rounding_value', 5) or 5))
             except (TypeError, ValueError):
                 self.cash_rounding_value.setValue(5)
+        if hasattr(self, 'fin_currency'):
+            code = str(cfg.get('currency_code') or cfg.get('currency_symbol') or 'KES').upper()
+            fidx = self.fin_currency.findText(code)
+            self.fin_currency.setCurrentIndex(fidx if fidx >= 0 else 0)
+            try:
+                self.fin_tax_rate.setValue(float(cfg.get('tax_rate', 0) or 0))
+            except (TypeError, ValueError):
+                self.fin_tax_rate.setValue(0)
+            self.fin_receipt_tax.setChecked(cfg.get('receipt_tax_enabled', '1') == '1')
+            fy = str(cfg.get('fiscal_year_start_month') or '1')
+            fi = self.fin_fy_month.findData(fy)
+            self.fin_fy_month.setCurrentIndex(fi if fi >= 0 else 0)
+            m = (cfg.get('accounting_method') or 'accrual').strip().lower()
+            mi = self.fin_method.findData(m)
+            self.fin_method.setCurrentIndex(mi if mi >= 0 else 0)
+            c = (cfg.get('inventory_costing') or 'weighted_avg').strip().lower()
+            ci = self.fin_costing.findData(c)
+            self.fin_costing.setCurrentIndex(ci if ci >= 0 else 0)
+            self.fin_cash_acct.setText(cfg.get('acct_cash_code') or '1000')
+            self.fin_mpesa_acct.setText(cfg.get('acct_mpesa_code') or '1010')
+            self.fin_bank_acct.setText(cfg.get('acct_bank_code') or '1020')
+            self.fin_expense_cats.setText(
+                cfg.get('expense_category_codes') or '6000,6100,6900')
+            self.fin_opening_note.setText(cfg.get('opening_balances_note') or '')
+            self.fin_profit_cogs.setChecked(cfg.get('profit_use_inventory_cogs', '1') == '1')
+            self.fin_profit_tips.setChecked(cfg.get('profit_include_tips', '1') == '1')
+            self.fin_round_off.setChecked(cfg.get('finance_use_cash_rounding', '1') == '1')
         if hasattr(self, 'after_sale_default_customer'):
             cust = (cfg.get('after_sale_default_customer') or 'walk_in').strip().lower()
             cidx = self.after_sale_default_customer.findData(cust)
@@ -1160,7 +1256,7 @@ class SettingsTab(QWidget):
     # ── Save ──────────────────────────────────────────────────────────────────
 
     def _common_payload(self):
-        return {
+        payload = {
             'shop_name':           self.shop_name.text().strip(),
             'shop_address':        self.shop_address.text().strip(),
             'shop_phone':          self.shop_phone.text().strip(),
@@ -1224,6 +1320,49 @@ class SettingsTab(QWidget):
             'autofill_credit_customer_info':
                 '1' if self.autofill_credit_customer_info.isChecked() else '0',
         }
+        if hasattr(self, 'fin_currency'):
+            code = self.fin_currency.currentText().strip().upper() or 'KES'
+            # Keep shop currency combo in sync when Finance is the source of truth
+            payload['currency_symbol'] = code
+            payload['currency_code'] = code
+            payload['tax_rate'] = str(self.fin_tax_rate.value())
+            payload['receipt_tax_enabled'] = '1' if self.fin_receipt_tax.isChecked() else '0'
+            payload['fiscal_year_start_month'] = self.fin_fy_month.currentData() or '1'
+            payload['accounting_method'] = self.fin_method.currentData() or 'accrual'
+            payload['inventory_costing'] = self.fin_costing.currentData() or 'weighted_avg'
+            payload['acct_cash_code'] = (self.fin_cash_acct.text() or '1000').strip()
+            payload['acct_mpesa_code'] = (self.fin_mpesa_acct.text() or '1010').strip()
+            payload['acct_bank_code'] = (self.fin_bank_acct.text() or '1020').strip()
+            payload['expense_category_codes'] = (
+                self.fin_expense_cats.text() or '6000,6100,6900').strip()
+            payload['opening_balances_note'] = self.fin_opening_note.text().strip()
+            payload['profit_use_inventory_cogs'] = (
+                '1' if self.fin_profit_cogs.isChecked() else '0')
+            payload['profit_include_tips'] = (
+                '1' if self.fin_profit_tips.isChecked() else '0')
+            payload['finance_use_cash_rounding'] = (
+                '1' if self.fin_round_off.isChecked() else '0')
+            # Mirror into shop currency dropdown for consistency
+            try:
+                cidx = self.currency.findText(code)
+                if cidx >= 0:
+                    self.currency.setCurrentIndex(cidx)
+                self.tax_rate.setValue(self.fin_tax_rate.value())
+            except Exception:
+                pass
+        return payload
+
+    def _open_finance_module(self):
+        w = self.window()
+        if hasattr(w, '_goto'):
+            try:
+                w._goto('accounting')
+                return
+            except Exception:
+                pass
+        QMessageBox.information(
+            self, 'Finance',
+            'Open Finance from the sidebar to view Overview, Money, and reports.')
 
     def _save(self):
         if not self.shop_name.text().strip():

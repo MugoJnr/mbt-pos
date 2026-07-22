@@ -983,7 +983,9 @@ def dashboard_kpis(conn) -> dict:
     ).fetchone()[0]
     return {
         'month_revenue': pl['total_income'],
+        'month_cogs': pl['total_cogs'],
         'month_expenses': pl['total_expenses'],
+        'month_gross': pl['gross_profit'],
         'month_net': pl['net_profit'],
         'cash_balance': cash['balance'],
         'bank_balance': bank['balance'],

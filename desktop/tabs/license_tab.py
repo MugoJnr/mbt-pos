@@ -248,15 +248,15 @@ class LicenseTab(QWidget):
         al.addWidget(act_hdr)
 
         act_info = QLabel(
-            "Enter the license key provided by\n"
-            "MugoByte Technologies to activate\n"
-            "or renew your subscription."
+            "Paste an online license key from\n"
+            "portal.mugobyte.com (format MBT-…).\n"
+            "Local/offline keygen keys are not accepted."
         )
         act_info.setStyleSheet(f"color:{C['text']}; font-size:12px; line-height:1.5;")
         al.addWidget(act_info)
 
         self.key_input = QLineEdit()
-        self.key_input.setPlaceholderText("XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX")
+        self.key_input.setPlaceholderText("MBT-TRI-XXXX-XXXX-XXXX")
         self.key_input.setFont(QFont('Consolas', 11))
         self.key_input.returnPressed.connect(self._activate)
         al.addWidget(self.key_input)

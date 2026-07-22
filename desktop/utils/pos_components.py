@@ -711,7 +711,23 @@ class CartList(QWidget):
         self._lay.addStretch(1)
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll)
+        self._expanded = False
         self.refresh_theme()
+
+    def set_expanded(self, expanded: bool):
+        """Review mode: lift height cap so long carts are easy to scan and edit."""
+        self._expanded = bool(expanded)
+        if self._expanded:
+            self._scroll.setMinimumHeight(420)
+            self._scroll.setMaximumHeight(16777215)
+        else:
+            self._scroll.setMinimumHeight(280)
+            self._scroll.setMaximumHeight(520)
+        try:
+            self._scroll.updateGeometry()
+            self.updateGeometry()
+        except Exception:
+            pass
 
     def clear_rows(self):
         while self._rows:

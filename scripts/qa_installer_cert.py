@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """MBT POS installer production certification.
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.3"
+EXPECTED_VERSION = "3.0.4"
 OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_INSTALLER_CERT")
 if not OUT.parent.exists():
     OUT = Path(os.environ.get("USERPROFILE", "")) / "Desktop" / "QA_INSTALLER_CERT"

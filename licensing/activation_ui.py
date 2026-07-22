@@ -274,10 +274,11 @@ class ActivationDialog(QDialog):
         except Exception:
             pass
 
-        # Offline / manual fallback
-        content.addWidget(self._section_label("Offline? Use a license key"))
+        # Manual Portal key (online keys only — no local keygen)
+        content.addWidget(self._section_label("Or paste your online license key"))
         content.addWidget(self._hint(
-            "No internet or no seat available — activate with a hardware-bound key instead."))
+            "Get an MBT-… key from portal.mugobyte.com → Licenses. "
+            "Local/offline keygen keys are not accepted."))
 
         # Step 1 — device ID
         content.addWidget(self._section_label("Your Hardware ID"))
@@ -286,7 +287,7 @@ class ActivationDialog(QDialog):
         dl.setContentsMargins(12, 10, 12, 10)
         dl.setSpacing(8)
         dl.addWidget(self._hint(
-            "Send this ID to MugoByte to receive your activation key."))
+            "Shown for support. Activation uses your Portal account or online MBT-… key."))
 
         self._hwid_edit = QLineEdit(self.device_id)
         self._hwid_edit.setReadOnly(True)
@@ -308,7 +309,7 @@ class ActivationDialog(QDialog):
         kl.setContentsMargins(12, 10, 12, 10)
         kl.setSpacing(8)
         self._key_input = QLineEdit()
-        self._key_input.setPlaceholderText("Paste your license key here…")
+        self._key_input.setPlaceholderText("MBT-… online key from portal.mugobyte.com")
         self._key_input.setFont(QFont("Consolas", 10))
         self._key_input.setMinimumHeight(42)
         self._style_input(self._key_input, gold=False)

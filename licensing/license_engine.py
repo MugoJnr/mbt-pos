@@ -543,15 +543,40 @@ class LicenseEngine:
         return ok
 
     def activate_with_key(self, key_str: str) -> Tuple[bool, str]:
-        key_str = (key_str or '').strip()
-        data = decode_license_key(key_str)
-        if not data:
-            # Cloud keys look like MBT-TRI-XXXX-XXXX-XXXX (not locally signed).
-            if key_str.upper().startswith('MBT-') and key_str.count('-') >= 2:
-                return self._activate_cloud_key(key_str)
-            return False, "Invalid or tampered license key."
+        """Activate using a Portal / online key only (MBT-…).
 
-        # Key must be issued for THIS device
+        Locally signed keygen keys are rejected unless MBT_ALLOW_LOCAL_KEYS=1
+        (developer/tests). Existing already-activated installs are unaffected.
+        """
+        key_str = (key_str or '').strip()
+        if not key_str:
+            return False, "Please enter a license key."
+
+        # Preferred path: online Portal keys (MBT-PLAN-XXXX-…)
+        if key_str.upper().startswith('MBT-') and key_str.count('-') >= 2:
+            return self._activate_cloud_key(key_str)
+
+        data = decode_license_key(key_str)
+        if data:
+            # Signed offline / license_keygen.py keys — disabled for production.
+            allow_local = (os.environ.get('MBT_ALLOW_LOCAL_KEYS') or '').strip() in (
+                '1', 'true', 'TRUE', 'yes', 'YES',
+            )
+            if not allow_local:
+                self.store.log('ACTIVATION_FAIL', 'Local keygen key rejected (online-only policy)')
+                return False, (
+                    "Local/offline keys are no longer accepted. "
+                    "Sign in at portal.mugobyte.com and paste an online MBT-… license key."
+                )
+            return self._activate_local_signed_key(data)
+
+        return False, (
+            "Invalid license key. Use an online key from portal.mugobyte.com "
+            "(format MBT-…)."
+        )
+
+    def _activate_local_signed_key(self, data: dict) -> Tuple[bool, str]:
+        """Legacy keygen activation — only when MBT_ALLOW_LOCAL_KEYS is set."""
         key_device = data.get('device_id', '')
         if key_device and key_device != self.device_id:
             self.store.log('ACTIVATION_FAIL', 'Device ID mismatch')
@@ -562,11 +587,9 @@ class LicenseEngine:
         if not allocated:
             return False, "License key has no valid duration_days allocation."
 
-        # Expiry is always activate_time + allocated days (never a hardcoded plan length).
         expires_at = local_now + allocated * 86400
-
         lic = {
-            'device_id':      self.device_id,          # bake THIS device into token
+            'device_id':      self.device_id,
             'plan':           data.get('plan', 'basic'),
             'issued_at':      data.get('issued_at', local_now),
             'expires_at':     expires_at,
