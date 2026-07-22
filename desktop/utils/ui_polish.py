@@ -15,6 +15,7 @@ from PyQt5.QtCore import (
     Qt,
     QTimer,
     pyqtProperty,
+    pyqtSignal,
 )
 from PyQt5.QtGui import QCursor, QFont
 from PyQt5.QtWidgets import (
@@ -267,6 +268,8 @@ class FloatingActionButton(QWidget):
 class AnimatedKPI(QFrame):
     """KPI card with hover lift, glow accent, trend chip, animated numeric value."""
 
+    clicked = pyqtSignal()
+
     def __init__(
         self,
         label: str,
@@ -285,9 +288,11 @@ class AnimatedKPI(QFrame):
         self._is_money = False
         self._prefix = ""
         self._anim_timer: Optional[QTimer] = None
+        self._actionable = False
         self.setMinimumHeight(112)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.ArrowCursor)
         self.setAttribute(Qt.WA_Hover, True)
+        self.setFocusPolicy(Qt.NoFocus)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
@@ -318,6 +323,33 @@ class AnimatedKPI(QFrame):
         root.addLayout(col, 1)
         self.refresh_theme()
         fade_in(self, 200)
+
+    def set_actionable(self, enabled: bool, tooltip: str = "", accessible_name: str = ""):
+        """Mark KPI as a clickable control (keyboard + mouse)."""
+        self._actionable = bool(enabled)
+        if self._actionable:
+            self.setCursor(Qt.PointingHandCursor)
+            self.setFocusPolicy(Qt.StrongFocus)
+            self.setToolTip(tooltip or f"Open {self._label}")
+            self.setAccessibleName(accessible_name or self._label)
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self.setFocusPolicy(Qt.NoFocus)
+            self.setToolTip("")
+
+    def mouseReleaseEvent(self, e):
+        if self._actionable and e.button() == Qt.LeftButton:
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e):
+        if self._actionable and e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
     def refresh_theme(self):
         a = self._accent or C["gold"]

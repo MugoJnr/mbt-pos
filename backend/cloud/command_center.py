@@ -66,18 +66,22 @@ class CommandCenter:
             return None
 
     def issue_to_license_devices(self, org_id: str, license_id: str, command: str,
-                                 params: dict | None = None, issued_by: str | None = None) -> list:
-        """Push a command to every active activation for a license."""
+                                 params: dict | None = None, issued_by: str | None = None,
+                                 *, include_inactive: bool = False) -> list:
+        """Push a command to every activation for a license."""
         from backend.cloud.platform_service import service_select
-        acts = service_select(
-            'license_activations',
-            f'license_id=eq.{quote(license_id, safe="")}&is_active=eq.true&select=device_id',
-        ) or []
+        q = f'license_id=eq.{quote(license_id, safe="")}&select=device_id'
+        if not include_inactive:
+            q += '&is_active=eq.true'
+        acts = service_select('license_activations', q) or []
+        # Deduplicate device ids
+        seen = set()
         results = []
         for a in acts:
             did = a.get('device_id')
-            if not did:
+            if not did or did in seen:
                 continue
+            seen.add(did)
             results.append(self.issue_command(org_id, did, command, params, issued_by))
         return results
 

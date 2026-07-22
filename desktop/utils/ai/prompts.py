@@ -78,4 +78,9 @@ def build_system_prompt(module: str, role: str, extra: str = '') -> str:
         'append a fenced JSON block: ```json\n{"type":"propose_action","action":"...","payload":{...},"summary":"..."}\n``` '
         'Do not claim the action was executed.'
     )
+    parts.append(
+        'Never invent, fabricate, or estimate money amounts, stock counts, '
+        'receipt totals, or KPI figures that are not present in the POS context. '
+        'If a number is missing, say it is unavailable — do not substitute placeholders.'
+    )
     return '\n\n'.join(parts)

@@ -8,8 +8,16 @@ export const BRAND = {
   docsUrl: "https://docs.mugobyte.com",
   privacyUrl: "https://mugobyte.com/privacy",
   termsUrl: "https://mugobyte.com/terms",
-  /** Company/platform mark (letter M). Prefer for Workspace chrome. */
+  /** Company/platform mark (letter M). Prefer for compact chrome. */
   markSvg: "/favicon.svg",
+  /**
+   * Official MugoByte company wordmark (shield + MugoByte Technologies).
+   * Use on Workspace chrome, auth, and marketing surfaces.
+   */
+  companyLogo: "/brand/mugo_logo.png",
+  companyLogoDark: "/brand/mugo_logo_dark.png",
+  companyLogo2x: "/brand/mugo_logo_2x.png",
+  companyLogoDark2x: "/brand/mugo_logo_dark_2x.png",
   /** MBT POS product monitor art — use only on POS product surfaces. */
   logoHd: "/brand/mbt_logo_hd.png",
   icon: "/brand/mbt_icon.png",

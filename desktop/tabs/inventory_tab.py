@@ -84,6 +84,13 @@ class InventoryTab(QWidget):
             adj = SecondaryBtn('\u2699  Adjust Stock', 40)
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
+            recv = SecondaryBtn('Receive Stock', 40)
+            recv.setToolTip('Receive delivery from a supplier (increases stock)')
+            recv.clicked.connect(self._receive_stock_dialog)
+            tb.addWidget(recv)
+            sups = SecondaryBtn('Suppliers', 40)
+            sups.clicked.connect(self._suppliers_dialog)
+            tb.addWidget(sups)
 
         exp = SecondaryBtn('Export Excel', 40)
         exp.setToolTip('Export inventory snapshot and stock movements to Excel')
@@ -361,6 +368,19 @@ class InventoryTab(QWidget):
         cl.addStretch()
         self._tbl.setCellWidget(i, 7, cell)
         apply_table_row_backgrounds(self._tbl, row=i)
+    def _receive_stock_dialog(self):
+        if self._role() != ROLE_SUPERADMIN:
+            QMessageBox.warning(self, 'Access Denied',
+                'Only Super-Admin can receive stock.'); return
+        from desktop.dialogs.receive_stock_dialog import ReceiveStockDialog
+        dlg = ReceiveStockDialog(self.api, self, products=self.products)
+        if dlg.exec_():
+            self.refresh()
+
+    def _suppliers_dialog(self):
+        from desktop.dialogs.receive_stock_dialog import SuppliersDialog
+        SuppliersDialog(self.api, self).exec_()
+
     def _adjust_stock_dialog(self):
         """Superadmin: adjust stock with PIN and reason. Never crashes the app."""
         if self._role() != ROLE_SUPERADMIN:
@@ -370,6 +390,7 @@ class InventoryTab(QWidget):
         if not self.products:
             QMessageBox.information(self, 'No Products',
                 'Add products first.'); return
+
 
         try:
             dlg = QDialog(self)

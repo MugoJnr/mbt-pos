@@ -65,9 +65,12 @@ def format_currency(amount, symbol='KES'):
 class ReceiptBuilder:
     """Builds ESC/POS byte stream for 80mm thermal printer."""
 
-    def __init__(self, shop_name='My Shop', currency='KES'):
+    def __init__(self, shop_name='My Shop', currency='KES',
+                 shop_address='', shop_phone=''):
         self.shop_name = shop_name
         self.currency = currency
+        self.shop_address = (shop_address or '').strip()
+        self.shop_phone = (shop_phone or '').strip()
         self._buf = bytearray()
 
     def _write(self, data):
@@ -119,6 +122,10 @@ class ReceiptBuilder:
         self._line(self.shop_name[:PAPER_CHARS])
         self.double(False)
         self.bold(False)
+        if self.shop_address:
+            self._line(self.shop_address[:PAPER_CHARS])
+        if self.shop_phone:
+            self._line(self.shop_phone[:PAPER_CHARS])
         self._line('INVOICE')
         self.divider('=')
         self.align('left')
@@ -228,7 +235,8 @@ class ReceiptBuilder:
 
 
 def build_receipt(sale_data, shop_name='My Shop', currency='KES',
-                  footer='Thank you for shopping with us!'):
+                  footer='Thank you for shopping with us!',
+                  shop_address='', shop_phone=''):
     """
     sale_data: dict with keys:
         receipt_number, created_at, cashier_name,
@@ -241,7 +249,10 @@ def build_receipt(sale_data, shop_name='My Shop', currency='KES',
     cashier  = sale_data.get('cashier_name', 'Staff')
     invoice  = sale_data.get('receipt_number', 'N/A')
 
-    b = ReceiptBuilder(shop_name=shop_name, currency=currency)
+    b = ReceiptBuilder(
+        shop_name=shop_name, currency=currency,
+        shop_address=shop_address, shop_phone=shop_phone,
+    )
     b.header(invoice, date_str, cashier)
     b.items(sale_data.get('items', []))
     b.totals(
@@ -404,7 +415,11 @@ class PrinterManager:
         shop  = cfg.get('shop_name', 'My Shop')
         cur   = cfg.get('currency_symbol', 'KES')
         foot  = cfg.get('receipt_footer', 'Thank you for shopping with us!')
-        data  = build_receipt(sale_data, shop_name=shop, currency=cur, footer=foot)
+        data  = build_receipt(
+            sale_data, shop_name=shop, currency=cur, footer=foot,
+            shop_address=cfg.get('shop_address', ''),
+            shop_phone=cfg.get('shop_phone', ''),
+        )
         self._queue.enqueue(data, label=sale_data.get('receipt_number', 'receipt'))
 
     def print_raw(self, data: bytes, label='raw'):
@@ -413,12 +428,19 @@ class PrinterManager:
     def test_print(self):
         cfg = self.config_getter()
         shop = cfg.get('shop_name', 'My Shop')
-        b = ReceiptBuilder(shop_name=shop)
+        addr = (cfg.get('shop_address') or '').strip()
+        phone = (cfg.get('shop_phone') or '').strip()
+        b = ReceiptBuilder(shop_name=shop, shop_address=addr, shop_phone=phone)
         b.init()
         b.align('center')
         b.bold(True)
         b.text('TEST PRINT')
         b.bold(False)
+        b.text(shop)
+        if addr:
+            b.text(addr)
+        if phone:
+            b.text(phone)
         b.text('MugoByte Technologies')
         b.text('mugobyte.com')
         b.divider()

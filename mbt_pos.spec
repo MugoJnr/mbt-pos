@@ -26,13 +26,19 @@ def _web_datas_without_node_modules():
 
 
 def _safe_config_datas():
-    """Bundle config code and public templates, never deployment secrets."""
+    """Bundle config code and public templates.
+
+    NOTE: deploy.local.json (vendor Cloudflare/OpenRouter tokens) is bundled on
+    purpose so every install auto-provisions {shop}.mugobyte.com and AI with no
+    per-PC setup. This ships a zone-wide secret inside the exe by design.
+    """
     config_root = os.path.join(HERE, 'config')
     allowed_files = {
         '__init__.py',
         'deploy.py',
         'cloud_config.example.json',
         'deploy.local.json.example',
+        'deploy.local.json',
         'web_config.json',
     }
     return [

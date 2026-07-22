@@ -1,89 +1,98 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { BarChart3, FileSpreadsheet, RefreshCw } from "lucide-react";
+import { BarChart3 } from "lucide-react";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
-import { LiveOpsCallout } from "@/components/layout/LiveOpsCallout";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { OverviewPanel } from "@/components/reports/OverviewPanel";
+import { SalesPanel } from "@/components/reports/SalesPanel";
+import { DebtsPanel } from "@/components/reports/DebtsPanel";
+import { InventoryPanel } from "@/components/reports/InventoryPanel";
+import { SavedReports } from "@/components/reports/SavedReports";
+import { DateRangePicker } from "@/components/reports/ReportControls";
+import {
+  type AnalyticsResponse,
+  type AnalyticsSearch,
+  type AnalyticsTab,
+  todayIso,
+} from "@/components/reports/analytics";
 import { GET } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/_app/reports")({
+  validateSearch: (search: Record<string, unknown>): AnalyticsSearch => {
+    const validTabs = ["overview", "sales", "debts", "inventory", "saved"] as const;
+    const tab = validTabs.includes(search.tab as (typeof validTabs)[number])
+      ? (search.tab as AnalyticsTab)
+      : "overview";
+    const today = todayIso();
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(String(search.start || "")) ? String(search.start) : today;
+    const end = /^\d{4}-\d{2}-\d{2}$/.test(String(search.end || "")) ? String(search.end) : start;
+    return { tab, start: start <= end ? start : end, end: start <= end ? end : start };
+  },
   component: Reports,
   head: () => ({ meta: [{ title: "Reports | MugoByte" }] }),
 });
 
-type CloudReport = {
-  id?: string;
-  title?: string;
-  report_type?: string;
-  period?: string;
-  created_at?: string;
-  format?: string;
-  status?: string;
-};
-
 function Reports() {
   const { orgId } = useAuth();
-  const reportsQ = useQuery({
-    queryKey: ["cloud-reports", orgId],
-    queryFn: () =>
-      GET<{ reports?: CloudReport[] }>("/cloud/reports", orgId ? { org_id: orgId } : undefined),
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const tab = search.tab || "overview";
+  const start = search.start || todayIso();
+  const end = search.end || start;
+  const filtersQ = useQuery({
+    queryKey: ["cloud-analytics-filters", orgId],
+    queryFn: () => GET<AnalyticsResponse>("/cloud/analytics/filters", { org_id: orgId }),
+    enabled: Boolean(orgId),
   });
-  const reports = reportsQ.data?.reports || [];
+  const setSearch = (patch: Partial<AnalyticsSearch>) =>
+    void navigate({ search: (previous) => ({ ...previous, ...patch }), replace: true });
 
   return (
     <PageShell>
       <PageHeader
         eyebrow="MBT POS"
-        title="Report Center"
-        description="Cloud-stored daily, weekly and monthly report history. Live shop analytics stay on Live Dashboard."
+        title="Cloud Analytics"
+        description="Complete synced sales, debt and inventory reporting across your organization."
         actions={
-          <Button variant="outline" onClick={() => reportsQ.refetch()}>
-            <RefreshCw className="mr-1.5 h-4 w-4" />Refresh
-          </Button>
+          <DateRangePicker
+            start={start}
+            end={end}
+            onChange={(nextStart, nextEnd) => setSearch({ start: nextStart, end: nextEnd })}
+          />
         }
       />
-      <LiveOpsCallout
-        title="Need today’s live sales?"
-        description="Interactive sales lists, payment mix and cashier filters run on your shop Live Dashboard against local SQLite."
-      />
-      <Card className="mt-4">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 font-display">
-            <BarChart3 className="h-4 w-4" /> Cloud report history
-          </CardTitle>
-          <CardDescription>
-            Scheduled and emailed reports synced to Supabase. Export formats: PDF, Excel, print, email.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {reports.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No cloud reports yet. When daily/weekly jobs run, they appear here. For immediate exports use Live Dashboard → Reports.
-            </p>
-          ) : (
-            reports.map((r, i) => (
-              <div key={r.id || i} className="flex items-center justify-between gap-3 rounded-xl border border-border/70 p-3">
-                <div>
-                  <div className="font-semibold">{r.title || r.report_type || "Report"}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {(r.period || "").toString()} · {(r.created_at || "").toString().slice(0, 16)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {r.format ? <Badge variant="secondary">{r.format}</Badge> : null}
-                  <FileSpreadsheet className="h-4 w-4 text-muted-foreground" />
-                </div>
-              </div>
-            ))
-          )}
-          <Button asChild variant="outline">
-            <Link to="/downloads">Downloads & release packages</Link>
-          </Button>
-        </CardContent>
-      </Card>
+      <Tabs value={tab} onValueChange={(nextTab) => setSearch({ tab: nextTab as AnalyticsTab })}>
+        <div className="overflow-x-auto pb-1">
+          <TabsList className="h-auto min-w-max justify-start">
+            <TabsTrigger value="overview">
+              <BarChart3 className="mr-1.5 h-4 w-4" />
+              Overview
+            </TabsTrigger>
+            <TabsTrigger value="sales">All Sales</TabsTrigger>
+            <TabsTrigger value="debts">Debts</TabsTrigger>
+            <TabsTrigger value="inventory">Inventory</TabsTrigger>
+            <TabsTrigger value="saved">Saved Reports</TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="overview" className="mt-4">
+          {orgId ? <OverviewPanel orgId={orgId} start={start} end={end} /> : null}
+        </TabsContent>
+        <TabsContent value="sales" className="mt-4">
+          {orgId ? <SalesPanel orgId={orgId} start={start} end={end} filters={filtersQ.data} /> : null}
+        </TabsContent>
+        <TabsContent value="debts" className="mt-4">
+          {orgId ? <DebtsPanel orgId={orgId} start={start} end={end} /> : null}
+        </TabsContent>
+        <TabsContent value="inventory" className="mt-4">
+          {orgId ? (
+            <InventoryPanel orgId={orgId} start={start} end={end} filters={filtersQ.data} />
+          ) : null}
+        </TabsContent>
+        <TabsContent value="saved" className="mt-4">
+          {orgId ? <SavedReports orgId={orgId} /> : null}
+        </TabsContent>
+      </Tabs>
     </PageShell>
   );
 }

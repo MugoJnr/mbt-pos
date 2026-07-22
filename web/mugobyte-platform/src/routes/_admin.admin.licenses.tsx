@@ -19,6 +19,7 @@ import {
   activateCloudLicense,
   revokeCloudLicense,
   suspendCloudLicense,
+  unsuspendCloudLicense,
   renewCloudLicense,
   forceValidateCloudLicense,
   transferCloudLicense,
@@ -116,6 +117,7 @@ function AdminLicensesPage() {
     mutationFn: async (args: { op: string; id: string; days?: number }) => {
       if (args.op === "revoke") return revokeCloudLicense(args.id);
       if (args.op === "suspend") return suspendCloudLicense(args.id);
+      if (args.op === "unsuspend") return unsuspendCloudLicense(args.id);
       if (args.op === "renew") return renewCloudLicense(args.id, args.days || renewDays);
       if (args.op === "force") return forceValidateCloudLicense(args.id);
       throw new Error("Unknown op");
@@ -126,7 +128,18 @@ function AdminLicensesPage() {
         return;
       }
       const n = (res as { commands_issued?: number })?.commands_issued ?? 0;
-      toast.success(`${vars.op} sent`, { description: `Pushed to ${n} device(s). POS applies within ~30s.` });
+      const status = (res as { license?: CloudLicense })?.license?.status;
+      if (n === 0 && (vars.op === "suspend" || vars.op === "revoke")) {
+        toast.success(`${vars.op} saved in cloud`, {
+          description: status
+            ? `Status is now ${status}. No online POS device was linked — it will lock on next phone-home.`
+            : "No online POS device was linked — it will lock on next phone-home.",
+        });
+      } else {
+        toast.success(`${vars.op} sent`, {
+          description: `Pushed to ${n} device(s). Online POS applies within ~30s; offline POS within ~15 min of reconnect.`,
+        });
+      }
       refreshAll();
       setHistoryId(vars.id);
     },
@@ -255,16 +268,26 @@ function AdminLicensesPage() {
                   <div key={row.id || row.license_key} className="rounded-xl border border-border/70 p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="font-mono text-sm font-semibold">{row.license_key}</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-mono text-sm font-semibold">{row.license_key}</div>
+                          <Badge variant={
+                            row.status === "active" || row.status === "trial" ? "default"
+                              : row.status === "suspended" ? "secondary"
+                                : "destructive"
+                          }>
+                            {row.status || "unknown"}
+                          </Badge>
+                        </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {row.plan} · {row.status} · {row.activated_devices ?? 0}/{row.max_devices ?? 1} devices
+                          {row.plan} · {row.activated_devices ?? 0}/{row.max_devices ?? 1} devices
+                          {row.org_id ? ` · org ${String(row.org_id).slice(0, 8)}…` : ""}
                         </div>
                         <div className="text-xs text-muted-foreground">Expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}</div>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => copyKey(row.license_key)}><Copy className="h-3.5 w-3.5" /></Button>
                     </div>
                     <div className="mt-3 flex flex-wrap gap-1.5">
-                      <Button size="sm" variant="outline" onClick={() => activateMut.mutate(row.license_key)}>Activate here</Button>
+                      <Button size="sm" variant="outline" onClick={() => activateMut.mutate(row.license_key)} disabled={row.status === "suspended" || row.status === "revoked"}>Activate here</Button>
                       <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "renew", id: row.id!, days: renewDays })}>
                         <CalendarPlus className="mr-1 h-3.5 w-3.5" />Extend
                       </Button>
@@ -272,8 +295,12 @@ function AdminLicensesPage() {
                         <Wifi className="mr-1 h-3.5 w-3.5" />Force online
                       </Button>
                       <Button size="sm" variant="outline" onClick={() => { setHistoryId(row.id || ""); }}>History</Button>
-                      <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "suspend", id: row.id! })}>Suspend</Button>
-                      <Button size="sm" variant="destructive" onClick={() => {
+                      {row.status === "suspended" ? (
+                        <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "unsuspend", id: row.id! })}>Unsuspend</Button>
+                      ) : (
+                        <Button size="sm" variant="outline" disabled={row.status === "revoked"} onClick={() => actionMut.mutate({ op: "suspend", id: row.id! })}>Suspend</Button>
+                      )}
+                      <Button size="sm" variant="destructive" disabled={row.status === "revoked"} onClick={() => {
                         if (confirm("Revoke this license on all devices?")) actionMut.mutate({ op: "revoke", id: row.id! });
                       }}>
                         <Ban className="mr-1 h-3.5 w-3.5" />Revoke

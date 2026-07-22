@@ -31,9 +31,11 @@ POS (PyQt5 + SQLite)
 ## Configure Supabase
 
 1. Create a project at [supabase.com](https://supabase.com)
-2. SQL Editor → paste and run `supabase/schema.sql`
-3. Storage → New bucket → name `mbt-backups` → **Private**
-4. Add Storage policies from the comments at the bottom of `schema.sql`
+2. Install the Supabase CLI and authenticate with `supabase login`
+3. Apply `supabase/migrations` with `supabase link --project-ref <project-ref>`
+   followed by `supabase db push --linked --include-all`
+4. The migrations provision the private `mbt-backups` bucket and its
+   business-folder-scoped Storage policies
 5. Authentication → Providers → Email enabled
 6. Copy **Project URL** + **anon public** key
 7. On the POS PC, create:

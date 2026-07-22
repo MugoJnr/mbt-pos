@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-07-21-v3.0.0-rc1"
-APP_VERSION   = "3.0.0"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-07-22-v3.0.3"
+APP_VERSION   = "3.0.3"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -383,7 +383,17 @@ class LoginDialog(QDialog):
                 _audio_play('login_fail')
             except Exception:
                 pass
-            self._set_msg("Invalid username or password", err=True)
+            err = (res or {}).get('error') or 'Invalid username or password'
+            if (res or {}).get('locked'):
+                self._set_msg(err, err=True)
+            elif (res or {}).get('attempts_remaining') is not None:
+                left = res['attempts_remaining']
+                self._set_msg(
+                    f"Invalid username or password ({left} attempt(s) left)",
+                    err=True,
+                )
+            else:
+                self._set_msg(err, err=True)
         except Exception as e:
             self._set_msg(f"Could not open database.\n{e}", err=True)
         self._btn.setText("SIGN IN"); self._btn.setEnabled(True)
@@ -511,6 +521,171 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2200, self._restore_pending_update)
         # Warm remaining tabs slowly after first paint + services settle
         QTimer.singleShot(8000, self._warm_remaining_tabs)
+        self._install_global_search()
+        self._install_idle_watchdog()
+
+    def _install_idle_watchdog(self):
+        """S03: sign out after prolonged inactivity (default 45 min).
+
+        Override with env MBT_SESSION_IDLE_SEC (seconds). Set 0 to disable.
+        Activity = mouse / key / wheel / touch on the app.
+        """
+        try:
+            raw = (os.environ.get('MBT_SESSION_IDLE_SEC') or '').strip()
+            if raw == '':
+                timeout_sec = 45 * 60
+            else:
+                timeout_sec = float(raw)
+        except (TypeError, ValueError):
+            timeout_sec = 45 * 60
+        self._idle_timeout_sec = max(0.0, timeout_sec)
+        self._last_activity_ts = time.time()
+        self._idle_logged_out = False
+        self._idle_timer = None
+        if self._idle_timeout_sec <= 0:
+            log.info('Session idle timeout disabled (MBT_SESSION_IDLE_SEC=0)')
+            return
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+            t = QTimer(self)
+            t.setInterval(15_000)  # poll every 15s
+            t.timeout.connect(self._check_idle_timeout)
+            t.start()
+            self._idle_timer = t
+            log.info(
+                'Session idle timeout armed: %.0f min',
+                self._idle_timeout_sec / 60.0,
+            )
+        except Exception as e:
+            log.warning('idle watchdog: %s', e)
+
+    def _note_user_activity(self):
+        self._last_activity_ts = time.time()
+
+    def _idle_elapsed_sec(self) -> float:
+        return max(0.0, time.time() - float(getattr(self, '_last_activity_ts', time.time()) or time.time()))
+
+    def _should_idle_logout(self) -> bool:
+        timeout = float(getattr(self, '_idle_timeout_sec', 0) or 0)
+        if timeout <= 0:
+            return False
+        if getattr(self, '_idle_logged_out', False):
+            return False
+        return self._idle_elapsed_sec() >= timeout
+
+    def _check_idle_timeout(self):
+        if not self._should_idle_logout():
+            return
+        self._idle_session_logout()
+
+    def _idle_session_logout(self):
+        """Force return to login after inactivity (no confirm dialog)."""
+        if getattr(self, '_idle_logged_out', False):
+            return
+        self._idle_logged_out = True
+        try:
+            t = getattr(self, '_idle_timer', None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
+        log.info(
+            'Idle session logout after %.0fs inactivity',
+            self._idle_elapsed_sec(),
+        )
+        try:
+            QMessageBox.information(
+                self,
+                'Session expired',
+                'You were signed out due to inactivity.\n'
+                'Sign in again to continue.',
+            )
+        except Exception:
+            pass
+        self._perform_logout(confirm=False)
+
+    def eventFilter(self, obj, event):
+        try:
+            et = event.type()
+            if et in (
+                QEvent.MouseMove,
+                QEvent.MouseButtonPress,
+                QEvent.MouseButtonDblClick,
+                QEvent.KeyPress,
+                QEvent.Wheel,
+                QEvent.TouchBegin,
+                QEvent.TabletPress,
+            ):
+                self._note_user_activity()
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _install_global_search(self):
+        """Ctrl+K / Ctrl+F omnisearch across products, receipts, customers, debts."""
+        try:
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            sc = QShortcut(QKeySequence('Ctrl+K'), self)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(self._open_global_search)
+            sc2 = QShortcut(QKeySequence('Ctrl+Shift+F'), self)
+            sc2.setContext(Qt.ApplicationShortcut)
+            sc2.activated.connect(self._open_global_search)
+            self._global_search_shortcuts = (sc, sc2)
+        except Exception as e:
+            log.warning('global search shortcut: %s', e)
+
+    def _open_global_search(self):
+        try:
+            from desktop.dialogs.global_search_dialog import GlobalSearchDialog
+            dlg = GlobalSearchDialog(self.api, self)
+            dlg.navigate.connect(self._on_global_search_nav)
+            dlg.exec_()
+        except Exception as e:
+            log.warning('global search open: %s', e)
+            QMessageBox.warning(self, 'Search', f'Could not open search:\n{e}')
+
+    def _on_global_search_nav(self, module: str, payload):
+        self._goto(module or 'dashboard')
+        tab = self._tabs.get(module)
+        if not tab or not payload:
+            return
+        try:
+            if module == 'inventory' and hasattr(tab, '_search'):
+                q = (payload or {}).get('query') or ''
+                tab._search.setText(q)
+                if hasattr(tab, '_filter'):
+                    tab._filter()
+            elif module == 'sales':
+                rn = (payload or {}).get('receipt_number') or ''
+                if rn and hasattr(tab, '_reprint_receipt'):
+                    # Prefer focusing search / note — receipt open is user-driven
+                    if hasattr(tab, '_search'):
+                        tab._search.setText(rn)
+                elif hasattr(tab, '_search') and (payload or {}).get('query'):
+                    tab._search.setText(str(payload.get('query')))
+            elif module == 'debt':
+                q = (payload or {}).get('query') or ''
+                for attr in ('_search', '_filter_edit', '_q'):
+                    w = getattr(tab, attr, None)
+                    if w is not None and hasattr(w, 'setText'):
+                        w.setText(q)
+                        break
+                if hasattr(tab, '_filter'):
+                    try:
+                        tab._filter()
+                    except TypeError:
+                        pass
+                if hasattr(tab, 'refresh'):
+                    try:
+                        tab.refresh()
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.debug('global search nav apply: %s', e)
 
     def _open_first_tab(self):
         first = next(iter(self._nav), 'dashboard')
@@ -539,9 +714,11 @@ class MainWindow(QMainWindow):
             if hasattr(w, 'sale_completed'):
                 if 'dashboard' in self._tabs and hasattr(self._tabs['dashboard'], '_load'):
                     w.sale_completed.connect(self._tabs['dashboard']._load)
-                # reports may not exist yet â€” reconnect in _ensure_tab('reports') if needed
+                # reports may not exist yet — reconnect in _ensure_tab('reports') if needed
             if hasattr(w, 'theme_changed'):
                 w.theme_changed.connect(self._apply_app_theme)
+            if hasattr(w, 'focus_mode_toggled'):
+                w.focus_mode_toggled.connect(self.set_pos_focus_mode)
         if tid == 'reports' and 'sales' in self._tabs:
             sales = self._tabs['sales']
             if hasattr(sales, 'sale_completed') and hasattr(w, 'refresh'):
@@ -680,11 +857,17 @@ class MainWindow(QMainWindow):
         self._pending_update_version = ''
         self._pending_installer_path = None
         self._pending_update_notes = ''
+        self._unattended_idle_streak = 0
+        self._unattended_install_started = False
         try:
             from backend.updater import UpdateChecker
             online_fn = lambda: getattr(
                 getattr(self, '_svc_net', None), 'is_connected', False)
-            self._updater = UpdateChecker(APP_VERSION, is_online_getter=online_fn)
+            self._updater = UpdateChecker(
+                APP_VERSION,
+                is_online_getter=online_fn,
+                idle_getter=self.is_safe_to_auto_update,
+            )
             self._updater.on_update_available = self._on_update_available
             self._updater.on_download_ready   = self._on_update_ready
             self._updater.on_force_required   = self._on_force_update
@@ -785,6 +968,7 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         log.info(f"Update downloaded: v{version}")
         self.signals.update_ready.emit(installer_path, version)
+        QTimer.singleShot(0, self._schedule_unattended_install)
 
     def _on_force_update(self, version, reason):
         self._pending_update_version = version
@@ -816,6 +1000,108 @@ class MainWindow(QMainWindow):
                 reason or 'The update is still downloading in the background.')
         QTimer.singleShot(0, _show)
 
+    def is_safe_to_auto_update(self) -> bool:
+        """True when no sale/payment/dialog/critical UI would be interrupted."""
+        from backend.updater import evaluate_idle_window
+        try:
+            app = QApplication.instance()
+            has_modal = bool(app and app.activeModalWidget() is not None)
+            has_popup = bool(app and app.activePopupWidget() is not None)
+        except Exception:
+            has_modal = has_popup = True
+        cart_items = 0
+        critical = False
+        backup_busy = False
+        try:
+            sales = (getattr(self, '_tabs', {}) or {}).get('sales')
+            if sales is not None:
+                cart = getattr(sales, 'cart', None) or []
+                cart_items = len(cart)
+                critical = bool(getattr(sales, '_processing_sale', False))
+        except Exception:
+            cart_items = 1
+        try:
+            for tid, tab in (getattr(self, '_tabs', {}) or {}).items():
+                panel = getattr(tab, '_cloud_panel', None) or tab
+                if getattr(panel, '_busy', False):
+                    backup_busy = True
+                    break
+        except Exception:
+            pass
+        idle, _reason = evaluate_idle_window(
+            has_modal=has_modal,
+            has_popup=has_popup,
+            cart_items=cart_items,
+            critical_operation=critical,
+            backup_busy=backup_busy,
+        )
+        return idle
+
+    def _schedule_unattended_install(self):
+        """Poll for a stable idle window, then silent-install + restart."""
+        if getattr(self, '_unattended_install_started', False):
+            return
+        timer = getattr(self, '_unattended_timer', None)
+        if timer is None:
+            self._unattended_timer = QTimer(self)
+            self._unattended_timer.setInterval(15000)
+            self._unattended_timer.timeout.connect(self._try_unattended_install)
+            timer = self._unattended_timer
+        self._unattended_idle_streak = 0
+        if not timer.isActive():
+            timer.start()
+
+    def _try_unattended_install(self):
+        if getattr(self, '_unattended_install_started', False):
+            return
+        path = getattr(self, '_pending_installer_path', None) or ''
+        version = getattr(self, '_pending_update_version', None) or ''
+        updater = getattr(self, '_updater', None)
+        if not path or not os.path.isfile(path) or not updater:
+            self._unattended_idle_streak = 0
+            return
+        if not self.is_safe_to_auto_update():
+            self._unattended_idle_streak = 0
+            return
+        self._unattended_idle_streak = int(
+            getattr(self, '_unattended_idle_streak', 0) or 0) + 1
+        # ~60s consecutive idle (4 x 15s) before auto-install
+        if self._unattended_idle_streak < 4:
+            return
+        can, reason = updater.can_unattended_install()
+        if not can:
+            log.info('Unattended update deferred: %s', reason)
+            # Missing helper/checksum — keep manual button; stop hammering
+            if reason in (
+                'missing_checksum', 'helper_not_registered',
+                'fail_cooldown', 'already_installed', 'blocked_version',
+            ):
+                try:
+                    self._unattended_timer.stop()
+                except Exception:
+                    pass
+            self._unattended_idle_streak = 0
+            return
+        self._unattended_install_started = True
+        try:
+            self._unattended_timer.stop()
+        except Exception:
+            pass
+        log.info('Starting unattended install for v%s', version)
+        try:
+            ok, err = updater.install_and_restart(path, unattended=True)
+            if not ok:
+                self._unattended_install_started = False
+                log.warning('Unattended install blocked: %s', err)
+                return
+            self._pending_installer_path = getattr(
+                updater, '_installer_path', path) or path
+            self._stop_services()
+            QApplication.instance().quit()
+        except Exception as e:
+            self._unattended_install_started = False
+            log.error('Unattended install failed: %s', e)
+
     def _ui_update_available(self, version, notes):
         self._pending_update_version = version
         self._pending_update_notes = notes
@@ -833,6 +1119,7 @@ class MainWindow(QMainWindow):
             btn.setText(f"  Update v{version}  ")
             btn.show()
             btn.raise_()
+        self._schedule_unattended_install()
 
     def _ui_force_update(self, version, reason):
         QMessageBox.warning(
@@ -910,14 +1197,28 @@ class MainWindow(QMainWindow):
                 self, 'Update',
                 'The update file is not ready yet. Try again in a few minutes.')
             return
+        from backend.updater import is_update_helper_registered
+        helper_ok = False
+        try:
+            helper_ok = is_update_helper_registered()
+        except Exception:
+            helper_ok = False
         dlg = QMessageBox(self)
         dlg.setWindowTitle(f'Update v{version} Ready')
+        if helper_ok:
+            perm = (
+                'The update will install silently and reopen automatically.<br>'
+                'No Windows permission prompt is needed on this PC.')
+        else:
+            perm = (
+                '<b>Windows will ask for permission once — click Yes.</b><br>'
+                'That stages silent updates for next time.<br>'
+                'If you see "Windows protected your PC", click <b>More info</b> '
+                'then <b>Run anyway</b>.')
         dlg.setText(
             f'<b>Version {version} is ready to install.</b><br><br>'
-            'The app will close for about 30 seconds, then reopen automatically.<br>'
-            '<b>Windows will ask for permission - click Yes.</b><br>'
-            'If you see "Windows protected your PC", click <b>More info</b> '
-            'then <b>Run anyway</b>.<br>'
+            'The app will close briefly, then reopen after a successful install.<br>'
+            f'{perm}<br>'
             'Do not start MBT POS manually during the update.<br><br>'
             'Your shop data will not be affected.')
         if notes:
@@ -929,7 +1230,8 @@ class MainWindow(QMainWindow):
             return
         try:
             if self._updater:
-                ok, err = self._updater.install_and_restart(path)
+                ok, err = self._updater.install_and_restart(
+                    path, unattended=False)
                 if not ok:
                     QMessageBox.warning(self, 'Update Blocked', err)
                     return
@@ -1205,6 +1507,13 @@ class MainWindow(QMainWindow):
 
     def _goto(self, tid: str):
         prev = getattr(self, '_active_tab_id', None)
+        # Leaving sales while maximized — restore shell chrome
+        if prev == 'sales' and tid != 'sales' and getattr(self, '_pos_focus_mode', False):
+            sales = self._tabs.get('sales')
+            if sales is not None and hasattr(sales, 'set_focus_mode'):
+                sales.set_focus_mode(False)
+            else:
+                self.set_pos_focus_mode(False)
         if prev and prev != tid and prev in getattr(self, '_tabs', {}):
             try:
                 from desktop.utils.auto_fill import AutoFillService
@@ -1243,6 +1552,49 @@ class MainWindow(QMainWindow):
                 ai.set_module(tid)
         except Exception as e:
             log.debug('ai set_module: %s', e)
+
+    def set_pos_focus_mode(self, enabled: bool):
+        """Hide/show sidebar + topbar so Point of Sale fills the window (U04)."""
+        enabled = bool(enabled)
+        self._pos_focus_mode = enabled
+        side = getattr(self, '_sidebar', None)
+        top = getattr(self, '_topbar', None)
+        if side is not None:
+            side.setVisible(not enabled)
+        if top is not None:
+            top.setVisible(not enabled)
+        # Esc exits focus mode (ApplicationShortcut so it works while typing in search)
+        try:
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            sc = getattr(self, '_pos_focus_esc', None)
+            if enabled:
+                if sc is None:
+                    sc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+                    sc.setContext(Qt.ApplicationShortcut)
+                    sc.activated.connect(self._exit_pos_focus_mode)
+                    self._pos_focus_esc = sc
+                sc.setEnabled(True)
+            elif sc is not None:
+                sc.setEnabled(False)
+        except Exception as e:
+            log.debug('pos focus Esc shortcut: %s', e)
+
+    def _exit_pos_focus_mode(self):
+        """Esc / restore — sync SalesTab button then restore chrome."""
+        if not getattr(self, '_pos_focus_mode', False):
+            return
+        try:
+            app = QApplication.instance()
+            if app is not None and app.activeModalWidget() is not None:
+                return  # let dialogs keep Esc for close/cancel
+        except Exception:
+            pass
+        sales = self._tabs.get('sales') if hasattr(self, '_tabs') else None
+        if sales is not None and hasattr(sales, 'set_focus_mode'):
+            sales.set_focus_mode(False)
+        else:
+            self.set_pos_focus_mode(False)
 
     def _install_ai_assistant(self):
         """Mount floating AI FAB + slide-over panel + Full Workspace."""
@@ -1762,12 +2114,25 @@ class MainWindow(QMainWindow):
         )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
+    def _perform_logout(self, *, confirm: bool = True):
+        if confirm:
+            if QMessageBox.question(
+                self, "Sign Out", "Sign out of MBT POS?",
+                QMessageBox.Yes | QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
+        try:
+            t = getattr(self, '_idle_timer', None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
+        self._stop_services()
+        self.hide()
+        _show_login(self.api)
+
     def _logout(self):
-        if QMessageBox.question(self, "Sign Out", "Sign out of MBT POS?",
-                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
-            self._stop_services()
-            self.hide()
-            _show_login(self.api)
+        self._perform_logout(confirm=True)
 
     def closeEvent(self, event):
         self._stop_services(); event.accept()

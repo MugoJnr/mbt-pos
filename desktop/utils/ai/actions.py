@@ -15,12 +15,17 @@ log = logging.getLogger('ai.actions')
 
 # action name → required permission
 _ACTION_PERMS = {
-    'create_purchase_order': 'inventory.create',
+    'create_purchase_order': 'inventory.create',  # propose-only; PO UI not shipped (V05)
     'propose_restock': 'inventory.view',
     'draft_debt_reminder': 'debt.view',
     'open_report': 'reports.view_basic',
     'navigate': None,  # UI only
 }
+
+# Actions that must never imply a working module exists
+_UNIMPLEMENTED_ACTIONS = frozenset({
+    'create_purchase_order',
+})
 
 
 @dataclass
@@ -88,8 +93,17 @@ def extract_proposed_actions(assistant_text: str) -> Tuple[str, List[ProposedAct
 
 def format_action_preview(action: ProposedAction) -> str:
     lines = [f"Action: {action.action}", f"Summary: {action.summary}"]
+    if action.action in _UNIMPLEMENTED_ACTIONS:
+        lines.append(
+            'NOTE: Purchase Orders / receiving UI is not available yet (V05). '
+            'Treat this as a restock suggestion only — do not expect a PO to be created.')
     if action.payload:
         lines.append('Details:')
         for k, v in list(action.payload.items())[:12]:
             lines.append(f'  • {k}: {v}')
     return '\n'.join(lines)
+
+
+def is_unimplemented_action(action: ProposedAction | str) -> bool:
+    name = action.action if isinstance(action, ProposedAction) else str(action or '')
+    return name in _UNIMPLEMENTED_ACTIONS

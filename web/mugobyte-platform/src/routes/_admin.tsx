@@ -2,11 +2,18 @@ import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopbar } from "@/components/layout/AppTopbar";
-import { isAuthed, isPlatformAdmin } from "@/lib/api";
+import { ensureAuthSession, isPlatformAdmin } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin")({
-  beforeLoad: () => {
-    if (!isAuthed()) throw redirect({ to: "/login" });
+  beforeLoad: async ({ location }) => {
+    const ok = await ensureAuthSession();
+    if (!ok) {
+      const next = `${location.pathname}${location.search || ""}`;
+      throw redirect({
+        to: "/login",
+        search: { redirect: next },
+      });
+    }
     if (!isPlatformAdmin()) throw redirect({ to: "/dashboard" });
   },
   component: AdminLayout,

@@ -479,7 +479,7 @@ class ReportsTab(QWidget):
 
     def _do_export(self):
         sys.path.insert(0, _PR)
-        from backend.export_engine import export_sales_report
+        from backend.export_engine import export_sales_report, export_sales_report_html
         from backend.report_export_service import get_export_dir as _shared_export_dir
         start = self._s.date().toString(DATE_API_FMT)
         end   = self._e.date().toString(DATE_API_FMT)
@@ -540,7 +540,8 @@ class ReportsTab(QWidget):
             variance_rows, variance_summary = [], {}
         fname = f"MBT_Sales_{start}_to_{end}.xlsx"
         out = os.path.join(_shared_export_dir(), fname)
-        return export_sales_report(
+        filt = f"Date {start} → {end} · completed sales only"
+        xlsx_path = export_sales_report(
             sales, ibs, shop_name=shop, start_date=start,
             end_date=end, output_path=out, currency=cur,
             products_data=products,
@@ -551,8 +552,21 @@ class ReportsTab(QWidget):
             variance_rows=variance_rows,
             variance_summary=variance_summary,
             generated_by=user_name,
-            filters=f"Date {start} → {end} · completed sales only",
+            filters=filt,
         )
+        # Companion printable HTML (browser Print → PDF) — R02 printable export
+        try:
+            html_out = os.path.join(
+                _shared_export_dir(), f"MBT_Sales_{start}_to_{end}.html")
+            self._last_html_export_path = export_sales_report_html(
+                sales, ibs, shop_name=shop, start_date=start,
+                end_date=end, output_path=html_out, currency=cur,
+                generated_by=user_name, filters=filt,
+            )
+        except Exception as e:
+            _log.warning(f"HTML report export skipped: {e}")
+            self._last_html_export_path = None
+        return xlsx_path
 
     def _export(self):
         try:
@@ -561,6 +575,12 @@ class ReportsTab(QWidget):
             path = self._do_export()
             self._last_export_path = path
             self._set_status(f"✓ Saved: {path}", ok=True)
+            html_note = ''
+            html_path = getattr(self, '_last_html_export_path', None)
+            if html_path:
+                html_note = (
+                    f'\n\nPrintable HTML (Print → PDF):\n{html_path}'
+                )
             QMessageBox.information(self, 'Exported ✓',
                 f'Report saved to:\n{path}\n\n'
                 f'Contains 7 sheets:\n'
@@ -570,7 +590,8 @@ class ReportsTab(QWidget):
                 f'  • Payment Methods\n'
                 f'  • Stock & Inventory\n'
                 f'  • Debt Management\n'
-                f'  • Payment Variance')
+                f'  • Payment Variance'
+                f'{html_note}')
         except Exception as e:
             _log.error(f"Export error: {e}", exc_info=True)
             QMessageBox.critical(self, 'Export Error', str(e))

@@ -169,7 +169,22 @@ class CloudLicenseServer:
 
     def suspend(self, license_id: str, actor: str | None = None) -> bool:
         self._update('licenses', f'id=eq.{license_id}', {'status': 'suspended'})
+        # Stop activations immediately so validate() and re-activate cannot succeed.
+        try:
+            self._update('license_activations', f'license_id=eq.{license_id}', {'is_active': False})
+        except Exception as e:
+            logger.warning('suspend activations clear failed: %s', e)
         self._log_history(license_id, 'suspended', actor)
+        return True
+
+    def unsuspend(self, license_id: str, actor: str | None = None) -> bool:
+        rows = self._rows('licenses', f'id=eq.{license_id}&select=status,expires_at')
+        if not rows:
+            return False
+        if rows[0].get('status') != 'suspended':
+            return False
+        self._update('licenses', f'id=eq.{license_id}', {'status': 'active'})
+        self._log_history(license_id, 'unsuspended', actor)
         return True
 
     def revoke(self, license_id: str, actor: str | None = None) -> bool:
@@ -177,6 +192,10 @@ class CloudLicenseServer:
             'status': 'revoked',
             'revoked_at': datetime.now().isoformat(),
         })
+        try:
+            self._update('license_activations', f'license_id=eq.{license_id}', {'is_active': False})
+        except Exception as e:
+            logger.warning('revoke activations clear failed: %s', e)
         self._log_history(license_id, 'revoked', actor)
         return True
 

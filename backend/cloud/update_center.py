@@ -1,15 +1,66 @@
 """
 MBT Cloud — Update Center.
 Admin uploads POS versions; desktop checks periodically and reports results.
+
+Checksum helpers here are shared with backend.updater for verified installs.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger('cloud.updates')
+
+_SHA256_RE = re.compile(r'\b([a-fA-F0-9]{64})\b')
+_CHECKSUM_TAG_RE = re.compile(
+    r'\[(?:checksum_sha256|sha256)\s*:\s*([a-fA-F0-9]{64})\]',
+    re.IGNORECASE,
+)
+_CHECKSUM_LINE_RE = re.compile(
+    r'(?:checksum_sha256|sha256)\s*[:=]\s*([a-fA-F0-9]{64})',
+    re.IGNORECASE,
+)
+
+
+def normalize_checksum(value: str | None) -> str:
+    """Return lowercase 64-char hex SHA-256, or '' if invalid/missing."""
+    if not value:
+        return ''
+    text = str(value).strip().lower()
+    if text.startswith('sha256:'):
+        text = text[7:].strip()
+    text = text.replace(' ', '').replace('\r', '').replace('\n', '')
+    # Allow "hex  filename" sidecar lines
+    if '  ' in text or '\t' in text:
+        text = re.split(r'[\s]', text, maxsplit=1)[0]
+    if len(text) == 64 and _SHA256_RE.fullmatch(text):
+        return text
+    m = _SHA256_RE.search(str(value))
+    return m.group(1).lower() if m else ''
+
+
+def parse_checksum_from_text(text: str | None) -> str:
+    """Extract SHA-256 from release notes / sidecar body."""
+    if not text:
+        return ''
+    for rx in (_CHECKSUM_TAG_RE, _CHECKSUM_LINE_RE):
+        m = rx.search(text)
+        if m:
+            return normalize_checksum(m.group(1))
+    # Sidecar often is bare hex or "hex *MBT_POS_Setup.exe"
+    first = text.strip().splitlines()[0] if text.strip() else ''
+    return normalize_checksum(first)
+
+
+def sha256_file(file_path: str, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(chunk_size), b''):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 class UpdateCenter:
@@ -36,6 +87,10 @@ class UpdateCenter:
     def publish_update(self, version: str, download_url: str, checksum: str,
                        release_notes: str = '', is_mandatory: bool = False,
                        published_by: str | None = None) -> dict | None:
+        checksum = normalize_checksum(checksum)
+        if not checksum:
+            logger.error('publish_update refused: missing/invalid checksum')
+            return None
         try:
             from backend.cloud_backup.supabase_client import SupabaseClient
             client = SupabaseClient()
@@ -71,11 +126,14 @@ class UpdateCenter:
             logger.debug('record_update_result skipped: %s', e)
 
     def verify_checksum(self, file_path: str, expected: str) -> bool:
-        h = hashlib.sha256()
-        with open(file_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                h.update(chunk)
-        return h.hexdigest() == expected
+        want = normalize_checksum(expected)
+        if not want:
+            return False
+        try:
+            return sha256_file(file_path) == want
+        except Exception as e:
+            logger.warning('verify_checksum failed: %s', e)
+            return False
 
     @staticmethod
     def _version_gt(a: str, b: str) -> bool:

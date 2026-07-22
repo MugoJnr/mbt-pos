@@ -89,7 +89,8 @@ def get_dashboard_insights(api, user, *, force: bool = False) -> Dict[str, Any]:
     prompt = (
         'Based on the provided POS context, reply with a short JSON object ONLY:\n'
         '{"summary":"...","alerts":["..."],"recommendations":["..."]}\n'
-        'Max 2 sentences in summary. Max 4 alerts and 4 recommendations. Use context numbers only.'
+        'Max 2 sentences in summary. Max 4 alerts and 4 recommendations. '
+        'Use context numbers only — never invent revenue, stock, or debt figures.'
     )
     try:
         result = svc.chat(

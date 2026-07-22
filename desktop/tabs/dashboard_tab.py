@@ -14,7 +14,9 @@ from PyQt5.QtGui     import *
 from desktop.utils.theme   import C, ThemeManager, is_light_mode, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, make_table,
                                     tbl_item, tbl_right, tbl_center, page_layout)
-from desktop.utils.charts import GoldLineChart, PaymentBars, ChartCard
+from desktop.utils.charts import (
+    GoldLineChart, PaymentBars, ChartCard, ChartDetailsDialog,
+)
 from desktop.utils.security import can_void_sales, prompt_void_sale
 from desktop.utils.ui_polish import (
     AnimatedKPI, EmptyState, FloatingActionButton, ToastNotification,
@@ -132,16 +134,26 @@ class _BarRow(QWidget):
 # QUICK ACTION BUTTON
 # ---
 
-def _qa_btn(icon, label, accent, bg_dim, is_light=False):
-    """Quick-action button \u2014 icons + hover elevation, touch-friendly height."""
+def _qa_btn(icon_key, label, accent, bg_dim, is_light=False):
+    """Quick action with a native Qt icon (no emoji/font dependency)."""
     p = _palette(is_light)
-    text = f"{icon}  {label}" if icon else label
-    btn = QPushButton(text)
+    btn = QPushButton(label)
+    std_icons = {
+        'sales': QStyle.SP_FileIcon,
+        'inventory': QStyle.SP_DirIcon,
+        'debt': QStyle.SP_DialogApplyButton,
+        'reports': QStyle.SP_FileDialogDetailedView,
+    }
+    btn.setIcon(btn.style().standardIcon(
+        std_icons.get(icon_key, QStyle.SP_ArrowRight)))
+    btn.setIconSize(QSize(20, 20))
     btn.setCursor(Qt.PointingHandCursor)
     btn.setFixedHeight(48)
     btn.setMinimumWidth(110)
     btn.setMinimumHeight(44)
     btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    btn.setAccessibleName(label)
+    btn.setToolTip(f'Open {label}')
     btn.setStyleSheet(
         f"QPushButton {{ background:{bg_dim}; color:{p['text']}; "
         f"border:1px solid {qss_alpha(accent, 0.28)}; border-radius:12px; "
@@ -290,6 +302,14 @@ class DashboardTab(QWidget):
         self._k_low   = _KPI("Low Stock",        '!', '0',   'Items to restock', p['err'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
+        self._k_sales.set_actionable(True, 'Open Point of Sale', "Today's Sales")
+        self._k_sales.clicked.connect(lambda: self.navigate.emit('sales'))
+        self._k_rev.set_actionable(True, 'Open sales reports', "Today's Revenue")
+        self._k_rev.clicked.connect(lambda: self.navigate.emit('reports'))
+        self._k_avg.set_actionable(True, 'Open sales reports', 'Average Transaction')
+        self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
+        self._k_low.set_actionable(True, 'Open Inventory low-stock items', 'Low Stock')
+        self._k_low.clicked.connect(lambda: self.navigate.emit('inventory'))
         self._root_lay.addLayout(kr1)
 
         # Collected revenue tender breakdown (cash flow vs credit)
@@ -311,6 +331,15 @@ class DashboardTab(QWidget):
         for k in (self._k_debt_out, self._k_debt_col, self._k_customers,
                   self._k_overdue, self._k_credit_out):
             kr2.addWidget(k)
+        for k, tip in (
+            (self._k_debt_out, 'Open Debt Management'),
+            (self._k_debt_col, 'Open Debt collections'),
+            (self._k_customers, 'Open Debt customers'),
+            (self._k_overdue, 'Open Debt overdue invoices'),
+            (self._k_credit_out, 'Open Debt credit sales'),
+        ):
+            k.set_actionable(True, tip, k._label)
+            k.clicked.connect(lambda _=False, t='debt': self.navigate.emit(t))
         self._root_lay.addLayout(kr2)
 
         # -- KPI ROW 3 - Internal Consumption ---
@@ -318,9 +347,9 @@ class DashboardTab(QWidget):
         self._k_cons = _KPI(
             'Internal Consumption Today', '#', '0',
             'items | cost', p['info'], self._is_light)
-        self._k_cons.setCursor(Qt.PointingHandCursor)
-        self._k_cons.setToolTip('Open Internal Consumption report')
-        self._k_cons.mousePressEvent = lambda e: self._open_consumption_report()
+        self._k_cons.set_actionable(
+            True, 'Open Internal Consumption report', 'Internal Consumption Today')
+        self._k_cons.clicked.connect(self._open_consumption_report)
         kr3.addWidget(self._k_cons)
         kr3.addStretch(3)
         self._root_lay.addLayout(kr3)
@@ -328,10 +357,16 @@ class DashboardTab(QWidget):
         # -- CHARTS ROW ---
         charts = QHBoxLayout(); charts.setSpacing(18)
         self._trend_chart = GoldLineChart(height=168)
-        self._trend_card = ChartCard('Sales | Last 7 Days', self._trend_chart)
+        self._trend_card = ChartCard(
+            'Sales | Last 7 Days', self._trend_chart, expandable=True)
+        self._trend_card.activated.connect(
+            lambda: self._open_chart_detail('trend'))
         apply_card_shadow(self._trend_card)
         self._pay_chart = PaymentBars()
-        self._pay_card = ChartCard('By Payment | 7 Days', self._pay_chart)
+        self._pay_card = ChartCard(
+            'By Payment | 7 Days', self._pay_chart, expandable=True)
+        self._pay_card.activated.connect(
+            lambda: self._open_chart_detail('payment'))
         apply_card_shadow(self._pay_card)
         charts.addWidget(self._trend_card, 3)
         charts.addWidget(self._pay_card, 2)
@@ -348,10 +383,10 @@ class DashboardTab(QWidget):
         qcl.addWidget(self._qa_title)
         qa_row = QHBoxLayout(); qa_row.setSpacing(10)
         actions = [
-            ('$', 'New Sale',   'gold',  'sales'),
-            ('#', 'Inventory',  'ok',    'inventory'),
-            ('*', 'Debt',       'info',  'debt'),
-            ('%', 'Reports',    'warn',  'reports'),
+            ('sales',     'New Sale',  'gold', 'sales'),
+            ('inventory', 'Inventory', 'ok',   'inventory'),
+            ('debt',      'Debt',      'info', 'debt'),
+            ('reports',   'Reports',   'warn', 'reports'),
         ]
         self._qa_btns = []
         for icon, lbl, acc_key, tid in actions:
@@ -402,12 +437,16 @@ class DashboardTab(QWidget):
         else:
             self._void_btn = None
 
-        ref_btn = QPushButton('R')
-        ref_btn.setFixedSize(32, 32)
+        ref_btn = QPushButton()
+        ref_btn.setIcon(ref_btn.style().standardIcon(QStyle.SP_BrowserReload))
+        ref_btn.setIconSize(QSize(17, 17))
+        ref_btn.setAccessibleName('Refresh dashboard')
+        ref_btn.setToolTip('Refresh dashboard')
+        ref_btn.setFixedSize(40, 40)
         ref_btn.setCursor(Qt.PointingHandCursor)
         ref_btn.setStyleSheet(
             f"QPushButton {{ background:{p['card2']}; color:{p['text2']}; "
-            f"border:1px solid {p['border']}; border-radius:8px; font-size:16px; }}"
+            f"border:1px solid {p['border']}; border-radius:9px; font-size:16px; }}"
             f"QPushButton:hover {{ color:{p['gold']}; border-color:{p['gold']}; }}")
         ref_btn.clicked.connect(self._load)
         sh.addWidget(ref_btn)
@@ -504,10 +543,14 @@ class DashboardTab(QWidget):
         self._ai_title = QLabel('*  AI Insights')
         self._ai_title.setStyleSheet(
             f"color:{p['text']}; font-size:15px; font-weight:700; background:transparent; border:none;")
-        self._ai_refresh = QPushButton('R')
-        self._ai_refresh.setFixedSize(28, 28)
+        self._ai_refresh = QPushButton()
+        self._ai_refresh.setIcon(
+            self._ai_refresh.style().standardIcon(QStyle.SP_BrowserReload))
+        self._ai_refresh.setIconSize(QSize(16, 16))
+        self._ai_refresh.setFixedSize(40, 40)
         self._ai_refresh.setCursor(Qt.PointingHandCursor)
         self._ai_refresh.setToolTip('Refresh AI insights')
+        self._ai_refresh.setAccessibleName('Refresh AI insights')
         self._ai_refresh.clicked.connect(lambda: self._load_ai_insights(force=True))
         hdr_ai.addWidget(self._ai_title); hdr_ai.addStretch(); hdr_ai.addWidget(self._ai_refresh)
         ail.addLayout(hdr_ai)
@@ -541,30 +584,20 @@ class DashboardTab(QWidget):
         rcol.addWidget(self._ai_card)
         QTimer.singleShot(600, lambda: self._load_ai_insights(force=False))
 
-        # -- Today's Tasks + Activity ---
+        # -- Operational alerts (live data only — no placeholder checklists) ---
         self._tasks_card = _Card(self._is_light)
         tl = self._tasks_card.body(margins=(18, 16, 18, 16), spacing=8)
-        tt = QLabel("Today's Tasks")
-        tt.setStyleSheet(
+        self._tasks_title = QLabel('Needs attention')
+        self._tasks_title.setStyleSheet(
             f"color:{p['text']}; font-size:15px; font-weight:700; background:transparent; border:none;")
-        tl.addWidget(tt)
-        self._task_checks = []
-        for task in ('Pay Supplier', 'Restock low-stock items', 'Bank Deposit', 'Close Register'):
-            cb = QCheckBox(f'  {task}')
-            cb.setStyleSheet(
-                f"QCheckBox {{ color:{p['text2']}; font-size:13px; spacing:8px; background:transparent; }}"
-                f"QCheckBox::indicator {{ width:16px; height:16px; }}")
-            tl.addWidget(cb)
-            self._task_checks.append(cb)
-        rem = QLabel('Reminders')
-        rem.setStyleSheet(
-            f"color:{p['text']}; font-size:13px; font-weight:700; background:transparent; border:none; padding-top:8px;")
-        tl.addWidget(rem)
-        for rem_txt in ('Supplier payment tomorrow', 'License check', 'Monthly report due'):
-            rlbl = QLabel(f'*  {rem_txt}')
-            rlbl.setStyleSheet(
-                f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
-            tl.addWidget(rlbl)
+        tl.addWidget(self._tasks_title)
+        self._ops_list = QVBoxLayout()
+        self._ops_list.setSpacing(6)
+        tl.addLayout(self._ops_list)
+        self._ops_empty = QLabel('No urgent items right now')
+        self._ops_empty.setStyleSheet(
+            f"color:{p['muted']}; font-size:12px; background:transparent; border:none;")
+        self._ops_list.addWidget(self._ops_empty)
         rcol.addWidget(self._tasks_card)
 
         self._act_card = _Card(self._is_light)
@@ -625,8 +658,16 @@ class DashboardTab(QWidget):
             lbl = btn.property('mbtQaLabel') or btn.text()
             acc = p.get(key, p['gold'])
             dim = p.get(f'{key}_dim', p['card2'])
-            text = f"{icon}  {lbl}" if icon else lbl
-            btn.setText(text)
+            btn.setText(lbl)
+            std_icons = {
+                'sales': QStyle.SP_FileIcon,
+                'inventory': QStyle.SP_DirIcon,
+                'debt': QStyle.SP_DialogApplyButton,
+                'reports': QStyle.SP_FileDialogDetailedView,
+            }
+            btn.setIcon(btn.style().standardIcon(
+                std_icons.get(icon, QStyle.SP_ArrowRight)))
+            btn.setIconSize(QSize(20, 20))
             btn.setStyleSheet(
                 f"QPushButton {{ background:{dim}; color:{p['text']}; "
                 f"border:1px solid {qss_alpha(acc, 0.28)}; border-radius:12px; "
@@ -641,7 +682,7 @@ class DashboardTab(QWidget):
                 ('$', 'New Sale', lambda: self.navigate.emit('sales')),
                 ('#', 'New Product', lambda: self.navigate.emit('inventory')),
                 ('@', 'New Customer', lambda: self.navigate.emit('debt')),
-                ('>', 'New Supplier', lambda: self.navigate.emit('inventory')),
+                ('%', 'Open Reports', lambda: self.navigate.emit('reports')),
             ],
             parent=self,
         )
@@ -738,7 +779,7 @@ class DashboardTab(QWidget):
 
         # Section titles
         for lbl in (self._sales_title, self._top_title, self._qa_title, self._st_title,
-                    getattr(self, '_ai_title', None)):
+                    getattr(self, '_ai_title', None), getattr(self, '_tasks_title', None)):
             if lbl is not None:
                 lbl.setStyleSheet(
                     f"color:{p['text']}; font-size:15px; font-weight:700; "
@@ -822,6 +863,63 @@ class DashboardTab(QWidget):
         if mw is not None:
             setattr(mw, '_pending_consumption_report', True)
         self.navigate.emit('consumption')
+
+    def _refresh_ops_alerts(self, *, low_stock=0, overdue=0, outstanding=0.0, currency='KES'):
+        """Replace placeholder checklists with actionable live alerts."""
+        lay = getattr(self, '_ops_list', None)
+        if lay is None:
+            return
+        while lay.count():
+            item = lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        p = _palette()
+        alerts = []
+        if int(low_stock or 0) > 0:
+            alerts.append((
+                f'{int(low_stock)} low-stock item(s) need restock',
+                'inventory', p['err'],
+            ))
+        if int(overdue or 0) > 0:
+            alerts.append((
+                f'{int(overdue)} overdue debt invoice(s)',
+                'debt', p['warn'],
+            ))
+        if float(outstanding or 0) > 0.009:
+            alerts.append((
+                f'Outstanding debt {currency} {float(outstanding):,.0f}',
+                'debt', p['err'],
+            ))
+        if not alerts:
+            empty = QLabel('No urgent items right now')
+            empty.setStyleSheet(
+                f"color:{p['muted']}; font-size:12px; background:transparent; border:none;")
+            lay.addWidget(empty)
+            return
+        for text, tid, color in alerts:
+            btn = QPushButton(text)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(40)
+            btn.setToolTip(f'Open {tid}')
+            btn.setStyleSheet(
+                f"QPushButton {{ text-align:left; padding:8px 10px; background:{p['card2']}; "
+                f"color:{p['text']}; border:1px solid {p['border']}; border-radius:8px; "
+                f"border-left:3px solid {color}; font-size:12px; font-weight:600; }}"
+                f"QPushButton:hover {{ border-color:{color}; color:{color}; }}"
+            )
+            btn.clicked.connect(lambda _=False, t=tid: self.navigate.emit(t))
+            lay.addWidget(btn)
+
+    def _open_chart_detail(self, kind):
+        """Open a native chart detail dialog with exact values."""
+        if kind == 'trend':
+            rows = self._trend_chart.data_rows()
+            title = self._trend_card._title.text()
+        else:
+            rows = self._pay_chart.data_rows()
+            title = self._pay_card._title.text()
+        ChartDetailsDialog(
+            kind, title, rows, currency=self._currency, parent=self).exec_()
 
     def _open_floating_ai(self):
         mw = self.window()
@@ -1061,6 +1159,30 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard payment chart: {e}")
 
+        # -- Live operational alerts ---
+        try:
+            low_n = 0
+            try:
+                prods = self.api.get_products() or []
+                low_n = sum(
+                    1 for p2 in prods
+                    if float(p2.get('stock', 0)) <= float(p2.get('min_stock', 5))
+                )
+            except Exception:
+                low_n = 0
+            overdue_n = 0
+            outstanding = 0.0
+            try:
+                ds = self.api.get_debt_summary() or {}
+                overdue_n = int((ds.get('overdue') or {}).get('count', 0) or 0)
+                outstanding = float((ds.get('outstanding') or {}).get('total', 0) or 0)
+            except Exception:
+                pass
+            self._refresh_ops_alerts(
+                low_stock=low_n, overdue=overdue_n, outstanding=outstanding, currency=cur)
+        except Exception as e:
+            log.warning(f"Dashboard ops alerts: {e}")
+
         # -- System status ---
         p2 = _palette(self._is_light)
         from datetime import datetime as _dt
@@ -1167,7 +1289,7 @@ class DashboardTab(QWidget):
         self._void_sale_action()
 
     def _on_sale_double_click(self, row, _col):
-        """Sale details dialog with Void action when permitted."""
+        """Full receipt detail (line items) with Edit / Void for permitted roles."""
         if row < 0:
             return
         receipt = ''
@@ -1176,56 +1298,15 @@ class DashboardTab(QWidget):
             receipt = item.text().strip()
         if not receipt:
             return
-        vals = []
-        for c in range(self._tbl.columnCount()):
-            it = self._tbl.item(row, c)
-            vals.append(it.text() if it else '')
-        headers = ['Receipt', 'Time', 'Cashier', 'Total', 'Status']
-        from desktop.utils.theme import apply_themed_dialog, C as TC
-        dlg = QDialog(self)
-        dlg.setWindowTitle(f'Sale - {receipt}')
-        dlg.setMinimumWidth(400)
-        apply_themed_dialog(dlg)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(10)
-        title = QLabel('Sale Details')
-        title.setStyleSheet(
-            f"color:{TC['text']};font-size:17px;font-weight:700;background:transparent;")
-        lay.addWidget(title)
-        for h, v in zip(headers, vals):
-            row_l = QHBoxLayout()
-            hl = QLabel(h)
-            hl.setStyleSheet(
-                f"color:{TC['muted']};font-size:12px;font-weight:600;background:transparent;")
-            hl.setFixedWidth(80)
-            vl = QLabel(v)
-            vl.setStyleSheet(
-                f"color:{TC['text']};font-size:13px;background:transparent;")
-            row_l.addWidget(hl)
-            row_l.addWidget(vl, 1)
-            lay.addLayout(row_l)
-        btns = QHBoxLayout()
-        btns.addStretch()
-        if can_void_sales(self.user) and (vals[4] or '').lower().find('void') < 0:
-            void_b = QPushButton('Void Sale')
-            void_b.setCursor(Qt.PointingHandCursor)
-            void_b.setMinimumHeight(36)
-            void_b.setStyleSheet(
-                f"QPushButton {{ background:{TC['err_dim']}; color:{TC['err']}; "
-                f"border:1px solid {qss_alpha(TC['err'], 0.45)}; border-radius:7px; "
-                f"font-size:13px; font-weight:700; padding:0 16px; }}"
-                f"QPushButton:hover {{ background:{TC['err']}; color:{TC.get('on_danger', '#FFFFFF')}; }}")
-            def _do_void():
-                dlg.accept()
-                if prompt_void_sale(self.api, self, receipt_prefill=receipt):
-                    ToastNotification.show_toast(self, 'Sale voided', tone='warn')
-                    self._load()
-            void_b.clicked.connect(_do_void)
-            btns.addWidget(void_b)
-        close_b = QPushButton('Close')
-        close_b.setMinimumHeight(36)
-        close_b.clicked.connect(dlg.reject)
-        btns.addWidget(close_b)
-        lay.addLayout(btns)
-        dlg.exec_()
+        from desktop.dialogs.receipt_detail_dialog import open_receipt_detail
+        cur = 'KES'
+        try:
+            cur = (self.api.get_setting('currency_symbol') if hasattr(self.api, 'get_setting')
+                   else None) or getattr(self, '_currency', None) or 'KES'
+        except Exception:
+            cur = getattr(self, '_currency', 'KES') or 'KES'
+        if open_receipt_detail(
+            self.api, self, receipt=receipt, currency=cur, user=self.user,
+        ):
+            ToastNotification.show_toast(self, 'Sale updated', tone='ok')
+            self._load()

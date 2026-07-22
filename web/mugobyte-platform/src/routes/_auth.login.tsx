@@ -8,9 +8,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth";
+import { getUser, isPlatformAdmin } from "@/lib/api";
 
 export const Route = createFileRoute("/_auth/login")({
   component: LoginPage,
+  validateSearch: (search: Record<string, unknown>) => ({
+    redirect: typeof search.redirect === "string" ? search.redirect : undefined,
+    next: typeof search.next === "string" ? search.next : undefined,
+  }),
   head: () => ({ meta: [{ title: "Sign In | MugoByte" }] }),
 });
 
@@ -21,22 +26,44 @@ function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(() => {
+    try {
+      return localStorage.getItem("mbt_remember") !== "0";
+    } catch {
+      return true;
+    }
+  });
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    const error = await login(username.trim(), password);
+    const error = await login(username.trim(), password, remember);
     setLoading(false);
     if (error) {
       toast.error("Sign in failed", { description: error });
       return;
     }
     toast.success("Welcome back", { description: "Opening your MugoByte Workspace…" });
+    const params = new URLSearchParams(window.location.search);
+    const next = params.get("redirect") || params.get("next") || "";
+    if (next.startsWith("/") && !next.startsWith("//")) {
+      window.location.assign(next);
+      return;
+    }
+    if (isPlatformAdmin(getUser())) {
+      navigate({ to: "/admin/licenses" });
+      return;
+    }
     navigate({ to: "/dashboard" });
   };
 
   return (
     <div className="animate-fade-in">
+      <div className="mb-5 rounded-xl border border-primary/20 bg-primary/5 px-3.5 py-2.5 text-xs text-muted-foreground">
+        <span className="font-medium text-foreground">MugoByte Workspace</span>
+        <span className="mx-1.5 text-border">·</span>
+        Secure cloud account for every MugoByte product
+      </div>
       <h1 className="font-display text-2xl font-semibold tracking-tight">Sign in</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         One account for every MugoByte product — enter your Workspace, not just a POS screen.
@@ -61,7 +88,11 @@ function LoginPage() {
         </div>
         <div className="flex items-center justify-between">
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Checkbox /> Remember me
+            <Checkbox
+              checked={remember}
+              onCheckedChange={(value) => setRemember(value === true)}
+            />
+            Remember me
           </label>
           <Link to="/verify-email" className="text-xs text-muted-foreground hover:text-foreground">Verify account</Link>
         </div>

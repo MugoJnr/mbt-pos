@@ -3,13 +3,14 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopbar } from "@/components/layout/AppTopbar";
 import { AppFooter } from "@/components/layout/AppFooter";
-import { isAuthed } from "@/lib/api";
+import { ensureAuthSession } from "@/lib/api";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { pageTitle, PORTAL_PRODUCT } from "@/lib/brand";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: () => {
-    if (!isAuthed()) throw redirect({ to: "/login" });
+  beforeLoad: async () => {
+    const ok = await ensureAuthSession();
+    if (!ok) throw redirect({ to: "/login" });
   },
   component: AppLayout,
 });

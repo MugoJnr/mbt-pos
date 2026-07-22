@@ -1162,6 +1162,138 @@ def list_expenses(conn, start=None, end=None) -> list:
     ).fetchall()]
 
 
+def get_expense(conn, expense_id: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM expense_entries WHERE id=? AND deleted_at IS NULL",
+        (expense_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_expense(
+    conn, expense_id: int, *, reason: str = '', user_id=None, username='',
+) -> dict:
+    """Soft-delete expense and reverse its journal (posted entries stay immutable)."""
+    exp = get_expense(conn, expense_id)
+    if not exp:
+        return {'error': 'Expense not found'}
+    jid = exp.get('journal_id')
+    if jid:
+        rev = reverse_journal(
+            conn, int(jid),
+            reason=reason or f"Delete expense {exp.get('expense_number')}",
+            user_id=user_id,
+            username=username or '',
+            source_module='expense',
+            source_id=f"del:{exp.get('expense_number')}",
+            entry_type='reversal',
+        )
+        if rev.get('error') and 'already reversed' not in str(rev.get('error') or '').lower():
+            return rev
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE expense_entries SET deleted_at=?, status='voided' WHERE id=?",
+        (now, expense_id),
+    )
+    accounting_audit(
+        conn, user_id, username, 'DELETE_EXPENSE', 'expense', expense_id,
+        f"{exp.get('expense_number')} reason={reason}",
+    )
+    return {'success': True, 'id': expense_id, 'expense_number': exp.get('expense_number')}
+
+
+def update_expense(
+    conn, expense_id: int, data: dict, *, user_id=None, username='',
+) -> dict:
+    """
+    Update expense. Description/vendor-only changes patch the row.
+    Amount/account/date changes reverse the old journal and post a replacement.
+    """
+    exp = get_expense(conn, expense_id)
+    if not exp:
+        return {'error': 'Expense not found'}
+
+    new_desc = data.get('description')
+    if new_desc is None:
+        new_desc = exp.get('description') or ''
+    new_desc = str(new_desc).strip() or (exp.get('description') or 'Expense')
+    new_vendor = data.get('vendor_name')
+    if new_vendor is None:
+        new_vendor = exp.get('vendor_name') or ''
+    new_vendor = str(new_vendor)
+
+    amount = D(data['amount']) if 'amount' in data and data['amount'] is not None else D(exp.get('amount') or 0)
+    if amount <= 0:
+        return {'error': 'Amount must be greater than zero'}
+    exp_code = (data.get('account_code') or exp.get('account_code') or '6000').strip()
+    pay_code = (data.get('pay_from_code') or exp.get('pay_from_code') or '1000').strip()
+    exp_date = (data.get('expense_date') or exp.get('expense_date') or date.today().isoformat())[:10]
+    require_account(conn, exp_code)
+    require_account(conn, pay_code)
+
+    money_changed = (
+        abs(amount - D(exp.get('amount') or 0)) >= Decimal('0.005')
+        or exp_code != (exp.get('account_code') or '')
+        or pay_code != (exp.get('pay_from_code') or '')
+        or exp_date != (exp.get('expense_date') or '')[:10]
+    )
+
+    new_journal_id = exp.get('journal_id')
+    if money_changed:
+        jid = exp.get('journal_id')
+        if jid:
+            rev = reverse_journal(
+                conn, int(jid),
+                reason=f"Update expense {exp.get('expense_number')}",
+                user_id=user_id,
+                username=username or '',
+                source_module='expense',
+                source_id=f"upd:{exp.get('expense_number')}",
+                entry_type='reversal',
+            )
+            if rev.get('error') and 'already reversed' not in str(rev.get('error') or '').lower():
+                return rev
+        result = post_journal(
+            conn,
+            [
+                {'account_code': exp_code, 'debit': amount, 'memo': new_desc},
+                {'account_code': pay_code, 'credit': amount, 'memo': new_desc},
+            ],
+            description=f"Expense {exp.get('expense_number')}: {new_desc}",
+            entry_date=exp_date,
+            source_module='expense',
+            source_id=f"{exp.get('expense_number')}:v2",
+            entry_type='expense',
+            user_id=user_id,
+            username=username or '',
+        )
+        if not result.get('success'):
+            return result
+        new_journal_id = result.get('journal_id')
+
+    conn.execute(
+        "UPDATE expense_entries SET expense_date=?, account_code=?, pay_from_code=?, "
+        "amount=?, description=?, vendor_name=?, journal_id=?, "
+        "attachment_path=COALESCE(?, attachment_path) WHERE id=?",
+        (
+            exp_date, exp_code, pay_code, money_float(amount), new_desc, new_vendor,
+            new_journal_id,
+            data.get('attachment_path'),
+            expense_id,
+        ),
+    )
+    accounting_audit(
+        conn, user_id, username, 'UPDATE_EXPENSE', 'expense', expense_id,
+        f"{exp.get('expense_number')} amt={money_float(amount)}",
+    )
+    return {
+        'success': True,
+        'id': expense_id,
+        'expense_number': exp.get('expense_number'),
+        'journal_id': new_journal_id,
+    }
+
+
 def ar_aging_from_debts(conn) -> dict:
     """AR aging reads debt_invoices — single source of truth with Debt module."""
     rows = [dict(r) for r in conn.execute(

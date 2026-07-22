@@ -45,21 +45,84 @@ def _business_passphrase(business_id: str, user_id: str = '', extra: str = '') -
     return hashlib.sha256(material.encode('utf-8')).hexdigest()
 
 
+def _deterministic_salt(business_id: str, user_id: str = '') -> str:
+    """
+    Portable salt derived from the cloud account identity.
+
+    The default (password-less) backup key MUST be reproducible on any device
+    that signs into the same MugoByte account, otherwise a fresh install can
+    never decrypt existing cloud backups. business_id + user_id both come back
+    from the cloud on login, so deriving the salt from them makes the key
+    fully recoverable without ever transmitting the salt.
+    """
+    material = f'mbt-cloud-salt|{business_id}|{user_id}'
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()[:SALT_LEN * 2]
+
+
 def ensure_identity_key_material(identity: dict, password: str = '') -> tuple[bytes, dict]:
     """
-    Ensure identity has encryption_salt; return (aes_key, updated_identity).
-    Prefer user password when provided; else derive from business/user ids.
+    Return (aes_key, updated_identity) for encrypting/decrypting cloud backups.
+
+    Default (no password): use a DETERMINISTIC salt + passphrase derived from the
+    business/user identity so the key can be reproduced on any device that logs
+    into the same account (device migration / disaster recovery).
+
+    With a user password: keep a per-identity random salt (stored locally). Note
+    that password-protected backups are only portable if that salt is preserved.
     """
-    salt = identity.get('encryption_salt') or ''
-    if not salt:
-        salt = generate_salt()
-        identity = dict(identity)
-        identity['encryption_salt'] = salt
     biz = identity.get('business_id') or 'local'
     uid = identity.get('user_id') or ''
-    passphrase = password.strip() if password else _business_passphrase(biz, uid)
-    key = derive_key(passphrase, salt)
+
+    if password:
+        salt = identity.get('encryption_salt') or ''
+        if not salt:
+            salt = generate_salt()
+            identity = dict(identity)
+            identity['encryption_salt'] = salt
+        key = derive_key(password.strip(), salt)
+        return key, identity
+
+    # Password-less path → fully account-derived, portable across devices.
+    salt = _deterministic_salt(biz, uid)
+    key = derive_key(_business_passphrase(biz, uid), salt)
     return key, identity
+
+
+def derive_candidate_keys(identity: dict, password: str = '') -> list[bytes]:
+    """
+    Ordered list of keys to try when decrypting a backup.
+
+    Covers backups created by the current portable scheme as well as legacy
+    backups made with a locally-stored random salt, so restores keep working
+    across the migration.
+    """
+    biz = identity.get('business_id') or 'local'
+    uid = identity.get('user_id') or ''
+    stored = identity.get('encryption_salt') or ''
+
+    candidates: list[bytes] = []
+
+    def _add(passphrase: str, salt: str) -> None:
+        if not salt:
+            return
+        try:
+            key = derive_key(passphrase, salt)
+        except EncryptionError:
+            return
+        if key not in candidates:
+            candidates.append(key)
+
+    if password:
+        # Password backups: password + (stored | deterministic) salt.
+        _add(password.strip(), stored)
+        _add(password.strip(), _deterministic_salt(biz, uid))
+
+    # Portable, account-derived key (current default scheme).
+    _add(_business_passphrase(biz, uid), _deterministic_salt(biz, uid))
+    # Legacy: business passphrase + locally-stored random salt.
+    _add(_business_passphrase(biz, uid), stored)
+
+    return candidates
 
 
 def encrypt_bytes(plaintext: bytes, key: bytes) -> bytes:

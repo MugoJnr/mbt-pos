@@ -70,20 +70,19 @@ class SettingsTab(QWidget):
         # ── M-Pesa (per shop — no customer accounts) ───────────────────────────
         mg, mf_body = section_card('$', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
         mf = make_form(); mf_w = QWidget(); mf_w.setLayout(mf)
+        # STK Push is not implemented — keep mode fixed to manual (no dead UI control).
         self.mpesa_mode = QComboBox()
-        self.mpesa_mode.setMinimumHeight(42)
-        self.mpesa_mode.setMinimumWidth(320)
-        self.mpesa_mode.addItems(['Manual (Till / Paybill on receipt)', 'STK Push (coming soon)'])
-        self.mpesa_mode.model().item(1).setEnabled(False)
+        self.mpesa_mode.addItems(['Manual (Till / Paybill on receipt)'])
+        self.mpesa_mode.hide()
         self.mpesa_till = Field('e.g. 123456')
         self.mpesa_paybill = Field('e.g. 400200')
         self.mpesa_business = Field('Name shown on receipt')
         mpesa_hint = QLabel(
             'Each shop uses its own Till or Paybill. Cashiers confirm payment on the customer\'s phone — '
-            'no buyer personal details are stored.')
+            'no buyer personal details are stored. STK Push is not available yet.')
         mpesa_hint.setWordWrap(True)
         mpesa_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
-        for lbl, w in [('Mode', self.mpesa_mode), ('Till Number', self.mpesa_till),
+        for lbl, w in [('Till Number', self.mpesa_till),
                        ('Paybill (optional)', self.mpesa_paybill), ('Business Name', self.mpesa_business)]:
             FormRow(lbl, w, mf)
         mf.addRow(mpesa_hint)
@@ -103,8 +102,9 @@ class SettingsTab(QWidget):
         self.variance_enable_transport.setMinimumHeight(36)
         self.variance_require_customer = QCheckBox('Require customer for deposits and advances')
         self.variance_require_customer.setMinimumHeight(36)
+        # Hidden until a real post-finalize refund path exists (avoid UI-only setting).
         self.variance_allow_refund = QCheckBox('Allow refunding excess after sale is finalized')
-        self.variance_allow_refund.setMinimumHeight(36)
+        self.variance_allow_refund.hide()
         self.variance_max_cashier = QDoubleSpinBox()
         self.variance_max_cashier.setRange(0, 99999999)
         self.variance_max_cashier.setDecimals(2)
@@ -115,8 +115,7 @@ class SettingsTab(QWidget):
             'the excess (change, deposit, tip, transport, advance, or miscellaneous). '
             'Amounts above the max below require manager / super-admin PIN approval. '
             'Tips and transport are separate revenue — they do not inflate product sales. '
-            '“Allow refunding excess after finalize” is a shop policy flag; voiding a sale '
-            'always reverses deposits/credit for accounting integrity.')
+            'Voiding a sale always reverses deposits/credit for accounting integrity.')
         var_hint.setWordWrap(True)
         var_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         FormRow('', self.variance_enabled, vf)
@@ -124,7 +123,6 @@ class SettingsTab(QWidget):
         FormRow('', self.variance_enable_tips, vf)
         FormRow('', self.variance_enable_transport, vf)
         FormRow('', self.variance_require_customer, vf)
-        FormRow('', self.variance_allow_refund, vf)
         FormRow('Max cashier-approvable variance', self.variance_max_cashier, vf)
         vf.addRow(var_hint)
         vf_body.addWidget(vf_w)
@@ -559,8 +557,7 @@ class SettingsTab(QWidget):
         self.mpesa_till.setText(cfg.get('mpesa_till', ''))
         self.mpesa_paybill.setText(cfg.get('mpesa_paybill', ''))
         self.mpesa_business.setText(cfg.get('mpesa_business_name', '') or cfg.get('shop_name', ''))
-        mode = cfg.get('mpesa_mode', 'manual')
-        self.mpesa_mode.setCurrentIndex(1 if mode == 'stk' else 0)
+        self.mpesa_mode.setCurrentIndex(0)  # STK not available — always manual
         self.auto_report_daily.setChecked(cfg.get('auto_report_daily', '1') == '1')
         self.auto_report_weekly.setChecked(cfg.get('auto_report_weekly', '0') == '1')
         self.auto_db_backup.setChecked(cfg.get('auto_db_backup', '1') == '1')
@@ -573,8 +570,7 @@ class SettingsTab(QWidget):
                 cfg.get('variance_enable_transport', '1') == '1')
             self.variance_require_customer.setChecked(
                 cfg.get('variance_require_customer_deposit', '1') == '1')
-            self.variance_allow_refund.setChecked(
-                cfg.get('variance_allow_refund_after_finalize', '0') == '1')
+            self.variance_allow_refund.setChecked(False)
             try:
                 self.variance_max_cashier.setValue(
                     float(cfg.get('variance_max_cashier', 1000) or 1000))
@@ -1173,8 +1169,9 @@ class SettingsTab(QWidget):
             'receipt_footer':      self.receipt_footer.text().strip(),
             'auto_print':          '1' if self.auto_print.isChecked() else '0',
             'printer_port':        self.printer_port.text().strip(),
-            'sync_interval':       str(self.sync_interval.value()),
-            'mpesa_mode':          'stk' if self.mpesa_mode.currentIndex() == 1 else 'manual',
+            # sync_interval / STK / post-finalize refund are not wired — persist safe defaults only.
+            'sync_interval':       '30',
+            'mpesa_mode':          'manual',
             'mpesa_till':          self.mpesa_till.text().strip(),
             'mpesa_paybill':       self.mpesa_paybill.text().strip(),
             'mpesa_business_name': self.mpesa_business.text().strip(),
@@ -1189,8 +1186,7 @@ class SettingsTab(QWidget):
             'variance_enable_transport': '1' if self.variance_enable_transport.isChecked() else '0',
             'variance_require_customer_deposit':
                 '1' if self.variance_require_customer.isChecked() else '0',
-            'variance_allow_refund_after_finalize':
-                '1' if self.variance_allow_refund.isChecked() else '0',
+            'variance_allow_refund_after_finalize': '0',
             'variance_max_cashier': str(self.variance_max_cashier.value()),
             'cash_rounding_enabled':
                 '1' if self.cash_rounding_enabled.isChecked() else '0',

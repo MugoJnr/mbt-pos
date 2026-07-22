@@ -479,7 +479,7 @@ class _InvoicesTab(QWidget):
 
             if status not in ('paid', 'cancelled'):
                 pay_btn = QPushButton('Collect')
-                pay_btn.setMinimumHeight(34)
+                pay_btn.setMinimumHeight(40)
                 pay_btn.setMinimumWidth(78)
                 pay_btn.setCursor(Qt.PointingHandCursor)
                 pay_btn.setToolTip('Collect payment on this invoice')
@@ -495,7 +495,7 @@ class _InvoicesTab(QWidget):
                 cl.addWidget(pay_btn)
 
             view_btn = QPushButton('History')
-            view_btn.setMinimumHeight(34)
+            view_btn.setMinimumHeight(40)
             view_btn.setMinimumWidth(78)
             view_btn.setCursor(Qt.PointingHandCursor)
             view_btn.setToolTip('View payment history')
@@ -515,7 +515,7 @@ class _InvoicesTab(QWidget):
                     and bal_amt > 0.009
                     and self._can_delete_debt()):
                 del_btn = QPushButton('Write Off' if paid_amt > 0.009 else 'Delete')
-                del_btn.setMinimumHeight(34)
+                del_btn.setMinimumHeight(40)
                 del_btn.setMinimumWidth(70)
                 del_btn.setCursor(Qt.PointingHandCursor)
                 del_btn.setToolTip(
@@ -1388,10 +1388,30 @@ class _SaleDebtDetailDialog(QDialog):
             f"color:{C['text']};font-size:13px;background:{C['card']};"
             f"border:1px solid {C['border']};border-radius:8px;padding:14px;")
         lay.addWidget(self._info)
+
+        self._items_tbl = QTableWidget(0, 4)
+        self._items_tbl.setHorizontalHeaderLabels(['Product', 'Qty', 'Price', 'Total'])
+        self._items_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self._items_tbl.verticalHeader().setVisible(False)
+        self._items_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._items_tbl.setMaximumHeight(180)
+        lay.addWidget(self._items_tbl)
+
         br = QHBoxLayout()
         hist = PrimaryBtn("View Debt History", 42)
         hist.clicked.connect(self._open_history)
         br.addWidget(hist, 1)
+
+        view_sale = SecondaryBtn("View Receipt", 42)
+        view_sale.clicked.connect(self._view_receipt)
+        br.addWidget(view_sale, 1)
+
+        self._edit_sale_btn = PrimaryBtn("Edit Sale…", 42)
+        self._edit_sale_btn.setToolTip(
+            "Super Admin — edit the linked sale (or reinstate if voided)")
+        self._edit_sale_btn.clicked.connect(self._edit_sale)
+        self._edit_sale_btn.setVisible(False)
+        br.addWidget(self._edit_sale_btn, 1)
 
         self._del_btn = DangerBtn("Delete Debt…", 42)
         self._del_btn.setToolTip(
@@ -1436,11 +1456,43 @@ class _SaleDebtDetailDialog(QDialog):
             f"<b>Payment Method:</b> {method}<br>"
             f"<b>Customer:</b> {cust}<br>"
             f"<b>Sale Date:</b> {(sale.get('created_at') or debt.get('sale_date') or '')[:16] or '?'}<br>"
+            f"<b>Sale status:</b> {(sale.get('status') or '—')}<br>"
             f"<b>Original:</b> {_fmt(original, cur)} &nbsp; "
             f"<b>Paid:</b> {_fmt(paid, cur)} &nbsp; "
             f"<b style='color:{C['err']};'>Outstanding:</b> {_fmt(bal, cur)}<br>"
             f"<b>Status:</b> {_status_label(status)}"
         )
+
+        items = sale.get('items') or []
+        self._items_tbl.setRowCount(0)
+        for i, it in enumerate(items):
+            self._items_tbl.insertRow(i)
+            vals = [
+                it.get('product_name') or '—',
+                f"{float(it.get('quantity') or 0):g}",
+                f"{float(it.get('unit_price') or 0):,.2f}",
+                f"{float(it.get('total') or 0):,.2f}",
+            ]
+            for j, v in enumerate(vals):
+                self._items_tbl.setItem(i, j, QTableWidgetItem(v))
+        if not items:
+            self._items_tbl.insertRow(0)
+            empty = QTableWidgetItem('No line items (sale may be missing)')
+            empty.setFlags(Qt.ItemIsEnabled)
+            self._items_tbl.setItem(0, 0, empty)
+            self._items_tbl.setSpan(0, 0, 1, 4)
+
+        # Superadmin can edit / reinstate the linked sale
+        try:
+            role = (self.p.user.get('role') or '').lower()
+            self._edit_sale_btn.setVisible(bool(self.sale_id) and role == 'superadmin')
+            if (sale.get('status') or '').lower() in ('void', 'voided'):
+                self._edit_sale_btn.setText('Reinstate & Edit Sale…')
+            else:
+                self._edit_sale_btn.setText('Edit Sale…')
+        except Exception:
+            self._edit_sale_btn.setVisible(False)
+
         # Show delete/write-off for open debts with remaining balance (superadmin)
         try:
             from desktop.utils.security import can_delete_debt
@@ -1457,6 +1509,36 @@ class _SaleDebtDetailDialog(QDialog):
                     'Write Off Debt…' if paid > 0.009 else 'Delete Debt…')
         except Exception:
             self._del_btn.setVisible(False)
+
+    def _view_receipt(self):
+        if not self.sale_id:
+            QMessageBox.information(self, "No Sale", "No linked sale for this debt.")
+            return
+        from desktop.dialogs.receipt_detail_dialog import open_receipt_detail
+        if open_receipt_detail(
+            self.p.api, self, sale_id=int(self.sale_id),
+            currency=self.p._currency, user=self.p.user,
+        ):
+            self._load()
+
+    def _edit_sale(self):
+        if not self.sale_id:
+            return
+        from desktop.dialogs.edit_sale_dialog import prompt_edit_sale
+        sale = {}
+        try:
+            sale = self.p.api.get_sale(int(self.sale_id)) or {}
+        except Exception:
+            sale = {}
+        rn = sale.get('receipt_number') or ''
+        if not rn:
+            QMessageBox.warning(self, "Missing", "Could not resolve receipt number.")
+            return
+        if prompt_edit_sale(
+            self.p.api, self, receipt_prefill=rn,
+            currency=self.p._currency, user=self.p.user, allow_voided=True,
+        ):
+            self._load()
 
     def _open_history(self):
         if not self.invoice_id:

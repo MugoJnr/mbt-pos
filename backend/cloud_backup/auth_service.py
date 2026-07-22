@@ -26,10 +26,26 @@ from backend.cloud_backup.sync_manager import _app_version
 logger = logging.getLogger('cloud_backup.auth')
 
 
-def _register_device_for_business(business: dict, user_id: str, email: str, session: dict) -> None:
-    """Register this desktop into Portal devices (pending approval) and persist org_id."""
-    from urllib.parse import quote
+def _kickoff_analytics_after_registration(device_row: dict | None) -> None:
+    """After auto-approval, clear approval backoff and start backfill/sync ASAP."""
+    status = str((device_row or {}).get('approval_status') or '').lower()
+    if status != 'approved':
+        return
+    try:
+        from backend.cloud_backup import get_sync_manager
+        mgr = get_sync_manager()
+        cleared = mgr.clear_device_approval_backoff()
+        if cleared:
+            logger.info('Cleared approval backoff on %s outbox row(s)', cleared)
+        mgr.ensure_historical_backfill()
+        mgr.flush_entity_outbox()
+    except Exception as e:
+        # Sync loop will retry; do not fail sign-in because of a transient kickoff.
+        logger.info('Post-registration analytics kickoff deferred: %s', e)
 
+
+def _register_device_for_business(business: dict, user_id: str, email: str, session: dict) -> None:
+    """Register this desktop into Portal devices (auto-approved) and persist org_id."""
     from backend.cloud.platform_service import (
         ensure_org_for_business,
         register_or_refresh_device,
@@ -38,9 +54,10 @@ def _register_device_for_business(business: dict, user_id: str, email: str, sess
     device = get_device_info()
     business_id = business.get('id') or ''
     business_name = business.get('name') or 'My Business'
+    device_row = None
     try:
         org = ensure_org_for_business(business, user_id)
-        register_or_refresh_device(
+        device_row = register_or_refresh_device(
             org['id'],
             device_id=device['device_id'],
             business_id=business_id or None,
@@ -50,6 +67,7 @@ def _register_device_for_business(business: dict, user_id: str, email: str, sess
             mbt_version=_app_version(),
             hardware_fingerprint=device.get('device_id') or '',
             actor_user_id=user_id,
+            verify_org_access=True,
         )
         ident = update_business_identity(
             business_id=business_id,
@@ -61,6 +79,7 @@ def _register_device_for_business(business: dict, user_id: str, email: str, sess
         )
         ident['org_id'] = org['id']
         save_identity(ident)
+        _kickoff_analytics_after_registration(device_row)
     except Exception as e:
         logger.warning('Device register: %s', e)
         try:

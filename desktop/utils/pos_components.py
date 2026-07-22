@@ -765,9 +765,6 @@ class PaymentButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor if enabled else Qt.ForbiddenCursor)
         self.setMinimumHeight(56)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        if not enabled:
-            tip = 'Gift Card / Store Credit — coming soon'
-            self.setToolTip(tip)
         self.refresh_theme()
 
     def refresh_theme(self):
@@ -792,17 +789,17 @@ class PaymentButton(QPushButton):
 
 
 class PaymentSegment(QWidget):
-    """Cash | M-Pesa | Card | Bank | Split tiles + future-ready Gift Card stub."""
+    """Cash | M-Pesa | Card | Bank | Split tiles (no Gift/STK placeholders)."""
     methodChanged = pyqtSignal(str)
 
     # Display key → payment combo text (POS_PAYMENT_METHODS)
+    # Gift Card omitted until implemented (U05 — no dead/coming-soon tiles).
     TILES = (
         ('Cash', 'Cash\nCash', True),
         ('M-Pesa', 'M-Pesa\nTill', True),
         ('Card', 'Card\nCard', True),
         ('Bank Transfer', 'Bank\nTransfer', True),
         ('Mixed', 'Split\nPay', True),
-        ('Gift Card', 'Gift\nSoon', False),  # future-ready stub
     )
 
     def __init__(self, parent=None):
@@ -821,7 +818,6 @@ class PaymentSegment(QWidget):
                 'Card': 'Card',
                 'Bank Transfer': 'Bank',
                 'Mixed': 'Split',
-                'Gift Card': 'Gift*',
             }.get(key, label)
             b = PaymentButton(key, pretty, enabled=enabled, secondary=not enabled)
             if enabled:
@@ -835,7 +831,6 @@ class PaymentSegment(QWidget):
         alias = {
             'Bank': 'Bank Transfer',
             'Split': 'Mixed',
-            'Gift': 'Gift Card',
         }
         method = alias.get(method, method)
         for k, b in self._btns.items():

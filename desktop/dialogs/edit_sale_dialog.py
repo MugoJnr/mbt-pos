@@ -52,6 +52,12 @@ class EditSaleDialog(QDialog):
             'Edit quantities, prices, discounts, payment, and customer. '
             'Inventory and customer balances update when you save.'
         )
+        if (self.sale.get('status') or '').lower() in ('void', 'voided'):
+            tip.setText(
+                'This sale is VOIDED. Saving will REINSTATE it as completed, '
+                'deduct stock again, and restore linked debt if it is a credit sale. '
+                'Enter a reason below.'
+            )
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
         lay.addWidget(tip)
@@ -304,8 +310,13 @@ class EditSaleDialog(QDialog):
 
 
 def prompt_edit_sale(api, parent, *, receipt_prefill: str = '',
-                     currency: str = 'KES', user=None) -> bool:
-    """Load sale by receipt → edit dialog. Returns True on successful save."""
+                     currency: str = 'KES', user=None,
+                     allow_voided: bool = True) -> bool:
+    """Load sale by receipt → edit dialog. Returns True on successful save.
+
+    Super Admin only. Completed sales can always be edited. Voided sales can be
+    reinstated + edited when allow_voided=True (default).
+    """
     from desktop.utils.security import ask_superadmin_pin, require_permission
     from desktop.utils.api_client import _db
 
@@ -326,8 +337,26 @@ def prompt_edit_sale(api, parent, *, receipt_prefill: str = '',
     if not row:
         QMessageBox.warning(parent, 'Not Found', f'No sale found: {receipt}')
         return False
-    if (row['status'] or '').lower() != 'completed':
-        QMessageBox.warning(parent, 'Cannot Edit', 'Only completed sales can be edited.')
+
+    status_l = (row['status'] or '').lower()
+    if status_l in ('void', 'voided'):
+        if not allow_voided:
+            QMessageBox.warning(parent, 'Cannot Edit', 'This sale is voided.')
+            return False
+        confirm = QMessageBox.question(
+            parent, 'Reinstate Voided Sale',
+            f'Receipt {receipt} is VOIDED.\n\n'
+            'Saving will reinstate it as COMPLETED, deduct stock again, '
+            'and re-open linked debt if it is a credit sale.\n\n'
+            'Continue?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return False
+    elif status_l != 'completed':
+        QMessageBox.warning(
+            parent, 'Cannot Edit',
+            f'Cannot edit sale with status "{row["status"]}".')
         return False
 
     if not ask_superadmin_pin(api, parent, reason=f'Edit sale {receipt}'):
@@ -339,6 +368,8 @@ def prompt_edit_sale(api, parent, *, receipt_prefill: str = '',
         return False
 
     dlg = EditSaleDialog(parent, api, sale, currency=currency)
+    if status_l in ('void', 'voided'):
+        dlg.setWindowTitle(f'Reinstate & Edit — {receipt}')
     return dlg.exec_() == QDialog.Accepted
 
 

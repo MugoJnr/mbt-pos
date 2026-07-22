@@ -61,10 +61,23 @@ def get_db_path() -> str:
 
 def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     """Standard PRAGMAs for all MBT POS database connections."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Read-only URI connections (e.g. backup snapshot source) cannot set WAL.
+        pass
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        pass
 
 
 def get_init_flag_path() -> str:

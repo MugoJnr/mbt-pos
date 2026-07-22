@@ -235,8 +235,52 @@ class ActivationDialog(QDialog):
         content.addWidget(title)
         content.addWidget(sub)
 
+        # Step 1 — Sign in to MugoByte (cloud-first: auto-activates this device)
+        content.addWidget(self._section_label("Step 1 — Sign in to MugoByte"))
+        signin_card = self._card()
+        sl = QVBoxLayout(signin_card)
+        sl.setContentsMargins(12, 10, 12, 10)
+        sl.setSpacing(8)
+        sl.addWidget(self._hint(
+            "Sign in and this device is licensed automatically from your account. "
+            "No key needed if a seat is available."))
+
+        self._cloud_email = QLineEdit()
+        self._cloud_email.setPlaceholderText("Business email")
+        self._cloud_email.setMinimumHeight(40)
+        self._style_input(self._cloud_email)
+        sl.addWidget(self._cloud_email)
+
+        self._cloud_pw = QLineEdit()
+        self._cloud_pw.setPlaceholderText("Password")
+        self._cloud_pw.setEchoMode(QLineEdit.Password)
+        self._cloud_pw.setMinimumHeight(40)
+        self._style_input(self._cloud_pw)
+        self._cloud_pw.returnPressed.connect(self._cloud_signin_activate)
+        sl.addWidget(self._cloud_pw)
+
+        self._signin_btn = QPushButton("Sign In & Activate")
+        _style_primary(self._signin_btn)
+        self._signin_btn.clicked.connect(self._cloud_signin_activate)
+        sl.addWidget(self._signin_btn)
+        content.addWidget(signin_card)
+
+        # Prefill from an existing cloud identity if present
+        try:
+            from backend.cloud_backup.paths import load_identity
+            _pref = (load_identity().get('email') or '').strip()
+            if _pref:
+                self._cloud_email.setText(_pref)
+        except Exception:
+            pass
+
+        # Offline / manual fallback
+        content.addWidget(self._section_label("Offline? Use a license key"))
+        content.addWidget(self._hint(
+            "No internet or no seat available — activate with a hardware-bound key instead."))
+
         # Step 1 — device ID
-        content.addWidget(self._section_label("Step 1 — Your Hardware ID"))
+        content.addWidget(self._section_label("Your Hardware ID"))
         did_card = self._card()
         dl = QVBoxLayout(did_card)
         dl.setContentsMargins(12, 10, 12, 10)
@@ -348,6 +392,34 @@ class ActivationDialog(QDialog):
         self._result_lbl.setText("Hardware ID copied to clipboard.")
         self._result_lbl.setStyleSheet(
             f"color:{C['ok']}; font-size:12px; background:transparent;")
+
+    def _cloud_signin_activate(self):
+        email = self._cloud_email.text().strip()
+        pw = self._cloud_pw.text()
+        if not email or not pw:
+            self._set_result("Enter your MugoByte email and password.", error=True)
+            return
+
+        self._signin_btn.setEnabled(False)
+        self._signin_btn.setText("Signing in…")
+        QApplication.processEvents()
+        try:
+            from licensing.cloud_onboarding import auto_claim_device_license
+            res = auto_claim_device_license(self.engine, email=email, password=pw)
+            if res.get('ok'):
+                self._set_result(res.get('message') or "Device activated from your account.")
+                self.accept()
+                return
+            reason = res.get('reason') or ''
+            msg = res.get('message') or "Could not auto-activate."
+            if reason in ('no_seat', 'no_org'):
+                msg += "  You can paste a license key below instead."
+            self._set_result(msg, error=True)
+        except Exception as e:
+            self._set_result(f"Sign in failed: {e}", error=True)
+        finally:
+            self._signin_btn.setEnabled(True)
+            self._signin_btn.setText("Sign In & Activate")
 
     def _activate(self):
         key = self._key_input.text().strip()

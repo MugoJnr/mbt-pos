@@ -1,11 +1,13 @@
 {
-  "version": "3.0.0",
-  "build": "RC-2026-07-21-v3.0.0-rc1",
-  "build_date": "2026-07-21",
-  "release_notes": "MugoByte Platform 3.0.0 RC1: Portal-first onboarding, multi-tenant organizations, cloud licensing, approved-device synchronization, Live Dashboard, and portal.mugobyte.com.",
+  "version": "3.0.3",
+  "build": "RC-2026-07-22-v3.0.3",
+  "build_date": "2026-07-22",
+  "release_notes": "MBT POS 3.0.3 production gate: product returns (partial restock + refund sale), suppliers + receive stock, approvals escalate, durable hold, Focus mode, Ctrl+K search, settings/receipt hardening, and expanded production test gates.\n\n[checksum_sha256: a5ebe08b64e0a0a5929dd0ba0f6e6c0cf403523d279d9358701c3428bc725fa1]",
   "github_repo": "MugoJnr/mbt-pos",
   "asset_name": "MBT_POS_Setup.exe",
   "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+  "checksum_sha256": "a5ebe08b64e0a0a5929dd0ba0f6e6c0cf403523d279d9358701c3428bc725fa1",
+  "checksum_note": "Publish SHA-256 in GitHub release notes as [checksum_sha256: <hex>] and/or upload MBT_POS_Setup.exe.sha256 sidecar. Required for unattended install.",
   "min_required_version": "1.0.0",
   "force_update": false
 }

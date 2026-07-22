@@ -475,7 +475,7 @@ class AutoFillService:
     def reports_default_preset(cfg: Optional[dict] = None) -> str:
         if _flag(cfg, AUTOFILL_REPORTS_TODAY):
             return 'today'
-        return 'today'
+        return ''
 
     @staticmethod
     def apply_reports_default_dates(tab, cfg: Optional[dict] = None) -> None:

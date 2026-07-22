@@ -35,6 +35,7 @@ class _KesEdit(QLineEdit):
 class SalesTab(QWidget):
     sale_completed = pyqtSignal()
     theme_changed = pyqtSignal(bool)
+    focus_mode_toggled = pyqtSignal(bool)  # True = hide shell chrome for POS focus
 
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
@@ -56,6 +57,13 @@ class SalesTab(QWidget):
         # until payment method change or sale reset.
         self._cash_paid_dirty = False
         self._paid_programmatic = False
+        self._held = None  # park/resume single slot (session + durable JSON)
+        self._focus_mode = False  # session-only; MainWindow hides sidebar/topbar
+        try:
+            from desktop.utils.held_sale import load_held_sale
+            self._held = load_held_sale()
+        except Exception:
+            self._held = None
         self._build()
         # Defer product grid load so MainWindow can paint first (avoids hang)
         QTimer.singleShot(400, self.refresh)
@@ -95,6 +103,13 @@ class SalesTab(QWidget):
         sf.addWidget(self._cat)
         ref = IconBtn('↺', 40, 40); ref.clicked.connect(self.refresh); sf.addWidget(ref)
         self._refresh_btn = ref
+        # POS focus: hide MainWindow sidebar/topbar so sale fills the window (U04 touch ≥40)
+        self._focus_btn = SecondaryBtn('Focus', 40)
+        self._focus_btn.setMinimumWidth(96)
+        self._focus_btn.setToolTip(
+            'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
+        self._focus_btn.clicked.connect(self._toggle_focus_mode)
+        sf.addWidget(self._focus_btn)
         # Theme switch lives in the main topbar only (avoids dual-bar fight)
         self._theme_btn = None
         self._search_bar = search_bar
@@ -407,22 +422,39 @@ class SalesTab(QWidget):
         br = QHBoxLayout(); br.setSpacing(10)
         self._clr_btn = DangerBtn('X', 40); self._clr_btn.setFixedWidth(44)
         self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
+        self._hold_btn = SecondaryBtn('Hold', 40)
+        self._hold_btn.setToolTip('Park current cart (in-memory; cleared on exit)')
+        self._hold_btn.clicked.connect(self._hold_sale)
+        self._resume_btn = SecondaryBtn('Resume', 40)
+        self._resume_btn.setToolTip('Restore held cart')
+        self._resume_btn.clicked.connect(self._resume_held)
+        self._resume_btn.setEnabled(False)
         self._prv_btn = SecondaryBtn('Preview', 40)
         self._prv_btn.clicked.connect(self._preview)
         self._reprint_btn = SecondaryBtn('Reprint', 40)
         self._reprint_btn.setToolTip('Reprint a completed receipt')
         self._reprint_btn.clicked.connect(self._reprint_receipt)
-        br.addWidget(self._clr_btn); br.addWidget(self._prv_btn, 1)
+        br.addWidget(self._clr_btn)
+        br.addWidget(self._hold_btn)
+        br.addWidget(self._resume_btn)
+        br.addWidget(self._prv_btn, 1)
         br.addWidget(self._reprint_btn)
         from desktop.utils.security import can_void_sales
         if can_void_sales(self.user):
             self._void_btn = DangerBtn('Void Sale', 40)
             self._void_btn.setToolTip(
-                'Void a completed sale (reason dropdown + Super-Admin PIN)')
+                'Void a completed sale (reason dropdown + Super-Admin PIN). '
+                'Returns not available — void or edit instead.')
             self._void_btn.clicked.connect(self._void_sale)
             br.addWidget(self._void_btn)
         else:
             self._void_btn = None
+        # Return / Exchange — partial restock + refund sale (P11)
+        self._returns_help_btn = SecondaryBtn('Return / Exchange', 40)
+        self._returns_help_btn.setToolTip(
+            'Return items from a completed receipt (restock + refund record)')
+        self._returns_help_btn.clicked.connect(self._open_return_sale)
+        br.addWidget(self._returns_help_btn)
         fl.addLayout(br)
 
         self._charge_btn = PrimaryBtn('$  Complete Sale', 56)
@@ -431,6 +463,25 @@ class SalesTab(QWidget):
         fl.addWidget(self._charge_btn)
         rp_outer.addWidget(foot)
         root.addWidget(self._right_panel, 5)
+
+    # ── POS focus / maximize (session-only) ───────────────────────────────────
+
+    def _toggle_focus_mode(self):
+        self.set_focus_mode(not bool(getattr(self, '_focus_mode', False)))
+
+    def set_focus_mode(self, enabled: bool):
+        """Enter/exit POS focus mode. Emits focus_mode_toggled for MainWindow chrome."""
+        enabled = bool(enabled)
+        if bool(getattr(self, '_focus_mode', False)) == enabled:
+            return
+        self._focus_mode = enabled
+        btn = getattr(self, '_focus_btn', None)
+        if btn is not None:
+            btn.setText('Restore' if enabled else 'Focus')
+            btn.setToolTip(
+                'Restore sidebar and top bar' if enabled else
+                'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
+        self.focus_mode_toggled.emit(enabled)
 
     def _select_pay_method(self, method: str):
         if hasattr(self, '_pay_seg'):
@@ -980,6 +1031,16 @@ class SalesTab(QWidget):
                         or q in (p.get('barcode') or '').lower())
                     and (cat == 'All Categories'
                          or (p.get('category') or 'General') == cat)]
+        # Light typo tolerance when substring finds nothing
+        if q and not filtered and len(q) >= 3:
+            import difflib
+            names = {
+                (p.get('name') or '').lower(): p
+                for p in self.products
+                if cat == 'All Categories' or (p.get('category') or 'General') == cat
+            }
+            close = difflib.get_close_matches(q, names.keys(), n=12, cutoff=0.62)
+            filtered = [names[n] for n in close]
         if not filtered:
             self._prod_grid.clear()
             self._empty.show()
@@ -1157,6 +1218,125 @@ class SalesTab(QWidget):
         n = len(self.cart)
         self._cnt.setText(f"{n} item{'s' if n != 1 else ''}")
         self._recalc()
+        self._update_hold_buttons()
+
+    def _update_hold_buttons(self):
+        if hasattr(self, '_hold_btn'):
+            self._hold_btn.setEnabled(bool(self.cart))
+        if hasattr(self, '_resume_btn'):
+            held = getattr(self, '_held', None)
+            self._resume_btn.setEnabled(bool(held and held.get('cart')))
+            n = len(held.get('cart') or []) if held else 0
+            self._resume_btn.setToolTip(
+                f'Restore held cart ({n} item{"s" if n != 1 else ""})'
+                if n else 'No held sale')
+
+    def _snapshot_pos(self):
+        import copy
+        cust_id = None
+        try:
+            if hasattr(self, '_customer') and self._customer is not None:
+                cust_id = self._customer.selected_id()
+        except Exception:
+            cust_id = None
+        disc_txt = ''
+        try:
+            disc_txt = self._disc.text() if hasattr(self, '_disc') else ''
+        except Exception:
+            pass
+        note = ''
+        try:
+            note = self._note.text() if hasattr(self, '_note') else ''
+        except Exception:
+            pass
+        pay = 'Cash'
+        try:
+            pay = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        except Exception:
+            pass
+        return {
+            'cart': copy.deepcopy(self.cart),
+            'customer_id': cust_id,
+            'disc': disc_txt,
+            'note': note,
+            'payment': pay,
+            'credit_to_apply': float(getattr(self, '_credit_to_apply', 0) or 0),
+        }
+
+    def _hold_sale(self):
+        if not self.cart:
+            _sfx('warning')
+            QMessageBox.information(self, 'Empty Cart', 'Add items before holding a sale.')
+            return
+        if self._held and self._held.get('cart'):
+            r = QMessageBox.question(
+                self, 'Replace Held Sale?',
+                'A sale is already held. Replace it with the current cart?',
+                QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        snap = self._snapshot_pos()
+        self._held = snap
+        try:
+            from desktop.utils.held_sale import save_held_sale
+            save_held_sale(snap)
+        except Exception:
+            pass
+        self._clear()
+        self._update_hold_buttons()
+        _sfx('ok')
+        QMessageBox.information(
+            self, 'Sale Held',
+            'Cart parked. Use Resume to restore it.\n'
+            '(Saved locally — survives leaving Sales / restarting the app.)')
+
+    def _resume_held(self):
+        held = getattr(self, '_held', None)
+        if not held or not held.get('cart'):
+            try:
+                from desktop.utils.held_sale import load_held_sale
+                held = load_held_sale()
+                self._held = held
+            except Exception:
+                held = None
+        if not held or not held.get('cart'):
+            QMessageBox.information(self, 'Nothing Held', 'No parked sale to restore.')
+            return
+        if self.cart:
+            r = QMessageBox.question(
+                self, 'Replace Current Cart?',
+                'Current cart will be replaced by the held sale. Continue?',
+                QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        import copy
+        self.cart = copy.deepcopy(held['cart'])
+        if hasattr(self, '_disc') and held.get('disc') is not None:
+            self._disc.blockSignals(True)
+            self._disc.setText(str(held.get('disc') or ''))
+            self._disc.blockSignals(False)
+        if hasattr(self, '_note'):
+            self._note.setText(str(held.get('note') or ''))
+        pay = held.get('payment') or 'Cash'
+        self._select_pay_method(pay)
+        self._credit_to_apply = float(held.get('credit_to_apply') or 0)
+        cid = held.get('customer_id')
+        try:
+            if cid and hasattr(self, '_customer') and hasattr(self._customer, 'select_customer'):
+                self._customer.select_customer(cid)
+            elif hasattr(self, '_customer') and hasattr(self._customer, 'select_walk_in'):
+                self._customer.select_walk_in()
+            self._on_customer_changed()
+        except Exception:
+            pass
+        self._held = None
+        try:
+            from desktop.utils.held_sale import clear_held_sale
+            clear_held_sale()
+        except Exception:
+            pass
+        self._refresh_cart()
+        _sfx('ok')
 
     def _parse_kes(self, text):
         """Parse typed KES amount; commas and spaces allowed."""
@@ -1789,6 +1969,13 @@ class SalesTab(QWidget):
         prefill = getattr(self, '_last_receipt', '') or ''
         if prompt_void_sale(self.api, self, receipt_prefill=prefill):
             _sfx('void')
+            self.sale_completed.emit()
+
+    def _open_return_sale(self):
+        from desktop.dialogs.return_sale_dialog import prompt_return_sale
+        prefill = getattr(self, '_last_receipt', '') or ''
+        if prompt_return_sale(self.api, self, receipt_prefill=prefill):
+            _sfx('ok')
             self.sale_completed.emit()
 
     def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method):

@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query";
 
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +19,24 @@ import { useTheme } from "@/lib/theme";
 import { useAuth } from "@/lib/auth";
 import { ProductSwitcher } from "@/components/layout/ProductSwitcher";
 import { fetchOrganizations } from "@/lib/platform";
+import { BRAND } from "@/lib/brand";
+
+function TopbarLogo() {
+  const { theme } = useTheme();
+  const isDark =
+    theme === "dark" ||
+    (theme === "system" &&
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches);
+  return (
+    <img
+      src={isDark ? BRAND.companyLogoDark : BRAND.companyLogo}
+      alt="MugoByte"
+      className="h-7 w-auto max-w-[132px] object-contain object-left"
+      draggable={false}
+    />
+  );
+}
 
 export function AppTopbar({ title }: { title?: string }) {
   const { theme, setTheme } = useTheme();
@@ -39,6 +56,13 @@ export function AppTopbar({ title }: { title?: string }) {
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/60 sm:px-4">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-1 h-5" />
+      <Link
+        to="/dashboard"
+        className="mr-1 inline-flex shrink-0 items-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring sm:hidden"
+        aria-label="MugoByte Workspace home"
+      >
+        <TopbarLogo />
+      </Link>
       <div className="hidden min-w-0 sm:block">
         <div className="truncate font-display text-sm font-semibold leading-tight">
           {title || "MugoByte Workspace"}
@@ -49,14 +73,16 @@ export function AppTopbar({ title }: { title?: string }) {
       </div>
 
       <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
-        <div className="relative hidden lg:block">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search products, businesses, reports…"
-            className="h-9 w-72 rounded-full bg-muted/50 pl-8 text-sm shadow-none"
-            aria-label="Search workspace"
-          />
-        </div>
+        <Button
+          asChild
+          variant="outline"
+          className="hidden h-9 gap-2 rounded-full px-3 lg:inline-flex"
+        >
+          <Link to="/reports" aria-label="Open cloud reports search">
+            <Search className="h-4 w-4" />
+            <span className="text-sm text-muted-foreground">Search reports…</span>
+          </Link>
+        </Button>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -138,7 +164,11 @@ export function AppTopbar({ title }: { title?: string }) {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-9 gap-2 pl-1 pr-2">
+            <Button
+              variant="ghost"
+              className="h-9 gap-2 pl-1 pr-2"
+              aria-label={`Account menu for ${user?.full_name || user?.username || "MugoByte User"}`}
+            >
               <Avatar className="h-7 w-7">
                 <AvatarFallback className="bg-primary/15 text-xs font-semibold text-primary">
                   {initials || "MB"}

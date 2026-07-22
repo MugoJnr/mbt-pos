@@ -89,9 +89,77 @@ class SetupWizard(QDialog):
         self._step_btns = []
         self._cf_setup_running = False
         self._tg_polling = False
+        # If activation screen already signed in / licensed, reuse that session.
+        self._seed_from_existing_session()
 
         self._build_ui()
         self._center()
+
+    def _seed_from_existing_session(self):
+        """Carry forward cloud login + license from the activation gate."""
+        try:
+            from backend.cloud_backup.paths import is_logged_in, load_identity
+            if is_logged_in():
+                ident = load_identity()
+                self._data['cloud_mode'] = 'login'
+                self._data['cloud_business_id'] = ident.get('business_id') or ''
+                self._data['cloud_email'] = ident.get('email') or ''
+                self._data['portal_notifications'] = True
+                if ident.get('business_name') and not self._data.get('shop_name'):
+                    self._data['shop_name'] = ident.get('business_name')
+        except Exception:
+            pass
+        try:
+            from licensing.license_engine import LicenseEngine
+            eng = LicenseEngine(PROJECT_ROOT)
+            if getattr(eng, 'is_valid', False):
+                self._data['license_activated'] = True
+                try:
+                    self._data['license_key'] = eng.store.get('cloud_license_key') or ''
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _restored_user_count() -> int:
+        """Number of real accounts already in the local DB (e.g. after a cloud restore)."""
+        try:
+            import sqlite3 as _sq
+            p = get_db_path()
+            if not os.path.isfile(p):
+                return 0
+            conn = _sq.connect(p)
+            try:
+                n = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            finally:
+                conn.close()
+            return int(n or 0)
+        except Exception:
+            return 0
+
+    def _has_restored_accounts(self) -> bool:
+        """True when a restore brought back accounts — skip forced admin creation."""
+        if self._data.get('cloud_restored'):
+            return True
+        return self._restored_user_count() > 0
+
+    @staticmethod
+    def _cloud_session_summary() -> tuple[bool, str]:
+        try:
+            from backend.cloud_backup.paths import is_logged_in, load_identity
+            if not is_logged_in():
+                return False, ''
+            ident = load_identity()
+            email = (ident.get('email') or '').strip()
+            biz = (ident.get('business_name') or '').strip()
+            if email and biz:
+                return True, f"Signed in as {email} · {biz}"
+            if email:
+                return True, f"Signed in as {email}"
+            return True, "Signed in to MugoByte"
+        except Exception:
+            return False, ''
 
     def _center(self):
         s = QApplication.primaryScreen().geometry()
@@ -375,6 +443,30 @@ class SetupWizard(QDialog):
     # Page 3 — Admin
     def _page_admin(self):
         w, lay = self._page_container()
+
+        # After a cloud restore, the users table (admins + passwords) already came
+        # back with the data. Don't force a new password — just confirm and continue.
+        restored = self._has_restored_accounts()
+        self._data['skip_local_admin'] = restored
+        if restored:
+            n = self._restored_user_count()
+            lay.addWidget(_label("Accounts Restored", 22, bold=True))
+            lay.addWidget(_label(
+                f"Your data recovery restored {n} existing account(s) with their original "
+                "passwords and permissions.", 14, color=C['text2']))
+            lay.addSpacing(6)
+            box = QLabel(
+                "You do NOT need to create a new admin password here.\n"
+                "Sign in to the POS using your existing username and password after setup.")
+            box.setWordWrap(True)
+            box.setStyleSheet(
+                f"background:{C.get('card', '#1E2A38')}; color:{C['text']};"
+                f"border:1px solid {C.get('accent', '#27AE60')}; border-radius:10px;"
+                "padding:14px; font-size:14px;")
+            lay.addWidget(box)
+            lay.addStretch()
+            return w
+
         lay.addWidget(_label("Create Admin Account", 22, bold=True))
         lay.addWidget(_label("This account controls all settings, users, and licensing.", 14, color=C['text2']))
         lay.addSpacing(8)
@@ -515,6 +607,30 @@ class SetupWizard(QDialog):
     def _page_license(self):
         w, lay = self._page_container()
         lay.addWidget(_label("Register Device & Activate", 22, bold=True))
+
+        already_licensed = bool(self._data.get('license_activated'))
+        if not already_licensed:
+            try:
+                from licensing.license_engine import LicenseEngine
+                if LicenseEngine(PROJECT_ROOT).is_valid:
+                    already_licensed = True
+                    self._data['license_activated'] = True
+            except Exception:
+                pass
+
+        if already_licensed:
+            lay.addWidget(_label(
+                "This device is already licensed from Sign In & Activate. Continue.",
+                14, color=C['text2']))
+            lay.addSpacing(8)
+            self.w_license_key = QLineEdit()
+            self.w_license_key.hide()
+            self.w_lic_status = QLabel("✓ License active on this device")
+            self.w_lic_status.setStyleSheet(f"color:{C['ok']}; font-size:14px; font-weight:600;")
+            lay.addWidget(self.w_lic_status)
+            lay.addStretch()
+            return w
+
         lay.addWidget(_label(
             "This PC is registered to your Portal organization. Activate with your Portal license — "
             "no trial mode and no manual serial codes.",
@@ -866,6 +982,50 @@ class SetupWizard(QDialog):
     def _page_portal_account(self):
         w, lay = self._page_container()
         lay.addWidget(_label("Portal Account", 22, True))
+
+        already, summary = self._cloud_session_summary()
+        if already or self._data.get('cloud_mode') in ('created', 'login'):
+            # Activation-screen login already done — do not ask again.
+            self._data['cloud_mode'] = self._data.get('cloud_mode') or 'login'
+            lay.addWidget(_label(
+                "You're already signed in from activation. Continue to finish shop setup.",
+                13, color=C['text2']))
+            lay.addSpacing(12)
+            self.w_cloud_email = _field("Business email")
+            self.w_cloud_pw = _field("Password (12+ characters)", password=True)
+            self.w_cloud_biz = _field("Business name (for Create Account)")
+            for f in (self.w_cloud_email, self.w_cloud_pw, self.w_cloud_biz):
+                f.hide()
+            self.w_cloud_status = _label(
+                summary or "Signed in to MugoByte. Click Continue.",
+                13, color=C['ok'])
+            try:
+                from backend.cloud_backup.paths import load_identity
+                ident = load_identity()
+                self.w_cloud_email.setText(ident.get('email') or '')
+                self.w_cloud_biz.setText(ident.get('business_name') or '')
+            except Exception:
+                pass
+            lay.addWidget(self.w_cloud_status)
+
+            # Offer restore once if cloud backups exist and local DB is empty/new.
+            try:
+                from backend.cloud_backup.restore_manager import RestoreManager
+                from mbt_paths import get_db_path
+                latest = RestoreManager().latest_backup()
+                db_missing = not os.path.isfile(get_db_path())
+                if latest and db_missing and not self._data.get('cloud_restore_offered'):
+                    self._data['cloud_restore_offered'] = True
+                    restore_btn = PrimaryBtn("Restore Latest Cloud Backup", 42)
+                    restore_btn.clicked.connect(self._restore_latest_now)
+                    lay.addSpacing(12)
+                    lay.addWidget(restore_btn, 0, Qt.AlignLeft)
+            except Exception:
+                pass
+
+            lay.addStretch()
+            return w
+
         lay.addWidget(_label(
             "Create an account or sign in to MugoByte Workspace. Email verification is required. "
             "This device will appear under Portal → Devices for approval.",
@@ -998,6 +1158,20 @@ class SetupWizard(QDialog):
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud login failed: {e}")
 
+    def _restore_latest_now(self):
+        try:
+            from backend.cloud_backup.restore_manager import RestoreManager
+            RestoreManager().restore_latest()
+            self._data['cloud_restored'] = True
+            if hasattr(self, 'w_cloud_status'):
+                self.w_cloud_status.setText(
+                    "Restore complete — finish the wizard, then restart POS.")
+                self.w_cloud_status.setStyleSheet(f"color:{C['ok']}; font-size:13px;")
+        except Exception as e:
+            if hasattr(self, 'w_cloud_status'):
+                self.w_cloud_status.setText(f"Restore failed: {e}")
+                self.w_cloud_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
+
     def _cloud_skip(self):
         """Fresh installs cannot skip Portal account creation."""
         self.w_cloud_status.setText(
@@ -1051,6 +1225,12 @@ class SetupWizard(QDialog):
         self._skip_btn.setVisible(skippable)
 
         if step == 1:
+            already, summary = self._cloud_session_summary()
+            if already:
+                self._data['cloud_mode'] = 'login'
+                if hasattr(self, 'w_cloud_status') and summary:
+                    self.w_cloud_status.setText(summary + "  Click Continue.")
+                    self.w_cloud_status.setStyleSheet(f"color:{C['ok']}; font-size:13px;")
             if hasattr(self, 'w_cloud_biz') and not self.w_cloud_biz.text().strip():
                 self.w_cloud_biz.setText(self._data.get('shop_name') or '')
             try:
@@ -1058,6 +1238,31 @@ class SetupWizard(QDialog):
                 get_or_create_device_id()
             except Exception:
                 pass
+
+        if step == 2:
+            if not self._data.get('license_activated'):
+                try:
+                    from licensing.license_engine import LicenseEngine
+                    if LicenseEngine(PROJECT_ROOT).is_valid:
+                        self._data['license_activated'] = True
+                        if hasattr(self, 'w_lic_status'):
+                            self.w_lic_status.setText("✓ License already active on this device")
+                            self.w_lic_status.setStyleSheet(
+                                f"color:{C['ok']}; font-size:13px; font-weight:600;")
+                except Exception:
+                    pass
+
+        if step == 3:
+            if hasattr(self, 'w_shop_name') and not self.w_shop_name.text().strip():
+                pref = self._data.get('shop_name') or ''
+                if not pref:
+                    try:
+                        from backend.cloud_backup.paths import load_identity
+                        pref = load_identity().get('business_name') or ''
+                    except Exception:
+                        pass
+                if pref:
+                    self.w_shop_name.setText(pref)
 
         if step == 6:
             self._refresh_cf_subdomain()
@@ -1101,12 +1306,27 @@ class SetupWizard(QDialog):
     def _validate_step(self) -> bool:
         step = self._step
         if step == 1:
+            # Prefer live session from activation-screen login over wizard-only flag.
+            already, _ = self._cloud_session_summary()
+            if already:
+                self._data['cloud_mode'] = 'login'
             mode = self._data.get('cloud_mode')
             if mode not in ('created', 'login'):
                 self._show_err("Sign in or create a Portal account before continuing.")
                 return False
         elif step == 2:
-            key = self.w_license_key.text().strip()
+            if not self._data.get('license_activated'):
+                try:
+                    from licensing.license_engine import LicenseEngine
+                    if LicenseEngine(PROJECT_ROOT).is_valid:
+                        self._data['license_activated'] = True
+                except Exception:
+                    pass
+            key = ''
+            try:
+                key = self.w_license_key.text().strip()
+            except Exception:
+                pass
             if not key and not self._data.get('license_activated'):
                 self._show_err("Activate your Portal license key to continue. There is no trial mode.")
                 return False
@@ -1115,6 +1335,10 @@ class SetupWizard(QDialog):
                 self._show_err("Shop name is required.")
                 return False
         elif step == 4:
+            # Restored data already carries the admin accounts/passwords — nothing to enter.
+            if self._data.get('skip_local_admin') or self._has_restored_accounts():
+                self._data['skip_local_admin'] = True
+                return True
             u = self.w_admin_user.text().strip()
             p = self.w_admin_pw.text()
             p2 = self.w_admin_pw2.text()
@@ -1142,6 +1366,8 @@ class SetupWizard(QDialog):
             self._data['shop_phone']    = self.w_shop_phone.text().strip()
             self._data['currency']      = self.w_currency.currentText()
         elif step == 4:
+            if self._data.get('skip_local_admin'):
+                return
             self._data['admin_user']    = self.w_admin_user.text().strip() or 'admin'
             self._data['admin_pw']      = self.w_admin_pw.text()
             self._data['admin_pin']     = self.w_admin_pin.text().strip()
@@ -1174,7 +1400,10 @@ class SetupWizard(QDialog):
 
     def _update_summary(self):
         shop = self._data.get('shop_name', '(not set)')
-        user = self._data.get('admin_user', 'admin')
+        if self._data.get('skip_local_admin') or self._data.get('cloud_restored'):
+            user = 'Restored accounts (use existing password)'
+        else:
+            user = self._data.get('admin_user', 'admin')
         prt  = self._data.get('printer_port', 'Not configured')
         lic  = 'Activated' if self._data.get('license_key') else 'Pending'
         notif = 'Portal + Email'
@@ -1254,9 +1483,20 @@ class SetupWizard(QDialog):
             }
             if deploy.get('developer_chat_id'):
                 settings['developer_chat_id'] = str(deploy['developer_chat_id'])
+
+            # If a cloud restore brought back the shop's data, never clobber restored
+            # settings or accounts. Only fill in keys that are missing.
+            restored = bool(self._data.get('skip_local_admin')) or self._has_restored_accounts()
+            settings_verb = "INSERT OR IGNORE" if restored else "INSERT OR REPLACE"
             for k, v in settings.items():
                 db.execute(
-                    "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?,?)", (k, v))
+                    f"{settings_verb} INTO system_settings (key, value) VALUES (?,?)", (k, v))
+
+            if restored:
+                # Accounts/passwords came back with the restore — leave them untouched.
+                db.commit()
+                db.close()
+                return
 
             # Create/update admin user (same hash format as login API)
             admin_user = self._data.get('admin_user', 'admin')

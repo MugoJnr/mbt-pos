@@ -692,6 +692,9 @@ def init_db():
         'branches': 'branch',
         'audit_log': 'audit_log',
         'system_settings': 'setting',
+        'debt_invoices': 'debt_invoice',
+        'debt_payments': 'debt_payment',
+        'stock_movements': 'stock_movement',
     }
     existing_tables = {
         row[0] for row in cur.execute(

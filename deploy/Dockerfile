@@ -6,7 +6,7 @@ COPY backend ./backend
 COPY web ./web
 RUN mkdir -p ./config
 COPY config/__init__.py config/deploy.py config/web_config.json ./config/
-COPY mbt_paths.py runtime_security.py roles.py ./
+COPY mbt_paths.py runtime_security.py roles.py version.json ./
 ENV PYTHONPATH=/app
 ENV MBT_DATA_ROOT=/data
 ENV MBT_ENV=production

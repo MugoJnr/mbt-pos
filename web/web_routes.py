@@ -454,6 +454,38 @@ def cloud_auth_login():
         return jsonify({'error': 'Invalid email, password, or unverified account'}), 401
 
 
+@web.route('/api/cloud/auth/session', methods=['POST'])
+def cloud_auth_session_from_tokens():
+    """Accept Auth redirect tokens (email verify / magic link) and create Portal session."""
+    data = request.json or {}
+    access_token = (data.get('access_token') or data.get('token') or '').strip()
+    refresh_token = (data.get('refresh_token') or '').strip()
+    if not access_token:
+        return jsonify({'error': 'access_token required'}), 400
+    try:
+        from backend.cloud.platform_service import cloud_session_from_tokens
+        from backend.cloud_backup.paths import is_cloud_configured
+        if not is_cloud_configured():
+            return jsonify({'error': 'Cloud not configured'}), 503
+        result = cloud_session_from_tokens(access_token, refresh_token)
+        refresh = result.pop('refresh_token', '') or refresh_token
+        response = jsonify(result)
+        if refresh:
+            response.set_cookie(
+                _REFRESH_COOKIE,
+                refresh,
+                httponly=True,
+                secure=_secure_cookie(),
+                samesite='Lax',
+                max_age=60 * 60 * 24 * 30,
+                path='/api/cloud/auth',
+            )
+        return response
+    except Exception as e:
+        current_app.logger.exception('cloud auth session: %s', e)
+        return jsonify({'error': 'Invalid or expired verification link'}), 401
+
+
 @web.route('/api/cloud/auth/register', methods=['POST'])
 def cloud_auth_register():
     data = request.json or {}
@@ -523,13 +555,20 @@ def cloud_auth_refresh():
     if not refresh_token:
         return jsonify({'error': 'Refresh session required'}), 401
     try:
-        from backend.cloud.platform_service import cloud_refresh_session
+        from backend.cloud.platform_service import cloud_refresh_session, cloud_session_from_tokens
         session = cloud_refresh_session(refresh_token)
-        response = jsonify({
-            'token': session.get('access_token'),
-            'expires_in': session.get('expires_in'),
-        })
-        rotated = session.get('refresh_token')
+        access = session.get('access_token') or ''
+        rotated = session.get('refresh_token') or refresh_token
+        payload = {'token': access, 'expires_in': session.get('expires_in')}
+        if access:
+            try:
+                # Keep Portal role in sync with Supabase app_metadata after elevation.
+                live = cloud_session_from_tokens(access, rotated)
+                payload['user'] = live.get('user')
+                payload['organizations'] = live.get('organizations')
+            except Exception:
+                pass
+        response = jsonify(payload)
         if rotated:
             response.set_cookie(
                 _REFRESH_COOKIE,
@@ -545,6 +584,30 @@ def cloud_auth_refresh():
         response = jsonify({'error': 'Session expired'})
         response.delete_cookie(_REFRESH_COOKIE, path='/api/cloud/auth')
         return response, 401
+
+
+@web.route('/api/cloud/auth/me', methods=['GET'])
+def cloud_auth_me():
+    """Return the current Portal user (including live platform_role)."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = getattr(g, 'current_user', None) or {}
+        if not user.get('id'):
+            return jsonify({'error': 'Not authenticated'}), 401
+        return jsonify({
+            'user': {
+                'id': user.get('id'),
+                'username': user.get('username'),
+                'full_name': user.get('full_name'),
+                'email': user.get('email'),
+                'role': user.get('role') or 'member',
+                'tab_permissions': [],
+            }
+        })
+
+    return _inner()
 
 
 @web.route('/api/cloud/auth/logout', methods=['POST'])
@@ -587,9 +650,10 @@ def _cloud_user_id():
 def _resolve_request_org_id(explicit: str = '', *, admin: bool = False) -> str:
     """Resolve and authorize an org before any service-role Supabase access."""
     uid = _cloud_user_id()
+    platform_role = str((getattr(g, 'current_user', {}) or {}).get('role') or '')
     if explicit:
         from backend.cloud.platform_service import require_org_access
-        require_org_access(uid, explicit, admin=admin)
+        require_org_access(uid, explicit, admin=admin, platform_role=platform_role)
         return explicit
     try:
         from backend.cloud.platform_service import list_organizations_for_user
@@ -598,7 +662,7 @@ def _resolve_request_org_id(explicit: str = '', *, admin: bool = False) -> str:
             org_id = orgs[0]['id']
             if admin:
                 from backend.cloud.platform_service import require_org_access
-                require_org_access(uid, org_id, admin=True)
+                require_org_access(uid, org_id, admin=True, platform_role=platform_role)
             return org_id
     except Exception:
         raise
@@ -607,8 +671,67 @@ def _resolve_request_org_id(explicit: str = '', *, admin: bool = False) -> str:
 
 def _cloud_exception(error: Exception, fallback_status: int = 400):
     status = 403 if isinstance(error, PermissionError) else fallback_status
-    message = str(error) if status == 403 else 'Cloud request failed'
+    if isinstance(error, LookupError):
+        status = 404
+    if isinstance(error, ValueError):
+        status = 400
+    try:
+        from backend.cloud_backup.supabase_client import SupabaseError
+        if isinstance(error, SupabaseError):
+            status = int(getattr(error, 'status', 0) or fallback_status)
+            if status < 400:
+                status = fallback_status
+    except Exception:
+        pass
+    message = str(error) if status in (400, 403, 404) else (
+        str(error) if status >= 500 and str(error) else 'Cloud request failed'
+    )
+    if status >= 500 and not str(error):
+        message = 'Cloud request failed'
+    elif status >= 500:
+        # Prefer stable client message; keep detail for known Supabase failures.
+        message = str(error) if 'failed' in str(error).lower() else 'Cloud request failed'
     return jsonify({'error': message}), status
+
+
+def _analytics_authorize():
+    """Validate org membership and analytics role before any service-role query."""
+    org_id = (request.args.get('org_id') or '').strip()
+    if not org_id:
+        raise ValueError('org_id is required')
+    from backend.cloud.platform_service import analytics_require_role, require_org_access
+
+    uid = _cloud_user_id()
+    platform_role = str((getattr(g, 'current_user', {}) or {}).get('role') or '')
+    membership = require_org_access(uid, org_id, platform_role=platform_role)
+    role, can_see_finance = analytics_require_role(membership)
+    return org_id, role, can_see_finance
+
+
+def _analytics_common_args():
+    from backend.cloud.platform_service import analytics_parse_page
+
+    page, page_size = analytics_parse_page(request.args)
+    return {
+        'start': (request.args.get('start') or '').strip()[:10],
+        'end': (request.args.get('end') or '').strip()[:10],
+        'page': page,
+        'page_size': page_size,
+        'sort': (request.args.get('sort') or '').strip(),
+        'order': (request.args.get('order') or 'desc').strip(),
+        'q': (request.args.get('q') or '').strip(),
+        'status': (request.args.get('status') or '').strip(),
+        'payment': (request.args.get('payment') or '').strip(),
+        'cashier': (request.args.get('cashier') or '').strip(),
+        'customer': (request.args.get('customer') or '').strip(),
+        'stock': (
+            request.args.get('stock')
+            or request.args.get('stock_status')
+            or ''
+        ).strip(),
+        'format': (request.args.get('format') or 'json').strip().lower(),
+        'report': (request.args.get('report') or 'sales').strip().lower(),
+    }
 
 
 def _authorize_license(license_id: str, *, admin: bool = False) -> str:
@@ -621,6 +744,11 @@ def _authorize_license(license_id: str, *, admin: bool = False) -> str:
     return org_id
 
 
+def _is_platform_admin() -> bool:
+    role = str((getattr(g, 'current_user', {}) or {}).get('role') or '').lower()
+    return role == 'platform_admin'
+
+
 @web.route('/api/cloud/licenses', methods=['GET'])
 def cloud_licenses_list():
     from backend.app import token_required
@@ -628,7 +756,9 @@ def cloud_licenses_list():
     def _inner():
         org_id = request.args.get('org_id') or ''
         try:
-            from backend.cloud.platform_service import list_licenses_for_org
+            from backend.cloud.platform_service import list_licenses_for_org, list_all_licenses
+            if _is_platform_admin() and (request.args.get('all') in ('1', 'true', 'yes') or not org_id):
+                return jsonify({'licenses': list_all_licenses(), 'scope': 'all'})
             org_id = _resolve_request_org_id(org_id)
             if not org_id:
                 return jsonify({'licenses': []})
@@ -713,7 +843,7 @@ def cloud_devices_list():
 
 @web.route('/api/cloud/devices/register', methods=['POST'])
 def cloud_devices_register():
-    """Desktop self-registration into the org device roster (pending approval)."""
+    """Desktop self-registration: org members auto-approve new/pending devices."""
     from backend.app import token_required
 
     @token_required
@@ -729,7 +859,9 @@ def cloud_devices_register():
             if not org_id:
                 return jsonify({'error': 'org_id required'}), 400
             from backend.cloud.platform_service import register_or_refresh_device
-            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            current = getattr(g, 'current_user', {}) or {}
+            actor = str(current.get('id') or '')
+            platform_role = str(current.get('role') or '')
             row = register_or_refresh_device(
                 org_id,
                 device_id=device_id,
@@ -742,6 +874,8 @@ def cloud_devices_register():
                 hardware_fingerprint=data.get('hardware_fingerprint') or '',
                 branch=data.get('branch') or '',
                 actor_user_id=actor or None,
+                platform_role=platform_role,
+                verify_org_access=True,
             )
             return jsonify({'ok': True, 'device': row})
         except Exception as e:
@@ -971,6 +1105,21 @@ def cloud_license_suspend(license_id):
     return _inner()
 
 
+@web.route('/api/cloud/licenses/<license_id>/unsuspend', methods=['POST'])
+def cloud_license_unsuspend(license_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import admin_unsuspend_license
+            _authorize_license(license_id, admin=True)
+            actor = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            return jsonify(admin_unsuspend_license(license_id, actor))
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
 @web.route('/api/cloud/licenses/<license_id>/renew', methods=['POST'])
 def cloud_license_renew(license_id):
     from backend.app import token_required
@@ -1168,6 +1317,375 @@ def cloud_reports_history():
             return jsonify({'reports': rows, 'org_id': org_id})
         except Exception as e:
             return jsonify({'reports': [], 'org_id': org_id, 'error': str(e)})
+    return _inner()
+
+
+@web.route('/api/cloud/reports', methods=['POST'])
+def cloud_reports_upload():
+    """Store a POS-generated report in the cloud so it stays visible on the
+    Portal even when the shop PC is later powered off or offline."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        try:
+            org_id = _resolve_request_org_id((data.get('org_id') or '').strip())
+        except Exception as e:
+            return _cloud_exception(e, 403)
+        if not org_id:
+            return jsonify({'error': 'No organization is linked to this account'}), 400
+
+        report = data.get('report') or {}
+        if not isinstance(report, dict):
+            return jsonify({'error': 'report must be an object'}), 400
+
+        rtype = str(report.get('type') or report.get('report_type') or 'daily').strip() or 'daily'
+        pstart = report.get('period_start') or None
+        pend = report.get('period_end') or None
+        summary_in = report.get('summary') if isinstance(report.get('summary'), dict) else {}
+        shop = str(report.get('shop_name') or '').strip()
+        title = str(data.get('title') or '').strip() or (
+            f"{rtype.title()} Report" + (f" — {shop}" if shop else '')
+        )
+        summary = {
+            'currency': report.get('currency') or 'KES',
+            'revenue': summary_in.get('revenue', 0),
+            'transactions': summary_in.get('transactions', 0),
+            'discounts': summary_in.get('discounts', 0),
+            'tax': summary_in.get('tax', 0),
+            'subtotal': summary_in.get('subtotal', 0),
+            'avg_ticket': summary_in.get('avg_ticket', 0),
+            'min_ticket': summary_in.get('min_ticket', 0),
+            'max_ticket': summary_in.get('max_ticket', 0),
+            'items_sold': summary_in.get('items_sold', 0),
+            'line_items': summary_in.get('line_items', 0),
+            'void_transactions': summary_in.get('void_transactions', 0),
+            'void_revenue': summary_in.get('void_revenue', 0),
+            'cost_of_goods': summary_in.get('cost_of_goods', 0),
+            'gross_profit': summary_in.get('gross_profit', 0),
+            'gross_margin_pct': summary_in.get('gross_margin_pct', 0),
+            'top_products': report.get('top_products') or [],
+            'by_category': report.get('by_category') or [],
+            'payment_methods': report.get('payment_methods') or [],
+            'staff_performance': report.get('staff_performance') or [],
+            'low_stock': report.get('low_stock') or [],
+            'by_hour': report.get('by_hour') or [],
+            'by_day': report.get('by_day') or [],
+            'generated_at': report.get('generated_at'),
+        }
+        row = {
+            'org_id': org_id,
+            'report_type': rtype,
+            'period_start': pstart,
+            'period_end': pend,
+            'title': title,
+            'format': 'json',
+            'summary': summary,
+        }
+        uid = _cloud_user_id()
+        if uid:
+            row['generated_by'] = uid
+
+        try:
+            from backend.cloud.platform_service import (
+                service_select, service_insert, service_update,
+            )
+            from urllib.parse import quote
+            q = (
+                f"org_id=eq.{quote(org_id, safe='')}"
+                f"&report_type=eq.{quote(rtype, safe='')}"
+                + (f"&period_start=eq.{pstart}" if pstart else "&period_start=is.null")
+                + (f"&period_end=eq.{pend}" if pend else "&period_end=is.null")
+                + "&select=id&limit=1"
+            )
+            existing = service_select('reports', q) or []
+            if existing:
+                rid = existing[0]['id']
+                service_update('reports', f"id=eq.{rid}", {
+                    'title': title, 'summary': summary, 'format': 'json',
+                })
+                return jsonify({'ok': True, 'id': rid, 'updated': True})
+            saved = service_insert('reports', row)
+            rid = saved.get('id') if isinstance(saved, dict) else None
+            return jsonify({'ok': True, 'id': rid, 'updated': False})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+# ── Portal cloud analytics (typed projection tables) ──────────────────────────
+
+@web.route('/api/cloud/analytics/overview', methods=['GET'])
+def cloud_analytics_overview():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            from backend.cloud.platform_service import (
+                analytics_overview,
+                analytics_redact_payload,
+            )
+            payload = analytics_overview(org_id, start=start, end=args['end'] or start)
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/sales', methods=['GET'])
+def cloud_analytics_sales():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            from backend.cloud.platform_service import (
+                analytics_list_sales,
+                analytics_redact_payload,
+            )
+            payload = analytics_list_sales(
+                org_id,
+                start=start,
+                end=args['end'] or start,
+                page=args['page'],
+                page_size=args['page_size'],
+                sort=args['sort'] or 'created_at',
+                order=args['order'],
+                status=args['status'],
+                payment=args['payment'],
+                cashier=args['cashier'],
+                customer=args['customer'],
+                q=args['q'],
+            )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/sales/<device_id>/<source_id>', methods=['GET'])
+def cloud_analytics_sale_detail(device_id, source_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            from backend.cloud.platform_service import (
+                analytics_redact_payload,
+                analytics_sale_detail,
+            )
+            sale = analytics_sale_detail(org_id, device_id, source_id)
+            return jsonify({
+                'org_id': org_id,
+                'sale': analytics_redact_payload(
+                    sale, can_see_finance=can_see_finance, role=role,
+                ),
+            })
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/debts', methods=['GET'])
+def cloud_analytics_debts():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            from backend.cloud.platform_service import (
+                analytics_list_debts,
+                analytics_redact_payload,
+            )
+            payload = analytics_list_debts(
+                org_id,
+                start=args['start'],
+                end=args['end'],
+                page=args['page'],
+                page_size=args['page_size'],
+                sort=args['sort'] or 'created_at',
+                order=args['order'],
+                status=args['status'],
+                customer=args['customer'],
+                q=args['q'],
+            )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/debt-payments', methods=['GET'])
+def cloud_analytics_debt_payments():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            from backend.cloud.platform_service import (
+                analytics_list_debt_payments,
+                analytics_redact_payload,
+            )
+            payload = analytics_list_debt_payments(
+                org_id,
+                start=start,
+                end=args['end'] or start,
+                page=args['page'],
+                page_size=args['page_size'],
+                sort=args['sort'] or 'created_at',
+                order=args['order'],
+                payment=args['payment'],
+                customer=args['customer'],
+                q=args['q'],
+            )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/inventory', methods=['GET'])
+def cloud_analytics_inventory():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            from backend.cloud.platform_service import (
+                analytics_list_inventory,
+                analytics_redact_payload,
+            )
+            payload = analytics_list_inventory(
+                org_id,
+                page=args['page'],
+                page_size=args['page_size'],
+                sort=args['sort'] or 'name',
+                order=args['order'] or 'asc',
+                q=args['q'],
+                stock=args['stock'] or args['status'],
+            )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/filters', methods=['GET'])
+def cloud_analytics_filters():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, _role, _can_see_finance = _analytics_authorize()
+            from backend.cloud.platform_service import analytics_filter_options
+            return jsonify(analytics_filter_options(org_id))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/export', methods=['GET'])
+def cloud_analytics_export():
+    from backend.app import token_required
+    from flask import Response
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            fmt = args['format'] if args['format'] in ('csv', 'json') else 'csv'
+            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            from backend.cloud.platform_service import (
+                analytics_export_rows,
+                analytics_redact_payload,
+                analytics_rows_to_csv,
+            )
+            rows, fields = analytics_export_rows(
+                org_id,
+                report=args['report'],
+                start=start,
+                end=args['end'] or start,
+                status=args['status'],
+                payment=args['payment'],
+                cashier=args['cashier'],
+                customer=args['customer'],
+                q=args['q'],
+                stock=args['stock'],
+                sort=args['sort'],
+                order=args['order'],
+            )
+            rows = analytics_redact_payload(
+                rows, can_see_finance=can_see_finance, role=role,
+            )
+            if not can_see_finance:
+                fields = [f for f in fields if f not in (
+                    'cost_price', 'unit_cost', 'cost', 'gross_profit', 'profit',
+                )]
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            stem = f"mbt-{(args['report'] or 'analytics')}-{start}-{stamp}"
+            if fmt == 'json':
+                body = json.dumps({
+                    'org_id': org_id,
+                    'report': args['report'],
+                    'start': start,
+                    'end': args['end'] or start,
+                    'total': len(rows),
+                    'rows': rows,
+                }, default=str)
+                return Response(
+                    body,
+                    mimetype='application/json; charset=utf-8',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{stem}.json"',
+                    },
+                )
+            csv_body = analytics_rows_to_csv(rows, fields)
+            return Response(
+                csv_body.encode('utf-8'),
+                mimetype='text/csv; charset=utf-8',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{stem}.csv"',
+                },
+            )
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
     return _inner()
 
 
@@ -2168,10 +2686,11 @@ def _app_version_info():
     """Read version.json next to package root; fall back to known release."""
     ver_path = os.path.join(_BASE_DIR, 'version.json')
     info = {
-        'version': '2.3.87',
-        'build': 'PROD-2026-07-18-v2.3.87',
-        'build_date': '2026-07-18',
+        'version': '3.0.0',
+        'build': 'RC-2026-07-21-v3.0.0-rc1',
+        'build_date': '2026-07-21',
         'exe': 'MBT_POS.exe',
+        'download_url': 'https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe',
     }
     try:
         if os.path.isfile(ver_path):
@@ -2180,6 +2699,10 @@ def _app_version_info():
             info['version'] = data.get('version') or info['version']
             info['build'] = data.get('build') or info['build']
             info['build_date'] = data.get('build_date') or info['build_date']
+            if data.get('download_url'):
+                info['download_url'] = data['download_url']
+            if data.get('release_notes'):
+                info['release_notes'] = data['release_notes']
     except Exception:
         pass
     return info
@@ -2427,10 +2950,22 @@ def _review_approval(aid, action):
         row = _tr(db.execute("SELECT * FROM cc_approvals WHERE id=?", (aid,)).fetchone())
         if not row:
             return jsonify({'error': 'Not found'}), 404
-        if row['status'] != 'pending':
-            return jsonify({'error': f"Already {row['status']}"}), 400
+        cur = (row.get('status') or '').lower()
+        if action == 'escalate':
+            if cur != 'pending':
+                return jsonify({'error': f"Already {row['status']}"}), 400
+            status = 'escalated'
+        elif action == 'approve':
+            if cur not in ('pending', 'escalated'):
+                return jsonify({'error': f"Already {row['status']}"}), 400
+            status = 'approved'
+        elif action == 'reject':
+            if cur not in ('pending', 'escalated'):
+                return jsonify({'error': f"Already {row['status']}"}), 400
+            status = 'rejected'
+        else:
+            return jsonify({'error': 'Unknown action'}), 400
         user = g.current_user
-        status = 'approved' if action == 'approve' else 'rejected'
         db.execute(
             "UPDATE cc_approvals SET status=?, reviewed_by=?, reviewed_by_id=?, "
             "review_note=?, updated_at=? WHERE id=?",
@@ -2462,6 +2997,11 @@ def approve_approval(aid):
 @web.route('/api/approvals/<int:aid>/reject', methods=['POST'])
 def reject_approval(aid):
     return _review_approval(aid, 'reject')
+
+
+@web.route('/api/approvals/<int:aid>/escalate', methods=['POST'])
+def escalate_approval(aid):
+    return _review_approval(aid, 'escalate')
 
 
 @web.route('/api/notifications', methods=['GET'])

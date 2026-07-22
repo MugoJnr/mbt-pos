@@ -67,7 +67,8 @@ def test_app_version_matches_version_json():
     m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', main)
     assert m, "APP_VERSION missing"
     vj = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-    assert m.group(1) == vj["version"] == "3.0.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", vj["version"])
+    assert m.group(1) == vj["version"]
 
 
 def test_email_defaults_are_mugobyte_platform():

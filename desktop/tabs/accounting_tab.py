@@ -430,6 +430,12 @@ class _ExpensesPage(QWidget):
         add = PrimaryBtn('+ Expense', 36)
         add.clicked.connect(self._add)
         bar.addWidget(add)
+        edit = SecondaryBtn('Edit', 36)
+        edit.clicked.connect(self._edit)
+        bar.addWidget(edit)
+        dele = DangerBtn('Delete', 36)
+        dele.clicked.connect(self._delete)
+        bar.addWidget(dele)
         ref = GhostBtn('↺', 36)
         ref.clicked.connect(self.refresh)
         bar.addWidget(ref)
@@ -437,14 +443,20 @@ class _ExpensesPage(QWidget):
         self._tbl = make_table(
             ['Number', 'Date', 'Expense Acct', 'Paid From', 'Amount', 'Description', 'Vendor'])
         lay.addWidget(wrap_table_card(self._tbl), 1)
+        self._ids = []
+        self._rows_cache = []
 
     def refresh(self):
         rows = self.p.api.accounting_expenses() or []
         cur = self.p._currency
         self._tbl.setRowCount(0)
+        self._ids = []
+        self._rows_cache = []
         for r in rows:
             i = self._tbl.rowCount()
             self._tbl.insertRow(i)
+            self._ids.append(r.get('id'))
+            self._rows_cache.append(r)
             self._tbl.setItem(i, 0, tbl_item(r.get('expense_number')))
             self._tbl.setItem(i, 1, tbl_item((r.get('expense_date') or '')[:10]))
             self._tbl.setItem(i, 2, tbl_item(r.get('account_code')))
@@ -452,6 +464,12 @@ class _ExpensesPage(QWidget):
             self._tbl.setItem(i, 4, tbl_right(_fmt(r.get('amount'), cur)))
             self._tbl.setItem(i, 5, tbl_item(r.get('description')))
             self._tbl.setItem(i, 6, tbl_item(r.get('vendor_name')))
+
+    def _selected_row(self):
+        row = self._tbl.currentRow()
+        if row < 0 or row >= len(self._ids):
+            return None, None
+        return row, self._rows_cache[row]
 
     def _add(self):
         dlg = QDialog(self)
@@ -485,6 +503,61 @@ class _ExpensesPage(QWidget):
         })
         if res.get('error'):
             QMessageBox.warning(self, 'Expense', res['error'])
+        self.refresh()
+
+    def _edit(self):
+        row, cur = self._selected_row()
+        if cur is None:
+            QMessageBox.information(self, 'Expense', 'Select an expense to edit.')
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Edit {cur.get('expense_number') or 'Expense'}")
+        apply_themed_dialog(dlg)
+        form = QFormLayout(dlg)
+        exp = QLineEdit(str(cur.get('account_code') or '6000'))
+        pay = QLineEdit(str(cur.get('pay_from_code') or '1000'))
+        amt = QDoubleSpinBox()
+        amt.setMaximum(1e9)
+        amt.setDecimals(2)
+        amt.setValue(float(cur.get('amount') or 0))
+        desc = QLineEdit(str(cur.get('description') or ''))
+        vendor = QLineEdit(str(cur.get('vendor_name') or ''))
+        form.addRow('Expense account', exp)
+        form.addRow('Pay from', pay)
+        form.addRow('Amount', amt)
+        form.addRow('Description', desc)
+        form.addRow('Vendor', vendor)
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        form.addRow(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        res = self.p.api.accounting_update_expense(self._ids[row], {
+            'account_code': exp.text().strip(),
+            'pay_from_code': pay.text().strip(),
+            'amount': amt.value(),
+            'description': desc.text(),
+            'vendor_name': vendor.text(),
+            'expense_date': (cur.get('expense_date') or '')[:10] or None,
+        })
+        if res.get('error'):
+            QMessageBox.warning(self, 'Expense', res['error'])
+        self.refresh()
+
+    def _delete(self):
+        row, cur = self._selected_row()
+        if cur is None:
+            QMessageBox.information(self, 'Expense', 'Select an expense to delete.')
+            return
+        reason, ok = QInputDialog.getText(
+            self, 'Delete Expense',
+            f"Reason for deleting {cur.get('expense_number') or 'expense'}:")
+        if not ok:
+            return
+        res = self.p.api.accounting_delete_expense(self._ids[row], reason)
+        if res.get('error'):
+            QMessageBox.warning(self, 'Delete', res['error'])
         self.refresh()
 
 
@@ -601,7 +674,8 @@ class _ReportsPage(QWidget):
         bar = QHBoxLayout()
         self._kind = Select(items=[
             'Profit & Loss', 'Balance Sheet', 'Trial Balance',
-            'Cash Book', 'AR Aging', 'AP Aging',
+            'Cash Book', 'M-Pesa Book', 'Bank Book',
+            'AR Aging', 'AP Aging',
         ])
         bar.addWidget(self._kind, 1)
         self._from = make_date_edit()
@@ -675,9 +749,10 @@ class _ReportsPage(QWidget):
                 lines.append(
                     f"  {r['code']} {r['name']}: "
                     f"Dr {_fmt(r['debit'], cur)}  Cr {_fmt(r['credit'], cur)}")
-        elif kind == 'Cash Book':
-            data = self.p.api.accounting_cash_book('1000', start, end) or {}
-            lines.append(f"Cash balance: {_fmt(data.get('balance'), cur)}")
+        elif kind in ('Cash Book', 'M-Pesa Book', 'Bank Book'):
+            code = {'Cash Book': '1000', 'M-Pesa Book': '1010', 'Bank Book': '1020'}[kind]
+            data = self.p.api.accounting_cash_book(code, start, end) or {}
+            lines.append(f"{kind} ({code}) balance: {_fmt(data.get('balance'), cur)}")
             for r in data.get('lines') or []:
                 lines.append(
                     f"  {(r.get('entry_date') or '')[:10]} {r.get('entry_number')} "

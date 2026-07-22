@@ -8,6 +8,7 @@ on:
       - 'web/**'
       - 'config/**'
       - 'deploy/**'
+      - 'supabase/**'
       - 'mbt_paths.py'
       - 'runtime_security.py'
       - 'fly.toml'
@@ -17,10 +18,25 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    concurrency:
+      group: portal-production
+      cancel-in-progress: false
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify deployment secrets
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          : "${FLY_API_TOKEN:?Missing FLY_API_TOKEN repository secret}"
+          : "${SUPABASE_ACCESS_TOKEN:?Missing SUPABASE_ACCESS_TOKEN repository secret}"
+          : "${SUPABASE_DB_PASSWORD:?Missing SUPABASE_DB_PASSWORD repository secret}"
+          : "${SUPABASE_PROJECT_ID:?Missing SUPABASE_PROJECT_ID repository secret}"
 
       - uses: actions/setup-node@v4
         with:
@@ -40,9 +56,42 @@ jobs:
           npm ci
           npm run build
 
+      - name: Validate migration files
+        run: python deploy/validate_supabase_migrations.py
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID" --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Preview Supabase migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --linked --include-all --dry-run --password "$SUPABASE_DB_PASSWORD"
+
+      - name: Apply Supabase migrations
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: supabase db push --linked --include-all --yes --password "$SUPABASE_DB_PASSWORD"
+
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy Fly monolith
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only --config fly.toml
+
+      - name: Verify production health
+        run: |
+          curl --fail --silent --show-error \
+            --retry 8 --retry-delay 10 --retry-all-errors \
+            --max-time 20 \
+            https://portal.mugobyte.com/api/health

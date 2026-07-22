@@ -3,22 +3,30 @@ MBT POS — Auto Update Engine
 MugoByte Technologies | mugobyte.com
 
 Checks GitHub Releases for a newer version, downloads it silently
-in the background, and signals the UI when ready to install.
+in the background, verifies SHA-256, and installs when POS is idle.
 
 Flow:
   1. 60s after startup → check GitHub API for latest release
-  2. If newer → download installer to TEMP folder (background thread)
-  3. When download complete → emit update_ready signal
-  4. UI shows "↓ Update vX.Y.Z" button in topbar
-  5. Cashier clicks when convenient → silent install → restart
+  2. If newer → download installer (resumable) to TEMP / updates folder
+  3. Verify SHA-256 (release metadata or sidecar asset)
+  4. When idle (no cart/modal/critical UI) → silent install via elevated
+     scheduled task helper, then restart only on success
+  5. Manual Update button remains as fallback (legacy PCs / missing checksum)
+
+Elevation: installer registers least-privilege task MBT_POS_UpdateHelper
+(SYSTEM/Highest, on-demand). Unattended path never prompts UAC.
+Legacy installs without the task: one-time UAC on manual install, then
+helper can be staged for future silent updates (see docs/UNATTENDED_UPDATES.md).
 
 Never blocks the UI. Never interrupts a sale.
-All exceptions are caught and logged silently.
+The privileged helper never executes arbitrary commands.
 """
 import os
 import sys
 import json
+import re
 import time
+import uuid
 import shutil
 import logging
 import hashlib
@@ -26,6 +34,7 @@ import tempfile
 import threading
 import urllib.request
 import urllib.error
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +42,13 @@ logger = logging.getLogger(__name__)
 GITHUB_REPO     = "MugoJnr/mbt-pos"
 GITHUB_API      = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ASSET_NAME      = "MBT_POS_Setup.exe"
+CHECKSUM_ASSET_NAMES = (
+    'MBT_POS_Setup.exe.sha256',
+    'MBT_POS_Setup.sha256',
+    'checksums.sha256',
+    'SHA256SUMS',
+    'checksums.txt',
+)
 # Broken onefile release — never offer or install (Python DLL error on update)
 BLOCKED_VERSIONS = frozenset({'2.3.5'})
 
@@ -46,6 +62,13 @@ REQUEST_TIMEOUT   = 15          # API call timeout
 FETCH_RETRIES     = 3
 MIN_INSTALLER_BYTES = 1_000_000
 EXPECTED_INSTALLER_BYTES = 40_000_000  # ~45 MB; used for resume detection
+DOWNLOAD_CHUNK = 65536
+MAX_DOWNLOAD_ATTEMPTS = 5
+INSTALL_FAIL_COOLDOWN_SEC = 6 * 3600
+MAX_AUTO_FAILS = 3
+HELPER_TASK_NAME = 'MBT_POS_UpdateHelper'
+UPDATER_MUTEX_NAME = 'Global\\MBT_POS_UpdateEngine'
+INSTALLER_NAME_RE = re.compile(r'^MBT_POS_Setup(_v[\d.]+)?\.exe$', re.IGNORECASE)
 
 
 def _ensure_ssl_certs():
@@ -371,10 +394,10 @@ def format_diagnosis(d: dict) -> str:
 
 
 def _stage_installer(installer_path: str) -> str:
-    """Copy installer out of TEMP and strip Mark-of-the-Web before running."""
+    """Copy installer into allowlisted updates folder and strip MotW."""
     try:
-        from mbt_paths import get_project_root
-        updates_dir = os.path.join(get_project_root(), 'updates')
+        # Always use AppData brand updates dir so elevated helper allowlist matches
+        updates_dir = os.path.join(_brand_data_root(), 'updates')
         os.makedirs(updates_dir, exist_ok=True)
         dest = os.path.join(updates_dir, os.path.basename(installer_path))
         if os.path.normcase(os.path.abspath(installer_path)) != os.path.normcase(os.path.abspath(dest)):
@@ -406,16 +429,22 @@ def _unblock_windows_file(path: str):
         logger.warning(f'_unblock_windows_file: {e}')
 
 
-def acquire_single_instance() -> bool:
-    """Return False if another MBT POS instance is already running."""
+def acquire_single_instance(mutex_name: str | None = None) -> bool:
+    """Return False if another MBT POS instance is already running.
+
+    ``mutex_name`` is for unit tests only; production always uses the
+    Global\\MBT_POS_SingleInstance mutex and keeps the process handle alive.
+    """
     global _MUTEX_HANDLE
     if sys.platform != 'win32':
         return True
+    name = mutex_name or 'Global\\MBT_POS_SingleInstance'
     try:
         import ctypes
-        _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(
-            None, False, 'Global\\MBT_POS_SingleInstance')
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
         err = ctypes.windll.kernel32.GetLastError()
+        if mutex_name is None:
+            _MUTEX_HANDLE = handle
         return err != 183  # ERROR_ALREADY_EXISTS
     except Exception as e:
         logger.warning(f'acquire_single_instance: {e}')
@@ -424,6 +453,420 @@ def acquire_single_instance() -> bool:
 
 def _version_ge(a: str, b: str) -> bool:
     return _parse_version(a) >= _parse_version(b)
+
+
+# ── Checksum / path / idle / install-state helpers ─────────────────────────────
+
+def normalize_checksum(value: str | None) -> str:
+    from backend.cloud.update_center import normalize_checksum as _norm
+    return _norm(value)
+
+
+def parse_checksum_from_text(text: str | None) -> str:
+    from backend.cloud.update_center import parse_checksum_from_text as _parse
+    return _parse(text)
+
+
+def sha256_file(file_path: str) -> str:
+    from backend.cloud.update_center import sha256_file as _sha
+    return _sha(file_path)
+
+
+def verify_installer_checksum(file_path: str, expected: str | None) -> tuple[bool, str]:
+    """
+    Returns (ok, detail). ok=False when checksum missing or mismatch.
+    """
+    want = normalize_checksum(expected)
+    if not want:
+        return False, 'missing_checksum'
+    if not file_path or not os.path.isfile(file_path):
+        return False, 'missing_file'
+    try:
+        actual = sha256_file(file_path)
+    except Exception as e:
+        return False, f'hash_error:{e}'
+    if actual != want:
+        return False, f'checksum_mismatch:{actual}'
+    return True, actual
+
+
+def _brand_data_root() -> str:
+    base = (
+        os.environ.get('LOCALAPPDATA')
+        or os.environ.get('APPDATA')
+        or os.path.expanduser('~')
+    )
+    return os.path.join(base, 'MugoByte', 'MBT POS')
+
+
+def update_job_path() -> str:
+    return os.path.join(_brand_data_root(), 'update_job.json')
+
+
+def update_job_result_path() -> str:
+    return os.path.join(_brand_data_root(), 'update_job_result.json')
+
+
+def install_state_path() -> str:
+    return os.path.join(_brand_data_root(), 'update_install_state.json')
+
+
+def allowed_installer_roots() -> list[str]:
+    roots = [
+        os.path.abspath(tempfile.gettempdir()),
+        os.path.abspath(os.path.join(_brand_data_root(), 'updates')),
+    ]
+    prog = os.environ.get('ProgramData') or r'C:\ProgramData'
+    roots.append(os.path.abspath(os.path.join(prog, 'MugoByte', 'MBT POS', 'updates')))
+    return roots
+
+
+def is_safe_installer_path(path: str) -> bool:
+    """Reject anything that is not an MBT setup EXE under an allowlisted folder."""
+    if not path:
+        return False
+    try:
+        full = os.path.abspath(path)
+    except Exception:
+        return False
+    name = os.path.basename(full)
+    if not INSTALLER_NAME_RE.match(name):
+        return False
+    if any(ch in full for ch in ';&|<>`'):
+        return False
+    full_l = os.path.normcase(full)
+    for root in allowed_installer_roots():
+        root_l = os.path.normcase(os.path.abspath(root))
+        if full_l.startswith(root_l + os.sep) or full_l == root_l:
+            return True
+    return False
+
+
+def evaluate_idle_window(
+    *,
+    has_modal: bool = False,
+    has_popup: bool = False,
+    cart_items: int = 0,
+    critical_operation: bool = False,
+    backup_busy: bool = False,
+) -> tuple[bool, str]:
+    """
+    Pure idle gate used by UI and tests.
+    Returns (is_idle, reason_if_busy).
+    """
+    if critical_operation:
+        return False, 'critical_operation'
+    if has_modal:
+        return False, 'modal_dialog'
+    if has_popup:
+        return False, 'popup'
+    if cart_items > 0:
+        return False, 'active_cart'
+    if backup_busy:
+        return False, 'backup_busy'
+    return True, ''
+
+
+def load_install_state() -> dict:
+    path = install_state_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_install_state(state: dict) -> None:
+    path = install_state_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning('save_install_state: %s', e)
+
+
+def can_attempt_auto_install(version: str, now: float | None = None) -> tuple[bool, str]:
+    """Loop / fail-storm guard for unattended installs."""
+    now = time.time() if now is None else now
+    ver = (version or '').lstrip('v').strip()
+    if not ver:
+        return False, 'missing_version'
+    if ver in BLOCKED_VERSIONS:
+        return False, 'blocked_version'
+    st = load_install_state()
+    if st.get('in_progress'):
+        started = float(st.get('in_progress_started') or 0)
+        # Stale lock older than 30 min — allow recovery
+        if started and (now - started) < 30 * 60:
+            return False, 'install_in_progress'
+    if st.get('last_success_version') == ver:
+        return False, 'already_installed'
+    if st.get('last_attempt_version') == ver and st.get('last_result') == 'failed':
+        fails = int(st.get('fail_count') or 0)
+        last_t = float(st.get('last_attempt_time') or 0)
+        elapsed = (now - last_t) if last_t else INSTALL_FAIL_COOLDOWN_SEC
+        if fails >= MAX_AUTO_FAILS and 0 <= elapsed < INSTALL_FAIL_COOLDOWN_SEC:
+            return False, 'fail_cooldown'
+    return True, ''
+
+
+def mark_install_started(version: str) -> None:
+    st = load_install_state()
+    st.update({
+        'in_progress': True,
+        'in_progress_started': time.time(),
+        'last_attempt_version': (version or '').lstrip('v'),
+        'last_attempt_time': time.time(),
+    })
+    save_install_state(st)
+
+
+def mark_install_finished(version: str, success: bool, error: str = '') -> None:
+    st = load_install_state()
+    ver = (version or '').lstrip('v')
+    prev_ver = st.get('last_attempt_version')
+    fail_count = int(st.get('fail_count') or 0)
+    if success:
+        fail_count = 0
+        st['last_success_version'] = ver
+        st['last_result'] = 'ok'
+    else:
+        if prev_ver == ver:
+            fail_count += 1
+        else:
+            fail_count = 1
+        st['last_result'] = 'failed'
+        st['last_error'] = (error or '')[:500]
+    st.update({
+        'in_progress': False,
+        'in_progress_started': 0,
+        'last_attempt_version': ver,
+        'last_attempt_time': time.time(),
+        'fail_count': fail_count,
+    })
+    save_install_state(st)
+
+
+_UPDATER_MUTEX = None
+
+
+def acquire_updater_lock() -> bool:
+    """Prevent concurrent updater download/install engines on this PC."""
+    global _UPDATER_MUTEX
+    if sys.platform != 'win32':
+        return True
+    try:
+        import ctypes
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, UPDATER_MUTEX_NAME)
+        err = ctypes.windll.kernel32.GetLastError()
+        if err == 183:  # already exists — we still get a handle; check ownership
+            # ERROR_ALREADY_EXISTS means another process created it
+            _UPDATER_MUTEX = handle
+            return False
+        _UPDATER_MUTEX = handle
+        return True
+    except Exception as e:
+        logger.warning('acquire_updater_lock: %s', e)
+        return True
+
+
+def is_update_helper_registered() -> bool:
+    if sys.platform != 'win32':
+        return False
+    try:
+        import subprocess
+        r = subprocess.run(
+            ['schtasks', '/Query', '/TN', HELPER_TASK_NAME],
+            capture_output=True, text=True, timeout=15,
+            creationflags=0x08000000 if sys.platform == 'win32' else 0,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def find_update_helper_script() -> str:
+    """Locate MBT_UpdateHelper.ps1 next to the installed EXE or in deploy/."""
+    candidates = []
+    if getattr(sys, 'frozen', False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), 'MBT_UpdateHelper.ps1'))
+    try:
+        from mbt_paths import get_project_root
+        # Dev tree: repo/deploy; frozen data root will not have it
+        root = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(root, '..', 'deploy', 'MBT_UpdateHelper.ps1'))
+        candidates.append(os.path.join(get_project_root(), 'MBT_UpdateHelper.ps1'))
+    except Exception:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(here, '..', 'deploy', 'MBT_UpdateHelper.ps1'))
+    for c in candidates:
+        try:
+            p = os.path.abspath(c)
+            if os.path.isfile(p):
+                return p
+        except Exception:
+            pass
+    return ''
+
+
+def build_helper_register_command(helper_script: str) -> list[str]:
+    """PowerShell that registers the on-demand elevated helper task (no always-on service)."""
+    ps = helper_script.replace("'", "''")
+    name = HELPER_TASK_NAME
+    cmd = (
+        f"$tn='{name}'; "
+        f"$action=New-ScheduledTaskAction -Execute 'powershell.exe' "
+        f"-Argument '-NoProfile -ExecutionPolicy Bypass -File \"{ps}\"'; "
+        f"$prin=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount "
+        f"-RunLevel Highest; "
+        f"$set=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "
+        f"-DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew; "
+        f"Register-ScheduledTask -TaskName $tn -Action $action -Principal $prin "
+        f"-Settings $set -Force | Out-Null"
+    )
+    return [
+        'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', cmd,
+    ]
+
+
+def write_update_job(installer_path: str, sha256: str, version: str) -> str:
+    """Write constrained job file for the elevated helper. Returns request_id."""
+    if not is_safe_installer_path(installer_path):
+        raise ValueError('installer path not allowlisted')
+    want = normalize_checksum(sha256)
+    if not want:
+        raise ValueError('checksum required for elevated job')
+    request_id = uuid.uuid4().hex
+    job = {
+        'request_id': request_id,
+        'installer_path': os.path.abspath(installer_path),
+        'sha256': want,
+        'version': (version or '').lstrip('v'),
+        'created_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        # Explicitly no command / args field — helper hardcodes /S only
+    }
+    path = update_job_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    result = update_job_result_path()
+    try:
+        if os.path.isfile(result):
+            os.remove(result)
+    except Exception:
+        pass
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(job, f, indent=2)
+    os.replace(tmp, path)
+    return request_id
+
+
+def read_update_job_result(timeout_sec: float = 0) -> dict:
+    path = update_job_result_path()
+    deadline = time.time() + max(0, timeout_sec)
+    while True:
+        try:
+            if os.path.isfile(path):
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return {}
+        time.sleep(0.5)
+
+
+def run_update_helper_task() -> tuple[bool, str]:
+    """Trigger the pre-registered elevated helper (no UAC)."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ['schtasks', '/Run', '/TN', HELPER_TASK_NAME],
+            capture_output=True, text=True, timeout=60,
+            creationflags=0x08000000 if sys.platform == 'win32' else 0,
+        )
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or 'schtasks_failed').strip()
+            return False, err[:300]
+        return True, ''
+    except Exception as e:
+        return False, str(e)
+
+
+def fetch_sidecar_checksum(asset_url: str, headers: dict) -> str:
+    """Download a small .sha256 sidecar next to the installer asset."""
+    if not asset_url:
+        return ''
+    # Try sibling URLs derived from installer URL
+    candidates = []
+    for suffix in ('.sha256', '.sha256.txt'):
+        candidates.append(asset_url + suffix)
+    base = asset_url.rsplit('/', 1)[0] if '/' in asset_url else ''
+    for name in CHECKSUM_ASSET_NAMES:
+        if base:
+            candidates.append(f'{base}/{name}')
+    seen = set()
+    for url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            text = _http_get_text(url, headers)
+            got = parse_checksum_from_text(text)
+            if got:
+                return got
+        except Exception:
+            continue
+    return ''
+
+
+def _http_get_text(url: str, headers: dict) -> str:
+    try:
+        import requests
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return ''
+        return resp.text or ''
+    except Exception:
+        pass
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+        return resp.read().decode('utf-8', errors='replace')
+
+
+def resolve_release_checksum(notes: str, assets: list, asset_url: str,
+                             headers: dict, cloud_checksum: str = '') -> str:
+    """Prefer cloud → release notes tag → named checksum asset → sidecar URL."""
+    for candidate in (
+        cloud_checksum,
+        parse_checksum_from_text(notes),
+    ):
+        got = normalize_checksum(candidate)
+        if got:
+            return got
+    for asset in assets or []:
+        name = (asset.get('name') or '').lower()
+        if name in {n.lower() for n in CHECKSUM_ASSET_NAMES} or name.endswith('.sha256'):
+            url = asset.get('browser_download_url') or ''
+            if not url:
+                continue
+            try:
+                text = _http_get_text(url, headers)
+                got = parse_checksum_from_text(text)
+                if got:
+                    return got
+            except Exception:
+                continue
+    return fetch_sidecar_checksum(asset_url, headers)
 
 
 # ── Main updater class ─────────────────────────────────────────────────────────
@@ -436,18 +879,28 @@ class UpdateChecker:
         on_download_ready(installer_path, version)
         on_force_required(version, reason)
         on_error(msg)          — optional, for diagnostics tab
+        on_install_failed(version, reason)
+        on_download_failed(version, title, reason)
+        idle_getter() -> bool  — optional; True when safe to auto-install
     """
 
-    def __init__(self, current_version: str, is_online_getter=None):
+    def __init__(self, current_version: str, is_online_getter=None,
+                 idle_getter: Optional[Callable[[], bool]] = None):
         self.current_version  = current_version.lstrip('v')
         self._is_online       = is_online_getter or (lambda: True)
+        self._idle_getter     = idle_getter  # reserved; UI also polls
         self._stop            = threading.Event()
         self._thread          = None
         self._dl_thread       = None
         self._installer_path  = None
         self._pending_version = None
         self._pending_asset_url = ''
+        self._pending_checksum = ''
+        self._pending_notes = ''
+        self._expected_bytes = 0
         self._download_warned_version = ''
+        self._has_updater_lock = False
+        self._install_lock = threading.Lock()
 
         # Callbacks — set by caller (MainWindow)
         self.on_update_available = None   # (version, notes, url)
@@ -458,6 +911,10 @@ class UpdateChecker:
         self.on_download_failed  = None   # (version, title, reason)
 
     def start(self):
+        self._has_updater_lock = acquire_updater_lock()
+        if not self._has_updater_lock:
+            logger.warning('Another updater engine is active — skipping start')
+            return
         self._check_previous_install()
         logger.info(
             f"UpdateChecker started (v{self.current_version}); "
@@ -474,6 +931,30 @@ class UpdateChecker:
 
     def stop(self):
         self._stop.set()
+
+    def get_pending_checksum(self) -> str:
+        return self._pending_checksum or ''
+
+    def has_verified_checksum(self) -> bool:
+        return bool(normalize_checksum(self._pending_checksum))
+
+    def can_unattended_install(self) -> tuple[bool, str]:
+        """Whether silent auto-install is allowed right now (no UAC path)."""
+        if not self._installer_path or not os.path.isfile(self._installer_path):
+            return False, 'no_installer'
+        ver = self._pending_version or ''
+        ok, reason = can_attempt_auto_install(ver)
+        if not ok:
+            return False, reason
+        if not normalize_checksum(self._pending_checksum):
+            return False, 'missing_checksum'
+        ok_hash, detail = verify_installer_checksum(
+            self._installer_path, self._pending_checksum)
+        if not ok_hash:
+            return False, detail
+        if not is_update_helper_registered():
+            return False, 'helper_not_registered'
+        return True, ''
 
     # ── Core loop ──────────────────────────────────────────────────────────────
 
@@ -503,11 +984,13 @@ class UpdateChecker:
                     f'Ignored stale Install FAILED v{ver} '
                     f'(running v{self.current_version} — treating as OK)')
                 _log_update(f'Install OK v{self.current_version} (manual / supersede)')
+                mark_install_finished(ver, True)
                 self._purge_stale_installers()
                 return
             if not self.on_install_failed:
                 return
             diag = diagnose_install_failure(ver)
+            mark_install_finished(ver or '?', False, diag.get('category', 'failed'))
             self.on_install_failed(ver or '?', diag['title'] + '\n\n' + diag['message'])
         except Exception:
             pass
@@ -573,6 +1056,7 @@ class UpdateChecker:
             if _version_lt(self.current_version, min_version):
                 logger.warning(
                     f"Version {self.current_version} below minimum {min_version} — force update")
+                self._pending_checksum = info.get('checksum_sha256') or ''
                 if self.on_force_required:
                     self.on_force_required(remote_version,
                         f"Version {self.current_version} is no longer supported. "
@@ -587,8 +1071,10 @@ class UpdateChecker:
                 if remote_version in BLOCKED_VERSIONS:
                     logger.warning(
                         f"Skipping blocked release v{remote_version}")
-                    return
+                    return True
                 logger.info(f"Update available: v{remote_version}")
+                self._pending_checksum = info.get('checksum_sha256') or ''
+                self._pending_notes = notes
                 if self.on_update_available:
                     self.on_update_available(remote_version, notes, asset_url)
                 if asset_url:
@@ -612,7 +1098,8 @@ class UpdateChecker:
     def _fetch_release_info(self) -> dict:
         """
         Fetch latest release from GitHub API.
-        Returns dict with keys: version, notes, asset_url, min_required_version
+        Returns dict with keys: version, notes, asset_url, min_required_version,
+        checksum_sha256
         """
         _ensure_ssl_certs()
         headers = {
@@ -620,6 +1107,15 @@ class UpdateChecker:
             'User-Agent': f'MBT-POS/{self.current_version}',
         }
         last_err = None
+        cloud_checksum = ''
+        try:
+            from backend.cloud.update_center import get_update_center
+            cloud = get_update_center().check_for_update(self.current_version)
+            if cloud:
+                cloud_checksum = cloud.get('checksum_sha256') or ''
+        except Exception:
+            pass
+
         for attempt in range(1, FETCH_RETRIES + 1):
             try:
                 data = self._http_get_json(GITHUB_API, headers)
@@ -628,11 +1124,15 @@ class UpdateChecker:
                 tag     = data.get('tag_name', '0.0.0')
                 version = tag.lstrip('v')
                 notes   = data.get('body', '')[:2000]
+                assets  = data.get('assets', []) or []
 
                 asset_url = ''
-                for asset in data.get('assets', []):
+                for asset in assets:
                     if asset.get('name', '').lower() == ASSET_NAME.lower():
                         asset_url = asset.get('browser_download_url', '')
+                        size = int(asset.get('size') or 0)
+                        if size > MIN_INSTALLER_BYTES:
+                            self._expected_bytes = size
                         break
 
                 min_version = '0.0.0'
@@ -644,15 +1144,23 @@ class UpdateChecker:
                     except Exception:
                         pass
 
+                checksum = resolve_release_checksum(
+                    notes, assets, asset_url, headers, cloud_checksum)
+
                 if not asset_url:
                     logger.warning(
                         f"GitHub release v{version} missing asset {ASSET_NAME}")
+                if not checksum:
+                    logger.warning(
+                        f"GitHub release v{version} missing SHA-256 checksum "
+                        f"(unattended install will be blocked)")
 
                 return {
                     'version':              version,
                     'notes':                notes,
                     'asset_url':            asset_url,
                     'min_required_version': min_version,
+                    'checksum_sha256':      checksum,
                 }
             except Exception as e:
                 last_err = e
@@ -726,10 +1234,14 @@ class UpdateChecker:
         """
         Download with resume support for slow networks.
         Returns total file size after download attempt.
+        Stores Content-Length into self._expected_bytes when available.
         """
         existing = os.path.getsize(dest) if os.path.isfile(dest) else 0
+        expect = self._expected_bytes or EXPECTED_INSTALLER_BYTES
         can_resume = (
-            MIN_INSTALLER_BYTES <= existing < EXPECTED_INSTALLER_BYTES)
+            existing >= MIN_INSTALLER_BYTES
+            and (expect <= 0 or existing < expect)
+        )
         req_headers = dict(headers)
         if can_resume:
             req_headers['Range'] = f'bytes={existing}-'
@@ -742,20 +1254,39 @@ class UpdateChecker:
             with requests.get(url, headers=req_headers, stream=True,
                               timeout=timeout) as resp:
                 if resp.status_code == 416:
-                    # Range not satisfiable — file may be complete or stale
                     if os.path.isfile(dest) and os.path.getsize(dest) >= MIN_INSTALLER_BYTES:
                         return os.path.getsize(dest)
                     os.remove(dest)
                     return self._http_download_file(url, dest, headers)
                 if resp.status_code not in (200, 206):
                     resp.raise_for_status()
+                cl = resp.headers.get('Content-Length')
+                if cl and resp.status_code == 200:
+                    try:
+                        self._expected_bytes = int(cl)
+                    except Exception:
+                        pass
+                elif cl and resp.status_code == 206 and can_resume:
+                    try:
+                        # Total size ≈ existing + remaining
+                        self._expected_bytes = existing + int(cl)
+                    except Exception:
+                        pass
+                cr = resp.headers.get('Content-Range') or ''
+                if '/' in cr:
+                    try:
+                        total = int(cr.rsplit('/', 1)[-1])
+                        if total > MIN_INSTALLER_BYTES:
+                            self._expected_bytes = total
+                    except Exception:
+                        pass
                 append = resp.status_code == 206 and can_resume
                 if not append and os.path.isfile(dest):
                     existing = 0
                 written = 0
                 mode = 'ab' if append else 'wb'
                 with open(dest, mode) as f:
-                    for chunk in resp.iter_content(chunk_size=65536):
+                    for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK):
                         if chunk:
                             f.write(chunk)
                             written += len(chunk)
@@ -766,11 +1297,23 @@ class UpdateChecker:
         req = urllib.request.Request(url, headers=req_headers)
         with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp:
             code = getattr(resp, 'status', 200) or 200
+            cl = resp.headers.get('Content-Length') if hasattr(resp, 'headers') else None
+            if cl and code == 200:
+                try:
+                    self._expected_bytes = int(cl)
+                except Exception:
+                    pass
             append = code == 206 and can_resume
             if not append and os.path.isfile(dest):
                 existing = 0
             written = self._write_download_stream(resp, dest, append=append)
             return (existing + written) if append else written
+
+    def _download_complete_enough(self, size: int) -> bool:
+        expect = self._expected_bytes or EXPECTED_INSTALLER_BYTES
+        if expect and expect > MIN_INSTALLER_BYTES:
+            return size >= int(expect * 0.98)
+        return size >= int(EXPECTED_INSTALLER_BYTES * 0.85)
 
     def _start_download(self, url: str, version: str):
         """Start background download of the installer."""
@@ -781,9 +1324,19 @@ class UpdateChecker:
                 logger.info('Cached installer is for current or older version — clearing')
                 self.clear_cache()
             else:
-                if self.on_download_ready:
+                # Re-verify checksum if we have one
+                if self._pending_checksum:
+                    ok, _ = verify_installer_checksum(
+                        self._installer_path, self._pending_checksum)
+                    if not ok:
+                        logger.warning('Cached installer failed checksum — re-download')
+                        self.clear_cache()
+                    elif self.on_download_ready:
+                        self.on_download_ready(self._installer_path, version)
+                        return
+                elif self.on_download_ready:
                     self.on_download_ready(self._installer_path, version)
-                return
+                    return
 
         self._pending_version = version
         self._pending_asset_url = url
@@ -794,8 +1347,8 @@ class UpdateChecker:
 
     def _download(self, url: str, version: str):
         """
-        Download installer to TEMP folder silently.
-        Shows no UI. Signals on_download_ready when complete.
+        Download installer to TEMP folder silently (resumable + retries).
+        Shows no UI. Signals on_download_ready when complete and verified.
         """
         dest = os.path.join(
             tempfile.gettempdir(),
@@ -812,65 +1365,145 @@ class UpdateChecker:
                 except Exception:
                     pass
                 return
-            if size >= int(EXPECTED_INSTALLER_BYTES * 0.85):
-                logger.info(f"Installer already cached: {dest}")
-                _unblock_windows_file(dest)
-                self._installer_path = dest
-                if self.on_download_ready:
-                    self.on_download_ready(dest, version)
-                return
+            if self._download_complete_enough(size):
+                if self._pending_checksum:
+                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                    if not ok:
+                        logger.warning(
+                            f'Cached installer checksum failed ({detail}) — re-download')
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
+                    else:
+                        logger.info(f"Installer already cached+verified: {dest}")
+                        _unblock_windows_file(dest)
+                        self._installer_path = dest
+                        if self.on_download_ready:
+                            self.on_download_ready(dest, version)
+                        return
+                else:
+                    logger.info(f"Installer already cached: {dest}")
+                    _unblock_windows_file(dest)
+                    self._installer_path = dest
+                    if self.on_download_ready:
+                        self.on_download_ready(dest, version)
+                    return
             if size >= MIN_INSTALLER_BYTES:
                 logger.info(
                     f"Partial update download found ({size/1024/1024:.1f} MB) — resuming")
 
         logger.info(f"Downloading update v{version} from {url}")
-        try:
-            _ensure_ssl_certs()
-            headers = {'User-Agent': f'MBT-POS/{self.current_version}'}
-            self._http_download_file(url, dest, headers)
+        last_err = None
+        for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+            if self._stop.is_set():
+                return
+            try:
+                _ensure_ssl_certs()
+                headers = {'User-Agent': f'MBT-POS/{self.current_version}'}
+                # Refresh checksum from sidecar if still missing
+                if not self._pending_checksum:
+                    self._pending_checksum = fetch_sidecar_checksum(url, headers)
 
-            size = os.path.getsize(dest)
-            if size < int(EXPECTED_INSTALLER_BYTES * 0.85):
-                logger.warning(
-                    f"Update download incomplete ({size/1024/1024:.1f} MB) — will retry")
-                diag = diagnose_download_error(
-                    TimeoutError('download incomplete'), self._is_online())
-                _log_update(
-                    f"Download partial v{version}: {size} bytes — retry scheduled")
-                self._notify_download_issue(version, diag['title'], diag['message'])
-                self._schedule_download_retry(url, version)
+                self._http_download_file(url, dest, headers)
+
+                size = os.path.getsize(dest) if os.path.isfile(dest) else 0
+                if not self._download_complete_enough(size):
+                    logger.warning(
+                        f"Update download incomplete attempt {attempt} "
+                        f"({size/1024/1024:.1f} MB) — will retry")
+                    last_err = TimeoutError('download incomplete')
+                    time.sleep(min(attempt * 3, 15))
+                    continue
+
+                if self._pending_checksum:
+                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                    if not ok:
+                        logger.error(f'Checksum verification failed: {detail}')
+                        try:
+                            os.remove(dest)
+                        except Exception:
+                            pass
+                        self._notify_download_issue(
+                            version,
+                            'Update file failed verification',
+                            'The downloaded update did not match the expected '
+                            'security checksum and was discarded.\n\n'
+                            'MBT POS will retry the download automatically.')
+                        _log_update(f'Download BAD checksum v{version}: {detail}')
+                        self._schedule_download_retry(url, version)
+                        return
+
+                logger.info(f"Update downloaded: {dest} ({size/1024/1024:.1f} MB)")
+                self._download_warned_version = ''
+                _unblock_windows_file(dest)
+                self._installer_path = dest
+                if self.on_download_ready:
+                    self.on_download_ready(dest, version)
                 return
 
-            logger.info(f"Update downloaded: {dest} ({size/1024/1024:.1f} MB)")
-            self._download_warned_version = ''
-            _unblock_windows_file(dest)
-            self._installer_path = dest
-            if self.on_download_ready:
-                self.on_download_ready(dest, version)
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    f"Update download attempt {attempt}/{MAX_DOWNLOAD_ATTEMPTS} failed: {e}")
+                partial = os.path.getsize(dest) if os.path.isfile(dest) else 0
+                if partial < MIN_INSTALLER_BYTES and os.path.isfile(dest):
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+                time.sleep(min(attempt * 3, 15))
 
-        except Exception as e:
-            logger.warning(f"Update download failed: {e}")
-            partial = os.path.getsize(dest) if os.path.isfile(dest) else 0
-            if partial < MIN_INSTALLER_BYTES and os.path.isfile(dest):
-                try:
-                    os.remove(dest)
-                except Exception:
-                    pass
-            diag = diagnose_download_error(e, self._is_online())
-            _log_update(f"Download FAILED v{version}: {diag['category']} — {e}")
-            self._notify_download_issue(version, diag['title'], diag['message'])
-            self._schedule_download_retry(url, version)
+        diag = diagnose_download_error(
+            last_err or RuntimeError('download failed'), self._is_online())
+        _log_update(
+            f"Download FAILED v{version}: {diag['category']} — {last_err}")
+        self._notify_download_issue(version, diag['title'], diag['message'])
+        self._schedule_download_retry(url, version)
 
     # ── Install ────────────────────────────────────────────────────────────────
 
-    def install_and_restart(self, installer_path: str):
+    def install_and_restart(self, installer_path: str, unattended: bool = False):
         """
         Run the installer silently (/S = NSIS silent mode).
-        Installer replaces the exe in-place, then restarts MBT POS.
-        Called from UI thread — launches subprocess and exits immediately.
-        Returns (True, '') on success, (False, error_message) on preflight failure.
+
+        unattended=True (idle auto-update):
+          - Requires SHA-256 checksum
+          - Requires pre-registered MBT_POS_UpdateHelper task (no UAC)
+          - Rejects missing checksum / missing helper
+
+        unattended=False (manual Update button):
+          - Prefers helper when available
+          - Falls back to one-time UAC RunAs on legacy PCs
+          - Missing checksum allowed only for this manual path (logged)
+
+        Restart happens only after successful install.
+        Returns (True, '') on success, (False, error_message) on failure.
         """
         import subprocess
+
+        if not self._install_lock.acquire(blocking=False):
+            return False, (
+                'An update install is already in progress.\n\n'
+                'Wait for it to finish before trying again.')
+
+        try:
+            return self._install_and_restart_locked(installer_path, unattended)
+        finally:
+            try:
+                self._install_lock.release()
+            except Exception:
+                pass
+
+    def _install_and_restart_locked(self, installer_path: str, unattended: bool):
+        import subprocess
+
+        version = self._pending_version or ''
+        ok_attempt, reason = can_attempt_auto_install(version) if unattended else (True, '')
+        if unattended and not ok_attempt:
+            return False, (
+                f'Automatic update deferred ({reason}).\n\n'
+                'Use the Update button if you need to install manually.')
 
         pre = preflight_install(installer_path)
         if not pre.get('ok'):
@@ -879,119 +1512,219 @@ class UpdateChecker:
         installer_path = pre.get('path') or installer_path
         self._installer_path = installer_path
 
+        if not is_safe_installer_path(installer_path):
+            # Stage into allowlisted updates folder
+            installer_path = _stage_installer(installer_path)
+            self._installer_path = installer_path
+        if not is_safe_installer_path(installer_path):
+            return False, (
+                'Update installer is not in an allowed folder.\n\n'
+                'Download was blocked for safety.')
+
         if not installer_path or not os.path.exists(installer_path):
-            diag = diagnose_install_failure(self._pending_version or '')
+            diag = diagnose_install_failure(version)
             return False, diag['title'] + '\n\n' + diag['message']
 
-        logger.info(f"Installing update: {installer_path}")
+        checksum = normalize_checksum(self._pending_checksum)
+        if checksum:
+            ok_hash, detail = verify_installer_checksum(installer_path, checksum)
+            if not ok_hash:
+                return False, (
+                    'Update file failed security verification.\n\n'
+                    f'Detail: {detail}\n\n'
+                    'The installer will not run. MBT POS will re-download it.')
+        elif unattended:
+            return False, (
+                'Automatic install blocked: release checksum is missing.\n\n'
+                'Publish SHA-256 with the GitHub release (notes tag or '
+                '.sha256 sidecar). Manual Update may still work as fallback.')
+        else:
+            logger.warning(
+                'Manual install without checksum — legacy/fallback path')
+            _log_update(f'Install WARN v{version}: missing checksum (manual)')
+
+        use_helper = is_update_helper_registered()
+        if unattended and not use_helper:
+            return False, (
+                'Automatic install blocked: elevated update helper is not '
+                'installed on this PC.\n\n'
+                'Click Update once and approve the Windows permission prompt. '
+                'That one-time approval stages the helper so future updates '
+                'can install silently. See docs/UNATTENDED_UPDATES.md.')
+
+        logger.info(
+            f"Installing update: {installer_path} "
+            f"unattended={unattended} helper={use_helper}")
         try:
-            # Get current exe path so we can restart after install
             if getattr(sys, 'frozen', False):
                 restart_exe = sys.executable
             else:
                 restart_exe = ''
 
-            # Build a small launcher script that:
-            #   1. Waits for current process to exit
-            #   2. Runs installer silently
-            #   3. Restarts the POS
             launcher_script = os.path.join(
                 tempfile.gettempdir(), 'mbt_update_launcher.bat')
-
             pid = os.getpid()
             inst_dir = os.path.dirname(restart_exe) if restart_exe else ''
-            install_ver = self._pending_version or 'unknown'
-            install_ps1 = os.path.join(tempfile.gettempdir(), 'mbt_run_install.ps1')
-            inst_ps = installer_path.replace("'", "''")
-            with open(install_ps1, 'w', encoding='utf-8') as pf:
-                pf.write(
-                    '$ErrorActionPreference = "Continue"\n'
-                    f'$inst = "{inst_ps}"\n'
-                    'if (-not (Test-Path -LiteralPath $inst)) {\n'
-                    '  Write-Host "ERROR: installer not found: $inst"\n'
-                    '  exit 2\n'
-                    '}\n'
-                    'Unblock-File -LiteralPath $inst -ErrorAction SilentlyContinue\n'
-                    '$zone = "${inst}:Zone.Identifier"\n'
-                    'if (Test-Path -LiteralPath $zone) { Remove-Item -LiteralPath $zone -Force -ErrorAction SilentlyContinue }\n'
-                    'function Invoke-MbtInstaller([string]$args) {\n'
-                    '  Write-Host "Running installer: $inst $args"\n'
-                    '  try {\n'
-                    '    if ($args) {\n'
-                    '      $p = Start-Process -FilePath $inst -ArgumentList $args `\n'
-                    '        -Wait -PassThru -Verb RunAs\n'
-                    '    } else {\n'
-                    '      $p = Start-Process -FilePath $inst `\n'
-                    '        -Wait -PassThru -Verb RunAs\n'
-                    '    }\n'
-                    '  } catch {\n'
-                    '    Write-Host "Start-Process error: $_"\n'
-                    '    return 1\n'
-                    '  }\n'
-                    '  if (-not $p) { Write-Host "UAC denied or process did not start"; return 1223 }\n'
-                    '  Write-Host "Installer exit code: $($p.ExitCode)"\n'
-                    '  return [int]$p.ExitCode\n'
-                    '}\n'
-                    '$code = Invoke-MbtInstaller "/S"\n'
-                    'if ($code -ne 0) {\n'
-                    '  Write-Host "Silent install failed (exit $code), showing installer UI"\n'
-                    '  $code = Invoke-MbtInstaller $null\n'
-                    '}\n'
-                    'exit $code\n'
-                )
+            install_ver = version or 'unknown'
             update_log = UPDATE_LOG
-            lines = [
-                '@echo off',
-                f':: MBT POS update launcher — PID {pid}',
-                f'echo [%date% %time%] Update launcher started v{install_ver} >> "{update_log}"',
-                ':: Wait for POS to exit',
-                ':waitloop',
-                f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitloop )',
-                'taskkill /F /IM MBT_POS.exe >nul 2>&1',
-                'timeout /t 2 /nobreak >nul',
-                ':waitall',
-                'tasklist /FI "IMAGENAME eq MBT_POS.exe" 2>nul | find "MBT_POS.exe" >nul',
-                'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitall )',
-                ':: Install silently (elevated — required for Program Files)',
-                f'powershell -NoProfile -ExecutionPolicy Bypass -File "{install_ps1}" '
-                f'>> "{update_log}" 2>&1',
-                'set INSTALL_ERR=%ERRORLEVEL%',
-                'if %INSTALL_ERR% neq 0 (',
-                f'  echo [%date% %time%] Install FAILED v{install_ver} err=%INSTALL_ERR% >> "{update_log}"',
-                ')',
-                'if %INSTALL_ERR% equ 0 (',
-                f'  echo [%date% %time%] Install OK v{install_ver} >> "{update_log}"',
-                f'  del /f /q "{installer_path}" 2>nul',
-                ')',
-                'timeout /t 5 /nobreak >nul',
-                'for /d %%D in ("%TEMP%\\_MEI*") do rd /s /q "%%D" 2>nul',
-            ]
-            if restart_exe:
-                lines.append(':: Restart POS (always — even if install failed)')
-                lines.append(f'start "" /D "{inst_dir}" "{restart_exe}"')
-            lines.append(':: Clean up this script')
-            lines.append(f'del "%~f0"')
+
+            if use_helper:
+                # Job file + schtasks — no UAC
+                try:
+                    if not checksum:
+                        # Manual + helper still needs checksum for privileged path
+                        return False, (
+                            'Elevated helper requires a SHA-256 checksum.\n\n'
+                            'Re-download the update after the release publishes '
+                            'checksum metadata, or install manually from USB.')
+                    write_update_job(installer_path, checksum, install_ver)
+                except Exception as e:
+                    return False, f'Could not prepare update job: {e}'
+
+                lines = [
+                    '@echo off',
+                    f':: MBT POS unattended update — PID {pid}',
+                    f'echo [%date% %time%] Helper install start v{install_ver} >> "{update_log}"',
+                    ':waitloop',
+                    f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitloop )',
+                    'taskkill /F /IM MBT_POS.exe >nul 2>&1',
+                    'timeout /t 2 /nobreak >nul',
+                    ':waitall',
+                    'tasklist /FI "IMAGENAME eq MBT_POS.exe" 2>nul | find "MBT_POS.exe" >nul',
+                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitall )',
+                    f'schtasks /Run /TN "{HELPER_TASK_NAME}" >> "{update_log}" 2>&1',
+                    'set RUN_ERR=%ERRORLEVEL%',
+                    'if %RUN_ERR% neq 0 (',
+                    f'  echo [%date% %time%] Install FAILED v{install_ver} err=%RUN_ERR% helper_run >> "{update_log}"',
+                    '  goto end',
+                    ')',
+                    ':: Wait for helper result (up to ~10 minutes)',
+                    'set /a waits=0',
+                    ':waitresult',
+                    f'if exist "%LOCALAPPDATA%\\MugoByte\\MBT POS\\update_job_result.json" goto gotresult',
+                    'timeout /t 2 /nobreak >nul',
+                    'set /a waits+=1',
+                    'if %waits% lss 300 goto waitresult',
+                    f'echo [%date% %time%] Install FAILED v{install_ver} err=timeout >> "{update_log}"',
+                    'goto end',
+                    ':gotresult',
+                    f'findstr /C:"\\"ok\\": true" /C:"\\"ok\\":true" "%LOCALAPPDATA%\\MugoByte\\MBT POS\\update_job_result.json" >nul',
+                    'if errorlevel 1 (',
+                    f'  echo [%date% %time%] Install FAILED v{install_ver} err=helper_result >> "{update_log}"',
+                    '  goto end',
+                    ')',
+                    f'echo [%date% %time%] Install OK v{install_ver} >> "{update_log}"',
+                    f'del /f /q "{installer_path}" 2>nul',
+                    'timeout /t 3 /nobreak >nul',
+                    'for /d %%D in ("%TEMP%\\_MEI*") do rd /s /q "%%D" 2>nul',
+                ]
+                if restart_exe:
+                    lines.append(f'start "" /D "{inst_dir}" "{restart_exe}"')
+                lines += [':end', 'del "%~f0"']
+            else:
+                # Legacy fallback: one-time UAC via RunAs + optionally stage helper
+                install_ps1 = os.path.join(tempfile.gettempdir(), 'mbt_run_install.ps1')
+                inst_ps = installer_path.replace("'", "''")
+                helper_ps = find_update_helper_script().replace("'", "''")
+                with open(install_ps1, 'w', encoding='utf-8') as pf:
+                    pf.write(
+                        '$ErrorActionPreference = "Continue"\n'
+                        f'$inst = "{inst_ps}"\n'
+                        'if (-not (Test-Path -LiteralPath $inst)) {\n'
+                        '  Write-Host "ERROR: installer not found: $inst"\n'
+                        '  exit 2\n'
+                        '}\n'
+                        'Unblock-File -LiteralPath $inst -ErrorAction SilentlyContinue\n'
+                        '$zone = "${inst}:Zone.Identifier"\n'
+                        'if (Test-Path -LiteralPath $zone) { Remove-Item -LiteralPath $zone -Force -ErrorAction SilentlyContinue }\n'
+                        'function Invoke-MbtInstaller([string]$argList) {\n'
+                        '  Write-Host "Running installer: $inst $argList"\n'
+                        '  try {\n'
+                        '    if ($argList) {\n'
+                        '      $p = Start-Process -FilePath $inst -ArgumentList $argList `\n'
+                        '        -Wait -PassThru -Verb RunAs\n'
+                        '    } else {\n'
+                        '      $p = Start-Process -FilePath $inst `\n'
+                        '        -Wait -PassThru -Verb RunAs\n'
+                        '    }\n'
+                        '  } catch {\n'
+                        '    Write-Host "Start-Process error: $_"\n'
+                        '    return 1\n'
+                        '  }\n'
+                        '  if (-not $p) { Write-Host "UAC denied or process did not start"; return 1223 }\n'
+                        '  Write-Host "Installer exit code: $($p.ExitCode)"\n'
+                        '  return [int]$p.ExitCode\n'
+                        '}\n'
+                        '$code = Invoke-MbtInstaller "/S"\n'
+                        'if ($code -ne 0) {\n'
+                        '  Write-Host "Silent install failed (exit $code), showing installer UI"\n'
+                        '  $code = Invoke-MbtInstaller $null\n'
+                        '}\n'
+                        # Stage helper for future unattended updates (same elevated context)
+                        f'$helper = "{helper_ps}"\n'
+                        'if ($code -eq 0 -and $helper -and (Test-Path -LiteralPath $helper)) {\n'
+                        '  try {\n'
+                        f"    $tn = '{HELPER_TASK_NAME}'\n"
+                        '    $action = New-ScheduledTaskAction -Execute "powershell.exe" '
+                        '-Argument "-NoProfile -ExecutionPolicy Bypass -File `"$helper`""\n'
+                        '    $prin = New-ScheduledTaskPrincipal -UserId "SYSTEM" '
+                        '-LogonType ServiceAccount -RunLevel Highest\n'
+                        '    $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries '
+                        '-DontStopIfGoingOnBatteries -StartWhenAvailable '
+                        '-MultipleInstances IgnoreNew\n'
+                        '    Register-ScheduledTask -TaskName $tn -Action $action '
+                        '-Principal $prin -Settings $set -Force | Out-Null\n'
+                        '    Write-Host "Registered update helper task"\n'
+                        '  } catch { Write-Host "Helper register skipped: $_" }\n'
+                        '}\n'
+                        'exit $code\n'
+                    )
+                lines = [
+                    '@echo off',
+                    f':: MBT POS update launcher (legacy UAC) — PID {pid}',
+                    f'echo [%date% %time%] Update launcher started v{install_ver} >> "{update_log}"',
+                    ':waitloop',
+                    f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitloop )',
+                    'taskkill /F /IM MBT_POS.exe >nul 2>&1',
+                    'timeout /t 2 /nobreak >nul',
+                    ':waitall',
+                    'tasklist /FI "IMAGENAME eq MBT_POS.exe" 2>nul | find "MBT_POS.exe" >nul',
+                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitall )',
+                    f'powershell -NoProfile -ExecutionPolicy Bypass -File "{install_ps1}" '
+                    f'>> "{update_log}" 2>&1',
+                    'set INSTALL_ERR=%ERRORLEVEL%',
+                    'if %INSTALL_ERR% neq 0 (',
+                    f'  echo [%date% %time%] Install FAILED v{install_ver} err=%INSTALL_ERR% >> "{update_log}"',
+                    '  goto end',
+                    ')',
+                    f'echo [%date% %time%] Install OK v{install_ver} >> "{update_log}"',
+                    f'del /f /q "{installer_path}" 2>nul',
+                    'timeout /t 5 /nobreak >nul',
+                    'for /d %%D in ("%TEMP%\\_MEI*") do rd /s /q "%%D" 2>nul',
+                ]
+                if restart_exe:
+                    lines.append(f'start "" /D "{inst_dir}" "{restart_exe}"')
+                lines += [':end', 'del "%~f0"']
 
             with open(launcher_script, 'w') as f:
                 f.write('\n'.join(lines))
 
-            # Run the launcher hidden — it will wait for us to exit
-            flags = 0
-            if sys.platform == 'win32':
-                flags = 0x08000000   # CREATE_NO_WINDOW
+            mark_install_started(install_ver)
+            flags = 0x08000000 if sys.platform == 'win32' else 0
             subprocess.Popen(
                 ['cmd', '/c', launcher_script],
                 creationflags=flags,
                 close_fds=True
             )
-
             logger.info("Update launcher started — exiting for install")
             return True, ''
 
         except Exception as e:
             logger.error(f"install_and_restart: {e}")
-            diag = diagnose_install_failure(self._pending_version or '')
+            mark_install_finished(version, False, str(e))
+            diag = diagnose_install_failure(version)
             return False, diag['title'] + '\n\n' + diag['message']
 
     # ── Public helpers ─────────────────────────────────────────────────────────
@@ -1014,3 +1747,6 @@ class UpdateChecker:
                 logger.warning(f"clear_cache: {e}")
         self._installer_path  = None
         self._pending_version = None
+        self._pending_checksum = ''
+        self._pending_asset_url = ''
+        self._expected_bytes = 0

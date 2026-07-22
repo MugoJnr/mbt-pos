@@ -49,12 +49,12 @@ if exist "%PLATFORM_DIR%\package.json" (
     echo  [ERROR] mugobyte-platform dist\index.html missing.
     exit /b 1
   )
-  echo  [OK] Platform SPA: %PLATFORM_DIR%\dist
+  echo  [OK] Platform SPA: "!PLATFORM_DIR!\dist"
 )
 
 :: Legacy dashboard-ui (optional fallback)
 if exist "%UI_DIR%\package.json" (
-  echo  [2/2] Building dashboard-ui (legacy fallback)...
+  echo  [2/2] Building dashboard-ui ^(legacy fallback^)...
   cd /d "%UI_DIR%"
   if exist "package-lock.json" (
     call npm ci
@@ -63,13 +63,13 @@ if exist "%UI_DIR%\package.json" (
     call npm install
   )
   if errorlevel 1 (
-    echo  [!] dashboard-ui deps failed — continuing with platform SPA only.
+    echo  [!] dashboard-ui deps failed - continuing with platform SPA only.
   ) else (
     call npm run build
     if errorlevel 1 (
-      echo  [!] dashboard-ui build failed — continuing with platform SPA only.
+      echo  [!] dashboard-ui build failed - continuing with platform SPA only.
     ) else (
-      echo  [OK] Legacy SPA: %UI_DIR%\dist
+      echo  [OK] Legacy SPA: "!UI_DIR!\dist"
     )
   )
 )

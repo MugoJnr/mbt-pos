@@ -4,6 +4,29 @@ const TOKEN_KEY = "mbt_token";
 const USER_KEY = "mbt_user";
 const ORG_KEY = "mbt_org";
 const PROVIDER_KEY = "mbt_auth_provider";
+const REMEMBER_KEY = "mbt_remember";
+
+/** Auth endpoints that must never trigger a recursive refresh attempt. */
+const AUTH_NO_REFRESH_PREFIXES = [
+  "/cloud/auth/login",
+  "/cloud/auth/register",
+  "/cloud/auth/refresh",
+  "/cloud/auth/logout",
+  "/cloud/auth/forgot-password",
+  "/cloud/auth/update-password",
+  "/cloud/auth/resend-verification",
+  "/cloud/auth/session",
+];
+
+let authBootstrapPromise: Promise<boolean> | null = null;
+
+function shouldAttemptRefresh(path: string): boolean {
+  return !AUTH_NO_REFRESH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
+function prefersRemember(): boolean {
+  return localStorage.getItem(REMEMBER_KEY) === "1";
+}
 
 export type MbtUser = {
   id?: number | string;
@@ -26,30 +49,64 @@ export type Organization = {
 };
 
 export function getToken(): string {
-  const token = sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || "";
-  if (token && !sessionStorage.getItem(TOKEN_KEY)) {
-    sessionStorage.setItem(TOKEN_KEY, token);
-    localStorage.removeItem(TOKEN_KEY);
-  }
-  return token;
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || "";
 }
 
 export function getUser(): MbtUser | null {
   try {
     const raw = sessionStorage.getItem(USER_KEY) || localStorage.getItem(USER_KEY) || "null";
-    if (raw !== "null" && !sessionStorage.getItem(USER_KEY)) {
-      sessionStorage.setItem(USER_KEY, raw);
-      localStorage.removeItem(USER_KEY);
-    }
     return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
+export function getAuthProvider(): string {
+  return sessionStorage.getItem(PROVIDER_KEY) || localStorage.getItem(PROVIDER_KEY) || "supabase";
+}
+
+function platformRoleFromJwt(token = getToken()): string {
+  if (!token || token.split(".").length < 2) return "";
+  try {
+    const raw = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = raw + "=".repeat((4 - (raw.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as {
+      app_metadata?: { platform_role?: string };
+    };
+    return String(payload?.app_metadata?.platform_role || "");
+  } catch {
+    return "";
+  }
+}
+
 export function isPlatformAdmin(user: MbtUser | null = getUser()): boolean {
   // Shop POS roles like "admin" must never open the platform console.
-  return String(user?.role || "").toLowerCase() === "platform_admin";
+  // Prefer stored user, but also trust JWT app_metadata after role elevation
+  // so a stale mbt_user session cannot hide Platform Admin.
+  const fromUser = String(user?.role || "").toLowerCase();
+  if (fromUser === "platform_admin") return true;
+  return platformRoleFromJwt().toLowerCase() === "platform_admin";
+}
+
+/** Refresh stored user role from live Auth claims (after platform_admin elevation). */
+export async function syncSessionUser(): Promise<MbtUser | null> {
+  const token = getToken();
+  if (!token) return null;
+  // Allow one refresh on 401 — do not wipe a still-valid refresh cookie.
+  const data = await api<{ user?: MbtUser; error?: string }>(
+    "GET",
+    "/cloud/auth/me",
+    undefined,
+    false,
+    true,
+    false,
+  );
+  if (!data?.user) {
+    if (!getToken()) return null;
+    return getUser();
+  }
+  setSession(getToken(), data.user, getAuthProvider());
+  return data.user;
 }
 
 export function getOrgId(): string {
@@ -61,10 +118,29 @@ export function setOrgId(id: string) {
   else localStorage.removeItem(ORG_KEY);
 }
 
-export function setSession(token: string, user: MbtUser, provider = "local") {
+export function setSession(
+  token: string,
+  user: MbtUser,
+  provider = "local",
+  remember?: boolean,
+) {
+  if (remember !== undefined) {
+    localStorage.setItem(REMEMBER_KEY, remember ? "1" : "0");
+  }
+  const persist = remember ?? prefersRemember();
   sessionStorage.setItem(TOKEN_KEY, token);
   sessionStorage.setItem(USER_KEY, JSON.stringify(user));
   sessionStorage.setItem(PROVIDER_KEY, provider);
+  if (persist) {
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    localStorage.setItem(PROVIDER_KEY, provider);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(PROVIDER_KEY);
+  }
+  authBootstrapPromise = Promise.resolve(true);
 }
 
 export function clearSession() {
@@ -75,6 +151,25 @@ export function clearSession() {
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(ORG_KEY);
   localStorage.removeItem(PROVIDER_KEY);
+  authBootstrapPromise = null;
+}
+
+/**
+ * Restore access token before route guards run.
+ * Uses existing storage first; otherwise exchanges the HttpOnly refresh cookie.
+ */
+export function ensureAuthSession(): Promise<boolean> {
+  if (getToken()) return Promise.resolve(true);
+  if (!authBootstrapPromise) {
+    authBootstrapPromise = refreshCloudSession().then((ok) => {
+      if (!ok && !getToken()) {
+        // Allow a later login / navigation to try again.
+        authBootstrapPromise = null;
+      }
+      return ok || Boolean(getToken());
+    });
+  }
+  return authBootstrapPromise;
 }
 
 export async function api<T = unknown>(
@@ -83,6 +178,7 @@ export async function api<T = unknown>(
   body?: unknown,
   noAuth = false,
   allowRefresh = true,
+  clearOnUnauthorized = true,
 ): Promise<T | null> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
@@ -92,13 +188,15 @@ export async function api<T = unknown>(
   const r = await fetch("/api" + path, opts);
   const data = (await r.json().catch(() => ({}))) as T & { error?: string };
   if (r.status === 401 && !noAuth) {
-    if (allowRefresh && !path.startsWith("/cloud/auth/")) {
+    if (allowRefresh && shouldAttemptRefresh(path)) {
       const refreshed = await refreshCloudSession();
-      if (refreshed) return api<T>(method, path, body, noAuth, false);
+      if (refreshed) return api<T>(method, path, body, noAuth, false, clearOnUnauthorized);
     }
-    clearSession();
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
+    if (clearOnUnauthorized) {
+      clearSession();
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
     }
     return null;
   }
@@ -118,6 +216,44 @@ export const GET = <T = unknown>(path: string, q?: Record<string, string | undef
 
 export const POST = <T = unknown>(path: string, body?: unknown) => api<T>("POST", path, body);
 export const PUT = <T = unknown>(path: string, body?: unknown) => api<T>("PUT", path, body);
+
+/** Download an authenticated analytics export without loading the full result into the browser. */
+export async function downloadAnalyticsExport(
+  query: Record<string, string | undefined>,
+  allowRefresh = true,
+): Promise<void> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value != null && value !== "") params.set(key, value);
+  }
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`/api/cloud/analytics/export?${params.toString()}`, {
+    headers,
+    credentials: "same-origin",
+  });
+  if (response.status === 401 && allowRefresh && (await refreshCloudSession())) {
+    return downloadAnalyticsExport(query, false);
+  }
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || `Export failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const filename =
+    disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i)?.[1] ||
+    `mbt-${query.report || "analytics"}-${query.start || "export"}.${query.format || "csv"}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = decodeURIComponent(filename);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
 
 type LoginResult = {
   token?: string;
@@ -179,9 +315,22 @@ export async function refreshCloudSession(): Promise<boolean> {
     credentials: "same-origin",
   });
   if (!r.ok) return false;
-  const data = (await r.json().catch(() => ({}))) as { token?: string };
+  const data = (await r.json().catch(() => ({}))) as {
+    token?: string;
+    user?: MbtUser;
+  };
   if (!data.token) return false;
-  sessionStorage.setItem(TOKEN_KEY, data.token);
+  const provider = getAuthProvider();
+  const existing = getUser();
+  if (data.user) {
+    setSession(data.token, data.user, provider);
+  } else if (existing) {
+    setSession(data.token, existing, provider);
+  } else {
+    // Token-only restore (rare) — keep storage coherent for guards.
+    sessionStorage.setItem(TOKEN_KEY, data.token);
+    if (prefersRemember()) localStorage.setItem(TOKEN_KEY, data.token);
+  }
   return true;
 }
 
@@ -237,9 +386,14 @@ export type CloudDevice = {
 };
 
 export function listCloudLicenses(orgId?: string) {
-  return GET<{ licenses: CloudLicense[]; org_id?: string; error?: string }>(
+  const q: Record<string, string | undefined> = {
+    org_id: orgId || getOrgId() || undefined,
+  };
+  // Platform admin console lists every org's licenses.
+  if (isPlatformAdmin()) q.all = "1";
+  return GET<{ licenses: CloudLicense[]; org_id?: string; scope?: string; error?: string }>(
     "/cloud/licenses",
-    { org_id: orgId || getOrgId() || undefined },
+    q,
   );
 }
 
@@ -270,8 +424,15 @@ export function revokeCloudLicense(licenseId: string) {
 }
 
 export function suspendCloudLicense(licenseId: string) {
-  return POST<{ ok?: boolean; commands_issued?: number; error?: string }>(
+  return POST<{ ok?: boolean; commands_issued?: number; license?: CloudLicense; error?: string }>(
     `/cloud/licenses/${licenseId}/suspend`,
+    {},
+  );
+}
+
+export function unsuspendCloudLicense(licenseId: string) {
+  return POST<{ ok?: boolean; commands_issued?: number; license?: CloudLicense; error?: string }>(
+    `/cloud/licenses/${licenseId}/unsuspend`,
     {},
   );
 }
@@ -358,12 +519,20 @@ export function deactivateCloudDevice(deviceId: string, orgId?: string, reason =
 export function listDeviceEvents(orgId?: string, limit = 50) {
   return GET<{ events: Array<Record<string, unknown>>; org_id?: string; error?: string }>(
     "/cloud/devices/events",
-    { org_id: orgId || getOrgId() || undefined, limit },
+    { org_id: orgId || getOrgId() || undefined, limit: String(limit) },
   );
 }
 
 export function bootstrapCloud() {
-  return POST<{ ok?: boolean; organizations?: Organization[]; error?: string }>("/cloud/bootstrap", {});
+  // Never wipe a fresh login if bootstrap hiccups (401/network).
+  return api<{ ok?: boolean; organizations?: Organization[]; error?: string }>(
+    "POST",
+    "/cloud/bootstrap",
+    {},
+    false,
+    true,
+    false,
+  );
 }
 
 export function isAuthed(): boolean {

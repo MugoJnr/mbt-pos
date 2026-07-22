@@ -23,6 +23,7 @@ from backend.cloud_backup.device_manager import get_or_create_device_id
 from backend.cloud_backup.encryption import (
     EncryptionError,
     decrypt_file,
+    derive_candidate_keys,
     ensure_identity_key_material,
 )
 from backend.cloud_backup.paths import load_identity, save_identity
@@ -111,8 +112,17 @@ class RestoreManager:
         return client.list_backups(biz, limit=limit)
 
     def latest_backup(self) -> dict | None:
-        rows = self.list_available_backups(limit=1)
-        return rows[0] if rows else None
+        rows = self.list_available_backups(limit=30)
+        if not rows:
+            return None
+        # Prefer a real snapshot over empty post-wipe backups that sort newer.
+        # Tiny encrypted envelopes (~<50KB) are almost always empty DBs.
+        substantial = [
+            r for r in rows
+            if int(r.get('size_bytes') or 0) >= 50_000
+        ]
+        pool = substantial or rows
+        return max(pool, key=lambda r: int(r.get('size_bytes') or 0))
 
     def restore_from_meta(
         self,
@@ -139,15 +149,29 @@ class RestoreManager:
             client.download_file(storage_path, enc_path)
 
             ident = load_identity()
-            key, ident = ensure_identity_key_material(ident, password=password)
+            _key, ident = ensure_identity_key_material(ident, password=password)
             save_identity(ident)
 
             zip_path = os.path.join(tmp, 'backup.zip')
             self._emit('Decrypting…', 40)
-            try:
-                decrypt_file(enc_path, zip_path, key)
-            except EncryptionError as e:
-                raise RestoreError(f'Decryption failed — wrong key/password? ({e})') from e
+            candidates = derive_candidate_keys(ident, password=password)
+            if not candidates:
+                raise RestoreError('No decryption key material available for this account')
+            last_err: Optional[Exception] = None
+            decrypted = False
+            for cand in candidates:
+                try:
+                    decrypt_file(enc_path, zip_path, cand)
+                    decrypted = True
+                    break
+                except EncryptionError as e:
+                    last_err = e
+                    continue
+            if not decrypted:
+                raise RestoreError(
+                    'Decryption failed — wrong key/password for this account '
+                    f'({last_err})'
+                ) from last_err
 
             self._emit('Extracting database…', 60)
             extract_dir = os.path.join(tmp, 'out')

@@ -63,6 +63,10 @@ function ApprovalsPage() {
     mutationFn: (id: number) => POST(`/approvals/${id}/reject`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
   });
+  const escalateM = useMutation({
+    mutationFn: (id: number) => POST(`/approvals/${id}/escalate`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+  });
   const createM = useMutation({
     mutationFn: () =>
       POST("/approvals", {
@@ -91,7 +95,7 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="Void, refund, discount, override, stock, expense & credit requests"
+        description="Status tracking for void, refund, discount, and related requests. Approve/Reject updates queue status only — it does not run the POS action automatically. Execute voids and refunds on the desktop with Super-Admin PIN."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
@@ -110,6 +114,10 @@ function ApprovalsPage() {
         }
       />
 
+      <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-text">
+        Approving here marks the request as approved for audit visibility. It does not void a sale,
+        issue a refund, or adjust stock on a POS terminal.
+      </div>
       {showNew ? (
         <Card className="p-4 mb-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -227,8 +235,8 @@ function ApprovalsPage() {
                         <Badge tone={tone(a.status) as any}>{a.status}</Badge>
                       </td>
                       <td className="px-4 py-3">
-                        {a.status === "pending" ? (
-                          <div className="flex gap-2">
+                        {a.status === "pending" || a.status === "escalated" ? (
+                          <div className="flex flex-wrap gap-2">
                             <Button
                               size="sm"
                               variant="success"
@@ -245,6 +253,16 @@ function ApprovalsPage() {
                             >
                               <X className="h-3.5 w-3.5" /> Reject
                             </Button>
+                            {a.status === "pending" ? (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={escalateM.isPending}
+                                onClick={() => escalateM.mutate(a.id)}
+                              >
+                                Escalate
+                              </Button>
+                            ) : null}
                           </div>
                         ) : (
                           <span className="text-xs text-text2">

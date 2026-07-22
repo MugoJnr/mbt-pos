@@ -43,6 +43,54 @@ if PROJECT_ROOT not in sys.path:
 
 SECRET_KEY = get_jwt_secret()
 
+# Failed-login lockout (memory cache + system_settings persistence).
+LOGIN_MAX_FAILED_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 60
+LOGIN_LOCKOUT_SETTING_KEY = 'login_lockout_state'
+_LOGIN_ATTEMPTS: dict[str, dict] = {}
+
+
+def _lockout_load_from_db(db) -> dict[str, dict]:
+    """Load persisted lockout map; prune expired entries."""
+    import time
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key=?",
+            (LOGIN_LOCKOUT_SETTING_KEY,),
+        ).fetchone()
+        raw = row['value'] if row else ''
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            return {}
+        now = time.time()
+        cleaned = {}
+        for k, v in data.items():
+            if not isinstance(v, dict):
+                continue
+            fails = int(v.get('fails') or 0)
+            until = float(v.get('locked_until') or 0)
+            if until > now or fails > 0:
+                cleaned[str(k).lower()] = {'fails': fails, 'locked_until': until}
+        return cleaned
+    except Exception:
+        return {}
+
+
+def _lockout_save_to_db(db, state: dict[str, dict]) -> None:
+    try:
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value,updated_at) VALUES (?,?,?)",
+            (LOGIN_LOCKOUT_SETTING_KEY, json.dumps(state), datetime.now().isoformat()),
+        )
+        db.commit()
+    except Exception:
+        pass
+
+
+def clear_login_lockout_cache() -> None:
+    """Test helper — clear in-process lockout cache."""
+    _LOGIN_ATTEMPTS.clear()
+
 
 # ── Password helpers (must match backend/app.py) ────────────────────────────────
 def _check_pw(pw: str, stored: str) -> bool:
@@ -603,6 +651,36 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
         if 'electronic_paid' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+        if 'original_sale_id' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN original_sale_id INTEGER")
+    except Exception:
+        pass
+    # Sale-item returned qty tracking (partial returns)
+    try:
+        si_cols = {r[1] for r in conn.execute("PRAGMA table_info(sale_items)").fetchall()}
+        if si_cols and 'returned_qty' not in si_cols:
+            conn.execute(
+                "ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
+    except Exception:
+        pass
+    # Suppliers + optional product link (receiving / V05)
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS suppliers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        notes TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    try:
+        prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
+        if prod_cols and 'supplier_id' not in prod_cols:
+            conn.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER")
     except Exception:
         pass
     # Cash rounding adjustment ledger (does not inflate product revenue)
@@ -941,22 +1019,74 @@ class APIClient:
     # ── AUTH ────────────────────────────────────────────────────────────────────
 
     def login(self, username: str, password: str) -> dict:
+        import time
+        # Case-insensitive username match (Admin == admin == ADMIN)
+        uname = (username or '').strip()
+        key = uname.lower() or '__empty__'
+        now = time.time()
+
         db = _db()
         try:
-            # Case-insensitive username match (Admin == admin == ADMIN)
-            uname = (username or '').strip()
+            # Merge DB-persisted lockout into process cache (survives restart)
+            if key not in _LOGIN_ATTEMPTS:
+                persisted = _lockout_load_from_db(db)
+                if key in persisted:
+                    _LOGIN_ATTEMPTS[key] = dict(persisted[key])
+                # Keep other usernames warm in cache too
+                for k, v in persisted.items():
+                    _LOGIN_ATTEMPTS.setdefault(k, dict(v))
+
+            state = _LOGIN_ATTEMPTS.get(key) or {'fails': 0, 'locked_until': 0.0}
+            locked_until = float(state.get('locked_until') or 0)
+            if locked_until > now:
+                retry_after = max(1, int(locked_until - now + 0.999))
+                return {
+                    'error': f'Too many failed attempts. Try again in {retry_after}s.',
+                    'locked': True,
+                    'retry_after': retry_after,
+                }
+
             user = _row(db.execute(
                 "SELECT * FROM users WHERE LOWER(username)=LOWER(?) AND is_active=1",
                 (uname,),
             ))
             if not user or not _check_pw(password, user['password_hash']):
-                return {'error': 'Invalid credentials'}
+                fails = int(state.get('fails') or 0) + 1
+                if fails >= LOGIN_MAX_FAILED_ATTEMPTS:
+                    _LOGIN_ATTEMPTS[key] = {
+                        'fails': 0,
+                        'locked_until': now + LOGIN_LOCKOUT_SECONDS,
+                    }
+                else:
+                    _LOGIN_ATTEMPTS[key] = {
+                        'fails': fails,
+                        'locked_until': 0.0,
+                    }
+                _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
+                if fails >= LOGIN_MAX_FAILED_ATTEMPTS:
+                    return {
+                        'error': (
+                            f'Too many failed attempts. '
+                            f'Locked for {LOGIN_LOCKOUT_SECONDS}s.'
+                        ),
+                        'locked': True,
+                        'retry_after': LOGIN_LOCKOUT_SECONDS,
+                    }
+                remaining = LOGIN_MAX_FAILED_ATTEMPTS - fails
+                return {
+                    'error': 'Invalid credentials',
+                    'attempts_remaining': remaining,
+                }
+
+            # Successful login clears lockout for this username
+            if key in _LOGIN_ATTEMPTS:
+                _LOGIN_ATTEMPTS.pop(key, None)
+                _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
 
             db.execute("UPDATE users SET last_login=? WHERE id=?",
                        (datetime.now().isoformat(), user['id']))
             db.commit()
 
-            import time
             token = jwt.encode({
                 'user_id':  user['id'],
                 'username': user['username'],
@@ -1435,6 +1565,138 @@ class APIClient:
                    'STOCK_ADJUSTED', 'inventory',
                    f"pid={pid} name={row['name']} {old_stock}→{new_qty} reason={reason}")
             return {'success': True, 'old_stock': old_stock, 'new_stock': new_qty}
+        finally:
+            db.close()
+
+    def get_suppliers(self, *, active_only: bool = True) -> list:
+        db = _db()
+        try:
+            q = "SELECT * FROM suppliers"
+            if active_only:
+                q += " WHERE COALESCE(is_active,1)=1"
+            q += " ORDER BY name COLLATE NOCASE"
+            return _rows(db.execute(q))
+        finally:
+            db.close()
+
+    def create_supplier(self, data: dict) -> dict:
+        name = (data.get('name') or '').strip()
+        if not name:
+            return {'error': 'Supplier name is required.'}
+        db = _db()
+        try:
+            db.execute(
+                "INSERT INTO suppliers (name,phone,email,address,notes) VALUES (?,?,?,?,?)",
+                (name, (data.get('phone') or '').strip(),
+                 (data.get('email') or '').strip(),
+                 (data.get('address') or '').strip(),
+                 (data.get('notes') or '').strip()),
+            )
+            db.commit()
+            sid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            _audit(self._user_id, self._username, 'CREATE_SUPPLIER', 'inventory',
+                   f"id={sid} name={name}")
+            return {'success': True, 'id': sid}
+        finally:
+            db.close()
+
+    def update_supplier(self, sid: int, data: dict) -> dict:
+        db = _db()
+        try:
+            fields, vals = [], []
+            for f in ('name', 'phone', 'email', 'address', 'notes', 'is_active'):
+                if f in data:
+                    fields.append(f"{f}=?")
+                    vals.append(data[f])
+            if not fields:
+                return {'error': 'No fields to update.'}
+            fields.append("updated_at=?")
+            vals.append(datetime.now().isoformat())
+            vals.append(sid)
+            db.execute(
+                f"UPDATE suppliers SET {', '.join(fields)} WHERE id=?", vals)
+            db.commit()
+            return {'success': True}
+        finally:
+            db.close()
+
+    def receive_stock(self, product_id: int, qty_add: float, *,
+                      supplier_id: int = None, notes: str = '',
+                      unit_cost: float = None) -> dict:
+        """Receive stock from a supplier (PURCHASE movement). Superadmin only."""
+        if self._role != 'superadmin':
+            return {'error': 'Only Super-Admin can receive stock.'}
+        qty_add = round(float(qty_add or 0), 4)
+        if qty_add <= 0:
+            return {'error': 'Quantity to receive must be greater than zero.'}
+        db = _db()
+        try:
+            row = db.execute(
+                "SELECT id, name, stock, cost_price, supplier_id FROM products WHERE id=?",
+                (product_id,),
+            ).fetchone()
+            if not row:
+                return {'error': 'Product not found'}
+            old_stock = round(float(row['stock'] or 0), 4)
+            new_stock = round(old_stock + qty_add, 4)
+            now = datetime.now().isoformat()
+            supplier_name = ''
+            if supplier_id:
+                sup = db.execute(
+                    "SELECT name FROM suppliers WHERE id=?", (supplier_id,)
+                ).fetchone()
+                if not sup:
+                    return {'error': 'Supplier not found'}
+                supplier_name = sup['name'] or ''
+            reason = 'Received from Supplier'
+            if supplier_name:
+                reason = f'{reason}: {supplier_name}'
+            if notes:
+                reason = f'{reason} — {notes.strip()}'
+            db.execute(
+                "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                (new_stock, now, product_id),
+            )
+            if supplier_id and not row['supplier_id']:
+                try:
+                    db.execute(
+                        "UPDATE products SET supplier_id=? WHERE id=?",
+                        (supplier_id, product_id),
+                    )
+                except Exception:
+                    pass
+            if unit_cost is not None and float(unit_cost) >= 0:
+                db.execute(
+                    "UPDATE products SET cost_price=? WHERE id=?",
+                    (float(unit_cost), product_id),
+                )
+            db.execute(
+                "INSERT INTO stock_movements "
+                "(product_id,product_name,movement_type,qty_before,qty_change,"
+                "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (product_id, row['name'], 'PURCHASE',
+                 old_stock, qty_add, new_stock,
+                 f"RECEIVE_sup={supplier_id or 0}", reason,
+                 self._user_id, self._username or 'superadmin'),
+            )
+            mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            try:
+                cost = float(unit_cost) if unit_cost is not None else float(row['cost_price'] or 0)
+                from desktop.utils.accounting_hooks import post_stock_adjust_journal
+                post_stock_adjust_journal(
+                    db, product_id=product_id, product_name=row['name'],
+                    qty_change=qty_add, unit_cost=cost, reason=reason,
+                    movement_id=mov_id, user_id=self._user_id,
+                    username=self._username or 'superadmin', safe=True)
+            except Exception as _je:
+                logger.error('receive stock accounting: %s', _je, exc_info=True)
+            db.commit()
+            _audit(self._user_id, self._username, 'RECEIVE_STOCK', 'inventory',
+                   f"pid={product_id} +{qty_add} supplier={supplier_id} {reason}")
+            return {
+                'success': True, 'old_stock': old_stock, 'new_stock': new_stock,
+                'supplier_id': supplier_id, 'supplier_name': supplier_name,
+            }
         finally:
             db.close()
 
@@ -2233,6 +2495,207 @@ class APIClient:
         finally:
             db.close()
 
+    def get_sale_for_return(self, receipt: str) -> dict:
+        """Lookup a completed sale with returnable line quantities."""
+        receipt = (receipt or '').strip()
+        if not receipt:
+            return {'error': 'Receipt number is required.'}
+        db = _db()
+        try:
+            sale = _row(db.execute(
+                "SELECT * FROM sales WHERE receipt_number=?", (receipt,)
+            ))
+            if not sale:
+                return {'error': f'No sale found with receipt: {receipt}'}
+            status = (sale.get('status') or '').lower()
+            if status != 'completed':
+                return {'error': f'Cannot return a sale with status "{sale.get("status")}".'}
+            items = _rows(db.execute(
+                "SELECT * FROM sale_items WHERE sale_id=? ORDER BY id",
+                (sale['id'],)
+            ))
+            out_items = []
+            for it in items:
+                sold = float(it.get('quantity') or 0)
+                already = float(it.get('returned_qty') or 0)
+                remaining = round(max(0.0, sold - already), 4)
+                out_items.append({
+                    **dict(it),
+                    'sold_qty': sold,
+                    'returned_qty': already,
+                    'remaining_qty': remaining,
+                })
+            return {'success': True, 'sale': dict(sale), 'items': out_items}
+        finally:
+            db.close()
+
+    def return_sale(self, sale_id: int, items: list, reason: str,
+                    *, refund_method: str = 'cash') -> dict:
+        """
+        Partial product return against a completed sale.
+        Restocks inventory, records a status='return' sale (negative totals),
+        and bumps sale_items.returned_qty on the original.
+        """
+        if self._role not in ('admin', 'superadmin', 'manager'):
+            return {'error': 'Insufficient permissions to process returns.'}
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'A return reason is required.'}
+        if not items:
+            return {'error': 'Select at least one item to return.'}
+
+        db = _db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            sale = db.execute(
+                "SELECT * FROM sales WHERE id=?", (sale_id,)
+            ).fetchone()
+            if not sale:
+                db.rollback()
+                return {'error': 'Sale not found'}
+            if (sale['status'] or '').lower() != 'completed':
+                db.rollback()
+                return {'error': f'Cannot return sale with status "{sale["status"]}".'}
+
+            orig_rn = sale['receipt_number'] or str(sale_id)
+            refund_total = 0.0
+            restock_lines = []
+            now = datetime.now().isoformat()
+
+            for spec in items:
+                si_id = int(spec.get('sale_item_id') or 0)
+                qty = round(float(spec.get('quantity') or 0), 4)
+                if si_id <= 0 or qty <= 0:
+                    continue
+                line = db.execute(
+                    "SELECT * FROM sale_items WHERE id=? AND sale_id=?",
+                    (si_id, sale_id),
+                ).fetchone()
+                if not line:
+                    db.rollback()
+                    return {'error': f'Sale line #{si_id} not found on this receipt.'}
+                sold = float(line['quantity'] or 0)
+                already = float(line['returned_qty'] or 0) if 'returned_qty' in line.keys() else 0.0
+                remaining = round(sold - already, 4)
+                if qty > remaining + 0.0001:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'Cannot return {qty} of {line["product_name"]} — '
+                            f'only {remaining} remaining.'
+                        )
+                    }
+                unit = float(line['unit_price'] or 0)
+                line_disc = float(line['discount'] or 0)
+                # Pro-rate line discount
+                disc_share = round(line_disc * (qty / sold), 2) if sold > 0 else 0.0
+                line_total = round(qty * unit - disc_share, 2)
+                refund_total = round(refund_total + line_total, 2)
+                restock_lines.append({
+                    'sale_item_id': si_id,
+                    'product_id': line['product_id'],
+                    'product_name': line['product_name'],
+                    'sku': line['sku'] or '',
+                    'quantity': qty,
+                    'unit_price': unit,
+                    'discount': disc_share,
+                    'total': line_total,
+                    'already': already,
+                })
+
+            if not restock_lines:
+                db.rollback()
+                return {'error': 'No valid return quantities.'}
+
+            # Restock
+            for rl in restock_lines:
+                pid = rl['product_id']
+                qty = rl['quantity']
+                if not pid:
+                    continue
+                prod = db.execute(
+                    "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+                ).fetchone()
+                if not prod:
+                    continue
+                old_stock = float(prod['stock'] or 0)
+                new_stock = round(old_stock + qty, 4)
+                db.execute(
+                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                    (new_stock, now, pid),
+                )
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (pid, prod['name'], 'RETURN_RESTORE',
+                     old_stock, qty, new_stock,
+                     f"RETURN_sale={sale_id}_item={rl['sale_item_id']}",
+                     f"Return from {orig_rn}: {reason}",
+                     self._user_id, self._username or 'staff'),
+                )
+                db.execute(
+                    "UPDATE sale_items SET returned_qty=? WHERE id=?",
+                    (round(rl['already'] + qty, 4), rl['sale_item_id']),
+                )
+
+            ret_rn = f"RET-{datetime.now().strftime('%Y%m%d%H%M%S')}-{sale_id}"
+            method = (refund_method or 'cash').strip() or 'cash'
+            db.execute(
+                "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
+                "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
+                "status,original_sale_id,customer_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ret_rn, self._user_id, self._username or 'staff',
+                 -refund_total, 0, 0, -refund_total, method,
+                 -refund_total, 0,
+                 f"RETURN of {orig_rn}: {reason}",
+                 'return', sale_id, sale['customer_id'] if 'customer_id' in sale.keys() else None),
+            )
+            ret_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            for rl in restock_lines:
+                db.execute(
+                    "INSERT INTO sale_items "
+                    "(sale_id,product_id,product_name,sku,quantity,unit_price,discount,total)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (ret_id, rl['product_id'], rl['product_name'], rl['sku'],
+                     -rl['quantity'], rl['unit_price'], rl['discount'], -rl['total']),
+                )
+
+            db.execute(
+                "INSERT INTO sale_edits "
+                "(sale_id,edited_by_id,edited_by_name,edit_type,"
+                "field_name,old_value,new_value,reason) VALUES (?,?,?,?,?,?,?,?)",
+                (sale_id, self._user_id, self._username or 'staff',
+                 'RETURN', 'return', orig_rn, ret_rn, reason),
+            )
+            try:
+                from desktop.utils.accounting_hooks import reverse_sale_journal
+                # Soft: reverse journal against original is wrong for partial —
+                # log only; full journal optional
+                pass
+            except Exception:
+                pass
+
+            db.commit()
+            _audit(self._user_id, self._username, 'RETURN_SALE', 'sales',
+                   f"sale_id={sale_id} return_id={ret_id} receipt={ret_rn} "
+                   f"refund={refund_total} reason={reason}")
+            return {
+                'success': True,
+                'return_sale_id': ret_id,
+                'receipt_number': ret_rn,
+                'refund_total': refund_total,
+                'original_receipt': orig_rn,
+            }
+        except Exception as e:
+            db.rollback()
+            logger.error(f"return_sale: {e}", exc_info=True)
+            return {'error': str(e)}
+        finally:
+            db.close()
+
     def edit_sale(self, sale_id: int, data: dict) -> dict:
         """
         Super Admin only — full receipt edit.
@@ -2264,9 +2727,14 @@ class APIClient:
             if not sale:
                 db.rollback()
                 return {'error': 'Sale not found'}
-            if (sale['status'] or '').lower() != 'completed':
+            status_l = (sale['status'] or '').lower()
+            reinstate = status_l in ('void', 'voided')
+            if status_l not in ('completed', 'void', 'voided'):
                 db.rollback()
-                return {'error': 'Only completed sales can be edited.'}
+                return {'error': f'Cannot edit sale with status "{sale["status"]}".'}
+            if reinstate and self._role != 'superadmin':
+                db.rollback()
+                return {'error': 'Only Super Admin can reinstate and edit voided sales.'}
 
             rn = sale['receipt_number'] or str(sale_id)
             old_items = _rows(db.execute(
@@ -2275,6 +2743,7 @@ class APIClient:
 
             # Snapshot header for audit
             old_snap = {
+                'status': sale['status'] or '',
                 'subtotal': float(sale['subtotal'] or 0),
                 'discount': float(sale['discount'] or 0),
                 'tax': float(sale['tax'] or 0),
@@ -2372,13 +2841,16 @@ class APIClient:
             if not is_credit and amount_paid < 0.009:
                 amount_paid = total
 
-            # Inventory: restore old lines then deduct new (no double VOID_RESTORE)
-            self._restock_sale_items(
-                db, sale_id, receipt=rn,
-                reason=f"Sale edit reverse stock: {rn} — {reason}",
-                movement_type='SALE_EDIT_RESTORE',
-                skip_if_restored=False,
-            )
+            # Inventory:
+            # - Completed edits: restore old lines then deduct new.
+            # - Voided reinstate: stock was already restored on void — only deduct new lines.
+            if not reinstate:
+                self._restock_sale_items(
+                    db, sale_id, receipt=rn,
+                    reason=f"Sale edit reverse stock: {rn} — {reason}",
+                    movement_type='SALE_EDIT_RESTORE',
+                    skip_if_restored=False,
+                )
             db.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
             for it in normalized:
                 db.execute(
@@ -2389,28 +2861,34 @@ class APIClient:
                      it['quantity'], it['unit_price'], it['discount'], it['total'])
                 )
             self._deduct_sale_items_stock(
-                db, sale_id, normalized, receipt=rn, movement_type='SALE_EDIT'
+                db, sale_id, normalized, receipt=rn,
+                movement_type='SALE_REINSTATE' if reinstate else 'SALE_EDIT',
             )
 
             now = datetime.now().isoformat()
+            reinstate_note = (
+                f' | REINSTATED from voided & edited: {reason}' if reinstate
+                else f' | EDITED: {reason}'
+            )
             db.execute(
                 "UPDATE sales SET subtotal=?, discount=?, tax=?, total=?, "
                 "payment_method=?, amount_paid=?, customer_id=?, "
-                "original_total=?, notes=?, change_amount=? WHERE id=?",
+                "original_total=?, notes=?, change_amount=?, status='completed' WHERE id=?",
                 (
                     subtotal, header_disc, tax, total, payment_method, amount_paid,
                     customer_id, total,
-                    ((sale['notes'] or '') + f' | EDITED: {reason}').strip(' |'),
+                    ((sale['notes'] or '') + reinstate_note).strip(' |'),
                     max(0.0, amount_paid - total) if not is_credit else float(sale['change_amount'] or 0),
                     sale_id,
                 )
             )
 
-            # Linked debt invoice sync
+            # Linked debt invoice sync (include cancelled invoices when reinstating)
             debt = db.execute(
                 "SELECT * FROM debt_invoices WHERE sale_id=? "
-                "AND LOWER(COALESCE(status,'')) NOT IN ('cancelled','written_off') "
-                "ORDER BY id DESC LIMIT 1",
+                "AND LOWER(COALESCE(status,'')) NOT IN ('written_off') "
+                "ORDER BY CASE WHEN LOWER(COALESCE(status,''))='cancelled' THEN 1 ELSE 0 END, id DESC "
+                "LIMIT 1",
                 (sale_id,)
             ).fetchone()
             if is_credit and customer_id:
@@ -2431,7 +2909,8 @@ class APIClient:
                         "balance=?, status=?, updated_at=?, notes=? WHERE id=?",
                         (
                             customer_id, total, bal, status, now,
-                            f"{(debt['notes'] or '').strip()}\nEDITED: {reason}".strip(),
+                            f"{(debt['notes'] or '').strip()}\n"
+                            f"{'REINSTATED' if reinstate else 'EDITED'}: {reason}".strip(),
                             debt['id'],
                         )
                     )
@@ -2451,7 +2930,8 @@ class APIClient:
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                         (inv_num, sale_id, rn, customer_id, cust_name or 'Customer',
                          total, 0.0, total, 'unpaid',
-                         f'Created on sale edit: {reason}', now, now)
+                         f'Created on sale {"reinstate" if reinstate else "edit"}: {reason}',
+                         now, now)
                     )
             elif debt and not is_credit:
                 # Switched off credit — cancel open debt if unpaid
@@ -2483,6 +2963,7 @@ class APIClient:
                      edit_type, field, str(old_v), str(new_v), reason)
                 )
 
+            _log_edit('EDIT', 'status', old_snap.get('status'), 'completed')
             _log_edit('EDIT', 'total', old_snap['total'], total)
             _log_edit('EDIT', 'discount', old_snap['discount'], header_disc)
             _log_edit('EDIT', 'payment_method', old_snap['payment_method'], payment_method)
@@ -2510,10 +2991,11 @@ class APIClient:
                 logger.error('edit_sale accounting: %s', _je, exc_info=True)
 
             db.commit()
+            action = 'REINSTATE_EDIT_SALE' if reinstate else 'EDIT_SALE'
             _audit(
-                self._user_id, self._username, 'EDIT_SALE', 'sales',
+                self._user_id, self._username, action, 'sales',
                 f"sale_id={sale_id} receipt={rn} total={old_snap['total']}→{total} "
-                f"method={payment_method} reason={reason}"
+                f"method={payment_method} reinstate={reinstate} reason={reason}"
             )
             return {
                 'success': True,
@@ -2521,6 +3003,7 @@ class APIClient:
                 'receipt_number': rn,
                 'total': total,
                 'items': normalized,
+                'reinstated': reinstate,
             }
         except ValueError as e:
             db.rollback()
@@ -2645,7 +3128,7 @@ class APIClient:
                               ('bank transfer','bank','bank payment')
                          THEN COALESCE(amount_paid,0) ELSE 0 END),0) as bank_collected
                 FROM sales WHERE date(created_at) BETWEEN ? AND ?
-                AND status='completed'
+                AND status IN ('completed','return')
             """, (start, end)))
 
             debt_collected_row = _row(db.execute("""
@@ -2669,14 +3152,14 @@ class APIClient:
                        COUNT(si.id)     as transactions
                 FROM sale_items si JOIN sales s ON si.sale_id=s.id
                 WHERE date(s.created_at) BETWEEN ? AND ?
-                  AND s.status='completed'
+                  AND s.status IN ('completed','return')
                 GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
             """, (start, end)))
 
             by_payment = _rows(db.execute("""
                 SELECT payment_method,COUNT(*) as count,SUM(total) as total
                 FROM sales WHERE date(created_at) BETWEEN ? AND ?
-                AND status='completed' GROUP BY payment_method
+                AND status IN ('completed','return') GROUP BY payment_method
             """, (start, end)))
 
             return {
@@ -4268,6 +4751,42 @@ class APIClient:
             from desktop.utils.accounting_engine import create_expense
             r = create_expense(db, data, user_id=self._user_id,
                                username=self._username or '')
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_update_expense(self, expense_id: int, data: dict) -> dict:
+        if not self._acc_perm('accounting.approve_expenses'):
+            return {'error': 'Insufficient permissions to update expenses'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import update_expense
+            r = update_expense(
+                db, int(expense_id), data or {},
+                user_id=self._user_id, username=self._username or '',
+            )
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_delete_expense(self, expense_id: int, reason: str = '') -> dict:
+        if not self._acc_perm('accounting.approve_expenses'):
+            return {'error': 'Insufficient permissions to delete expenses'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import delete_expense
+            r = delete_expense(
+                db, int(expense_id), reason=reason or '',
+                user_id=self._user_id, username=self._username or '',
+            )
             db.commit()
             return r
         except Exception as e:

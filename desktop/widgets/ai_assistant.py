@@ -957,6 +957,18 @@ class AiAssistantPanel(QFrame):
     def _prompt_action(self, action: ProposedAction):
         if not isinstance(action, ProposedAction):
             return
+        from desktop.utils.ai.actions import is_unimplemented_action
+        if is_unimplemented_action(action):
+            QMessageBox.information(
+                self, 'Not available yet',
+                'Purchase Orders / receiving (STK Push / PO) are not available in this '
+                'release.\n\nUse Inventory stock adjust or restock suggestions instead.')
+            self._add_bubble(
+                'assistant',
+                'Purchase Orders are **not available** yet (V05). '
+                'Use Inventory adjustments or restock lists instead.',
+            )
+            return
         if not action.permission_ok(self.mw.user_data):
             QMessageBox.information(
                 self, 'Action not allowed',

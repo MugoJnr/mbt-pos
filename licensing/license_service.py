@@ -25,10 +25,10 @@ from licensing.license_engine import (
 
 logger = logging.getLogger('license_service')
 
-SYNC_INTERVAL     = 6 * 3600    # cloud validate every 6 hours when online
+SYNC_INTERVAL     = 15 * 60      # cloud validate every 15 minutes when online
 VALIDATE_INTERVAL = 300          # re-validate every 5 minutes offline
 OFFLINE_GRACE_DAYS = 7           # must phone home within this window
-FORCE_ONLINE_CHECK_HOURS = 24    # attempt cloud validate at least daily when online
+FORCE_ONLINE_CHECK_HOURS = 1     # attempt cloud validate at least hourly when online
 
 
 class LicenseService(threading.Thread):
@@ -57,10 +57,16 @@ class LicenseService(threading.Thread):
     def run(self):
         logger.info("License service started")
 
-        # Brief delay then register device with cloud
+        # Brief delay then register device with cloud + immediate validation
         self._stop.wait(8)
         if not self._stop.is_set():
             self._register_device_with_cloud()
+            if self._check_internet():
+                try:
+                    self._do_remote_sync()
+                    self._last_sync = int(time.time())
+                except Exception as e:
+                    logger.debug('Startup cloud sync: %s', e)
 
         while not self._stop.is_set():
             try:
@@ -177,7 +183,7 @@ class LicenseService(threading.Thread):
             logger.debug('Cloud validate skipped: %s', e)
 
     def _handle_license_push(self, text: str):
-        """Process __LICPUSH__ / __LICEXTEND__ / __LICREVOKE__ from the Telegram hub."""
+        """Process __LICPUSH__ / __LICEXTEND__ / __LICREVOKE__ from cloud sync."""
         try:
             if text.startswith('__LICPUSH__'):
                 payload = json.loads(text[11:])
@@ -191,9 +197,9 @@ class LicenseService(threading.Thread):
                 self._apply_remote_config(cfg_update)
                 logger.info(f"Config push applied: {list(cfg_update.keys())}")
                 self.engine.store.log('CONFIG_PUSH', str(list(cfg_update.keys())))
-                if 'developer_chat_id' in cfg_update:
+                if any(k in cfg_update for k in ('shop_name', 'business_id', 'device_label')):
                     self._stop.wait(2)
-                    self._send_device_registration()
+                    self._register_device_with_cloud()
             elif text.startswith('__LICEXTEND__'):
                 payload = json.loads(text[13:])
                 extra_days = payload.get('extra_days', 0)

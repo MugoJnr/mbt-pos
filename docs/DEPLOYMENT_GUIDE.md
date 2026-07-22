@@ -32,7 +32,7 @@ Live Dashboard remains on per-shop Cloudflare tunnels (`{shop}.mugobyte.com`) an
    - `MBT_SUPABASE_ANON_KEY`
    - `MBT_SUPABASE_SERVICE_KEY`
 3. Portal SPA and Live Dashboard SPA built into `web/*/dist`
-4. GitHub Actions secret `FLY_API_TOKEN` for CI deploy
+4. GitHub Actions deployment secrets listed below
 
 ## First-time create
 
@@ -82,9 +82,47 @@ Health check path: `/api/health`
 
 Workflow: `.github/workflows/portal-production.yml`
 
-Required repository secret:
+The production workflow validates migration hygiene, links the Supabase project,
+previews and applies every pending migration, then deploys Fly. A migration
+failure stops the job before `flyctl deploy`. After deploy it retries
+`https://portal.mugobyte.com/api/health` and requires an HTTP 2xx response.
 
-- `FLY_API_TOKEN` from `flyctl tokens create deploy -x 999999h`
+Required GitHub repository secrets:
+
+- `SUPABASE_ACCESS_TOKEN`: Supabase personal access token used only by the CLI.
+  Create it under Supabase Account → Access Tokens.
+- `SUPABASE_PROJECT_ID`: project reference from Project Settings → General
+  (the short value used in `<project-ref>.supabase.co`).
+- `SUPABASE_DB_PASSWORD`: database password from Project Settings → Database.
+- `FLY_API_TOKEN`: app-scoped Fly deploy token. Create with
+  `flyctl tokens create deploy --app mbt-portal`.
+
+These CI credentials are distinct from the Fly runtime secrets
+`MBT_SUPABASE_URL`, `MBT_SUPABASE_ANON_KEY`, and
+`MBT_SUPABASE_SERVICE_KEY`. Never put a service-role key, database password, or
+access token in source, `supabase/config.toml`, workflow YAML, or build args.
+
+### Migration adoption
+
+The timestamped migration history is in `supabase/migrations`. The four
+baseline migrations are deliberately idempotent so the first CI run can adopt
+either a fresh database or the existing manually provisioned production
+schema. `--include-all` ensures an existing project with no migration-history
+rows receives the baseline migrations; later runs apply only new migrations.
+
+Before enabling automatic deployment, preview from a trusted workstation:
+
+```powershell
+$env:SUPABASE_ACCESS_TOKEN = '<personal-access-token>'
+$env:SUPABASE_DB_PASSWORD = '<database-password>'
+supabase link --project-ref '<project-ref>' --password $env:SUPABASE_DB_PASSWORD
+python deploy/validate_supabase_migrations.py
+supabase db push --linked --include-all --dry-run --password $env:SUPABASE_DB_PASSWORD
+```
+
+Do not use `supabase db reset` against a linked production project. New schema
+changes must be added as a later timestamped migration; do not edit a migration
+after it has reached production.
 
 ## Rollback
 

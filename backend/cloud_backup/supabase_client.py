@@ -111,6 +111,7 @@ class SupabaseClient:
             'type': link_type,
             'email': email,
             'options': {'redirect_to': redirect_to},
+            'redirect_to': redirect_to,
         }
         if password:
             payload['password'] = password
@@ -124,7 +125,26 @@ class SupabaseClient:
         )
         if r.status_code >= 400:
             self._raise(r, 'Generate auth link')
-        return r.json()
+        data = r.json()
+        # GoTrue sometimes stamps Site URL instead of options.redirect_to.
+        # Rewrite so verify/magic/recovery land on the Portal auth routes.
+        try:
+            from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+            action = data.get('action_link') or (data.get('properties') or {}).get('action_link') or ''
+            if action and redirect_to:
+                parts = urlparse(action)
+                qs = parse_qs(parts.query)
+                qs['redirect_to'] = [redirect_to]
+                new_query = urlencode({k: v[0] for k, v in qs.items()})
+                fixed = urlunparse(parts._replace(query=new_query))
+                data['action_link'] = fixed
+                props = data.get('properties')
+                if isinstance(props, dict):
+                    props['action_link'] = fixed
+        except Exception:
+            pass
+        return data
 
     def sign_in(self, email: str, password: str, *, persist: bool = True) -> dict:
         r = self._session.post(
@@ -291,8 +311,16 @@ class SupabaseClient:
         )
 
     def insert_backup_meta(self, meta: dict) -> dict:
-        result = self.rest_insert('backups', meta)
-        return result[0] if isinstance(result, list) else result
+        try:
+            result = self.rest_insert('backups', meta)
+            return result[0] if isinstance(result, list) else result
+        except SupabaseError as e:
+            # Fallback for stale identity / RLS edge cases when service role is available.
+            if self.service and ('row-level security' in str(e).lower() or e.status in (401, 403)):
+                from backend.cloud.platform_service import service_insert
+                result = service_insert('backups', meta)
+                return result[0] if isinstance(result, list) else result
+            raise
 
     def list_backups(self, business_id: str, limit: int = 20) -> list:
         return self.rest_select(
@@ -327,13 +355,14 @@ class SupabaseClient:
         if not content_type:
             content_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
 
-        def _do():
-            token = self.access_token()
+        def _do(use_service: bool = False):
+            token = self.service if use_service and self.service else self.access_token()
+            key = self.service if use_service and self.service else self.anon
             url = self._url(
                 f'/storage/v1/object/{self.bucket}/{object_path}'
             )
             headers = {
-                'apikey': self.anon,
+                'apikey': key,
                 'Authorization': f'Bearer {token}',
                 'Content-Type': content_type,
                 'x-upsert': 'true',
@@ -344,7 +373,13 @@ class SupabaseClient:
                 self._raise(r, 'Storage upload')
             return object_path
 
-        return self.with_auth_retry(_do)
+        try:
+            return self.with_auth_retry(lambda: _do(False))
+        except SupabaseError as e:
+            if self.service and e.status in (400, 401, 403):
+                logger.warning('Storage user upload failed (%s); retrying with service role', e)
+                return _do(True)
+            raise
 
     def download_file(self, object_path: str, dest_path: str) -> int:
         def _do():
