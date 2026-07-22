@@ -1,0 +1,107 @@
+{
+    "checks":  [
+                   {
+                       "detail":  "SQLite OK · 1438 sales records",
+                       "key":  "db",
+                       "label":  "Database",
+                       "state":  "healthy",
+                       "weight":  2
+                   },
+                   {
+                       "detail":  "736.4 GB free of 930.6 GB",
+                       "key":  "storage",
+                       "label":  "Storage",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "Configured · logged_in=True · last=never",
+                       "key":  "cloud",
+                       "label":  "Cloud",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "AI configured and online",
+                       "key":  "ai",
+                       "label":  "AI",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "Last error at 2026-07-20 09:57:59",
+                       "key":  "backups",
+                       "label":  "Backups",
+                       "state":  "warn",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "0 pending item(s)",
+                       "key":  "sync",
+                       "label":  "Sync",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "Responding · ~0 ms",
+                       "key":  "api",
+                       "label":  "API",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "Running (frozen EXE)",
+                       "key":  "desktop",
+                       "label":  "Desktop POS",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "Outbound TCP 443 reachable",
+                       "key":  "internet",
+                       "label":  "Internet",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "edmus.mugobyte.com · tunnel=up · ACTIVE",
+                       "key":  "cloudflare",
+                       "label":  "Cloudflare Tunnel",
+                       "state":  "healthy",
+                       "weight":  2
+                   },
+                   {
+                       "detail":  "MBT POS · active",
+                       "key":  "license",
+                       "label":  "License",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "1 admin(s) · 0 disabled user(s)",
+                       "key":  "security",
+                       "label":  "Security",
+                       "state":  "healthy",
+                       "weight":  1
+                   },
+                   {
+                       "detail":  "0h 0m 0s",
+                       "key":  "uptime",
+                       "label":  "API Uptime",
+                       "state":  "healthy",
+                       "weight":  1
+                   }
+               ],
+    "overall":  "healthy",
+    "score":  97,
+    "time":  "2026-07-22T09:35:08.774898",
+    "uptime_seconds":  0,
+    "version":  {
+                    "build":  "RC-2026-07-22-v3.0.3-certified",
+                    "build_date":  "2026-07-22",
+                    "download_url":  "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+                    "exe":  "MBT_POS.exe",
+                    "release_notes":  "MBT POS 3.0.3 certified installer: SetRegView 64 registry fix, FileVersion 3.0.3, silent upgrade/uninstall/reinstall verified, customer journey PASS.\n\n[checksum_sha256: 280bedd874764bd7d57eaf9fe95746ebfd0e0cef5f9dc5134500d6ce4d3ff0c3]",
+                    "version":  "3.0.3"
+                }
+}

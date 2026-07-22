@@ -1,0 +1,13 @@
+MBT POS Live Dashboard v3.0 certification evidence
+Date: 2026-07-22
+Local: http://127.0.0.1:5050/
+Remote: https://edmus.mugobyte.com/
+Login: admin / admin123
+
+Connection: PASS (local health 200, remote health 200, tunnel ACTIVE)
+API smoke: version, reports/summary, debt/summary, notifications, backup/status, live, settings PASS
+command-center: cash/mpesa/bank + business_health + top_products PASS
+health/detail: ~750ms warm, score 97, checks include desktop/internet/cloudflare/license/uptime
+E2E: inserted sale milk KES 500 ? dashboard KPIs updated (revenue/cash/tops)
+SPA build: index-DuMoL3au.js deployed to exe _internal + served remotely
+Mobile: responsive CSS + bottom nav + mobile search sheet (emulation; no physical device farm)

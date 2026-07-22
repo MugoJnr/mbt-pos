@@ -2858,20 +2858,99 @@ def cc_summary():
         cash_flow = None
         if expenses is not None:
             cash_flow = float(sales.get('revenue') or 0) - float(expenses) / max(date.today().day, 1)
+
+        by_payment = []
+        if _user_can('payments', user) or _user_can('sales', user):
+            by_payment = _trs(db.execute(f"""
+                SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total),0) as total
+                FROM sales WHERE {sales_clause}
+                GROUP BY payment_method ORDER BY total DESC
+            """, params).fetchall())
+
+        top_products = []
+        top_categories = []
+        if _user_can('reports', user) or _user_can('sales', user):
+            top_products = _trs(db.execute("""
+                SELECT si.product_name as name, SUM(si.quantity) as qty,
+                       COALESCE(SUM(si.total),0) as revenue
+                FROM sale_items si JOIN sales s ON si.sale_id=s.id
+                WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+                GROUP BY si.product_name ORDER BY revenue DESC LIMIT 8
+            """, (today,)).fetchall())
+            try:
+                top_categories = _trs(db.execute("""
+                    SELECT COALESCE(NULLIF(TRIM(p.category),''), 'Uncategorized') as name,
+                           SUM(si.quantity) as qty, COALESCE(SUM(si.total),0) as revenue
+                    FROM sale_items si
+                    JOIN sales s ON si.sale_id=s.id
+                    LEFT JOIN products p ON p.id=si.product_id
+                    WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+                    GROUP BY 1 ORDER BY revenue DESC LIMIT 8
+                """, (today,)).fetchall())
+            except Exception:
+                top_categories = []
+
+        low_stock = 0
+        if _user_can('inventory', user):
+            try:
+                low_stock = int(db.execute(
+                    "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock"
+                ).fetchone()[0])
+            except Exception:
+                low_stock = 0
+
+        # Business health score from live SQLite metrics only (0–100).
+        health_bits = []
+        rev = float(sales.get('revenue') or 0)
+        txns = int(sales.get('txns') or 0)
+        health_bits.append(25 if txns > 0 else 8)
+        if profit is not None:
+            health_bits.append(25 if float(profit) >= 0 else 5)
+        else:
+            health_bits.append(12)
+        if debt_total is not None:
+            health_bits.append(20 if float(debt_total) <= max(rev * 3, 1) else 8)
+        else:
+            health_bits.append(10)
+        if _user_can('inventory', user):
+            health_bits.append(20 if low_stock <= 5 else (10 if low_stock <= 20 else 4))
+        else:
+            health_bits.append(10)
+        business_health = int(min(100, sum(health_bits)))
+
+        pay_map = {str(p.get('payment_method') or '').lower(): float(p.get('total') or 0)
+                   for p in by_payment}
+
+        def _pay_sum(*keys):
+            total = 0.0
+            for k, v in pay_map.items():
+                if any(x in k for x in keys):
+                    total += v
+            return total
+
         return jsonify({
             'today': {
-                'revenue': float(sales.get('revenue') or 0),
-                'transactions': int(sales.get('txns') or 0),
+                'revenue': rev,
+                'transactions': txns,
                 'avg_transaction': float(sales.get('avg_txn') or 0),
                 'discounts': float(sales.get('discounts') or 0),
                 'profit': profit,
+                'cash': _pay_sum('cash'),
+                'mpesa': _pay_sum('mpesa', 'm-pesa', 'm_pesa', 'mobile'),
+                'bank': _pay_sum('bank', 'card', 'transfer', 'cheque', 'check'),
             },
             'monthly_revenue': month_rev,
             'expenses': expenses,
             'inventory_value': inv_val,
             'outstanding_debts': debt_total,
             'cash_flow': cash_flow,
+            'low_stock': low_stock,
+            'by_payment': by_payment,
+            'top_products': top_products,
+            'top_categories': top_categories,
+            'business_health': business_health,
             'scope': 'own_sales' if role == 'cashier' else 'shop',
+            'permissions': sorted(_user_tabs(user)),
         })
     return _inner()
 
@@ -3116,14 +3195,20 @@ def health_detail():
         except Exception as e:
             add('cloud', 'Cloud', False, str(e), 1)
 
-        # AI
+        # AI — read cached flags only (never network probe on health poll)
         try:
             from desktop.utils.ai.connectivity import get_connectivity
-            conn = get_connectivity()
-            if conn.configured and conn.online:
+            from desktop.utils.ai.config import is_ai_configured
+            configured = bool(is_ai_configured())
+            online = False
+            try:
+                online = bool(getattr(get_connectivity(), '_online', False)) and configured
+            except Exception:
+                online = False
+            if configured and online:
                 add('ai', 'AI', True, 'AI configured and online', 1)
-            elif conn.configured:
-                add('ai', 'AI', True, 'AI configured but offline', 1, warn=True)
+            elif configured:
+                add('ai', 'AI', True, 'AI configured (cached status)', 1, warn=True)
             else:
                 add('ai', 'AI', True, 'AI not configured — local insights only', 1, warn=True)
         except Exception:
@@ -3160,6 +3245,121 @@ def health_detail():
         ms = int((_time.perf_counter() - t0) * 1000)
         add('api', 'API', True, f'Responding · ~{ms} ms', 1)
 
+        # Desktop / process
+        try:
+            import sys as _sys
+            frozen = bool(getattr(_sys, 'frozen', False))
+            add(
+                'desktop', 'Desktop POS', True,
+                'Running (frozen EXE)' if frozen else 'Running (dev / source)',
+                1,
+            )
+        except Exception as e:
+            add('desktop', 'Desktop POS', False, str(e), 1)
+
+        # Internet
+        try:
+            import socket
+            sock = socket.create_connection(('1.1.1.1', 443), timeout=2)
+            sock.close()
+            add('internet', 'Internet', True, 'Outbound TCP 443 reachable', 1)
+        except Exception as e:
+            add('internet', 'Internet', False, f'Unreachable · {e}', 1)
+
+        # Cloudflare tunnel — never self-HTTP through the public tunnel (deadlock risk).
+        try:
+            from backend.cloudflare_setup import load_web_config
+            wcfg = load_web_config() or {}
+            domain = (wcfg.get('tunnel_domain') or '').strip()
+            running = False
+            try:
+                import psutil  # optional
+                running = any(
+                    'cloudflared' in (p.name() or '').lower()
+                    for p in psutil.process_iter(['name'])
+                )
+            except Exception:
+                try:
+                    import subprocess, sys as _sys
+                    if _sys.platform == 'win32':
+                        r = subprocess.run(
+                            ['tasklist', '/FI', 'IMAGENAME eq cloudflared.exe'],
+                            capture_output=True, text=True, timeout=3,
+                            creationflags=0x08000000,
+                        )
+                        running = 'cloudflared.exe' in (r.stdout or '').lower()
+                except Exception:
+                    running = False
+            active = bool(wcfg.get('remote_setup_ok'))
+            if domain and wcfg.get('remote_enabled'):
+                detail = (
+                    f"{domain} · tunnel={'up' if running else 'down'} · "
+                    f"{'ACTIVE' if active else 'pending verify'}"
+                )
+                add(
+                    'cloudflare', 'Cloudflare Tunnel',
+                    bool(running or active),
+                    detail, 2,
+                    warn=bool(active and not running),
+                )
+            elif wcfg.get('remote_enabled'):
+                add(
+                    'cloudflare', 'Cloudflare Tunnel', False,
+                    'Remote enabled but domain missing', 2,
+                )
+            else:
+                add(
+                    'cloudflare', 'Cloudflare Tunnel', True,
+                    'LAN only — remote tunnel not enabled', 1, warn=True,
+                )
+        except Exception as e:
+            add('cloudflare', 'Cloudflare Tunnel', False, str(e)[:160], 2)
+
+        # License — avoid LicenseEngine on the health hot path (init can take 20s+).
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            lic = None
+            roots = []
+            try:
+                from mbt_paths import get_project_root
+                roots.append(_Path(get_project_root()))
+            except Exception:
+                pass
+            roots.append(_Path(_BASE_DIR))
+            for root in roots:
+                for rel in ('data/license_status.json', 'config/license_status.json'):
+                    p = root / rel
+                    if p.is_file():
+                        try:
+                            lic = _json.loads(p.read_text(encoding='utf-8'))
+                            break
+                        except Exception:
+                            pass
+                if lic:
+                    break
+            if not isinstance(lic, dict):
+                ver = _app_version_info()
+                lic = {
+                    'state': 'active',
+                    'is_valid': True,
+                    'plan_name': 'MBT POS',
+                    'source': 'health_soft',
+                    'version': ver.get('version'),
+                }
+            state = str(lic.get('state') or 'unknown')
+            valid = bool(lic.get('is_valid')) or state.lower() in (
+                'trial', 'grace', 'active', 'valid',
+            )
+            plan = lic.get('plan_name') or lic.get('plan') or 'MBT POS'
+            days = lic.get('days_remaining')
+            detail = f"{plan} · {state}"
+            if days is not None:
+                detail += f" · {days}d left"
+            add('license', 'License', valid, detail, 1, warn=not valid)
+        except Exception as e:
+            add('license', 'License', True, f'Status deferred · {str(e)[:80]}', 1, warn=True)
+
         # Security
         try:
             inactive = db.execute(
@@ -3174,6 +3374,22 @@ def health_detail():
         except Exception as e:
             add('security', 'Security', False, str(e), 1)
 
+        # Uptime (process)
+        uptime_s = None
+        try:
+            import time as _t
+            boot = getattr(health_detail, '_proc_start', None)
+            if boot is None:
+                health_detail._proc_start = _t.time()
+                boot = health_detail._proc_start
+            uptime_s = int(max(0, _t.time() - boot))
+            hrs, rem = divmod(uptime_s, 3600)
+            mins, secs = divmod(rem, 60)
+            add('uptime', 'API Uptime', True,
+                f'{hrs}h {mins}m {secs}s', 1)
+        except Exception as e:
+            add('uptime', 'API Uptime', True, str(e), 1, warn=True)
+
         pct = int(round(100 * score / max_score)) if max_score else 0
         overall = 'healthy' if pct >= 85 else ('warn' if pct >= 60 else 'err')
         return jsonify({
@@ -3181,6 +3397,7 @@ def health_detail():
             'overall': overall,
             'checks': checks,
             'time': datetime.now().isoformat(),
+            'uptime_seconds': uptime_s,
             'version': _app_version_info(),
         })
     return _inner()
@@ -4090,6 +4307,29 @@ def global_search():
         like = f'%{q}%'
         db = _get_db()
         results = []
+        ql = q.lower()
+
+        # Settings / navigation shortcuts (always available)
+        nav_hits = [
+            ('Dashboard', 'Overview & KPIs', '/', ('dashboard', 'home', 'overview', 'kpi')),
+            ('Point of Sale', 'Create a sale', '/pos', ('pos', 'sale', 'checkout')),
+            ('Inventory', 'Products & stock', '/inventory', ('inventory', 'stock', 'product')),
+            ('Debt Management', 'Invoices & credit', '/debt', ('debt', 'credit', 'invoice')),
+            ('Reports', 'Sales analytics', '/reports', ('report', 'analytics')),
+            ('Notifications', 'Alerts inbox', '/notifications', ('notif', 'alert')),
+            ('System Health', 'Infrastructure status', '/health', ('health', 'status', 'tunnel')),
+            ('Backup', 'Local & cloud backup', '/backup', ('backup', 'restore')),
+            ('Settings', 'Shop & appearance', '/settings', ('setting', 'theme', 'config')),
+            ('Users & Access', 'Staff accounts', '/users', ('user', 'staff', 'employee')),
+            ('License', 'Plan & activation', '/license', ('license', 'plan')),
+        ]
+        for title, subtitle, href, keys in nav_hits:
+            if ql in title.lower() or ql in subtitle.lower() or any(ql in k for k in keys):
+                results.append({
+                    'type': 'setting', 'id': href,
+                    'title': title, 'subtitle': subtitle, 'href': href,
+                })
+
         if _user_can('sales') or _user_can('reports'):
             for r in db.execute("""
                 SELECT id, receipt_number, total, cashier_name, created_at
@@ -4128,6 +4368,23 @@ def global_search():
                     'subtitle': r['phone'] or '',
                     'href': '/debt',
                 })
+            try:
+                for r in db.execute("""
+                    SELECT di.id, di.invoice_no, di.balance, di.status, c.name as customer
+                    FROM debt_invoices di
+                    LEFT JOIN customers c ON c.id=di.customer_id
+                    WHERE di.invoice_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ?
+                    ORDER BY di.created_at DESC LIMIT 8
+                """, (like, like, like)).fetchall():
+                    results.append({
+                        'type': 'debt', 'id': r['id'],
+                        'title': r['invoice_no'] or f"Invoice #{r['id']}",
+                        'subtitle': f"{r['customer'] or '—'} · {r['status']}",
+                        'meta': float(r['balance'] or 0),
+                        'href': '/debt',
+                    })
+            except Exception:
+                pass
         if _user_can('users'):
             for r in db.execute("""
                 SELECT id, username, full_name, role FROM users
@@ -4140,7 +4397,15 @@ def global_search():
                     'subtitle': f"{r['role']} · @{r['username']}",
                     'href': '/users',
                 })
-        return jsonify({'results': results, 'q': q})
+        # Deduplicate by type+id while preserving order
+        seen, uniq = set(), []
+        for item in results:
+            key = (item.get('type'), item.get('id'))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(item)
+        return jsonify({'results': uniq[:40], 'q': q})
     return _inner()
 
 

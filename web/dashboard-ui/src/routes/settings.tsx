@@ -1,12 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, Store, MessageSquare, Palette } from "lucide-react";
+import { Save, Store, MessageSquare, Palette, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
 import { useTheme, type ThemeVariant } from "@/components/theme";
 import { GET, PUT } from "@/lib/api";
+import {
+  DEFAULT_PREFS,
+  loadPrefs,
+  savePrefs,
+  type DashboardPrefs,
+} from "@/lib/prefs";
 
 export const Route = createFileRoute("/settings")({
   component: Settings,
@@ -59,6 +65,7 @@ function Settings() {
     queryFn: () => GET<Record<string, string>>("/settings"),
   });
   const [form, setForm] = useState<Record<string, string>>({});
+  const [prefs, setPrefs] = useState<DashboardPrefs>(() => loadPrefs());
 
   useEffect(() => {
     if (settingsQ.data) setForm({ ...settingsQ.data });
@@ -66,6 +73,7 @@ function Settings() {
 
   const save = useMutation({
     mutationFn: async () => {
+      savePrefs(prefs);
       const payload = {
         shop_name: form.shop_name || "",
         shop_phone: form.shop_phone || "",
@@ -87,6 +95,8 @@ function Settings() {
   });
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const setPref = <K extends keyof DashboardPrefs>(k: K, v: DashboardPrefs[K]) =>
+    setPrefs((p) => ({ ...p, [k]: v }));
 
   const variants: { id: ThemeVariant; label: string }[] = [
     { id: "default", label: "Professional" },
@@ -101,7 +111,7 @@ function Settings() {
       <PageHeader
         eyebrow="Admin"
         title="Settings"
-        description="Configure your shop, receipts, appearance, and integrations."
+        description="Configure your shop, receipts, appearance, dashboard layout, and integrations."
         actions={
           <Button
             variant="primary"
@@ -138,6 +148,110 @@ function Settings() {
                   }`}
                 >
                   {v.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        </Section>
+
+        <Section
+          icon={<SlidersHorizontal className="h-5 w-5" />}
+          title="Dashboard preferences"
+          desc="Refresh, widgets, density, language & exports — saved on this device"
+        >
+          <Field label={`Refresh interval (${prefs.refreshIntervalSec}s)`}>
+            <input
+              type="range"
+              min={15}
+              max={120}
+              step={5}
+              value={prefs.refreshIntervalSec}
+              onChange={(e) => setPref("refreshIntervalSec", Number(e.target.value))}
+              className="w-full accent-[var(--gold)] min-h-11"
+            />
+          </Field>
+          <Field label="Table density">
+            <select
+              className="w-full min-h-11 rounded-lg border border-border bg-input px-3 text-text"
+              value={prefs.tableDensity}
+              onChange={(e) => setPref("tableDensity", e.target.value as any)}
+            >
+              <option value="comfortable">Comfortable</option>
+              <option value="compact">Compact</option>
+            </select>
+          </Field>
+          <Field label="Layout">
+            <select
+              className="w-full min-h-11 rounded-lg border border-border bg-input px-3 text-text"
+              value={prefs.layout}
+              onChange={(e) => setPref("layout", e.target.value as any)}
+            >
+              <option value="auto">Auto</option>
+              <option value="dense">Dense</option>
+              <option value="relaxed">Relaxed</option>
+            </select>
+          </Field>
+          <Field label="Language">
+            <select
+              className="w-full min-h-11 rounded-lg border border-border bg-input px-3 text-text"
+              value={prefs.language}
+              onChange={(e) => setPref("language", e.target.value as any)}
+            >
+              <option value="en">English</option>
+              <option value="sw">Kiswahili (labels later)</option>
+            </select>
+          </Field>
+          <Field label="Export format">
+            <select
+              className="w-full min-h-11 rounded-lg border border-border bg-input px-3 text-text"
+              value={prefs.exportFormat}
+              onChange={(e) => setPref("exportFormat", e.target.value as any)}
+            >
+              <option value="csv">CSV</option>
+              <option value="xlsx">Excel (XLSX)</option>
+            </select>
+          </Field>
+          <Field label="Toggles">
+            <div className="flex flex-col gap-2 text-sm text-text">
+              {(
+                [
+                  ["notificationsEnabled", "Desktop notifications feed"],
+                  ["showCharts", "Show charts"],
+                  ["showWidgets", "Show insight widgets"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key} className="inline-flex items-center gap-2 min-h-11">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(prefs[key])}
+                    onChange={(e) => setPref(key, e.target.checked as any)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </Field>
+          <Field label="Widget visibility">
+            <div className="flex flex-wrap gap-2">
+              {(
+                Object.keys(DEFAULT_PREFS.widgets) as (keyof DashboardPrefs["widgets"])[]
+              ).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() =>
+                    setPrefs((p) => ({
+                      ...p,
+                      widgets: { ...p.widgets, [key]: !p.widgets[key] },
+                    }))
+                  }
+                  className={`min-h-11 rounded-lg border px-3 text-sm font-semibold ${
+                    prefs.widgets[key]
+                      ? "border-gold bg-gold/15 text-gold"
+                      : "border-border bg-card text-text2"
+                  }`}
+                >
+                  {key}
                 </button>
               ))}
             </div>

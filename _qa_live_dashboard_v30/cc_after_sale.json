@@ -1,0 +1,46 @@
+{
+    "business_health":  45,
+    "by_payment":  [
+
+                   ],
+    "cash_flow":  0.0,
+    "expenses":  0.0,
+    "inventory_value":  1076490.7,
+    "low_stock":  362,
+    "monthly_revenue":  10315.0,
+    "outstanding_debts":  660.0,
+    "permissions":  [
+                        "accounting",
+                        "admin",
+                        "backup",
+                        "consumption",
+                        "dashboard",
+                        "debt",
+                        "diagnostics",
+                        "inventory",
+                        "license",
+                        "notes",
+                        "reports",
+                        "sales",
+                        "security",
+                        "settings",
+                        "users"
+                    ],
+    "scope":  "shop",
+    "today":  {
+                  "avg_transaction":  0.0,
+                  "bank":  0.0,
+                  "cash":  0.0,
+                  "discounts":  0.0,
+                  "mpesa":  0.0,
+                  "profit":  0.0,
+                  "revenue":  0.0,
+                  "transactions":  0
+              },
+    "top_categories":  [
+
+                       ],
+    "top_products":  [
+
+                     ]
+}

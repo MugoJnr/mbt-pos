@@ -1,0 +1,12 @@
+{
+    "q":  "health",
+    "results":  [
+                    {
+                        "href":  "/health",
+                        "id":  "/health",
+                        "subtitle":  "Infrastructure status",
+                        "title":  "System Health",
+                        "type":  "setting"
+                    }
+                ]
+}

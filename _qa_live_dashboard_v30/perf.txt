@@ -1,0 +1,5 @@
+/api/command-center/summary 99ms 200 660b
+/api/health/detail FAIL 20041ms
+/api/search?q=milk 85ms 200 1118b
+/api/live 67ms 200 853b
+/ 52ms 200 1993b
