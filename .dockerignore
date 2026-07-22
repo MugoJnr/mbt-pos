@@ -8,6 +8,9 @@ cloudflared.exe
 tools/
 logs/
 exports/
+backups/
+build/
+dist/
 *.db
 *.sqlite
 *.sqlite3
@@ -19,6 +22,7 @@ config/deploy.local.json
 config/cloud_config.json
 config/vendor_ai.local.json
 config/vendor_ai.bin
+config/.jwt_secret
 **/cloud_identity.json
 **/cloud_offline_queue.json
 **/tunnel_token.txt
@@ -35,6 +39,12 @@ diagnostics/
 licensing/
 tests/
 docs/
+scripts/
+supabase/
+assets/
 *.nsi
 *.spec
 BUILD.bat
+_BUILD_NOPAUSE.bat
+*.exe
+*.lnk
