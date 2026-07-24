@@ -1,13 +1,13 @@
 {
-  "version": "3.0.4",
-  "build": "RC-2026-07-22-v3.0.4",
-  "build_date": "2026-07-22",
-  "release_notes": "MBT POS 3.0.4: Finance module redesign, online-only Portal licensing, Live Dashboard remote ops polish.\n\n[checksum_sha256: 0ea59d338a60fbb7b2a38d158c65b032c6ee175f848f735727ee6f99e74b14e3]",
-  "github_repo": "MugoJnr/mbt-pos",
-  "asset_name": "MBT_POS_Setup.exe",
-  "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
-  "checksum_sha256": "0ea59d338a60fbb7b2a38d158c65b032c6ee175f848f735727ee6f99e74b14e3",
-  "checksum_note": "Publish SHA-256 in GitHub release notes as [checksum_sha256: <hex>] and/or upload MBT_POS_Setup.exe.sha256 sidecar. Required for unattended install.",
-  "min_required_version": "1.0.0",
-  "force_update": false
+    "version": "3.0.12",
+    "build": "RC-2026-07-24-v3.0.12",
+    "build_date": "2026-07-24",
+    "release_notes": "MBT POS 3.0.12: Publish channel catch-up. AppData local backups (fixes Live Backup ERROR on Program Files). Portal /licenses redirect. Touch-target footer + Return/Exchange panel wiring. Keeps 3.0.11 snappy POS open + 3.0.10 offline fail-open. Business-day picker included.",
+    "github_repo": "MugoJnr/mbt-pos",
+    "asset_name": "MBT_POS_Setup.exe",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+    "checksum_sha256": "ff44e8f8b5da81b19696f08f385c428422eb8f08dfd26c0ba075ca2c7ea1f106",
+    "checksum_note": "Publish SHA-256 in GitHub release notes as [checksum_sha256: HEX] and/or upload MBT_POS_Setup.exe.sha256 sidecar. Required for unattended install.",
+    "min_required_version": "1.0.0",
+    "force_update": false
 }

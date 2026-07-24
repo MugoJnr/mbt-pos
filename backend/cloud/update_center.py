@@ -70,10 +70,30 @@ class UpdateCenter:
         try:
             from backend.cloud_backup.supabase_client import SupabaseClient
             client = SupabaseClient()
-            rows = client.rest_select(
-                'app_updates',
-                f'is_active=eq.true&select=*&order=published_at.desc&limit=1',
-            ) or []
+            # Prefer service role so shops can see published updates even when
+            # anon RLS hides app_updates (common on locked-down portals).
+            rows = []
+            try:
+                r = client._session.get(
+                    client._url('/rest/v1/app_updates'),
+                    headers=client._headers(use_service=True),
+                    params={
+                        'is_active': 'eq.true',
+                        'select': '*',
+                        'order': 'published_at.desc',
+                        'limit': '1',
+                    },
+                    timeout=5,
+                )
+                if r.status_code < 400 and r.content:
+                    rows = r.json() or []
+            except Exception:
+                rows = []
+            if not rows:
+                rows = client.rest_select(
+                    'app_updates',
+                    'is_active=eq.true&select=*&order=published_at.desc&limit=1',
+                ) or []
             if not rows:
                 return None
             latest = rows[0]
@@ -99,11 +119,27 @@ class UpdateCenter:
                 'download_url': download_url,
                 'checksum_sha256': checksum,
                 'release_notes': release_notes,
-                'is_mandatory': is_mandatory,
-                'published_by': published_by,
+                'is_mandatory': bool(is_mandatory),
                 'is_active': True,
             }
-            return client.rest_insert('app_updates', row, upsert=True, on_conflict='version')
+            if published_by:
+                row['published_by'] = published_by
+            # Service role required — anon/authenticated RLS blocks inserts.
+            r = client._session.post(
+                client._url('/rest/v1/app_updates?on_conflict=version'),
+                headers={
+                    **client._headers(use_service=True),
+                    'Prefer': 'resolution=merge-duplicates,return=representation',
+                },
+                json=row,
+                timeout=30,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(r.text[:400] or f'HTTP {r.status_code}')
+            data = r.json() if r.content else None
+            if isinstance(data, list):
+                return data[0] if data else row
+            return data or row
         except Exception as e:
             logger.error('publish_update failed: %s', e)
             return None

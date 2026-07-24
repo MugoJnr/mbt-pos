@@ -394,23 +394,68 @@ _TIME_SOURCES = [
     'http://worldclockapi.com/api/json/utc/now',
 ]
 
-def _fetch_trusted_time() -> Optional[int]:
-    """Return Unix timestamp from an internet time source, or None if offline."""
+# Session cache — never block POS startup on unreachable time APIs.
+_TRUSTED_TIME_CACHE: dict = {
+    'ts': None,          # Optional[int]
+    'fetched_at': 0.0,   # monotonic-ish wall clock of last success
+    'fail_until': 0.0,   # skip network until this wall time after failure
+}
+_TRUSTED_TIME_TTL_SEC = 3600.0
+_TRUSTED_TIME_FAIL_TTL_SEC = 300.0
+_TRUSTED_TIME_TIMEOUT = (1.0, 1.5)  # (connect, read) — fail open fast
+
+
+def _cached_trusted_time() -> Optional[int]:
+    """Return cached internet time only — never hits the network."""
+    ts = _TRUSTED_TIME_CACHE.get('ts')
+    if ts is None:
+        return None
+    age = time.time() - float(_TRUSTED_TIME_CACHE.get('fetched_at') or 0)
+    if age > _TRUSTED_TIME_TTL_SEC:
+        return None
+    try:
+        return int(ts)
+    except Exception:
+        return None
+
+
+def _fetch_trusted_time(*, allow_network: bool = True) -> Optional[int]:
+    """Return Unix timestamp from an internet time source, or None if offline.
+
+    Startup / license evaluation must call with allow_network=False (or use
+    ``_cached_trusted_time``) so unreachable DNS/HTTPS cannot hang the UI.
+    """
+    cached = _cached_trusted_time()
+    if cached is not None:
+        return cached
+    if not allow_network:
+        return None
+    now = time.time()
+    if now < float(_TRUSTED_TIME_CACHE.get('fail_until') or 0):
+        return None
     for url in _TIME_SOURCES:
         try:
-            r = requests.get(url, timeout=5)
-            if not r.ok: continue
+            r = requests.get(url, timeout=_TRUSTED_TIME_TIMEOUT)
+            if not r.ok:
+                continue
             data = r.json()
             # worldtimeapi
             if 'unixtime' in data:
-                return int(data['unixtime'])
+                result = int(data['unixtime'])
             # worldclockapi  {'currentFileTime': 133...}
-            if 'currentFileTime' in data:
+            elif 'currentFileTime' in data:
                 # Windows FILETIME → Unix: subtract 116444736000000000, divide by 10M
                 ft = int(data['currentFileTime'])
-                return (ft - 116444736000000000) // 10_000_000
+                result = (ft - 116444736000000000) // 10_000_000
+            else:
+                continue
+            _TRUSTED_TIME_CACHE['ts'] = result
+            _TRUSTED_TIME_CACHE['fetched_at'] = now
+            _TRUSTED_TIME_CACHE['fail_until'] = 0.0
+            return result
         except Exception:
             continue
+    _TRUSTED_TIME_CACHE['fail_until'] = now + _TRUSTED_TIME_FAIL_TTL_SEC
     return None
 
 
@@ -515,15 +560,17 @@ class LicenseEngine:
             self.store.set('highest_ts_seen', local_now)
         self.store.set('last_checked_ts', local_now)
 
-        trusted = _fetch_trusted_time()
+        # Never fetch internet time here — that blocked offline shop startup for
+        # 10–30+ seconds (DNS/HTTPS hang). Use cache only; bg service may refresh.
+        trusted = _cached_trusted_time()
         if trusted is not None:
             drift = abs(local_now - trusted)
             if drift > 3600:
                 self.store.log('CLOCK_DRIFT',
                     f'Local={local_now} Trusted={trusted} Drift={drift}s (warning only)')
 
-        # For expiry, use the later of local vs trusted so a slow clock does not
-        # falsely expire the license; still use local for rollback anchors above.
+        # For expiry, use the later of local vs cached trusted so a slow clock
+        # does not falsely expire; still use local for rollback anchors above.
         expiry_now = max(local_now, trusted) if trusted is not None else local_now
 
         expires   = self._license_data.get('expires_at', 0)
@@ -621,7 +668,18 @@ class LicenseEngine:
             from backend.cloud.platform_service import activate_license_on_device
             from backend.cloud_backup.device_manager import get_or_create_device_id
             device_id = get_or_create_device_id() or self.device_id
-            result = activate_license_on_device(key_str, device_id)
+            actor_email = ''
+            try:
+                from backend.cloud_backup.paths import load_identity
+                actor_email = (load_identity().get('email') or '').strip()
+            except Exception:
+                actor_email = ''
+            result = activate_license_on_device(
+                key_str,
+                device_id,
+                actor_email=actor_email,
+                actor_is_admin=False,
+            )
             if result.get('ok'):
                 lic = result.get('license') or {}
                 activation = result.get('activation') or {}
@@ -863,6 +921,12 @@ class LicenseEngine:
                 self._state = STATE_INACTIVE
                 return STATE_INACTIVE
             if self.store.get('offline_lock'):
+                # Soft lock: still honour real expiry / unactivated / revoke.
+                self._evaluate_state()
+                if self._state in (
+                    STATE_EXPIRED, STATE_UNACTIVATED, STATE_INACTIVE, STATE_TAMPERED,
+                ):
+                    return self._state
                 self._state = STATE_CRITICAL
                 return STATE_CRITICAL
             self._evaluate_state()
@@ -870,17 +934,35 @@ class LicenseEngine:
 
     @property
     def is_valid(self) -> bool:
-        if self.store.get('offline_lock') or self.store.get('revoked'):
-            return False
+        """Local license usable for POS.
+
+        Soft ``offline_lock`` (grace exceeded / cloud unreachable) must NOT brick
+        an already-activated shop — that maps to STATE_CRITICAL and still opens.
+        Hard blocks: tamper, revoke without token, expired, unactivated.
+        """
         if self.store.get('tampered'):
             return False
-        return self.state in (STATE_ACTIVE, STATE_EXPIRING, STATE_WARNING, STATE_CRITICAL)
+        if self.store.get('revoked') and not self._license_data:
+            return False
+        # Evaluate real license (ignores offline_lock short-circuit via property)
+        with self._lock:
+            self._evaluate_state()
+            st = self._state
+        if self.store.get('offline_lock') and st in (
+            STATE_ACTIVE, STATE_EXPIRING, STATE_WARNING, STATE_CRITICAL,
+        ):
+            return True
+        return st in (STATE_ACTIVE, STATE_EXPIRING, STATE_WARNING, STATE_CRITICAL)
+
+    def has_local_license_payload(self) -> bool:
+        """True when a decryptable license token exists for this device."""
+        return bool(self._license_data and self._license_data.get('expires_at'))
 
     @property
     def days_remaining(self) -> int:
         exp = self._license_data.get('expires_at', 0)
         if not exp: return 0
-        actual_now = _fetch_trusted_time() or int(time.time())
+        actual_now = _cached_trusted_time() or int(time.time())
         return max(0, (exp - actual_now) // 86400)
 
     @property

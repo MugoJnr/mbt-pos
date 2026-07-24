@@ -46,35 +46,48 @@ def fade_in(widget: QWidget, duration: int = 220) -> None:
 
 
 class EmptyState(QFrame):
-    """Centered empty placeholder for tables / lists."""
+    """Centered empty placeholder — painted icon + title + muted caption."""
 
     def __init__(self, icon: str, title: str, subtitle: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("mbtEmptyState")
+        self._icon_key = icon or "box"
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 28, 24, 28)
-        lay.setSpacing(6)
+        lay.setContentsMargins(24, 32, 24, 32)
+        lay.setSpacing(8)
         lay.setAlignment(Qt.AlignCenter)
-        self._icon = QLabel(icon)
+        self._icon = QLabel()
+        self._icon.setFixedSize(52, 52)
         self._icon.setAlignment(Qt.AlignCenter)
         self._title = QLabel(title)
         self._title.setAlignment(Qt.AlignCenter)
         self._sub = QLabel(subtitle)
         self._sub.setAlignment(Qt.AlignCenter)
         self._sub.setWordWrap(True)
-        lay.addWidget(self._icon)
+        lay.addWidget(self._icon, 0, Qt.AlignCenter)
         lay.addWidget(self._title)
         if subtitle:
             lay.addWidget(self._sub)
         self.refresh_theme()
 
     def refresh_theme(self):
+        gold = C["gold"]
         self.setStyleSheet(
             f"QFrame#mbtEmptyState {{ background:transparent; border:none; }}"
         )
         self._icon.setStyleSheet(
-            f"font-size:28px; color:{C['gold']}; background:transparent; border:none;"
+            f"background:{qss_alpha(gold, 0.12)}; border-radius:26px; border:none;"
         )
+        try:
+            from desktop.utils.nav_icons import kpi_pixmap
+            self._icon.setPixmap(kpi_pixmap(self._icon_key, 26, accent=gold))
+            self._icon.setText("")
+        except Exception:
+            self._icon.setText("·")
+            self._icon.setStyleSheet(
+                f"font-size:22px; font-weight:800; color:{gold}; "
+                f"background:{qss_alpha(gold, 0.12)}; border-radius:26px; border:none;"
+            )
         self._title.setStyleSheet(
             f"color:{C['text']}; font-size:15px; font-weight:700; background:transparent; border:none;"
         )
@@ -200,7 +213,7 @@ class FloatingActionButton(QWidget):
         self._fab.clicked.connect(self.toggle)
         self.refresh_theme()
         self._menu.adjustSize()
-        self.setFixedSize(220, 280)
+        self.sync_footprint()
 
     def _make_handler(self, cb: Callable):
         def _h():
@@ -210,6 +223,17 @@ class FloatingActionButton(QWidget):
             except Exception:
                 pass
         return _h
+
+    def sync_footprint(self):
+        """Collapsed = button only; open = menu + button (avoids overlaying charts)."""
+        if self._open:
+            self._menu.adjustSize()
+            mw = max(180, self._menu.sizeHint().width())
+            mh = self._menu.sizeHint().height()
+            self.setFixedSize(max(220, mw + 16), mh + 56 + 24)
+        else:
+            self.setFixedSize(72, 72)
+        self._layout_children()
 
     def refresh_theme(self):
         r = 28
@@ -231,7 +255,7 @@ class FloatingActionButton(QWidget):
             f"border-radius:10px; font-size:13px; font-weight:600; text-align:left; padding:0 12px; }}"
             f"QPushButton:hover {{ border-color:{gold}; color:{gold}; }}"
         )
-        self._layout_children()
+        self.sync_footprint()
 
     def _layout_children(self):
         self._fab.move(self.width() - 56 - 8, self.height() - 56 - 8)
@@ -257,12 +281,13 @@ class FloatingActionButton(QWidget):
         self._open = True
         self._menu.show()
         self._fab.setText("×")
-        self._layout_children()
+        self.sync_footprint()
 
     def close_menu(self):
         self._open = False
         self._menu.hide()
         self._fab.setText("+")
+        self.sync_footprint()
 
 
 class AnimatedKPI(QFrame):
@@ -282,7 +307,7 @@ class AnimatedKPI(QFrame):
         super().__init__(parent)
         self._accent = accent or C["gold"]
         self._label = label
-        self._icon_ch = icon
+        self._icon_key = icon
         self._numeric_target: Optional[float] = None
         self._numeric_current = 0.0
         self._is_money = False
@@ -298,7 +323,7 @@ class AnimatedKPI(QFrame):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(14)
 
-        self._icon = QLabel(icon)
+        self._icon = QLabel()
         self._icon.setFixedSize(48, 48)
         self._icon.setAlignment(Qt.AlignCenter)
         root.addWidget(self._icon)
@@ -361,8 +386,14 @@ class AnimatedKPI(QFrame):
         )
         self._icon.setStyleSheet(
             f"background:{qss_alpha(a, 0.14)}; border-radius:24px; "
-            f"color:{a}; font-size:22px; border:none;"
+            f"border:none;"
         )
+        try:
+            from desktop.utils.nav_icons import kpi_pixmap
+            self._icon.setPixmap(kpi_pixmap(self._icon_key, 24, accent=a))
+            self._icon.setText("")
+        except Exception:
+            pass
         self._lbl.setStyleSheet(
             f"color:{C['muted']}; font-size:11px; font-weight:700; letter-spacing:0.6px; "
             f"background:transparent; border:none;"
@@ -370,6 +401,15 @@ class AnimatedKPI(QFrame):
         self._val.setStyleSheet(
             f"color:{a}; font-size:32px; font-weight:800; background:transparent; border:none;"
         )
+        self._val.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        # Tabular figures so KPI decimals/columns scan consistently across the row
+        try:
+            f = self._val.font()
+            f.setStyleHint(QFont.TypeWriter)
+            f.setFamilies(["Cascadia Mono", "Consolas", "Segoe UI", f.family()])
+            self._val.setFont(f)
+        except Exception:
+            pass
         self._sub.setStyleSheet(
             f"color:{C['text2']}; font-size:12px; background:transparent; border:none;"
         )
@@ -400,13 +440,13 @@ class AnimatedKPI(QFrame):
         try:
             target = float(cleaned)
             self._prefix = prefix
-            # Show final value immediately, then soften with a short count-up
+            self._numeric_current = target
+            # Always commit the final figure immediately — animated count-up caused
+            # mid-tween screenshots / glanceable mismatches across tabs during refresh.
             if money or prefix:
-                self._val.setText(f"{prefix}{target:,.0f}")
-                self._animate_to(target, money=True, prefix=prefix)
+                self._val.setText(f"{prefix}{target:,.2f}")
             elif abs(target - round(target)) < 0.01:
                 self._val.setText(str(int(round(target))))
-                self._animate_to(target, money=False, prefix="")
             else:
                 self._val.setText(f"{target:,.1f}")
             return
@@ -446,7 +486,7 @@ class AnimatedKPI(QFrame):
             cur = start + (target - start) * t
             self._numeric_current = cur
             if money:
-                self._val.setText(f"{prefix}{cur:,.0f}")
+                self._val.setText(f"{prefix}{cur:,.2f}")
             elif abs(target - round(target)) < 0.01:
                 self._val.setText(str(int(round(cur))))
             else:
@@ -454,7 +494,7 @@ class AnimatedKPI(QFrame):
             if step_i["i"] >= steps:
                 self._numeric_current = target
                 if money:
-                    self._val.setText(f"{prefix}{target:,.0f}")
+                    self._val.setText(f"{prefix}{target:,.2f}")
                 elif abs(target - round(target)) < 0.01:
                     self._val.setText(str(int(round(target))))
                 self._anim_timer.stop()

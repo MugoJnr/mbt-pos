@@ -99,23 +99,23 @@ class Card(QFrame):
 
 class KPICard(QFrame):
     """
-    Premium KPI tile — icon circle + left accent border.
+    Premium KPI tile — painted icon circle + left accent border.
     Large value, readable label, optional sub-label.
     """
     def __init__(self, label, value='0', sub='', accent=None, icon=''):
         super().__init__()
         self._accent = accent or C['gold']
-        self._icon   = icon
+        self._icon_key = icon
         self.setMinimumHeight(100)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(12)
 
-        # Icon circle
+        # Icon circle — painted vector (no ASCII/emoji tofu)
         self._ic = None
         if icon:
-            self._ic = QLabel(icon)
+            self._ic = QLabel()
             self._ic.setFixedSize(42, 42)
             self._ic.setAlignment(Qt.AlignCenter)
             root.addWidget(self._ic)
@@ -143,7 +143,13 @@ class KPICard(QFrame):
         if self._ic is not None:
             self._ic.setStyleSheet(
                 f"background:{qss_alpha(self._accent, 0.12)}; border-radius:10px; "
-                f"color:{self._accent}; font-size:18px; border:none;")
+                f"border:none;")
+            try:
+                from desktop.utils.nav_icons import kpi_pixmap
+                self._ic.setPixmap(kpi_pixmap(self._icon_key, 22, accent=self._accent))
+                self._ic.setText('')
+            except Exception:
+                pass
         self._lbl.setStyleSheet(
             f"color:{C['muted']}; font-size:10px; font-weight:700; "
             f"letter-spacing:1.2px; background:transparent; border:none;")
@@ -159,6 +165,47 @@ class KPICard(QFrame):
         self._val.setStyleSheet(
             f"color:{c}; font-size:28px; font-weight:800; "
             f"background:transparent; border:none; line-height:1;")
+        # Tinted tile when value is negative or explicitly critical/warn.
+        # warn = P&L / attention; err = cash deficit / overdue only.
+        try:
+            raw = str(v).replace(',', '').replace(' ', '')
+            neg = '-' in raw and any(ch.isdigit() for ch in raw)
+        except Exception:
+            neg = False
+        r = RADIUS['xl']
+        is_err = bool(color and color == C.get('err'))
+        is_warn = bool(color and color == C.get('warn')) or (neg and not is_err)
+        if is_err:
+            tone, dim = C['err'], C.get('err_dim', C['card'])
+            tip = 'Critical — overdue or cash deficit'
+        elif is_warn or neg:
+            tone, dim = C['warn'], C.get('warn_dim', C['card'])
+            tip = 'Needs attention — negative result or elevated risk'
+        else:
+            tone = dim = tip = None
+        if tone:
+            self._accent = tone
+            self.setStyleSheet(
+                f"QFrame {{ background:{dim}; "
+                f"border:1px solid {qss_alpha(tone, 0.55)}; "
+                f"border-left:4px solid {tone}; border-radius:{r}px; }}")
+            self.setToolTip(tip)
+        else:
+            if color:
+                self._accent = color
+            self.setStyleSheet(
+                f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
+                f"border-left:3px solid {self._accent}; border-radius:{r}px; }}")
+            self.setToolTip('')
+        if self._ic is not None:
+            try:
+                from desktop.utils.nav_icons import kpi_pixmap
+                self._ic.setStyleSheet(
+                    f"background:{qss_alpha(self._accent, 0.12)}; border-radius:10px; "
+                    f"border:none;")
+                self._ic.setPixmap(kpi_pixmap(self._icon_key, 22, accent=self._accent))
+            except Exception:
+                pass
 
     def set_sub(self, s):
         self._sub.setText(str(s))
@@ -188,13 +235,15 @@ def _refresh_badge(lbl):
 def _refresh_primary_btn(btn):
     """PrimaryBtn bakes gold QSS at create — retint so light/dark gold_fg stays correct."""
     gold_fg = C.get('gold_fg', '#0A0F1A')
+    # Disabled: desaturated + no gold glow — unambiguous vs active
     btn.setStyleSheet(
         f"QPushButton#primaryBtn {{ background:{C['gold']}; color:{gold_fg};"
         f" border:none; border-radius:{RADIUS['md']}px; font-weight:700;"
         f" font-size:14px; padding:8px 16px; }}"
         f"QPushButton#primaryBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
         f"QPushButton#primaryBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
-        f"QPushButton#primaryBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
+        f"QPushButton#primaryBtn:disabled {{ background:{C['panel']}; color:{C['muted']};"
+        f" border:1px solid {C['border']}; font-weight:600; }}")
 
 
 def refresh_themed_widgets(root):
@@ -504,8 +553,21 @@ def make_table(headers, stretch_col=0, row_height=44, alt=True):
 
 
 def table_row_bg_hex(row: int) -> str:
-    """Theme-consistent zebra: even=card, odd=card2 (both dark-in-dark / light-in-light)."""
-    return C['card2'] if (int(row) % 2) else C['card']
+    """Theme-consistent zebra: even=card, odd=slightly lifted panel mix (scan-friendly)."""
+    if int(row) % 2 == 0:
+        return C['card']
+    # Stronger odd-row lift than card2 so 600+ inventory rows stay scannable
+    try:
+        from PyQt5.QtGui import QColor
+        a = QColor(C['card'])
+        b = QColor(C.get('panel', C['card2']))
+        return QColor(
+            int(a.red() * 0.55 + b.red() * 0.45),
+            int(a.green() * 0.55 + b.green() * 0.45),
+            int(a.blue() * 0.55 + b.blue() * 0.45),
+        ).name()
+    except Exception:
+        return C['card2']
 
 
 def apply_table_row_backgrounds(table, row=None):
@@ -576,6 +638,46 @@ def tbl_right(text, color=None, tone=None):
 
 def tbl_center(text, color=None, tone=None):
     return tbl_item(text, Qt.AlignCenter, color, tone)
+
+
+def align_header_right(table, *cols):
+    """Right-align numeric column headers to match cell alignment."""
+    if table is None:
+        return
+    hdr = table.horizontalHeader()
+    for c in cols:
+        try:
+            item = table.horizontalHeaderItem(int(c))
+            if item is not None:
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            # Also tip the header view section alignment where supported
+            if hdr is not None:
+                hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        except Exception:
+            pass
+
+
+# Severity language (Finance / Dashboard / Inventory / Debt):
+#   ok   = healthy / success
+#   warn = attention (negative P&L, low stock, outstanding credit)
+#   err  = critical only (OUT of stock, overdue, cash deficit)
+#   gold = neutral informational
+SEVERITY_OK = 'ok'
+SEVERITY_WARN = 'warn'
+SEVERITY_ERR = 'err'
+SEVERITY_INFO = 'gold'
+
+
+def severity_hex(kind: str) -> str:
+    """Resolve live palette hex for a severity token."""
+    key = (kind or SEVERITY_INFO).lower()
+    if key in ('ok', 'success'):
+        return C['ok']
+    if key in ('warn', 'warning', 'attention'):
+        return C['warn']
+    if key in ('err', 'error', 'danger', 'critical'):
+        return C['err']
+    return C.get('gold', C['text'])
 
 
 def retint_table_items(table):
@@ -650,8 +752,19 @@ def page_layout(parent=None, margins=None, spacing=None):
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     scroll.setFrameShape(QFrame.NoFrame)
-    scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+    # Visible thin scrollbar so long Settings/pages have clear scroll affordance
+    scroll.setStyleSheet(
+        "QScrollArea{border:none;background:transparent;}"
+        "QScrollBar:vertical{background:transparent;width:10px;margin:2px;}"
+        "QScrollBar::handle:vertical{"
+        f"background:{C.get('border2', C['border'])};min-height:32px;"
+        "border-radius:5px;}"
+        f"QScrollBar::handle:vertical:hover{{background:{C['gold']};}}"
+        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+        "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+    )
     inner = QWidget()
     inner.setObjectName('mbtPageInner')
     inner.setStyleSheet(f"background:{C['surface']};")
@@ -746,11 +859,8 @@ class ThemeSwitchBar(QWidget):
     """
     Always-visible Dark | Light segmented switch.
     Active side is gold-filled; click the other side to switch.
-    Icons: Dark = moon (U+263E), Light = sun (U+2600) — ASCII-safe escapes.
+    Painted moon/sun icons — no Unicode tofu glyphs.
     """
-
-    _DARK_LABEL = '\u263E  Dark'   # ☾
-    _LIGHT_LABEL = '\u2600  Light'  # ☀
 
     def __init__(self, on_toggle=None, parent=None):
         super().__init__(parent)
@@ -762,8 +872,8 @@ class ThemeSwitchBar(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        self._dark_btn = QPushButton(self._DARK_LABEL)
-        self._light_btn = QPushButton(self._LIGHT_LABEL)
+        self._dark_btn = QPushButton(' Dark')
+        self._light_btn = QPushButton(' Light')
         for b in (self._dark_btn, self._light_btn):
             b.setCursor(Qt.PointingHandCursor)
             b.setMinimumHeight(34)
@@ -789,10 +899,18 @@ class ThemeSwitchBar(QWidget):
 
     def _refresh_theme(self):
         from desktop.utils.theme import ThemeManager, C as _C, RADIUS as _R, qss_alpha
+        from desktop.utils.nav_icons import action_icon
+        from PyQt5.QtCore import QSize
         is_light = ThemeManager.is_light()
-        # Keep labels/icons correct even if setText was called with wrong copy
-        self._dark_btn.setText(self._DARK_LABEL)
-        self._light_btn.setText(self._LIGHT_LABEL)
+        self._dark_btn.setText(' Dark')
+        self._light_btn.setText(' Light')
+        # Active segment uses dark ink on gold; idle uses muted stroke
+        active_ink = _C.get('gold_fg', '#0B1120')
+        idle_ink = _C['text2']
+        self._dark_btn.setIcon(action_icon('moon', 14, accent=active_ink if not is_light else idle_ink))
+        self._light_btn.setIcon(action_icon('sun', 14, accent=active_ink if is_light else idle_ink))
+        for b in (self._dark_btn, self._light_btn):
+            b.setIconSize(QSize(14, 14))
         self._dark_btn.setChecked(not is_light)
         self._light_btn.setChecked(is_light)
         r = _R['md']
@@ -897,21 +1015,27 @@ def section_card(icon_text, title, desc=''):
     """
     Lovable Settings-style section card with gold icon tile + title.
     Returns (Card, body_layout) — put fields into body_layout.
-    Prefer monochrome glyphs (not color emoji) so gold CSS tint applies.
+    Uses painted vector icons (icon_text kept for call-site compat only).
     """
     card = Card()
     root = card.layout_v(margins=(22, 18, 22, 18), spacing=16)
     hdr = QHBoxLayout(); hdr.setSpacing(12)
-    glyph = '◆'
-    ic = QLabel(glyph)
+    ic = QLabel()
     ic.setFixedSize(40, 40)
     ic.setAlignment(Qt.AlignCenter)
-    # Lovable: bg-gold/15 text-gold
     gold = C['gold']
     ic.setStyleSheet(
         f"QLabel {{ background-color: {qss_alpha(gold, 0.15)}; color: {gold}; "
-        f"border-radius:8px; font-size:14px; font-weight:800; border:none; }}")
+        f"border-radius:8px; border:none; }}")
     ic.setProperty('mbtSectionIcon', True)
+    try:
+        from desktop.utils.nav_icons import section_icon_for_title
+        ic.setPixmap(section_icon_for_title(title, 22).pixmap(22, 22))
+    except Exception:
+        ic.setText('◆')
+        ic.setStyleSheet(
+            f"QLabel {{ background-color: {qss_alpha(gold, 0.15)}; color: {gold}; "
+            f"border-radius:8px; font-size:14px; font-weight:800; border:none; }}")
     hdr.addWidget(ic)
     tcol = QVBoxLayout(); tcol.setSpacing(1); tcol.setContentsMargins(0, 0, 0, 0)
     eye = QLabel('SECTION')
@@ -948,5 +1072,5 @@ def wrap_table_card(table, title=None):
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 14, 16, 14)
         hl.addWidget(H2(title)); hl.addStretch()
         lay.addWidget(hdr)
-    lay.addWidget(table)
+    lay.addWidget(table, 1)
     return card

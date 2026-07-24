@@ -1,11 +1,11 @@
-﻿; MBT POS - NSIS Installer Script
+; MBT POS - NSIS Installer Script
 ; MugoByte Technologies | mugobyte.com
 ; Builds a professional Windows installer from dist\MBT_POS\
 ;
-; Installation modes (automatic — user never chooses):
-;   NEW     — no existing MBT_POS.exe → install files → first launch runs Setup Wizard
-;   UPGRADE — existing install found → backup AppData DB → update files → preserve
-;             settings/license (AppData) → launch POS (wizard skipped)
+; Installation modes (automatic - user never chooses):
+;   NEW     - no existing MBT_POS.exe -> install files -> first launch runs Setup Wizard
+;   UPGRADE - existing install found -> backup AppData DB -> update files -> preserve
+;             settings/license (AppData) -> launch POS (wizard skipped)
 
 ;=============================================================================
 ; General Settings
@@ -39,10 +39,10 @@ Var InstallMode
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 
-; Finish — launch POS (wizard runs only on new installs via needs_wizard())
+; Finish - launch POS (wizard runs only on new installs via needs_wizard())
 !define MUI_FINISHPAGE_RUN "$INSTDIR\MBT_POS.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Launch MBT POS"
-!define MUI_FINISHPAGE_LINK "Download Center · portal.mugobyte.com"
+!define MUI_FINISHPAGE_LINK "Download Center - portal.mugobyte.com"
 !define MUI_FINISHPAGE_LINK_LOCATION "https://portal.mugobyte.com/downloads"
 
 !insertmacro MUI_PAGE_WELCOME
@@ -91,13 +91,13 @@ FunctionEnd
 ;=============================================================================
 ; Version Info
 ;=============================================================================
-VIProductVersion "3.0.4.0"
+VIProductVersion "3.0.12.0"
 VIAddVersionKey "ProductName"     "MBT POS"
 VIAddVersionKey "CompanyName"     "MugoByte Technologies"
-VIAddVersionKey "LegalCopyright"  "© 2026 MugoByte Technologies"
-VIAddVersionKey "FileDescription" "MBT POS Installer — auto new/upgrade"
-VIAddVersionKey "FileVersion"     "3.0.4"
-VIAddVersionKey "ProductVersion"  "3.0.4"
+VIAddVersionKey "LegalCopyright"  "(c) 2026 MugoByte Technologies"
+VIAddVersionKey "FileDescription" "MBT POS Installer - auto new/upgrade"
+VIAddVersionKey "FileVersion"     "3.0.12"
+VIAddVersionKey "ProductVersion"  "3.0.12"
 
 ;=============================================================================
 ; Installer Sections
@@ -109,18 +109,18 @@ Section "MBT POS" SecMain
 
     ; UPGRADE: back up the real runtime paths before replacing binaries.
     ${If} $IsUpgrade == "1"
-        DetailPrint "Upgrade detected — backing up database…"
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4"
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\config"
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\license"
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\mbt_pos.db"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\mbt_pos.db-wal"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\mbt_pos.db-shm"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\config"'
-        nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.4\license\lc.db"'
+        DetailPrint "Upgrade detected - backing up database..."
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12"
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\config"
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\license"
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\mbt_pos.db"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\mbt_pos.db-wal"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\mbt_pos.db-shm"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\config"'
+        nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.12\license\lc.db"'
         DetailPrint "Database, settings, and encrypted license backup complete."
     ${Else}
-        DetailPrint "New installation — Setup Wizard will run on first launch."
+        DetailPrint "New installation - Setup Wizard will run on first launch."
     ${EndIf}
 
     SetOutPath "$INSTDIR"
@@ -138,26 +138,26 @@ Section "MBT POS" SecMain
     CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\updates"
     FileOpen $1 "$LOCALAPPDATA\MugoByte\MBT POS\last_install_mode.txt" w
     FileWrite $1 "$InstallMode$\r$\n"
-    FileWrite $1 "version=3.0.4$\r$\n"
+    FileWrite $1 "version=3.0.12$\r$\n"
     FileClose $1
 
     WriteRegStr HKLM "Software\MugoByte\MBT POS" "InstallDir" "$INSTDIR"
-    WriteRegStr HKLM "Software\MugoByte\MBT POS" "Version"    "3.0.4"
+    WriteRegStr HKLM "Software\MugoByte\MBT POS" "Version"    "3.0.12"
     WriteRegStr HKLM "Software\MugoByte\MBT POS" "InstallMode" "$InstallMode"
 
     ; Register on-demand elevated helper (no always-running service).
-    DetailPrint "Registering silent update helper task…"
+    DetailPrint "Registering silent update helper task..."
     nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\register_update_helper.ps1"'
 
     CreateDirectory "$SMPROGRAMS\MugoByte\MBT POS"
     CreateShortcut  "$SMPROGRAMS\MugoByte\MBT POS\MBT POS.lnk" \
                     "$INSTDIR\MBT_POS.exe" "" "$INSTDIR\MBT_POS.exe" 0 \
-                    SW_SHOWNORMAL "" "MBT POS — Professional Point of Sale System"
+                    SW_SHOWNORMAL "" "MBT POS - Professional Point of Sale System"
     CreateShortcut  "$SMPROGRAMS\MugoByte\MBT POS\Uninstall MBT POS.lnk" \
                     "$INSTDIR\Uninstall.exe"
     CreateShortcut  "$SMPROGRAMS\MugoByte\MBT POS\MugoByte Workspace.lnk" \
                     "https://portal.mugobyte.com" "" "$INSTDIR\MBT_POS.exe" 0 \
-                    SW_SHOWNORMAL "" "MugoByte Workspace — downloads, licenses, devices"
+                    SW_SHOWNORMAL "" "MugoByte Workspace - downloads, licenses, devices"
 
     CreateShortcut "$DESKTOP\MBT POS.lnk" \
                    "$INSTDIR\MBT_POS.exe" "" "$INSTDIR\MBT_POS.exe" 0 \
@@ -168,7 +168,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "3.0.4"
+        "DisplayVersion"       "3.0.12"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"
@@ -199,7 +199,7 @@ Section "MBT POS" SecMain
 SectionEnd
 
 ;=============================================================================
-; Uninstaller — AppData (sales, license, settings) left intact
+; Uninstaller - AppData (sales, license, settings) left intact
 ;=============================================================================
 Section "Uninstall"
     ${If} ${RunningX64}

@@ -71,14 +71,15 @@ function DevicesPage() {
 
   const lic = licQ.data || {};
   const ver = verQ.data;
+  const localForbidden = lic.error === "Forbidden";
   const devices: CloudDevice[] = devicesQ.data?.devices || [];
   const pending = useMemo(
     () => devices.filter((d) => (d.approval_status || "pending").toLowerCase() === "pending"),
     [devices],
   );
 
-  const deviceId = lic.device_id || "—";
-  const state = lic.state || "unknown";
+  const deviceId = localForbidden ? "—" : (lic.device_id || "—");
+  const state = localForbidden ? "unavailable" : (lic.state || "unknown");
   const isOnline = state === "active" || state === "expiring";
 
   const refreshAll = () => {
@@ -134,12 +135,17 @@ function DevicesPage() {
         }
       />
 
-      {licQ.isLoading ? (
+      {devicesQ.isLoading && licQ.isLoading ? (
         <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Loading device information…</CardContent></Card>
-      ) : lic.error === "Forbidden" ? (
-        <Card><CardContent className="p-6 text-sm text-muted-foreground">Manager or administrator access is required to view device information.</CardContent></Card>
       ) : (
         <>
+          {localForbidden ? (
+            <Card>
+              <CardContent className="p-4 text-sm text-muted-foreground">
+                Local install status is unavailable for this account. Organization cloud devices below are still accessible.
+              </CardContent>
+            </Card>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-4">
             <Card>
               <CardContent className="p-5">
@@ -230,16 +236,18 @@ function DevicesPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <DeviceRow label="Device ID" value={deviceId} mono />
-                <DeviceRow label="Plan" value={lic.plan_name || lic.plan || "—"} />
-                <DeviceRow label="Activation date" value={lic.activation_date || "—"} />
-                <DeviceRow label="License source" value={lic.source || "license_engine"} />
+                <DeviceRow label="Plan" value={localForbidden ? "—" : (lic.plan_name || lic.plan || "—")} />
+                <DeviceRow label="Activation date" value={localForbidden ? "—" : (lic.activation_date || "—")} />
+                <DeviceRow label="License source" value={localForbidden ? "unavailable" : (lic.source || "license_engine")} />
                 <DeviceRow label="App version" value={ver?.version ? `v${ver.version}` : "—"} mono />
                 <DeviceRow label="License state" value={state} />
                 <div className="flex items-center gap-2 pt-2">
                   <Badge variant={isOnline ? "default" : "secondary"}>{state.toUpperCase()}</Badge>
-                  <Badge variant={lic.is_valid ? "default" : "destructive"}>
-                    {lic.is_valid ? "Valid" : "Not valid"}
-                  </Badge>
+                  {!localForbidden ? (
+                    <Badge variant={lic.is_valid ? "default" : "destructive"}>
+                      {lic.is_valid ? "Valid" : "Not valid"}
+                    </Badge>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>

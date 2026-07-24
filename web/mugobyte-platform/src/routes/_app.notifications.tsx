@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bell, CheckCircle2, ShieldAlert, TriangleAlert, RefreshCw } from "lucide-react";
-import { PageShell, PageHeader } from "@/components/layout/PageShell";
+import { PageShell, PageHeader, EmptyState } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -89,7 +89,11 @@ function NotificationsPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           {items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No cloud notifications yet.</p>
+            <EmptyState
+              icon={Bell}
+              title="No cloud notifications yet"
+              description="License, device, backup, and update alerts will land here when they fire."
+            />
           ) : (
             items.map((n) => {
               const sev = (n.severity || "info").toLowerCase();

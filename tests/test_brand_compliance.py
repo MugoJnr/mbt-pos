@@ -66,7 +66,8 @@ def test_app_version_matches_version_json():
     main = (ROOT / "desktop" / "main.py").read_text(encoding="utf-8")
     m = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', main)
     assert m, "APP_VERSION missing"
-    vj = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
+    # utf-8-sig tolerates accidental BOM from Windows editors
+    vj = json.loads((ROOT / "version.json").read_text(encoding="utf-8-sig"))
     assert re.fullmatch(r"\d+\.\d+\.\d+", vj["version"])
     assert m.group(1) == vj["version"]
 

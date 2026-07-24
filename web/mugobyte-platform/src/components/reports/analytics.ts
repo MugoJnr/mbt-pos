@@ -31,9 +31,45 @@ export const todayIso = () => {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 };
 
+/** Inclusive local calendar day N days before today (0 = today). */
+export const daysAgoIso = (days: number) => {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+  local.setUTCDate(local.getUTCDate() - Math.max(0, Math.floor(days)));
+  return local.toISOString().slice(0, 10);
+};
+
+/** Default Reports range: today (Nairobi/local calendar day). */
+export const defaultAnalyticsRange = () => {
+  const day = todayIso();
+  return { start: day, end: day };
+};
+
 export function formatMoney(value: unknown, currency = "KES") {
   const amount = Number(value || 0);
   return `${currency} ${Number.isFinite(amount) ? amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00"}`;
+}
+
+/** KPI-safe currency: never mid-number ellipsis; abbreviate large values. */
+export function formatCompactMoney(value: unknown, currency = "KES") {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return `${currency} 0`;
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount);
+  if (abs >= 1_000_000) {
+    const digits = abs >= 10_000_000 ? 0 : 1;
+    return `${currency} ${sign}${(abs / 1_000_000).toFixed(digits)}M`;
+  }
+  if (abs >= 10_000) {
+    return `${currency} ${sign}${(abs / 1_000).toFixed(1)}K`;
+  }
+  if (Math.abs(abs - Math.round(abs)) < 0.005) {
+    return `${currency} ${sign}${Math.round(abs).toLocaleString()}`;
+  }
+  return `${currency} ${sign}${abs.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 export function formatNumber(value: unknown, digits = 0) {

@@ -131,18 +131,20 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
                 'memo': f'Cash rounding expense {rn}',
             })
 
-        # Payment variance (tips / transport / deposit / misc)
+        # Payment variance (tips / transport / deposit / misc / additional payment)
         var = db.execute(
             "SELECT * FROM payment_variances WHERE sale_id=? ORDER BY id DESC LIMIT 1",
             (sale_id,)
         ).fetchone()
-        tip = transport = deposit = advance = misc = D(0)
+        tip = transport = deposit = advance = misc = additional = D(0)
         if var:
             tip = D(var['tip_amount'] or 0)
             transport = D(var['transport_amount'] or 0)
             deposit = D(var['deposit_amount'] or 0)
             advance = D(var['advance_amount'] or 0)
             misc = D(var['misc_amount'] or 0)
+            if (var['handling'] or '').strip().lower() == 'additional_payment':
+                additional = D(var['excess_amount'] or 0)
             # change_returned is already excluded via net_tender (change_amount)
 
         if tip > 0:
@@ -164,11 +166,18 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
                 'credit': misc,
                 'memo': f'Misc variance {rn}',
             })
+        if additional > 0:
+            # Additional customer payment → sales/other income (internal; not on receipt)
+            lines.append({
+                'account_code': '4100',
+                'credit': additional,
+                'memo': f'Additional customer payment {rn}',
+            })
 
         # Amount still owed on credit (AR)
         # payable after credit = total - credit_applied; AR = that - net cash tendered
         # (excluding variance extras that inflate amount_paid)
-        variance_extra = tip + transport + deposit + advance + misc
+        variance_extra = tip + transport + deposit + advance + misc + additional
         # amount_paid includes variance excess; net product tender:
         product_tender = net_tender - variance_extra
         if product_tender < 0:
@@ -228,7 +237,7 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
                 })
 
         # Variance extras also hit cash/electronic (customer paid them)
-        cash_extra = tip + transport + deposit + advance + misc
+        cash_extra = tip + transport + deposit + advance + misc + additional
         if cash_extra > 0:
             # Already included in amount_paid; if product_tender split consumed
             # only product portion, add extra debit to payment account
@@ -283,7 +292,8 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
             )
             lines = _simplified_sale_lines(
                 sale, original_total, rounding, credit_applied, product_tender,
-                ar_amount, tip, transport, deposit + advance, misc, method, rn
+                ar_amount, tip, transport, deposit + advance, misc + additional,
+                method, rn
             )
             lines.extend(cogs_lines)
 

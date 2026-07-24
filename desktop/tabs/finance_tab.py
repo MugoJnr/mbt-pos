@@ -85,7 +85,7 @@ class FinanceTab(QWidget):
         # ── Left nav ─────────────────────────────────────────────────────────
         nav = QWidget()
         nav.setObjectName('financeNav')
-        nav.setFixedWidth(220)
+        nav.setFixedWidth(248)
         nav.setAttribute(Qt.WA_StyledBackground, True)
         nl = QVBoxLayout(nav)
         nl.setContentsMargins(12, 16, 12, 16)
@@ -123,7 +123,10 @@ class FinanceTab(QWidget):
             nl.addWidget(line)
             nl.addSpacing(8)
 
-            self._adv_toggle = QPushButton('▸  Advanced Accounting')
+            self._adv_toggle = QPushButton('▸ Ledger & Statements')
+            self._adv_toggle.setToolTip(
+                'Chart of Accounts, journals, trial balance, and period close')
+            self._adv_toggle.setAccessibleName('Ledger and Statements')
             self._adv_toggle.setCursor(Qt.PointingHandCursor)
             self._adv_toggle.setStyleSheet(self._nav_style(False, muted=True))
             self._adv_toggle.clicked.connect(self._toggle_advanced)
@@ -152,7 +155,7 @@ class FinanceTab(QWidget):
         nl.addStretch(1)
 
         tip = Caption(
-            'Sales post automatically — you rarely need Advanced.'
+            'Sales post automatically — open Ledger & Statements only when needed.'
             if self._show_advanced else
             'Track money in, money out, and customer credit here.'
         )
@@ -193,24 +196,55 @@ class FinanceTab(QWidget):
         self._goto('overview')
 
     def _mk_nav(self, key: str, label: str, indent=False) -> QPushButton:
-        btn = QPushButton(('    ' if indent else '') + label)
+        btn = QPushButton(label)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setCheckable(True)
         btn.setProperty('financeKey', key)
+        btn.setProperty('financeIndent', bool(indent))
+        # Uniform icon+label pattern for every nav item
+        try:
+            from desktop.utils.nav_icons import (
+                icon_dashboard, icon_money, icon_wallet, icon_reports,
+                icon_finance, icon_notes, icon_settings, icon_debt,
+            )
+            from PyQt5.QtCore import QSize
+            key_icons = {
+                'overview': icon_dashboard,
+                'money': icon_money,
+                'expenses': icon_wallet,
+                'credit': icon_debt,
+                'reports': icon_reports,
+                'coa': icon_notes,
+                'ledger': icon_notes,
+                'journals': icon_notes,
+                'trial': icon_finance,
+                'balance': icon_finance,
+                'cashflow': icon_finance,
+                'periods': icon_settings,
+                'fin_settings': icon_settings,
+            }
+            builder = key_icons.get(key) or icon_finance
+            btn.setIcon(builder(15))
+            btn.setIconSize(QSize(15, 15))
+        except Exception:
+            pass
+        pad_l = 22 if indent else 12
+        btn.setStyleSheet('')  # painted in _paint_nav
+        btn.setProperty('financePadL', pad_l)
         btn.clicked.connect(lambda _=False, k=key: self._goto(k))
         self._nav_btns[key] = btn
         return btn
 
-    def _nav_style(self, active: bool, muted=False) -> str:
+    def _nav_style(self, active: bool, muted=False, pad_l: int = 12) -> str:
         if active:
             return (
-                f"QPushButton{{text-align:left; padding:10px 12px; border:none; "
+                f"QPushButton{{text-align:left; padding:10px 12px 10px {pad_l}px; border:none; "
                 f"border-radius:8px; background:{qss_alpha(C['gold'], 0.18)}; "
                 f"color:{C['gold']}; font-weight:700; font-size:13px;}}"
             )
         color = C['muted'] if muted else C['text2']
         return (
-            f"QPushButton{{text-align:left; padding:10px 12px; border:none; "
+            f"QPushButton{{text-align:left; padding:10px 12px 10px {pad_l}px; border:none; "
             f"border-radius:8px; background:transparent; color:{color}; "
             f"font-weight:600; font-size:13px;}}"
             f"QPushButton:hover{{background:{C['hover']}; color:{C['text']};}}"
@@ -222,12 +256,25 @@ class FinanceTab(QWidget):
             f"border-right:1px solid {C['border']};}}"
         )
         for key, btn in self._nav_btns.items():
-            btn.setStyleSheet(self._nav_style(btn.isChecked()))
+            pad = int(btn.property('financePadL') or 12)
+            btn.setStyleSheet(self._nav_style(btn.isChecked(), pad_l=pad))
         if self._adv_toggle is not None:
             self._adv_toggle.setStyleSheet(self._nav_style(False, muted=True))
             self._adv_toggle.setText(
-                ('▾  Advanced Accounting' if self._advanced_open else '▸  Advanced Accounting')
+                ('▾ Ledger & Statements' if self._advanced_open else '▸ Ledger & Statements')
             )
+            try:
+                from desktop.utils.nav_icons import icon_finance
+                from PyQt5.QtCore import QSize
+                self._adv_toggle.setIcon(icon_finance(15))
+                self._adv_toggle.setIconSize(QSize(15, 15))
+                self._adv_toggle.setToolTip(
+                    'Collapse ledger & statements' if self._advanced_open
+                    else 'Chart of Accounts, journals, trial balance, and period close')
+            except Exception:
+                pass
+            # Keep accessible name full
+            self._adv_toggle.setAccessibleName('Ledger and Statements')
 
     def _toggle_advanced(self):
         if self._adv_box is None:
@@ -318,7 +365,45 @@ class _OverviewPage(QWidget):
         # Business health
         health = Card()
         hl = health.layout_v((18, 16, 18, 16), 10)
-        hl.addWidget(H2('Business Health'))
+        self._health_banner = QFrame()
+        self._health_banner.setObjectName('mbtHealthBanner')
+        self._health_banner.setVisible(False)
+        bl = QHBoxLayout(self._health_banner)
+        bl.setContentsMargins(12, 10, 12, 10)
+        bl.setSpacing(10)
+        self._health_banner_icon = QLabel('!')
+        self._health_banner_icon.setFixedSize(22, 22)
+        self._health_banner_icon.setAlignment(Qt.AlignCenter)
+        self._health_banner_text = QLabel('')
+        self._health_banner_text.setWordWrap(True)
+        self._health_banner_text.setStyleSheet(
+            'font-size:13px; font-weight:700; background:transparent;')
+        bl.addWidget(self._health_banner_icon, 0, Qt.AlignTop)
+        bl.addWidget(self._health_banner_text, 1)
+        hl.addWidget(self._health_banner)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        title_row.addWidget(H2('Business Health'))
+        self._health_info = QToolButton()
+        self._health_info.setObjectName('mbtHealthInfo')
+        self._health_info.setCursor(Qt.PointingHandCursor)
+        self._health_info.setAutoRaise(True)
+        self._health_info.setIcon(self.style().standardIcon(QStyle.SP_MessageBoxInformation))
+        self._health_info.setIconSize(QSize(16, 16))
+        self._health_info.setFixedSize(28, 28)
+        self._health_info.setToolTip(
+            'Business Health score (0–100)\n'
+            'Starts at 70, then adjusts from live data:\n'
+            '  • Net profit this month (+10 / −15)\n'
+            '  • Cash + M-Pesa on hand (+8 / −20)\n'
+            '  • Overdue share of customer credit (−12 if high)\n'
+            '  • Trial balance balanced (+5 / −10)\n\n'
+            'Scale: 75+ Healthy · 55–74 Watch · below 55 Needs attention'
+        )
+        self._health_info.setAccessibleName('Business Health score legend')
+        title_row.addWidget(self._health_info)
+        title_row.addStretch(1)
+        hl.addLayout(title_row)
         self._score_lbl = QLabel('—')
         self._score_lbl.setStyleSheet(
             f"color:{C['gold']}; font-size:36px; font-weight:800; background:transparent;")
@@ -328,9 +413,17 @@ class _OverviewPage(QWidget):
         row = QHBoxLayout()
         row.addWidget(self._score_lbl)
         row.addSpacing(16)
+        score_col = QVBoxLayout()
+        score_col.setSpacing(4)
         self._score_sub = Caption('Based on your live sales, cash, profit, and credit data.')
         self._score_sub.setWordWrap(True)
-        row.addWidget(self._score_sub, 1)
+        self._score_legend = Caption('0–100 · 75+ healthy · 55–74 watch · below 55 needs attention')
+        self._score_legend.setWordWrap(True)
+        self._score_legend.setStyleSheet(
+            f"color:{C['muted']}; font-size:11px; background:transparent;")
+        score_col.addWidget(self._score_sub)
+        score_col.addWidget(self._score_legend)
+        row.addLayout(score_col, 1)
         hl.addLayout(row)
         hl.addLayout(self._health_grid)
         self._insight = Body('', muted=True)
@@ -347,7 +440,12 @@ class _OverviewPage(QWidget):
         a2.clicked.connect(lambda: self.p._goto('credit'))
         a3 = SecondaryBtn('View Reports', 40)
         a3.clicked.connect(lambda: self.p._goto('reports'))
-        a4 = GhostBtn('↺ Refresh', 40)
+        a4 = GhostBtn('Refresh', 40)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(a4, 'refresh', 14)
+        except Exception:
+            pass
         a4.clicked.connect(self.refresh)
         actions.addWidget(a1)
         actions.addWidget(a2)
@@ -400,21 +498,33 @@ class _OverviewPage(QWidget):
         collected = float((debt.get('today_collected') or {}).get('total') or 0)
 
         row1 = [
-            ("Today's Sales", _fmt(sales_today, cur)),
-            ('Gross Profit', _fmt(dash.get('month_gross'), cur)),
-            ('Net Profit', _fmt(dash.get('month_net'), cur)),
-            ("Today's Expenses", _fmt(expenses_today, cur)),
+            ("Today's Revenue", _fmt(sales_today, cur), C['ok']),
+            # warn = attention for negative P&L (err reserved for overdue/cash deficit)
+            ('Gross Profit', _fmt(dash.get('month_gross'), cur),
+             C['warn'] if float(dash.get('month_gross') or 0) < 0 else C['ok']),
+            ('Net Profit', _fmt(dash.get('month_net'), cur),
+             C['warn'] if float(dash.get('month_net') or 0) < 0 else C['ok']),
+            ("Today's Expenses", _fmt(expenses_today, cur), C['warn']),
         ]
         row2 = [
-            ('Cash', _fmt(dash.get('cash_balance'), cur)),
-            ('M-Pesa', _fmt(dash.get('mpesa_balance'), cur)),
-            ('Bank', _fmt(dash.get('bank_balance'), cur)),
-            ('Customer Credit', _fmt(outstanding, cur)),
+            ('Cash', _fmt(dash.get('cash_balance'), cur),
+             C['err'] if float(dash.get('cash_balance') or 0) < 0 else C['ok']),
+            ('M-Pesa', _fmt(dash.get('mpesa_balance'), cur), C['ok']),
+            ('Bank', _fmt(dash.get('bank_balance'), cur), C['info']),
+            # Outstanding credit = warn; overdue alone uses err elsewhere
+            ('Outstanding Debt', _fmt(outstanding, cur),
+             C['warn'] if outstanding > 0 else C['gold']),
         ]
-        for t, v in row1:
-            self._kpi1.addWidget(KPICard(t, v))
-        for t, v in row2:
-            self._kpi2.addWidget(KPICard(t, v))
+        for t, v, acc in row1:
+            card = KPICard(t, v, accent=acc)
+            if acc in (C['err'], C['warn']):
+                card.set_value(v, acc)
+            self._kpi1.addWidget(card)
+        for t, v, acc in row2:
+            card = KPICard(t, v, accent=acc)
+            if acc in (C['err'], C['warn']):
+                card.set_value(v, acc)
+            self._kpi2.addWidget(card)
 
         # Health score from real metrics only
         score = 70
@@ -452,18 +562,58 @@ class _OverviewPage(QWidget):
         self._score_lbl.setStyleSheet(
             f"color:{color}; font-size:36px; font-weight:800; background:transparent;")
 
+        # Severity banner — proportional to negative net / low health score
+        banner = getattr(self, '_health_banner', None)
+        if banner is not None:
+            severe = score < 55 or net < 0
+            watch = (not severe) and score < 75
+            if severe or watch:
+                # Severity banner — err only when score critically low; warn for negative net alone
+                if score < 55 and net < 0:
+                    msg = (f'Needs attention — health score {score}/100 and '
+                           f'net profit is negative this month.')
+                    tone, dim = C['err'], C.get('err_dim', qss_alpha(C['err'], 0.14))
+                elif score < 55:
+                    msg = (f'Business health needs attention — score {score}/100. '
+                           f'Check cash, overdue credit, and trial balance.')
+                    tone, dim = C['err'], C.get('err_dim', qss_alpha(C['err'], 0.14))
+                elif net < 0:
+                    msg = (f'Net profit is negative this month '
+                           f'(health score {score}/100). Review expenses and margins.')
+                    tone, dim = C['warn'], C.get('warn_dim', qss_alpha(C['warn'], 0.14))
+                else:
+                    msg = (f'Watch closely — health score {score}/100. '
+                           f'Some metrics are below healthy thresholds.')
+                    tone, dim = C['warn'], C.get('warn_dim', qss_alpha(C['warn'], 0.14))
+                banner.setVisible(True)
+                banner.setStyleSheet(
+                    f"QFrame#mbtHealthBanner {{ background:{dim}; "
+                    f"border:1px solid {qss_alpha(tone, 0.55)}; border-radius:10px; }}")
+                self._health_banner_icon.setStyleSheet(
+                    f"color:{tone}; background:{qss_alpha(tone, 0.18)}; "
+                    f"border-radius:11px; font-size:12px; font-weight:800;")
+                self._health_banner_text.setText(msg)
+                self._health_banner_text.setStyleSheet(
+                    f"color:{tone}; font-size:13px; font-weight:700; background:transparent;")
+            else:
+                banner.setVisible(False)
+
         status_rows = [
-            ('Cash flow', 'Healthy' if cash > expenses_today else 'Watch closely'),
-            ('Profitability', 'On track' if net >= 0 else 'Needs attention'),
-            ('Customer credit', f'{_fmt(overdue, cur)} overdue' if overdue else 'No overdue'),
-            ('Collected today', _fmt(collected, cur)),
-            ('Trial balance', 'OK' if dash.get('trial_balanced') else 'Review'),
+            ('Cash flow', 'Healthy' if cash > expenses_today else 'Watch closely',
+             C['ok'] if cash > expenses_today else C['warn']),
+            ('Profitability', 'On track' if net >= 0 else 'Needs attention',
+             C['ok'] if net >= 0 else C['warn']),
+            ('Customer credit', f'{_fmt(overdue, cur)} overdue' if overdue else 'No overdue',
+             C['err'] if overdue else C['ok']),
+            ('Collected today', _fmt(collected, cur), C['ok'] if collected else C['text2']),
+            ('Trial balance', 'OK' if dash.get('trial_balanced') else 'Review',
+             C['ok'] if dash.get('trial_balanced') else C['warn']),
         ]
-        for i, (k, v) in enumerate(status_rows):
+        for i, (k, v, tone) in enumerate(status_rows):
             self._health_grid.addWidget(Caption(k), i // 3, (i % 3) * 2)
             vl = QLabel(v)
             vl.setStyleSheet(
-                f"color:{C['text']}; font-size:13px; font-weight:700; background:transparent;")
+                f"color:{tone}; font-size:13px; font-weight:700; background:transparent;")
             self._health_grid.addWidget(vl, i // 3, (i % 3) * 2 + 1)
 
         self._insight.setText(' · '.join(notes[:4]) if notes else 'No issues flagged from current data.')
@@ -673,7 +823,7 @@ class _CreditPage(QWidget):
             aging = {}
 
         cards = [
-            ('Outstanding', _fmt((debt.get('outstanding') or {}).get('total'), cur)),
+            ('Outstanding Debt', _fmt((debt.get('outstanding') or {}).get('total'), cur)),
             ('Overdue', _fmt((debt.get('overdue') or {}).get('total'), cur)),
             ('Collected Today', _fmt((debt.get('today_collected') or {}).get('total'), cur)),
             ('Customers', str(debt.get('customers_with_debt') or 0)),
@@ -948,7 +1098,12 @@ class _AccountsPage(QWidget):
         )
         lay.addLayout(intro)
         bar = QHBoxLayout()
-        ref = GhostBtn('↺ Refresh', 36)
+        ref = GhostBtn('Refresh', 36)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref, 'refresh', 14)
+        except Exception:
+            pass
         ref.clicked.connect(self.refresh)
         bar.addWidget(ref)
         bar.addStretch(1)
@@ -1099,7 +1254,12 @@ class _JournalsPage(QWidget):
         rev = SecondaryBtn('Reverse Selected', 36)
         rev.clicked.connect(self._reverse)
         bar.addWidget(rev)
-        ref = GhostBtn('↺ Refresh', 36)
+        ref = GhostBtn('Refresh', 36)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref, 'refresh', 14)
+        except Exception:
+            pass
         ref.clicked.connect(self.refresh)
         bar.addWidget(ref)
         bar.addStretch(1)
@@ -1222,7 +1382,12 @@ class _ExpensesPage(QWidget):
         dele = DangerBtn('Delete', 36)
         dele.clicked.connect(self._delete)
         bar.addWidget(dele)
-        ref = GhostBtn('↺ Refresh', 36)
+        ref = GhostBtn('Refresh', 36)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref, 'refresh', 14)
+        except Exception:
+            pass
         ref.clicked.connect(self.refresh)
         bar.addWidget(ref)
         bar.addStretch(1)
@@ -1413,7 +1578,12 @@ class _PeriodsPage(QWidget):
         )
         lay.addLayout(intro)
         bar = QHBoxLayout()
-        ref = GhostBtn('↺ Refresh', 36)
+        ref = GhostBtn('Refresh', 36)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref, 'refresh', 14)
+        except Exception:
+            pass
         ref.clicked.connect(self.refresh)
         bar.addWidget(ref)
         bar.addStretch(1)

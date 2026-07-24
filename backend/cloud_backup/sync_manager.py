@@ -49,6 +49,22 @@ logger = logging.getLogger('cloud_backup.sync')
 
 DEFAULT_INTERVAL_MIN = 5
 BACKFILL_BATCH_SIZE = 200
+OUTBOX_FLUSH_LIMIT = 200
+OUTBOX_FLUSH_ROUNDS = 25  # up to ~5k rows per loop when backlog is deep
+
+# Prefer analytics-critical entities so stock/audit floods cannot hide today's sales.
+OUTBOX_PRIORITY_SQL = (
+    "CASE entity_type "
+    "WHEN 'sale' THEN 0 "
+    "WHEN 'sale_item' THEN 1 "
+    "WHEN 'debt_invoice' THEN 2 "
+    "WHEN 'debt_payment' THEN 3 "
+    "WHEN 'customer' THEN 4 "
+    "WHEN 'product' THEN 5 "
+    "WHEN 'stock_movement' THEN 8 "
+    "WHEN 'audit_log' THEN 9 "
+    "ELSE 6 END"
+)
 
 # Local table → cloud entity_type for outbox flush / historical backfill.
 ENTITY_TABLE_MAP = {
@@ -399,7 +415,12 @@ class SyncManager:
             try:
                 if is_logged_in() and is_cloud_configured():
                     self.ensure_historical_backfill()
-                    self.flush_entity_outbox()
+                    # Drain multiple prioritized batches per tick so sales are not
+                    # stuck behind stock_movement / audit_log floods.
+                    for _ in range(OUTBOX_FLUSH_ROUNDS):
+                        flushed = self.flush_entity_outbox(limit=OUTBOX_FLUSH_LIMIT)
+                        if flushed <= 0:
+                            break
                 self.flush_offline_queue()
                 if cfg.get('enabled') and is_logged_in() and is_cloud_configured():
                     state = load_json(backup_state_path(), {})
@@ -616,7 +637,7 @@ class SyncManager:
         finally:
             conn.close()
 
-    def flush_entity_outbox(self, limit: int = 100) -> int:
+    def flush_entity_outbox(self, limit: int = OUTBOX_FLUSH_LIMIT) -> int:
         """Push one transactional, idempotent entity batch to the Portal API."""
         ident = load_identity()
         org_id = str(ident.get('org_id') or '')
@@ -629,10 +650,20 @@ class SyncManager:
         configure_sqlite_connection(conn)
         conn.row_factory = sqlite3.Row
         try:
+            # Drop noisy audit_log outbox rows locally — not projected to analytics.
+            conn.execute(
+                "UPDATE sync_outbox SET processed_at=CURRENT_TIMESTAMP, "
+                "last_error='skipped:audit_log' "
+                "WHERE processed_at IS NULL AND entity_type='audit_log'"
+            )
+            conn.commit()
+
             rows = conn.execute(
                 "SELECT * FROM sync_outbox "
                 "WHERE processed_at IS NULL AND available_at <= CURRENT_TIMESTAMP "
-                "ORDER BY id LIMIT ?",
+                "AND entity_type <> 'audit_log' "
+                f"ORDER BY {OUTBOX_PRIORITY_SQL}, id "
+                "LIMIT ?",
                 (max(1, min(limit, 500)),),
             ).fetchall()
             if not rows:
@@ -661,16 +692,24 @@ class SyncManager:
                 elif deleted:
                     payload = serialize_entity_payload(entity_type, {})
 
+                source_updated_at = (
+                    payload.get('updated_at')
+                    or payload.get('created_at')
+                    or event['created_at']
+                )
+                if (
+                    isinstance(source_updated_at, str)
+                    and 'T' not in source_updated_at
+                    and ' ' in source_updated_at
+                ):
+                    source_updated_at = source_updated_at.replace(' ', 'T')
+
                 entities.append({
                     'branch_id': ident.get('branch_id') or '',
                     'entity_type': entity_type,
                     'source_id': str(event['row_id']),
                     'source_version': int(event['id']),
-                    'source_updated_at': (
-                        payload.get('updated_at')
-                        or payload.get('created_at')
-                        or event['created_at']
-                    ),
+                    'source_updated_at': source_updated_at,
                     'payload': payload,
                     'payload_hash': _payload_hash(payload),
                     'deleted': deleted,
@@ -733,6 +772,13 @@ class SyncManager:
 
     def flush_offline_queue(self) -> int:
         if not (is_logged_in() and is_cloud_configured()):
+            return 0
+        # Never stall the backup thread on dead DNS when the shop is offline.
+        try:
+            import socket
+            s = socket.create_connection(('1.1.1.1', 53), timeout=1.5)
+            s.close()
+        except OSError:
             return 0
         q = load_json(offline_queue_path(), {'items': []})
         items = q.get('items') or []

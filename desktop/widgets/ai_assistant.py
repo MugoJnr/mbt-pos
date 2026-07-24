@@ -1102,13 +1102,15 @@ class _Bubble(QFrame):
 
 
 class AiFabButton(QPushButton):
-    """Floating Copilot launcher — bottom-right."""
+    """Floating Copilot launcher — bottom-right (always shows readable AI mark)."""
 
     def __init__(self, parent=None):
-        super().__init__('✦  Copilot', parent)
+        super().__init__('AI', parent)
         self.setObjectName('mbtCopilotFab')
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedSize(118, 48)
+        self.setFixedSize(52, 52)
+        self.setToolTip('Open MBT Copilot')
+        self.setAccessibleName('Copilot')
         self.refresh_theme()
 
     def refresh_theme(self):
@@ -1116,8 +1118,8 @@ class AiFabButton(QPushButton):
         self.setStyleSheet(
             f"QPushButton#mbtCopilotFab {{"
             f" background:{p['accent']}; color:#0B1220; border:none;"
-            f" border-radius:24px; font-size:13px; font-weight:800;"
-            f" padding:0 14px; }}"
+            f" border-radius:26px; font-size:15px; font-weight:900;"
+            f" padding:0; letter-spacing:0.5px; }}"
             f"QPushButton#mbtCopilotFab:hover {{ background:#FCD34D; }}"
         )
         shadow = QGraphicsDropShadowEffect(self)

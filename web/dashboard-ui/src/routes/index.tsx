@@ -250,18 +250,32 @@ function Dashboard() {
       : Array.isArray(wrap.by_payment)
         ? wrap.by_payment
         : [];
-    if (raw.length) {
-      return raw.map((p: any) => ({
-        name: String(p.method || p.payment_method || p.name || "Other"),
-        total: Number(p.total || 0),
-      }));
-    }
     const map: Record<string, number> = {};
-    for (const row of sales) {
-      const m = String(row.payment_method || "Cash");
-      map[m] = (map[m] || 0) + Number(row.total || 0);
+    const order: string[] = [];
+    const pretty = (rawName: string) => {
+      const key = rawName.toLowerCase().replace(/\s+/g, "");
+      if (key === "mpesa" || key === "m-pesa") return "M-Pesa";
+      return rawName.replace(/\b\w/g, (c) => c.toUpperCase());
+    };
+    const ingest = (name: string, total: number) => {
+      if (total <= 0.009) return;
+      const label = pretty(String(name || "Other").trim() || "Other");
+      if (!(label in map)) {
+        map[label] = 0;
+        order.push(label);
+      }
+      map[label] += total;
+    };
+    if (raw.length) {
+      for (const p of raw as any[]) {
+        ingest(String(p.method || p.payment_method || p.name || "Other"), Number(p.total || 0));
+      }
+    } else {
+      for (const row of sales) {
+        ingest(String(row.payment_method || "Cash"), Number(row.total || 0));
+      }
     }
-    return Object.entries(map).map(([name, total]) => ({ name, total }));
+    return order.map((name) => ({ name, total: map[name] }));
   }, [cc.by_payment, wrap.by_payment, sales]);
 
   const peakHour = useMemo(() => {
@@ -344,7 +358,11 @@ function Dashboard() {
         ) : (
           <Badge tone="muted">Sync clear</Badge>
         )}
-        <Badge tone={bak.status === "ok" ? "ok" : "warn"}>
+        <Badge
+          tone={
+            bak.status === "ok" ? "ok" : bak.status === "error" ? "warn" : "warn"
+          }
+        >
           Backup {String(bak.status || "—").toUpperCase()}
         </Badge>
       </div>

@@ -22,21 +22,29 @@ import {
   Download,
   Activity,
   Banknote,
+  ChevronDown,
   Receipt,
   WalletCards,
 } from "lucide-react";
-import { PageShell, PageHeader } from "@/components/layout/PageShell";
+import { PageShell, PageHeader, EmptyState } from "@/components/layout/PageShell";
 import { StatCard } from "@/components/layout/StatCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
-import { canLaunch, fetchApplications, fetchOrganizations, type PlatformApp } from "@/lib/platform";
+import {
+  canLaunch,
+  fetchApplications,
+  fetchOrganizations,
+  groupAppsBySection,
+  type PlatformApp,
+} from "@/lib/platform";
 import { GET } from "@/lib/api";
 import {
   type AnalyticsResponse,
+  daysAgoIso,
+  formatCompactMoney,
   formatDateTime,
-  formatMoney,
   formatNumber,
   todayIso,
   value,
@@ -48,6 +56,7 @@ export const Route = createFileRoute("/_app/dashboard")({
 });
 
 function iconForApp(id: string) {
+  if (id === "pulse" || id.includes("pulse")) return Activity;
   if (id.includes("pos")) return Store;
   if (id.includes("exam") || id.includes("school")) return Building2;
   if (id.includes("analytics") || id.includes("ai")) return BarChart3;
@@ -76,7 +85,9 @@ function WorkspaceHome() {
   const orgsQ = useQuery({ queryKey: ["platform-orgs"], queryFn: fetchOrganizations });
   const orgs = orgsQ.data || [];
   const activeOrg = orgs.find((o) => o.id === orgId) || orgs[0];
-  const today = todayIso();
+  // Home KPIs: last 30 local days (Reports page keeps today-only default).
+  const rangeStart = daysAgoIso(30);
+  const rangeEnd = todayIso();
 
   useEffect(() => {
     if (!orgId && orgs[0]) setActiveOrg(orgs[0].id);
@@ -114,12 +125,12 @@ function WorkspaceHome() {
   const unread = notifQ.data?.unread ?? 0;
 
   const analyticsQ = useQuery({
-    queryKey: ["dashboard-today-overview", orgId, today],
+    queryKey: ["dashboard-overview", orgId, rangeStart, rangeEnd],
     queryFn: () =>
       GET<AnalyticsResponse>("/cloud/analytics/overview", {
         org_id: orgId,
-        start: today,
-        end: today,
+        start: rangeStart,
+        end: rangeEnd,
       }),
     enabled: Boolean(orgId),
     retry: false,
@@ -130,11 +141,20 @@ function WorkspaceHome() {
     unknown
   >;
   const currency = String(overview.currency || summary.currency || "KES");
-  const gross = value(summary, "gross_sales", "sales_total", "revenue");
-  const collected = value(summary, "collected_revenue", "collected", "cash_collected");
-  const outstanding = value(summary, "debt_outstanding", "outstanding_debt", "balance");
-  const transactions = value(summary, "transactions", "sales_count", "receipts");
-  const lastSync = value(summary, "last_sync_at", "last_sync") || overview.last_sync_at;
+  const gross = Number(value(summary, "gross_sales", "sales_total", "revenue") ?? 0);
+  const collected = Number(
+    value(summary, "collected_revenue", "collected", "cash_collected") ?? 0,
+  );
+  const outstanding = Number(
+    value(summary, "debt_outstanding", "outstanding_debt", "balance") ?? 0,
+  );
+  const transactions = Number(
+    value(summary, "transactions", "sales_count", "receipts") ?? 0,
+  );
+  const lastSync =
+    value(summary, "last_sync_at", "last_sync") ||
+    overview.last_sync_at ||
+    null;
 
   const liveUrl =
     (typeof window !== "undefined" && localStorage.getItem("mbt_live_dashboard_url")) || "";
@@ -144,9 +164,9 @@ function WorkspaceHome() {
   return (
     <PageShell>
       <PageHeader
-        eyebrow="MugoByte Workspace"
+        eyebrow="MugoByte · Workspace"
         title={`Welcome back, ${name}.`}
-        description="One account for every MugoByte product. Cloud tools live here — live shop operations stay on your shop Live Dashboard."
+        description="Same MugoByte account as MBT POS desktop — cloud licenses, devices, and synced reports live here; till ops stay on the shop Live Dashboard."
         actions={
           <div className="flex flex-wrap gap-2">
             {liveUrl ? (
@@ -171,7 +191,7 @@ function WorkspaceHome() {
       <Card className="overflow-hidden border-primary/20 bg-gradient-to-br from-primary/5 via-background to-info/5">
         <CardHeader className="flex flex-col gap-3 border-b border-border/50 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <CardTitle className="font-display text-xl">Today’s performance</CardTitle>
+            <CardTitle className="font-display text-xl">Cloud performance</CardTitle>
             <CardDescription>
               Synced cloud analytics for {activeOrg?.name || "your business"} ·{" "}
               {lastSync ? `Last sync ${formatDateTime(lastSync)}` : "Waiting for first sync"}
@@ -186,20 +206,35 @@ function WorkspaceHome() {
         </CardHeader>
         <CardContent className="p-4 sm:p-5">
           {!orgId ? (
-            <p className="text-sm text-muted-foreground">Select a business to load today’s KPIs.</p>
+            <p className="text-sm text-muted-foreground">Select a business to load synced KPIs.</p>
           ) : analyticsQ.isLoading ? (
-            <div
-              className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground"
-              role="status"
-              aria-live="polite"
-            >
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading today’s analytics…
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="status" aria-live="polite">
+              {(
+                [
+                  { label: "Gross sales", icon: Receipt },
+                  { label: "Collected", icon: Banknote },
+                  { label: "Outstanding debt", icon: WalletCards },
+                  { label: "Transactions", icon: Activity },
+                ] as const
+              ).map(({ label, icon: Icon }) => (
+                <div
+                  key={label}
+                  className="rounded-xl border border-border/60 bg-muted/20 p-4"
+                >
+                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <Icon className="h-3.5 w-3.5" />
+                    {label}
+                  </div>
+                  <div className="mt-3 h-7 w-28 animate-pulse rounded-md bg-muted/50" />
+                  <p className="mt-2 text-[10px] text-muted-foreground/80">Loading cloud KPIs…</p>
+                </div>
+              ))}
+              <span className="sr-only">Loading cloud analytics…</span>
             </div>
           ) : analyticsQ.isError || overview.error ? (
             <div className="flex min-h-28 flex-col items-center justify-center gap-2 text-center" role="alert">
               <AlertCircle className="h-5 w-5 text-destructive" />
-              <p className="text-sm font-medium">Couldn’t load today’s analytics</p>
+              <p className="text-sm font-medium">Couldn’t load cloud analytics</p>
               <p className="text-xs text-muted-foreground">
                 {String(overview.error || (analyticsQ.error as Error)?.message || "Request failed")}
               </p>
@@ -207,25 +242,52 @@ function WorkspaceHome() {
                 Try again
               </Button>
             </div>
+          ) : !lastSync && gross === 0 && collected === 0 && outstanding === 0 && transactions === 0 ? (
+            <div className="flex min-h-28 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.04] px-4 py-7 text-center">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/15">
+                <CloudUpload className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">Waiting for first shop sync</p>
+                <p className="mt-1.5 max-w-md text-xs leading-relaxed text-muted-foreground">
+                  Cloud KPIs stay at zero until a licensed POS install syncs sales for{" "}
+                  {activeOrg?.name || "this business"}. Activate a license or open Live Shop to start.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                <Button asChild size="sm">
+                  <Link to="/license">
+                    <KeyRound className="mr-1.5 h-3.5 w-3.5" />
+                    Activate license
+                  </Link>
+                </Button>
+                <Button asChild size="sm" variant="outline">
+                  <Link to="/reports">
+                    <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+                    Open reports
+                  </Link>
+                </Button>
+              </div>
+            </div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard
                 label="Gross sales"
-                value={formatMoney(gross, currency)}
+                value={formatCompactMoney(gross, currency)}
                 icon={Receipt}
-                hint="Today · cloud"
+                hint="Last 30 days · cloud"
                 accent="primary"
               />
               <StatCard
                 label="Collected"
-                value={formatMoney(collected, currency)}
+                value={formatCompactMoney(collected, currency)}
                 icon={Banknote}
                 hint="Sales + debt payments"
                 accent="success"
               />
               <StatCard
                 label="Outstanding debt"
-                value={formatMoney(outstanding, currency)}
+                value={formatCompactMoney(outstanding, currency)}
                 icon={WalletCards}
                 hint="Open balances"
                 accent="warning"
@@ -259,7 +321,7 @@ function WorkspaceHome() {
           {
             label: "Devices",
             value: devicesQ.isLoading
-              ? "…"
+              ? "0"
               : devicesQ.isError
                 ? "—"
                 : String(devices.length || "0"),
@@ -291,7 +353,7 @@ function WorkspaceHome() {
 
       <div className="grid gap-4 lg:grid-cols-[1.65fr_1fr]">
         <div className="space-y-4">
-          <Card id="products" className="overflow-hidden">
+          <Card id="products" className="relative overflow-hidden shadow-[0_12px_40px_-24px_rgba(0,0,0,0.45)]">
             <CardHeader className="border-b border-border/60 bg-muted/20">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -305,23 +367,54 @@ function WorkspaceHome() {
                   {apps.filter((a) => a.status === "active").length} active
                 </Badge>
               </div>
+              <div className="mt-3 flex items-center justify-center gap-1.5 rounded-full border border-border/70 bg-background/80 px-3 py-1.5 text-[11px] font-medium text-muted-foreground shadow-sm">
+                <ChevronDown className="h-3.5 w-3.5 animate-bounce" aria-hidden />
+                Scroll for more products below
+                <ChevronDown className="h-3.5 w-3.5 animate-bounce" aria-hidden />
+              </div>
             </CardHeader>
-            <CardContent className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
+            <CardContent className="relative max-h-[28rem] space-y-6 overflow-y-auto p-4 pb-14">
               {appsQ.isLoading ? (
-                <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
-                  Loading products…
-                </p>
+                <p className="py-8 text-center text-sm text-muted-foreground">Loading products…</p>
               ) : appsQ.isError ? (
-                <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+                <p className="py-8 text-center text-sm text-muted-foreground">
                   Products could not be loaded.
                 </p>
               ) : apps.length === 0 ? (
-                <p className="col-span-full py-8 text-center text-sm text-muted-foreground">
+                <p className="py-8 text-center text-sm text-muted-foreground">
                   No products in this workspace yet.
                 </p>
               ) : (
-                apps.map((app) => <ProductCard key={app.id} app={app} />)
+                groupAppsBySection(apps).map((group) => (
+                  <section key={group.section} className="space-y-3">
+                    <div className="flex items-end justify-between gap-3 border-b border-border/60 pb-2">
+                      <div>
+                        <h3 className="font-display text-sm font-semibold tracking-tight">
+                          {group.section}
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground">
+                          {group.apps.length} product{group.apps.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {group.apps.map((app) => (
+                        <ProductCard key={app.id} app={app} />
+                      ))}
+                    </div>
+                  </section>
+                ))
               )}
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-background via-background/85 to-transparent"
+                aria-hidden
+              />
+              <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+                <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/90 px-3 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur-sm">
+                  Continue scrolling
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                </span>
+              </div>
             </CardContent>
           </Card>
 
@@ -402,7 +495,12 @@ function WorkspaceHome() {
               ) : notifQ.isError ? (
                 <p className="text-sm text-muted-foreground">Notifications unavailable.</p>
               ) : notifs.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No notifications yet.</p>
+                <EmptyState
+                  icon={Bell}
+                  title="No notifications yet"
+                  description="Cloud alerts for licenses, devices, and backups will appear here."
+                  compact
+                />
               ) : (
                 notifs.map((n, i) => (
                   <div key={i} className="rounded-lg border border-border/60 px-3 py-2">
@@ -506,9 +604,12 @@ function ProductCard({ app }: { app: PlatformApp }) {
         {app.description}
       </p>
       <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
-        <span>{app.category}</span>
+        <span>{app.section || app.category}</span>
         <span>{app.version || "—"}</span>
       </div>
+      {app.company ? (
+        <p className="mt-1 text-[10px] text-muted-foreground/80">{app.company}</p>
+      ) : null}
       <div className="mt-3">
         {launchable ? (
           <Button asChild className="w-full" size="sm">

@@ -15,6 +15,19 @@ from urllib.parse import quote
 logger = logging.getLogger('cloud.devices')
 
 
+def _quick_online(timeout: float = 1.0) -> bool:
+    """Fail-open connectivity probe — never hang shop UI/threads."""
+    import socket
+    for host in (('1.1.1.1', 53), ('8.8.8.8', 53)):
+        try:
+            s = socket.create_connection(host, timeout=timeout)
+            s.close()
+            return True
+        except OSError:
+            pass
+    return False
+
+
 def _resolve_cloud_ids() -> tuple[str, str]:
     """Return (business_id, org_id) for device registration."""
     from backend.cloud_backup.paths import load_identity
@@ -24,15 +37,33 @@ def _resolve_cloud_ids() -> tuple[str, str]:
     business_id = ident.get('business_id') or ''
     org_id = ident.get('org_id') or ''
 
+    # Skip Portal lookups when offline — identity alone is enough for later retry.
+    if not _quick_online(1.0):
+        return business_id, org_id
+
     if business_id and not org_id:
-        rows = service_select('businesses', f'id=eq.{quote(business_id, safe="")}&select=org_id,id&limit=1')
-        if rows and rows[0].get('org_id'):
-            org_id = rows[0]['org_id']
+        try:
+            rows = service_select(
+                'businesses',
+                f'id=eq.{quote(business_id, safe="")}&select=org_id,id&limit=1',
+                timeout=5,
+            )
+            if rows and rows[0].get('org_id'):
+                org_id = rows[0]['org_id']
+        except Exception:
+            pass
 
     if org_id and not business_id:
-        rows = service_select('businesses', f'org_id=eq.{quote(org_id, safe="")}&select=id&limit=1')
-        if rows:
-            business_id = rows[0]['id']
+        try:
+            rows = service_select(
+                'businesses',
+                f'org_id=eq.{quote(org_id, safe="")}&select=id&limit=1',
+                timeout=5,
+            )
+            if rows:
+                business_id = rows[0]['id']
+        except Exception:
+            pass
 
     return business_id, org_id
 
@@ -78,6 +109,8 @@ class DeviceService:
 
     def register(self) -> tuple[bool, str]:
         """Register or update this device in MBT Cloud."""
+        if not _quick_online(1.0):
+            return False, 'Offline — will retry when online'
         info = self.get_device_info()
         try:
             from backend.cloud_backup.paths import is_cloud_configured
@@ -95,6 +128,7 @@ class DeviceService:
                 rows = service_select(
                     'businesses',
                     f'id=eq.{quote(business_id, safe="")}&select=org_id&limit=1',
+                    timeout=5,
                 ) or []
                 if rows:
                     org_id = rows[0].get('org_id') or ''
@@ -124,6 +158,8 @@ class DeviceService:
     def heartbeat(self):
         """Update last_seen_at in cloud."""
         try:
+            if not _quick_online(1.0):
+                return
             from backend.cloud_backup.paths import is_cloud_configured
             if not is_cloud_configured():
                 return

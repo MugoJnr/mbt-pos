@@ -31,7 +31,7 @@ class DiagnosticsTab(QWidget):
         run=PrimaryBtn('▶  Run Check', 40); run.clicked.connect(self.run_check)
         copy=SecondaryBtn('Copy Errors', 40); copy.clicked.connect(self._copy_errors)
         exp=SecondaryBtn('⬇  Export', 40); exp.clicked.connect(self._export)
-        rot=GhostBtn('↺  Rotate Logs', 40); rot.clicked.connect(self._rotate)
+        rot=GhostBtn('Rotate Logs', 40); rot.clicked.connect(self._rotate)
         ar.addWidget(run); ar.addWidget(copy); ar.addWidget(exp); ar.addWidget(rot)
         chrome, _ = PageChrome(
             'System Diagnostics',

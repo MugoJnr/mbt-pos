@@ -277,6 +277,17 @@ class TestAnalyticsRoutesContract(unittest.TestCase):
     def test_export_bound_constant(self):
         self.assertEqual(ps.ANALYTICS_EXPORT_MAX, 10_000)
 
+    def test_default_range_helper_present(self):
+        self.assertIn('def _analytics_default_range', self.routes_src)
+        self.assertIn('_analytics_default_range()', self.routes_src)
+        # Overview/sales must not hard-default to a single calendar day.
+        overview = self.routes_src[
+            self.routes_src.index('def cloud_analytics_overview'):
+            self.routes_src.index('def cloud_analytics_sales')
+        ]
+        self.assertNotIn("datetime.now().strftime('%Y-%m-%d')", overview)
+        self.assertIn('_analytics_default_range()', overview)
+
 
 class TestAnalyticsOrgIsolationHelpers(unittest.TestCase):
     def test_sales_query_always_includes_org_filter(self):

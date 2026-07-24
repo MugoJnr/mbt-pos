@@ -187,7 +187,7 @@ class SecurityTab(QWidget):
         lay.addLayout(form)
 
         btn_row = QHBoxLayout()
-        load = SecondaryBtn('↺  Load Products', 42)
+        load = SecondaryBtn('Load Products', 42)
         load.clicked.connect(self._load_products_for_adj)
         apply = PrimaryBtn('⚖  Apply Adjustment', 46)
         apply.clicked.connect(self._apply_adj)
@@ -258,7 +258,7 @@ class SecurityTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(H2('Stock Movement Log'))
         top.addStretch()
-        ref = SecondaryBtn('↺ Refresh', 38); ref.clicked.connect(self._load_stock_log)
+        ref = SecondaryBtn('Refresh', 38); ref.clicked.connect(self._load_stock_log)
         top.addWidget(ref); lay.addLayout(top)
         self._stock_tbl = make_table(
             ['Time', 'Product', 'Type', 'Before', 'Change', 'After',
@@ -308,7 +308,7 @@ class SecurityTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(H2('Sale Edits & Voids'))
         top.addStretch()
-        ref = SecondaryBtn('↺ Refresh', 38); ref.clicked.connect(self._load_edits)
+        ref = SecondaryBtn('Refresh', 38); ref.clicked.connect(self._load_edits)
         top.addWidget(ref); lay.addLayout(top)
 
         # Void a sale section
@@ -418,7 +418,7 @@ class SecurityTab(QWidget):
         top = QHBoxLayout()
         top.addWidget(H2('Full Audit Log'))
         top.addStretch()
-        ref = SecondaryBtn('↺ Refresh', 38); ref.clicked.connect(self._load_audit)
+        ref = SecondaryBtn('Refresh', 38); ref.clicked.connect(self._load_audit)
         top.addWidget(ref); lay.addLayout(top)
         self._audit_tbl = make_table(
             ['Time', 'User', 'Action', 'Module', 'Details'],

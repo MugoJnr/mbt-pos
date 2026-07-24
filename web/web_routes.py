@@ -12,7 +12,7 @@ Adds to the existing Flask backend:
 import os
 import json
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort
 
 web = Blueprint('web', __name__)
@@ -179,175 +179,223 @@ def _platform_live_orgs(user=None):
 
 
 def _platform_demo_apps(user=None):
-    """Product registry for Portal My Products — unlimited future apps."""
+    """Product registry for Portal My Products — unlimited future apps (sectioned)."""
     role = ((user or getattr(g, 'current_user', None) or {}).get('role') or 'cashier').lower()
     can_admin = role in ('admin', 'superadmin', 'manager', 'owner')
     try:
         ver = _app_version_info().get('version')
     except Exception:
         ver = None
+    company = 'MugoByte Technologies'
     return [
         {
             'id': 'mbt-pos',
             'name': 'MBT POS',
+            'company': company,
             'description': 'Cloud licenses, devices, backups, reports history and account tools. Live shop ops open via your tunnel dashboard.',
             'icon': 'pos',
             'status': 'active',
             'launch_url': '/pos',
             'permission': 'owner' if can_admin else 'employee',
             'category': 'Retail',
+            'section': 'Point of Sale',
             'version': ver,
+            'download_url': 'https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe',
+        },
+        {
+            'id': 'pulse',
+            'name': 'Pulse',
+            'company': company,
+            'description': 'Desktop command center for CPU, GPU, memory and system health — same MugoByte Account as POS.',
+            'icon': 'pulse',
+            'status': 'active',
+            'launch_url': '/downloads#pulse',
+            'permission': 'owner' if can_admin else 'employee',
+            'category': 'System tools',
+            'section': 'Desktop utilities',
+            'version': '1.0.x',
+            'download_url': '',
         },
         {
             'id': 'exam-hub',
             'name': 'Exam Hub',
+            'company': company,
             'description': 'Students, teachers, exams, results and school reports.',
             'icon': 'exam',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Education',
+            'section': 'Education',
         },
         {
             'id': 'erp',
             'name': 'ERP',
+            'company': company,
             'description': 'Enterprise resource planning for operations and finance.',
             'icon': 'erp',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Operations',
+            'section': 'Business operations',
         },
         {
             'id': 'crm',
             'name': 'CRM',
+            'company': company,
             'description': 'Customer relationships, pipelines and follow-ups.',
             'icon': 'crm',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Sales',
+            'section': 'Business operations',
         },
         {
             'id': 'hr',
             'name': 'HR',
+            'company': company,
             'description': 'People, attendance and payroll preparation.',
             'icon': 'hr',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'People',
+            'section': 'Business operations',
         },
         {
             'id': 'inventory',
             'name': 'Inventory Cloud',
+            'company': company,
             'description': 'Multi-branch stock visibility and replenishment planning.',
             'icon': 'inventory',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Operations',
+            'section': 'Business operations',
         },
         {
             'id': 'accounting',
             'name': 'Accounting',
+            'company': company,
             'description': 'Cloud ledgers, periods and financial statements.',
             'icon': 'accounting',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Finance',
+            'section': 'Finance',
         },
         {
             'id': 'payroll',
             'name': 'Payroll',
+            'company': company,
             'description': 'Salaries, statutory deductions and payslips.',
             'icon': 'payroll',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Finance',
+            'section': 'Finance',
         },
         {
             'id': 'school',
             'name': 'School',
+            'company': company,
             'description': 'Admissions, fees and school administration.',
             'icon': 'school',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Education',
+            'section': 'Education',
         },
         {
             'id': 'hospital',
             'name': 'Hospital',
+            'company': company,
             'description': 'Clinics, patient records and billing.',
             'icon': 'hospital',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Health',
+            'section': 'Industry',
         },
         {
             'id': 'farm',
             'name': 'Farm Management',
+            'company': company,
             'description': 'Farms, harvests, inventory and cooperative trading.',
             'icon': 'agriculture',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Agriculture',
+            'section': 'Industry',
         },
         {
             'id': 'trading',
             'name': 'Trading Platform',
+            'company': company,
             'description': 'Wholesale trading, pricing and partner networks.',
             'icon': 'trading',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Commerce',
+            'section': 'Industry',
         },
         {
             'id': 'media',
             'name': 'MB Media',
+            'company': company,
             'description': 'Brand assets, campaigns and content for your businesses.',
             'icon': 'media',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Marketing',
+            'section': 'Marketing & insights',
         },
         {
             'id': 'ai',
             'name': 'AI Hub',
+            'company': company,
             'description': 'Insights, forecasting and assistants across products.',
             'icon': 'ai',
             'status': 'active',
             'launch_url': '/ai',
             'permission': 'owner' if can_admin else 'employee',
             'category': 'Insights',
+            'section': 'Marketing & insights',
             'version': 'Beta',
         },
         {
             'id': 'marketplace',
             'name': 'Marketplace',
+            'company': company,
             'description': 'Discover and install additional MugoByte products.',
             'icon': 'marketplace',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Platform',
+            'section': 'Platform',
         },
         {
             'id': 'developer',
             'name': 'Developer Console',
+            'company': company,
             'description': 'API keys, webhooks and integration tooling.',
             'icon': 'developer',
             'status': 'coming_soon',
             'launch_url': '#',
             'permission': 'disabled',
             'category': 'Platform',
+            'section': 'Platform',
         },
     ]
 
@@ -387,8 +435,9 @@ def platform_marketplace():
     from backend.app import token_required
     @token_required
     def _inner():
+        installed = {'mbt-pos', 'pulse'}
         return jsonify({'marketplace': [
-            {**app, 'installed': app['id'] == 'mbt-pos', 'update_available': False}
+            {**app, 'installed': app['id'] in installed, 'update_available': False}
             for app in _platform_demo_apps()
         ]})
     return _inner()
@@ -708,6 +757,16 @@ def _analytics_authorize():
     return org_id, role, can_see_finance
 
 
+def _analytics_default_range() -> tuple[str, str]:
+    """Inclusive Nairobi calendar day (today) when the client omits start/end."""
+    try:
+        from backend.cloud.platform_service import NAIROBI_TZ
+        today = datetime.now(NAIROBI_TZ).date()
+    except Exception:
+        today = datetime.utcnow().date()
+    return today.isoformat(), today.isoformat()
+
+
 def _analytics_common_args():
     from backend.cloud.platform_service import analytics_parse_page
 
@@ -749,6 +808,40 @@ def _is_platform_admin() -> bool:
     return role == 'platform_admin'
 
 
+# Local POS shop roles + cloud org managers who may view license details.
+_LICENSE_VIEW_ROLES = frozenset({
+    'admin', 'superadmin', 'manager', 'owner', 'platform_admin',
+})
+
+
+def _can_view_license_details() -> bool:
+    """True for shop managers and cloud org owners/managers/platform admins.
+
+    Portal JWTs often use platform_role=member while org membership is owner/manager —
+    check org admin access when the JWT role alone is insufficient.
+    """
+    role = str((getattr(g, 'current_user', {}) or {}).get('role') or '').lower()
+    if role in _LICENSE_VIEW_ROLES:
+        return True
+    uid = _cloud_user_id()
+    if not uid:
+        return False
+    try:
+        from backend.cloud.platform_service import list_organizations_for_user, require_org_access
+        for org in list_organizations_for_user(uid) or []:
+            oid = str((org or {}).get('id') or '')
+            if not oid:
+                continue
+            try:
+                require_org_access(uid, oid, admin=True, platform_role=role)
+                return True
+            except PermissionError:
+                continue
+    except Exception:
+        return False
+    return False
+
+
 @web.route('/api/cloud/licenses', methods=['GET'])
 def cloud_licenses_list():
     from backend.app import token_required
@@ -777,12 +870,28 @@ def cloud_licenses_create():
         org_id = data.get('org_id') or ''
         plan = data.get('plan') or 'monthly'
         notes = data.get('notes') or ''
+        assigned_email = (data.get('assigned_email') or data.get('email') or '').strip()
+        reserved_device_id = (data.get('reserved_device_id') or data.get('device_id') or '').strip()
+        product_id = (data.get('product_id') or data.get('product') or 'mbt-pos').strip()
         try:
-            from backend.cloud.license_server import get_license_server
+            from backend.cloud.license_server import get_license_server, normalize_product_id
             org_id = _resolve_request_org_id(org_id, admin=True)
             if not org_id:
                 return jsonify({'error': 'No organization'}), 400
-            lic = get_license_server().create_license(org_id, plan=plan, notes=notes)
+            actor = ''
+            try:
+                actor = (getattr(g, 'current_user', None) or {}).get('id') or ''
+            except Exception:
+                actor = ''
+            lic = get_license_server().create_license(
+                org_id,
+                plan=plan,
+                notes=notes,
+                created_by=actor or None,
+                assigned_email=assigned_email,
+                reserved_device_id=reserved_device_id,
+                product_id=normalize_product_id(product_id),
+            )
             return jsonify({'ok': True, 'license': lic}), 201
         except Exception as e:
             return _cloud_exception(e)
@@ -811,12 +920,212 @@ def cloud_licenses_activate():
             from backend.cloud.platform_service import (
                 activate_license_on_device,
                 license_key_org_id,
+                service_select,
             )
+            from urllib.parse import quote as _q
             org_id = license_key_org_id(license_key)
             if not org_id:
                 return jsonify({'error': 'License not found'}), 404
-            _resolve_request_org_id(org_id, admin=True)
-            result = activate_license_on_device(license_key, device_id, org_id)
+
+            actor_email = ''
+            try:
+                u = getattr(g, 'current_user', None) or {}
+                actor_email = (u.get('email') or '').strip()
+            except Exception:
+                actor_email = ''
+            if not actor_email:
+                actor_email = (data.get('email') or '').strip()
+
+            is_admin = False
+            org_authorized = False
+            try:
+                _resolve_request_org_id(org_id, admin=True)
+                is_admin = True
+                org_authorized = True
+            except Exception:
+                try:
+                    _resolve_request_org_id(org_id, admin=False)
+                    org_authorized = True
+                except Exception:
+                    org_authorized = False
+
+            # Shop owners may activate a key reserved for their email (or an
+            # unassigned key they were given) without prior org membership.
+            if not org_authorized and not _is_platform_admin():
+                rows = service_select(
+                    'licenses',
+                    f'license_key=eq.{_q(license_key, safe="")}&select=assigned_email&limit=1',
+                ) or []
+                assigned = str((rows[0] if rows else {}).get('assigned_email') or '').strip().lower()
+                actor = (actor_email or '').strip().lower()
+                if assigned and assigned != actor:
+                    return jsonify({
+                        'error': (
+                            f'This key is reserved for {assigned}. '
+                            'Sign in with that account, or ask Portal admin to reassign it.'
+                        ),
+                    }), 403
+                if assigned and not actor:
+                    return jsonify({
+                        'error': (
+                            f'This key is reserved for {assigned}. '
+                            'Sign in with that MugoByte account, then activate.'
+                        ),
+                    }), 401
+
+            result = activate_license_on_device(
+                license_key,
+                device_id,
+                org_id,
+                actor_email=actor_email,
+                actor_is_admin=bool(is_admin or _is_platform_admin()),
+                product_id=(data.get('product_id') or data.get('product') or '').strip() or None,
+            )
+            return jsonify(result)
+        except Exception as e:
+            return _cloud_exception(e)
+
+    return _inner()
+
+
+@web.route('/api/public/licenses/activate', methods=['POST'])
+def public_licenses_activate():
+    """
+    Shop Option B: paste an MBT-… key without a prior org membership.
+
+    The license key is the credential. When assigned_email is set, the request
+    must include that email (or the caller must already be signed in elsewhere).
+    """
+    data = request.json or {}
+    license_key = (data.get('license_key') or data.get('key') or '').strip()
+    device_id = (data.get('device_id') or '').strip()
+    actor_email = (data.get('email') or '').strip()
+    product_id = (data.get('product_id') or data.get('product') or '').strip() or None
+    if not license_key:
+        return jsonify({'error': 'license_key required'}), 400
+    if not device_id:
+        return jsonify({'error': 'device_id required'}), 400
+    if not license_key.upper().startswith('MBT-'):
+        return jsonify({'error': 'Online MBT-… license key required'}), 400
+    try:
+        from backend.cloud.platform_service import (
+            activate_license_on_device,
+            has_service_role,
+            service_select,
+        )
+        from urllib.parse import quote as _q
+        if not has_service_role():
+            return jsonify({
+                'error': 'Portal license service is not configured on this host',
+            }), 503
+        rows = service_select(
+            'licenses',
+            f'license_key=eq.{_q(license_key, safe="")}'
+            '&select=id,org_id,assigned_email,status,reserved_device_id,product_id&limit=1',
+        ) or []
+        if not rows:
+            # Pre-migration select without product_id
+            rows = service_select(
+                'licenses',
+                f'license_key=eq.{_q(license_key, safe="")}'
+                '&select=id,org_id,assigned_email,status,reserved_device_id&limit=1',
+            ) or []
+        if not rows:
+            return jsonify({'error': 'License key not found'}), 404
+        lic = rows[0]
+        assigned = str(lic.get('assigned_email') or '').strip().lower()
+        actor = actor_email.lower()
+        if assigned and assigned != actor:
+            return jsonify({
+                'error': (
+                    f'This key is reserved for {assigned}. '
+                    'Sign in with that account (Option A) or include that email.'
+                ),
+            }), 403
+        result = activate_license_on_device(
+            license_key,
+            device_id,
+            str(lic.get('org_id') or '') or None,
+            actor_email=actor_email,
+            actor_is_admin=False,
+            product_id=product_id,
+        )
+        return jsonify(result)
+    except Exception as e:
+        return _cloud_exception(e)
+
+@web.route('/api/cloud/licenses/<license_id>/assign', methods=['POST'])
+def cloud_licenses_assign(license_id):
+    """Admin: link a license key to a customer email and/or reserved device id."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        clear = bool(data.get('clear'))
+        assigned_email = (data.get('assigned_email') or data.get('email') or '').strip()
+        reserved_device_id = (data.get('reserved_device_id') or data.get('device_id') or '').strip()
+        try:
+            from backend.cloud.platform_service import assign_license_to_email, service_select
+            from urllib.parse import quote as _q
+            rows = service_select('licenses', f'id=eq.{_q(license_id, safe="")}&select=org_id')
+            if not rows:
+                return jsonify({'error': 'License not found'}), 404
+            org_id = str(rows[0].get('org_id') or '')
+            if org_id:
+                _resolve_request_org_id(org_id, admin=True)
+            elif not _is_platform_admin():
+                return jsonify({'error': 'Admin required'}), 403
+            actor = ''
+            try:
+                actor = (getattr(g, 'current_user', None) or {}).get('id') or ''
+            except Exception:
+                actor = ''
+            result = assign_license_to_email(
+                license_id,
+                assigned_email=assigned_email,
+                reserved_device_id=reserved_device_id,
+                clear=clear,
+                actor=actor or None,
+            )
+            return jsonify(result)
+        except Exception as e:
+            return _cloud_exception(e)
+
+    return _inner()
+
+
+@web.route('/api/cloud/licenses/claim', methods=['POST'])
+def cloud_licenses_claim():
+    """Customer: claim a license reserved for the signed-in email onto this device."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        device_id = (data.get('device_id') or '').strip()
+        org_id = data.get('org_id') or ''
+        product_id = (data.get('product_id') or data.get('product') or '').strip() or None
+        if not device_id:
+            try:
+                from backend.cloud_backup.device_manager import get_or_create_device_id
+                device_id = get_or_create_device_id()
+            except Exception:
+                return jsonify({'error': 'device_id required'}), 400
+        try:
+            from backend.cloud.platform_service import claim_license_for_identity
+            u = getattr(g, 'current_user', None) or {}
+            email = (u.get('email') or data.get('email') or '').strip()
+            if not email:
+                return jsonify({'error': 'Signed-in email required'}), 400
+            if org_id:
+                org_id = _resolve_request_org_id(org_id, admin=False) or org_id
+            result = claim_license_for_identity(
+                email=email,
+                device_id=device_id,
+                org_id=org_id or None,
+                product_id=product_id,
+            )
             return jsonify(result)
         except Exception as e:
             return _cloud_exception(e)
@@ -1426,12 +1735,14 @@ def cloud_analytics_overview():
         try:
             org_id, role, can_see_finance = _analytics_authorize()
             args = _analytics_common_args()
-            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            default_start, default_end = _analytics_default_range()
+            start = args['start'] or default_start
+            end = args['end'] or default_end
             from backend.cloud.platform_service import (
                 analytics_overview,
                 analytics_redact_payload,
             )
-            payload = analytics_overview(org_id, start=start, end=args['end'] or start)
+            payload = analytics_overview(org_id, start=start, end=end)
             return jsonify(analytics_redact_payload(
                 payload, can_see_finance=can_see_finance, role=role,
             ))
@@ -1450,7 +1761,9 @@ def cloud_analytics_sales():
         try:
             org_id, role, can_see_finance = _analytics_authorize()
             args = _analytics_common_args()
-            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            default_start, default_end = _analytics_default_range()
+            start = args['start'] or default_start
+            end = args['end'] or default_end
             from backend.cloud.platform_service import (
                 analytics_list_sales,
                 analytics_redact_payload,
@@ -1458,7 +1771,7 @@ def cloud_analytics_sales():
             payload = analytics_list_sales(
                 org_id,
                 start=start,
-                end=args['end'] or start,
+                end=end,
                 page=args['page'],
                 page_size=args['page_size'],
                 sort=args['sort'] or 'created_at',
@@ -1546,7 +1859,8 @@ def cloud_analytics_debt_payments():
         try:
             org_id, role, can_see_finance = _analytics_authorize()
             args = _analytics_common_args()
-            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            default_start, default_end = _analytics_default_range()
+            start = args['start'] or default_start
             from backend.cloud.platform_service import (
                 analytics_list_debt_payments,
                 analytics_redact_payload,
@@ -1554,7 +1868,7 @@ def cloud_analytics_debt_payments():
             payload = analytics_list_debt_payments(
                 org_id,
                 start=start,
-                end=args['end'] or start,
+                end=args['end'] or default_end,
                 page=args['page'],
                 page_size=args['page_size'],
                 sort=args['sort'] or 'created_at',
@@ -1630,7 +1944,9 @@ def cloud_analytics_export():
             org_id, role, can_see_finance = _analytics_authorize()
             args = _analytics_common_args()
             fmt = args['format'] if args['format'] in ('csv', 'json') else 'csv'
-            start = args['start'] or datetime.now().strftime('%Y-%m-%d')
+            default_start, default_end = _analytics_default_range()
+            start = args['start'] or default_start
+            end = args['end'] or default_end
             from backend.cloud.platform_service import (
                 analytics_export_rows,
                 analytics_redact_payload,
@@ -1640,7 +1956,7 @@ def cloud_analytics_export():
                 org_id,
                 report=args['report'],
                 start=start,
-                end=args['end'] or start,
+                end=end,
                 status=args['status'],
                 payment=args['payment'],
                 cashier=args['cashier'],
@@ -1664,7 +1980,7 @@ def cloud_analytics_export():
                     'org_id': org_id,
                     'report': args['report'],
                     'start': start,
-                    'end': args['end'] or start,
+                    'end': end,
                     'total': len(rows),
                     'rows': rows,
                 }, default=str)
@@ -3431,6 +3747,27 @@ def live_monitor():
         last_bak = _tr(db.execute(
             "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 1"
         ).fetchone())
+        last_ok = _tr(db.execute(
+            "SELECT * FROM cc_backup_history WHERE status='ok' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone())
+        # Prefer last successful backup for the Live KPI when the newest row is a
+        # failed Program-Files write (common on installed builds before AppData fix).
+        bak_payload = last_bak or {'status': 'unknown'}
+        if (
+            isinstance(bak_payload, dict)
+            and str(bak_payload.get('status') or '').lower() == 'error'
+            and last_ok
+        ):
+            detail = str(bak_payload.get('detail') or '')
+            if 'Permission denied' in detail or 'Program Files' in detail:
+                bak_payload = {
+                    **dict(last_ok),
+                    'status': 'ok',
+                    'note': 'Last attempt failed (unwritable path); showing last successful backup',
+                    'last_error_at': bak_payload.get('created_at'),
+                    'last_error_detail': detail[:240],
+                }
         pending_approvals = db.execute(
             "SELECT COUNT(*) FROM cc_approvals WHERE status='pending'"
         ).fetchone()[0]
@@ -3456,7 +3793,7 @@ def live_monitor():
             'cashiers': cashiers,
             'online_users': online_users,
             'sync': {'pending': pending_sync},
-            'backup': last_bak or {'status': 'unknown'},
+            'backup': bak_payload,
             'ai': ai_status,
             'pending_approvals': pending_approvals,
             'refreshed_at': datetime.now().isoformat(),
@@ -3529,11 +3866,16 @@ def backup_run():
             else:
                 raise RuntimeError('cloud_unavailable')
         except Exception:
-            # Local snapshot fallback
+            # Local snapshot fallback — ALWAYS write under AppData, never Program Files
             try:
                 import shutil
-                bak_dir = os.path.join(_BASE_DIR, 'data', 'backups')
-                os.makedirs(bak_dir, exist_ok=True)
+                try:
+                    from backend.local_db_backup import get_local_backup_dir
+                    bak_dir = get_local_backup_dir()
+                except Exception:
+                    from mbt_paths import ensure_data_dirs, get_project_root
+                    bak_dir = os.path.join(ensure_data_dirs(get_project_root()), 'backups')
+                    os.makedirs(bak_dir, exist_ok=True)
                 stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 path = os.path.join(bak_dir, f'mbt_pos_{stamp}.db')
                 src = DB_PATH
@@ -4414,8 +4756,7 @@ def license_status():
     from backend.app import token_required
     @token_required
     def _inner():
-        role = (g.current_user or {}).get('role', '')
-        if role not in ('admin', 'superadmin', 'manager'):
+        if not _can_view_license_details():
             return jsonify({'error': 'Forbidden'}), 403
         info = {
             'state': 'unknown',

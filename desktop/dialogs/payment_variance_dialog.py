@@ -1,18 +1,32 @@
 """
-Payment Variance dialog — handle excess M-Pesa / Till payments (Kenya POS).
+Payment Variance dialog — handle excess payments (Kenya POS).
 MugoByte Technologies
+
+Primary overpayment choices (UPDATED):
+  • Return Change (default)
+  • Record as Additional Customer Payment
+  • Cancel
+
+Advanced till allocations (deposit / tip / transport / …) remain available
+under “Other allocations” so existing finance paths stay intact.
 """
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QRadioButton, QButtonGroup,
-    QComboBox, QLineEdit, QTextEdit, QFrame, QMessageBox, QWidget,
+    QComboBox, QLineEdit, QFrame, QMessageBox, QWidget,
 )
 from PyQt5.QtCore import Qt
-from desktop.utils.theme import apply_themed_dialog,  C
+from desktop.utils.theme import apply_themed_dialog, C
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
 
 
-HANDLING_OPTIONS = (
+# Primary cashier choices (shown first)
+PRIMARY_OPTIONS = (
     ('return_change', 'Return Change'),
+    ('additional_payment', 'Record as Additional Customer Payment'),
+)
+
+# Secondary / advanced till allocations
+ADVANCED_OPTIONS = (
     ('deposit', 'Customer Deposit (Store Credit)'),
     ('transport', 'Transport / Delivery Fee'),
     ('tip', 'Tip (Tips account)'),
@@ -20,10 +34,23 @@ HANDLING_OPTIONS = (
     ('miscellaneous', 'Miscellaneous'),
 )
 
+# Back-compat alias used by smoke scripts / imports
+HANDLING_OPTIONS = PRIMARY_OPTIONS + ADVANCED_OPTIONS
+
 MISC_CATEGORIES = (
-    'Rounding', 'Staff Error Adjustment', 'Promotion', 'Delivery Surcharge',
+    'Rounding', 'Staff Error Adjustment', 'Preference', 'Delivery Surcharge',
     'Service Charge', 'Other',
 )
+
+HANDLING_LABELS = {
+    'return_change': 'Return Change',
+    'additional_payment': 'Additional Customer Payment',
+    'deposit': 'Customer Deposit',
+    'transport': 'Transport/Delivery Fee',
+    'tip': 'Tip',
+    'advance': 'Advance Payment',
+    'miscellaneous': 'Miscellaneous',
+}
 
 
 class PaymentVarianceDialog(QDialog):
@@ -32,8 +59,8 @@ class PaymentVarianceDialog(QDialog):
     def __init__(self, parent, currency, sale_total, amount_received, excess,
                  settings=None, has_customer=False, customer_name=''):
         super().__init__(parent)
-        self.setWindowTitle('Payment Variance — Excess Received')
-        self.setMinimumWidth(460)
+        self.setWindowTitle('Overpayment Confirmation')
+        self.setMinimumWidth(480)
         self.setModal(True)
         self._currency = currency or 'KES'
         self._sale_total = float(sale_total)
@@ -49,10 +76,12 @@ class PaymentVarianceDialog(QDialog):
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(12)
 
-        title = QLabel('Excess payment must be allocated before completing the sale')
+        title = QLabel(
+            f'Customer paid {self._currency} {self._excess:,.2f} more than the invoice'
+        )
         title.setWordWrap(True)
         title.setStyleSheet(
-            f"color:{C['text']};font-size:14px;font-weight:700;background:transparent;")
+            f"color:{C['text']};font-size:15px;font-weight:800;background:transparent;")
         lay.addWidget(title)
 
         summary = QFrame()
@@ -63,7 +92,7 @@ class PaymentVarianceDialog(QDialog):
         sl.setContentsMargins(14, 10, 14, 10)
         sl.setSpacing(4)
         for lbl, val in (
-            ('Sale total (expected)', f"{self._currency} {self._sale_total:,.2f}"),
+            ('Invoice total', f"{self._currency} {self._sale_total:,.2f}"),
             ('Amount received', f"{self._currency} {self._received:,.2f}"),
             ('Difference (excess)', f"{self._currency} {self._excess:,.2f}"),
         ):
@@ -82,7 +111,7 @@ class PaymentVarianceDialog(QDialog):
             sl.addWidget(cn)
         lay.addWidget(summary)
 
-        hint = QLabel('How should the excess be handled?')
+        hint = QLabel('How should the overpayment be handled?')
         hint.setStyleSheet(
             f"color:{C['text2']};font-size:12px;background:transparent;")
         lay.addWidget(hint)
@@ -110,7 +139,28 @@ class PaymentVarianceDialog(QDialog):
         ml.addWidget(self._misc_reason)
         self._misc_box.hide()
 
-        for key, label in HANDLING_OPTIONS:
+        for key, label in PRIMARY_OPTIONS:
+            rb = QRadioButton(label)
+            rb.setStyleSheet(
+                f"color:{C['text']};font-size:14px;font-weight:700;background:transparent;")
+            if key == 'return_change':
+                rb.setToolTip('Give the excess back to the customer (default).')
+            elif key == 'additional_payment':
+                rb.setToolTip(
+                    'Keep the full amount received as sales income for this sale. '
+                    'Recorded internally only — customer receipt stays standard.')
+            self._group.addButton(rb)
+            self._radios[key] = rb
+            lay.addWidget(rb)
+            rb.toggled.connect(self._on_option)
+
+        adv_hdr = QLabel('Other allocations (optional)')
+        adv_hdr.setStyleSheet(
+            f"color:{C['muted']};font-size:11px;font-weight:700;letter-spacing:0.4px;"
+            f"background:transparent;margin-top:6px;")
+        lay.addWidget(adv_hdr)
+
+        for key, label in ADVANCED_OPTIONS:
             rb = QRadioButton(label)
             rb.setStyleSheet(f"color:{C['text']};font-size:13px;background:transparent;")
             if key == 'deposit' and not enable_dep:
@@ -132,7 +182,7 @@ class PaymentVarianceDialog(QDialog):
         lay.addWidget(self._misc_box)
         self._radios['return_change'].setChecked(True)
 
-        notes_lbl = QLabel('Notes (optional)')
+        notes_lbl = QLabel('Internal notes (optional — not printed on customer receipt)')
         notes_lbl.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
         lay.addWidget(notes_lbl)
         self._notes = QLineEdit()
@@ -143,7 +193,7 @@ class PaymentVarianceDialog(QDialog):
         btns = QHBoxLayout()
         cancel = SecondaryBtn('Cancel', 40)
         cancel.clicked.connect(self.reject)
-        ok = PrimaryBtn('Confirm Allocation', 40)
+        ok = PrimaryBtn('Confirm', 40)
         ok.clicked.connect(self._confirm)
         btns.addWidget(cancel)
         btns.addStretch()

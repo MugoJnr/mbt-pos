@@ -202,6 +202,10 @@ class ReceiptBuilder:
         if change > 0:
             self._line(left_right(f"Change Returned:", format_currency(change, sym)))
         var = variance or {}
+        handling = (var.get('handling') or '').strip().lower()
+        # Additional customer payment is internal-only — never print on customer receipt
+        if handling == 'additional_payment':
+            return self
         if var and float(var.get('excess_amount') or 0) > 0:
             self.divider()
             if float(var.get('tip_amount') or 0) > 0:
@@ -246,6 +250,11 @@ def build_receipt(sale_data, shop_name='My Shop', currency='KES',
     Returns: bytes (ESC/POS stream)
     """
     date_str = sale_data.get('created_at', datetime.now().isoformat())[:19]
+    try:
+        from desktop.utils.shop_time import receipt_date_label
+        date_str, _not_today = receipt_date_label(sale_data)
+    except Exception:
+        pass
     cashier  = sale_data.get('cashier_name', 'Staff')
     invoice  = sale_data.get('receipt_number', 'N/A')
 
@@ -478,7 +487,12 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
     lines.append(center_text('mugobyte.com'))
     lines.append('=' * W)
     lines.append(f"Invoice #: {sale_data.get('receipt_number','N/A')}")
-    lines.append(f"Date:      {sale_data.get('created_at','')[:19]}")
+    try:
+        from desktop.utils.shop_time import receipt_date_label
+        date_line, _ = receipt_date_label(sale_data)
+    except Exception:
+        date_line = sale_data.get('created_at', '')[:19]
+    lines.append(f"Date:      {date_line}")
     lines.append(f"Cashier:   {sale_data.get('cashier_name','Staff')}")
     lines.append('-' * W)
     header = f"{'ITEM':<20} {'QTY':>6} {'PRICE':>9} {'TOTAL':>9}"
@@ -541,12 +555,13 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
     if sale_data.get('change_amount', 0) > 0:
         lines.append(left_right('Change Returned:', f"{sale_data.get('change_amount',0):,.2f}"))
     # Payment variance split (excess Till / M-Pesa)
+    # Additional customer payment is internal-only — omit from customer receipt text
     var = sale_data.get('variance') or {}
-    if var and float(var.get('excess_amount') or 0) > 0:
+    handling = (var.get('handling') or '').strip().lower()
+    if handling != 'additional_payment' and var and float(var.get('excess_amount') or 0) > 0:
         lines.append('-' * W)
         lines.append(center_text('*** PAYMENT VARIANCE ***'))
         excess = float(var.get('excess_amount') or 0)
-        handling = (var.get('handling') or '').lower()
         if float(var.get('tip_amount') or 0) > 0:
             lines.append(left_right('Tip:', f"{var.get('tip_amount'):,.2f}"))
         if float(var.get('transport_amount') or 0) > 0:

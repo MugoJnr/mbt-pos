@@ -67,8 +67,20 @@ function LivePage() {
         <KpiCard
           label="Backup"
           value={String(bak.status || "—").toUpperCase()}
-          sub={bak.created_at ? String(bak.created_at).slice(0, 16) : "No history"}
-          accent={bak.status === "ok" ? "ok" : bak.status === "error" ? "err" : "warn"}
+          sub={
+            bak.note
+              ? String(bak.note).slice(0, 48)
+              : bak.created_at
+                ? String(bak.created_at).slice(0, 16)
+                : "No history"
+          }
+          accent={
+            bak.status === "ok"
+              ? "ok"
+              : bak.status === "error"
+                ? "err"
+                : "warn"
+          }
           icon={<HardDrive className="h-5 w-5" />}
         />
         <KpiCard
@@ -84,7 +96,13 @@ function LivePage() {
         <Card className="p-4">
           <SectionTitle>Cashiers today</SectionTitle>
           {cashiers.length === 0 ? (
-            <p className="text-sm text-text2 py-4">No cashier activity yet today.</p>
+            <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+              <Users className="h-5 w-5 text-gold/80" />
+              <p className="text-sm font-semibold text-text">No cashier activity yet today</p>
+              <p className="text-xs text-text2 max-w-xs">
+                Completed sales will appear here with receipt counts and revenue per cashier.
+              </p>
+            </div>
           ) : (
             <ul className="space-y-2">
               {cashiers.map((c: any, i: number) => (
@@ -116,7 +134,13 @@ function LivePage() {
             <Users className="h-3.5 w-3.5" /> Active accounts (by last login)
           </div>
           {users.length === 0 ? (
-            <p className="text-sm text-text2 py-4">No users found.</p>
+            <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+              <Users className="h-5 w-5 text-gold/80" />
+              <p className="text-sm font-semibold text-text">No staff accounts yet</p>
+              <p className="text-xs text-text2 max-w-xs">
+                Add users from Users &amp; Access on the desktop app, then they show here by last login.
+              </p>
+            </div>
           ) : (
             <ul className="space-y-2 max-h-64 overflow-y-auto scrollbar-thin">
               {users.slice(0, 12).map((u: any) => (

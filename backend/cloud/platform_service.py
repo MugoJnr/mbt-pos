@@ -45,24 +45,59 @@ def _svc() -> SupabaseClient:
     return SupabaseClient()
 
 
+def has_service_role() -> bool:
+    """True when this process can bypass RLS (Portal / developer machine)."""
+    client = _svc()
+    return bool(client.configured and str(client.service or '').strip())
+
+
+def portal_api_base() -> str:
+    import os
+    return (os.environ.get('MBT_PORTAL_URL') or 'https://portal.mugobyte.com').rstrip('/')
+
+
 def _service_headers(client: SupabaseClient) -> dict:
-    key = client.service or client.anon
+    """
+    Prefer service-role when configured (Portal server).
+
+    Shop installs intentionally ship without a service key. In that case use the
+    signed-in user's JWT so RLS policies apply — never bare anon for org/license
+    writes, which caused "No organization is linked to this account".
+    """
+    if str(client.service or '').strip():
+        key = client.service
+        return {
+            'apikey': key,
+            'Authorization': f'Bearer {key}',
+            'Content-Type': 'application/json',
+            'Prefer': 'return=representation',
+        }
+    token = ''
+    try:
+        token = (load_identity().get('access_token') or '').strip()
+    except Exception:
+        token = ''
+    bearer = token or client.anon
     return {
-        'apikey': key,
-        'Authorization': f'Bearer {key}',
+        'apikey': client.anon,
+        'Authorization': f'Bearer {bearer}',
         'Content-Type': 'application/json',
         'Prefer': 'return=representation',
     }
 
 
-def service_select(table: str, query: str = '') -> list:
+def service_select(table: str, query: str = '', *, timeout: float = 8) -> list:
     client = _svc()
     if not client.configured:
         return []
     url = client._url(f'/rest/v1/{table}')
     if query:
         url = f'{url}?{query}'
-    r = client._session.get(url, headers=_service_headers(client), timeout=30)
+    try:
+        r = client._session.get(url, headers=_service_headers(client), timeout=timeout)
+    except Exception as e:
+        logger.warning('service_select %s network error: %s', table, e)
+        return []
     if r.status_code >= 400:
         logger.warning('service_select %s failed: %s %s', table, r.status_code, r.text[:200])
         return []
@@ -73,7 +108,7 @@ def service_select_strict(table: str, query: str = '', *, prefer: str = '') -> l
     """Service-role select that raises on HTTP/config failures (never silent empty)."""
     client = _svc()
     if not client.configured:
-        raise SupabaseError('Cloud is not configured', 503)
+        raise SupabaseError('MugoByte Cloud is unavailable', 503)
     url = client._url(f'/rest/v1/{table}')
     if query:
         url = f'{url}?{query}'
@@ -99,7 +134,7 @@ def service_select_page(
     """Paginated select with Prefer: count=exact. Returns (rows, total_count)."""
     client = _svc()
     if not client.configured:
-        raise SupabaseError('Cloud is not configured', 503)
+        raise SupabaseError('MugoByte Cloud is unavailable', 503)
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
     base = query.strip('&')
@@ -947,10 +982,86 @@ def list_device_events(org_id: str, limit: int = 50) -> list[dict]:
     ) or []
 
 
-def activate_license_on_device(license_key: str, device_id: str, org_id: str | None = None) -> dict:
+def _activate_license_via_portal(
+    license_key: str,
+    device_id: str,
+    *,
+    actor_email: str = '',
+    product_id: str | None = None,
+) -> dict:
+    """Shop PCs without service-role activate through Portal (which holds the key)."""
+    import requests
+
+    base = portal_api_base()
+    payload = {
+        'license_key': license_key,
+        'device_id': device_id,
+        'email': (actor_email or '').strip(),
+    }
+    if product_id:
+        payload['product_id'] = product_id
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    token = ''
+    try:
+        token = (load_identity().get('access_token') or '').strip()
+    except Exception:
+        token = ''
+
+    errors: list[str] = []
+    if token:
+        try:
+            r = requests.post(
+                f'{base}/api/cloud/licenses/activate',
+                headers={**headers, 'Authorization': f'Bearer {token}'},
+                json=payload,
+                timeout=45,
+            )
+            data = r.json() if r.content else {}
+            if r.status_code < 400 and isinstance(data, dict) and data.get('ok'):
+                return data
+            errors.append(str((data or {}).get('error') or r.text[:200] or r.status_code))
+        except Exception as e:
+            errors.append(str(e))
+
+    try:
+        r = requests.post(
+            f'{base}/api/public/licenses/activate',
+            headers=headers,
+            json=payload,
+            timeout=45,
+        )
+        data = r.json() if r.content else {}
+        if r.status_code < 400 and isinstance(data, dict) and data.get('ok'):
+            return data
+        msg = str((data or {}).get('error') or r.text[:200] or f'HTTP {r.status_code}')
+        raise SupabaseError(msg, r.status_code if r.status_code >= 400 else 403)
+    except SupabaseError:
+        raise
+    except Exception as e:
+        detail = '; '.join(errors + [str(e)]) if errors else str(e)
+        raise SupabaseError(
+            f'Could not reach MugoByte Portal to activate license ({detail})',
+            503,
+        )
+
+
+def activate_license_on_device(
+    license_key: str,
+    device_id: str,
+    org_id: str | None = None,
+    *,
+    actor_email: str = '',
+    actor_is_admin: bool = False,
+    product_id: str | None = None,
+) -> dict:
     """Activate a cloud license key onto a device; also update local license engine when possible."""
     rows = service_select('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
     if not rows:
+        # Shop installs cannot read foreign-org keys via RLS — use Portal.
+        if not has_service_role():
+            return _activate_license_via_portal(
+                license_key, device_id, actor_email=actor_email, product_id=product_id,
+            )
         raise SupabaseError('License key not found', 404)
     lic = rows[0]
     if lic.get('status') in ('revoked', 'suspended'):
@@ -959,26 +1070,155 @@ def activate_license_on_device(license_key: str, device_id: str, org_id: str | N
     if org_id and str(org_id) != license_org:
         raise PermissionError('License does not belong to the selected organization')
     oid = license_org
-    ok, msg, data = get_license_server().activate(license_key, device_id, oid)
+    ok, msg, data = get_license_server().activate(
+        license_key,
+        device_id,
+        oid,
+        actor_email=actor_email,
+        actor_is_admin=actor_is_admin,
+        product_id=product_id,
+    )
     if not ok:
-        # Try service-role activation path directly
-        if lic.get('activated_devices', 0) >= lic.get('max_devices', 1):
-            raise SupabaseError(f'Device limit reached ({lic["max_devices"]})', 403)
-        service_insert('license_activations', {
-            'license_id': lic['id'],
-            'device_id': device_id,
-            'org_id': oid,
-            'is_active': True,
-            'last_validated_at': datetime.now(timezone.utc).isoformat(),
-        }, upsert=True, on_conflict='license_id,device_id')
-        service_update('licenses', f'id=eq.{lic["id"]}', {
-            'activated_devices': int(lic.get('activated_devices') or 0) + 1,
-            'activated_at': datetime.now(timezone.utc).isoformat(),
-            'status': 'active',
-        })
-        data = {'plan': lic['plan'], 'expires_at': lic.get('expires_at')}
-        msg = 'Activated'
-    return {'ok': True, 'message': msg, 'license': lic, 'activation': data}
+        # Seat/reservation failures stay local; missing write rights → Portal.
+        if (not has_service_role()) and 'not found' in (msg or '').lower():
+            return _activate_license_via_portal(
+                license_key, device_id, actor_email=actor_email, product_id=product_id,
+            )
+        raise SupabaseError(msg or 'Activation failed', 403)
+    # Refresh license row after activation (claim_status etc.)
+    refreshed = service_select('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
+    return {
+        'ok': True,
+        'message': msg,
+        'license': refreshed[0] if refreshed else lic,
+        'activation': data,
+    }
+
+
+def claim_license_via_portal(*, email: str, device_id: str, org_id: str | None = None) -> dict:
+    """Claim a reserved seat through Portal when the shop PC has no service role."""
+    import requests
+
+    token = (load_identity().get('access_token') or '').strip()
+    if not token:
+        raise SupabaseError('Sign in required to claim a reserved license', 401)
+    payload: dict[str, Any] = {
+        'device_id': device_id,
+        'email': (email or '').strip(),
+    }
+    if org_id:
+        payload['org_id'] = org_id
+    r = requests.post(
+        f'{portal_api_base()}/api/cloud/licenses/claim',
+        headers={
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {token}',
+        },
+        json=payload,
+        timeout=8,
+    )
+    data = r.json() if r.content else {}
+    if r.status_code >= 400:
+        raise SupabaseError(
+            str((data or {}).get('error') or r.text[:200] or 'Claim failed'),
+            r.status_code,
+        )
+    return data if isinstance(data, dict) else {'ok': True, 'result': data}
+
+
+def assign_license_to_email(
+    license_id: str,
+    *,
+    assigned_email: str = '',
+    reserved_device_id: str = '',
+    clear: bool = False,
+    actor: str | None = None,
+) -> dict:
+    """Admin: reserve a license key for a customer email and/or device."""
+    ok, msg, lic = get_license_server().assign_license(
+        license_id,
+        assigned_email=assigned_email if not clear else None,
+        reserved_device_id=reserved_device_id if not clear else None,
+        clear=clear,
+        actor=actor,
+    )
+    if not ok:
+        raise SupabaseError(msg or 'Assign failed', 400)
+    return {'ok': True, 'message': msg, 'license': lic}
+
+
+def claim_license_for_identity(
+    *,
+    email: str,
+    device_id: str,
+    org_id: str | None = None,
+    product_id: str | None = None,
+) -> dict:
+    """
+    Customer claim: find a license reserved for this email (prefer exact reserved
+    device, then any free reserved seat) and activate it onto device_id.
+    When product_id is set (e.g. pulse), only seats for that product are claimed.
+    """
+    from backend.cloud.license_server import DEFAULT_PRODUCT_ID, normalize_product_id
+
+    email_n = (email or '').strip().lower()
+    if not email_n:
+        raise SupabaseError('Email required', 400)
+    if not device_id:
+        raise SupabaseError('device_id required', 400)
+    server = get_license_server()
+    pid = normalize_product_id(product_id) if product_id else None
+    reserved = server.find_licenses_for_email(email_n, org_id=org_id, product_id=pid) or []
+    # Prefer reserved_device_id match, then free seats, skip terminal statuses
+    terminal = {'revoked', 'suspended', 'expired', 'cancelled'}
+    candidates = [l for l in reserved if str(l.get('status') or '') not in terminal]
+    if not candidates:
+        label = pid or 'portal'
+        raise SupabaseError(
+            f'No {label} license is reserved for this email. '
+            'Ask Portal admin to issue/assign a seat for this product, or paste a license key.',
+            404,
+        )
+
+    def _free(lic: dict) -> bool:
+        try:
+            return int(lic.get('activated_devices') or 0) < int(lic.get('max_devices') or 1)
+        except Exception:
+            return True
+
+    chosen = None
+    for lic in candidates:
+        reserved_dev = str(lic.get('reserved_device_id') or '').strip()
+        if reserved_dev and reserved_dev == device_id and _free(lic):
+            chosen = lic
+            break
+    if not chosen:
+        for lic in candidates:
+            reserved_dev = str(lic.get('reserved_device_id') or '').strip()
+            if not reserved_dev and _free(lic):
+                chosen = lic
+                break
+    if not chosen:
+        for lic in candidates:
+            if _free(lic):
+                chosen = lic
+                break
+    if not chosen:
+        raise SupabaseError(
+            f'License reserved for this email has no free device seat'
+            + (f' for product "{pid}"' if pid else ''),
+            403,
+        )
+
+    return activate_license_on_device(
+        str(chosen.get('license_key') or ''),
+        device_id,
+        org_id=str(chosen.get('org_id') or org_id or '') or None,
+        actor_email=email_n,
+        actor_is_admin=False,
+        product_id=pid or chosen.get('product_id') or DEFAULT_PRODUCT_ID,
+    )
 
 
 def push_license_command(license_id: str, command: str, params: dict | None = None,
@@ -1316,13 +1556,23 @@ def analytics_fetch_all(
 
 
 def analytics_last_sync_at(org_id: str) -> str | None:
+    # PostgREST DESC defaults to NULLS FIRST — without nullslast, limit=1
+    # returns a device that has never synced even when others have.
     rows = service_select_strict(
         'devices',
-        f'{_org_eq(org_id)}&select=last_sync_at&order=last_sync_at.desc&limit=1',
+        f'{_org_eq(org_id)}&select=last_sync_at'
+        f'&order=last_sync_at.desc.nullslast&limit=1',
     )
-    if not rows:
-        return None
-    return rows[0].get('last_sync_at')
+    if rows and rows[0].get('last_sync_at'):
+        return rows[0].get('last_sync_at')
+    # Fallback: newest cloud sale ingest time
+    sales = service_select(
+        'cloud_sales',
+        f'{_org_eq(org_id)}&select=synced_at&order=synced_at.desc.nullslast&limit=1',
+    )
+    if sales and sales[0].get('synced_at'):
+        return sales[0].get('synced_at')
+    return None
 
 
 def _sales_base_query(

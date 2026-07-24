@@ -100,7 +100,10 @@ def create_business(
     business_name: str,
 ) -> dict[str, Any]:
     if not is_cloud_configured():
-        raise SupabaseError('Configure Supabase URL + anon key first (cloud_config.json)')
+        raise SupabaseError(
+            'MugoByte Cloud is unavailable on this PC. '
+            'Check internet and restart POS, or open portal.mugobyte.com.'
+        )
     email = (email or '').strip().lower()
     business_name = (business_name or '').strip() or 'My Business'
     if len(password or '') < 12:
@@ -179,7 +182,10 @@ def create_business(
 
 def login_existing(email: str, password: str) -> dict[str, Any]:
     if not is_cloud_configured():
-        raise SupabaseError('Configure Supabase URL + anon key first (cloud_config.json)')
+        raise SupabaseError(
+            'MugoByte Cloud is unavailable on this PC. '
+            'Check internet and restart POS, or open portal.mugobyte.com.'
+        )
     email = (email or '').strip().lower()
     client = SupabaseClient()
     session = client.sign_in(email, password)
@@ -210,6 +216,19 @@ def login_existing(email: str, password: str) -> dict[str, Any]:
         access_token=session.get('access_token') or '',
         refresh_token=session.get('refresh_token') or '',
     )
+    # Ensure org linkage even when device registration partially failed (shop
+    # installs have no service-role key; org create must use the user JWT).
+    if not ident.get('org_id'):
+        try:
+            from backend.cloud.platform_service import ensure_org_for_business
+            org = ensure_org_for_business(
+                biz if isinstance(biz, dict) else {'id': business_id, 'name': business_name},
+                user_id,
+            )
+            if org and org.get('id'):
+                ident['org_id'] = org['id']
+        except Exception as e:
+            logger.warning('ensure org on login: %s', e)
     _, ident = ensure_identity_key_material(ident, password=password)
     save_identity(ident)
 

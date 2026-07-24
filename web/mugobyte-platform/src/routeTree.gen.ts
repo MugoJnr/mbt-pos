@@ -24,6 +24,7 @@ import { Route as AppDevicesRouteImport } from './routes/_app.devices'
 import { Route as AppDownloadsRouteImport } from './routes/_app.downloads'
 import { Route as AppInventoryRouteImport } from './routes/_app.inventory'
 import { Route as AppLicenseRouteImport } from './routes/_app.license'
+import { Route as AppLicensesRouteImport } from './routes/_app.licenses'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppPosRouteImport } from './routes/_app.pos'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
@@ -125,6 +126,11 @@ const AppInventoryRoute = AppInventoryRouteImport.update({
 const AppLicenseRoute = AppLicenseRouteImport.update({
   id: '/license',
   path: '/license',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLicensesRoute = AppLicensesRouteImport.update({
+  id: '/licenses',
+  path: '/licenses',
   getParentRoute: () => AppRoute,
 } as any)
 const AppNotificationsRoute = AppNotificationsRouteImport.update({
@@ -291,6 +297,7 @@ export interface FileRoutesByFullPath {
   '/downloads': typeof AppDownloadsRoute
   '/inventory': typeof AppInventoryRoute
   '/license': typeof AppLicenseRoute
+  '/licenses': typeof AppLicensesRoute
   '/notifications': typeof AppNotificationsRoute
   '/pos': typeof AppPosRoute
   '/reports': typeof AppReportsRoute
@@ -335,6 +342,7 @@ export interface FileRoutesByTo {
   '/downloads': typeof AppDownloadsRoute
   '/inventory': typeof AppInventoryRoute
   '/license': typeof AppLicenseRoute
+  '/licenses': typeof AppLicensesRoute
   '/notifications': typeof AppNotificationsRoute
   '/pos': typeof AppPosRoute
   '/reports': typeof AppReportsRoute
@@ -383,6 +391,7 @@ export interface FileRoutesById {
   '/_app/downloads': typeof AppDownloadsRoute
   '/_app/inventory': typeof AppInventoryRoute
   '/_app/license': typeof AppLicenseRoute
+  '/_app/licenses': typeof AppLicensesRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/pos': typeof AppPosRoute
   '/_app/reports': typeof AppReportsRoute
@@ -429,6 +438,7 @@ export interface FileRouteTypes {
     | '/downloads'
     | '/inventory'
     | '/license'
+    | '/licenses'
     | '/notifications'
     | '/pos'
     | '/reports'
@@ -473,6 +483,7 @@ export interface FileRouteTypes {
     | '/downloads'
     | '/inventory'
     | '/license'
+    | '/licenses'
     | '/notifications'
     | '/pos'
     | '/reports'
@@ -520,6 +531,7 @@ export interface FileRouteTypes {
     | '/_app/downloads'
     | '/_app/inventory'
     | '/_app/license'
+    | '/_app/licenses'
     | '/_app/notifications'
     | '/_app/pos'
     | '/_app/reports'
@@ -664,6 +676,13 @@ declare module '@tanstack/react-router' {
       path: '/license'
       fullPath: '/license'
       preLoaderRoute: typeof AppLicenseRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/licenses': {
+      id: '/_app/licenses'
+      path: '/licenses'
+      fullPath: '/licenses'
+      preLoaderRoute: typeof AppLicensesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/notifications': {
@@ -927,6 +946,7 @@ interface AppRouteChildren {
   AppDownloadsRoute: typeof AppDownloadsRoute
   AppInventoryRoute: typeof AppInventoryRoute
   AppLicenseRoute: typeof AppLicenseRoute
+  AppLicensesRoute: typeof AppLicensesRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppPosRoute: typeof AppPosRoute
   AppReportsRoute: typeof AppReportsRoute
@@ -949,6 +969,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppDownloadsRoute: AppDownloadsRoute,
   AppInventoryRoute: AppInventoryRoute,
   AppLicenseRoute: AppLicenseRoute,
+  AppLicensesRoute: AppLicensesRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppPosRoute: AppPosRoute,
   AppReportsRoute: AppReportsRoute,

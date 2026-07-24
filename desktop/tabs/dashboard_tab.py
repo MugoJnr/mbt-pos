@@ -103,13 +103,34 @@ class _BarRow(QWidget):
         super().__init__()
         p = _palette(is_light)
         self.setStyleSheet("background:transparent;")
-        lay = QHBoxLayout(self); lay.setContentsMargins(0,2,0,2); lay.setSpacing(10)
+        # Name + value on one row; bar alone below — never overlaps truncated text
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 2, 0, 4)
+        outer.setSpacing(4)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(8)
 
         nm = QLabel(name)
-        nm.setFixedWidth(130)
+        nm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        nm.setWordWrap(False)
+        fm = nm.fontMetrics()
+        nm.setText(fm.elidedText(name, Qt.ElideRight, 160))
+        nm.setToolTip(name)
         nm.setStyleSheet(
             f"color:{p['text']}; font-size:13px; background:transparent; border:none;")
-        nm.setToolTip(name)
+
+        val = QLabel(value_str)
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val.setMinimumWidth(72)
+        val.setStyleSheet(
+            f"color:{accent}; font-size:12px; font-weight:700; "
+            f"background:transparent; border:none;")
+
+        top.addWidget(nm, 1)
+        top.addWidget(val, 0)
+        outer.addLayout(top)
 
         track = QProgressBar()
         track.setRange(0, 100)
@@ -119,15 +140,7 @@ class _BarRow(QWidget):
         track.setStyleSheet(
             f"QProgressBar {{ background:{p['border']}; border-radius:4px; border:none; }}"
             f"QProgressBar::chunk {{ background:{accent}; border-radius:4px; }}")
-
-        val = QLabel(value_str)
-        val.setFixedWidth(90)
-        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        val.setStyleSheet(
-            f"color:{accent}; font-size:13px; font-weight:700; "
-            f"background:transparent; border:none;")
-
-        lay.addWidget(nm); lay.addWidget(track, 1); lay.addWidget(val)
+        outer.addWidget(track)
 
 
 # ---
@@ -135,18 +148,16 @@ class _BarRow(QWidget):
 # ---
 
 def _qa_btn(icon_key, label, accent, bg_dim, is_light=False):
-    """Quick action with a native Qt icon (no emoji/font dependency)."""
+    """Quick action with painted nav icon (no emoji / system tofu glyphs)."""
     p = _palette(is_light)
     btn = QPushButton(label)
-    std_icons = {
-        'sales': QStyle.SP_FileIcon,
-        'inventory': QStyle.SP_DirIcon,
-        'debt': QStyle.SP_DialogApplyButton,
-        'reports': QStyle.SP_FileDialogDetailedView,
-    }
-    btn.setIcon(btn.style().standardIcon(
-        std_icons.get(icon_key, QStyle.SP_ArrowRight)))
-    btn.setIconSize(QSize(20, 20))
+    try:
+        from desktop.utils.nav_icons import nav_icon
+        btn.setIcon(nav_icon(icon_key, 18))
+        btn.setIconSize(QSize(18, 18))
+    except Exception:
+        btn.setIcon(btn.style().standardIcon(QStyle.SP_ArrowRight))
+        btn.setIconSize(QSize(18, 18))
     btn.setCursor(Qt.PointingHandCursor)
     btn.setFixedHeight(48)
     btn.setMinimumWidth(110)
@@ -223,24 +234,41 @@ class DashboardTab(QWidget):
     # -- Build ---
 
     def _build(self):
-        # Page scrolls as a whole - never clip Quick Actions under the window edge
+        # Sticky header + primary KPIs stay visible; body scrolls underneath.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        self._sticky = QWidget()
+        self._sticky.setObjectName('mbtDashSticky')
+        self._sticky.setStyleSheet('background:transparent;')
+        self._sticky_lay = QVBoxLayout(self._sticky)
+        self._sticky_lay.setContentsMargins(20, 14, 20, 8)
+        self._sticky_lay.setSpacing(10)
+        outer.addWidget(self._sticky)
+
         self._page_scroll = QScrollArea()
+        self._page_scroll.setObjectName('mbtPageScroll')
         self._page_scroll.setWidgetResizable(True)
         self._page_scroll.setFrameShape(QFrame.NoFrame)
         self._page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._page_scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
+        try:
+            from desktop.utils.no_wheel_small_scroll import mark_wheel_scroll
+            mark_wheel_scroll(self._page_scroll, True)
+        except Exception:
+            pass
         self._page = QWidget()
         self._page.setStyleSheet('background:transparent;')
         self._root_lay = QVBoxLayout(self._page)
-        self._root_lay.setContentsMargins(20, 18, 20, 18)
-        self._root_lay.setSpacing(16)
+        # Bottom inset so charts clear the status bar when scrolled to end
+        self._root_lay.setContentsMargins(20, 6, 20, 40)
+        self._root_lay.setSpacing(12)
         self._page_scroll.setWidget(self._page)
-        outer.addWidget(self._page_scroll)
+        outer.addWidget(self._page_scroll, 1)
         self._build_content()
-        self._install_fab()
+        # No overlay + FAB — Quick Actions already cover those launches; FAB
+        # was clipping By Payment bars / last chart row under Copilot clearance.
 
     def _build_content(self):
         p = _palette(self._is_light)
@@ -291,15 +319,16 @@ class DashboardTab(QWidget):
         right_row.addWidget(ns_btn)
 
         hdr.addLayout(right_row)
-        self._root_lay.addLayout(hdr)
+        self._sticky_lay.addLayout(hdr)
 
-        # -- KPI ROW 1 - Sales ---
-        kr1 = QHBoxLayout(); kr1.setSpacing(16)
-        self._k_sales = _KPI("Today's Sales",   '$', '0',   'Transactions', p['gold'],   self._is_light)
-        self._k_rev   = _KPI("Today's Revenue (Collected)", '*', '--',
-                             'Cash in hand today',  p['ok'],     self._is_light)
-        self._k_avg   = _KPI("Avg Transaction", '^', '--',   'Per receipt',   p['info'],   self._is_light)
-        self._k_low   = _KPI("Low Stock",        '!', '0',   'Items to restock', p['err'], self._is_light)
+        # -- KPI ROW 1 - Sales (sticky) ---
+        # Accent semantics: gold=neutral, green=cash+, amber=attention, red=risk, blue=info
+        kr1 = QHBoxLayout(); kr1.setSpacing(12)
+        self._k_sales = _KPI("Today's Sales",   'count', '0',   'Transactions', p['gold'],   self._is_light)
+        self._k_rev   = _KPI("Today's Revenue", 'revenue', '--',
+                             'Gross sales (same as Reports)',  p['ok'],     self._is_light)
+        self._k_avg   = _KPI("Avg Transaction", 'avg', '--',   'Per receipt',   p['gold'],   self._is_light)
+        self._k_low   = _KPI("Low Stock",        'low_stock', '0',   'Items to restock', p['warn'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
         self._k_sales.set_actionable(True, 'Open Point of Sale', "Today's Sales")
@@ -310,26 +339,47 @@ class DashboardTab(QWidget):
         self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
         self._k_low.set_actionable(True, 'Open Inventory low-stock items', 'Low Stock')
         self._k_low.clicked.connect(lambda: self.navigate.emit('inventory'))
-        self._root_lay.addLayout(kr1)
+        self._sticky_lay.addLayout(kr1)
 
-        # Collected revenue tender breakdown (cash flow vs credit)
-        self._rev_break = QLabel('')
-        self._rev_break.setWordWrap(True)
-        self._rev_break.setStyleSheet(
-            f"color:{p['text2']};font-size:12px;background:transparent;border:none;"
-            f"padding:0 4px 4px 4px;")
-        self._root_lay.addWidget(self._rev_break)
+        self._kpi_legend = QLabel(
+            'KPI accents · green cash in · gold neutral · amber attention · red risk · blue info')
+        self._kpi_legend.setWordWrap(True)
+        self._kpi_legend.setStyleSheet(
+            f"color:{p['muted']}; font-size:10px; font-weight:600; "
+            f"background:transparent; border:none; padding:0 4px 0 4px;")
+        self._sticky_lay.addWidget(self._kpi_legend)
 
-        # -- KPI ROW 2 - Debt ---
-        kr2 = QHBoxLayout(); kr2.setSpacing(16)
-        self._k_debt_out  = _KPI("Outstanding Debt",    '=', '--', 'unpaid',        p['err'],  self._is_light)
-        self._k_debt_col  = _KPI("Collected Today",     '+', '--', 'debt payments', p['ok'],   self._is_light)
-        self._k_customers = _KPI("Customers w/ Debt",   '@', '0', 'accounts',      p['warn'], self._is_light)
-        self._k_overdue   = _KPI("Overdue",             '*', '0', 'past due date', p['err'],  self._is_light)
-        self._k_credit_out = _KPI("Credit Sales (Outstanding)", '#', '--',
-                                  'unpaid credit today', p['warn'], self._is_light)
+        # Collected revenue tender breakdown — chip strip (not a dense text line)
+        self._rev_break_host = QWidget()
+        self._rev_break_host.setObjectName('dashRevBreak')
+        self._rev_break_lay = QHBoxLayout(self._rev_break_host)
+        self._rev_break_lay.setContentsMargins(4, 0, 4, 2)
+        self._rev_break_lay.setSpacing(8)
+        self._rev_break_chips = []
+        self._sticky_lay.addWidget(self._rev_break_host)
+        # Compat alias for theme refresh paths that still touch _rev_break
+        self._rev_break = self._rev_break_host
+
+        # Sticky primary KPIs only — debt metrics live as compact chips (less card noise)
+        self._debt_chip_host = QWidget()
+        self._debt_chip_host.setObjectName('dashDebtChips')
+        self._debt_chip_lay = QHBoxLayout(self._debt_chip_host)
+        self._debt_chip_lay.setContentsMargins(4, 0, 4, 2)
+        self._debt_chip_lay.setSpacing(8)
+        self._root_lay.addWidget(self._debt_chip_host)
+
+        # Keep KPI widgets for data binding, but hide full cards (chips carry the signal)
+        kr2 = QHBoxLayout(); kr2.setSpacing(12)
+        self._k_debt_out  = _KPI("Outstanding Debt",    'debt', '--',
+                                 'open invoices (Debt tab)', p['warn'],  self._is_light)
+        self._k_debt_col  = _KPI("Collected Today",     'collected', '--', 'debt payments', p['ok'],   self._is_light)
+        self._k_customers = _KPI("Customers w/ Debt",   'customers', '0', 'accounts',      p['warn'], self._is_light)
+        self._k_overdue   = _KPI("Overdue",             'alert', '0', 'past due date', p['err'],  self._is_light)
+        self._k_credit_out = _KPI("Unpaid Credit (sales)", 'money', '--',
+                                  'today credit not yet collected', p['warn'], self._is_light)
         for k in (self._k_debt_out, self._k_debt_col, self._k_customers,
                   self._k_overdue, self._k_credit_out):
+            k.hide()
             kr2.addWidget(k)
         for k, tip in (
             (self._k_debt_out, 'Open Debt Management'),
@@ -342,21 +392,22 @@ class DashboardTab(QWidget):
             k.clicked.connect(lambda _=False, t='debt': self.navigate.emit(t))
         self._root_lay.addLayout(kr2)
 
-        # -- KPI ROW 3 - Internal Consumption ---
-        kr3 = QHBoxLayout(); kr3.setSpacing(18)
+        # Compact consumption strip (own row — avoids clipping a 6th KPI card)
+        kr3 = QHBoxLayout(); kr3.setSpacing(12)
         self._k_cons = _KPI(
-            'Internal Consumption Today', '#', '0',
+            'Internal Use Today', 'consumption', '0',
             'items | cost', p['info'], self._is_light)
         self._k_cons.set_actionable(
             True, 'Open Internal Consumption report', 'Internal Consumption Today')
         self._k_cons.clicked.connect(self._open_consumption_report)
-        kr3.addWidget(self._k_cons)
+        self._k_cons.hide()
+        kr3.addWidget(self._k_cons, 1)
         kr3.addStretch(3)
         self._root_lay.addLayout(kr3)
 
-        # -- CHARTS ROW ---
-        charts = QHBoxLayout(); charts.setSpacing(18)
-        self._trend_chart = GoldLineChart(height=168)
+        # -- CHARTS ROW (above Quick Actions so By Payment stays in fold) ---
+        charts = QHBoxLayout(); charts.setSpacing(14)
+        self._trend_chart = GoldLineChart(height=132)
         self._trend_card = ChartCard(
             'Sales | Last 7 Days', self._trend_chart, expandable=True)
         self._trend_card.activated.connect(
@@ -372,16 +423,16 @@ class DashboardTab(QWidget):
         charts.addWidget(self._pay_card, 2)
         self._root_lay.addLayout(charts)
 
-        # -- Quick Actions (full width - never crushed in the side rail) ---
+        # -- Quick Actions (compact strip under charts) ---
         self._qa_card = _Card(self._is_light)
         self._qa_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        qcl = self._qa_card.body(margins=(16, 14, 16, 14), spacing=10)
+        qcl = self._qa_card.body(margins=(14, 8, 14, 8), spacing=6)
         self._qa_title = QLabel('Quick Actions')
         self._qa_title.setStyleSheet(
-            f"color:{p['text']}; font-size:15px; font-weight:700; "
+            f"color:{p['text']}; font-size:13px; font-weight:700; "
             f"background:transparent; border:none;")
         qcl.addWidget(self._qa_title)
-        qa_row = QHBoxLayout(); qa_row.setSpacing(10)
+        qa_row = QHBoxLayout(); qa_row.setSpacing(8)
         actions = [
             ('sales',     'New Sale',  'gold', 'sales'),
             ('inventory', 'Inventory', 'ok',   'inventory'),
@@ -476,7 +527,7 @@ class DashboardTab(QWidget):
         self._tbl.cellDoubleClicked.connect(self._on_sale_double_click)
         scl.addWidget(self._tbl)
 
-        self._sales_empty = EmptyState('=', 'No sales today', 'Start your first sale from Point of Sale')
+        self._sales_empty = EmptyState('sales', 'No sales today', 'Start your first sale from Point of Sale')
         self._sales_empty.hide()
         scl.addWidget(self._sales_empty)
 
@@ -608,7 +659,7 @@ class DashboardTab(QWidget):
         al.addWidget(at)
         self._act_list = QVBoxLayout(); self._act_list.setSpacing(6)
         al.addLayout(self._act_list)
-        self._act_placeholder = EmptyState('=', 'No recent activity', 'Sales and system events appear here')
+        self._act_placeholder = EmptyState('notes', 'No recent activity', 'Sales and system events appear here')
         self._act_list.addWidget(self._act_placeholder)
         rcol.addWidget(self._act_card)
 
@@ -691,16 +742,9 @@ class DashboardTab(QWidget):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._position_fab()
 
     def _position_fab(self):
-        fab = getattr(self, '_fab', None)
-        if not fab:
-            return
-        fab.resize(220, 280)
-        fab.move(self.width() - fab.width() - 16, self.height() - fab.height() - 16)
-        fab.raise_()
-        fab.refresh_theme()
+        return
 
     def set_light_mode(self, is_light: bool):
         self._is_light = bool(is_light)
@@ -744,24 +788,30 @@ class DashboardTab(QWidget):
             f"color:{p['text2']}; font-size:14px; "
             f"background:transparent; border:none;")
 
-        # KPI cards
+        # KPI cards — semantic accents (must match __init__; never decorative shuffle)
         kpi_map = [
-            (self._k_sales,    p['gold']),
-            (self._k_rev,      p['ok']),
-            (self._k_avg,      p['info']),
-            (self._k_low,      p['err']),
-            (self._k_debt_out, p['err']),
-            (self._k_debt_col, p['ok']),
-            (self._k_customers,p['warn']),
-            (self._k_overdue,  p['err']),
-            (self._k_credit_out, p['warn']),
-            (self._k_cons,     p['info']),
+            (self._k_sales,      p['gold']),  # neutral count
+            (self._k_rev,        p['ok']),    # cash-positive revenue
+            (self._k_avg,        p['gold']),  # neutral average
+            (self._k_low,        p['warn']),  # attention
+            (self._k_debt_out,   p['warn']),  # outstanding = attention
+            (self._k_debt_col,   p['ok']),    # cash in
+            (self._k_customers,  p['warn']),  # attention
+            (self._k_overdue,    p['err']),   # critical
+            (self._k_credit_out, p['warn']),  # attention
+            (self._k_cons,       p['info']),  # informational
         ]
         for kpi, acc in kpi_map:
             kpi._accent = acc
             kpi.apply_mode(self._is_light)
+        if getattr(self, '_kpi_legend', None) is not None:
+            self._kpi_legend.setStyleSheet(
+                f"color:{p['muted']}; font-size:11px; font-weight:600; "
+                f"background:transparent; border:none; padding:0 4px 2px 4px;")
 
-        if getattr(self, '_rev_break', None) is not None:
+        if getattr(self, '_rev_break_host', None) is not None:
+            self._rev_break_host.setStyleSheet('background:transparent;border:none;')
+        elif getattr(self, '_rev_break', None) is not None and isinstance(self._rev_break, QLabel):
             self._rev_break.setStyleSheet(
                 f"color:{p['text2']};font-size:12px;background:transparent;border:none;"
                 f"padding:0 4px 4px 4px;")
@@ -878,7 +928,7 @@ class DashboardTab(QWidget):
         if int(low_stock or 0) > 0:
             alerts.append((
                 f'{int(low_stock)} low-stock item(s) need restock',
-                'inventory', p['err'],
+                'inventory', p['warn'],
             ))
         if int(overdue or 0) > 0:
             alerts.append((
@@ -980,7 +1030,11 @@ class DashboardTab(QWidget):
             start_d, end_d = date_range_for_preset(key)
         start = start_d.isoformat()
         end = end_d.isoformat()
-        today = str(date.today())
+        try:
+            from desktop.utils.shop_time import shop_today as _shop_today
+            today = str(_shop_today())
+        except Exception:
+            today = str(date.today())
         p     = _palette(self._is_light)
         cur   = self._currency
 
@@ -998,9 +1052,10 @@ class DashboardTab(QWidget):
                     s.get('collected_revenue', s.get('collected_from_sales', 0)) or 0)
                 avg = float(s.get('avg_transaction', 0))
                 self._k_sales.set_value(str(today_tx))
-                # Primary revenue card = money actually received (excludes unpaid credit)
-                self._k_rev.set_value(f"{cur} {today_collected:,.0f}")
-                self._k_avg.set_value(f"{cur} {avg:,.0f}")
+                # Primary revenue = total_revenue so Dashboard/Reports/Finance agree
+                self._k_rev.set_value(f"{cur} {today_rev:,.2f}")
+                self._k_rev.set_sub(f"Collected {cur} {today_collected:,.2f}")
+                self._k_avg.set_value(f"{cur} {avg:,.2f}")
                 period_lbl = self._period.current_label() if hasattr(self, '_period') else 'Period'
                 self._k_sales.set_sub(period_lbl or 'Transactions')
                 cash_c = float(s.get('cash_sales_collected') or s.get('cash_received') or 0)
@@ -1010,9 +1065,32 @@ class DashboardTab(QWidget):
                 debt_c = float(s.get('debt_collected') or 0)
                 credit_out = float(s.get('credit_sales_outstanding') or 0)
                 if hasattr(self, '_k_credit_out'):
-                    self._k_credit_out.set_value(f"{cur} {credit_out:,.0f}")
-                    self._k_credit_out.set_sub('not in collected revenue')
-                if hasattr(self, '_rev_break'):
+                    self._k_credit_out.set_value(f"{cur} {credit_out:,.2f}")
+                    self._k_credit_out.set_sub('in revenue, not yet cash')
+                if hasattr(self, '_rev_break_lay'):
+                    while self._rev_break_lay.count():
+                        item = self._rev_break_lay.takeAt(0)
+                        w = item.widget()
+                        if w is not None:
+                            w.deleteLater()
+                    chips = [
+                        ('Collected', today_collected, p.get('ok', C['ok'])),
+                        ('Cash', cash_c, p.get('ok', C['ok'])),
+                        ('Mobile Money', mpesa_c, p.get('info', C['info'])),
+                        ('Card', card_c, p.get('gold', C['gold'])),
+                        ('Bank', bank_c, p.get('text2', C['text2'])),
+                        ('Debt in', debt_c, p.get('ok', C['ok'])),
+                        ('Credit out', credit_out, p.get('warn', C['warn'])),
+                    ]
+                    for label, amt, tone in chips:
+                        chip = QLabel(f"{label}  {cur} {amt:,.0f}")
+                        chip.setStyleSheet(
+                            f"color:{tone}; font-size:11px; font-weight:700; "
+                            f"background:{qss_alpha(tone, 0.12)}; border:1px solid {qss_alpha(tone, 0.28)}; "
+                            f"border-radius:8px; padding:5px 10px;")
+                        self._rev_break_lay.addWidget(chip)
+                    self._rev_break_lay.addStretch(1)
+                elif hasattr(self, '_rev_break') and isinstance(self._rev_break, QLabel):
                     self._rev_break.setText(
                         f"Cash {cur} {cash_c:,.0f}  ·  Mobile Money {cur} {mpesa_c:,.0f}  ·  "
                         f"Card {cur} {card_c:,.0f}  ·  Bank {cur} {bank_c:,.0f}  ·  "
@@ -1029,7 +1107,8 @@ class DashboardTab(QWidget):
             yd = self.api.get_report_summary(yday, yday) or {}
             ys = (yd.get('summary') or {})
             y_tx = int(ys.get('total_transactions', 0) or 0)
-            y_rev = float(
+            y_rev = float(ys.get('total_revenue', 0) or 0)
+            y_collected = float(
                 ys.get('collected_revenue', ys.get('collected_from_sales', 0)) or 0)
 
             def _pct(cur_v, prev_v):
@@ -1039,12 +1118,12 @@ class DashboardTab(QWidget):
 
             if key == 'today':
                 self._k_sales.set_trend(_pct(today_tx, y_tx))
-                self._k_rev.set_trend(_pct(today_collected, y_rev))
-                self._k_rev.set_sub('vs yesterday · excludes unpaid credit')
+                self._k_rev.set_trend(_pct(today_rev, y_rev))
+                self._k_rev.set_sub(f"Collected {cur} {today_collected:,.2f} · vs yesterday")
             else:
                 self._k_rev.set_sub(
-                    (self._period.current_label() if hasattr(self, '_period') else '')
-                    + ' · excludes unpaid credit'
+                    f"Collected {cur} {today_collected:,.2f} · "
+                    + (self._period.current_label() if hasattr(self, '_period') else 'period')
                 )
         except Exception as e:
             log.warning(f"Dashboard trends: {e}")
@@ -1052,7 +1131,7 @@ class DashboardTab(QWidget):
         try:
             prods = self.api.get_products() or []
             low   = sum(1 for p2 in prods if float(p2.get('stock', 0)) <= float(p2.get('min_stock', 5)))
-            self._k_low.set_value(str(low), p['err'] if low > 0 else p['ok'])
+            self._k_low.set_value(str(low), p['warn'] if low > 0 else p['ok'])
             self._k_low.set_sub('Items to restock' if low else 'All stocked')
         except Exception as e:
             log.warning(f"Dashboard low stock: {e}")
@@ -1065,14 +1144,55 @@ class DashboardTab(QWidget):
                 col  = ds.get('today_collected', {})
                 over = ds.get('overdue', {})
                 cust = ds.get('customers_with_debt', 0)
+                out_tot = float(out.get('total', 0) or 0)
+                col_tot = float(col.get('total', 0) or 0)
+                over_n = int(over.get('count', 0) or 0)
                 self._k_debt_out.set_value(
-                    f"{cur} {float(out.get('total',0)):,.0f}",
-                    p['err'] if float(out.get('total',0)) > 0 else p['ok'])
-                self._k_debt_col.set_value(f"{cur} {float(col.get('total',0)):,.0f}")
+                    f"{cur} {out_tot:,.2f}",
+                    p['warn'] if out_tot > 0 else p['ok'])
+                self._k_debt_col.set_value(f"{cur} {col_tot:,.2f}")
                 self._k_customers.set_value(str(cust))
                 self._k_overdue.set_value(
-                    str(int(over.get('count', 0))),
-                    p['err'] if int(over.get('count', 0)) > 0 else p['ok'])
+                    str(over_n),
+                    p['err'] if over_n > 0 else p['ok'])
+                # Compact debt chip strip (replaces full second KPI card row)
+                if hasattr(self, '_debt_chip_lay'):
+                    while self._debt_chip_lay.count():
+                        item = self._debt_chip_lay.takeAt(0)
+                        w = item.widget()
+                        if w is not None:
+                            w.deleteLater()
+                    debt_chips = [
+                        ('Outstanding', f"{cur} {out_tot:,.2f}",
+                         p['warn'] if out_tot > 0 else p['ok'], 'debt'),
+                        ('Collected', f"{cur} {col_tot:,.2f}", p['ok'], 'debt'),
+                        ('Customers', str(cust), p['warn'], 'debt'),
+                        ('Overdue', str(over_n),
+                         p['err'] if over_n > 0 else p['ok'], 'debt'),
+                    ]
+                    try:
+                        cs = self.api.get_consumption_today_summary() or {}
+                        lines = int(cs.get('line_count') or 0)
+                        cost = float(cs.get('total_cost') or 0)
+                        debt_chips.append(
+                            ('Internal use', f"{lines} · {cur} {cost:,.0f}",
+                             p['info'], 'consumption'))
+                    except Exception:
+                        pass
+                    for label, val, tone, dest in debt_chips:
+                        chip = QPushButton(f"{label}  {val}")
+                        chip.setCursor(Qt.PointingHandCursor)
+                        chip.setStyleSheet(
+                            f"QPushButton {{ color:{tone}; font-size:11px; font-weight:700; "
+                            f"background:{qss_alpha(tone, 0.12)}; border:1px solid {qss_alpha(tone, 0.28)}; "
+                            f"border-radius:8px; padding:6px 12px; text-align:left; }}"
+                            f"QPushButton:hover {{ border-color:{tone}; }}")
+                        if dest == 'consumption':
+                            chip.clicked.connect(self._open_consumption_report)
+                        else:
+                            chip.clicked.connect(lambda _=False: self.navigate.emit('debt'))
+                        self._debt_chip_lay.addWidget(chip)
+                    self._debt_chip_lay.addStretch(1)
         except Exception as e:
             log.warning(f"Dashboard debt KPIs: {e}")
 
@@ -1149,12 +1269,26 @@ class DashboardTab(QWidget):
             start_7 = (date.today() - timedelta(days=6)).isoformat()
             pay_data = self.api.get_report_summary(start_7, today) or {}
             by_pay = pay_data.get('by_payment') or []
+            # Merge duplicate methods (cash/Cash/CASH → one Cash row)
+            merged: dict[str, float] = {}
+            labels: dict[str, str] = {}
+            order: list[str] = []
+            for r in by_pay:
+                raw = (r.get('payment_method') or 'Other').strip() or 'Other'
+                key = raw.lower().replace(' ', '')
+                if key in ('mpesa', 'm-pesa'):
+                    key = 'm-pesa'
+                    pretty = 'M-Pesa'
+                else:
+                    pretty = raw.title()
+                if key not in merged:
+                    merged[key] = 0.0
+                    labels[key] = pretty
+                    order.append(key)
+                merged[key] += float(r.get('total') or 0)
             self._pay_chart.set_data([
-                {
-                    'label': (r.get('payment_method') or 'Other').title(),
-                    'value': float(r.get('total') or 0),
-                }
-                for r in by_pay
+                {'label': labels[k], 'value': merged[k]}
+                for k in order
             ])
         except Exception as e:
             log.warning(f"Dashboard payment chart: {e}")
@@ -1216,7 +1350,7 @@ class DashboardTab(QWidget):
                 item.widget().deleteLater()
         p = _palette()
         if not sales:
-            empty = EmptyState('=', 'No recent activity', 'Sales and system events appear here')
+            empty = EmptyState('notes', 'No recent activity', 'Sales and system events appear here')
             lay.addWidget(empty)
             return
         for s in sales:
@@ -1245,7 +1379,7 @@ class DashboardTab(QWidget):
         cur = self._currency
 
         if not top:
-            empty = EmptyState('#', 'No sales today', 'Top products will appear after your first sale')
+            empty = EmptyState('box', 'No sales today', 'Top products will appear after your first sale')
             self._no_top = empty
             self._top_container.addWidget(empty)
             return
@@ -1255,7 +1389,7 @@ class DashboardTab(QWidget):
         for i, t in enumerate(top):
             rev = float(t.get('revenue', 0))
             pct = int(rev / max_rev * 100) if max_rev > 0 else 0
-            name = (t.get('product_name') or '')[:22]
+            name = (t.get('product_name') or '').strip()
             val_str = f"{cur} {rev:,.0f}"
             bar = _BarRow(name, val_str, pct, accents[i % len(accents)], self._is_light)
             self._top_container.addWidget(bar)

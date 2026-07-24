@@ -501,6 +501,9 @@ class TestFlushEntityOutboxContracts(unittest.TestCase):
         self.assertIn('401', refresh_src)
         loop_src = inspect.getsource(mod.SyncManager._loop)
         self.assertIn('ensure_historical_backfill', loop_src)
+        self.assertIn('OUTBOX_FLUSH_ROUNDS', inspect.getsource(mod))
+        self.assertIn('OUTBOX_PRIORITY_SQL', inspect.getsource(mod))
+        self.assertIn("entity_type <> 'audit_log'", src)
 
     def test_outbox_triggers_include_debt_and_stock(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   KeyRound, RefreshCw, Download, CheckCircle2, AlertTriangle, Clock, Plus, Copy,
-  Ban, CalendarPlus, ShieldAlert, ArrowRightLeft, Wifi,
+  Ban, CalendarPlus, ShieldAlert, ArrowRightLeft, Wifi, Link2, Eraser,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import {
   GET,
   createCloudLicense,
+  assignCloudLicense,
   listCloudLicenses,
   activateCloudLicense,
   revokeCloudLicense,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadApi, exportQuery } from "@/lib/download";
+import { LICENSE_PRODUCTS } from "@/lib/platform";
 
 export const Route = createFileRoute("/_admin/admin/licenses")({
   component: AdminLicensesPage,
@@ -58,11 +60,15 @@ function AdminLicensesPage() {
   const [exporting, setExporting] = useState(false);
   const [activateKey, setActivateKey] = useState("");
   const [plan, setPlan] = useState("trial");
+  const [productId, setProductId] = useState("mbt-pos");
+  const [issueEmail, setIssueEmail] = useState("");
+  const [issueDeviceId, setIssueDeviceId] = useState("");
   const [renewDays, setRenewDays] = useState(30);
   const [historyId, setHistoryId] = useState<string>("");
   const [transferOld, setTransferOld] = useState("");
   const [transferNew, setTransferNew] = useState("");
   const [transferLic, setTransferLic] = useState("");
+  const [assignDrafts, setAssignDrafts] = useState<Record<string, { email: string; device: string }>>({});
 
   const licQ = useQuery({
     queryKey: ["license-status"],
@@ -88,16 +94,60 @@ function AdminLicensesPage() {
     if (historyId) qc.invalidateQueries({ queryKey: ["license-history", historyId] });
   };
 
+  const draftFor = (id: string, row?: CloudLicense) =>
+    assignDrafts[id] || {
+      email: row?.assigned_email || "",
+      device: row?.reserved_device_id || "",
+    };
+
+  const setDraft = (id: string, patch: Partial<{ email: string; device: string }>, row?: CloudLicense) => {
+    const cur = draftFor(id, row);
+    setAssignDrafts((prev) => ({ ...prev, [id]: { ...cur, ...patch } }));
+  };
+
   const createMut = useMutation({
-    mutationFn: () => createCloudLicense(plan, `Issued from admin (${plan})`, orgId),
+    mutationFn: () =>
+      createCloudLicense(plan, `Issued from admin (${productId}/${plan})`, orgId, {
+        assigned_email: issueEmail.trim() || undefined,
+        reserved_device_id: issueDeviceId.trim() || undefined,
+        product_id: productId,
+      }),
     onSuccess: (res) => {
       if (res?.error || !res?.license) {
         toast.error(res?.error || "Failed to create license");
         return;
       }
-      toast.success("License created", { description: res.license.license_key });
+      toast.success("License created", {
+        description: `${res.license.license_key} · ${res.license.product_id || productId}`,
+      });
+      setIssueEmail("");
+      setIssueDeviceId("");
       refreshAll();
     },
+  });
+
+  const assignMut = useMutation({
+    mutationFn: (args: {
+      id: string;
+      assigned_email?: string;
+      reserved_device_id?: string;
+      clear?: boolean;
+    }) =>
+      assignCloudLicense(args.id, {
+        assigned_email: args.assigned_email,
+        reserved_device_id: args.reserved_device_id,
+        clear: args.clear,
+      }),
+    onSuccess: (res, vars) => {
+      if (res?.error || !res?.ok) {
+        toast.error(res?.error || "Assign failed");
+        return;
+      }
+      toast.success(vars.clear ? "Assignment cleared" : res.message || "License assigned");
+      refreshAll();
+      setHistoryId(vars.id);
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const activateMut = useMutation({
@@ -188,7 +238,7 @@ function AdminLicensesPage() {
       <PageHeader
         eyebrow="Admin"
         title="License Control Plane"
-        description="Issue, activate, renew, revoke, transfer and force online validation — changes push to POS devices within ~30 seconds."
+        description="Issue, assign to hardware/email, activate, renew, revoke, transfer and force online validation — changes push to POS devices within ~30 seconds."
         actions={
           <>
             <Button variant="outline" onClick={() => { licQ.refetch(); cloudQ.refetch(); versionQ.refetch(); }}>
@@ -244,15 +294,39 @@ function AdminLicensesPage() {
         <Card>
           <CardHeader>
             <CardTitle className="font-display">Cloud licenses</CardTitle>
-            <CardDescription>Admin actions update Supabase and push remote commands to every activated POS.</CardDescription>
+            <CardDescription>Assign keys to a hardware device ID (and optional email). Wrong devices are rejected on activate.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap gap-2">
+              <select
+                className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                value={productId}
+                onChange={(e) => setProductId(e.target.value)}
+                title="Product"
+              >
+                {LICENSE_PRODUCTS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} · {p.section}
+                  </option>
+                ))}
+              </select>
               <select className="h-9 rounded-md border border-border bg-background px-3 text-sm" value={plan} onChange={(e) => setPlan(e.target.value)}>
                 {["trial", "basic", "monthly", "pro", "annual", "lifetime"].map((p) => (
                   <option key={p} value={p}>{p}</option>
                 ))}
               </select>
+              <Input
+                className="min-w-[180px] flex-1"
+                placeholder="Assign email (optional)"
+                value={issueEmail}
+                onChange={(e) => setIssueEmail(e.target.value)}
+              />
+              <Input
+                className="min-w-[180px] flex-1"
+                placeholder="Hardware device ID"
+                value={issueDeviceId}
+                onChange={(e) => setIssueDeviceId(e.target.value)}
+              />
               <Button onClick={() => createMut.mutate()} disabled={createMut.isPending}>
                 <Plus className="mr-1.5 h-4 w-4" />{createMut.isPending ? "Creating…" : "Issue license"}
               </Button>
@@ -264,50 +338,97 @@ function AdminLicensesPage() {
               <p className="text-sm text-muted-foreground">No cloud licenses yet.</p>
             ) : (
               <div className="space-y-3">
-                {cloudLicenses.map((row) => (
-                  <div key={row.id || row.license_key} className="rounded-xl border border-border/70 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="font-mono text-sm font-semibold">{row.license_key}</div>
-                          <Badge variant={
-                            row.status === "active" || row.status === "trial" ? "default"
-                              : row.status === "suspended" ? "secondary"
-                                : "destructive"
-                          }>
-                            {row.status || "unknown"}
-                          </Badge>
+                {cloudLicenses.map((row) => {
+                  const id = row.id || row.license_key || "";
+                  const draft = draftFor(id, row);
+                  return (
+                    <div key={id} className="rounded-xl border border-border/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <div className="font-mono text-sm font-semibold">{row.license_key}</div>
+                            <Badge variant={
+                              row.status === "active" || row.status === "trial" ? "default"
+                                : row.status === "suspended" ? "secondary"
+                                  : "destructive"
+                            }>
+                              {row.status || "unknown"}
+                            </Badge>
+                            {row.claim_status ? (
+                              <Badge variant="outline">{row.claim_status}</Badge>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {row.product_id || "mbt-pos"} · {row.plan} · {row.activated_devices ?? 0}/{row.max_devices ?? 1} devices
+                            {row.org_id ? ` · org ${String(row.org_id).slice(0, 8)}…` : ""}
+                          </div>
+                          <div className="text-xs text-muted-foreground">Expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}</div>
+                          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                            <div>Email: <span className="font-mono text-foreground">{row.assigned_email || "—"}</span></div>
+                            <div>Device: <span className="font-mono text-foreground">{row.reserved_device_id || "—"}</span></div>
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {row.plan} · {row.activated_devices ?? 0}/{row.max_devices ?? 1} devices
-                          {row.org_id ? ` · org ${String(row.org_id).slice(0, 8)}…` : ""}
-                        </div>
-                        <div className="text-xs text-muted-foreground">Expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}</div>
+                        <Button variant="outline" size="sm" onClick={() => copyKey(row.license_key)}><Copy className="h-3.5 w-3.5" /></Button>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => copyKey(row.license_key)}><Copy className="h-3.5 w-3.5" /></Button>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <Input
+                          placeholder="Customer email"
+                          value={draft.email}
+                          onChange={(e) => setDraft(id, { email: e.target.value }, row)}
+                        />
+                        <Input
+                          placeholder="Hardware device ID (required to lock)"
+                          value={draft.device}
+                          onChange={(e) => setDraft(id, { device: e.target.value }, row)}
+                        />
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={!row.id || (!draft.email.trim() && !draft.device.trim()) || assignMut.isPending}
+                          onClick={() =>
+                            assignMut.mutate({
+                              id: row.id!,
+                              assigned_email: draft.email.trim(),
+                              reserved_device_id: draft.device.trim(),
+                            })
+                          }
+                        >
+                          <Link2 className="mr-1 h-3.5 w-3.5" />Assign
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!row.id || assignMut.isPending}
+                          onClick={() => assignMut.mutate({ id: row.id!, clear: true })}
+                        >
+                          <Eraser className="mr-1 h-3.5 w-3.5" />Clear assignment
+                        </Button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        <Button size="sm" variant="outline" onClick={() => activateMut.mutate(row.license_key)} disabled={row.status === "suspended" || row.status === "revoked"}>Activate here</Button>
+                        <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "renew", id: row.id!, days: renewDays })}>
+                          <CalendarPlus className="mr-1 h-3.5 w-3.5" />Extend
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "force", id: row.id! })}>
+                          <Wifi className="mr-1 h-3.5 w-3.5" />Force online
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => { setHistoryId(row.id || ""); }}>History</Button>
+                        {row.status === "suspended" ? (
+                          <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "unsuspend", id: row.id! })}>Unsuspend</Button>
+                        ) : (
+                          <Button size="sm" variant="outline" disabled={row.status === "revoked"} onClick={() => actionMut.mutate({ op: "suspend", id: row.id! })}>Suspend</Button>
+                        )}
+                        <Button size="sm" variant="destructive" disabled={row.status === "revoked"} onClick={() => {
+                          if (confirm("Revoke this license on all devices?")) actionMut.mutate({ op: "revoke", id: row.id! });
+                        }}>
+                          <Ban className="mr-1 h-3.5 w-3.5" />Revoke
+                        </Button>
+                      </div>
                     </div>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      <Button size="sm" variant="outline" onClick={() => activateMut.mutate(row.license_key)} disabled={row.status === "suspended" || row.status === "revoked"}>Activate here</Button>
-                      <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "renew", id: row.id!, days: renewDays })}>
-                        <CalendarPlus className="mr-1 h-3.5 w-3.5" />Extend
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "force", id: row.id! })}>
-                        <Wifi className="mr-1 h-3.5 w-3.5" />Force online
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => { setHistoryId(row.id || ""); }}>History</Button>
-                      {row.status === "suspended" ? (
-                        <Button size="sm" variant="outline" onClick={() => actionMut.mutate({ op: "unsuspend", id: row.id! })}>Unsuspend</Button>
-                      ) : (
-                        <Button size="sm" variant="outline" disabled={row.status === "revoked"} onClick={() => actionMut.mutate({ op: "suspend", id: row.id! })}>Suspend</Button>
-                      )}
-                      <Button size="sm" variant="destructive" disabled={row.status === "revoked"} onClick={() => {
-                        if (confirm("Revoke this license on all devices?")) actionMut.mutate({ op: "revoke", id: row.id! });
-                      }}>
-                        <Ban className="mr-1 h-3.5 w-3.5" />Revoke
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

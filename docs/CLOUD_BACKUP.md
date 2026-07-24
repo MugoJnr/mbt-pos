@@ -30,6 +30,19 @@ POS (PyQt5 + SQLite)
 
 ## Configure Supabase
 
+### Shop installs (production)
+
+From **3.0.5+**, the desktop app ships the production Portal **URL + public anon key**
+(`backend/cloud_backup/defaults.py`) and seeds
+`%LOCALAPPDATA%\MugoByte\MBT POS\config\cloud_config.json` on first launch.
+
+Shop owners only need to **sign in with their portal.mugobyte.com email/password**
+(wizard, activation screen, or Settings → Cloud Backup). No manual key files.
+
+The **service-role key is never shipped** in the installer.
+
+### Developer / custom projects
+
 1. Create a project at [supabase.com](https://supabase.com)
 2. Install the Supabase CLI and authenticate with `supabase login`
 3. Apply `supabase/migrations` with `supabase link --project-ref <project-ref>`
@@ -38,29 +51,14 @@ POS (PyQt5 + SQLite)
    business-folder-scoped Storage policies
 5. Authentication → Providers → Email enabled
 6. Copy **Project URL** + **anon public** key
-7. On the POS PC, create:
+7. Override via AppData `cloud_config.json` (see `config/cloud_config.example.json`)
+   or env: `MBT_SUPABASE_URL`, `MBT_SUPABASE_ANON_KEY` (optional `MBT_SUPABASE_SERVICE_KEY`).
 
-`%LOCALAPPDATA%\MugoByte\MBT POS\config\cloud_config.json`
-
-(from `config/cloud_config.example.json`):
-
-```json
-{
-  "supabase_url": "https://xxxx.supabase.co",
-  "anon_key": "eyJ...",
-  "enabled": false,
-  "backup_interval_minutes": 5,
-  "bucket": "mbt-backups"
-}
-```
-
-Or set env vars: `MBT_SUPABASE_URL`, `MBT_SUPABASE_ANON_KEY` (optional `MBT_SUPABASE_SERVICE_KEY`).
-
-**Never commit real keys.** `cloud_config.json` and `cloud_identity.json` stay in AppData (gitignored patterns for `.env` / local config).
+**Never commit the service-role key.** Identity tokens stay in AppData `cloud_identity.json`.
 
 ## First run
 
-- Wizard / Settings: **Create New Business** or **Login Existing**
+- Wizard / Settings: **Create New Business** or **Login Existing** (Portal account)
 - If backups exist after login → offer restore
 - **Continue offline** skips cloud; cashiers are never blocked
 

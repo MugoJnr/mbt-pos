@@ -11,7 +11,8 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
                                     tbl_right, tbl_center, page_layout, PageChrome,
                                     retint_table_items,
-                                    apply_table_row_backgrounds, table_row_bg_hex)
+                                    apply_table_row_backgrounds, table_row_bg_hex,
+                                    align_header_right)
 from desktop.utils.security import (has_permission, require_permission,
                                      ask_superadmin_pin, ROLE_SUPERADMIN)
 from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS, PRODUCT_STATUSES
@@ -38,12 +39,44 @@ def _safe_float(v, default=0.0):
         return default
 
 
-def _fmt_stock(v):
-    """Display stock â€” show decimals when needed (e.g. 89.75 after quarter sales)."""
+def _fmt_stock(v, unit=None):
+    """Display stock — prefer whole numbers; one decimal only when truly fractional."""
     f = _safe_float(v, 0)
-    if abs(f - round(f)) < 1e-9:
+    if abs(f - round(f)) < 0.05:
         return str(int(round(f)))
-    return f"{f:g}"
+    # Continuous units (kg, L, m): one clean decimal, never trailing noise
+    return f"{f:.1f}".rstrip('0').rstrip('.') if abs(f) >= 0.1 else f"{f:.2f}"
+
+
+def _stock_pill(row_i, label, tone, tooltip=''):
+    """
+    Unified stock badge — color-coded pill, right-aligned in the Stock column.
+    tone: err (OUT) | warn (low) | ok (in stock). Label stays short (OUT / qty).
+    """
+    if tone == 'err':
+        bg, fg = C['err'], C.get('on_danger', '#FFFFFF')
+    elif tone == 'warn':
+        bg, fg = C['warn'], C.get('gold_fg', '#0B1220')
+    else:
+        bg, fg = C.get('ok_dim', C['card2']), C['ok']
+    badge = QLabel(label)
+    badge.setAlignment(Qt.AlignCenter)
+    badge.setFixedHeight(22)
+    # Size to contents so "OUT" / "41.5" never clip inside the pill
+    badge.adjustSize()
+    badge.setMinimumWidth(max(44, badge.sizeHint().width() + 16))
+    badge.setToolTip(tooltip)
+    badge.setStyleSheet(
+        f"QLabel {{ background:{bg}; color:{fg}; border:none; border-radius:6px; "
+        f"font-size:11px; font-weight:800; padding:0 8px; }}")
+    wrap = QWidget()
+    wrap.setAutoFillBackground(True)
+    wrap.setStyleSheet(f'background: {table_row_bg_hex(row_i)}; border: none;')
+    wl = QHBoxLayout(wrap)
+    wl.setContentsMargins(6, 4, 10, 4)
+    wl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    wl.addWidget(badge)
+    return wrap
 
 
 class InventoryTab(QWidget):
@@ -81,7 +114,12 @@ class InventoryTab(QWidget):
         tb.addWidget(cats_btn)
 
         if self._role() == ROLE_SUPERADMIN:
-            adj = SecondaryBtn('\u2699  Adjust Stock', 40)
+            adj = SecondaryBtn('Adjust Stock', 40)
+            try:
+                from desktop.utils.nav_icons import apply_button_icon
+                apply_button_icon(adj, 'gear', 15)
+            except Exception:
+                pass
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
             recv = SecondaryBtn('Receive Stock', 40)
@@ -97,7 +135,12 @@ class InventoryTab(QWidget):
         exp.clicked.connect(self._export_inventory)
         tb.addWidget(exp)
 
-        ref = GhostBtn('\u21bb  Refresh', 40)
+        ref = GhostBtn('Refresh', 40)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref, 'refresh', 15)
+        except Exception:
+            pass
         ref.clicked.connect(self.refresh)
         tb.addWidget(ref)
         lay.addLayout(tb)
@@ -110,35 +153,61 @@ class InventoryTab(QWidget):
             stretch_col=0, row_height=56)
         self._tbl.setAlternatingRowColors(False)  # zebra via BackgroundRole only
         hdr = self._tbl.horizontalHeader()
-        # Wider fixed columns so Cost/Category/Unit aren't clipped to "KES â€¦"
+        hdr.setSectionsClickable(True)
+        hdr.setHighlightSections(False)
+        hdr.setFixedHeight(40)
+        hdr.setStyleSheet(
+            f"QHeaderView::section {{ background:{C['card2']}; color:{C['text2']}; "
+            f"font-size:11px; font-weight:700; letter-spacing:0.6px; "
+            f"padding:10px 12px; border:none; border-bottom:2px solid {C['border2']}; }}")
+        # Category shows retail category (not supplier tags); tooltips carry source.
         widths = {
-            1: 100,   # SKU
-            2: 160,   # Category
-            3: 130,   # Price
-            4: 130,   # Cost
-            5: 80,    # Stock
-            6: 90,    # Unit
-            7: 230,   # Actions (History + Edit + Delete)
+            1: 88,    # SKU
+            2: 200,   # Category — wider so labels don't mid-word truncate
+            3: 122,   # Price
+            4: 122,   # Cost — room for KES 4,450.00
+            5: 100,   # Stock — OUT / numeric pills, right-aligned
+            6: 100,   # Unit — avoid "per ..." truncation
+            7: 92,    # Actions — ⋮ control + header "Actions" fully visible
         }
         for col, w in widths.items():
-            hdr.setSectionResizeMode(col, QHeaderView.Fixed)
+            mode = QHeaderView.Interactive if col == 2 else QHeaderView.Fixed
+            hdr.setSectionResizeMode(col, mode)
             self._tbl.setColumnWidth(col, w)
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        hdr.setMinimumSectionSize(70)
+        hdr.setMinimumSectionSize(72)
+        hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        align_header_right(self._tbl, 3, 4, 5)
         self._tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._tbl.setWordWrap(False)
         self._tbl.setTextElideMode(Qt.ElideRight)
+        # Keep Actions header fully painted (avoid right-edge clip into scrollbar)
+        self._tbl.horizontalHeader().setStretchLastSection(False)
         wl.addWidget(self._tbl)
         lay.addWidget(wrap, 1)
+        # Sticky-style footer card — clear gap so last table row never looks overlapped
+        self._stats_footer = QFrame()
+        self._stats_footer.setObjectName('invStatsFooter')
+        fl = QHBoxLayout(self._stats_footer)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.setSpacing(0)
         self._stats = Caption('')
         self._stats.setObjectName('invStatsCaption')
+        fl.addWidget(self._stats)
         self._apply_stats_style()
-        lay.addWidget(self._stats)
+        lay.addSpacing(10)
+        lay.addWidget(self._stats_footer)
+        lay.addSpacing(10)
 
     def _apply_stats_style(self):
+        self._stats_footer.setStyleSheet(
+            f"QFrame#invStatsFooter {{ background:transparent; border:none; "
+            f"margin:0; padding:0; }}")
         self._stats.setStyleSheet(
-            f"color:{C['text2']}; font-size:13px; font-weight:600; "
-            f"background:transparent; padding:4px 2px;")
+            f"QLabel#invStatsCaption {{ color:{C['text2']}; font-size:13px; font-weight:600; "
+            f"background:{C['card']}; border:1px solid {C['border']}; border-radius:10px; "
+            f"padding:12px 16px; min-height:22px; }}")
 
     def on_show(self): self.refresh()
 
@@ -261,6 +330,10 @@ class InventoryTab(QWidget):
             f"Stock value: {cur} {tot:,.2f}")
         # Final pass — guarantee every visible row has theme-matched zebra roles
         apply_table_row_backgrounds(self._tbl)
+        # Zero-stock tint must win over zebra (scan aid vs low-stock red text alone)
+        for i, p in enumerate(prods):
+            if _safe_float(p.get('stock'), 0) <= 0:
+                self._apply_zero_stock_row(i)
 
     def _populate_row(self, i, p, cur, can_edit, can_delete):
         self._tbl.insertRow(i)
@@ -269,105 +342,124 @@ class InventoryTab(QWidget):
         is_low = stock <= mins
         is_zero = stock <= 0
 
-        name = p.get('name', '') or ''
+        from desktop.utils.display_category import display_category, normalize_product_name
+        raw_name = p.get('name', '') or ''
+        name = normalize_product_name(raw_name)
         sku = p.get('sku', '') or ''
-        cat = p.get('category', '') or ''
+        cat_label, cat_tip = display_category(p.get('category', '') or '', raw_name)
         unit = p.get('unit', 'pcs') or 'pcs'
         price_s = f"{cur} {_safe_float(p.get('price')):,.2f}"
         cost_s = f"{cur} {_safe_float(p.get('cost_price')):,.2f}"
 
         name_item = tbl_item(name, tone='text')
-        name_item.setToolTip(name)
+        name_item.setToolTip(raw_name if raw_name != name else name)
         self._tbl.setItem(i, 0, name_item)
 
-        sku_item = tbl_item(sku, tone='text')
-        sku_item.setToolTip(sku)
+        sku_item = tbl_item(sku if sku else '—', tone='text2' if not sku else 'text')
+        sku_item.setToolTip(sku or 'No SKU')
         self._tbl.setItem(i, 1, sku_item)
 
-        cat_item = tbl_item(cat, tone='text')
-        cat_item.setToolTip(cat)
+        # Always a real category label — prefer inferred; soft "General" over Uncategorized spam
+        if not cat_label or cat_label in ('—', '-', 'N/A', 'Uncategorized'):
+            cat_label = 'General'
+        cat_tone = 'text'
+        cat_item = tbl_item(cat_label, tone=cat_tone)
+        cat_item.setToolTip(cat_tip or cat_label)
         self._tbl.setItem(i, 2, cat_item)
 
-        price_item = tbl_right(price_s, tone='gold')
-        price_item.setToolTip(price_s)
+        if _safe_float(p.get('price')) <= 0.009:
+            price_item = tbl_right('—', tone='muted')
+            price_item.setToolTip('No sell price set')
+        else:
+            price_item = tbl_right(price_s, tone='gold')
+            price_item.setToolTip(price_s)
         self._tbl.setItem(i, 3, price_item)
 
-        cost_item = tbl_right(cost_s, tone='text')
-        cost_item.setToolTip(cost_s)
+        if _safe_float(p.get('cost_price')) <= 0.009:
+            cost_item = tbl_right('—', tone='muted')
+            cost_item.setToolTip('No cost set')
+        else:
+            cost_item = tbl_right(cost_s, tone='text')
+            cost_item.setToolTip(cost_s)
         self._tbl.setItem(i, 4, cost_item)
 
-        stk_tone = 'err' if is_zero else ('warn' if is_low else 'text2')
-        stk_item  = tbl_center(_fmt_stock(stock), tone=stk_tone)
-        if is_low:
-            f = stk_item.font(); f.setBold(True); stk_item.setFont(f)
-        self._tbl.setItem(i, 5, stk_item)
+        stk_s = _fmt_stock(stock, unit)
+        stk_item = QTableWidgetItem('')
+        stk_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        stk_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        if is_zero:
+            stk_item.setData(Qt.UserRole + 40, 'out_of_stock')
+            tip = f'Out of stock · {stk_s} {unit}'
+            stk_item.setToolTip(tip)
+            self._tbl.setItem(i, 5, stk_item)
+            self._tbl.setCellWidget(i, 5, _stock_pill(i, 'OUT', 'err', tip))
+        elif is_low:
+            tip = f'{stk_s} {unit} · low stock'
+            stk_item.setToolTip(tip)
+            self._tbl.setItem(i, 5, stk_item)
+            # Short label — color carries "low"; full text in tooltip
+            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'warn', tip))
+        else:
+            tip = f'{stk_s} {unit}'
+            stk_item.setToolTip(tip)
+            self._tbl.setItem(i, 5, stk_item)
+            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'ok', tip))
 
         unit_item = tbl_center(unit, tone='text2')
         unit_item.setToolTip(unit)
         self._tbl.setItem(i, 6, unit_item)
 
+        # Neutral zebra for actions cell — OUT signal is the stock-column badge only
         row_bg = table_row_bg_hex(i)
         cell = QWidget()
         cell.setAutoFillBackground(True)
         cell.setStyleSheet(f'background: {row_bg}; border: none;')
         cl   = QHBoxLayout(cell)
-        cl.setContentsMargins(8, 6, 8, 6)
-        cl.setSpacing(6)
+        cl.setContentsMargins(8, 4, 10, 4)
+        cl.setSpacing(0)
 
-        # input/hover contrast on both even (card) and odd (card2) zebra rows
-        btn_bg = C['input']
+        # Single overflow control — avoids Edit/Hist/Del clipping in dense rows
+        more = QToolButton()
+        more.setText('⋮')
+        more.setPopupMode(QToolButton.InstantPopup)
+        more.setCursor(Qt.PointingHandCursor)
+        more.setFixedSize(36, 30)
+        more.setToolTip('Product actions')
+        more.setStyleSheet(
+            f"QToolButton {{ background:{C['input']}; color:{C['text']}; "
+            f"border:1px solid {C['border2']}; border-radius:7px; "
+            f"font-size:16px; font-weight:700; padding:0; }}"
+            f"QToolButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
+            f"background:{C['hover']}; }}"
+            f"QToolButton::menu-indicator {{ image:none; width:0; }}"
+        )
+        menu = QMenu(more)
+        menu.setStyleSheet(
+            f"QMenu {{ background:{C['card']}; color:{C['text']}; "
+            f"border:1px solid {C['border']}; padding:4px; }}"
+            f"QMenu::item {{ padding:8px 18px; border-radius:6px; }}"
+            f"QMenu::item:selected {{ background:{C['hover']}; color:{C['gold']}; }}"
+        )
         if can_edit:
-            eb = QPushButton('Edit')
-            eb.setCursor(Qt.PointingHandCursor)
-            eb.setFixedHeight(32)
-            eb.setMinimumWidth(54)
-            eb.setToolTip('Edit product')
-            eb.setStyleSheet(
-                f"QPushButton {{ background:{btn_bg}; color:{C['text']}; "
-                f"border:1px solid {C['border2']}; border-radius:8px; "
-                f"font-size:12px; font-weight:700; padding:4px 10px; }}"
-                f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
-                f"background:{C['hover']}; }}")
-            eb.clicked.connect(lambda _, pid=p['id']: self._edit(pid))
-            cl.addWidget(eb)
-
-        # History is available to anyone who can see inventory
-        hb = QPushButton('History')
-        hb.setCursor(Qt.PointingHandCursor)
-        hb.setFixedHeight(32)
-        hb.setMinimumWidth(68)
-        hb.setToolTip('Stock adjustments and sales since this product was added')
-        hb.setStyleSheet(
-            f"QPushButton {{ background:{btn_bg}; color:{C['text']}; "
-            f"border:1px solid {C['border2']}; border-radius:8px; "
-            f"font-size:12px; font-weight:700; padding:4px 10px; }}"
-            f"QPushButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
-            f"background:{C['hover']}; }}")
-        hb.clicked.connect(lambda _, pid=p['id']: self._show_history(pid))
-        cl.addWidget(hb)
-
+            act_edit = menu.addAction('Edit product')
+            act_edit.triggered.connect(lambda _=False, pid=p['id']: self._edit(pid))
+        act_hist = menu.addAction('History')
+        act_hist.triggered.connect(lambda _=False, pid=p['id']: self._show_history(pid))
         if can_delete:
-            db_b = QPushButton('Delete')
-            db_b.setCursor(Qt.PointingHandCursor)
-            db_b.setFixedHeight(32)
-            db_b.setMinimumWidth(62)
-            db_b.setToolTip('Delete product')
-            db_b.setStyleSheet(
-                f"QPushButton {{ background:{C['err']}; color:#FFFFFF; "
-                f"border:none; border-radius:8px; "
-                f"font-size:12px; font-weight:700; padding:4px 10px; }}"
-                f"QPushButton:hover {{ background:{C['err']}; color:#FFFFFF; "
-                f"border:1px solid {C['text']}; }}")
-            db_b.clicked.connect(lambda _, pid=p['id']: self._delete(pid))
-            cl.addWidget(db_b)
-
-        if not can_edit and not can_delete:
-            # History still shown above; only add View only if somehow no History
-            pass
-
+            menu.addSeparator()
+            act_del = menu.addAction('Delete')
+            act_del.triggered.connect(lambda _=False, pid=p['id']: self._delete(pid))
+        more.setMenu(menu)
         cl.addStretch()
+        cl.addWidget(more)
         self._tbl.setCellWidget(i, 7, cell)
         apply_table_row_backgrounds(self._tbl, row=i)
+        if is_zero:
+            self._apply_zero_stock_row(i)
+
+    def _apply_zero_stock_row(self, row: int):
+        """OUT is badge-only — keep zebra row background (no maroon full-row tint)."""
+        return
     def _receive_stock_dialog(self):
         if self._role() != ROLE_SUPERADMIN:
             QMessageBox.warning(self, 'Access Denied',

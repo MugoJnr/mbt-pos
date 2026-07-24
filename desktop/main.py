@@ -1,4 +1,4 @@
-﻿"""
+"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-07-22-v3.0.4"
-APP_VERSION   = "3.0.4"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-07-24-v3.0.12"
+APP_VERSION   = "3.0.12"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -155,7 +155,7 @@ class LoginDialog(QDialog):
         self.setWindowIcon(icon)
         self.setFixedSize(460, 580)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        # Inherit live QApplication ThemeManager sheet â€” do NOT freeze a copy
+        # Inherit live QApplication ThemeManager sheet ? do NOT freeze a copy
         # (stale DARK QSS on the dialog caused light-mode hybrid on login).
         self.setStyleSheet('')
         self._build()
@@ -435,14 +435,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MBT POS - MugoByte Technologies")
         self.setWindowIcon(icon)
         self.setMinimumSize(1200, 720)
-        # Do NOT freeze a copy of MBT_STYLESHEET on the window â€” it blocks ThemeManager
+        # Do NOT freeze a copy of MBT_STYLESHEET on the window ? it blocks ThemeManager
         # light/dark updates (QApp sheet never reaches #sidebar / #topbar). Inherit QApp.
         self.setStyleSheet('')
 
         self._db_path = get_db_path()
 
         # Apply saved theme BEFORE building widgets. Re-applying light QSS after
-        # 11 tabs exist re-polishes the whole tree and freezes Windows 25â€“80s
+        # 11 tabs exist re-polishes the whole tree and freezes Windows 25?80s
         # (Responding=False). Build once under the correct palette instead.
         self._boot_is_light = self._read_theme_pref()
         try:
@@ -453,7 +453,7 @@ class MainWindow(QMainWindow):
             log.warning(f'boot theme: {e}')
             self._boot_is_light = bool(ThemeManager.is_light())
 
-        # UI first â€” services second (never block render)
+        # UI first ? services second (never block render)
         self._build_ui()
         try:
             from desktop.utils.audio_manager import get_audio
@@ -462,7 +462,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         # Lazy tabs: only build the first page before paint. Eagerly constructing
-        # all 11 tabs under light QSS freezes Windows (Not Responding) for 40â€“80s
+        # all 11 tabs under light QSS freezes Windows (Not Responding) for 40?80s
         # and blocks QA/theme evidence dumps.
         self._tabs = {}
         self._tab_kw = dict(
@@ -488,7 +488,7 @@ class MainWindow(QMainWindow):
         self._ensure_tab('dashboard')
         # Paint shell chrome from live C (sidebar/topbar need WA_StyledBackground tint)
         self._refresh_chrome_styles()
-        # Floating AI assistant (every screen) â€” vendor-managed OpenRouter; offline-safe
+        # Floating AI assistant (every screen) ? vendor-managed OpenRouter; offline-safe
         self._install_ai_assistant()
 
         self.signals.connection_changed.connect(self._on_conn)
@@ -505,7 +505,7 @@ class MainWindow(QMainWindow):
             if hasattr(dash, 'theme_changed'):
                 dash.theme_changed.connect(self._apply_app_theme)
 
-        # Paint chrome first â€” defer first-tab show so the maximized frame paints
+        # Paint chrome first ? defer first-tab show so the maximized frame paints
         self.showMaximized()
         # Optional evidence dumps: set MBT_QA_THEME=1 before RUN_DEV
         if os.environ.get('MBT_QA_THEME', '').strip() in ('1', 'true', 'yes'):
@@ -662,7 +662,7 @@ class MainWindow(QMainWindow):
             elif module == 'sales':
                 rn = (payload or {}).get('receipt_number') or ''
                 if rn and hasattr(tab, '_reprint_receipt'):
-                    # Prefer focusing search / note — receipt open is user-driven
+                    # Prefer focusing search / note ? receipt open is user-driven
                     if hasattr(tab, '_search'):
                         tab._search.setText(rn)
                 elif hasattr(tab, '_search') and (payload or {}).get('query'):
@@ -714,7 +714,7 @@ class MainWindow(QMainWindow):
             if hasattr(w, 'sale_completed'):
                 if 'dashboard' in self._tabs and hasattr(self._tabs['dashboard'], '_load'):
                     w.sale_completed.connect(self._tabs['dashboard']._load)
-                # reports may not exist yet — reconnect in _ensure_tab('reports') if needed
+                # reports may not exist yet ? reconnect in _ensure_tab('reports') if needed
             if hasattr(w, 'theme_changed'):
                 w.theme_changed.connect(self._apply_app_theme)
             if hasattr(w, 'focus_mode_toggled'):
@@ -766,7 +766,7 @@ class MainWindow(QMainWindow):
                     os.path.join(out, '05_content_center.png'), 'PNG')
             mode = 'light' if ThemeManager.is_light() else 'dark'
             log.info('QA theme evidence dump (%s) -> %s (%dx%d)', mode, out, w, h)
-            # Late dump after dashboard paints (no auto POS nav â€” that raced warm-tabs)
+            # Late dump after dashboard paints (no auto POS nav ? that raced warm-tabs)
             QTimer.singleShot(1200, self._qa_dump_theme_evidence_late)
         except Exception as e:
             log.warning('QA evidence dump: %s', e)
@@ -784,7 +784,7 @@ class MainWindow(QMainWindow):
             log.warning('QA late dump: %s', e)
 
     def _qa_dump_sales_evidence(self):
-        """Optional â€” call manually / from tests; not auto-chained (avoids hang)."""
+        """Optional ? call manually / from tests; not auto-chained (avoids hang)."""
         try:
             out = os.path.join(
                 os.path.expanduser('~'), 'OneDrive', 'Desktop',
@@ -977,6 +977,7 @@ class MainWindow(QMainWindow):
 
     def _on_install_failed(self, version, reason):
         def _show():
+            # Non-modal: status + Update button. Avoid surprise OK dialogs on POS open.
             title = 'Update Could Not Install'
             msg = reason or ''
             if msg and '\n\n' in msg:
@@ -984,20 +985,40 @@ class MainWindow(QMainWindow):
                 if len(head) < 60 and not head.startswith('Update v'):
                     title = head
                     msg = body
-            QMessageBox.warning(
-                self, title,
-                f'Update v{version} could not install.\n\n{msg}')
+            key = f'install:{version}:{title}'
+            if key == getattr(self, '_update_fail_key', None):
+                return
+            self._update_fail_key = key
+            btn = getattr(self, '_update_btn', None)
+            if btn:
+                btn.setText(f'  Update v{version}  ')
+                btn.setToolTip(f'{title}\n\n{msg}'[:500])
+                btn.show()
+                btn.raise_()
+            try:
+                if hasattr(self, '_sync_lbl') and self._sync_lbl is not None:
+                    self._sync_lbl.setText(f'Update: {title}'[:40])
+            except Exception:
+                pass
         QTimer.singleShot(3000, _show)
 
     def _on_download_failed(self, version, title, reason):
         def _show():
+            key = f'dl:{version}:{title}'
+            if key == getattr(self, '_update_fail_key', None):
+                return
+            self._update_fail_key = key
             btn = getattr(self, '_update_btn', None)
             if btn:
-                btn.setText(f"  Downloading v{version}...  ")
+                btn.setText(f'  Update v{version}  ')
+                btn.setToolTip((reason or title or 'Download issue')[:500])
                 btn.show()
-            QMessageBox.warning(
-                self, title or 'Update Download',
-                reason or 'The update is still downloading in the background.')
+                btn.raise_()
+            try:
+                if hasattr(self, '_sync_lbl') and self._sync_lbl is not None:
+                    self._sync_lbl.setText((title or 'Update')[:40])
+            except Exception:
+                pass
         QTimer.singleShot(0, _show)
 
     def is_safe_to_auto_update(self) -> bool:
@@ -1071,7 +1092,7 @@ class MainWindow(QMainWindow):
         can, reason = updater.can_unattended_install()
         if not can:
             log.info('Unattended update deferred: %s', reason)
-            # Missing helper/checksum — keep manual button; stop hammering
+            # Missing helper/checksum ? keep manual button; stop hammering
             if reason in (
                 'missing_checksum', 'helper_not_registered',
                 'fail_cooldown', 'already_installed', 'blocked_version',
@@ -1211,7 +1232,7 @@ class MainWindow(QMainWindow):
                 'No Windows permission prompt is needed on this PC.')
         else:
             perm = (
-                '<b>Windows will ask for permission once — click Yes.</b><br>'
+                '<b>Windows will ask for permission once ? click Yes.</b><br>'
                 'That stages silent updates for next time.<br>'
                 'If you see "Windows protected your PC", click <b>More info</b> '
                 'then <b>Run anyway</b>.')
@@ -1277,7 +1298,7 @@ class MainWindow(QMainWindow):
         root.addWidget(right, 1)
 
     def _build_sidebar(self):
-        # AppShell sidebar â€” 240px (matches theme QSS), logo + brand, gold active rail
+        # AppShell sidebar ? 240px (matches theme QSS), logo + brand, gold active rail
         sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(240)
         # QWidget backgrounds need styled-background or light QSS never paints
         sb.setAttribute(Qt.WA_StyledBackground, True)
@@ -1285,7 +1306,7 @@ class MainWindow(QMainWindow):
         self._sidebar = sb
         sl = QVBoxLayout(sb); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
 
-        # Logo block â€” HD mark + MBT / POS SYSTEM
+        # Logo block ? HD mark + MBT / POS SYSTEM
         lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(80)
         ll = QHBoxLayout(lw)
         ll.setContentsMargins(16, 12, 16, 12); ll.setSpacing(12)
@@ -1301,38 +1322,46 @@ class MainWindow(QMainWindow):
 
         sl.addSpacing(8)
 
-        # Navigation â€” scrollable when many tabs / short displays
+        # Navigation ? scrollable when many tabs / short displays
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
-        # Icons: BMP geometric / ASCII only — never emoji (mojibake on some Windows PCs).
+        # Painted vector icons (no emoji / ASCII glyph placeholders)
+        from desktop.utils.nav_icons import nav_icon
+        from PyQt5.QtCore import QSize
         tabs  = [
-            ('dashboard',   '\u229e',  'Dashboard'),
-            ('sales',       '\u2295',  'Point of Sale'),
-            ('inventory',   '\u25a4',  'Inventory'),
-            ('consumption', '\u25a3',  'Internal Consumption'),
-            ('debt',        '$',       'Debt Management'),
-            ('accounting',  '\u2395',  'Finance'),
-            ('reports',     '\u25a6',  'Reports'),
-            ('notes',       '\u2261',  'Notes'),
-            ('ai_ops',      '*',       'AI Operations'),
-            ('admin',       '\u229b',  'Users && Access'),
-            ('settings',    '#',       'Settings'),
-            ('security',    '!',       'Security'),
-            ('license',     '\u25c8',  'License'),
-            ('diagnostics', '+',       'Diagnostics'),
+            ('dashboard',   'Dashboard'),
+            ('sales',       'Point of Sale'),
+            ('inventory',   'Inventory'),
+            ('consumption', 'Internal Consumption'),
+            ('debt',        'Debt Management'),
+            ('accounting',  'Finance'),
+            ('reports',     'Reports'),
+            ('notes',       'Notes'),
+            ('ai_ops',      'AI Operations'),
+            ('admin',       'Users && Access'),
+            ('settings',    'Settings'),
+            ('security',    'Security'),
+            ('license',     'License'),
+            ('diagnostics', 'Diagnostics'),
         ]
         nav_scroll = QScrollArea()
+        nav_scroll.setObjectName('posNavScroll')
         nav_scroll.setWidgetResizable(True)
         nav_scroll.setFrameShape(QFrame.NoFrame)
         nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         nav_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        try:
+            from desktop.utils.no_wheel_small_scroll import mark_wheel_scroll
+            mark_wheel_scroll(nav_scroll, True)
+        except Exception:
+            pass
         nav_body = QWidget()
         nav_body.setStyleSheet("background:transparent;")
         nv = QVBoxLayout(nav_body)
         nv.setContentsMargins(0, 6, 0, 6)
         nv.setSpacing(2)
-        for tid, icon, lbl in tabs:
+        for tid, lbl in tabs:
             if tid in ('security', 'license') and role != 'superadmin':
                 continue
             # AI Operations: manager / admin / superadmin (even if legacy tab_permissions omit it)
@@ -1340,10 +1369,15 @@ class MainWindow(QMainWindow):
                 continue
             if tid != 'ai_ops' and role != 'admin' and role != 'superadmin' and tid not in perms:
                 continue
-            btn = QPushButton(f"  {icon}   {lbl}")
+            btn = QPushButton(f"  {lbl}")
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
+            try:
+                btn.setIcon(nav_icon(tid, 18))
+                btn.setIconSize(QSize(18, 18))
+            except Exception:
+                pass
             btn.clicked.connect(lambda _, t=tid: self._goto(t))
             nv.addWidget(btn)
             self._nav[tid] = btn
@@ -1375,12 +1409,26 @@ class MainWindow(QMainWindow):
         self._page_title = QLabel("Dashboard"); self._page_title.setObjectName("pageTitle")
         lay.addWidget(self._page_title); lay.addStretch()
 
-        # Connection badge
-        self._conn_lbl = QLabel("\u25cf Online")
-        self._conn_lbl.setObjectName("connBadge")
+        # Connection badge ? painted green online/offline dot (no tofu ?)
+        conn_wrap = QWidget()
+        conn_lay = QHBoxLayout(conn_wrap)
+        conn_lay.setContentsMargins(0, 0, 0, 0)
+        conn_lay.setSpacing(6)
+        self._conn_dot = QLabel()
+        self._conn_dot.setFixedSize(12, 12)
+        try:
+            from desktop.utils.nav_icons import action_icon
+            self._conn_dot.setPixmap(action_icon('online', 10, accent=C['ok']).pixmap(10, 10))
+        except Exception:
+            pass
+        self._conn_lbl = QLabel('Online')
+        self._conn_lbl.setObjectName('connBadge')
         self._conn_lbl.setStyleSheet(
             f"color:{C['ok']}; font-size:12px; font-weight:600; background:transparent;")
-        lay.addWidget(self._conn_lbl)
+        conn_lay.addWidget(self._conn_dot)
+        conn_lay.addWidget(self._conn_lbl)
+        lay.addWidget(conn_wrap)
+        self._conn_wrap = conn_wrap
 
         self._sync_lbl = QLabel(""); self._sync_lbl.setObjectName("syncLbl")
         lay.addWidget(self._sync_lbl)
@@ -1408,10 +1456,20 @@ class MainWindow(QMainWindow):
             "Uses local http://127.0.0.1:5050 when available;\n"
             "falls back to your mugobyte.com remote URL if configured.")
         web_btn.clicked.connect(self._open_web_dashboard)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(web_btn, 'live', 15)
+        except Exception:
+            pass
         lay.addWidget(web_btn)
 
-        ref_btn = QPushButton("\u21bb  Refresh"); ref_btn.setObjectName("refreshBtn")
+        ref_btn = QPushButton("Refresh"); ref_btn.setObjectName("refreshBtn")
         ref_btn.setCursor(Qt.PointingHandCursor); ref_btn.clicked.connect(self._manual_refresh)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(ref_btn, 'refresh', 15)
+        except Exception:
+            pass
         lay.addWidget(ref_btn)
 
         from desktop.utils.widgets import ThemeSwitchBar
@@ -1426,7 +1484,7 @@ class MainWindow(QMainWindow):
 
     def _build_statusbar(self):
         bar = QWidget(); bar.setObjectName("statusBar"); bar.setFixedHeight(36)
-        # QWidget ignores QSS backgrounds unless styled-background is on â€”
+        # QWidget ignores QSS backgrounds unless styled-background is on ?
         # without this, light mode can leave a dark parent/chrome strip.
         bar.setAttribute(Qt.WA_StyledBackground, True)
         bar.setAutoFillBackground(True)
@@ -1434,8 +1492,8 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(bar); lay.setContentsMargins(PADDING, 0, PADDING, 0)
         l = QLabel("MBT POS \u00b7 MugoByte Technologies"); l.setObjectName("statusLeft")
         runtime = "EXE" if getattr(sys, 'frozen', False) else "DEV"
-        exe_name = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else "python"
-        r = QLabel(f"v{APP_VERSION} \u00b7 {APP_BUILD_TAG} \u00b7 {runtime}:{exe_name}")
+        # Production chrome: version only ? RC / DEV:python stay in tooltip (not footer).
+        r = QLabel(f"v{APP_VERSION}")
         r.setObjectName("statusRight")
         r.setToolTip(
             f"Version: {APP_VERSION}\n"
@@ -1507,7 +1565,7 @@ class MainWindow(QMainWindow):
 
     def _goto(self, tid: str):
         prev = getattr(self, '_active_tab_id', None)
-        # Leaving sales while maximized — restore shell chrome + cart split
+        # Leaving sales while maximized ? restore shell chrome + cart split
         if prev == 'sales' and tid != 'sales':
             sales = self._tabs.get('sales')
             if sales is not None:
@@ -1529,6 +1587,14 @@ class MainWindow(QMainWindow):
                     prev, self._tabs.get(prev), self._cfg() if hasattr(self, '_cfg') else {})
             except Exception:
                 pass
+            # Inventory edits must not leave POS with stale stock cards
+            if prev == 'inventory' and 'sales' in getattr(self, '_tabs', {}):
+                sales = self._tabs.get('sales')
+                if sales is not None and hasattr(sales, 'invalidate_catalog'):
+                    try:
+                        sales.invalidate_catalog()
+                    except Exception:
+                        pass
         if prev != tid:
             try:
                 from desktop.utils.audio_manager import play as _audio_play
@@ -1560,6 +1626,11 @@ class MainWindow(QMainWindow):
                 ai.set_module(tid)
         except Exception as e:
             log.debug('ai set_module: %s', e)
+        # Re-dock Copilot FAB (hidden on Dashboard ? chart/stat clearance)
+        try:
+            self._position_ai_chrome()
+        except Exception:
+            pass
 
     def set_pos_focus_mode(self, enabled: bool):
         """Hide/show sidebar + topbar so Point of Sale fills the window (U04)."""
@@ -1589,7 +1660,7 @@ class MainWindow(QMainWindow):
             log.debug('pos focus Esc shortcut: %s', e)
 
     def _exit_pos_focus_mode(self):
-        """Esc / restore — cart maximize first, then sync SalesTab focus chrome."""
+        """Esc / restore ? cart maximize first, then sync SalesTab focus chrome."""
         try:
             app = QApplication.instance()
             if app is not None and app.activeModalWidget() is not None:
@@ -1662,7 +1733,7 @@ class MainWindow(QMainWindow):
             fab.show()
             fab.raise_()
         self._position_ai_chrome()
-        # POS stack/tabs never unloaded â€” user returns to same place
+        # POS stack/tabs never unloaded ? user returns to same place
 
     def _position_ai_chrome(self):
         if getattr(self, '_ai_ws_active', False):
@@ -1670,13 +1741,19 @@ class MainWindow(QMainWindow):
         fab = getattr(self, '_ai_fab', None)
         panel = getattr(self, '_ai_panel', None)
         if fab is not None:
-            # Bottom-right of window, above status bar
-            fab.move(self.width() - fab.width() - 20, self.height() - fab.height() - 52)
-            fab.raise_()
-            try:
-                fab.refresh_theme()
-            except Exception:
-                pass
+            # Dashboard owns a quick-action FAB + payment charts at the fold ?
+            # hide Copilot chip here so it never covers By Payment / last KPI row.
+            active = getattr(self, '_active_tab_id', None) or ''
+            if active == 'dashboard':
+                fab.hide()
+            else:
+                fab.show()
+                fab.move(self.width() - fab.width() - 28, self.height() - fab.height() - 120)
+                fab.raise_()
+                try:
+                    fab.refresh_theme()
+                except Exception:
+                    pass
         if panel is not None and panel.isVisible():
             try:
                 panel._reposition()
@@ -1695,7 +1772,7 @@ class MainWindow(QMainWindow):
             return False
 
     def _on_theme_change(self, is_light: bool):
-        """ThemeToggleBtn / sales / dashboard â€” single apply path via _sync_theme_ui."""
+        """ThemeToggleBtn / sales / dashboard ? single apply path via _sync_theme_ui."""
         self._sync_theme_ui(is_light, persist=True)
 
     def _load_saved_theme(self):
@@ -1791,13 +1868,13 @@ class MainWindow(QMainWindow):
         self._theme_gen = getattr(self, '_theme_gen', 0) + 1
         gen = self._theme_gen
         t0 = time.perf_counter()
-        # Freeze paints while QApp stylesheet re-polishes â€” cuts Not Responding time
+        # Freeze paints while QApp stylesheet re-polishes ? cuts Not Responding time
         self.setUpdatesEnabled(False)
         try:
             ThemeManager.apply(is_light, force=True)
             # Clear any leftover window-level QSS so QApplication theme reaches chrome
             self.setStyleSheet('')
-            # ThemeManager already set QApplication stylesheet â€” do NOT also
+            # ThemeManager already set QApplication stylesheet ? do NOT also
             # self.setStyleSheet(full sheet) (second full polish was a major lag source).
 
             if hasattr(self, '_theme_btn') and hasattr(self._theme_btn, '_refresh_theme'):
@@ -1823,7 +1900,7 @@ class MainWindow(QMainWindow):
                     break
 
             # Scope findChildren walk to visible page + sidebar QWidget only
-            # (never pass self._nav â€” that is a dict of buttons, not a QWidget)
+            # (never pass self._nav ? that is a dict of buttons, not a QWidget)
             try:
                 from desktop.utils.widgets import refresh_themed_widgets
                 if cur is not None:
@@ -1857,7 +1934,7 @@ class MainWindow(QMainWindow):
             self._theme_pending_light = is_light
             self._theme_persist = persist
             self._theme_pending_gen = gen
-            # Unlock immediately â€” deferred work must not block the toggle
+            # Unlock immediately ? deferred work must not block the toggle
             self._theme_switching = False
             QTimer.singleShot(0, self._theme_apply_pending_tabs)
         except Exception as e:
@@ -1980,7 +2057,16 @@ class MainWindow(QMainWindow):
     # ?? Status slots ????????????????????????????????????????????????????????????
     def _on_conn(self, ok: bool):
         self._conn_ok = ok
-        self._conn_lbl.setText("\u25cf Online" if ok else "\u25cf Offline")
+        self._conn_lbl.setText("Online" if ok else "Offline")
+        color = C['ok'] if ok else C['err']
+        self._conn_lbl.setStyleSheet(
+            f"color:{color}; font-size:12px; font-weight:600; background:transparent;")
+        try:
+            from desktop.utils.nav_icons import action_icon
+            if hasattr(self, '_conn_dot') and self._conn_dot is not None:
+                self._conn_dot.setPixmap(action_icon('online', 10, accent=color).pixmap(10, 10))
+        except Exception:
+            pass
         self._conn_lbl.setStyleSheet(
             f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:700;")
         if ok:
@@ -2056,8 +2142,16 @@ class MainWindow(QMainWindow):
         self._on_conn(ok)
         cur = self._stack.currentWidget()
         if cur and hasattr(cur, 'refresh'):
-            try: cur.refresh()
-            except Exception: pass
+            try:
+                # Prefer force reload when cashier hits the status refresh
+                cur.refresh(force=True)
+            except TypeError:
+                try:
+                    cur.refresh()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     def _initial_conn_check(self):
         ok = self._svc_net.is_connected if self._svc_net else False
@@ -2119,10 +2213,10 @@ class MainWindow(QMainWindow):
             'Could not open the web dashboard.\n\n'
             f'Local URL ({local_url}) is not responding yet.\n\n'
             'Try again in a few seconds. If it still fails:\n'
-            'â€¢ Allow MBT POS through Windows Firewall (port 5050)\n'
-            'â€¢ Wait for Cloudflare remote setup in Settings, then use your\n'
+            '? Allow MBT POS through Windows Firewall (port 5050)\n'
+            '? Wait for Cloudflare remote setup in Settings, then use your\n'
             '  shop URL (https://yourshop.mugobyte.com)\n'
-            'â€¢ Desktop POS sales still work without the web dashboard',
+            '? Desktop POS sales still work without the web dashboard',
         )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
@@ -2156,8 +2250,8 @@ def _start_web_dashboard():
     """
     Start embedded web dashboard + Cloudflare tunnel in a background thread.
 
-    Must never block the Qt main thread â€” tunnel restart / remote HTTPS checks
-    can take 1â€“3 minutes and previously froze splash/login (Not Responding).
+    Must never block the Qt main thread ? tunnel restart / remote HTTPS checks
+    can take 1?3 minutes and previously froze splash/login (Not Responding).
     Desktop POS uses direct SQLite and does not need Flask to be ready.
     """
     global _web_svc
@@ -2169,7 +2263,7 @@ def _start_web_dashboard():
         try:
             try:
                 from backend.cloudflare_setup import bootstrap_cloudflared
-                # Local file copy only â€” no DNS / network (those blocked splash before)
+                # Local file copy only ? no DNS / network (those blocked splash before)
                 bootstrap_cloudflared()
             except Exception:
                 pass
@@ -2180,7 +2274,7 @@ def _start_web_dashboard():
             if ok:
                 log.info(f"Web dashboard: {svc.url}")
             else:
-                log.warning("Web dashboard could not start â€” desktop POS still works")
+                log.warning("Web dashboard could not start ? desktop POS still works")
         except Exception as e:
             log.warning(f"Web dashboard: {e}")
 
@@ -2249,6 +2343,18 @@ def main():
         app.setStyle('Fusion')
     except Exception:
         pass
+    # App-wide: mouse wheel must scroll panels, never nudge spinbox values
+    try:
+        from desktop.utils.no_wheel_spinbox import install_no_wheel_spinboxes
+        install_no_wheel_spinboxes(app)
+    except Exception:
+        log.exception('Failed to install no-wheel spinbox filter')
+    # App-wide: tiny panels must not steal wheel from large lists / pages
+    try:
+        from desktop.utils.no_wheel_small_scroll import install_no_wheel_small_scroll
+        install_no_wheel_small_scroll(app)
+    except Exception:
+        log.exception('Failed to install no-wheel small-scroll filter')
     install_crash_handler()
     app.setApplicationName("MBT POS")
     app.setOrganizationName("MugoByte Technologies")
@@ -2260,7 +2366,7 @@ def main():
         app.setFont(QFont(primary, 13))
     except Exception:
         app.setFont(QFont('Segoe UI', 13))
-    # Rebuild QSS now that fonts (and QApp) are ready â€” use saved light/dark so
+    # Rebuild QSS now that fonts (and QApp) are ready ? use saved light/dark so
     # login + MainWindow are not built dark then re-polished to light (80s freeze).
     _boot_light = False
     try:

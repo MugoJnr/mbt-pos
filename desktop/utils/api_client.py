@@ -203,6 +203,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         notes TEXT,
         status TEXT DEFAULT 'completed',
         synced INTEGER DEFAULT 0,
+        sale_date TEXT,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(cashier_id) REFERENCES users(id)
     );
@@ -485,6 +486,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         ('after_sale_auto_clear_cart', '1'),
         ('after_sale_reset_discounts', '1'),
         ('after_sale_reset_notes', '1'),
+        ('pos_checkout_layout', 'product_explorer'),
     ):
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():
@@ -653,6 +655,17 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
         if 'original_sale_id' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN original_sale_id INTEGER")
+        if 'sale_date' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN sale_date TEXT")
+            conn.execute(
+                "UPDATE sales SET sale_date=date(created_at) "
+                "WHERE sale_date IS NULL OR sale_date=''"
+            )
+        else:
+            conn.execute(
+                "UPDATE sales SET sale_date=date(created_at) "
+                "WHERE sale_date IS NULL OR sale_date=''"
+            )
     except Exception:
         pass
     # Sale-item returned qty tracking (partial returns)
@@ -874,19 +887,30 @@ def _ensure_categories_table(conn: sqlite3.Connection):
 
 
 # ── Receipt number generator ────────────────────────────────────────────────────
-def _next_receipt(conn=None) -> str:
-    """Generate the next receipt number for today.
+def _sale_day_expr(alias: str = '') -> str:
+    """SQL: business/reporting day for a sale (sale_date or date(created_at))."""
+    from desktop.utils.shop_time import sale_day_sql
+    return sale_day_sql(alias)
+
+
+def _next_receipt(conn=None, business_day=None) -> str:
+    """Generate the next receipt number for a business day (default: shop today).
+
     Accepts an optional open connection so it runs inside the caller's transaction,
     eliminating the race condition when two sales happen in the same second.
     """
-    today = datetime.now().strftime('%Y%m%d')
+    from desktop.utils.shop_time import business_day_iso, shop_today
+    day_s = business_day_iso(business_day) if business_day else shop_today().isoformat()
+    ymd = day_s.replace('-', '')
     close_after = conn is None
     db = conn if conn is not None else _db()
     try:
+        day_expr = _sale_day_expr()
         count = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE date(created_at)=date('now')"
+            f"SELECT COUNT(*) FROM sales WHERE {day_expr}=?",
+            (day_s,),
         ).fetchone()[0]
-        return f"RCP-{today}-{count+1:04d}"
+        return f"RCP-{ymd}-{count+1:04d}"
     finally:
         if close_after:
             db.close()
@@ -1383,8 +1407,11 @@ class APIClient:
     def get_products(self) -> list:
         db = _db()
         try:
+            # Narrow columns — SELECT * was a main-thread stall on large catalogs
             return _rows(db.execute(
-                "SELECT * FROM products WHERE is_active=1 ORDER BY name"
+                "SELECT id, name, sku, barcode, category, price, cost_price, "
+                "stock, min_stock, unit, is_active "
+                "FROM products WHERE is_active=1 ORDER BY name"
             ))
         finally:
             db.close()
@@ -1712,14 +1739,16 @@ class APIClient:
     # ── SALES ─────────────────────────────────────────────────────────────────────
 
     def get_sales(self, start=None, end=None) -> list:
-        start = start or str(date.today())
-        end   = end   or str(date.today())
+        from desktop.utils.shop_time import shop_today
+        start = start or str(shop_today())
+        end   = end   or str(shop_today())
+        day_expr = _sale_day_expr('s')
         db = _db()
         try:
             return _rows(db.execute(
                 "SELECT s.*,GROUP_CONCAT(si.product_name||' x'||si.quantity) as items_summary"
                 " FROM sales s LEFT JOIN sale_items si ON s.id=si.sale_id"
-                " WHERE date(s.created_at) BETWEEN ? AND ?"
+                f" WHERE {day_expr} BETWEEN ? AND ?"
                 " GROUP BY s.id ORDER BY s.created_at DESC",
                 (start, end)
             ))
@@ -1731,36 +1760,78 @@ class APIClient:
         Batch-fetch line items for a date range (avoids N+1 get_sale calls in Reports).
         Returns flat rows with sale header fields joined onto each item.
         """
-        start = start or str(date.today())
-        end = end or str(date.today())
+        from desktop.utils.shop_time import shop_today
+        start = start or str(shop_today())
+        end = end or str(shop_today())
+        day_expr = _sale_day_expr('s')
         db = _db()
         try:
             status_clause = "" if include_voided else " AND s.status='completed' "
             return _rows(db.execute(f"""
                 SELECT si.*,
                        s.receipt_number, s.created_at AS sale_created_at,
+                       s.sale_date AS sale_date,
                        s.cashier_name, s.payment_method, s.status AS sale_status,
                        s.id AS sale_id
                 FROM sale_items si
                 JOIN sales s ON si.sale_id = s.id
-                WHERE date(s.created_at) BETWEEN ? AND ?
+                WHERE {day_expr} BETWEEN ? AND ?
                 {status_clause}
                 ORDER BY s.created_at DESC, si.id ASC
             """, (start, end)))
         finally:
             db.close()
 
+    def _resolve_sale_date(self, data: dict) -> tuple:
+        """
+        Resolve business day from payload.
+
+        Returns (sale_date_iso, is_backdated, created_at_str).
+        Cashiers / unauthorized roles cannot backdate.
+        Future dates rejected.
+        """
+        from desktop.utils.shop_time import (
+            shop_today, business_day_iso, parse_sale_date, sale_created_at_for_day,
+        )
+        today = shop_today()
+        today_s = today.isoformat()
+        raw = (data.get('sale_date') or data.get('business_day') or '').strip()
+        requested = parse_sale_date(raw) if raw else today
+        if requested is None:
+            raise ValueError('Invalid sale_date — use YYYY-MM-DD.')
+        if requested > today:
+            raise ValueError('Sale date cannot be in the future.')
+        role = (self._role or '').strip().lower()
+        can_backdate = role in ('manager', 'admin', 'superadmin')
+        if requested != today and not can_backdate:
+            _audit(
+                self._user_id, self._username or 'staff',
+                'BUSINESS_DAY_DENIED', 'sales',
+                f"role={role} requested={requested.isoformat()} forced={today_s}",
+            )
+            raise ValueError(
+                'Only Manager/Admin can set a business day other than today.'
+            )
+        sale_date_s = business_day_iso(requested)
+        is_backdated = sale_date_s != today_s
+        created_at = sale_created_at_for_day(sale_date_s)
+        return sale_date_s, is_backdated, created_at
+
     def create_sale(self, data: dict) -> dict:
         items = data.get('items') or []
         if not items:
             return {'error': 'Cart is empty — add at least one product before charging.'}
+        try:
+            sale_date_s, is_backdated, created_at_s = self._resolve_sale_date(data)
+        except ValueError as e:
+            return {'error': str(e)}
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
             # Allow sale line items even if a product was later removed from inventory.
             db.execute("PRAGMA foreign_keys=OFF")
 
-            rn = _next_receipt(db)          # pass connection — avoids race condition
+            rn = _next_receipt(db, business_day=sale_date_s)
             total = float(data.get('total') or 0)
             amount_paid = float(data.get('amount_paid') or 0)
             change_amount = float(data.get('change_amount') or 0)
@@ -1793,13 +1864,16 @@ class APIClient:
                 notes = (
                     notes + f' | Split: {emethod} {electronic_paid:,.2f} + Cash {cash_bit:,.2f}'
                 ).strip(' |')
+            if is_backdated and 'business day' not in notes.lower():
+                notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
 
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,mpesa_ref,"
                 "credit_applied,customer_id,variance_handling,"
-                "original_total,cash_rounding_adj,electronic_paid)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "original_total,cash_rounding_adj,electronic_paid,"
+                "sale_date,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
@@ -1817,7 +1891,9 @@ class APIClient:
                  variance_handling,
                  original_total,
                  cash_rounding_adj,
-                 electronic_paid)
+                 electronic_paid,
+                 sale_date_s,
+                 created_at_s)
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -1913,7 +1989,8 @@ class APIClient:
                     'original_total': original_total,
                     'cash_rounding_adj': cash_rounding_adj,
                     'cashier':        self._username or 'staff',
-                    'created_at':     datetime.now().isoformat()
+                    'sale_date':      sale_date_s,
+                    'created_at':     created_at_s,
                 }))
             )
             # Auto-post double-entry journal (never block checkout)
@@ -1930,7 +2007,15 @@ class APIClient:
                    'CREATE_SALE', 'sales',
                    f"receipt={rn} total={total} original={original_total} "
                    f"rounding={cash_rounding_adj} paid={amount_paid} "
-                   f"credit={credit_applied} variance={variance_handling or 'none'}")
+                   f"credit={credit_applied} variance={variance_handling or 'none'} "
+                   f"sale_date={sale_date_s}")
+            if is_backdated:
+                _audit(
+                    self._user_id, self._username or 'staff',
+                    'BACKDATE_SALE', 'sales',
+                    f"receipt={rn} sale_date={sale_date_s} created_at={created_at_s} "
+                    f"total={total}",
+                )
             if abs(cash_rounding_adj) > 0.009:
                 _audit(
                     self._user_id, self._username or 'staff', 'CASH_ROUNDING', 'sales',
@@ -1940,20 +2025,23 @@ class APIClient:
             if variance_result:
                 _audit(
                     self._user_id, self._username or 'staff', 'PAYMENT_VARIANCE', 'sales',
-                    f"receipt={rn} excess={variance_result.get('excess_amount')} "
-                    f"handling={variance_result.get('handling')} "
-                    f"mgr={variance_result.get('manager_name') or '-'} "
-                    f"tip={variance_result.get('tip_amount')} "
-                    f"transport={variance_result.get('transport_amount')} "
-                    f"deposit={variance_result.get('deposit_amount')} "
-                    f"advance={variance_result.get('advance_amount')} "
-                    f"change={variance_result.get('change_returned')} "
-                    f"misc={variance_result.get('misc_amount')}"
+                   f"receipt={rn} excess={variance_result.get('excess_amount')} "
+                   f"handling={variance_result.get('handling')} "
+                   f"mgr={variance_result.get('manager_name') or '-'} "
+                   f"tip={variance_result.get('tip_amount')} "
+                   f"transport={variance_result.get('transport_amount')} "
+                   f"deposit={variance_result.get('deposit_amount')} "
+                   f"advance={variance_result.get('advance_amount')} "
+                   f"change={variance_result.get('change_returned')} "
+                   f"misc={variance_result.get('misc_amount')} "
+                   f"additional={variance_result.get('additional_payment_amount')}"
                 )
             out = {'success': True, 'receipt_number': rn, 'sale_id': sale_id,
                    'original_total': original_total,
                    'cash_rounding_adj': cash_rounding_adj,
-                   'total': total}
+                   'total': total,
+                   'sale_date': sale_date_s,
+                   'created_at': created_at_s}
             if wallet_balance_after is not None:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
@@ -2015,7 +2103,7 @@ class APIClient:
         handling = (variance.get('handling') or '').strip().lower()
         if excess <= 0 or not handling:
             return {}
-        tip = transport = deposit = advance = change_ret = misc = 0.0
+        tip = transport = deposit = advance = change_ret = misc = additional = 0.0
         if handling == 'return_change':
             change_ret = excess
         elif handling == 'deposit':
@@ -2028,6 +2116,10 @@ class APIClient:
             advance = excess
         elif handling == 'miscellaneous':
             misc = excess
+        elif handling == 'additional_payment':
+            # Keep full amount received as sales income; no change returned.
+            # Excess is tracked for audit/reports; receipt stays clean.
+            additional = excess
         else:
             raise ValueError(f'Unknown variance handling: {handling}')
 
@@ -2079,6 +2171,7 @@ class APIClient:
             'advance_amount': advance,
             'change_returned': change_ret,
             'misc_amount': misc,
+            'additional_payment_amount': additional,
             'misc_category': misc_cat,
             'wallet_balance': wallet_bal,
             'manager_approved': bool(mgr_ok),
@@ -2116,6 +2209,10 @@ class APIClient:
                 'tips': round(sum(float(r.get('tip_amount') or 0) for r in rows), 2),
                 'transport': round(sum(float(r.get('transport_amount') or 0) for r in rows), 2),
                 'misc': round(sum(float(r.get('misc_amount') or 0) for r in rows), 2),
+                'additional_payments': round(sum(
+                    float(r.get('excess_amount') or 0) for r in rows
+                    if (r.get('handling') or '').lower() == 'additional_payment'
+                ), 2),
             }
             return {'rows': rows, 'summary': summary, 'start': start, 'end': end}
         finally:
@@ -2135,6 +2232,11 @@ class APIClient:
             ))
             if var:
                 sale['variance'] = var
+                if (var.get('handling') or '').strip().lower() == 'additional_payment':
+                    # Derived field for UI/reports (no dedicated DB column)
+                    sale['variance'] = dict(var)
+                    sale['variance']['additional_payment_amount'] = float(
+                        var.get('excess_amount') or 0)
             if sale.get('customer_id'):
                 cust = _row(db.execute(
                     "SELECT name, phone FROM customers WHERE id=?", (sale['customer_id'],)

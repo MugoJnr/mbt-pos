@@ -219,11 +219,12 @@ class AccountingViewsExportAiGate(unittest.TestCase):
         self.assertNotIn('fake total', low)
 
     def test_u04_sales_footer_settings_debt_touch_targets(self):
-        sales_path = os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py')
-        with open(sales_path, encoding='utf-8') as f:
+        # Checkout chrome lives in panel_factory (shared across layouts)
+        panel_path = os.path.join(ROOT, 'desktop', 'pos', 'panel_factory.py')
+        with open(panel_path, encoding='utf-8') as f:
             src = f.read()
         # Footer action buttons constructed at height ≥40
-        self.assertIn("DangerBtn('X', 40)", src)
+        self.assertIn("DangerBtn('Clear', 40)", src)
         self.assertIn("SecondaryBtn('Hold', 40)", src)
         self.assertIn("SecondaryBtn('Resume', 40)", src)
         self.assertIn("SecondaryBtn('Preview', 40)", src)
@@ -231,13 +232,16 @@ class AccountingViewsExportAiGate(unittest.TestCase):
         self.assertIn('setMinimumHeight(56)', src)
         # Focus / maximize control (U04 touch ≥40) — session-only chrome toggle
         self.assertIn("SecondaryBtn('Focus', 40)", src)
-        self.assertIn('focus_mode_toggled', src)
-        self.assertIn('set_focus_mode', src)
+        sales_path = os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py')
+        with open(sales_path, encoding='utf-8') as f:
+            sales = f.read()
+        self.assertIn('focus_mode_toggled', sales)
+        self.assertIn('set_focus_mode', sales)
 
         settings_path = os.path.join(ROOT, 'desktop', 'tabs', 'settings_tab.py')
         with open(settings_path, encoding='utf-8') as f:
             settings = f.read()
-        self.assertIn("PrimaryBtn('💾  Save Changes', 40)", settings)
+        self.assertIn("PrimaryBtn('Save Changes', 40)", settings)
         self.assertIn("PrimaryBtn('Save All Settings', 50)", settings)
 
         debt_path = os.path.join(ROOT, 'desktop', 'tabs', 'debt_tab.py')

@@ -362,6 +362,13 @@ export type CloudLicense = {
   activated_at?: string;
   notes?: string;
   created_at?: string;
+  product_id?: string | null;
+  assigned_email?: string | null;
+  assigned_user_id?: string | null;
+  reserved_device_id?: string | null;
+  claim_status?: string | null;
+  claimed_at?: string | null;
+  assigned_at?: string | null;
 };
 
 export type CloudDevice = {
@@ -397,12 +404,38 @@ export function listCloudLicenses(orgId?: string) {
   );
 }
 
-export function createCloudLicense(plan: string, notes = "", orgId?: string) {
+export function createCloudLicense(
+  plan: string,
+  notes = "",
+  orgId?: string,
+  opts?: { assigned_email?: string; reserved_device_id?: string; product_id?: string },
+) {
   return POST<{ ok?: boolean; license?: CloudLicense; error?: string }>("/cloud/licenses", {
     plan,
     notes,
     org_id: orgId || getOrgId() || undefined,
+    assigned_email: opts?.assigned_email || undefined,
+    reserved_device_id: opts?.reserved_device_id || undefined,
+    product_id: opts?.product_id || undefined,
   });
+}
+
+export function assignCloudLicense(
+  licenseId: string,
+  opts: {
+    assigned_email?: string;
+    reserved_device_id?: string;
+    clear?: boolean;
+  },
+) {
+  return POST<{ ok?: boolean; message?: string; license?: CloudLicense; error?: string }>(
+    `/cloud/licenses/${licenseId}/assign`,
+    {
+      assigned_email: opts.assigned_email || undefined,
+      reserved_device_id: opts.reserved_device_id || undefined,
+      clear: opts.clear || undefined,
+    },
+  );
 }
 
 export function activateCloudLicense(licenseKey: string, deviceId?: string, orgId?: string) {

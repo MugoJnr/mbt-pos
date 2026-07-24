@@ -401,6 +401,28 @@ class ActivationDialog(QDialog):
             self._set_result("Enter your MugoByte email and password.", error=True)
             return
 
+        # Fail fast when offline — do not hang the activation dialog on Portal DNS.
+        try:
+            import socket
+            online = False
+            for host in (('1.1.1.1', 53), ('8.8.8.8', 53)):
+                try:
+                    s = socket.create_connection(host, timeout=1.5)
+                    s.close()
+                    online = True
+                    break
+                except OSError:
+                    pass
+            if not online:
+                self._set_result(
+                    "No internet connection. Already-activated shops can open POS offline. "
+                    "Sign in requires network — try again when online, or paste a license key.",
+                    error=True,
+                )
+                return
+        except Exception:
+            pass
+
         self._signin_btn.setEnabled(False)
         self._signin_btn.setText("Signing in…")
         QApplication.processEvents()
@@ -433,6 +455,22 @@ class ActivationDialog(QDialog):
         QApplication.processEvents()
 
         try:
+            # If the shop typed their Portal email above, persist it so reserved
+            # keys (assigned_email) can activate without a full Sign In first.
+            typed_email = ''
+            try:
+                typed_email = (self._cloud_email.text() or '').strip()
+            except Exception:
+                typed_email = ''
+            if typed_email and '@' in typed_email:
+                try:
+                    from backend.cloud_backup.paths import load_identity, save_identity
+                    ident = load_identity()
+                    if not (ident.get('email') or '').strip():
+                        ident['email'] = typed_email.lower()
+                        save_identity(ident)
+                except Exception:
+                    pass
             ok, msg = self.engine.activate_with_key(key)
             self._set_result(msg, error=not ok)
             if ok:

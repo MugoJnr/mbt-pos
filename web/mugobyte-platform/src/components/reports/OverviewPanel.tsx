@@ -42,9 +42,16 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
   const hasActivity =
     Number(gross || 0) > 0 ||
     Number(collected || 0) > 0 ||
+    Number(issued || 0) > 0 ||
+    Number(debtCollected || 0) > 0 ||
+    Number(outstanding || 0) > 0 ||
     Number(transactions || 0) > 0 ||
     trend.length > 0 ||
-    methods.length > 0;
+    methods.length > 0 ||
+    Boolean(lastSync);
+  const emptyHint = lastSync
+    ? "No sales in this date range (default is today). Use Last 7 / 30 Days if you need older activity — cloud sync last ran as shown below."
+    : "Sign in on the shop PC, open Cloud Backup, and keep the device approved so sales sync to the portal.";
   const cards = [
     ["Gross sales", formatMoney(gross, currency), Receipt, "primary"],
     ["Collected revenue", formatMoney(collected, currency), Banknote, "success"],
@@ -59,6 +66,8 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
       loading={query.isLoading}
       error={responseError(query.data, query.error)}
       empty={!query.isLoading && !query.error && !hasActivity}
+      emptyTitle="No analytics activity for this range"
+      emptyHint={emptyHint}
       onRetry={() => void query.refetch()}
     >
       <div className="space-y-5">

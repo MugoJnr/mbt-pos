@@ -181,8 +181,8 @@ class CloudBackupPanel(QWidget):
         form.addLayout(hist_row)
 
         hint = QLabel(
-            'Keys live in AppData <b>cloud_config.json</b> (never commit). '
-            'See docs/CLOUD_BACKUP.md. Offline POS sales continue if cloud is skipped.')
+            'Sign in with your <b>portal.mugobyte.com</b> email to enable encrypted backups. '
+            'Offline POS sales continue if cloud is skipped.')
         hint.setTextFormat(Qt.RichText)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{C['muted']}; font-size:11px; background:transparent;")
@@ -215,10 +215,10 @@ class CloudBackupPanel(QWidget):
                     f"every {st.get('interval_minutes')} min"
                 )
             elif not st.get('configured'):
-                title = 'Not configured'
+                title = 'Cloud unavailable'
                 sub = (
-                    'Add Supabase URL + anon key to AppData cloud_config.json '
-                    '(see config/cloud_config.example.json).'
+                    'Could not load MugoByte Cloud endpoints. Check internet, '
+                    'restart POS, or contact support.'
                 )
             elif st.get('cloud_skipped'):
                 title = 'Offline mode'

@@ -53,39 +53,80 @@ function DownloadsPage() {
     <PageShell>
       <PageHeader
         eyebrow="Download Center"
-        title="MBT POS Installer"
-        description="One destination for installers, updates and documentation. New computers download here, install, sign in, and activate automatically via Portal licensing."
+        title="Product installers"
+        description="Separate download sections for each MugoByte product. Sign in with the same account, then claim the matching product license."
       />
 
-      <Card className="border-primary/30 bg-primary/5">
-        <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle className="flex items-center gap-2 font-display text-xl">
-                <Package className="h-5 w-5 text-primary" /> Desktop POS Setup
-              </CardTitle>
-              <CardDescription className="mt-1">
-                Official Windows installer. Detects new vs upgrade automatically — you never choose.
-              </CardDescription>
-            </div>
-            <Badge>v{latestVer}</Badge>
+      <div className="space-y-6">
+        <section className="space-y-3">
+          <div className="border-b border-border/60 pb-2">
+            <h2 className="font-display text-lg font-semibold">Point of Sale</h2>
+            <p className="text-sm text-muted-foreground">MBT POS desktop installer and activation path.</p>
           </div>
-        </CardHeader>
-        <CardContent className="flex flex-wrap gap-2">
-          <Button asChild size="lg">
-            <a href={latestUrl} target="_blank" rel="noreferrer">
-              <Download className="mr-1.5 h-4 w-4" />
-              Download MBT_POS_Setup.exe
-            </a>
-          </Button>
-          <Button asChild variant="outline">
-            <Link to="/license">Activate after install</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link to="/devices">Manage devices</Link>
-          </Button>
-        </CardContent>
-      </Card>
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 font-display text-xl">
+                    <Package className="h-5 w-5 text-primary" /> Desktop POS Setup
+                  </CardTitle>
+                  <CardDescription className="mt-1">
+                    Official Windows installer. Detects new vs upgrade automatically — you never choose.
+                  </CardDescription>
+                </div>
+                <Badge>v{latestVer}</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button asChild size="lg">
+                <a href={latestUrl} target="_blank" rel="noreferrer">
+                  <Download className="mr-1.5 h-4 w-4" />
+                  Download MBT_POS_Setup.exe
+                </a>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/license">Activate after install</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/devices">Manage devices</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section id="pulse" className="space-y-3 scroll-mt-24">
+          <div className="border-b border-border/60 pb-2">
+            <h2 className="font-display text-lg font-semibold">Desktop utilities</h2>
+            <p className="text-sm text-muted-foreground">
+              Pulse command center — same MugoByte Account, separate Pulse license seats.
+            </p>
+          </div>
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="flex items-center gap-2 font-display text-xl">
+                    <MonitorSmartphone className="h-5 w-5 text-primary" /> Pulse
+                  </CardTitle>
+                  <CardDescription className="mt-1">
+                    CPU, GPU, memory and system health for Windows. Install from your release package,
+                    then Sign In &amp; Activate with product id <span className="font-mono">pulse</span>.
+                  </CardDescription>
+                </div>
+                <Badge variant="secondary">v1.0.x</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button asChild variant="outline">
+                <Link to="/license">Issue / claim Pulse seat</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/devices">Devices</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </section>
+      </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card>

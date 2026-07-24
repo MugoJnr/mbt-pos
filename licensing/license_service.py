@@ -60,6 +60,7 @@ class LicenseService(threading.Thread):
         # Brief delay then register device with cloud + immediate validation
         self._stop.wait(8)
         if not self._stop.is_set():
+            self._refresh_trusted_time()
             self._register_device_with_cloud()
             if self._check_internet():
                 try:
@@ -84,13 +85,23 @@ class LicenseService(threading.Thread):
         except Exception:
             return OFFLINE_GRACE_DAYS
 
+    def _refresh_trusted_time(self):
+        """Best-effort internet clock for anti-rollback — never blocks UI."""
+        try:
+            if not self._check_internet():
+                return
+            from licensing.license_engine import _fetch_trusted_time
+            _fetch_trusted_time(allow_network=True)
+        except Exception as e:
+            logger.debug('Trusted time refresh skipped: %s', e)
+
     def _tick(self):
         # 1. Re-validate locally (tamper / expiry / device bind)
         prev = self._last_state
         self.engine.revalidate()
         new_state = self.engine.state
 
-        # 2. Offline grace — require internet confirmation after N days
+        # 2. Offline grace — soft flag only (POS stays open on local license)
         allowed, grace_msg = self.engine.enforce_offline_grace(self._grace_days())
         if not allowed:
             new_state = self.engine.state
@@ -115,6 +126,7 @@ class LicenseService(threading.Thread):
         check_interval = min(SYNC_INTERVAL, FORCE_ONLINE_CHECK_HOURS * 3600)
         if now - self._last_sync > check_interval:
             if self._check_internet():
+                self._refresh_trusted_time()
                 self._do_remote_sync()
                 self._last_sync = now
             else:
@@ -125,7 +137,7 @@ class LicenseService(threading.Thread):
         import socket
         for host in (('8.8.8.8', 53), ('1.1.1.1', 53)):
             try:
-                s = socket.create_connection(host, timeout=3)
+                s = socket.create_connection(host, timeout=1.5)
                 s.close()
                 self._connected = True
                 return True

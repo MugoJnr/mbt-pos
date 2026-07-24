@@ -10,7 +10,8 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, Badge, lovable_tab_qss,
                                     wrap_table_card, page_intro,
-                                    apply_table_row_backgrounds, retint_table_items)
+                                    apply_table_row_backgrounds, retint_table_items,
+                                    align_header_right)
 from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
 from desktop.utils.select_controls import DatePresetSelect, refresh_select_controls
 from desktop.utils.option_lists import date_range_for_preset
@@ -58,9 +59,19 @@ class ReportsTab(QWidget):
         # Lovable-style top actions
         actions = QWidget()
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
-        self._exp_btn = PrimaryBtn('⬇  Export Excel', 40)
+        self._exp_btn = PrimaryBtn('Export Excel', 40)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(self._exp_btn, 'export', 15)
+        except Exception:
+            pass
         self._exp_btn.clicked.connect(self._export)
-        self._email_btn = SecondaryBtn('✉  Email Report', 40)
+        self._email_btn = SecondaryBtn('Email Report', 40)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(self._email_btn, 'email', 15)
+        except Exception:
+            pass
         self._email_btn.setToolTip('Send via cloud notification / email (Telegram permanently removed)')
         self._email_btn.clicked.connect(self._send_cloud_report)
         ar.addWidget(self._email_btn); ar.addWidget(self._exp_btn)
@@ -80,8 +91,13 @@ class ReportsTab(QWidget):
         add_labeled(fl, 'From', self._s, spacing=14)
         add_labeled(fl, 'To', self._e, spacing=10)
         fl.addStretch()
-        run = PrimaryBtn('▶  Run', 40)
+        run = PrimaryBtn('Run', 40)
         run.setFixedWidth(100)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(run, 'refresh', 15)
+        except Exception:
+            pass
         run.clicked.connect(self.refresh)
         fl.addWidget(run)
         lay.addWidget(fc)
@@ -89,10 +105,10 @@ class ReportsTab(QWidget):
 
         # ── KPIs ──────────────────────────────────────────────────────────────
         kr = QHBoxLayout(); kr.setSpacing(12)
-        self._k_txn  = KPICard('Transactions', '0',  '', C['gold'])
-        self._k_rev  = KPICard('Final Total',  '—',  '', C['ok'])
-        self._k_avg  = KPICard('Avg Sale',     '—',  '', C['info'])
-        self._k_disc = KPICard('Discounts',    '—',  '', C['warn'])
+        self._k_txn  = KPICard('Transactions', '0',  '', C['gold'], icon='count')
+        self._k_rev  = KPICard("Today's Revenue", '—',  'gross sales', C['ok'], icon='revenue')
+        self._k_avg  = KPICard('Avg Sale',     '—',  '', C['gold'], icon='avg')
+        self._k_disc = KPICard('Discounts',    '—',  '', C['warn'], icon='alert')
         for k in (self._k_txn,self._k_rev,self._k_avg,self._k_disc): kr.addWidget(k)
         lay.addLayout(kr)
 
@@ -108,7 +124,7 @@ class ReportsTab(QWidget):
 
         # ── Charts (Lovable MiniBar + By Payment) ─────────────────────────────
         charts = QHBoxLayout(); charts.setSpacing(14)
-        self._trend_chart = GoldBarChart(height=132)
+        self._trend_chart = GoldBarChart(height=148)
         self._trend_card = ChartCard('Sales · Last 7 Days', self._trend_chart)
         self._pay_chart = PaymentBars()
         self._pay_card = ChartCard('By Payment', self._pay_chart)
@@ -120,7 +136,7 @@ class ReportsTab(QWidget):
         self._ai_sum_card = Card()
         ail = self._ai_sum_card.layout_v((16, 12, 16, 12), 8)
         arow = QHBoxLayout()
-        self._ai_sum_title = QLabel('✦  AI Summary')
+        self._ai_sum_title = QLabel('AI Summary')
         self._ai_sum_title.setStyleSheet(
             f"color:{C['text']}; font-size:14px; font-weight:700; background:transparent;")
         self._ai_sum_btn = SecondaryBtn('Generate', 32)
@@ -136,7 +152,8 @@ class ReportsTab(QWidget):
 
         # ── Status / open folder ──────────────────────────────────────────────
         ac = Card(); al = ac.layout_h((16, 10, 16, 10), 8)
-        self._open_btn = GhostBtn('📂  Open Folder', 36)
+        self._open_btn = GhostBtn('Open Exports Folder', 36)
+        self._open_btn.setToolTip('Open the folder where exported Excel reports are saved')
         self._open_btn.clicked.connect(self._open_folder)
         self._status_lbl = QLabel('')
         self._status_lbl.setWordWrap(True)
@@ -198,6 +215,12 @@ class ReportsTab(QWidget):
             for col, w in specs:
                 tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
                 tbl.setColumnWidth(col, w)
+        # Numeric columns — headers + cells right-aligned for scannability
+        align_header_right(self._stbl, 4, 5, 6, 7, 8)
+        align_header_right(self._litbl, 5, 6, 7)
+        align_header_right(self._ptbl, 1, 2, 3, 4)
+        align_header_right(self._mtbl, 1, 2, 3, 4)
+        align_header_right(self._vtbl, 4, 5, 6, 8, 9, 10, 11)
 
         # Variance KPI strip (shown under variance tab conceptually — always above tabs)
         self._var_kpis = QWidget()
@@ -300,6 +323,9 @@ class ReportsTab(QWidget):
         s = data.get('summary', {})
         self._k_txn.set_value(str(int(s.get('total_transactions', 0))))
         self._k_rev.set_value(f"{cur} {s.get('total_revenue', 0):,.2f}")
+        collected = float(s.get('collected_revenue', s.get('collected_from_sales', 0)) or 0)
+        if hasattr(self._k_rev, 'set_sub'):
+            self._k_rev.set_sub(f"Collected {cur} {collected:,.2f}")
         self._k_avg.set_value(f"{cur} {s.get('avg_transaction', 0):,.2f}")
         self._k_disc.set_value(f"{cur} {s.get('total_discounts', 0):,.2f}")
         if hasattr(self, '_rk_orig'):
@@ -325,12 +351,25 @@ class ReportsTab(QWidget):
 
         try:
             by_pay = data.get('by_payment') or []
+            merged: dict[str, float] = {}
+            labels: dict[str, str] = {}
+            order: list[str] = []
+            for r in by_pay:
+                raw = (r.get('payment_method') or 'Other').strip() or 'Other'
+                key = raw.lower().replace(' ', '')
+                if key in ('mpesa', 'm-pesa'):
+                    key = 'm-pesa'
+                    pretty = 'M-Pesa'
+                else:
+                    pretty = raw.title()
+                if key not in merged:
+                    merged[key] = 0.0
+                    labels[key] = pretty
+                    order.append(key)
+                merged[key] += float(r.get('total') or 0)
             self._pay_chart.set_data([
-                {
-                    'label': (r.get('payment_method') or 'Other').title(),
-                    'value': float(r.get('total') or 0),
-                }
-                for r in by_pay
+                {'label': labels[k], 'value': merged[k]}
+                for k in order
             ])
             self._pay_card.set_title(f'By Payment  ·  {start} → {end}')
         except Exception as e:
@@ -347,19 +386,20 @@ class ReportsTab(QWidget):
                 orig = float(s2.get('original_total') or 0)
                 if orig <= 0:
                     orig = tot - adj
-                for j, v in enumerate([
-                    s2.get('receipt_number',''),
-                    (s2.get('created_at','') or '')[:16],
-                    s2.get('cashier_name',''),
-                    s2.get('items_summary','') or '',
-                    f"{s2.get('discount',0):,.2f}",
-                    f"{s2.get('tax',0):,.2f}",
-                    f"{cur} {orig:,.2f}",
-                    f"{adj:+,.2f}" if adj else '0.00',
-                    f"{cur} {tot:,.2f}",
-                    (s2.get('payment_method','') or '').upper(),
-                ]):
-                    self._stbl.setItem(i, j, tbl_item(str(v)))
+                cells = [
+                    tbl_item(str(s2.get('receipt_number', '') or '')),
+                    tbl_item(str((s2.get('created_at', '') or '')[:16])),
+                    tbl_item(str(s2.get('cashier_name', '') or '')),
+                    tbl_item(str(s2.get('items_summary', '') or '')),
+                    tbl_right(f"{float(s2.get('discount') or 0):,.2f}"),
+                    tbl_right(f"{float(s2.get('tax') or 0):,.2f}"),
+                    tbl_right(f"{cur} {orig:,.2f}", tone='gold'),
+                    tbl_right(f"{adj:+,.2f}" if adj else '0.00'),
+                    tbl_right(f"{cur} {tot:,.2f}", tone='gold'),
+                    tbl_center((s2.get('payment_method', '') or '').upper()),
+                ]
+                for j, item in enumerate(cells):
+                    self._stbl.setItem(i, j, item)
             apply_table_row_backgrounds(self._stbl)
         except Exception as e:
             _log.warning(f"Reports sales list: {e}")
@@ -374,17 +414,20 @@ class ReportsTab(QWidget):
             shown = items[:_UI_LINE_LIMIT]
             for row, item in enumerate(shown):
                 self._litbl.insertRow(row)
-                for j, v in enumerate([
-                    item.get('receipt_number', ''),
-                    (item.get('sale_created_at') or item.get('created_at') or '')[:16],
-                    item.get('cashier_name', ''),
-                    item.get('product_name', ''),
-                    item.get('sku', '') or '',
-                    str(item.get('quantity', 0)),
-                    f"{cur} {float(item.get('unit_price') or 0):,.2f}",
-                    f"{cur} {float(item.get('total') or 0):,.2f}",
-                ]):
-                    self._litbl.setItem(row, j, tbl_item(str(v)))
+                qty = float(item.get('quantity') or 0)
+                qty_s = f"{qty:,.0f}" if abs(qty - round(qty)) < 0.05 else f"{qty:,.2f}"
+                cells = [
+                    tbl_item(str(item.get('receipt_number', '') or '')),
+                    tbl_item(str((item.get('sale_created_at') or item.get('created_at') or '')[:16])),
+                    tbl_item(str(item.get('cashier_name', '') or '')),
+                    tbl_item(str(item.get('product_name', '') or '')),
+                    tbl_item(str(item.get('sku', '') or '')),
+                    tbl_right(qty_s),
+                    tbl_right(f"{cur} {float(item.get('unit_price') or 0):,.2f}"),
+                    tbl_right(f"{cur} {float(item.get('total') or 0):,.2f}", tone='gold'),
+                ]
+                for j, cell in enumerate(cells):
+                    self._litbl.setItem(row, j, cell)
             if len(items) > _UI_LINE_LIMIT:
                 self._set_status(
                     f"Line Items showing {_UI_LINE_LIMIT} of {len(items)} "
@@ -403,14 +446,15 @@ class ReportsTab(QWidget):
             for i, p in enumerate(top):
                 self._ptbl.insertRow(i)
                 pct = p.get('revenue',0)/total_rev*100
-                for j, v in enumerate([
-                    p.get('product_name',''),
-                    f"{p.get('qty_sold',0):,.0f}",
-                    str(p.get('transactions', p.get('count',''))),
-                    f"{cur} {p.get('revenue',0):,.2f}",
-                    f"{pct:.1f}%",
-                ]):
-                    self._ptbl.setItem(i, j, tbl_item(str(v)))
+                cells = [
+                    tbl_item(str(p.get('product_name', '') or '')),
+                    tbl_right(f"{float(p.get('qty_sold') or 0):,.0f}"),
+                    tbl_right(str(p.get('transactions', p.get('count', '')) or '')),
+                    tbl_right(f"{cur} {float(p.get('revenue') or 0):,.2f}", tone='gold'),
+                    tbl_right(f"{pct:.1f}%"),
+                ]
+                for j, cell in enumerate(cells):
+                    self._ptbl.setItem(i, j, cell)
             apply_table_row_backgrounds(self._ptbl)
         except Exception as e:
             _log.warning(f"Reports top products: {e}")
@@ -423,14 +467,15 @@ class ReportsTab(QWidget):
             total_pay = sum(p.get('total',0) for p in by_pay) or 1
             for i, p in enumerate(by_pay):
                 self._mtbl.insertRow(i)
-                for j, v in enumerate([
-                    (p.get('payment_method','') or '').upper(),
-                    str(p.get('count',0)),
-                    f"{p.get('count',0)/total_cnt*100:.1f}%",
-                    f"{cur} {p.get('total',0):,.2f}",
-                    f"{p.get('total',0)/total_pay*100:.1f}%",
-                ]):
-                    self._mtbl.setItem(i, j, tbl_item(str(v)))
+                cells = [
+                    tbl_item((p.get('payment_method', '') or '').upper()),
+                    tbl_right(str(int(p.get('count') or 0))),
+                    tbl_right(f"{float(p.get('count') or 0)/total_cnt*100:.1f}%"),
+                    tbl_right(f"{cur} {float(p.get('total') or 0):,.2f}", tone='gold'),
+                    tbl_right(f"{float(p.get('total') or 0)/total_pay*100:.1f}%"),
+                ]
+                for j, cell in enumerate(cells):
+                    self._mtbl.setItem(i, j, cell)
             apply_table_row_backgrounds(self._mtbl)
         except Exception as e:
             _log.warning(f"Reports by payment: {e}")
@@ -454,23 +499,24 @@ class ReportsTab(QWidget):
                 mgr = 'Yes' if r.get('manager_approved') else ''
                 if r.get('manager_name'):
                     mgr = str(r.get('manager_name'))[:12]
-                for j, v in enumerate([
-                    (r.get('created_at') or '')[:16],
-                    r.get('receipt_number', ''),
-                    r.get('cashier_name', ''),
-                    (r.get('payment_method') or '').upper(),
-                    f"{float(r.get('sale_total') or 0):,.2f}",
-                    f"{float(r.get('amount_received') or 0):,.2f}",
-                    f"{float(r.get('excess_amount') or 0):,.2f}",
-                    (r.get('handling') or '').replace('_', ' ').title(),
-                    f"{float(r.get('change_returned') or 0):,.2f}",
-                    f"{float(r.get('deposit_amount') or 0) + float(r.get('advance_amount') or 0):,.2f}",
-                    f"{float(r.get('tip_amount') or 0):,.2f}",
-                    f"{float(r.get('transport_amount') or 0):,.2f}",
-                    mgr,
-                    str(note)[:40],
-                ]):
-                    self._vtbl.setItem(i, j, tbl_item(str(v)))
+                cells = [
+                    tbl_item(str((r.get('created_at') or '')[:16])),
+                    tbl_item(str(r.get('receipt_number', '') or '')),
+                    tbl_item(str(r.get('cashier_name', '') or '')),
+                    tbl_center((r.get('payment_method') or '').upper()),
+                    tbl_right(f"{float(r.get('sale_total') or 0):,.2f}"),
+                    tbl_right(f"{float(r.get('amount_received') or 0):,.2f}"),
+                    tbl_right(f"{float(r.get('excess_amount') or 0):,.2f}"),
+                    tbl_item((r.get('handling') or '').replace('_', ' ').title()),
+                    tbl_right(f"{float(r.get('change_returned') or 0):,.2f}"),
+                    tbl_right(f"{float(r.get('deposit_amount') or 0) + float(r.get('advance_amount') or 0):,.2f}"),
+                    tbl_right(f"{float(r.get('tip_amount') or 0):,.2f}"),
+                    tbl_right(f"{float(r.get('transport_amount') or 0):,.2f}"),
+                    tbl_center(mgr),
+                    tbl_item(str(note)[:40]),
+                ]
+                for j, cell in enumerate(cells):
+                    self._vtbl.setItem(i, j, cell)
             apply_table_row_backgrounds(self._vtbl)
         except Exception as e:
             _log.warning(f"Reports payment variance: {e}")
@@ -597,7 +643,7 @@ class ReportsTab(QWidget):
             QMessageBox.critical(self, 'Export Error', str(e))
             self._set_status(f"✗ Export failed: {e}", ok=False)
         finally:
-            self._exp_btn.setEnabled(True); self._exp_btn.setText('⬇  Export Excel')
+            self._exp_btn.setEnabled(True); self._exp_btn.setText('Export Excel')
 
     # ── Cloud / email report (Telegram permanently removed) ───────────────────
 
@@ -626,7 +672,7 @@ class ReportsTab(QWidget):
         self._set_status(msg, ok=None)
 
     def _on_report_done(self, ok: bool, msg: str):
-        self._email_btn.setEnabled(True); self._email_btn.setText('✉  Email Report')
+        self._email_btn.setEnabled(True); self._email_btn.setText('Email Report')
         self._set_status(('✓ ' if ok else '✗ ') + (msg or '').split('\n')[0], ok=ok)
         if ok:
             QMessageBox.information(self, 'Report Sent', msg or 'Report queued.')

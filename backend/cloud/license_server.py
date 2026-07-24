@@ -26,9 +26,44 @@ PLANS = {
 
 LICENSE_STATUSES = ('active', 'suspended', 'expired', 'revoked', 'trial')
 
+# Portal product ids accepted for cloud licensing (catalog + claim filter).
+KNOWN_PRODUCT_IDS = frozenset({
+    'mbt-pos',
+    'pulse',
+    'exam-hub',
+    'erp',
+    'crm',
+    'hr',
+    'inventory',
+    'accounting',
+    'payroll',
+    'school',
+    'hospital',
+    'farm',
+    'trading',
+    'media',
+    'ai',
+    'marketplace',
+    'developer',
+})
+DEFAULT_PRODUCT_ID = 'mbt-pos'
 
-def generate_license_key(plan: str = 'trial') -> str:
-    """Generate a unique license key."""
+
+def normalize_product_id(product_id: str | None) -> str:
+    pid = (product_id or '').strip().lower().replace('_', '-')
+    if not pid:
+        return DEFAULT_PRODUCT_ID
+    if pid in KNOWN_PRODUCT_IDS:
+        return pid
+    # Allow forward-compatible ids that look like catalog slugs.
+    if all(c.isalnum() or c in '-.' for c in pid) and 2 <= len(pid) <= 64:
+        return pid
+    return DEFAULT_PRODUCT_ID
+
+
+def generate_license_key(plan: str = 'trial', product_id: str | None = None) -> str:
+    """Generate a unique license key (MBT-… for all portal products)."""
+    _ = normalize_product_id(product_id)  # reserved for future per-product prefixes
     prefix = plan.upper()[:3]
     token = secrets.token_hex(12).upper()
     return f'MBT-{prefix}-{token[:4]}-{token[4:8]}-{token[8:12]}'
@@ -70,12 +105,17 @@ class CloudLicenseServer:
         return service_update(table, query, patch)
 
     def create_license(self, org_id: str, plan: str = 'monthly', max_devices: int | None = None,
-                       notes: str = '', created_by: str | None = None) -> dict:
-        """Create a paid plan license. No customer free-trial by default."""
+                       notes: str = '', created_by: str | None = None,
+                       assigned_email: str = '', reserved_device_id: str = '',
+                       product_id: str | None = None) -> dict:
+        """Create a paid plan license. Optionally pre-assign to email / device."""
         plan_info = PLANS.get(plan) or PLANS['monthly']
-        key = generate_license_key(plan if plan in PLANS else 'monthly')
+        pid = normalize_product_id(product_id)
+        key = generate_license_key(plan if plan in PLANS else 'monthly', pid)
         expires = datetime.now() + timedelta(days=plan_info['days'])
         devices = max_devices or plan_info['max_devices']
+        email = (assigned_email or '').strip().lower()
+        reserved = (reserved_device_id or '').strip()
 
         row = {
             'org_id': org_id,
@@ -86,22 +126,184 @@ class CloudLicenseServer:
             'activated_devices': 0,
             'expires_at': expires.isoformat(),
             'notes': notes,
+            'product_id': pid,
+            'claim_status': 'reserved' if email or reserved else 'unassigned',
         }
+        if email:
+            row['assigned_email'] = email
+            row['assigned_at'] = datetime.now().isoformat()
+        if reserved:
+            row['reserved_device_id'] = reserved
         if created_by:
             row['created_by'] = created_by
 
+        try:
+            return self._create_license_row(
+                row, created_by=created_by, plan=plan, key=key, email=email, reserved=reserved,
+            )
+        except Exception as e:
+            # Resilient fallback when assign / product columns are not yet migrated
+            msg = str(e).lower()
+            missing_product = any(
+                tok in msg for tok in ('product_id', '42703', 'pgrst204')
+            )
+            if missing_product and 'product_id' in row:
+                logger.warning(
+                    'create_license: product_id column missing (%s); retrying without it', e
+                )
+                row.pop('product_id', None)
+                try:
+                    return self._create_license_row(
+                        row, created_by=created_by, plan=plan, key=key, email=email, reserved=reserved,
+                    )
+                except Exception:
+                    pass
+            if email or reserved:
+                missing = any(
+                    tok in msg for tok in (
+                        'assigned_email', 'reserved_device_id', 'claim_status',
+                        'assigned_at', '42703', 'pgrst204',
+                    )
+                )
+                if missing:
+                    logger.warning(
+                        'create_license: assign columns missing (%s); retrying without them', e
+                    )
+                    base = {
+                        'org_id': org_id,
+                        'license_key': key,
+                        'plan': plan if plan in PLANS else 'monthly',
+                        'status': 'active',
+                        'max_devices': devices,
+                        'activated_devices': 0,
+                        'expires_at': expires.isoformat(),
+                        'notes': notes,
+                    }
+                    if 'product_id' in row:
+                        base['product_id'] = pid
+                    if created_by:
+                        base['created_by'] = created_by
+                    return self._create_license_row(
+                        base, created_by=created_by, plan=plan, key=key, email='', reserved='',
+                    )
+            raise
+
+    def _create_license_row(
+        self,
+        row: dict,
+        *,
+        created_by: str | None,
+        plan: str,
+        key: str,
+        email: str,
+        reserved: str,
+    ) -> dict:
         result = self._insert('licenses', row)
         lid = result.get('id') if isinstance(result, dict) else None
         if lid:
-            self._log_history(lid, 'created', created_by, {'plan': plan, 'key': key})
+            self._log_history(lid, 'created', created_by, {
+                'plan': plan, 'key': key,
+                'assigned_email': email or None,
+                'reserved_device_id': reserved or None,
+            })
         return result
 
-    def activate(self, license_key: str, device_id: str, org_id: str) -> tuple[bool, str, dict | None]:
+    def assign_license(
+        self,
+        license_id: str,
+        *,
+        assigned_email: str | None = None,
+        reserved_device_id: str | None = None,
+        clear: bool = False,
+        actor: str | None = None,
+    ) -> tuple[bool, str, dict | None]:
+        """Reserve a license for a customer email and/or hardware device id."""
+        from urllib.parse import quote
+        rows = self._rows('licenses', f'id=eq.{quote(license_id, safe="")}&select=*')
+        if not rows:
+            return False, 'License not found', None
+        lic = rows[0]
+        if lic.get('status') in ('revoked',):
+            return False, 'Cannot assign a revoked license', None
+
+        if clear:
+            patch = {
+                'assigned_email': None,
+                'assigned_user_id': None,
+                'reserved_device_id': None,
+                'claim_status': 'unassigned',
+                'assigned_at': None,
+            }
+            self._update('licenses', f'id=eq.{quote(license_id, safe="")}', patch)
+            self._log_history(license_id, 'unassigned', actor, {})
+            refreshed = self._rows('licenses', f'id=eq.{quote(license_id, safe="")}&select=*')
+            return True, 'Assignment cleared', refreshed[0] if refreshed else lic
+
+        email = (assigned_email if assigned_email is not None else lic.get('assigned_email') or '')
+        email = str(email or '').strip().lower()
+        reserved = (
+            reserved_device_id if reserved_device_id is not None
+            else lic.get('reserved_device_id') or ''
+        )
+        reserved = str(reserved or '').strip()
+        if not email and not reserved:
+            return False, 'Provide an email and/or reserved device id', None
+
+        patch = {
+            'assigned_email': email or None,
+            'reserved_device_id': reserved or None,
+            'claim_status': 'reserved',
+            'assigned_at': datetime.now().isoformat(),
+        }
+        self._update('licenses', f'id=eq.{quote(license_id, safe="")}', patch)
+        self._log_history(license_id, 'assigned', actor, {
+            'assigned_email': email or None,
+            'reserved_device_id': reserved or None,
+        })
+        refreshed = self._rows('licenses', f'id=eq.{quote(license_id, safe="")}&select=*')
+        return True, 'License assigned', refreshed[0] if refreshed else {**lic, **patch}
+
+    def find_licenses_for_email(
+        self,
+        email: str,
+        org_id: str | None = None,
+        product_id: str | None = None,
+    ) -> list[dict]:
+        """Licenses reserved for this customer email (org/product-scoped when provided)."""
+        from urllib.parse import quote
+        em = (email or '').strip().lower()
+        if not em:
+            return []
+        # Fetch by email first (works before product_id migration), then filter in Python.
+        q = f'assigned_email=eq.{quote(em, safe="")}&select=*&order=created_at.desc'
+        if org_id:
+            q = f'org_id=eq.{quote(org_id, safe="")}&' + q
+        rows = self._rows('licenses', q) or []
+        pid = (product_id or '').strip()
+        if not pid:
+            return rows
+        pid = normalize_product_id(pid)
+        return [
+            r for r in rows
+            if normalize_product_id(r.get('product_id') or DEFAULT_PRODUCT_ID) == pid
+        ]
+
+    def activate(self, license_key: str, device_id: str, org_id: str,
+                 *, actor_email: str = '', actor_is_admin: bool = False,
+                 product_id: str | None = None) -> tuple[bool, str, dict | None]:
         from urllib.parse import quote
         rows = self._rows('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
         if not rows:
             return False, 'License key not found', None
         lic = rows[0]
+        if product_id:
+            want = normalize_product_id(product_id)
+            have = normalize_product_id(lic.get('product_id') or DEFAULT_PRODUCT_ID)
+            if have != want:
+                return False, (
+                    f'This license is for product "{have}", not "{want}". '
+                    'Issue or paste a key for the correct product.'
+                ), None
 
         if lic['status'] in ('revoked', 'suspended'):
             return False, f'License is {lic["status"]}', None
@@ -112,6 +314,27 @@ class CloudLicenseServer:
                     return False, 'License expired', None
             except Exception:
                 pass
+
+        # Enforce email / device reservation (admins may bypass email check)
+        assigned = str(lic.get('assigned_email') or '').strip().lower()
+        reserved = str(lic.get('reserved_device_id') or '').strip()
+        actor = (actor_email or '').strip().lower()
+        if assigned and not actor_is_admin:
+            if not actor:
+                return False, (
+                    f'This key is reserved for {assigned}. '
+                    'Sign in with that MugoByte account, then activate.'
+                ), None
+            if actor != assigned:
+                return False, (
+                    f'This key is reserved for {assigned}, not {actor}.'
+                ), None
+        if reserved and device_id and reserved != device_id:
+            return False, (
+                'This key is reserved for a different device. '
+                'Ask your administrator to clear or update the device reservation.'
+            ), None
+
         if lic.get('activated_devices', 0) >= lic.get('max_devices', 1):
             # Allow re-activation of same device
             existing = self._rows(
@@ -134,12 +357,18 @@ class CloudLicenseServer:
             'activation_token': token,
             'is_active': True,
         }, upsert=True, on_conflict='license_id,device_id')
-        self._update('licenses', f'id=eq.{lic["id"]}', {
+        patch = {
             'activated_devices': int(lic.get('activated_devices') or 0) + 1,
             'activated_at': datetime.now().isoformat(),
             'status': 'active',
+            'claim_status': 'claimed',
+            'claimed_at': datetime.now().isoformat(),
+        }
+        self._update('licenses', f'id=eq.{lic["id"]}', patch)
+        self._log_history(lic['id'], 'activated', actor or None, {
+            'device_id': device_id,
+            'actor_email': actor or None,
         })
-        self._log_history(lic['id'], 'activated', None, {'device_id': device_id})
         return True, 'Activated', {'token': token, 'plan': lic['plan'], 'expires_at': lic.get('expires_at')}
 
     def validate(self, license_key: str, device_id: str) -> tuple[bool, str, dict | None]:

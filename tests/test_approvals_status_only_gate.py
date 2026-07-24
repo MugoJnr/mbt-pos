@@ -104,12 +104,16 @@ class ApprovalsStatusOnlyGate(unittest.TestCase):
         self.assertIn('get_command_center', main_src)
 
     def test_sales_return_wired(self):
-        path = os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py')
-        with open(path, encoding='utf-8') as fh:
-            src = fh.read()
-        self.assertIn('_open_return_sale', src)
-        self.assertIn('prompt_return_sale', src)
-        self.assertIn('Return / Exchange', src)
+        sales = open(
+            os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py'), encoding='utf-8'
+        ).read()
+        panel = open(
+            os.path.join(ROOT, 'desktop', 'pos', 'panel_factory.py'), encoding='utf-8'
+        ).read()
+        self.assertIn('_open_return_sale', sales)
+        self.assertIn('prompt_return_sale', sales)
+        self.assertIn('Return / Exchange', panel)
+        self.assertIn('_open_return_sale', panel)
         self.assertIn('def return_sale', open(
             os.path.join(ROOT, 'desktop', 'utils', 'api_client.py'), encoding='utf-8'
         ).read())

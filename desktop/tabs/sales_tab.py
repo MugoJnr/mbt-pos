@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from datetime        import datetime
+import time
 from desktop.utils.theme   import C, ThemeManager, qss_alpha, RADIUS, PADDING, GAP
 from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, IconBtn)
@@ -60,422 +61,145 @@ class SalesTab(QWidget):
         self._held = None  # park/resume single slot (session + durable JSON)
         self._focus_mode = False  # session-only; MainWindow hides sidebar/topbar
         self._cart_maximized = False  # hide product grid; cart fills Sales tab
+        # Catalog cache — avoid full DB + grid rebuild on every tab switch
+        self._catalog_loaded = False
+        self._catalog_mono = 0.0
+        self._catalog_ttl_s = 45.0
+        self._grid_painted = False
+        self._resize_filter_timer = None
+        try:
+            from desktop.utils.shop_time import shop_today
+            self._business_day = shop_today()
+        except Exception:
+            from datetime import date as _date
+            self._business_day = _date.today()
         try:
             from desktop.utils.held_sale import load_held_sale
             self._held = load_held_sale()
         except Exception:
             self._held = None
         self._build()
-        # Defer product grid load so MainWindow can paint first (avoids hang)
-        QTimer.singleShot(400, self.refresh)
+        # Do NOT auto-refresh here — warm-tab creation would stall Dashboard.
+        # First paint + catalog load happen in on_show() after the tab is visible.
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build(self):
-        root = QHBoxLayout(self)
-        root.setContentsMargins(PADDING, 18, PADDING, 18)
-        root.setSpacing(GAP)
+        """Create shared panels once, then assemble via checkout layout shell."""
+        from desktop.pos.panel_factory import build_shared_panels
+        from desktop.pos.layout_ids import (
+            CHECKOUT_LAYOUT_KEY, DEFAULT_CHECKOUT_LAYOUT, normalize_layout_id,
+        )
+        from desktop.pos.layouts.shells import apply_layout_shell
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(PADDING, 12, PADDING, 12)
+        root.setSpacing(0)
         self._root_lay = root
 
-        # ── LEFT: product browser (modular ProductGrid) ───────────────────────
-        self._left_panel = QFrame()
-        self._left_panel.setObjectName('posProductPanel')
-        self._left_panel.setStyleSheet(
-            f"QFrame#posProductPanel {{ background:{C['card']}; "
-            f"border:1px solid {C['border']}; border-radius:{RADIUS['xl']}px; }}")
-        ll = QVBoxLayout(self._left_panel)
-        ll.setContentsMargins(0, 0, 0, 0); ll.setSpacing(0)
+        # Prevent the Sales tab itself from scrolling — panels scroll independently.
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        search_bar = QWidget()
-        search_bar.setStyleSheet(
-            f"background:transparent; border-bottom:1px solid {C['border']};")
-        sf = QHBoxLayout(search_bar); sf.setContentsMargins(16, 14, 16, 14); sf.setSpacing(10)
-        self._search = PosSearchBar()
-        self._search.textChanged.connect(self._filter)
-        self._search.submitted.connect(self._on_barcode_enter)
-        sf.addWidget(self._search, 1)
-        self._cat = QComboBox()
-        self._cat.setObjectName('posCatCombo')
-        self._cat.setMinimumHeight(44)
-        self._cat.setFixedWidth(220)
-        from desktop.utils.pos_light_theme import style_cat_combo
-        style_cat_combo(self._cat, is_light=bool(getattr(self, '_is_light', False)))
-        self._cat.addItem('All Categories')
-        self._cat.currentTextChanged.connect(self._filter)
-        sf.addWidget(self._cat)
-        ref = IconBtn('↺', 40, 40); ref.clicked.connect(self.refresh); sf.addWidget(ref)
-        self._refresh_btn = ref
-        # POS focus: hide MainWindow sidebar/topbar so sale fills the window (U04 touch ≥40)
-        self._focus_btn = SecondaryBtn('Focus', 40)
-        self._focus_btn.setMinimumWidth(96)
-        self._focus_btn.setToolTip(
-            'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
-        self._focus_btn.clicked.connect(self._toggle_focus_mode)
-        sf.addWidget(self._focus_btn)
-        # Theme switch lives in the main topbar only (avoids dual-bar fight)
-        self._theme_btn = None
-        self._search_bar = search_bar
-        ll.addWidget(search_bar)
+        build_shared_panels(self)
 
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        self._prod_grid = ProductGrid()
-        self._prod_grid.productClicked.connect(self._add)
-        self._gw = self._prod_grid  # back-compat for theme helpers
-        self._grid = self._prod_grid._grid
-        scroll.setWidget(self._prod_grid)
-        ll.addWidget(scroll)
+        self._shell = QWidget()
+        self._shell.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        root.addWidget(self._shell, 1)
 
-        self._empty = QLabel('No products.\nAdd products in Inventory.')
-        self._empty.setAlignment(Qt.AlignCenter)
-        self._empty.setStyleSheet(f"color:{C['muted']};font-size:14px;background:transparent;")
-        self._empty.hide(); ll.addWidget(self._empty)
-        root.addWidget(self._left_panel, 6)
-
-        # ── RIGHT: checkout cart — wide enough for names + prices without clipping
-        self._right_panel = QFrame()
-        self._right_panel.setObjectName('posCartPanel')
-        self._right_panel.setMinimumWidth(740)
-        self._right_panel.setMaximumWidth(920)
-        # Wide enough for Item + Qty ± + Price(1,070) + Disc("- 50.00") + Total + X
-        self._right_panel.setFixedWidth(880)
-        self._right_panel.setStyleSheet(
-            f"QFrame#posCartPanel {{ background:{C['card']}; "
-            f"border:1px solid {C['border']}; border-radius:{RADIUS['xl']}px; }}")
-        rp_outer = QVBoxLayout(self._right_panel)
-        rp_outer.setContentsMargins(0, 0, 0, 0)
-        rp_outer.setSpacing(0)
-
-        self._checkout_scroll = QScrollArea()
-        self._checkout_scroll.setWidgetResizable(True)
-        self._checkout_scroll.setFrameShape(QFrame.NoFrame)
-        self._checkout_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._checkout_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-
-        checkout = QWidget()
-        checkout.setStyleSheet("background:transparent;")
-        rl = QVBoxLayout(checkout)
-        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
-
-        hdr = QWidget()
-        hdr.setStyleSheet(f"border-bottom:1px solid {C['border']};")
-        self._cart_hdr = hdr
-        ch = QHBoxLayout(hdr); ch.setContentsMargins(16, 14, 16, 14)
-        self._sale_hdr = H2('Current Sale')
-        ch.addWidget(self._sale_hdr)
-        ch.addStretch()
-        self._cnt = Caption('0 items')
-        ch.addWidget(self._cnt)
-        self._cart_max_btn = SecondaryBtn('Review', 36)
-        self._cart_max_btn.setMinimumWidth(110)
-        self._cart_max_btn.setMinimumHeight(40)
-        self._cart_max_btn.setToolTip(
-            'Enlarge the cart to review and edit many items. Esc or Restore to add products again.')
-        self._cart_max_btn.clicked.connect(self._toggle_cart_maximized)
-        ch.addWidget(self._cart_max_btn)
-        rl.addWidget(hdr)
-
-        cart_body = QWidget()
-        cbl = QVBoxLayout(cart_body); cbl.setContentsMargins(16, 12, 16, 16); cbl.setSpacing(12)
-
-        # Modern cart rows (not spreadsheet). Keep _ctbl=None for legacy theme guards.
-        self._ctbl = None
-        self._cart_list = CartList()
-        self._cart_list.qtyChanged.connect(self._qty)
-        self._cart_list.discChanged.connect(self._set_line_disc)
-        self._cart_list.removeClicked.connect(self._rm)
-        cbl.addWidget(self._cart_list, 1)  # stretch — grows in Review / Maximize
-
-        # Compact customer chip (opens picker — frees cart vertical space)
-        self._cust_card = CustomerCard()
-        self._cust_card.set_api(self.api)
-        self._customer = self._cust_card.selector
-        self._customer.currentIndexChanged.connect(self._on_customer_changed)
-        self._cust_lbl = None
-        cbl.addWidget(self._cust_card)
-
-        # Store credit apply row (shown when customer has wallet balance)
-        self._credit_frame = QFrame()
-        self._credit_frame.setStyleSheet(
-            f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
-        cfl = QHBoxLayout(self._credit_frame)
-        cfl.setContentsMargins(10, 8, 10, 8); cfl.setSpacing(8)
-        self._credit_info = QLabel('Store credit: —')
-        self._credit_info.setStyleSheet(
-            f"color:{C['ok']};font-size:12px;font-weight:600;background:transparent;")
-        self._credit_spin = QDoubleSpinBox()
-        self._credit_spin.setRange(0, 99999999)
-        self._credit_spin.setDecimals(2)
-        self._credit_spin.setMinimumHeight(36)
-        self._credit_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._credit_spin.setPrefix('Apply ')
-        self._credit_spin.valueChanged.connect(self._on_credit_apply_changed)
-        self._apply_all_credit_btn = SecondaryBtn('Use All', 36)
-        self._apply_all_credit_btn.setFixedWidth(80)
-        self._apply_all_credit_btn.clicked.connect(self._apply_all_credit)
-        cfl.addWidget(self._credit_info, 1)
-        cfl.addWidget(self._credit_spin)
-        cfl.addWidget(self._apply_all_credit_btn)
-        self._credit_frame.hide()
-        cbl.addWidget(self._credit_frame)
-
-        # Totals (SummaryCard + KES disc edit)
-        self._summary = SummaryCard()
-        self._tot_frame = self._summary
-        self._sub_lbl = self._summary._sub_lbl
-        self._tax_lbl = self._summary._tax_lbl
-        self._tot_lbl = self._summary._tot_lbl
-        self._total_hdr = self._summary._total_hdr
-        self._disc_lbl = self._summary.disc_label
-
-        disc_row = QHBoxLayout(); disc_row.setContentsMargins(0, 0, 0, 0)
-        self._disc_lbl.setToolTip(
-            'Cart discount in KES. You can also set Disc per line in the cart.')
-        self._disc = _KesEdit()
-        self._disc.setObjectName('cartDisc')
-        self._disc.setText('0.00')
-        self._disc.setFixedWidth(150)
-        self._disc.setMinimumHeight(38)
-        self._disc.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._disc.setPlaceholderText('0')
-        self._disc.setToolTip('Click, type e.g. 60, press Enter')
-        self._disc.setStyleSheet(
-            f"QLineEdit#cartDisc{{"
-            f"background:{C['input']};color:{C['text']};"
-            f"border:1.5px solid {C['border2']};border-radius:8px;"
-            f"padding:4px 8px;font-size:14px;font-weight:700;}}"
-            f"QLineEdit#cartDisc:focus{{border-color:{C['gold']};}}"
-        )
-        self._disc.editingFinished.connect(self._commit_cart_disc)
-        self._disc.returnPressed.connect(self._commit_cart_disc)
-        self._summary.disc_edit = self._disc
-        # After Order Summary header + Subtotal (index 2)
-        disc_row.addWidget(self._disc_lbl); disc_row.addStretch(); disc_row.addWidget(self._disc)
-        self._summary._body.insertLayout(2, disc_row)
-        cbl.addWidget(self._summary)
-
-        # Payment tiles (Cash / M-Pesa / Card / Bank / Split) + full combo for other methods
-        pay_hdr = QLabel('Payment Method')
-        pay_hdr.setObjectName('posPayHdr')
-        pay_hdr.setStyleSheet(
-            f"color:{C['muted']};font-size:11px;font-weight:800;letter-spacing:0.6px;"
-            f"background:transparent;")
-        self._pay_hdr = pay_hdr
-        cbl.addWidget(pay_hdr)
-        self._pay_seg = PaymentSegment()
-        self._pay_seg.methodChanged.connect(self._select_pay_method)
-        self._pay_btns = self._pay_seg._btns
-        cbl.addWidget(self._pay_seg)
-
-        pay = QHBoxLayout(); pay.setSpacing(8)
-        self._pay_lbl = QLabel('Method')
-        self._pay_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:13px;background:transparent;")
-        self._pay = Select()
-        self._pay.set_items(list(POS_PAYMENT_METHODS))
-        self._pay.setMinimumHeight(44); self._pay.setMinimumWidth(140)
-        self._pay.currentTextChanged.connect(self._on_payment_changed)
-        self._paid = QDoubleSpinBox(); self._paid.setRange(0, 99999999)
-        self._paid.setDecimals(2); self._paid.setMinimumHeight(44)
-        self._paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._paid.setToolTip('Cash Paid')
-        self._paid.valueChanged.connect(self._on_paid_changed)
-        self._cash_paid_lbl = QLabel('Cash Paid')
-        self._cash_paid_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:12px;background:transparent;")
-        pay.addWidget(self._pay_lbl); pay.addWidget(self._pay)
-        pay.addWidget(self._cash_paid_lbl)
-        pay.addWidget(self._paid, 1)
-        cbl.addLayout(pay)
-
-        # Expected / Received / Difference (M-Pesa Till variance)
-        self._var_frame = QFrame()
-        self._var_frame.setStyleSheet(
-            f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
-        vfl = QVBoxLayout(self._var_frame)
-        vfl.setContentsMargins(12, 8, 12, 8); vfl.setSpacing(4)
-        self._expected_lbl = QLabel('Expected: —')
-        self._received_lbl = QLabel('Received: —')
-        self._diff_lbl = QLabel('Difference: —')
-        for w in (self._expected_lbl, self._received_lbl, self._diff_lbl):
-            w.setStyleSheet(
-                f"color:{C['text2']};font-size:12px;font-weight:600;background:transparent;")
-            vfl.addWidget(w)
-        self._var_frame.hide()
-        cbl.addWidget(self._var_frame)
-
-        # Cash rounding breakdown — shown only when Cash/Mixed + delta ≠ 0
-        self._round_frame = QFrame()
-        self._round_frame.setObjectName('posRoundFrame')
-        self._round_frame.setStyleSheet(
-            f"QFrame#posRoundFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
-        rfl = QVBoxLayout(self._round_frame)
-        rfl.setContentsMargins(12, 8, 12, 8); rfl.setSpacing(4)
-        self._round_badge = QLabel('Cash Rounding Applied')
-        self._round_badge.setStyleSheet(
-            f"color:{C['gold']};font-size:11px;font-weight:800;background:transparent;")
-        self._orig_due_lbl = QLabel('Original: —')
-        self._round_adj_lbl = QLabel('Cash Rounding: —')
-        self._amount_due_lbl = QLabel('Amount Due: —')
-        for w in (self._orig_due_lbl, self._round_adj_lbl, self._amount_due_lbl):
-            w.setStyleSheet(
-                f"color:{C['text2']};font-size:12px;font-weight:600;background:transparent;")
-        self._amount_due_lbl.setStyleSheet(
-            f"color:{C['text']};font-size:13px;font-weight:800;background:transparent;")
-        rfl.addWidget(self._round_badge)
-        rfl.addWidget(self._orig_due_lbl)
-        rfl.addWidget(self._round_adj_lbl)
-        rfl.addWidget(self._amount_due_lbl)
-        self._round_frame.hide()
-        cbl.addWidget(self._round_frame)
-
-        # Split / 2-way tender (outside rounding — visible whenever Cash or Mixed)
-        self._split_frame = QFrame()
-        self._split_frame.setObjectName('posSplitFrame')
-        self._split_frame.setStyleSheet(
-            f"QFrame#posSplitFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
-        sfl = QVBoxLayout(self._split_frame)
-        sfl.setContentsMargins(12, 8, 12, 8); sfl.setSpacing(6)
-        self._split_hdr = QLabel('Split payment (optional)')
-        self._split_hdr.setStyleSheet(
-            f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
-        sfl.addWidget(self._split_hdr)
-        erow = QHBoxLayout(); erow.setSpacing(8)
-        self._elec_method = Select()
-        self._elec_method.set_items(['M-Pesa', 'Card', 'Bank Transfer', 'Airtel Money'])
-        self._elec_method.setMinimumHeight(34)
-        self._elec_method.setMinimumWidth(120)
-        self._elec_lbl = QLabel('Electronic')
-        self._elec_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:12px;background:transparent;")
-        self._elec_paid = QDoubleSpinBox()
-        self._elec_paid.setRange(0, 99999999)
-        self._elec_paid.setDecimals(2)
-        self._elec_paid.setMinimumHeight(34)
-        self._elec_paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self._elec_paid.setToolTip(
-            'Amount paid electronically (M-Pesa / Card / Bank). '
-            'Cash portion below is rounded separately.')
-        self._elec_paid.valueChanged.connect(self._on_elec_paid_changed)
+        layout_id = DEFAULT_CHECKOUT_LAYOUT
         try:
-            self._elec_method.currentTextChanged.connect(
-                lambda *_: self._update_rounding_ui())
+            cfg = self.api.get_settings() or {}
+            layout_id = normalize_layout_id(cfg.get(CHECKOUT_LAYOUT_KEY))
+        except Exception:
+            layout_id = DEFAULT_CHECKOUT_LAYOUT
+        self._checkout_layout = layout_id
+        apply_layout_shell(self, layout_id)
+        self._update_hold_buttons()
+
+    def set_checkout_layout(self, layout_id: str, *, animate: bool = True) -> str:
+        """Switch Retail Classic / Product Explorer / Checkout Pro without restart.
+
+        Preserves cart, customer, payment, and search state — only geometry changes.
+        """
+        from desktop.pos.layout_ids import normalize_layout_id
+        from desktop.pos.layouts.shells import apply_layout_shell
+
+        lid = normalize_layout_id(layout_id)
+        if lid == getattr(self, '_checkout_layout', None) and getattr(self, '_shell', None):
+            # Still re-apply if shell is empty (first paint edge case)
+            if self._shell.layout() is not None and self._shell.layout().count() > 0:
+                return lid
+
+        # Snapshot UI values that live on widgets (already on self.cart / spins)
+        search_text = ''
+        try:
+            search_text = self._search.text()
         except Exception:
             pass
-        erow.addWidget(self._elec_lbl)
-        erow.addWidget(self._elec_method, 1)
-        erow.addWidget(self._elec_paid, 1)
-        sfl.addLayout(erow)
-        self._split_summary = QLabel('')
-        self._split_summary.setWordWrap(True)
-        self._split_summary.setStyleSheet(
-            f"color:{C['text']};font-size:12px;font-weight:700;background:transparent;")
-        sfl.addWidget(self._split_summary)
-        self._split_frame.hide()
-        cbl.addWidget(self._split_frame)
+        cat_text = ''
+        try:
+            cat_text = self._cat.currentText()
+        except Exception:
+            pass
 
-        self._chg_frame = QFrame()
-        self._chg_frame.setObjectName('posChangeDue')
-        self._chg_frame.setStyleSheet(
-            f"QFrame#posChangeDue{{background:{qss_alpha(C['ok'], 0.10)};"
-            f"border:1px solid {qss_alpha(C['ok'], 0.28)};border-radius:12px;}}")
-        chg = QHBoxLayout(self._chg_frame)
-        chg.setContentsMargins(14, 12, 14, 12)
-        self._chg_lbl = QLabel('Change Due')
-        self._chg_lbl.setStyleSheet(
-            f"color:{C['text2']};font-size:13px;font-weight:700;background:transparent;")
-        self._chg = QLabel('KES 0.00')
-        self._chg.setStyleSheet(
-            f"color:{C['ok']};font-size:22px;font-weight:900;background:transparent;")
-        chg.addWidget(self._chg_lbl)
-        chg.addStretch()
-        chg.addWidget(self._chg)
-        cbl.addWidget(self._chg_frame)
+        if animate:
+            try:
+                self._shell.setUpdatesEnabled(False)
+            except Exception:
+                pass
+        try:
+            apply_layout_shell(self, lid)
+        finally:
+            if animate:
+                try:
+                    self._shell.setUpdatesEnabled(True)
+                    self._shell.update()
+                except Exception:
+                    pass
 
-        self._mpesa_frame = QFrame()
-        self._mpesa_frame.setStyleSheet(
-            f"QFrame{{background:{C['card2']};border:1px solid {C['border2']};border-radius:8px;}}")
-        mfl = QVBoxLayout(self._mpesa_frame)
-        mfl.setContentsMargins(12, 10, 12, 10); mfl.setSpacing(6)
-        self._mpesa_info = QLabel('Pay to Till: —')
-        self._mpesa_info.setWordWrap(True)
-        self._mpesa_info.setStyleSheet(
-            f"color:{C['gold']};font-size:12px;font-weight:600;background:transparent;")
-        self._mpesa_ref = QLineEdit()
-        self._mpesa_ref.setPlaceholderText('M-Pesa confirmation code (optional)')
-        self._mpesa_ref.setMinimumHeight(40)
-        mfl.addWidget(self._mpesa_info); mfl.addWidget(self._mpesa_ref)
-        self._mpesa_frame.hide()
-        cbl.addWidget(self._mpesa_frame)
+        # Restore search/category where appropriate (widgets are the same instances)
+        try:
+            if search_text and self._search.text() != search_text:
+                self._search.setText(search_text)
+            if cat_text:
+                idx = self._cat.findText(cat_text)
+                if idx >= 0:
+                    self._cat.setCurrentIndex(idx)
+        except Exception:
+            pass
 
-        self._note = QLineEdit(); self._note.setPlaceholderText('Note (optional)…')
-        self._note.setMinimumHeight(40); cbl.addWidget(self._note)
-
-        # Preview/Reprint live in sticky footer (not under Complete Sale).
-        # Note: Checkout is pinned below the scroll area so it is always visible.
-        rl.addWidget(cart_body, 1)
-        self._checkout_scroll.setWidget(checkout)
-        rp_outer.addWidget(self._checkout_scroll, 1)
-
-        foot = QWidget()
-        foot.setObjectName('posCheckoutFoot')
-        foot.setAttribute(Qt.WA_StyledBackground, True)
-        foot.setStyleSheet(
-            f"QWidget#posCheckoutFoot {{ background:{C['card']}; "
-            f"border-top:1px solid {C['border']}; }}")
-        self._checkout_foot = foot
-        fl = QVBoxLayout(foot)
-        fl.setContentsMargins(16, 10, 16, 12)
-        fl.setSpacing(8)
-
-        br = QHBoxLayout(); br.setSpacing(10)
-        self._clr_btn = DangerBtn('X', 40); self._clr_btn.setFixedWidth(44)
-        self._clr_btn.setToolTip('Clear cart'); self._clr_btn.clicked.connect(self._clear)
-        self._hold_btn = SecondaryBtn('Hold', 40)
-        self._hold_btn.setToolTip('Park current cart (in-memory; cleared on exit)')
-        self._hold_btn.clicked.connect(self._hold_sale)
-        self._resume_btn = SecondaryBtn('Resume', 40)
-        self._resume_btn.setToolTip('Restore held cart')
-        self._resume_btn.clicked.connect(self._resume_held)
-        self._resume_btn.setEnabled(False)
-        self._prv_btn = SecondaryBtn('Preview', 40)
-        self._prv_btn.clicked.connect(self._preview)
-        self._reprint_btn = SecondaryBtn('Reprint', 40)
-        self._reprint_btn.setToolTip('Reprint a completed receipt')
-        self._reprint_btn.clicked.connect(self._reprint_receipt)
-        br.addWidget(self._clr_btn)
-        br.addWidget(self._hold_btn)
-        br.addWidget(self._resume_btn)
-        br.addWidget(self._prv_btn, 1)
-        br.addWidget(self._reprint_btn)
-        from desktop.utils.security import can_void_sales
-        if can_void_sales(self.user):
-            self._void_btn = DangerBtn('Void Sale', 40)
-            self._void_btn.setToolTip(
-                'Void a completed sale (reason dropdown + Super-Admin PIN). '
-                'Returns not available — void or edit instead.')
-            self._void_btn.clicked.connect(self._void_sale)
-            br.addWidget(self._void_btn)
-        else:
-            self._void_btn = None
-        # Return / Exchange — partial restock + refund sale (P11)
-        self._returns_help_btn = SecondaryBtn('Return / Exchange', 40)
-        self._returns_help_btn.setToolTip(
-            'Return items from a completed receipt (restock + refund record)')
-        self._returns_help_btn.clicked.connect(self._open_return_sale)
-        br.addWidget(self._returns_help_btn)
-        fl.addLayout(br)
-
-        self._charge_btn = PrimaryBtn('$  Complete Sale', 56)
-        self._charge_btn.setMinimumHeight(56)
-        self._charge_btn.clicked.connect(self._process)
-        fl.addWidget(self._charge_btn)
-        rp_outer.addWidget(foot)
-        root.addWidget(self._right_panel, 5)
+        try:
+            self._refresh_cart()
+            self._filter(defer=True)
+            self._on_payment_changed(self._pay.currentText())
+        except Exception:
+            pass
+        try:
+            self._search.setFocus(Qt.OtherFocusReason)
+        except Exception:
+            pass
+        return lid
 
     # ── POS focus / cart maximize (session-only) ──────────────────────────────
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F9:
+            try:
+                self._process()
+            except Exception:
+                pass
+            event.accept()
+            return
+        if event.key() == Qt.Key_Escape:
+            if getattr(self, '_cart_maximized', False):
+                self.set_cart_maximized(False)
+                event.accept()
+                return
+            if getattr(self, '_focus_mode', False):
+                self.set_focus_mode(False)
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _toggle_focus_mode(self):
         self.set_focus_mode(not bool(getattr(self, '_focus_mode', False)))
@@ -503,38 +227,50 @@ class SalesTab(QWidget):
         if bool(getattr(self, '_cart_maximized', False)) == enabled:
             return
         self._cart_maximized = enabled
-        left = getattr(self, '_left_panel', None)
+        left = getattr(self, '_product_panel', None) or getattr(self, '_left_panel', None)
+        sale = getattr(self, '_sale_panel', None)
+        actions = getattr(self, '_actions_panel', None)
         cart = getattr(self, '_right_panel', None)
-        root = getattr(self, '_root_lay', None)
+        shell = getattr(self, '_shell', None)
+        shell_lay = shell.layout() if shell is not None else None
         clist = getattr(self, '_cart_list', None)
+        layout_id = getattr(self, '_checkout_layout', 'product_explorer')
 
         if left is not None:
             left.setVisible(not enabled)
+        # Classic bottom payment strip — hide while reviewing cart
+        pf = getattr(self, '_payment_footer_bar', None)
+        if pf is not None and layout_id == 'retail_classic':
+            pf.setVisible(not enabled)
+        if layout_id == 'checkout_pro' and actions is not None:
+            actions.setVisible(not enabled)
 
-        if cart is not None:
+        focus_panel = sale if layout_id == 'checkout_pro' else cart
+        if focus_panel is not None:
             if enabled:
-                # Clear fixed width from split layout so cart can fill the tab
-                cart.setMinimumWidth(480)
-                cart.setMaximumWidth(16777215)
-                sp = cart.sizePolicy()
+                focus_panel.setMinimumWidth(480)
+                focus_panel.setMaximumWidth(16777215)
+                sp = focus_panel.sizePolicy()
                 sp.setHorizontalPolicy(QSizePolicy.Expanding)
                 sp.setHorizontalStretch(1)
-                cart.setSizePolicy(sp)
-                if root is not None:
-                    root.setStretchFactor(cart, 1)
-                    if left is not None:
-                        root.setStretchFactor(left, 0)
+                focus_panel.setSizePolicy(sp)
+                if shell_lay is not None:
+                    try:
+                        shell_lay.setStretchFactor(focus_panel, 1)
+                        if left is not None:
+                            shell_lay.setStretchFactor(left, 0)
+                    except Exception:
+                        pass
             else:
-                cart.setMinimumWidth(740)
-                cart.setMaximumWidth(920)
-                cart.setFixedWidth(880)
-                sp = cart.sizePolicy()
-                sp.setHorizontalPolicy(QSizePolicy.Fixed)
-                cart.setSizePolicy(sp)
-                if root is not None:
-                    root.setStretchFactor(cart, 5)
-                    if left is not None:
-                        root.setStretchFactor(left, 6)
+                # Restore layout-specific sizing via re-apply (preserves state)
+                try:
+                    from desktop.pos.layouts.shells import apply_layout_shell
+                    apply_layout_shell(self, layout_id)
+                except Exception:
+                    if layout_id == 'product_explorer' and cart is not None:
+                        cart.setMinimumWidth(740)
+                        cart.setMaximumWidth(920)
+                        cart.setFixedWidth(880)
 
         if clist is not None and hasattr(clist, 'set_expanded'):
             clist.set_expanded(enabled)
@@ -569,8 +305,8 @@ class SalesTab(QWidget):
 
         try:
             self.updateGeometry()
-            if cart is not None:
-                cart.updateGeometry()
+            if focus_panel is not None:
+                focus_panel.updateGeometry()
         except Exception:
             pass
 
@@ -610,21 +346,56 @@ class SalesTab(QWidget):
         row.addWidget(l); row.addStretch(); row.addWidget(v)
         parent_lay.addLayout(row); return v
 
+    def _catalog_is_fresh(self) -> bool:
+        """True when a catalog load completed recently (empty shop is still fresh)."""
+        if not getattr(self, '_catalog_loaded', False):
+            return False
+        try:
+            age = time.monotonic() - float(getattr(self, '_catalog_mono', 0) or 0)
+        except Exception:
+            return False
+        return age < float(getattr(self, '_catalog_ttl_s', 45) or 45)
+
+    def invalidate_catalog(self):
+        """Force next on_show / refresh to reload products (e.g. after inventory)."""
+        self._catalog_loaded = False
+        self._catalog_mono = 0.0
+
     def on_show(self):
-        self.refresh()
-        self._on_payment_changed(self._pay.currentText())
+        """Show path: paint first; reuse cached catalog when fresh."""
+        try:
+            self._on_payment_changed(self._pay.currentText())
+        except Exception:
+            pass
         try:
             self._search.setFocus(Qt.OtherFocusReason)
         except Exception:
             pass
+        if self._catalog_is_fresh() and getattr(self, '_grid_painted', False):
+            return
+        if self._catalog_is_fresh() and not getattr(self, '_grid_painted', False):
+            # Data in memory (rare) but grid never painted — fill without DB round-trip
+            QTimer.singleShot(0, lambda: self._filter(defer=True))
+            return
+        # First open or stale: load after this event so shell paints first
+        QTimer.singleShot(0, lambda: self.refresh(defer_grid=True))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         try:
             cols = self._product_columns()
-            if getattr(self, '_last_cols', None) != cols:
-                self._last_cols = cols
-                self._filter()
+            if getattr(self, '_last_cols', None) == cols:
+                return
+            self._last_cols = cols
+            # Debounce — layout reparent / maximize fires many resizes
+            t = getattr(self, '_resize_filter_timer', None)
+            if t is None:
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.setInterval(80)
+                t.timeout.connect(lambda: self._filter(defer=False))
+                self._resize_filter_timer = t
+            t.start()
         except Exception:
             pass
 
@@ -715,8 +486,27 @@ class SalesTab(QWidget):
     def _set_cash_paid_ui_visible(self, visible: bool):
         if hasattr(self, '_paid'):
             self._paid.setVisible(visible)
+        # Shared Amount Paid caption (all layouts) — never use legacy Cash Paid label
+        cap = getattr(self, '_amount_paid_cap', None)
+        if cap is not None:
+            try:
+                cap.setVisible(visible)
+                if visible:
+                    cap.setText('Amount Paid')
+            except RuntimeError:
+                pass
+        block = getattr(self, '_amount_paid_block', None) or getattr(self, '_amount_block', None)
+        if block is not None:
+            try:
+                block.setVisible(visible)
+            except RuntimeError:
+                pass
+        # Legacy label stays hidden — Amount Paid cap replaces it across layouts
         if hasattr(self, '_cash_paid_lbl'):
-            self._cash_paid_lbl.setVisible(visible)
+            try:
+                self._cash_paid_lbl.hide()
+            except RuntimeError:
+                pass
         if hasattr(self, '_chg_frame'):
             self._chg_frame.setVisible(visible)
         if hasattr(self, '_chg_lbl'):
@@ -821,8 +611,8 @@ class SalesTab(QWidget):
                     f"QFrame#posRoundFrame{{background:{C['card2']};"
                     f"border:1px solid {C['border2']};border-radius:8px;}}")
 
-        # Split tender panel — Cash / Mixed only (never on pure M-Pesa/Card/Bank)
-        show_split = self._is_split_method(method)
+        # Split tender panel — only when Mixed (Cash optional strip clutters Classic/Explorer)
+        show_split = method == 'Mixed'
         if hasattr(self, '_split_frame'):
             self._split_frame.setVisible(show_split)
             if show_split:
@@ -956,7 +746,11 @@ class SalesTab(QWidget):
         is_mpesa = method == 'M-Pesa'
         self._mpesa_frame.setVisible(is_mpesa)
         if hasattr(self, '_var_frame'):
-            self._var_frame.setVisible(is_mpesa)
+            # Checkout Pro: never permanently show Additional Payment Handling strip
+            if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+                self._var_frame.hide()
+            else:
+                self._var_frame.setVisible(is_mpesa)
 
         # Switching payment method resets Cash Paid dirty flag for Cash/Mixed
         if AutoFillService.is_cash_like(method):
@@ -983,17 +777,24 @@ class SalesTab(QWidget):
             self._mpesa_info.setText(' · '.join(parts))
             # Received Amount for Till variance (not Cash Paid auto-fill)
             self._set_cash_paid_ui_visible(True)
-            if hasattr(self, '_cash_paid_lbl'):
-                self._cash_paid_lbl.setText('Received')
+            if hasattr(self, '_amount_paid_cap'):
+                self._amount_paid_cap.setText('Amount Paid')
             self._paid.setEnabled(True)
             self._set_paid_value(self._amount_due())
-            self._paid.setToolTip('Received Amount — enter what customer paid via Till')
+            self._paid.setToolTip('Amount Paid — enter what customer paid via Till')
             self._pay_lbl.setText('Method')
-            self._chg_lbl.setText('Difference')
+            if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+                self._chg_lbl.setText('Change')
+                if hasattr(self, '_cash_paid_lbl'):
+                    self._cash_paid_lbl.hide()
+                if hasattr(self, '_pay_lbl'):
+                    self._pay_lbl.hide()
+            else:
+                self._chg_lbl.setText('Change')
         elif method in ('Credit Sale', 'Credit Account'):
             self._set_cash_paid_ui_visible(True)
-            if hasattr(self, '_cash_paid_lbl'):
-                self._cash_paid_lbl.setText('Paid Now')
+            if hasattr(self, '_amount_paid_cap'):
+                self._amount_paid_cap.setText('Amount Paid')
             self._set_paid_value(0.0)
             self._paid.setEnabled(False)
             self._mpesa_ref.clear()
@@ -1010,8 +811,8 @@ class SalesTab(QWidget):
         elif method == 'Part Payment':
             # Partial pay — never auto-fill amount (intentional credit remainder)
             self._set_cash_paid_ui_visible(True)
-            if hasattr(self, '_cash_paid_lbl'):
-                self._cash_paid_lbl.setText('Paid Now')
+            if hasattr(self, '_amount_paid_cap'):
+                self._amount_paid_cap.setText('Amount Paid')
             self._paid.setEnabled(True)
             self._mpesa_ref.clear()
             self._paid.setToolTip('Amount paid now (remainder on credit)')
@@ -1022,22 +823,32 @@ class SalesTab(QWidget):
         else:
             # Cash / Mixed — smart Cash Paid = Amount Due (post rounding)
             self._set_cash_paid_ui_visible(True)
-            if hasattr(self, '_cash_paid_lbl'):
-                self._cash_paid_lbl.setText('Cash Paid')
+            if hasattr(self, '_amount_paid_cap'):
+                self._amount_paid_cap.setText('Amount Paid')
             self._paid.setEnabled(True)
             self._mpesa_ref.clear()
-            self._paid.setToolTip('Cash Paid — defaults to Amount Due; edit for change')
+            self._paid.setToolTip('Amount Paid — defaults to Amount Due; edit for change')
             self._chg_lbl.setText('Change')
-            self._maybe_autofill_cash_paid(focus=True)
+            self._maybe_autofill_cash_paid(focus=False)
         self._update_rounding_ui()
         self._calc_change()
 
-    def refresh(self):
-        try: self.products = self.api.get_products() or []
-        except Exception: self.products = []
+    def refresh(self, force: bool = False, defer_grid: bool = False):
+        """Reload catalog from DB and repaint the product grid.
+
+        ``defer_grid=True`` paints shell first, then fills cards in chunks
+        (used on tab open). Manual refresh button uses synchronous fill.
+        """
+        if not force and self._catalog_is_fresh() and getattr(self, '_grid_painted', False):
+            return
+        try:
+            self.products = self.api.get_products() or []
+        except Exception:
+            self.products = []
         try:
             self._currency = (self.config_getter() or {}).get('currency_symbol', 'KES') or 'KES'
-        except Exception: pass
+        except Exception:
+            pass
         try:
             self._categories_by_name = self.api.categories_by_name_map()
         except Exception:
@@ -1057,32 +868,48 @@ class SalesTab(QWidget):
         except Exception:
             pass
         cats = sorted({p.get('category') or 'General' for p in self.products})
-        # Prefer managed category list when available
+        # Prefer managed category list when available; drop supplier-tag noise
+        try:
+            from desktop.utils.display_category import (
+                looks_like_supplier_tag, display_category,
+            )
+            cleaned = set()
+            for p in self.products:
+                lab, _ = display_category(p.get('category') or '', p.get('name') or '')
+                if lab and lab != 'Uncategorized':
+                    cleaned.add(lab)
+                elif p.get('category') and not looks_like_supplier_tag(p.get('category') or ''):
+                    cleaned.add(p.get('category'))
+            if cleaned:
+                cats = sorted(cleaned)
+            else:
+                cats = [c for c in cats if not looks_like_supplier_tag(c)]
+        except Exception:
+            pass
         try:
             managed = [c.get('name') for c in (self.api.get_categories() or []) if c.get('name')]
             if managed:
+                try:
+                    from desktop.utils.display_category import looks_like_supplier_tag as _slt
+                    managed = [c for c in managed if not _slt(c)]
+                except Exception:
+                    pass
                 cats = sorted(set(cats) | set(managed))
         except Exception:
             pass
-        self._cat.blockSignals(True)
-        cur = self._cat.currentText()
-        self._cat.clear(); self._cat.addItem('All Categories')
-        for c in cats:
-            meta = (self._categories_by_name or {}).get(c) or {}
-            # Show icon hint in combo via item data; text stays readable
-            self._cat.addItem(c)
-            idx_i = self._cat.count() - 1
-            if meta.get('icon_name'):
-                try:
-                    from desktop.utils.category_visuals import icon_to_pixmap
-                    self._cat.setItemIcon(
-                        idx_i, QIcon(icon_to_pixmap(icon_id=meta['icon_name'], size=20)))
-                except Exception:
-                    pass
-        idx = self._cat.findText(cur)
-        if idx >= 0: self._cat.setCurrentIndex(idx)
-        self._cat.blockSignals(False)
-        self._filter()
+        self._rebuild_category_combo(cats)
+        try:
+            if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+                from desktop.pos.checkout_pro_chrome import sync_category_chips
+                sync_category_chips(self)
+        except Exception:
+            pass
+        self._catalog_loaded = True
+        try:
+            self._catalog_mono = time.monotonic()
+        except Exception:
+            self._catalog_mono = 0.0
+        self._filter(defer=bool(defer_grid))
 
     def _on_barcode_enter(self, text: str):
         """Barcode / SKU Enter — add exact match and clear search for next scan."""
@@ -1098,7 +925,6 @@ class SalesTab(QWidget):
                 hit = p
                 break
         if hit is None:
-            # Unique partial SKU/barcode match
             matches = [p for p in self.products
                        if ql in (p.get('sku') or '').lower()
                        or ql in (p.get('barcode') or '').lower()
@@ -1121,36 +947,120 @@ class SalesTab(QWidget):
         else:
             self._filter()
 
-    def _filter(self):
+    def _rebuild_category_combo(self, cats: list):
+        """Rebuild category list; defer icon pixmaps so first paint stays snappy."""
+        self._cat.blockSignals(True)
+        cur = self._cat.currentText()
+        self._cat.clear()
+        self._cat.addItem('All Categories')
+        for c in cats:
+            self._cat.addItem(c)
+        idx = self._cat.findText(cur)
+        if idx >= 0:
+            self._cat.setCurrentIndex(idx)
+        else:
+            self._cat.setCurrentIndex(0)
+        self._cat.blockSignals(False)
+        # Icons after first paint — optional polish, not required for selling
+        QTimer.singleShot(0, lambda names=list(cats): self._apply_category_icons(names))
+
+    def _apply_category_icons(self, cats: list):
+        try:
+            from desktop.utils.category_visuals import icon_to_pixmap
+        except Exception:
+            return
+        cmap = getattr(self, '_categories_by_name', None) or {}
+        try:
+            self._cat.blockSignals(True)
+            for i in range(1, self._cat.count()):
+                name = self._cat.itemText(i)
+                if name not in cats and cats:
+                    continue
+                meta = cmap.get(name) or {}
+                if not meta.get('icon_name'):
+                    continue
+                try:
+                    self._cat.setItemIcon(
+                        i, QIcon(icon_to_pixmap(icon_id=meta['icon_name'], size=20)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            try:
+                self._cat.blockSignals(False)
+            except Exception:
+                pass
+
+    def _filter(self, defer: bool = False):
         q   = self._search.text().strip().lower()
         cat = self._cat.currentText()
+        try:
+            from desktop.utils.display_category import display_category as _dcat
+
+            def _cat_match(p):
+                if cat in ('All Categories', 'All', ''):
+                    return True
+                lab, _ = _dcat(p.get('category') or '', p.get('name') or '')
+                raw = (p.get('category') or 'General')
+                return lab == cat or raw == cat
+        except Exception:
+            def _cat_match(p):
+                return (cat in ('All Categories', 'All', '')
+                        or (p.get('category') or 'General') == cat)
+
         filtered = [p for p in self.products
                     if (not q or q in p.get('name', '').lower()
                         or q in (p.get('sku') or '').lower()
                         or q in (p.get('barcode') or '').lower())
-                    and (cat == 'All Categories'
-                         or (p.get('category') or 'General') == cat)]
+                    and _cat_match(p)]
         # Light typo tolerance when substring finds nothing
         if q and not filtered and len(q) >= 3:
             import difflib
             names = {
                 (p.get('name') or '').lower(): p
                 for p in self.products
-                if cat == 'All Categories' or (p.get('category') or 'General') == cat
+                if _cat_match(p)
             }
             close = difflib.get_close_matches(q, names.keys(), n=12, cutoff=0.62)
             filtered = [names[n] for n in close]
+        show_empty = getattr(self, '_show_empty_overlay', None)
         if not filtered:
             self._prod_grid.clear()
-            self._empty.show()
+            self._grid_painted = True
+            if callable(show_empty):
+                show_empty(True)
         else:
-            self._empty.hide()
+            if callable(show_empty):
+                show_empty(False)
             self._prod_grid.set_currency(self._currency)
             self._prod_grid.set_light(bool(getattr(self, '_is_light', False)))
             self._prod_grid.set_categories_map(
                 getattr(self, '_categories_by_name', None) or {})
             cols = self._product_columns()
-            self._prod_grid.populate(filtered, columns=cols)
+            # Typing / category change: sync. Tab open: chunked for smoothness.
+            use_chunk = bool(defer) and not q
+            self._prod_grid.populate(filtered, columns=cols, chunked=use_chunk)
+            self._grid_painted = True
+
+    def _show_empty_overlay(self, visible: bool):
+        empty = getattr(self, '_empty', None)
+        panel = getattr(self, '_product_panel', None)
+        if empty is None:
+            return
+        if visible and panel is not None:
+            try:
+                empty.setGeometry(0, 56, max(120, panel.width()), max(80, panel.height() - 56))
+                empty.raise_()
+            except Exception:
+                pass
+            empty.show()
+        else:
+            empty.hide()
+            try:
+                empty.lower()
+            except Exception:
+                pass
 
     def _retint_prod_grid(self):
         """Update product card colors in place — no destroy/rebuild (theme switch fast path)."""
@@ -1160,10 +1070,19 @@ class SalesTab(QWidget):
         refresh_pos_components(self)
 
     def _product_columns(self) -> int:
+        layout_id = getattr(self, '_checkout_layout', 'product_explorer')
+        # Checkout Pro: ~2-column product grid (narrow left rail).
+        if layout_id == 'checkout_pro':
+            return 2
         try:
-            available = max(640, self._left_panel.width() - 48)
+            left = getattr(self, '_product_panel', None) or self._left_panel
+            available = max(640, left.width() - 48)
         except Exception:
             available = 760
+        if layout_id == 'retail_classic':
+            # Prefer denser list feel on supermarket layout
+            if hasattr(self, '_prod_grid'):
+                return min(5, max(3, self._prod_grid.columns_for_width(available)))
         if hasattr(self, '_prod_grid'):
             return self._prod_grid.columns_for_width(available)
         card_w = 214 if self._is_light else 206
@@ -1175,7 +1094,7 @@ class SalesTab(QWidget):
         """Legacy helper — ProductGrid builds ProductCard now."""
         card = ProductCard(
             p, currency=self._currency,
-            card_size=(220, 150) if self._is_light else (214, 148))
+            card_size=(232, 156) if self._is_light else (226, 152))
         card.clicked.connect(self._add)
         return card
 
@@ -1285,11 +1204,13 @@ class SalesTab(QWidget):
                 _sfx('low_stock')
         except (TypeError, ValueError):
             pass
-        for item in self.cart:
+        for idx, item in enumerate(self.cart):
             if item['product_id'] == p['id']:
                 item['quantity'] = round(item['quantity'] + 1.0, 2)
                 self._apply_line_total(item)
-                self._refresh_cart(); return
+                self._cart_select_idx = idx
+                self._refresh_cart()
+                return
         self.cart.append({
             'product_id':   p['id'],
             'product_name': p.get('name', ''),
@@ -1300,6 +1221,7 @@ class SalesTab(QWidget):
             'discount':     0.0,
             'total':        p.get('price', 0),
         })
+        self._cart_select_idx = len(self.cart) - 1
         self._refresh_cart()
 
     def _cart_fg(self):
@@ -1313,9 +1235,23 @@ class SalesTab(QWidget):
         for item in self.cart:
             self._apply_line_total(item)
         if hasattr(self, '_cart_list') and self._cart_list is not None:
-            self._cart_list.set_items(self.cart, currency=self._currency)
+            sel = getattr(self, '_cart_select_idx', None)
+            if sel is None and self.cart:
+                sel = len(self.cart) - 1
+            elif self.cart and sel is not None:
+                sel = max(0, min(int(sel), len(self.cart) - 1))
+            else:
+                sel = None
+            self._cart_list.set_items(
+                self.cart, currency=self._currency, select_index=sel)
+            if sel is not None:
+                self._cart_select_idx = sel
         n = len(self.cart)
         self._cnt.setText(f"{n} item{'s' if n != 1 else ''}")
+        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+            hdr = getattr(self, '_sale_hdr', None)
+            if hdr is not None:
+                hdr.setText(f'Current Sale ({n} item{"s" if n != 1 else ""})')
         self._recalc()
         self._update_hold_buttons()
 
@@ -1388,6 +1324,179 @@ class SalesTab(QWidget):
             self, 'Sale Held',
             'Cart parked. Use Resume to restore it.\n'
             '(Saved locally — survives leaving Sales / restarting the app.)')
+
+    def _suspend_sale(self):
+        """Checkout Pro Suspend — same park backend as Hold (design label)."""
+        if not self.cart:
+            _sfx('warning')
+            QMessageBox.information(self, 'Empty Cart', 'Add items before suspending a sale.')
+            return
+        if self._held and self._held.get('cart'):
+            r = QMessageBox.question(
+                self, 'Replace Suspended Sale?',
+                'A sale is already parked. Replace it with the current cart?',
+                QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        snap = self._snapshot_pos()
+        self._held = snap
+        try:
+            from desktop.utils.held_sale import save_held_sale
+            save_held_sale(snap)
+        except Exception:
+            pass
+        self._clear()
+        self._update_hold_buttons()
+        _sfx('ok')
+        QMessageBox.information(
+            self, 'Sale Suspended',
+            'Sale suspended and parked locally. Restore it from Resume / Hold.')
+
+    def _open_recent_sales(self):
+        """Open business-day sales browser for the selected (or today) date."""
+        self._open_business_day_sales()
+
+    def _business_day_iso(self) -> str:
+        from desktop.utils.shop_time import business_day_iso
+        return business_day_iso(getattr(self, '_business_day', None))
+
+    def _sync_business_day_warn(self):
+        warn = getattr(self, '_biz_warn', None)
+        if warn is None:
+            return
+        from desktop.utils.shop_time import shop_today
+        day = getattr(self, '_business_day', shop_today())
+        if day != shop_today():
+            warn.setText(f'Recording sales for {day.isoformat()} (not today)')
+        else:
+            warn.setText('')
+
+    def _on_business_day_changed(self, qdate):
+        from desktop.utils.security import can_set_business_day
+        from desktop.utils.shop_time import shop_today
+        from datetime import date as date_cls
+        from PyQt5.QtCore import QDate
+        today = shop_today()
+        if not can_set_business_day(self.user):
+            self._business_day = today
+            ed = getattr(self, '_biz_date', None)
+            if ed is not None:
+                ed.blockSignals(True)
+                ed.setDate(QDate(today.year, today.month, today.day))
+                ed.blockSignals(False)
+            self._sync_business_day_warn()
+            return
+        try:
+            new_day = date_cls(qdate.year(), qdate.month(), qdate.day())
+        except Exception:
+            return
+        if new_day > today:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, 'Invalid Date', 'Sale date cannot be in the future.')
+            ed = getattr(self, '_biz_date', None)
+            if ed is not None:
+                ed.blockSignals(True)
+                ed.setDate(QDate(today.year, today.month, today.day))
+                ed.blockSignals(False)
+            new_day = today
+        old = getattr(self, '_business_day', today)
+        self._business_day = new_day
+        self._sync_business_day_warn()
+        if old != new_day:
+            try:
+                uid = (self.user.get('user') or self.user).get('id')
+                uname = (self.user.get('user') or self.user).get('username') or 'staff'
+                from desktop.utils.api_client import _audit
+                _audit(
+                    uid, uname, 'SET_BUSINESS_DAY', 'sales',
+                    f"from={old.isoformat() if hasattr(old, 'isoformat') else old} "
+                    f"to={new_day.isoformat()}",
+                )
+            except Exception:
+                pass
+
+    def _reset_business_day_today(self):
+        from desktop.utils.shop_time import shop_today
+        from PyQt5.QtCore import QDate
+        today = shop_today()
+        ed = getattr(self, '_biz_date', None)
+        if ed is not None:
+            ed.setDate(QDate(today.year, today.month, today.day))
+        else:
+            self._business_day = today
+            self._sync_business_day_warn()
+
+    def _open_business_day_sales(self):
+        from desktop.dialogs.business_day_dialog import (
+            open_business_day_sales, BusinessDaySalesDialog,
+        )
+        mode, items, sale_id = open_business_day_sales(
+            self.api, self,
+            day=self._business_day_iso(),
+            currency=getattr(self, '_currency', 'KES'),
+            user=self.user,
+        )
+        if mode in (
+            BusinessDaySalesDialog.RESULT_COPY,
+            BusinessDaySalesDialog.RESULT_COPY_DAY,
+        ) and items:
+            self._apply_copied_sale_lines(
+                items,
+                source_sale_id=sale_id,
+                copy_day=(mode == BusinessDaySalesDialog.RESULT_COPY_DAY),
+            )
+
+    def _apply_copied_sale_lines(self, items, *, source_sale_id=None, copy_day=False):
+        """Load copied line items into cart; confirm if cart not empty."""
+        import copy
+        from PyQt5.QtWidgets import QMessageBox
+        if self.cart:
+            r = QMessageBox.question(
+                self, 'Replace Cart?',
+                'Current cart is not empty. Replace it with the copied sale lines?',
+                QMessageBox.Yes | QMessageBox.No)
+            if r != QMessageBox.Yes:
+                return
+        self.cart = copy.deepcopy(items)
+        for it in self.cart:
+            self._apply_line_total(it)
+        note = getattr(self, '_note', None)
+        if note is not None:
+            tag = 'Copied day totals' if copy_day else f'Copied sale #{source_sale_id or "?"}'
+            prev = (note.text() or '').strip()
+            note.setText(f'{prev} | {tag}'.strip(' |') if prev else tag)
+        self._refresh_cart()
+        try:
+            uid = (self.user.get('user') or self.user).get('id')
+            uname = (self.user.get('user') or self.user).get('username') or 'staff'
+            from desktop.utils.api_client import _audit
+            _audit(
+                uid, uname, 'COPY_SALE', 'sales',
+                f"source_sale_id={source_sale_id or 'day'} "
+                f"lines={len(items)} business_day={self._business_day_iso()} "
+                f"copy_day={int(bool(copy_day))}",
+            )
+        except Exception:
+            pass
+        _sfx('ok')
+        QMessageBox.information(
+            self, 'Copied to Cart',
+            f'{len(items)} line(s) loaded for business day {self._business_day_iso()}.\n'
+            'Review quantities and Complete Sale when ready.',
+        )
+
+    def _focus_notes(self):
+        note = getattr(self, '_note', None)
+        if note is None:
+            return
+        note.show()
+        note.setFocus(Qt.OtherFocusReason)
+        tip, ok = QInputDialog.getMultiLineText(
+            self, 'Sale Notes', 'Notes for this sale:', note.text())
+        if ok:
+            note.setText(tip or '')
+        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+            note.hide()
 
     def _resume_held(self):
         held = getattr(self, '_held', None)
@@ -1463,6 +1572,7 @@ class SalesTab(QWidget):
     def _set_line_disc(self, idx, v):
         if not (0 <= idx < len(self.cart)):
             return
+        self._cart_select_idx = idx
         item = self.cart[idx]
         gross = self._line_gross(item)
         if gross <= 0:
@@ -1470,12 +1580,30 @@ class SalesTab(QWidget):
             item['total'] = 0.0
             if hasattr(self, '_cart_list'):
                 self._cart_list.update_row(idx, item)
+                self._cart_list.select_index(idx, focus_qty=False, scroll=False)
             self._recalc()
             return
         item['discount'] = float(v)
         self._apply_line_total(item)
         if hasattr(self, '_cart_list'):
             self._cart_list.update_row(idx, item)
+            self._cart_list.select_index(idx, focus_qty=False, scroll=False)
+        self._recalc()
+
+    def _set_line_price(self, idx, v):
+        if not (0 <= idx < len(self.cart)):
+            return
+        self._cart_select_idx = idx
+        item = self.cart[idx]
+        try:
+            price = max(0.0, round(float(v), 2))
+        except (TypeError, ValueError):
+            price = float(item.get('unit_price') or 0)
+        item['unit_price'] = price
+        self._apply_line_total(item)
+        if hasattr(self, '_cart_list'):
+            self._cart_list.update_row(idx, item)
+            self._cart_list.select_index(idx, focus_qty=False, scroll=False)
         self._recalc()
 
     def _bump_line_disc(self, idx, delta):
@@ -1494,11 +1622,13 @@ class SalesTab(QWidget):
 
     def _qty(self, idx, v):
         if 0 <= idx < len(self.cart):
+            self._cart_select_idx = idx
             q = round_qty(v, 0.25)
             self.cart[idx]['quantity'] = round(q, 2)
             self._apply_line_total(self.cart[idx])
             if hasattr(self, '_cart_list'):
                 self._cart_list.update_row(idx, self.cart[idx])
+                self._cart_list.select_index(idx, focus_qty=False, scroll=False)
             self._recalc()
 
     def _change_qty(self, idx, delta):
@@ -1507,15 +1637,28 @@ class SalesTab(QWidget):
         new_q = round_qty(self.cart[idx]['quantity'] + delta, 0.25)
         self.cart[idx]['quantity'] = round(new_q, 2)
         self._apply_line_total(self.cart[idx])
+        self._cart_select_idx = idx
         self._refresh_cart()
 
     def _rm(self, idx):
         if 0 <= idx < len(self.cart):
             del self.cart[idx]
+            sel = getattr(self, '_cart_select_idx', None)
+            if not self.cart:
+                self._cart_select_idx = None
+            elif sel is None:
+                self._cart_select_idx = len(self.cart) - 1
+            elif idx < sel:
+                self._cart_select_idx = sel - 1
+            elif idx == sel:
+                self._cart_select_idx = min(sel, len(self.cart) - 1)
             _sfx('product_remove')
             self._refresh_cart()
 
     def _cart_disc_value(self):
+        # Checkout Pro shows combined total in the disc field — never parse it back as cart disc
+        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+            return float(getattr(self, '_pro_cart_disc', 0.0) or 0.0)
         parsed = self._parse_kes(self._disc.text())
         return 0.0 if parsed is None else parsed
 
@@ -1557,6 +1700,31 @@ class SalesTab(QWidget):
             self._sub_lbl.setText(f'{cur} {sub:,.2f}')
             self._tax_lbl.setText(f'{cur} {tax:,.2f}')
             self._tot_lbl.setText(f'{cur} {tot:,.2f}')
+        # Checkout Pro: disc field is a read-only TOTAL (line + cart), never fed back into cart_dis
+        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
+            try:
+                if hasattr(self, '_disc_lbl') and self._disc_lbl is not None:
+                    self._disc_lbl.setText(f'Total Discount ({cur})')
+                    self._disc_lbl.setToolTip(
+                        f'Line discounts {line_dis:,.2f} + cart {cart_dis:,.2f}')
+                if hasattr(self, '_disc') and self._disc is not None:
+                    self._disc.blockSignals(True)
+                    self._disc.setReadOnly(True)
+                    self._disc.setText(f'{dis:.2f}')
+                    self._disc.setToolTip(
+                        f'Total discount {cur} {dis:,.2f} (lines {line_dis:,.2f}). '
+                        'Double-click a cart row to edit line Disc.')
+                    self._disc.blockSignals(False)
+            except Exception:
+                pass
+        elif hasattr(self, '_disc') and self._disc.isReadOnly():
+            try:
+                self._disc.setReadOnly(False)
+                self._disc.setToolTip('Click, type e.g. 60, press Enter')
+                if hasattr(self, '_disc_lbl') and self._disc_lbl is not None:
+                    self._disc_lbl.setText(f'Discount ({cur})')
+            except Exception:
+                pass
         # Cap credit apply to new total
         if self._credit_to_apply > tot:
             self._credit_to_apply = tot
@@ -1679,6 +1847,10 @@ class SalesTab(QWidget):
         if not self.cart:
             _sfx('warning')
             QMessageBox.warning(self, 'Empty Cart', 'Add items before charging.'); return
+        # Quotation mode (Checkout Pro): print preview only — no stock / payment
+        if getattr(self, '_pro_sale_type', 'cash') == 'quotation':
+            self._preview()
+            return
         pay_method = self._pay.currentText()
         is_debt = pay_method in ('Part Payment', 'Credit Sale', 'Credit Account')
         due = self._amount_due()
@@ -1821,6 +1993,7 @@ class SalesTab(QWidget):
             # Confirm till payment with split description
             handle_label = {
                 'return_change': 'Return Change',
+                'additional_payment': 'Additional Customer Payment',
                 'deposit': 'Customer Deposit',
                 'transport': 'Transport/Delivery Fee',
                 'tip': 'Tip',
@@ -1889,6 +2062,7 @@ class SalesTab(QWidget):
                 'credit_applied': credit_applied,
                 'notes':          notes_joined,
                 'mpesa_ref':      self._mpesa_ref.text().strip() if pay_method == 'M-Pesa' else '',
+                'sale_date':      self._business_day_iso(),
             }
             if cust_id:
                 sale_payload['customer_id'] = cust_id
@@ -1920,6 +2094,10 @@ class SalesTab(QWidget):
                         f'✓  Sale recorded\n\nInvoice:  {rn}\n'
                         f'Total:    {self._currency} {sale_total:,.2f}\n'
                     )
+                    sale_day = res.get('sale_date') or self._business_day_iso()
+                    from desktop.utils.shop_time import shop_today
+                    if sale_day and sale_day != shop_today().isoformat():
+                        msg += f'Sale date: {sale_day}\n'
                     if is_split:
                         msg += (
                             f'{elec_method_name}: {self._currency} {elec:,.2f}\n'
@@ -1946,7 +2124,7 @@ class SalesTab(QWidget):
                 self._try_print_receipt(sid, rn)
                 # Refresh stock/products first, then force After Sale defaults
                 # (Walk-in must win after credit sale — do not leave John selected).
-                self.refresh()
+                self.refresh(force=True)
                 from desktop.utils.state_reset import StateResetManager
                 cfg = {}
                 try:
@@ -1986,9 +2164,20 @@ class SalesTab(QWidget):
         cash_paid = float(sale.get('cash_paid') or 0)
         if cash_paid < 0.009 and elec > 0.009:
             cash_paid = max(0.0, round(float(sale.get('amount_paid') or 0) - elec, 2))
+        variance = sale.get('variance') or {}
+        handling = (variance.get('handling') or sale.get('variance_handling') or '').strip().lower()
+        amount_paid = float(sale.get('amount_paid') or 0)
+        change_amount = float(sale.get('change_amount') or 0)
+        # Customer receipt: additional payment is internal-only — print as exact tender
+        print_variance = variance
+        if handling == 'additional_payment':
+            amount_paid = float(sale.get('total') or amount_paid)
+            change_amount = 0.0
+            print_variance = {}
         return {
             'receipt_number': receipt_number or sale.get('receipt_number', ''),
             'created_at':     sale.get('created_at', datetime.now().isoformat()),
+            'sale_date':      sale.get('sale_date') or '',
             'cashier_name':   sale.get('cashier_name', ''),
             'items':          sale.get('items', []),
             'subtotal':       float(sale.get('subtotal') or 0),
@@ -1998,12 +2187,12 @@ class SalesTab(QWidget):
             'original_total': float(sale.get('original_total') or 0) or None,
             'cash_rounding_adj': float(sale.get('cash_rounding_adj') or 0),
             'payment_method': sale.get('payment_method', 'cash'),
-            'amount_paid':    float(sale.get('amount_paid') or 0),
-            'change_amount':  float(sale.get('change_amount') or 0),
+            'amount_paid':    amount_paid,
+            'change_amount':  change_amount,
             'credit_applied': float(sale.get('credit_applied') or 0),
             'customer_name':  sale.get('customer_name', '') or '',
             'wallet_balance': sale.get('wallet_balance'),
-            'variance':       sale.get('variance') or {},
+            'variance':       print_variance,
             'notes':          notes,
             'electronic_paid': elec,
             'electronic_method': elec_method,

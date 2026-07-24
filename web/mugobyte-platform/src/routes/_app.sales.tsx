@@ -1,10 +1,10 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { todayIso } from "@/components/reports/analytics";
+import { defaultAnalyticsRange } from "@/components/reports/analytics";
 
 export const Route = createFileRoute("/_app/sales")({
   beforeLoad: () => {
-    const today = todayIso();
-    throw redirect({ to: "/reports", search: { tab: "sales", start: today, end: today } });
+    const { start, end } = defaultAnalyticsRange();
+    throw redirect({ to: "/reports", search: { tab: "sales", start, end } });
   },
   head: () => ({ meta: [{ title: "Sales | MugoByte" }] }),
 });

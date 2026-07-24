@@ -39,7 +39,7 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports',
     },
     ROLE_MANAGER: {
-        'sales.create', 'sales.view_all', 'sales.void',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -54,7 +54,7 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
     },
     ROLE_ADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -73,6 +73,7 @@ _PERMISSIONS = {
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
+        'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'inventory.adjust_stock',          # ONLY superadmin can change stock
         'reports.view_all', 'reports.export',
@@ -209,6 +210,11 @@ def can_edit_sales(user: dict) -> bool:
 def can_void_sales(user: dict) -> bool:
     """True if user may void completed sales (manager / admin / superadmin)."""
     return has_permission(user, 'sales.void')
+
+
+def can_set_business_day(user: dict) -> bool:
+    """True if user may select/backdate the POS business day (manager+)."""
+    return has_permission(user, 'sales.business_day')
 
 
 def can_delete_debt(user: dict) -> bool:

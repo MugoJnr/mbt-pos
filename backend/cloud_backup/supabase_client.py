@@ -21,7 +21,9 @@ from backend.cloud_backup.paths import (
 
 logger = logging.getLogger('cloud_backup.supabase')
 
-DEFAULT_TIMEOUT = 60
+DEFAULT_TIMEOUT = 12  # Fail open quickly when Portal/Supabase unreachable
+UPLOAD_TIMEOUT = 300
+DOWNLOAD_TIMEOUT = 300
 
 
 class SupabaseError(Exception):

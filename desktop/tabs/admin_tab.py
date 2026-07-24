@@ -16,12 +16,34 @@ from desktop.utils.option_lists import USER_ROLES, USER_ROLE_LABELS
 from desktop.utils.select_controls import Select
 
 ALL_TABS = ALL_DESKTOP_TABS
-TAB_LABELS = {'dashboard':'+ Dashboard','sales':'+ Point of Sale','inventory':'# Inventory',
-              'consumption':'# Internal Consumption',
-              'debt':'$ Debt','accounting':'= Accounting',
-              'reports':'* Reports','notes':'= Notes','settings':'# Settings',
-              'admin':'@ Users','license':'* License','diagnostics':'+ Diagnostics',
-              'security':'! Security','ai_ops':'* AI Operations'}
+TAB_LABELS = {
+    'dashboard': 'Dashboard',
+    'sales': 'Point of Sale',
+    'inventory': 'Inventory',
+    'consumption': 'Internal Consumption',
+    'debt': 'Debt',
+    'accounting': 'Finance',
+    'reports': 'Reports',
+    'notes': 'Notes',
+    'settings': 'Settings',
+    'admin': 'Users',
+    'license': 'License',
+    'diagnostics': 'Diagnostics',
+    'security': 'Security',
+    'ai_ops': 'AI Operations',
+}
+
+
+def _fmt_last_login(raw):
+    if not raw:
+        return 'Never'
+    s = str(raw).strip()
+    if not s or s.lower() == 'never':
+        return 'Never'
+    # ISO / sqlite → readable date
+    s = s.replace('T', ' ')[:16]
+    return s
+
 
 class AdminTab(QWidget):
     def __init__(self, api, user, db_path, config_getter):
@@ -46,47 +68,109 @@ class AdminTab(QWidget):
         tb=QHBoxLayout(); tb.setSpacing(8)
         self._search=SearchBar('Search users…')
         self._search.textChanged.connect(self._filter); tb.addWidget(self._search, 1)
-        ref=GhostBtn('↺ Refresh', 40); ref.clicked.connect(self.refresh)
+        ref=GhostBtn('Refresh', 40); ref.clicked.connect(self.refresh)
         tb.addWidget(ref); lay.addLayout(tb)
 
         split=QSplitter(Qt.Horizontal)
         lw=QWidget(); ll=QVBoxLayout(lw); ll.setContentsMargins(0,0,0,0); ll.setSpacing(10)
         self._tbl=make_table(['Username','Full Name','Role','Status','Last Login'], stretch_col=1, row_height=44)
         self._tbl.horizontalHeader().setSectionResizeMode(0,QHeaderView.Fixed); self._tbl.setColumnWidth(0,110)
-        self._tbl.horizontalHeader().setSectionResizeMode(2,QHeaderView.Fixed); self._tbl.setColumnWidth(2,100)
+        self._tbl.horizontalHeader().setSectionResizeMode(2,QHeaderView.Fixed); self._tbl.setColumnWidth(2,168)
         self._tbl.horizontalHeader().setSectionResizeMode(3,QHeaderView.Fixed); self._tbl.setColumnWidth(3,90)
         self._tbl.horizontalHeader().setSectionResizeMode(4,QHeaderView.Fixed); self._tbl.setColumnWidth(4,130)
         self._tbl.clicked.connect(self._on_sel)
-        ll.addWidget(wrap_table_card(self._tbl, 'All Users')); split.addWidget(lw)
+        self._users_card = wrap_table_card(self._tbl, 'All Users')
+        ll.addWidget(self._users_card, 1)
+        self._users_sparse = Caption('')
+        self._users_sparse.setAlignment(Qt.AlignCenter)
+        self._users_sparse.setWordWrap(True)
+        self._users_sparse.setStyleSheet(
+            f"color:{C['text2']}; font-size:13px; font-weight:600; "
+            f"background:transparent; padding:12px 16px;")
+        self._users_sparse.hide()
+        ll.addWidget(self._users_sparse, 0)
+        split.addWidget(lw)
 
         rw=QWidget(); rw.setMinimumWidth(280); rw.setMaximumWidth(340)
         rl=QVBoxLayout(rw); rl.setContentsMargins(12,0,0,0); rl.setSpacing(12)
         rl.addWidget(H2('Permissions'))
         pc=Card(); pl=pc.layout_v()
+        self._perms_card = pc
         self._sel_lbl=Caption('Select a user')
-        self._role_cb=Select()
         roles = list(USER_ROLES)
         if not is_superadmin_role(self.user.get('user',{}).get('role','')):
             roles = [r for r in roles if r != 'superadmin']
-        self._role_cb.set_items([(USER_ROLE_LABELS.get(r, r), r) for r in roles])
-        self._role_cb.setMinimumHeight(40); self._role_cb.setEnabled(False)
+        self._role_cb = Select(
+            placeholder='Select a user first',
+            items=[(USER_ROLE_LABELS.get(r, r), r) for r in roles],
+        )
+        self._role_cb.setMinimumHeight(40)
+        self._role_cb.setEnabled(False)
         self._role_cb.currentIndexChanged.connect(lambda *_: self._on_role_preset())
         pl.addWidget(self._sel_lbl); pl.addWidget(QLabel('Role:')); pl.addWidget(self._role_cb)
-        pl.addWidget(QLabel('Tab Access:'))
         self._chks={}
-        for tid in ALL_TABS:
+        chk_host = QWidget()
+        chk_host.setObjectName('adminChkHost')
+        self._chk_host = chk_host
+        chk_lay = QVBoxLayout(chk_host)
+        chk_lay.setContentsMargins(0, 0, 0, 0)
+        chk_lay.setSpacing(2)
+        ops = [
+            'dashboard', 'sales', 'inventory', 'consumption', 'debt',
+            'accounting', 'reports', 'notes', 'ai_ops', 'admin', 'settings',
+        ]
+        system = ['license', 'diagnostics', 'security']
+        def _sec(title):
+            lbl = QLabel(title)
+            lbl.setStyleSheet(
+                f"color:{C['muted']}; font-size:10px; font-weight:800; letter-spacing:1px; "
+                f"background:transparent; padding:8px 0 4px 0;")
+            chk_lay.addWidget(lbl)
+        _sec('TAB ACCESS')
+        for tid in ops:
+            if tid not in ALL_TABS:
+                continue
             cb=QCheckBox(TAB_LABELS.get(tid,tid)); cb.setEnabled(False)
-            self._chks[tid]=cb; pl.addWidget(cb)
-        rl.addWidget(pc)
+            self._chks[tid]=cb; chk_lay.addWidget(cb)
+        _sec('SYSTEM')
+        for tid in system:
+            if tid not in ALL_TABS:
+                continue
+            cb=QCheckBox(TAB_LABELS.get(tid,tid)); cb.setEnabled(False)
+            self._chks[tid]=cb; chk_lay.addWidget(cb)
+        # Any leftover tabs not in the groups above
+        for tid in ALL_TABS:
+            if tid in self._chks:
+                continue
+            cb=QCheckBox(TAB_LABELS.get(tid,tid)); cb.setEnabled(False)
+            self._chks[tid]=cb; chk_lay.addWidget(cb)
+        chk_scroll = QScrollArea()
+        chk_scroll.setWidgetResizable(True)
+        chk_scroll.setFrameShape(QFrame.NoFrame)
+        chk_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        chk_scroll.setMinimumHeight(180)
+        chk_scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
+        chk_scroll.setWidget(chk_host)
+        pl.addWidget(chk_scroll, 1)
+        self._set_perms_dimmed(True)
+        rl.addWidget(pc, 1)
         self._save_btn=PrimaryBtn('Save Permissions', 40); self._save_btn.setEnabled(False); self._save_btn.clicked.connect(self._save_perms)
         self._pw_btn=SecondaryBtn('Reset Password', 40); self._pw_btn.setEnabled(False); self._pw_btn.clicked.connect(self._reset_pw)
         self._tog_btn=DangerBtn('Deactivate', 40); self._tog_btn.setEnabled(False); self._tog_btn.clicked.connect(self._toggle)
-        rl.addWidget(self._save_btn); rl.addWidget(self._pw_btn); rl.addWidget(self._tog_btn); rl.addStretch()
+        self._perms_hint=Caption('Select a user in the table to edit role and tab access.')
+        self._perms_hint.setWordWrap(True)
+        self._perms_hint.setStyleSheet(
+            f"color:{C['text2']}; font-size:12px; background:transparent; padding:4px 2px;")
+        rl.addWidget(self._save_btn); rl.addWidget(self._pw_btn); rl.addWidget(self._tog_btn)
+        rl.addWidget(self._perms_hint)
+        rl.addSpacing(8)
         split.addWidget(rw); lay.addWidget(split, 1)
         lay.addWidget(H2('Audit Log'))
         self._audit=make_table(['Time','User','Action','Module','Detail'], stretch_col=4, row_height=32)
         self._audit.setMaximumHeight(160)
         lay.addWidget(wrap_table_card(self._audit))
+        # Clearance so Copilot FAB never covers Deactivate / audit footer
+        lay.addSpacing(72)
 
     def on_show(self): self.refresh()
     def refresh(self):
@@ -101,9 +185,55 @@ class AdminTab(QWidget):
             self._tbl.insertRow(i); active=u.get('is_active',1)
             self._tbl.setItem(i,0,tbl_item(u.get('username','')))
             self._tbl.setItem(i,1,tbl_item(u.get('full_name','') or ''))
-            self._tbl.setItem(i,2,tbl_center(role_display_name(u.get('role','')),C['gold']))
+            role_lbl = role_display_name(u.get('role',''))
+            # Table uses short label; full title in tooltip
+            short = role_lbl.split('(')[0].strip() if '(' in role_lbl else role_lbl
+            role_it = tbl_center(short, C['gold'])
+            role_it.setToolTip(role_lbl)
+            self._tbl.setItem(i,2,role_it)
             self._tbl.setItem(i,3,tbl_center('Active' if active else 'Inactive', C['ok'] if active else C['err']))
-            self._tbl.setItem(i,4,tbl_item((u.get('last_login') or 'Never')[:16]))
+            self._tbl.setItem(i,4,tbl_item(_fmt_last_login(u.get('last_login'))))
+        # Size table to fill the card when staffed; only hug when truly sparse
+        try:
+            n = max(1, self._tbl.rowCount())
+            if n < 3:
+                hdr = self._tbl.horizontalHeader().height() if self._tbl.horizontalHeader() else 28
+                h = hdr + n * 44 + 8
+                self._tbl.setFixedHeight(min(420, max(96, h)))
+            else:
+                self._tbl.setMinimumHeight(200)
+                self._tbl.setMaximumHeight(16777215)
+                self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        except Exception:
+            pass
+        sparse = len(users) < 3
+        if hasattr(self, '_users_sparse'):
+            if sparse and users:
+                self._users_sparse.setText(
+                    f'{len(users)} staff account{"s" if len(users) != 1 else ""} · '
+                    'Select a row to edit roles and tab access, or add another user.')
+                self._users_sparse.show()
+            elif not users:
+                self._users_sparse.setText(
+                    'No users yet — click + New User to invite your first staff account.')
+                self._users_sparse.show()
+            else:
+                self._users_sparse.hide()
+        # Auto-select first row when none chosen so permissions panel isn't blank
+        if users and not self._uid and self._tbl.rowCount() > 0:
+            self._tbl.selectRow(0)
+            try:
+                self._on_sel(self._tbl.currentIndex())
+            except Exception:
+                pass
+        # Keep Save Permissions disabled until a row is chosen
+        elif not self._uid and hasattr(self, '_save_btn'):
+            self._save_btn.setEnabled(False)
+            self._sel_lbl.setText('Select a user')
+            self._role_cb.setEnabled(False)
+            for cb in self._chks.values():
+                cb.setEnabled(False); cb.setChecked(False)
+            self._set_perms_dimmed(True)
     def _on_sel(self, idx):
         uname=self._tbl.item(idx.row(),0)
         if not uname: return
@@ -121,6 +251,33 @@ class AdminTab(QWidget):
                 cb.setEnabled(True)
         for b in (self._save_btn,self._pw_btn,self._tog_btn): b.setEnabled(True)
         self._tog_btn.setText('Deactivate' if u.get('is_active',1) else 'Activate')
+        self._set_perms_dimmed(False)
+        if hasattr(self, '_perms_hint'):
+            self._perms_hint.setText(
+                f'Editing access for {u.get("full_name") or u.get("username")}. '
+                'Save to apply role and tab changes.')
+            self._perms_hint.show()
+
+    def _set_perms_dimmed(self, dimmed: bool):
+        """Visually mute the whole permissions panel until a user is selected."""
+        try:
+            host = getattr(self, '_chk_host', None)
+            if host is not None:
+                host.setEnabled(not dimmed)
+                host.setStyleSheet(
+                    f"QWidget#adminChkHost {{ background:transparent; }}"
+                    if not dimmed else
+                    f"QWidget#adminChkHost {{ background:transparent; }}"
+                    f"QWidget#adminChkHost QCheckBox {{ color:{C['muted']}; }}")
+            if hasattr(self, '_role_cb'):
+                self._role_cb.setEnabled(not dimmed and bool(self._uid))
+            if hasattr(self, '_sel_lbl'):
+                self._sel_lbl.setStyleSheet(
+                    f"color:{C['text2'] if dimmed else C['text']}; font-size:13px; "
+                    f"background:transparent;")
+        except Exception:
+            pass
+
     def _on_role_preset(self, role: str = None):
         """When role changes, apply the standard tab set for that role."""
         if not self._uid:

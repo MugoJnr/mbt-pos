@@ -6,12 +6,16 @@ export function ReportState({
   loading,
   error,
   empty,
+  emptyTitle,
+  emptyHint,
   onRetry,
   children,
 }: {
   loading: boolean;
   error?: string | null;
   empty: boolean;
+  emptyTitle?: string;
+  emptyHint?: string;
   onRetry: () => void;
   children: ReactNode;
 }) {
@@ -48,9 +52,12 @@ export function ReportState({
         className="grid min-h-64 place-items-center px-4 text-center text-sm text-muted-foreground"
         role="status"
       >
-        <div>
+        <div className="max-w-md">
           <Inbox className="mx-auto mb-3 h-7 w-7" />
-          No matching records for this date range.
+          <p className="font-medium text-foreground">
+            {emptyTitle || "No matching records for this date range."}
+          </p>
+          {emptyHint ? <p className="mt-2 text-sm">{emptyHint}</p> : null}
         </div>
       </div>
     );

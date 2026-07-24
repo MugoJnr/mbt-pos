@@ -59,22 +59,91 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
+def _ensure_shop_cloud_endpoints():
+    """Seed Portal URL + public anon key before license / sign-in UI."""
+    try:
+        from backend.cloud_backup.paths import ensure_production_cloud_config
+        ensure_production_cloud_config(persist=True)
+    except Exception:
+        pass
+
+
 # ── License Check ─────────────────────────────────────────────────────────────
+def _shop_already_ready(engine) -> bool:
+    """True when this PC was previously set up and still has a local license.
+
+    Used to skip the mandatory online activation wall when Portal/Supabase are
+    unreachable — shops must keep selling offline under grace.
+    """
+    try:
+        from mbt_paths import get_init_flag_path
+        initialized = os.path.exists(get_init_flag_path())
+    except Exception:
+        initialized = False
+    has_local = False
+    try:
+        has_local = bool(
+            getattr(engine, 'has_local_license_payload', lambda: False)()
+            or engine.store.get('license_token')
+        )
+    except Exception:
+        has_local = False
+    if not (initialized or has_local):
+        return False
+    try:
+        if engine.store.get('tampered'):
+            return False
+        if engine.store.get('revoked') and not getattr(engine, '_license_data', None):
+            return False
+    except Exception:
+        pass
+    # Soft offline lock must not block boot — background service re-enforces grace.
+    try:
+        if engine.store.get('offline_lock'):
+            engine.store.set('offline_lock', False)
+    except Exception:
+        pass
+    try:
+        if engine.is_valid:
+            return True
+    except Exception:
+        pass
+    # Last resort: decryptable, not-yet-expired local payload
+    try:
+        import time as _time
+        data = getattr(engine, '_license_data', None) or {}
+        exp = int(data.get('expires_at') or 0)
+        if exp and exp > int(_time.time()):
+            return True
+    except Exception:
+        pass
+    return bool(initialized and has_local)
+
+
 def check_license():
     from licensing.license_engine import LicenseEngine
     from licensing.activation_ui import show_activation_screen
 
     engine = LicenseEngine(PROJECT_ROOT)
-    if not engine.is_valid:
-        if not show_activation_screen(engine.device_id, engine):
-            sys.exit(0)
-        engine.revalidate()
-        if not engine.is_valid:
-            sys.exit(0)
+    if engine.is_valid:
+        return
+    if _shop_already_ready(engine):
+        return
+    if not show_activation_screen(engine.device_id, engine):
+        sys.exit(0)
+    engine.revalidate()
+    if not engine.is_valid and not _shop_already_ready(engine):
+        sys.exit(0)
+
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    _start_cloud_services()
+    _ensure_shop_cloud_endpoints()
+    # Cloud heartbeats are optional — never block license gate / UI on Portal.
+    try:
+        _start_cloud_services()
+    except Exception:
+        pass
     check_license()
     from desktop.main import main
     main()

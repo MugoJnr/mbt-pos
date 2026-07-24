@@ -1077,9 +1077,15 @@ class SetupWizard(QDialog):
             from backend.cloud_backup.auth_service import create_business
             from backend.cloud_backup.paths import is_cloud_configured
             if not is_cloud_configured():
+                try:
+                    from backend.cloud_backup.paths import ensure_production_cloud_config
+                    ensure_production_cloud_config(persist=True)
+                except Exception:
+                    pass
+            if not is_cloud_configured():
                 self.w_cloud_status.setText(
-                    "Cloud credentials missing on this PC. Contact MugoByte support — "
-                    "installer should ship production Portal config.")
+                    "Cannot reach MugoByte Cloud. Check internet, then try again — "
+                    "or open portal.mugobyte.com to create your account, then Sign In here.")
                 self._data['cloud_mode'] = 'skipped_unconfigured'
                 return
             r = create_business(email, pw, name)
@@ -1120,8 +1126,15 @@ class SetupWizard(QDialog):
             from backend.cloud_backup.auth_service import login_existing
             from backend.cloud_backup.paths import is_cloud_configured
             if not is_cloud_configured():
+                try:
+                    from backend.cloud_backup.paths import ensure_production_cloud_config
+                    ensure_production_cloud_config(persist=True)
+                except Exception:
+                    pass
+            if not is_cloud_configured():
                 self.w_cloud_status.setText(
-                    "Cloud credentials missing on this PC. Contact MugoByte support.")
+                    "Cannot reach MugoByte Cloud. Check internet, then Sign In again — "
+                    "or open portal.mugobyte.com.")
                 return
             r = login_existing(email, pw)
             self._data['cloud_mode'] = 'login'

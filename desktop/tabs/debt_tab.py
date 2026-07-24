@@ -20,8 +20,9 @@ from desktop.utils.theme   import C, qss_alpha, apply_themed_dialog
 from desktop.utils.widgets import (
     KPICard, Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn,
     SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
-    lovable_tab_qss, GhostBtn, Badge, wrap_table_card,
+    lovable_tab_qss, GhostBtn, Badge, wrap_table_card, align_header_right,
 )
+from desktop.utils.ui_polish import EmptyState
 from desktop.utils.option_lists import (
     DEBT_PAYMENT_METHODS, CUSTOMER_TYPES, INVOICE_STATUSES,
 )
@@ -218,10 +219,10 @@ class _OverviewTab(QWidget):
 
         # KPI row ? use em-dash placeholders (never leave literal "?")
         kr = QHBoxLayout(); kr.setSpacing(16)
-        self._k_out   = KPICard('Outstanding',     '?',  'total debt',       C['err'])
-        self._k_over  = KPICard('Overdue',          '?',  'past due date',    C['warn'])
-        self._k_col   = KPICard("Today's Collected",'?',  'payments today',   C['ok'])
-        self._k_cust  = KPICard('Customers w/ Debt','0',  'active accounts',  C['info'])
+        self._k_out   = KPICard('Outstanding Debt', '—',  'open invoices',    C['warn'], icon='debt')
+        self._k_over  = KPICard('Overdue',          '—',  'past due date',    C['err'], icon='alert')
+        self._k_col   = KPICard("Collected Today",  '—',  'payments today',   C['ok'], icon='collected')
+        self._k_cust  = KPICard('Customers w/ Debt','0',  'active accounts',  C['warn'], icon='customers')
         for k in (self._k_out, self._k_over, self._k_col, self._k_cust):
             kr.addWidget(k)
         lay.addLayout(kr)
@@ -229,25 +230,35 @@ class _OverviewTab(QWidget):
         # Body
         body = QHBoxLayout(); body.setSpacing(20)
 
-        # Top debtors
-        td = Card(); tdl = td.layout_v((20, 16, 20, 16), 12)
+        # Top debtors — hug content (no tall empty header zone)
+        td = Card(); tdl = td.layout_v((14, 10, 14, 10), 4)
         tdl.addWidget(H3('Largest Debtors'))
-        self._debtors_tbl = make_table(
-            ['Customer', 'Outstanding'], stretch_col=0, row_height=38)
-        self._debtors_tbl.setColumnWidth(1, 140)
-        self._debtors_tbl.setMaximumHeight(250)
-        tdl.addWidget(self._debtors_tbl)
+        self._debtors_box = QWidget()
+        self._debtors_lay = QVBoxLayout(self._debtors_box)
+        self._debtors_lay.setContentsMargins(0, 0, 0, 0)
+        self._debtors_lay.setSpacing(0)
+        tdl.addWidget(self._debtors_box)
+        self._debtors_empty = EmptyState(
+            'debt', 'No outstanding debtors', 'Credit balances will appear here')
+        self._debtors_empty.hide()
+        tdl.addWidget(self._debtors_empty)
+        tdl.addStretch(0)
+        td.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         body.addWidget(td, 3)
 
-        # Recent activity
-        ra = Card(); ral = ra.layout_v((20, 16, 20, 16), 12)
+        # Recent activity — match debtor card rhythm
+        ra = Card(); ral = ra.layout_v((14, 10, 14, 10), 4)
         ral.addWidget(H3('Recent Payments'))
-        self._recent_tbl = make_table(
-            ['Receipt', 'Customer', 'Amount', 'Time'], stretch_col=1, row_height=38)
-        for ci, w in [(0, 110), (2, 120), (3, 130)]:
-            self._recent_tbl.setColumnWidth(ci, w)
-        self._recent_tbl.setMaximumHeight(250)
-        ral.addWidget(self._recent_tbl)
+        self._recent_box = QWidget()
+        self._recent_lay = QVBoxLayout(self._recent_box)
+        self._recent_lay.setContentsMargins(0, 0, 0, 0)
+        self._recent_lay.setSpacing(0)
+        ral.addWidget(self._recent_box)
+        self._recent_empty = EmptyState(
+            'collected', 'No payments yet today', 'Collections will show up as they come in')
+        self._recent_empty.hide()
+        ral.addWidget(self._recent_empty)
+        ra.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         body.addWidget(ra, 4)
 
         lay.addLayout(body)
@@ -260,9 +271,25 @@ class _OverviewTab(QWidget):
             stretch_col=1, row_height=38)
         for ci, w in [(0, 130), (2, 110), (3, 120), (4, 100), (5, 130)]:
             self._overdue_tbl.setColumnWidth(ci, w)
+        align_header_right(self._overdue_tbl, 3)
         self._overdue_tbl.setMinimumHeight(180)
         odl.addWidget(self._overdue_tbl)
+        self._overdue_empty = EmptyState(
+            'alert', 'No overdue accounts', 'All balances are current')
+        self._overdue_empty.hide()
+        odl.addWidget(self._overdue_empty)
         lay.addWidget(od)
+
+    @staticmethod
+    def _hug_table(tbl, max_h=220, row_h=38):
+        """Shrink table height to content so headers don't float over empty space."""
+        try:
+            n = max(1, tbl.rowCount())
+            hdr = tbl.horizontalHeader().height() if tbl.horizontalHeader() else 28
+            h = hdr + n * row_h + 6
+            tbl.setFixedHeight(min(max_h, max(72, h)))
+        except Exception:
+            pass
 
     def _hint_use_pos(self):
         QMessageBox.information(
@@ -284,33 +311,72 @@ class _OverviewTab(QWidget):
             today = s.get('today_collected', {})
 
             self._k_out.set_value(_fmt(out.get('total', 0), cur),
-                                  C['err'] if out.get('total', 0) > 0 else C['ok'])
+                                  C['warn'] if out.get('total', 0) > 0 else C['ok'])
             self._k_over.set_value(_fmt(over.get('total', 0), cur),
                                    C['err'] if over.get('total', 0) > 0 else C['ok'])
             self._k_col.set_value(_fmt(today.get('total', 0), cur))
             self._k_cust.set_value(str(s.get('customers_with_debt', 0)))
 
             # Top debtors
-            self._debtors_tbl.setRowCount(0)
-            for i, d in enumerate(s.get('top_debtors', [])):
-                self._debtors_tbl.insertRow(i)
-                self._debtors_tbl.setItem(i, 0, tbl_item(d.get('customer_name', '')))
-                self._debtors_tbl.setItem(i, 1, tbl_right(
-                    _fmt(d.get('total_balance', 0), cur), C['err']))
+            while self._debtors_lay.count():
+                it = self._debtors_lay.takeAt(0)
+                w = it.widget()
+                if w:
+                    w.deleteLater()
+            debtors = s.get('top_debtors', []) or []
+            for d in debtors[:6]:
+                row = QWidget()
+                hl = QHBoxLayout(row)
+                hl.setContentsMargins(2, 5, 2, 5)
+                hl.setSpacing(8)
+                name = QLabel(d.get('customer_name', '') or '—')
+                name.setStyleSheet(
+                    f"color:{C['text']}; font-size:13px; font-weight:600; background:transparent;")
+                name.setToolTip(name.text())
+                amt = QLabel(_fmt(d.get('total_balance', 0), cur))
+                amt.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                amt.setStyleSheet(
+                    f"color:{C['warn']}; font-size:13px; font-weight:800; background:transparent;")
+                hl.addWidget(name, 1)
+                hl.addWidget(amt, 0)
+                self._debtors_lay.addWidget(row)
+            has_d = len(debtors) > 0
+            self._debtors_box.setVisible(has_d)
+            self._debtors_empty.setVisible(not has_d)
         except Exception as e:
             _log.warning(f"Debt overview KPI: {e}")
 
         try:
             payments = self.p.api.get_debt_payments() or []
-            self._recent_tbl.setRowCount(0)
-            for i, p in enumerate(payments[:15]):
-                self._recent_tbl.insertRow(i)
-                self._recent_tbl.setItem(i, 0, tbl_item(p.get('payment_receipt', '')))
-                self._recent_tbl.setItem(i, 1, tbl_item(p.get('customer_name', '')))
-                self._recent_tbl.setItem(i, 2, tbl_right(
-                    _fmt(p.get('amount', 0), cur), C['ok']))
-                self._recent_tbl.setItem(i, 3, tbl_item(
-                    (p.get('created_at', '') or '')[:16]))
+            while self._recent_lay.count():
+                it = self._recent_lay.takeAt(0)
+                w = it.widget()
+                if w:
+                    w.deleteLater()
+            for p in payments[:6]:
+                row = QWidget()
+                hl = QHBoxLayout(row)
+                hl.setContentsMargins(2, 5, 2, 5)
+                hl.setSpacing(8)
+                left = QVBoxLayout(); left.setSpacing(1); left.setContentsMargins(0, 0, 0, 0)
+                cust = QLabel(p.get('customer_name', '') or '—')
+                cust.setStyleSheet(
+                    f"color:{C['text']}; font-size:13px; font-weight:600; background:transparent;")
+                meta = QLabel(
+                    f"{p.get('payment_receipt', '') or ''} · {(p.get('created_at', '') or '')[:16]}")
+                meta.setStyleSheet(
+                    f"color:{C['text2']}; font-size:11px; background:transparent;")
+                left.addWidget(cust); left.addWidget(meta)
+                amt = QLabel(_fmt(p.get('amount', 0), cur))
+                amt.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                amt.setStyleSheet(
+                    f"color:{C['ok']}; font-size:13px; font-weight:800; background:transparent;")
+                hl.addLayout(left, 1)
+                hl.addWidget(amt, 0)
+                self._recent_lay.addWidget(row)
+            has_p = len(payments) > 0
+            self._recent_box.setVisible(has_p)
+            self._recent_empty.setVisible(not has_p)
         except Exception as e:
             _log.warning(f"Debt overview recent payments: {e}")
 
@@ -332,8 +398,15 @@ class _OverviewTab(QWidget):
                 self._overdue_tbl.setItem(i, 4, tbl_center(due))
                 days_item = tbl_center(f"{delta}d", C['err'] if delta > 0 else C['warn'])
                 self._overdue_tbl.setItem(i, 5, days_item)
+            has = len(overdue) > 0
+            self._overdue_tbl.setVisible(has)
+            if getattr(self, '_overdue_empty', None):
+                self._overdue_empty.setVisible(not has)
         except Exception as e:
             _log.warning(f"Debt overview overdue: {e}")
+            if getattr(self, '_overdue_empty', None):
+                self._overdue_empty.setVisible(True)
+                self._overdue_tbl.setVisible(False)
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -870,7 +943,7 @@ class _AgingTab(QWidget):
             self._tbl.setColumnWidth(ci, w)
         lay.addWidget(self._tbl)
 
-        ref_btn = SecondaryBtn('?  Refresh', 40)
+        ref_btn = SecondaryBtn('Refresh', 40)
         ref_btn.clicked.connect(self.refresh)
         lay.addWidget(ref_btn)
 

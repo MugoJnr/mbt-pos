@@ -353,7 +353,9 @@ class SearchableSelect(Select):
         self.blockSignals(False)
         if prev is not None:
             self.set_value(prev)
-        if q and matched > 0 and not self.view().isVisible():
+        le = self.lineEdit()
+        if (q and matched > 0 and not self.view().isVisible()
+                and self.isVisible() and le is not None and le.hasFocus()):
             self.showPopup()
 
     def set_loading(self, loading: bool, label: str = 'Loading…'):

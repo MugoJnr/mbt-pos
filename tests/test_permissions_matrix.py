@@ -15,6 +15,7 @@ from roles import (
 )
 from desktop.utils.security import (
     has_permission, can_void_sales, can_edit_sales, can_delete_debt,
+    can_set_business_day,
 )
 
 
@@ -28,6 +29,7 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(can_void_sales(u))
         self.assertFalse(can_edit_sales(u))
         self.assertFalse(can_delete_debt(u))
+        self.assertFalse(can_set_business_day(u))
         self.assertTrue(has_permission(u, 'sales.create'))
 
     def test_manager_can_void_not_edit(self):
@@ -35,6 +37,7 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertTrue(can_void_sales(u))
         self.assertFalse(can_edit_sales(u))
         self.assertFalse(can_delete_debt(u))
+        self.assertTrue(can_set_business_day(u))
 
     def test_admin_can_void_not_edit_stock(self):
         u = _user(ROLE_ADMIN)

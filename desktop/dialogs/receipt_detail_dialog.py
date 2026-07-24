@@ -30,6 +30,40 @@ class ReceiptDetailDialog(QDialog):
         apply_themed_dialog(self)
         self._build()
 
+    def _variance_html(self) -> str:
+        """Internal management view — show additional payment / variance clearly."""
+        var = self.sale.get('variance') or {}
+        handling = (
+            (var.get('handling') or self.sale.get('variance_handling') or '')
+            .strip().lower()
+        )
+        if not handling and not var:
+            return ''
+        excess = float(var.get('excess_amount') or 0)
+        if handling == 'additional_payment' or excess > 0.009:
+            label = (handling or 'variance').replace('_', ' ').title()
+            bits = [
+                f"<br><b>Payment variance:</b> {label}",
+            ]
+            if excess > 0.009:
+                bits.append(
+                    f" &nbsp; <b>Additional amount:</b> "
+                    f"{self.currency} {excess:,.2f}"
+                )
+            if float(self.sale.get('change_amount') or 0) > 0.009:
+                bits.append(
+                    f" &nbsp; <b>Change:</b> "
+                    f"{self.currency} {float(self.sale.get('change_amount') or 0):,.2f}"
+                )
+            cashier = var.get('cashier_name') or self.sale.get('cashier_name') or ''
+            if cashier:
+                bits.append(f" &nbsp; <b>Cashier:</b> {cashier}")
+            ts = (var.get('created_at') or self.sale.get('created_at') or '')[:19]
+            if ts:
+                bits.append(f" &nbsp; <b>At:</b> {ts}")
+            return ''.join(bits)
+        return ''
+
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 18)
@@ -42,9 +76,26 @@ class ReceiptDetailDialog(QDialog):
             f"color:{C['text']};font-size:18px;font-weight:800;background:transparent;")
         lay.addWidget(title)
 
+        try:
+            from desktop.utils.shop_time import receipt_date_label
+            date_disp, not_today = receipt_date_label(self.sale)
+            sale_day = (self.sale.get('sale_date') or '')[:10]
+            if not sale_day:
+                sale_day = (self.sale.get('created_at') or '')[:10]
+            day_bit = (
+                f"<b>Sale date:</b> {sale_day}"
+                + (" <span style='color:#D97706'>(not today)</span>"
+                   if not_today else "")
+                + " &nbsp; "
+            )
+        except Exception:
+            date_disp = (self.sale.get('created_at') or '')[:19]
+            day_bit = ''
+
         meta = QLabel(
             f"<b>Status:</b> <span style='color:{badge_color}'>{status.upper()}</span> &nbsp; "
-            f"<b>Date:</b> {(self.sale.get('created_at') or '')[:19]} &nbsp; "
+            f"{day_bit}"
+            f"<b>Recorded:</b> {date_disp} &nbsp; "
             f"<b>Cashier:</b> {self.sale.get('cashier_name') or '—'}<br>"
             f"<b>Payment:</b> {self.sale.get('payment_method') or '—'} &nbsp; "
             f"<b>Customer:</b> {self.sale.get('customer_name') or 'Walk-in'} "
@@ -55,6 +106,7 @@ class ReceiptDetailDialog(QDialog):
             f"<b>Total:</b> <span style='color:{C.get('gold', C['text'])};font-size:15px'>"
             f"{self.currency} {float(self.sale.get('total') or 0):,.2f}</span> &nbsp; "
             f"<b>Paid:</b> {self.currency} {float(self.sale.get('amount_paid') or 0):,.2f}"
+            f"{self._variance_html()}"
         )
         meta.setTextFormat(Qt.RichText)
         meta.setWordWrap(True)

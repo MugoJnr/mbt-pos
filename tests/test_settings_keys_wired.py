@@ -76,6 +76,10 @@ WIRED_SETTINGS_MATRIX = {
         'desktop/utils/auto_fill.py',
         'desktop/tabs/sales_tab.py',
     ],
+    'pos_checkout_layout': [
+        'desktop/tabs/sales_tab.py',
+        'desktop/pos/layout_ids.py',
+    ],
     # Theme aliases live on MainWindow / api settings (not in _common_payload).
     'theme': ['desktop/main.py'],
     'ui_theme': ['desktop/main.py'],

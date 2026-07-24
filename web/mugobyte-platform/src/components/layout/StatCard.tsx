@@ -34,7 +34,12 @@ export function StatCard({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
-            <p className="mt-2 font-display text-2xl font-semibold tracking-tight truncate">{value}</p>
+            <p
+              className="mt-2 font-display text-xl font-semibold tracking-tight tabular-nums leading-tight sm:text-2xl"
+              title={value}
+            >
+              {value}
+            </p>
             {(delta || hint) && (
               <div className="mt-2 flex items-center gap-1.5 text-xs">
                 {delta && (

@@ -7,7 +7,7 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QListWidgetItem,
     QLineEdit, QTextEdit, QLabel, QMessageBox, QAbstractItemView,
-    QShortcut,
+    QShortcut, QSizePolicy, QPushButton,
 )
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QKeySequence, QFont
@@ -76,9 +76,9 @@ class _NoteRow(QWidget):
         self._title.setFont(f)
         top.addWidget(self._title, 1)
 
-        self._pin = QLabel('*')
+        self._pin = QLabel('PIN')
         self._pin.setObjectName('noteRowPin')
-        self._pin.setFixedWidth(16)
+        self._pin.setFixedWidth(28)
         self._pin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         top.addWidget(self._pin)
         lay.addLayout(top)
@@ -97,9 +97,21 @@ class _NoteRow(QWidget):
 
     def set_note(self, note: dict):
         title = (note.get('title') or '').strip() or 'Untitled'
+        # Avoid tofu arrows / dashes when the UI font lacks those glyphs
+        for bad, good in (
+            ('\u2192', ' > '), ('\u2190', ' < '), ('\u2014', ' - '),
+            ('\u2013', ' - '), ('\u2022', '-'), ('\ufffd', ''),
+        ):
+            title = title.replace(bad, good)
         pinned = bool(int(note.get('pinned') or 0))
         self._title.setText(title)
-        self._snip.setText(_snippet(note.get('content')))
+        snip = _snippet(note.get('content'))
+        for bad, good in (
+            ('\u2192', ' > '), ('\u2190', ' < '), ('\u2014', ' - '),
+            ('\u2013', ' - '), ('\ufffd', ''),
+        ):
+            snip = snip.replace(bad, good)
+        self._snip.setText(snip)
         self._date.setText(_fmt_edited(note.get('updated_at') or note.get('created_at')))
         self._pin.setVisible(pinned)
 
@@ -170,7 +182,55 @@ class NotesTab(QWidget):
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._list.setSelectionMode(QAbstractItemView.SingleSelection)
         self._list.currentRowChanged.connect(self._select)
-        ll.addWidget(self._list, 1)
+        ll.addWidget(self._list, 0)
+
+        self._list_filler = QWidget()
+        self._list_filler.setObjectName('notesListFiller')
+        fl = QVBoxLayout(self._list_filler)
+        fl.setContentsMargins(14, 16, 14, 16)
+        fl.setSpacing(10)
+        self._filler_title = QLabel('Quick templates')
+        self._filler_title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._filler_title.setObjectName('sectionTitle')
+        self._filler_title.setProperty('mbtTitleSize', 13)
+        self._filler_hint = QLabel(
+            'Tap a template to start a note, or use + New. Notes stay on this device.')
+        self._filler_hint.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._filler_hint.setObjectName('sectionSubtitle')
+        self._filler_hint.setWordWrap(True)
+        fl.addWidget(self._filler_title)
+        fl.addWidget(self._filler_hint)
+        # Tip cards — fill dead space so sparse lists don't look unfinished
+        # Tip cards — clickable templates that create a real note
+        tips = (
+            ('Opening', 'Cash float checked · tills unlocked'),
+            ('Handoff', 'Note who is on register before you leave'),
+            ('Closing', 'Record variances and tomorrow deliveries'),
+        )
+        self._tip_cards = []
+        for title, body in tips:
+            card = QPushButton()
+            card.setObjectName('notesTipCard')
+            card.setCursor(Qt.PointingHandCursor)
+            card.setFlat(True)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(12, 10, 12, 10)
+            cl.setSpacing(2)
+            t = QLabel(title)
+            t.setObjectName('notesTipTitle')
+            t.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            b = QLabel(body)
+            b.setObjectName('notesTipBody')
+            b.setWordWrap(True)
+            b.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            cl.addWidget(t)
+            cl.addWidget(b)
+            card.clicked.connect(
+                lambda _=False, tt=title, bb=body: self._new_from_template(tt, bb))
+            fl.addWidget(card)
+            self._tip_cards.append(card)
+        fl.addStretch(1)
+        ll.addWidget(self._list_filler, 1)
 
         self._empty = QWidget()
         self._empty.setObjectName('notesEmpty')
@@ -211,8 +271,8 @@ class NotesTab(QWidget):
         self._tin.textChanged.connect(self._on_edit)
         hl.addWidget(self._tin, 1)
 
-        self._pin_btn = GhostBtn('*', 36)
-        self._pin_btn.setFixedWidth(40)
+        self._pin_btn = GhostBtn('Pin', 36)
+        self._pin_btn.setFixedWidth(52)
         self._pin_btn.setToolTip('Pin / unpin note')
         self._pin_btn.clicked.connect(self._toggle_pin)
         hl.addWidget(self._pin_btn)
@@ -223,12 +283,34 @@ class NotesTab(QWidget):
         self._sv.clicked.connect(self._save)
         hl.addWidget(self._sv)
 
-        self._dl = GhostBtn('X', 36)
-        self._dl.setFixedWidth(40)
+        self._dl = GhostBtn('Delete', 36)
+        self._dl.setFixedWidth(72)
         self._dl.setToolTip('Delete note')
         self._dl.clicked.connect(self._delete)
         hl.addWidget(self._dl)
         rl.addWidget(self._hdr)
+
+        # Minimal writing toolbar
+        self._toolbar = QWidget()
+        self._toolbar.setObjectName('notesToolbar')
+        tl = QHBoxLayout(self._toolbar)
+        tl.setContentsMargins(16, 0, 12, 8)
+        tl.setSpacing(6)
+        self._tb_stamp = GhostBtn('Insert time', 32)
+        self._tb_stamp.setToolTip('Insert current date/time')
+        self._tb_stamp.clicked.connect(self._insert_timestamp)
+        self._tb_bullet = GhostBtn('Bullet', 32)
+        self._tb_bullet.setToolTip('Insert bullet line')
+        self._tb_bullet.clicked.connect(self._insert_bullet)
+        self._dirty_dot = QLabel('Saved')
+        self._dirty_dot.setObjectName('notesDirty')
+        self._dirty_dot.setStyleSheet(
+            f"color:{C['ok']}; font-size:11px; font-weight:700; background:transparent;")
+        tl.addWidget(self._tb_stamp)
+        tl.addWidget(self._tb_bullet)
+        tl.addStretch(1)
+        tl.addWidget(self._dirty_dot)
+        rl.addWidget(self._toolbar)
 
         body = QWidget()
         bl = QVBoxLayout(body)
@@ -237,7 +319,9 @@ class NotesTab(QWidget):
 
         self._body = QTextEdit()
         self._body.setObjectName('notesBody')
-        self._body.setPlaceholderText('Start writing…')
+        self._body.setPlaceholderText(
+            'Write shift notes, handoffs, or stock reminders…\n'
+            'Autosaves a moment after you pause typing.')
         self._body.setAcceptRichText(False)
         self._body.textChanged.connect(self._on_edit)
         bl.addWidget(self._body, 1)
@@ -311,6 +395,23 @@ class NotesTab(QWidget):
                 f"background:transparent; border:none;")
             self._empty_hint.setStyleSheet(
                 f"color:{C['text2']}; font-size:13px; background:transparent; border:none;")
+            if hasattr(self, '_filler_title'):
+                self._filler_title.setStyleSheet(
+                    f"color:{C['text']}; font-size:13px; font-weight:700; "
+                    f"background:transparent; border:none;")
+                self._filler_hint.setStyleSheet(
+                    f"color:{C['text2']}; font-size:12px; background:transparent; border:none;")
+                self._list_filler.setStyleSheet(
+                    f"QWidget#notesListFiller{{background:transparent; "
+                    f"border-top:1px solid {C['border']};}}"
+                    f"QPushButton#notesTipCard{{background:{C['card2']}; "
+                    f"border:1px solid {C['border']}; border-radius:10px; text-align:left;}}"
+                    f"QPushButton#notesTipCard:hover{{border-color:{C['gold']}; "
+                    f"background:{C['hover']};}}"
+                    f"QLabel#notesTipTitle{{color:{C['gold']}; font-size:11px; "
+                    f"font-weight:800; letter-spacing:0.6px; background:transparent;}}"
+                    f"QLabel#notesTipBody{{color:{C['text2']}; font-size:12px; "
+                    f"background:transparent;}}")
             self._ed_empty_title.setStyleSheet(
                 f"color:{C['text']}; font-size:16px; font-weight:600; "
                 f"background:transparent; border:none;")
@@ -343,15 +444,27 @@ class NotesTab(QWidget):
             f"QListWidget#notesList::item:hover:!selected {{ background:{C['hover']}; }}"
         )
         self._tin.setStyleSheet(
-            f"QLineEdit#notesTitle {{ font-size:17px; font-weight:600; "
+            f"QLineEdit#notesTitle {{ font-size:18px; font-weight:700; "
             f"background:transparent; border:none; padding:4px 0; color:{C['text']}; "
             f"selection-background-color:{gold_tint}; }}"
             f"QLineEdit#notesTitle:focus {{ border:none; }}")
         self._body.setStyleSheet(
-            f"QTextEdit#notesBody {{ font-size:15px; background:transparent; border:none; "
-            f"color:{C['text']}; padding:4px 0; selection-background-color:{gold_tint}; }}")
+            f"QTextEdit#notesBody {{ font-size:15px; line-height:1.45; "
+            f"background:{C['card2']}; border:1px solid {border}; border-radius:10px; "
+            f"color:{C['text']}; padding:12px 14px; "
+            f"selection-background-color:{gold_tint}; }}")
         self._empty.setStyleSheet('background:transparent;')
         self._editor_empty.setStyleSheet('background:transparent;')
+        if getattr(self, '_right', None):
+            self._right.setStyleSheet(
+                f"QFrame {{ background:{C['card']}; border:1px solid {border}; "
+                f"border-radius:12px; }}")
+        if getattr(self, '_left', None):
+            self._left.setStyleSheet(
+                f"QFrame {{ background:{C['card2']}; border:1px solid {border}; "
+                f"border-radius:12px; }}")
+        self._editor_empty.setStyleSheet(
+            f"QWidget#notesEditorEmpty{{background:{C['card2']}; border-radius:10px;}}")
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -388,6 +501,12 @@ class NotesTab(QWidget):
         has = bool(notes)
         self._list.setVisible(has)
         self._empty.setVisible(not has)
+        # Sparse list: show tips filler under the few rows so left pane isn't a void
+        if hasattr(self, '_list_filler'):
+            sparse = has and len(notes) < 4
+            self._list_filler.setVisible(sparse or not has)
+            if not has:
+                self._list_filler.hide()  # full empty state owns the pane
         if not has and (self._search.text() or '').strip():
             self._empty_title.setText('No matching notes')
             self._empty_hint.setText('Try a different search, or clear the filter.')
@@ -405,6 +524,19 @@ class NotesTab(QWidget):
             self._list.setItemWidget(item, row)
             if keep_id is not None and n['id'] == keep_id:
                 select_row = i
+        # Cap list height when sparse so filler fills the rest
+        if has:
+            try:
+                n = len(notes)
+                row_h = 78
+                self._list.setMinimumHeight(min(320, max(row_h, n * row_h + 4)))
+                if n < 4:
+                    self._list.setMaximumHeight(n * row_h + 8)
+                else:
+                    self._list.setMaximumHeight(16777215)
+                    self._list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            except Exception:
+                pass
 
         self._list.blockSignals(False)
         if select_row < 0 and notes and self._nid is None:
@@ -469,7 +601,8 @@ class NotesTab(QWidget):
         self._loading = False
         self._dirty = False
         pinned = bool(int(n.get('pinned') or 0))
-        self._pin_btn.setText('*' if pinned else 'o')
+        self._pin_btn.setText('Unpin' if pinned else 'Pin')
+        self._pin_btn.setFixedWidth(72 if pinned else 52)
         self._pin_btn.setToolTip('Unpin note' if pinned else 'Pin note')
         edited = _fmt_edited(n.get('updated_at') or n.get('created_at'))
         self._meta.setText(f'Last edited · {edited}' if edited else '')
@@ -488,13 +621,37 @@ class NotesTab(QWidget):
         self._status.setText('Editing…')
         self._status.setStyleSheet(
             f"color:{C['warn']}; font-size:12px; background:transparent; border:none;")
+        if getattr(self, '_dirty_dot', None):
+            self._dirty_dot.setText('Unsaved')
+            self._dirty_dot.setStyleSheet(
+                f"color:{C['warn']}; font-size:11px; font-weight:700; background:transparent;")
         self._autosave.start()
+
+    def _mark_saved_indicator(self):
+        if getattr(self, '_dirty_dot', None):
+            self._dirty_dot.setText('Saved')
+            self._dirty_dot.setStyleSheet(
+                f"color:{C['ok']}; font-size:11px; font-weight:700; background:transparent;")
+
+    def _insert_timestamp(self):
+        stamp = datetime.now().strftime('%d %b %Y %H:%M')
+        cursor = self._body.textCursor()
+        cursor.insertText(stamp + '\n')
+        self._body.setTextCursor(cursor)
+        self._body.setFocus()
+
+    def _insert_bullet(self):
+        cursor = self._body.textCursor()
+        cursor.insertText('• ')
+        self._body.setTextCursor(cursor)
+        self._body.setFocus()
 
     def _reset_save_label(self):
         if not self._dirty:
             self._status.setText('Saved')
             self._status.setStyleSheet(
                 f"color:{C['muted']}; font-size:12px; background:transparent; border:none;")
+            self._mark_saved_indicator()
 
     def _new(self):
         if self._dirty and self._nid:
@@ -508,7 +665,8 @@ class NotesTab(QWidget):
         self._loading = False
         self._meta.setText('New note — unsaved')
         self._status.setText('')
-        self._pin_btn.setText('o')
+        self._pin_btn.setText('Pin')
+        self._pin_btn.setFixedWidth(52)
         self._pin_btn.setToolTip('Pin note')
         self._set_editor_enabled(True)
         self._pin_btn.setEnabled(False)
@@ -516,6 +674,21 @@ class NotesTab(QWidget):
         self._list.clearSelection()
         self._tin.setFocus()
         self._tin.setPlaceholderText('Note title…')
+
+    def _new_from_template(self, title: str, body: str):
+        """Create a draft note from a quick template card."""
+        self._new()
+        self._loading = True
+        self._tin.setText(title or 'Untitled')
+        self._body.setPlainText(body or '')
+        self._loading = False
+        self._dirty = True
+        self._meta.setText('New note from template — unsaved')
+        self._status.setText('Unsaved')
+        self._status.setStyleSheet(
+            f"color:{C['warn']}; font-size:12px; font-weight:700; "
+            f"background:transparent; border:none;")
+        self._body.setFocus()
 
     def _save(self, silent: bool = False):
         if not self._editor_body.isVisible() and self._nid is None:
@@ -554,6 +727,7 @@ class NotesTab(QWidget):
                     self._status.setText('Saved ✓')
                     self._status.setStyleSheet(
                         f"color:{C['ok']}; font-size:12px; background:transparent; border:none;")
+                    self._mark_saved_indicator()
                     self._feedback_clear.start()
                 self.refresh(select_id=self._nid)
                 n = self._find_note(self._nid) if self._nid else None

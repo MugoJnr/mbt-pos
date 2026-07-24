@@ -547,6 +547,8 @@ def init_db():
         ('cash_rounding_apply_mpesa', '0'),
         ('cash_rounding_apply_card', '0'),
         ('cash_rounding_apply_bank', '0'),
+        # POS checkout layout: retail_classic | product_explorer | checkout_pro
+        ('pos_checkout_layout', 'product_explorer'),
     ):
         cur.execute("INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)", (k, v))
 
@@ -690,7 +692,7 @@ def init_db():
         'employees': 'employee',
         'users': 'user',
         'branches': 'branch',
-        'audit_log': 'audit_log',
+        # audit_log intentionally omitted — high volume, not needed for portal analytics
         'system_settings': 'setting',
         'debt_invoices': 'debt_invoice',
         'debt_payments': 'debt_payment',

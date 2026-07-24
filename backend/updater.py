@@ -58,7 +58,7 @@ RECHECK_INTERVAL  = 4 * 3600   # recheck every 4 hours
 RETRY_INTERVAL    = 15 * 60    # retry sooner after a failed check
 DOWNLOAD_TIMEOUT  = 3600        # 1 hour — tolerate very slow shop networks (~12 KB/s)
 DOWNLOAD_RETRY_INTERVAL = 30 * 60  # retry failed/partial downloads every 30 min
-REQUEST_TIMEOUT   = 15          # API call timeout
+REQUEST_TIMEOUT   = 8           # API call timeout (fail-open when GitHub/Portal down)
 FETCH_RETRIES     = 3
 MIN_INSTALLER_BYTES = 1_000_000
 EXPECTED_INSTALLER_BYTES = 40_000_000  # ~45 MB; used for resume detection
@@ -1097,7 +1097,7 @@ class UpdateChecker:
 
     def _fetch_release_info(self) -> dict:
         """
-        Fetch latest release from GitHub API.
+        Fetch latest release from GitHub API, with Portal Update Center fallback.
         Returns dict with keys: version, notes, asset_url, min_required_version,
         checksum_sha256
         """
@@ -1107,6 +1107,7 @@ class UpdateChecker:
             'User-Agent': f'MBT-POS/{self.current_version}',
         }
         last_err = None
+        cloud = None
         cloud_checksum = ''
         try:
             from backend.cloud.update_center import get_update_center
@@ -1114,7 +1115,7 @@ class UpdateChecker:
             if cloud:
                 cloud_checksum = cloud.get('checksum_sha256') or ''
         except Exception:
-            pass
+            cloud = None
 
         for attempt in range(1, FETCH_RETRIES + 1):
             try:
@@ -1135,6 +1136,11 @@ class UpdateChecker:
                             self._expected_bytes = size
                         break
 
+                # Prefer cloud download URL when GitHub asset missing
+                if not asset_url and cloud and cloud.get('download_url'):
+                    asset_url = cloud.get('download_url') or ''
+                    notes = notes or (cloud.get('release_notes') or '')
+
                 min_version = '0.0.0'
                 if '[min_version:' in notes:
                     try:
@@ -1143,6 +1149,8 @@ class UpdateChecker:
                         min_version = notes[start:end].strip()
                     except Exception:
                         pass
+                if cloud and cloud.get('min_version'):
+                    min_version = str(cloud.get('min_version') or min_version)
 
                 checksum = resolve_release_checksum(
                     notes, assets, asset_url, headers, cloud_checksum)
@@ -1167,6 +1175,22 @@ class UpdateChecker:
                 logger.warning(
                     f"Update API attempt {attempt}/{FETCH_RETRIES} failed: {e}")
                 time.sleep(min(attempt * 2, 6))
+
+        # GitHub unreachable — use Portal Update Center if it has a newer build
+        if cloud and cloud.get('download_url'):
+            logger.info(
+                'Using Portal Update Center fallback for v%s (GitHub unavailable)',
+                cloud.get('version'),
+            )
+            return {
+                'version':              str(cloud.get('version') or '').lstrip('v'),
+                'notes':                (cloud.get('release_notes') or '')[:2000],
+                'asset_url':            cloud.get('download_url') or '',
+                'min_required_version': str(cloud.get('min_version') or '0.0.0'),
+                'checksum_sha256':      normalize_checksum(
+                    cloud.get('checksum_sha256') or '') or '',
+            }
+
         if last_err:
             logger.warning(f"Update check gave up: {last_err}")
         return {}

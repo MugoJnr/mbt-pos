@@ -511,7 +511,12 @@ def apply_light(sales_tab) -> None:
         t._pay.setStyleSheet(fmt(COMBO))
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
-    t._paid.setStyleSheet(fmt(SPINBOX))
+    # Amount Paid — high-contrast bordered input (matches checkout chrome)
+    try:
+        from desktop.pos.checkout_pro_chrome import style_amount_paid
+        style_amount_paid(t)
+    except Exception:
+        t._paid.setStyleSheet(fmt(SPINBOX))
     if getattr(t, '_chg_lbl', None):
         t._chg_lbl.setStyleSheet(_label_style('text2', 'label', '700'))
     t._chg.setStyleSheet(
@@ -673,7 +678,11 @@ def apply_dark(sales_tab) -> None:
     if getattr(t, '_pay_lbl', None):
         t._pay_lbl.setStyleSheet(
             f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")
-    t._paid.setStyleSheet(f"QDoubleSpinBox{{{_dark_input}}}")
+    try:
+        from desktop.pos.checkout_pro_chrome import style_amount_paid
+        style_amount_paid(t)
+    except Exception:
+        t._paid.setStyleSheet(f"QDoubleSpinBox{{{_dark_input}}}")
     if getattr(t, '_chg_lbl', None):
         t._chg_lbl.setStyleSheet(
             f"color:{D['text2']}; font-size:14px; font-weight:600; background:transparent;")

@@ -82,7 +82,7 @@ class P01SearchBarcodeGate(unittest.TestCase):
         # Capture populate args via side effect
         seen = []
 
-        def _populate(items, columns=3):
+        def _populate(items, columns=3, chunked=False):
             seen.append(list(items))
 
         self.tab._prod_grid.populate = _populate
@@ -313,9 +313,12 @@ class U05NoDeadPoStkReturnsGate(unittest.TestCase):
         sales = open(
             os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py'), encoding='utf-8'
         ).read()
+        panel = open(
+            os.path.join(ROOT, 'desktop', 'pos', 'panel_factory.py'), encoding='utf-8'
+        ).read()
         self.assertIn('_open_return_sale', sales)
         self.assertIn('prompt_return_sale', sales)
-        self.assertIn('Return / Exchange', sales)
+        self.assertIn('Return / Exchange', panel)
 
 
 if __name__ == '__main__':

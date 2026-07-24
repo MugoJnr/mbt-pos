@@ -30,6 +30,7 @@ export function DateRangePicker({
     ["Today", new Date(), new Date()],
     ["Yesterday", subDays(new Date(), 1), subDays(new Date(), 1)],
     ["Last 7 Days", subDays(new Date(), 6), new Date()],
+    ["Last 30 Days", subDays(new Date(), 29), new Date()],
     ["This Month", startOfMonth(new Date()), endOfMonth(new Date())],
   ] as const;
 

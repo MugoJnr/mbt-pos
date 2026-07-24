@@ -32,7 +32,7 @@ function TopbarLogo() {
     <img
       src={isDark ? BRAND.companyLogoDark : BRAND.companyLogo}
       alt="MugoByte"
-      className="h-7 w-auto max-w-[132px] object-contain object-left"
+      className="h-7 w-auto max-w-[180px] object-contain object-left sm:max-w-[200px]"
       draggable={false}
     />
   );
@@ -63,11 +63,17 @@ export function AppTopbar({ title }: { title?: string }) {
       >
         <TopbarLogo />
       </Link>
-      <div className="hidden min-w-0 sm:block">
-        <div className="truncate font-display text-sm font-semibold leading-tight">
+      <div className="hidden min-w-[10rem] max-w-[16rem] sm:block lg:max-w-[20rem]">
+        <div
+          className="truncate font-display text-sm font-semibold leading-tight"
+          title={title || "MugoByte Workspace"}
+        >
           {title || "MugoByte Workspace"}
         </div>
-        <div className="truncate text-[10px] text-muted-foreground">
+        <div
+          className="truncate text-[10px] text-muted-foreground"
+          title={activeOrg?.name || "Select a business"}
+        >
           {activeOrg?.name || "Select a business"}
         </div>
       </div>
@@ -86,7 +92,11 @@ export function AppTopbar({ title }: { title?: string }) {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" className="hidden h-9 max-w-[11rem] gap-2 md:inline-flex">
+            <Button
+              variant="outline"
+              className="hidden h-9 max-w-[18rem] gap-2 md:inline-flex"
+              title={activeOrg?.name || "Business"}
+            >
               <Building2 className="h-4 w-4 shrink-0" />
               <span className="truncate">{activeOrg?.name || "Business"}</span>
             </Button>

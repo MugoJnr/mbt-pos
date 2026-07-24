@@ -60,6 +60,7 @@ const workspaceNav: NavGroup[] = [
       { title: "Businesses", url: "/businesses", icon: Building2 },
       { title: "Devices", url: "/devices", icon: MonitorSmartphone },
       { title: "Reports", url: "/reports", icon: BarChart3 },
+      { title: "Licenses", url: "/license", icon: KeyRound },
       { title: "Notifications", url: "/notifications", icon: Bell },
       { title: "Downloads", url: "/downloads", icon: Download },
       { title: "Support", url: "/support", icon: LifeBuoy },
@@ -68,19 +69,14 @@ const workspaceNav: NavGroup[] = [
     ],
   },
   {
+    // POS-specific only — shared routes live once under Workspace (no IA dupes).
     label: "MBT POS Cloud",
-    // Prefer Workspace group for shared routes so only one item shows active.
-    markActive: false,
+    markActive: true,
     items: [
       { title: "Overview", url: "/pos", icon: Package },
-      { title: "Reports", url: "/reports", icon: BarChart3 },
-      { title: "Devices", url: "/devices", icon: MonitorSmartphone },
-      { title: "Licenses", url: "/license", icon: KeyRound },
       { title: "Backups", url: "/backups", icon: CloudUpload },
       { title: "Branches", url: "/branches", icon: Store },
       { title: "Users", url: "/users", icon: Users },
-      { title: "Notifications", url: "/notifications", icon: Bell },
-      { title: "Downloads", url: "/downloads", icon: Download },
       { title: "Security", url: "/security", icon: Shield },
       { title: "AI Insights", url: "/ai", icon: Bot, badge: "Beta" },
     ],
@@ -123,11 +119,7 @@ export function AppSidebar({ variant = "customer" }: { variant?: "customer" | "a
     variant === "admin" ? adminNav : showAdmin ? [...workspaceNav, ...adminNav] : workspaceNav;
 
   const isActive = (item: NavItem, group: NavGroup) => {
-    if (group.markActive === false) {
-      // POS Cloud unique routes still highlight.
-      const shared = ["/reports", "/devices", "/notifications", "/downloads"];
-      if (shared.includes(item.url)) return false;
-    }
+    if (group.markActive === false) return false;
     if (item.url === "/admin") return pathname === "/admin";
     if (item.url === "/dashboard") {
       if (item.hash) return pathname === "/dashboard" && hash === item.hash;

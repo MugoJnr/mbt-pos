@@ -259,6 +259,10 @@ def _build_stylesheet(p):
     gold_tint = qss_alpha(p['gold'], 0.14)
     nav_hover_soft = qss_alpha(p['hover'], 0.55)
     cal_arrow = _calendar_icon_qss().replace('{p_muted}', p['muted'])
+    check_path = os.path.join(_assets_root(), 'icons', 'ui', 'check.svg')
+    radio_path = os.path.join(_assets_root(), 'icons', 'ui', 'radio-dot.svg')
+    check_url = check_path.replace('\\', '/') if os.path.isfile(check_path) else ''
+    radio_url = radio_path.replace('\\', '/') if os.path.isfile(radio_path) else ''
     return f"""
 * {{
     font-family: {ff};
@@ -626,19 +630,19 @@ QTabBar::tab:hover:!selected {{ color: {p['text']}; }}
 
 /* ── SCROLLBARS ── */
 QScrollBar:vertical {{
-    background: transparent; width: 10px; border-radius: 5px; margin: 2px;
+    background: transparent; width: 6px; border-radius: 3px; margin: 0px;
 }}
 QScrollBar::handle:vertical {{
-    background: {p['border2']}; border-radius: 5px; min-height: 36px;
+    background: {p['border2']}; border-radius: 3px; min-height: 28px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {p['gold']}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 QScrollBar:horizontal {{
-    background: transparent; height: 10px; border-radius: 5px; margin: 2px;
+    background: transparent; height: 6px; border-radius: 3px; margin: 0px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {p['border2']}; border-radius: 5px; min-width: 36px;
+    background: {p['border2']}; border-radius: 3px; min-width: 28px;
 }}
 QScrollBar::handle:horizontal:hover {{ background: {p['gold']}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
@@ -672,9 +676,21 @@ QCheckBox::indicator, QRadioButton::indicator {{
 QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
     border-color: {p['gold']};
 }}
-QCheckBox::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
+QCheckBox::indicator:checked {{
+    background: {p['gold']};
+    border-color: {p['gold']};
+    image: url("{check_url}");
+}}
+QCheckBox::indicator:checked:disabled {{
+    background: {p['muted']};
+    border-color: {p['muted']};
+}}
 QRadioButton::indicator {{ border-radius: 9px; }}
-QRadioButton::indicator:checked {{ background: {p['gold']}; border-color: {p['gold']}; }}
+QRadioButton::indicator:checked {{
+    background: {p['gold']};
+    border-color: {p['gold']};
+    image: url("{radio_url}");
+}}
 
 /* Form labels — prefer text2 (readable) over inheriting muted/disabled */
 QLabel#formLabel {{

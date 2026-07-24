@@ -94,9 +94,9 @@ class LicenseTab(QWidget):
 
         actions = QWidget()
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(10)
-        ref_btn = GhostBtn("↺  Refresh", 36)
+        ref_btn = GhostBtn("Refresh", 36)
         ref_btn.clicked.connect(self.refresh)
-        sync_btn = SecondaryBtn("⟳  Sync Now", 36)
+        sync_btn = SecondaryBtn("Sync Now", 36)
         sync_btn.clicked.connect(self._force_sync)
         ar.addWidget(ref_btn); ar.addWidget(sync_btn)
         chrome, _ = PageChrome(

@@ -18,25 +18,199 @@ class SettingsTab(QWidget):
         self.db_path = db_path; self.config_getter = config_getter
         self._polling = False
         self._cf_setup_running = False
+        self._jump_scroll_lock = False
         self._build()
+
+    def _jump_section(self, key: str):
+        w = (getattr(self, '_section_anchors', {}) or {}).get(key)
+        scroll = getattr(self, '_scroll', None)
+        if not w or not scroll:
+            return
+        self._jump_scroll_lock = True
+        try:
+            # Ensure geometry is current, then scroll so section sits near top
+            target = w.mapTo(scroll.widget(), w.rect().topLeft())
+            scroll.verticalScrollBar().setValue(max(0, target.y() - 12))
+        except Exception:
+            pass
+        self._set_jump_active(key)
+        QTimer.singleShot(120, lambda: setattr(self, '_jump_scroll_lock', False))
+
+    def _set_jump_active(self, key: str):
+        for k, b in (getattr(self, '_jump_btns', {}) or {}).items():
+            b.blockSignals(True)
+            b.setChecked(k == key)
+            b.blockSignals(False)
+        self._paint_jump_nav()
+
+    def _on_jump_scroll(self, _value=None):
+        """Scroll-spy: highlight Jump pill for the section nearest the viewport top."""
+        if getattr(self, '_jump_scroll_lock', False):
+            return
+        scroll = getattr(self, '_scroll', None)
+        anchors = getattr(self, '_section_anchors', None) or {}
+        if not scroll or not anchors:
+            return
+        try:
+            view_top = int(scroll.verticalScrollBar().value())
+            # Prefer the last section whose top has scrolled past the sticky offset
+            best_key = None
+            best_y = -10**9
+            for key, w in anchors.items():
+                if w is None:
+                    continue
+                top = int(w.mapTo(scroll.widget(), w.rect().topLeft()).y())
+                if top <= view_top + 48 and top >= best_y:
+                    best_y = top
+                    best_key = key
+            if best_key is None:
+                # Above first section — first jump key
+                best_key = next(iter(anchors.keys()), None)
+            if best_key:
+                active = None
+                for k, b in (self._jump_btns or {}).items():
+                    if b.isChecked():
+                        active = k
+                        break
+                if active != best_key:
+                    self._set_jump_active(best_key)
+        except Exception:
+            pass
+
+    def _update_settings_fold_cue(self, *_args):
+        cue = getattr(self, '_fold_cue', None)
+        scroll = getattr(self, '_scroll', None)
+        if cue is None or scroll is None:
+            return
+        try:
+            bar = scroll.verticalScrollBar()
+            remaining = bar.maximum() - bar.value()
+            cue.setVisible(bar.maximum() > 24 and remaining > 40)
+        except Exception:
+            cue.setVisible(False)
+
+    def _paint_jump_nav(self):
+        from desktop.utils.theme import qss_alpha, RADIUS
+        r = RADIUS['md']
+        for k, b in (getattr(self, '_jump_btns', {}) or {}).items():
+            if b.isChecked():
+                b.setStyleSheet(
+                    f"QPushButton{{background:{qss_alpha(C['gold'], 0.22)}; color:{C['gold']}; "
+                    f"border:1px solid {qss_alpha(C['gold'], 0.45)}; border-radius:{r}px; "
+                    f"font-size:12px; font-weight:700; padding:4px 10px;}}"
+                )
+            else:
+                b.setStyleSheet(
+                    f"QPushButton{{background:transparent; color:{C['text2']}; "
+                    f"border:1px solid {C['border']}; border-radius:{r}px; "
+                    f"font-size:12px; font-weight:600; padding:4px 10px;}}"
+                    f"QPushButton:hover{{color:{C['gold']}; border-color:{C['gold']};}}"
+                )
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build(self):
-        lay, _ = page_layout(self)
+        # Sticky chrome (intro + Jump) above scroll so scroll-spy stays visible
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        save_top = PrimaryBtn('💾  Save Changes', 40)
+        head = QWidget()
+        head.setObjectName('settingsStickyHead')
+        head.setStyleSheet(f"QWidget#settingsStickyHead {{ background:{C['surface']}; }}")
+        head_lay = QVBoxLayout(head)
+        head_lay.setContentsMargins(20, 18, 20, 8)
+        head_lay.setSpacing(10)
+
+        self._section_anchors = {}
+
+        save_top = PrimaryBtn('Save Changes', 40)
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(save_top, 'save', 16)
+        except Exception:
+            pass
         save_top.clicked.connect(self._save)
         intro, _ = page_intro(
             'Settings',
             'Configure your shop, receipts, sync and integrations.',
             save_top)
-        lay.addLayout(intro)
+        head_lay.addLayout(intro)
+
+        jump = QWidget()
+        jump.setObjectName('settingsJumpNav')
+        jl = QHBoxLayout(jump)
+        jl.setContentsMargins(0, 0, 0, 4)
+        jl.setSpacing(6)
+        jl.addWidget(QLabel('Jump:'))
+        self._jump_btns = {}
+        for key, label in (
+            ('shop', 'Shop'),
+            ('receipts', 'Receipts'),
+            ('mpesa', 'M-Pesa'),
+            ('sync', 'Sync'),
+            ('workflow', 'Workflow'),
+            ('cloud', 'Cloud'),
+        ):
+            b = GhostBtn(label, 28)
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self._jump_section(k))
+            self._jump_btns[key] = b
+            jl.addWidget(b)
+        jl.addStretch(1)
+        if self._jump_btns.get('shop'):
+            self._jump_btns['shop'].setChecked(True)
+        self._paint_jump_nav()
+        head_lay.addWidget(jump)
+        outer.addWidget(head)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setFrameShape(QFrame.NoFrame)
+        self._scroll.setStyleSheet(
+            "QScrollArea{border:none;background:transparent;}"
+            "QScrollBar:vertical{background:transparent;width:10px;margin:2px;}"
+            "QScrollBar::handle:vertical{"
+            f"background:{C.get('border2', C['border'])};min-height:32px;"
+            "border-radius:5px;}"
+            f"QScrollBar::handle:vertical:hover{{background:{C['gold']};}}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+        )
+        inner = QWidget()
+        inner.setObjectName('mbtPageInner')
+        inner.setStyleSheet(f"background:{C['surface']};")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(20, 8, 20, 24)
+        lay.setSpacing(16)
+        self._scroll.setWidget(inner)
+        outer.addWidget(self._scroll, 1)
+        try:
+            self._scroll.verticalScrollBar().valueChanged.connect(self._on_jump_scroll)
+            self._scroll.verticalScrollBar().valueChanged.connect(self._update_settings_fold_cue)
+            self._scroll.verticalScrollBar().rangeChanged.connect(
+                lambda *_: self._update_settings_fold_cue())
+        except Exception:
+            pass
+
+        self._fold_cue = QLabel('↓  More settings below — scroll to continue')
+        self._fold_cue.setAlignment(Qt.AlignCenter)
+        self._fold_cue.setStyleSheet(
+            f"color:{C['gold']}; font-size:11px; font-weight:700; "
+            f"background:{qss_alpha(C['gold'], 0.12)}; border:1px solid {qss_alpha(C['gold'], 0.35)}; "
+            f"border-radius:8px; padding:8px 12px; margin:0 20px 10px 20px;")
+        outer.addWidget(self._fold_cue)
+        QTimer.singleShot(0, self._update_settings_fold_cue)
 
         # ── Shop information (Lovable section card) ───────────────────────────
-        sg, sf_body = section_card('*', 'Shop Information', 'Displayed on receipts and reports')
+        sg, sf_body = section_card('*', 'Shop Information', 'Shown on receipts & reports')
+        self._section_anchors['shop'] = sg
         sf = make_form(); sf_w = QWidget(); sf_w.setLayout(sf)
-        self.shop_name    = Field('Required — shown on receipts and reports')
+        self.shop_name    = Field('Required — shown on receipts & reports')
         self.shop_address = Field('Street or area (optional)')
         self.shop_phone   = Field('+254 700 000 000')
         self.currency     = QComboBox(); self.currency.setMinimumHeight(40)
@@ -44,6 +218,8 @@ class SettingsTab(QWidget):
         self.tax_rate = QDoubleSpinBox()
         self.tax_rate.setRange(0, 100); self.tax_rate.setDecimals(1)
         self.tax_rate.setSuffix(' %'); self.tax_rate.setMinimumHeight(40)
+        # Hide stepper arrows — avoids clipped control next to "%" affix
+        self.tax_rate.setButtonSymbols(QDoubleSpinBox.NoButtons)
         for lbl, w in [('Shop Name *', self.shop_name), ('Address', self.shop_address),
                        ('Phone', self.shop_phone), ('Currency', self.currency),
                        ('Tax Rate', self.tax_rate)]:
@@ -53,6 +229,7 @@ class SettingsTab(QWidget):
 
         # ── Receipt & printing ────────────────────────────────────────────────
         pg, pf_body = section_card('=', 'Receipt Printing', 'Thermal printer and receipt layout')
+        self._section_anchors['receipts'] = pg
         pf = make_form(); pf_w = QWidget(); pf_w.setLayout(pf)
         self.receipt_footer = Field('Thank you for shopping with us!')
         self.auto_print = QCheckBox('Auto-print receipt after each sale')
@@ -69,6 +246,7 @@ class SettingsTab(QWidget):
 
         # ── M-Pesa (per shop — no customer accounts) ───────────────────────────
         mg, mf_body = section_card('$', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
+        self._section_anchors['mpesa'] = mg
         mf = make_form(); mf_w = QWidget(); mf_w.setLayout(mf)
         # STK Push is not implemented — keep mode fixed to manual (no dead UI control).
         self.mpesa_mode = QComboBox()
@@ -186,6 +364,7 @@ class SettingsTab(QWidget):
         self.fin_tax_rate.setDecimals(1)
         self.fin_tax_rate.setSuffix(' %')
         self.fin_tax_rate.setMinimumHeight(40)
+        self.fin_tax_rate.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.fin_receipt_tax = QCheckBox('Show tax line on receipts')
         self.fin_receipt_tax.setMinimumHeight(36)
         self.fin_fy_month = QComboBox(); self.fin_fy_month.setMinimumHeight(40)
@@ -295,6 +474,7 @@ class SettingsTab(QWidget):
 
         # ── Workflow / After Sale defaults ────────────────────────────────────
         wg, wf_body = section_card('>', 'Workflow', 'After Sale defaults for POS checkout')
+        self._section_anchors['workflow'] = wg
         wform = make_form(); wf_w = QWidget(); wf_w.setLayout(wform)
         self.after_sale_default_customer = QComboBox()
         self.after_sale_default_customer.setMinimumHeight(42)
@@ -325,15 +505,28 @@ class SettingsTab(QWidget):
         self.autofill_credit_customer_info = QCheckBox(
             'Show credit customer balance / limit when selected')
         self.autofill_credit_customer_info.setMinimumHeight(36)
+        # Checkout layout — visual arrangement only; same sales backend for all.
+        from desktop.pos.layout_ids import CHECKOUT_LAYOUTS
+        self.pos_checkout_layout = QComboBox()
+        self.pos_checkout_layout.setMinimumHeight(42)
+        for key, label in CHECKOUT_LAYOUTS:
+            self.pos_checkout_layout.addItem(label, key)
+        self.pos_checkout_layout.setToolTip(
+            'Retail Classic: supermarket two-column + bottom payment.\n'
+            'Product Explorer: card grid + Current Sale (default).\n'
+            'Checkout Pro: three columns — products | cart | actions.\n'
+            'Cart, customer, and payment state are preserved when switching.')
         wf_hint = QLabel(
             'After every successful sale (Cash, M-Pesa, Credit, split), POS restores these '
             'defaults. Customer always returns to Walk-in so a credit sale for John Kamau '
             'never leaves John selected on the next ticket. '
             'Cash Paid re-fills on the next sale until the cashier edits it; switching '
             'back to Cash resets that lock. Notes, void/consumption reasons, and '
-            'discretionary discounts are never auto-filled.')
+            'discretionary discounts are never auto-filled. '
+            'Checkout Layout changes apply immediately on Save — no restart required.')
         wf_hint.setWordWrap(True)
         wf_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        FormRow('Checkout Layout', self.pos_checkout_layout, wform)
         FormRow('Default customer', self.after_sale_default_customer, wform)
         FormRow('Default payment', self.after_sale_default_payment, wform)
         FormRow('', self.after_sale_focus_barcode, wform)
@@ -390,6 +583,7 @@ class SettingsTab(QWidget):
 
         # ── Cloud Notifications ────────────────────────────────────────────────
         tg, tg_body = section_card('*', 'Cloud Notifications', 'MugoByte Platform notification center')
+        self._section_anchors['sync'] = tg
         _tg_lay = QVBoxLayout(); _tg_lay.setContentsMargins(0, 0, 0, 0); _tg_lay.setSpacing(14)
 
         self._tg_status_row = QFrame()
@@ -429,6 +623,7 @@ class SettingsTab(QWidget):
 
         # ── Remote web dashboard (Cloudflare) ─────────────────────────────────
         wg, wg_body = section_card('*', 'Live Dashboard', 'Sync sales and inventory to the cloud')
+        self._section_anchors['cloud'] = wg
         _wg_lay = QVBoxLayout(); _wg_lay.setContentsMargins(0, 0, 0, 0); _wg_lay.setSpacing(14)
 
         self._cf_status_row = QFrame()
@@ -601,6 +796,8 @@ class SettingsTab(QWidget):
 
         foot = Caption('MBT POS  ·  Powered by MugoByte Technologies  ·  mugobyte.com')
         foot.setAlignment(Qt.AlignCenter); lay.addWidget(foot)
+        lay.addSpacing(20)
+        lay.addStretch(1)
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
@@ -717,6 +914,11 @@ class SettingsTab(QWidget):
                 cfg.get('autofill_clear_search_on_leave', '1') == '1')
             self.autofill_credit_customer_info.setChecked(
                 cfg.get('autofill_credit_customer_info', '1') == '1')
+        if hasattr(self, 'pos_checkout_layout'):
+            from desktop.pos.layout_ids import normalize_layout_id
+            lid = normalize_layout_id(cfg.get('pos_checkout_layout'))
+            lidx = self.pos_checkout_layout.findData(lid)
+            self.pos_checkout_layout.setCurrentIndex(lidx if lidx >= 0 else 1)
         self._refresh_tg_status()
         self._refresh_report_health()
         self._refresh_cf_status()
@@ -1319,6 +1521,8 @@ class SettingsTab(QWidget):
                 '1' if self.autofill_clear_search_on_leave.isChecked() else '0',
             'autofill_credit_customer_info':
                 '1' if self.autofill_credit_customer_info.isChecked() else '0',
+            'pos_checkout_layout':
+                self.pos_checkout_layout.currentData() or 'product_explorer',
         }
         if hasattr(self, 'fin_currency'):
             code = self.fin_currency.currentText().strip().upper() or 'KES'
@@ -1373,6 +1577,7 @@ class SettingsTab(QWidget):
             self._save_category_visual_prefs()
             self._save_audio_settings()
             self._refresh_cf_status()
+            self._apply_checkout_layout_live()
             try:
                 from desktop.utils.audio_manager import play as _audio_play
                 _audio_play('save')
@@ -1386,6 +1591,25 @@ class SettingsTab(QWidget):
             except Exception:
                 pass
             QMessageBox.critical(self, 'Error', 'Failed to save settings.')
+
+    def _apply_checkout_layout_live(self):
+        """Push Checkout Layout to Sales tab immediately (no restart)."""
+        try:
+            lid = self.pos_checkout_layout.currentData() or 'product_explorer'
+        except Exception:
+            return
+        w = self.window()
+        sales = None
+        try:
+            tabs = getattr(w, '_tabs', None) or {}
+            sales = tabs.get('sales')
+        except Exception:
+            sales = None
+        if sales is not None and hasattr(sales, 'set_checkout_layout'):
+            try:
+                sales.set_checkout_layout(lid)
+            except Exception:
+                pass
 
     def _save_audio_settings(self):
         panel = getattr(self, '_audio_panel', None)
