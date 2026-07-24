@@ -13,7 +13,7 @@ import os
 import json
 import sqlite3
 from datetime import datetime, date, timedelta
-from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort
+from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort, redirect
 
 web = Blueprint('web', __name__)
 
@@ -116,6 +116,13 @@ def spa_assets(filename):
 @web.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory(os.path.join(_HERE, 'static'), filename)
+
+
+@web.route('/licenses')
+@web.route('/licenses/')
+def licenses_alias_redirect():
+    """Deep-link alias — bookmarks historically used /licenses (plural)."""
+    return redirect('/license', code=302)
 
 
 @web.route('/<path:spa_path>')
