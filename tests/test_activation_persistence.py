@@ -26,12 +26,28 @@ class _FakeLicenseServer(CloudLicenseServer):
         }
         self.activations = []
         self.updates = []
+        self.devices = []
 
     def _rows(self, table, query):
         if table == 'licenses':
-            if 'MBT-TRI-TEST' in query:
+            if 'MBT-TRI-TEST' in query or 'id=eq.L1' in query:
                 return [dict(self.licenses['LIC1'])]
             return []
+        if table == 'devices':
+            out = []
+            for row in self.devices:
+                if 'device_id=eq.' in query:
+                    want = query.split('device_id=eq.')[1].split('&')[0]
+                    from urllib.parse import unquote
+                    if row.get('device_id') != unquote(want):
+                        continue
+                if 'hardware_fingerprint=eq.' in query:
+                    want = query.split('hardware_fingerprint=eq.')[1].split('&')[0]
+                    from urllib.parse import unquote
+                    if row.get('hardware_fingerprint') != unquote(want):
+                        continue
+                out.append(dict(row))
+            return out
         if table == 'license_activations':
             out = []
             for row in self.activations:
@@ -53,8 +69,8 @@ class _FakeLicenseServer(CloudLicenseServer):
 
     def _update(self, table, query, patch):
         self.updates.append((table, query, dict(patch)))
-        if table == 'licenses' and 'activated_devices' in patch:
-            self.licenses['LIC1']['activated_devices'] = patch['activated_devices']
+        if table == 'licenses':
+            self.licenses['LIC1'].update(patch)
 
     def _log_history(self, *a, **k):
         pass
@@ -91,6 +107,51 @@ class ActivationSeatTests(unittest.TestCase):
         ok, msg, _ = s.activate('MBT-TRI-TEST', 'DEV-B', 'org1')
         self.assertFalse(ok)
         self.assertIn('limit', msg.lower())
+
+    def test_new_mbc_pc_id_matches_via_hardware_fingerprint(self):
+        s = _FakeLicenseServer()
+        hw = 'c' * 40
+        s.devices = [{'device_id': 'MBT-PC-52E5', 'hardware_fingerprint': hw}]
+        ok, msg, _ = s.activate('MBT-TRI-TEST', 'MBT-PC-52E5', 'org1')
+        self.assertTrue(ok, msg)
+        ok2, msg2, _ = s.activate(
+            'MBT-TRI-TEST', 'MBT-PC-DEAD', 'org1',
+            device_aliases=[hw],
+        )
+        self.assertTrue(ok2, msg2)
+        self.assertIn('already', msg2.lower())
+        self.assertEqual(s.licenses['LIC1']['activated_devices'], 1)
+
+    def test_reserved_old_mbt_pc_allows_new_id_via_fingerprint(self):
+        s = _FakeLicenseServer()
+        hw = 'd' * 40
+        s.licenses['LIC1']['reserved_device_id'] = 'MBT-PC-52E5'
+        s.licenses['LIC1']['claim_status'] = 'reserved'
+        s.devices = [{'device_id': 'MBT-PC-52E5', 'hardware_fingerprint': hw}]
+        ok, msg, _ = s.activate(
+            'MBT-TRI-TEST', 'MBT-PC-DEAD', 'org1',
+            device_aliases=[hw],
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(s.licenses['LIC1']['activated_devices'], 1)
+
+    def test_assign_does_not_demote_claimed(self):
+        s = _FakeLicenseServer()
+        s.activate('MBT-TRI-TEST', 'MBT-PC-52E5', 'org1')
+        s.licenses['LIC1']['claim_status'] = 'claimed'
+        s.licenses['LIC1']['reserved_device_id'] = 'MBT-PC-52E5'
+        ok, msg, row = s.assign_license(
+            'L1', assigned_email='edmus.cloud@gmail.com',
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(row['claim_status'], 'claimed')
+        self.assertEqual(s.licenses['LIC1']['claim_status'], 'claimed')
+
+    def test_assign_rejects_email_without_at(self):
+        s = _FakeLicenseServer()
+        ok, msg, _ = s.assign_license('L1', assigned_email='not-an-email')
+        self.assertFalse(ok)
+        self.assertIn('email', msg.lower())
 
 
 class SplitterScaleTests(unittest.TestCase):

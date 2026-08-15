@@ -116,6 +116,8 @@ class CloudLicenseServer:
         devices = max_devices or plan_info['max_devices']
         email = (assigned_email or '').strip().lower()
         reserved = (reserved_device_id or '').strip()
+        if email and '@' not in email:
+            raise ValueError('assigned_email must be a valid email address')
 
         row = {
             'org_id': org_id,
@@ -246,13 +248,23 @@ class CloudLicenseServer:
             else lic.get('reserved_device_id') or ''
         )
         reserved = str(reserved or '').strip()
+        if email and '@' not in email:
+            return False, 'assigned_email must be a valid email address', None
         if not email and not reserved:
             return False, 'Provide an email and/or reserved device id', None
 
+        already = self._find_active_activation(
+            lic['id'],
+            self._activation_device_ids(reserved, None),
+        )
+        if not already:
+            already = self._find_active_activation(lic['id'], [reserved] if reserved else [])
+        # Re-assigning email on an already-activated seat must not look unclaimed.
+        has_seat = bool(already) or int(lic.get('activated_devices') or 0) > 0
         patch = {
             'assigned_email': email or None,
             'reserved_device_id': reserved or None,
-            'claim_status': 'reserved',
+            'claim_status': 'claimed' if has_seat else 'reserved',
             'assigned_at': datetime.now().isoformat(),
         }
         self._update('licenses', f'id=eq.{quote(license_id, safe="")}', patch)
@@ -296,9 +308,31 @@ class CloudLicenseServer:
                 ids.append(did)
         return ids
 
+    def _expand_device_aliases(self, device_ids: list[str]) -> list[str]:
+        """Include MBT-PC-* and hardware_fingerprint for the same physical PC."""
+        from urllib.parse import quote
+        out = list(device_ids)
+        for did in list(device_ids):
+            if not did:
+                continue
+            for q in (
+                f'device_id=eq.{quote(did, safe="")}&select=device_id,hardware_fingerprint&limit=5',
+                f'hardware_fingerprint=eq.{quote(did, safe="")}&select=device_id,hardware_fingerprint&limit=5',
+            ):
+                try:
+                    rows = self._rows('devices', q) or []
+                except Exception:
+                    rows = []
+                for row in rows:
+                    for key in ('device_id', 'hardware_fingerprint'):
+                        val = str(row.get(key) or '').strip()
+                        if val and val not in out:
+                            out.append(val)
+        return out
+
     def _find_active_activation(self, license_id: str, device_ids: list[str]) -> dict | None:
         from urllib.parse import quote
-        for did in device_ids:
+        for did in self._expand_device_aliases(device_ids):
             rows = self._rows(
                 'license_activations',
                 f'license_id=eq.{quote(str(license_id), safe="")}'
@@ -352,7 +386,8 @@ class CloudLicenseServer:
                     f'This key is reserved for {assigned}, not {actor}.'
                 ), None
         ids = self._activation_device_ids(device_id, device_aliases)
-        if reserved and ids and reserved not in ids:
+        expanded = self._expand_device_aliases(ids)
+        if reserved and ids and reserved not in expanded:
             return False, (
                 'This key is reserved for a different device. '
                 'Ask your administrator to clear or update the device reservation.'

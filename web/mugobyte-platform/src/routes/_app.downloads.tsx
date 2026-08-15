@@ -16,18 +16,39 @@ export const Route = createFileRoute("/_app/downloads")({
 const FALLBACK_INSTALLER =
   "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe";
 
+/** Numeric semver only — never "latest" (Badge used to render "vlatest"). */
+function pickReleaseVersion(...candidates: Array<string | undefined | null>): string {
+  for (const raw of candidates) {
+    const cleaned = String(raw || "")
+      .trim()
+      .replace(/^v/i, "");
+    if (!cleaned) continue;
+    if (/^latest$/i.test(cleaned)) continue;
+    if (/^\d+(\.\d+){0,3}([.-][\w.]+)?$/.test(cleaned)) return cleaned;
+  }
+  return "";
+}
+
+function formatVersionBadge(version: string): string {
+  return version ? `v${version}` : "Version pending";
+}
+
+type UpdateRow = {
+  version: string;
+  download_url: string;
+  release_notes?: string;
+  checksum?: string;
+  checksum_sha256?: string;
+};
+
 function DownloadsPage() {
   const updatesQ = useQuery({
     queryKey: ["cloud-updates"],
     queryFn: () =>
       GET<{
-        updates?: Array<{
-          version: string;
-          download_url: string;
-          release_notes?: string;
-          checksum?: string;
-        }>;
-        latest?: { version?: string; download_url?: string };
+        updates?: UpdateRow[];
+        latest?: UpdateRow | null;
+        latest_for_client?: UpdateRow | null;
       }>("/cloud/updates"),
     retry: false,
   });
@@ -39,15 +60,33 @@ function DownloadsPage() {
       ),
     retry: false,
   });
+  const githubQ = useQuery({
+    queryKey: ["github-latest-release"],
+    queryFn: async () => {
+      const r = await fetch(
+        "https://api.github.com/repos/MugoJnr/mbt-pos/releases/latest",
+        { headers: { Accept: "application/vnd.github+json" } },
+      );
+      if (!r.ok) return null;
+      const data = (await r.json()) as { tag_name?: string; name?: string };
+      return pickReleaseVersion(data.tag_name, data.name) || null;
+    },
+    retry: false,
+    staleTime: 5 * 60_000,
+  });
 
   const updates = updatesQ.data?.updates || [];
+  const latestRow = updatesQ.data?.latest || updatesQ.data?.latest_for_client || updates[0];
   const latestUrl =
-    updatesQ.data?.latest?.download_url ||
-    updates[0]?.download_url ||
+    latestRow?.download_url ||
     versionQ.data?.download_url ||
     FALLBACK_INSTALLER;
-  const latestVer =
-    updatesQ.data?.latest?.version || updates[0]?.version || versionQ.data?.version || "latest";
+  const latestVer = pickReleaseVersion(
+    latestRow?.version,
+    updates[0]?.version,
+    versionQ.data?.version,
+    githubQ.data,
+  );
 
   return (
     <PageShell>
@@ -74,7 +113,7 @@ function DownloadsPage() {
                     Official Windows installer. Detects new vs upgrade automatically — you never choose.
                   </CardDescription>
                 </div>
-                <Badge>v{latestVer}</Badge>
+                <Badge>{formatVersionBadge(latestVer)}</Badge>
               </div>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">

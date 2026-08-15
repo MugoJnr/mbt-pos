@@ -11,6 +11,10 @@ exports/
 backups/
 build/
 dist/
+!web/mugobyte-platform/dist/
+!web/mugobyte-platform/dist/**
+!web/dashboard-ui/dist/
+!web/dashboard-ui/dist/**
 *.db
 *.sqlite
 *.sqlite3
@@ -42,6 +46,10 @@ docs/
 scripts/
 supabase/
 assets/
+chrome/
+_qa_*/
+_qa_*/
+**/_qa_*/
 *.nsi
 *.spec
 BUILD.bat

@@ -1,7 +1,7 @@
 {
-    "version": "3.0.47",
-    "build": "RC-2026-08-15-v3.0.47",
+    "version": "3.0.48",
+    "build": "RC-2026-08-15-v3.0.48",
     "released": "2026-08-15",
-    "release_notes": "Activation stays on the same PC after restart (no extra license seat). POS columns scale on small/square screens. Checkout Pro rail, More categories, Split + Part pay.",
-    "checksum_sha256": "e36a2dfa3df2fdc33dbdb95e98882c327eedba28b7a0edfa7cc6dbe13545369a"
+    "release_notes": "Same PC keeps one license seat after a new MBT-PC id (hardware fingerprint). Portal assign no longer demotes claimed keys or accepts emails without @. Downloads page shows a real version instead of vlatest.",
+    "checksum_sha256": "1d83dd8838ec43e3e657a833d0fb7b7303e87c32ce7c9686fd581d62fa4c0454"
 }

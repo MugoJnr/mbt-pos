@@ -20,7 +20,7 @@ from datetime import datetime, timedelta
 # Make licensing importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from licensing.license_engine import (
-    generate_license_key, decode_license_key, PLANS, _MASTER_SECRET, _sign
+    generate_license_key, decode_license_key, PLANS, _master_secret_bytes, _sign
 )
 
 
@@ -96,7 +96,7 @@ def generate_remote_activation_payload(device_id: str, plan: str, days: int) -> 
         'version':        2,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
-    payload['sig'] = hmac.new(_MASTER_SECRET, raw, hashlib.sha256).hexdigest()
+    payload['sig'] = hmac.new(_master_secret_bytes(), raw, hashlib.sha256).hexdigest()
     return payload
 
 
@@ -104,14 +104,14 @@ def generate_extension_sig(device_id: str, days: int) -> str:
     """Generate a signed extension token for /extend_subscription."""
     import hmac, hashlib
     raw = f"extend:{days}:{device_id}".encode()
-    return hmac.new(_MASTER_SECRET, raw, hashlib.sha256).hexdigest()
+    return hmac.new(_master_secret_bytes(), raw, hashlib.sha256).hexdigest()
 
 
 def generate_revoke_sig(device_id: str) -> str:
     """Generate a signed revocation token."""
     import hmac, hashlib
     raw = f"revoke:{device_id}".encode()
-    return hmac.new(_MASTER_SECRET, raw, hashlib.sha256).hexdigest()
+    return hmac.new(_master_secret_bytes(), raw, hashlib.sha256).hexdigest()
 
 
 def interactive():
