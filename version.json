@@ -1,7 +1,7 @@
 {
-    "version": "3.0.48",
-    "build": "RC-2026-08-15-v3.0.48",
+    "version": "3.0.49",
+    "build": "RC-2026-08-15-v3.0.49",
     "released": "2026-08-15",
-    "release_notes": "Same PC keeps one license seat after a new MBT-PC id (hardware fingerprint). Portal assign no longer demotes claimed keys or accepts emails without @. Downloads page shows a real version instead of vlatest.",
-    "checksum_sha256": "1d83dd8838ec43e3e657a833d0fb7b7303e87c32ce7c9686fd581d62fa4c0454"
+    "release_notes": "Keep the shop device on the business org after restart and heartbeat (do not flip to a stale identity org). 3.0.48 activation seat and hardware-fingerprint aliases are included.",
+    "checksum_sha256": "9d7cc307d011e9a6df014e6676ea70709077032326b7dce662bdc9812b7b6601"
 }
