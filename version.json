@@ -3,5 +3,5 @@
     "build": "RC-2026-08-15-v3.0.47",
     "released": "2026-08-15",
     "release_notes": "Activation stays on the same PC after restart (no extra license seat). POS columns scale on small/square screens. Checkout Pro rail, More categories, Split + Part pay.",
-    "checksum_sha256": ""
+    "checksum_sha256": "e36a2dfa3df2fdc33dbdb95e98882c327eedba28b7a0edfa7cc6dbe13545369a"
 }
