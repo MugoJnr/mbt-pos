@@ -41,15 +41,24 @@ def _resolve_cloud_ids() -> tuple[str, str]:
     if not _quick_online(1.0):
         return business_id, org_id
 
-    if business_id and not org_id:
+    if business_id:
         try:
             rows = service_select(
                 'businesses',
                 f'id=eq.{quote(business_id, safe="")}&select=org_id,id&limit=1',
                 timeout=5,
             )
-            if rows and rows[0].get('org_id'):
-                org_id = rows[0]['org_id']
+            biz_org = str((rows[0].get('org_id') if rows else '') or '')
+            if biz_org and biz_org != org_id:
+                # Stale identity org (e.g. "My Business") must not override the
+                # shop's real business → org link on heartbeat.
+                org_id = biz_org
+                try:
+                    from backend.cloud_backup.paths import save_identity
+                    ident['org_id'] = biz_org
+                    save_identity(ident)
+                except Exception:
+                    pass
         except Exception:
             pass
 
