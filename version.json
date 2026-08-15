@@ -1,7 +1,7 @@
 {
-    "version": "3.0.46",
-    "build": "RC-2026-08-15-v3.0.46",
+    "version": "3.0.47",
+    "build": "RC-2026-08-15-v3.0.47",
     "released": "2026-08-15",
-    "release_notes": "Checkout Pro: payment rail fills the column; More category popup lists all categories. Totals under the cart; Split + Part pay, hold tenders.",
-    "checksum_sha256": "1f2743a3c10d734f6a48f85eb49468e4ab56a91a13cd4b4172ff23d5e50e3aa7"
+    "release_notes": "Activation stays on the same PC after restart (no extra license seat). POS columns scale on small/square screens. Checkout Pro rail, More categories, Split + Part pay.",
+    "checksum_sha256": ""
 }
