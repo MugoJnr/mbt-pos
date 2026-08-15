@@ -66,12 +66,11 @@ def sha256_file(file_path: str, chunk_size: int = 1024 * 1024) -> str:
 class UpdateCenter:
     """Manages app version updates between cloud and desktop POS."""
 
-    def check_for_update(self, current_version: str) -> dict | None:
+    def get_latest(self) -> dict | None:
+        """Return the newest active app_updates row (service role preferred)."""
         try:
             from backend.cloud_backup.supabase_client import SupabaseClient
             client = SupabaseClient()
-            # Prefer service role so shops can see published updates even when
-            # anon RLS hides app_updates (common on locked-down portals).
             rows = []
             try:
                 r = client._session.get(
@@ -94,9 +93,18 @@ class UpdateCenter:
                     'app_updates',
                     'is_active=eq.true&select=*&order=published_at.desc&limit=1',
                 ) or []
-            if not rows:
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.debug('get_latest skipped: %s', e)
+            return None
+
+    def check_for_update(self, current_version: str) -> dict | None:
+        try:
+            # Prefer service role so shops can see published updates even when
+            # anon RLS hides app_updates (common on locked-down portals).
+            latest = self.get_latest()
+            if not latest:
                 return None
-            latest = rows[0]
             if self._version_gt(latest['version'], current_version):
                 return latest
             return None

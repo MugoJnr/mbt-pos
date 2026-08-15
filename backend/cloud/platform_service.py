@@ -1053,6 +1053,7 @@ def activate_license_on_device(
     actor_email: str = '',
     actor_is_admin: bool = False,
     product_id: str | None = None,
+    device_aliases: list | None = None,
 ) -> dict:
     """Activate a cloud license key onto a device; also update local license engine when possible."""
     rows = service_select('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
@@ -1077,6 +1078,7 @@ def activate_license_on_device(
         actor_email=actor_email,
         actor_is_admin=actor_is_admin,
         product_id=product_id,
+        device_aliases=device_aliases,
     )
     if not ok:
         # Seat/reservation failures stay local; missing write rights → Portal.

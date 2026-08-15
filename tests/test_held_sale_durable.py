@@ -31,7 +31,12 @@ def _sample_snap(n=1):
         'disc': '5',
         'note': 'parked',
         'payment': 'M-Pesa',
+        'sale_type': 'part',
         'credit_to_apply': 10.5,
+        'amount_paid': 200.0,
+        'electronic_paid': 150.0,
+        'electronic_method': 'M-Pesa',
+        'mpesa_ref': 'ABC123',
     }
 
 
@@ -79,6 +84,11 @@ class HeldSaleDurableUnit(unittest.TestCase):
         self.assertEqual(loaded['payment'], 'M-Pesa')
         self.assertEqual(loaded['credit_to_apply'], 10.5)
         self.assertEqual(loaded['note'], 'parked')
+        self.assertEqual(loaded['sale_type'], 'part')
+        self.assertAlmostEqual(loaded['amount_paid'], 200.0)
+        self.assertAlmostEqual(loaded['electronic_paid'], 150.0)
+        self.assertEqual(loaded['electronic_method'], 'M-Pesa')
+        self.assertEqual(loaded['mpesa_ref'], 'ABC123')
 
         clear_held_sale()
         self.assertFalse(os.path.isfile(path))

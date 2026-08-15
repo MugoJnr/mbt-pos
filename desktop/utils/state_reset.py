@@ -163,6 +163,8 @@ class StateResetManager:
             # Allow Cash Paid smart auto-fill on the next sale
             tab._cash_paid_dirty = False
             tab._paid_programmatic = False
+            tab._elec_paid_dirty = False
+            tab._elec_programmatic = False
         except Exception:
             pass
         _safe_set_spin(getattr(tab, '_paid', None), 0)

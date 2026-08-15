@@ -68,6 +68,22 @@ class CartQtyDiscountUnit(unittest.TestCase):
         self.tab._rm(0)
         self.assertEqual(self.tab.cart, [])
 
+    def test_decimal_and_invalid_qty(self):
+        item = {
+            'product_id': 1, 'quantity': 1.0, 'unit_price': 80.0,
+            'discount': 0.0, 'total': 80.0,
+        }
+        self.tab.cart = [item]
+        self.tab._qty(0, 0.5)
+        self.assertEqual(self.tab.cart[0]['quantity'], 0.5)
+        self.assertEqual(self.tab.cart[0]['total'], 40.0)
+        self.tab._qty(0, 0.25)
+        self.assertEqual(self.tab.cart[0]['quantity'], 0.25)
+        self.tab._qty(0, 0)
+        self.assertGreaterEqual(self.tab.cart[0]['quantity'], 0.25)
+        self.tab._qty(0, -3)
+        self.assertGreaterEqual(self.tab.cart[0]['quantity'], 0.25)
+
 
 class PaymentMethodAcceptance(unittest.TestCase):
     def setUp(self):
@@ -173,6 +189,27 @@ class PaymentMethodAcceptance(unittest.TestCase):
             self.assertEqual(row['payment_method'], method)
             self.assertEqual(float(row['discount']), 10.0)
             self.assertEqual(float(row['total']), 90.0)
+
+    def test_split_tenders_persisted_on_mixed_sale(self):
+        res = self._sale(
+            'mixed',
+            qty=2,
+            disc=10.0,
+            amount_paid=90.0,
+            electronic_paid=40.0,
+            electronic_method='M-Pesa',
+        )
+        self.assertTrue(res.get('success') or res.get('sale_id'), res)
+        sale = self.api.get_sale(res['sale_id'])
+        self.assertGreater(float(sale.get('electronic_paid') or 0), 0.009)
+        tenders = sale.get('payment_tenders') or []
+        methods = {str(t.get('method')) for t in tenders}
+        self.assertIn('M-Pesa', methods)
+        self.assertIn('Cash', methods)
+        from desktop.utils.payment_tenders import format_sale_payment, remainder_electronic
+        self.assertIn('M-Pesa', format_sale_payment(sale))
+        self.assertEqual(remainder_electronic(800, 500, 0), 300.0)
+        self.assertEqual(remainder_electronic(800, 500, 200), 200.0)
 
 
 if __name__ == '__main__':

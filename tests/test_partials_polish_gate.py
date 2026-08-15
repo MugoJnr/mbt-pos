@@ -74,7 +74,9 @@ class P01SearchBarcodeGate(unittest.TestCase):
             _product_columns=lambda: 3,
             _add=lambda p, from_scan=False: self.added.append((p.get('id'), from_scan)),
         )
-        self.tab._filter = lambda: SalesTab._filter(self.tab)
+        self.tab._filter = lambda *a, **k: SalesTab._filter(self.tab, *a, **k)
+        self.tab._apply_product_filter = lambda *a, **k: SalesTab._apply_product_filter(
+            self.tab, *a, **k)
         self.tab._on_barcode_enter = lambda t: SalesTab._on_barcode_enter(self.tab, t)
 
     def test_filter_substring_sku_and_difflib(self):

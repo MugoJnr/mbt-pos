@@ -26,6 +26,16 @@ def _random_suffix(n: int = 4) -> str:
 
 
 def generate_device_id() -> str:
+    """Stable MBT-PC id for this Windows install (not a new random id each launch)."""
+    try:
+        from licensing.license_engine import _win_machine_guid
+        mg = (_win_machine_guid() or '').strip()
+    except Exception:
+        mg = ''
+    if mg:
+        import hashlib
+        suffix = hashlib.sha256(f'mbt-pc:{mg}'.encode()).hexdigest()[:8].upper()
+        return f'MBT-PC-{suffix}'
     return f'MBT-PC-{_random_suffix(4)}'
 
 
@@ -34,12 +44,19 @@ def get_or_create_device_id() -> str:
     did = (ident.get('device_id') or '').strip()
     if did.startswith('MBT-PC-') and len(did) >= 10:
         return did
+    if len(did) == 40 and all(c in '0123456789abcdef' for c in did.lower()):
+        return did
     did = generate_device_id()
     ident['device_id'] = did
     if not ident.get('created_at'):
         ident['created_at'] = _utc_now()
     ident['hostname'] = platform.node() or ''
     ident['platform'] = platform.platform()
+    try:
+        from licensing.license_engine import get_device_id as hw_id
+        ident['hardware_fingerprint'] = hw_id()
+    except Exception:
+        pass
     save_identity(ident)
     logger.info('Assigned device_id=%s', did)
     return did

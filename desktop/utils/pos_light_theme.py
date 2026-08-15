@@ -465,6 +465,7 @@ def apply_light(sales_tab) -> None:
     else:
         t._search.setStyleSheet(fmt(SEARCH_INPUT))
     style_cat_combo(getattr(t, '_cat', None), is_light=True)
+    style_cat_combo(getattr(t, '_layout_combo', None), is_light=True)
     _tint_checkout_foot(t, L['card'], L['border'])
     _tint_refresh_btn(t, L['card'], L['text'], L['border2'], L['hover'], L['gold'])
     sb = getattr(t, '_search_bar', None)
@@ -562,6 +563,11 @@ def apply_light(sales_tab) -> None:
         f"color:{L['muted']}; font-size:{FS['empty']}; background:transparent;")
 
     t._is_light = True
+    try:
+        from desktop.pos.layouts.splitters import restyle as _restyle_splitter
+        _restyle_splitter(t)
+    except Exception:
+        pass
     # Fast in-place card colors only — cart rebuild + product grid deferred by MainWindow
     if hasattr(t, '_retint_prod_grid'):
         try:
@@ -613,6 +619,7 @@ def apply_dark(sales_tab) -> None:
     else:
         t._search.setStyleSheet(f"QLineEdit{{{_dark_input} border-radius:22px;}}")
     style_cat_combo(getattr(t, '_cat', None), is_light=False)
+    style_cat_combo(getattr(t, '_layout_combo', None), is_light=False)
     _tint_checkout_foot(t, D['card'], D['border'])
     _tint_refresh_btn(t, D['card'], D['text'], D['border2'], D['hover'], D.get('gold', '#F2A800'))
     sb = getattr(t, '_search_bar', None)
@@ -751,6 +758,11 @@ def apply_dark(sales_tab) -> None:
         f"color:{D['muted']}; font-size:15px; font-weight:600; background:transparent;")
 
     t._is_light = False
+    try:
+        from desktop.pos.layouts.splitters import restyle as _restyle_splitter
+        _restyle_splitter(t)
+    except Exception:
+        pass
     # Fast in-place card colors only — cart rebuild + product grid deferred by MainWindow
     if hasattr(t, '_retint_prod_grid'):
         try:

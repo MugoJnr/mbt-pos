@@ -30,13 +30,18 @@ def save_held_sale(snapshot: dict) -> bool:
     tmp = path + '.tmp'
     try:
         payload = {
-            'version': 1,
+            'version': 2,
             'cart': list(snapshot.get('cart') or []),
             'customer_id': snapshot.get('customer_id'),
             'disc': snapshot.get('disc') or '',
             'note': snapshot.get('note') or '',
             'payment': snapshot.get('payment') or 'Cash',
+            'sale_type': snapshot.get('sale_type') or 'cash',
             'credit_to_apply': float(snapshot.get('credit_to_apply') or 0),
+            'amount_paid': float(snapshot.get('amount_paid') or 0),
+            'electronic_paid': float(snapshot.get('electronic_paid') or 0),
+            'electronic_method': snapshot.get('electronic_method') or '',
+            'mpesa_ref': snapshot.get('mpesa_ref') or '',
         }
         with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -73,7 +78,12 @@ def load_held_sale() -> Optional[dict[str, Any]]:
             'disc': data.get('disc') or '',
             'note': data.get('note') or '',
             'payment': data.get('payment') or 'Cash',
+            'sale_type': data.get('sale_type') or 'cash',
             'credit_to_apply': float(data.get('credit_to_apply') or 0),
+            'amount_paid': float(data.get('amount_paid') or 0),
+            'electronic_paid': float(data.get('electronic_paid') or 0),
+            'electronic_method': data.get('electronic_method') or '',
+            'mpesa_ref': data.get('mpesa_ref') or '',
         }
     except Exception as e:
         logger.warning('load_held_sale failed: %s', e)

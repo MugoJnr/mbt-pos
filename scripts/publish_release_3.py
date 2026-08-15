@@ -35,13 +35,62 @@ def stamp_checksum() -> dict:
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
     vj["checksum_sha256"] = digest
     VERSION_JSON.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-    # Also stamp into packaged tree if present
+    # Also stamp into packaged tree if present (next NSIS / local run)
     packaged = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
     if packaged.is_file():
         packaged.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
+    # Keep a root-level copy next to the frozen EXE when present
+    packaged_root = ROOT / "dist" / "MBT_POS" / "version.json"
+    if packaged_root.parent.is_dir():
+        packaged_root.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
     SIDECAR.write_text(f"{digest}  MBT_POS_Setup.exe\n", encoding="utf-8", newline="\n")
+    # Patch installed Program Files copy when present (QA / same-PC upgrade)
+    for pf in (
+        Path(r"C:\Program Files\MugoByte\MBT POS\_internal\version.json"),
+        Path(r"C:\Program Files\MugoByte\MBT POS\version.json"),
+    ):
+        if pf.is_file():
+            try:
+                pf.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
+                print(f"stamped install: {pf}")
+            except OSError as e:
+                print(f"warn: could not stamp {pf}: {e}")
     print(f"version={vj['version']} sha256={digest} size={SETUP.stat().st_size}")
     return vj
+
+
+def embed_checksum_before_nsis() -> None:
+    """Copy root version.json (must already carry checksum_sha256) into freeze tree.
+
+    Call after PyInstaller and before makensis so Setup embeds a non-empty SHA.
+    After makensis, run stamp_checksum() so root/sidecar match the new Setup bytes.
+    One optional second makensis after stamp embeds the matching Setup SHA into the
+    next installer build (BUILD.bat does freeze → nsis → stamp → nsis → stamp).
+    """
+    vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
+    digest = (vj.get("checksum_sha256") or "").strip()
+    if len(digest) != 64:
+        # Prefer existing Setup hash if we are rebuilding installer only
+        if SETUP.is_file():
+            vj["checksum_sha256"] = sha256_file(SETUP)
+            VERSION_JSON.write_text(
+                json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n"
+            )
+            digest = vj["checksum_sha256"]
+        else:
+            raise SystemExit(
+                "version.json checksum_sha256 empty and no dist Setup to hash — "
+                "build Setup once, then re-run with stamp"
+            )
+    internal = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
+    if not internal.parent.is_dir():
+        raise SystemExit(f"Missing freeze tree: {internal.parent}")
+    payload = json.dumps(vj, indent=4) + "\n"
+    internal.write_text(payload, encoding="utf-8", newline="\n")
+    (ROOT / "dist" / "MBT_POS" / "version.json").write_text(
+        payload, encoding="utf-8", newline="\n"
+    )
+    print(f"embedded checksum into freeze tree: {digest}")
 
 
 def gh_release(vj: dict) -> None:
@@ -94,7 +143,7 @@ def publish_app_updates(vj: dict) -> None:
         checksum=vj["checksum_sha256"],
         release_notes=vj.get("release_notes") or "",
         is_mandatory=False,
-        published_by="release-engineer",
+        published_by=None,
     )
     if not row:
         raise SystemExit("app_updates publish failed")
@@ -120,7 +169,15 @@ def main() -> None:
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--install", action="store_true")
     ap.add_argument("--stamp-only", action="store_true")
+    ap.add_argument(
+        "--embed-before-nsis",
+        action="store_true",
+        help="Copy version.json with checksum into dist/MBT_POS before makensis",
+    )
     args = ap.parse_args()
+    if args.embed_before_nsis:
+        embed_checksum_before_nsis()
+        return
     vj = stamp_checksum()
     if args.stamp_only:
         return

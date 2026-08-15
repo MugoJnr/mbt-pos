@@ -80,18 +80,25 @@ class MultiLayoutSwitchTests(unittest.TestCase):
 
     def test_checkout_pro_has_three_columns(self):
         from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO
+        from PyQt5.QtWidgets import QSplitter
         tab = self.tab
         tab.set_checkout_layout(LAYOUT_CHECKOUT_PRO)
         lay = tab._shell.layout()
-        self.assertEqual(lay.count(), 3)
-        self.assertIs(tab._center_panel, tab._sale_panel)
-        self.assertIs(tab._right_panel, tab._actions_panel)
+        self.assertEqual(lay.count(), 1)
+        split = lay.itemAt(0).widget()
+        self.assertIsInstance(split, QSplitter)
+        self.assertEqual(split.count(), 3)
+        self.assertIs(split.widget(0), tab._product_panel)
+        self.assertIs(split.widget(1), tab._sale_panel)
+        self.assertIs(split.widget(2), tab._actions_panel)
 
-    def test_product_columns_pro_is_two(self):
+    def test_product_columns_pro_fits_width(self):
         from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO
         tab = self.tab
         tab.set_checkout_layout(LAYOUT_CHECKOUT_PRO)
-        self.assertEqual(tab._product_columns(), 2)
+        grid = tab._prod_grid
+        self.assertGreaterEqual(grid.columns_for_width(700), 2)
+        self.assertEqual(grid.columns_for_width(280), 1)
 
 
 if __name__ == '__main__':

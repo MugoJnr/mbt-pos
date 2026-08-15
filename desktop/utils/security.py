@@ -365,7 +365,11 @@ def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
             'Debt Written Off' if res.get('mode') == 'write_off'
             else 'Debt Deleted'
         )
-        QMessageBox.information(parent_widget, title, msg)
+        try:
+            from desktop.utils.quiet_ui import info_toast
+            info_toast(parent_widget, f"{title}: {msg.splitlines()[0]}")
+        except Exception:
+            QMessageBox.information(parent_widget, title, msg)
         return True
 
     QMessageBox.critical(

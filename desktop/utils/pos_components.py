@@ -15,6 +15,17 @@ from desktop.utils.theme import C, RADIUS, PADDING, GAP, TOUCH_MIN, qss_alpha
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
 
 
+def _parse_hex_rgb(color: str):
+    """(r, g, b) from a '#RRGGBB' token — for QColor-based effects (shadows),
+    which need real ints, not the QSS rgba()/#AARRGGBB strings qss_alpha() makes."""
+    h = (color or '').strip().lstrip('#')
+    if len(h) == 3:
+        h = ''.join(ch * 2 for ch in h)
+    if len(h) != 6:
+        return 0, 0, 0
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
 # ── Category visual language ──────────────────────────────────────────────────
 
 _CATEGORY_STYLE = {
@@ -177,7 +188,17 @@ class StockBadge(QLabel):
     """Compact stock status pill (OK / Low / Out)."""
 
     def __init__(self, stock=0, unit='pcs', parent=None):
+        # Always prefer a real parent — parentless QLabel becomes a free HWND
+        # that flashes at screen-center during product-grid rebuilds.
         super().__init__(parent)
+        self.setObjectName('posStockBadge')
+        try:
+            from PyQt5.QtCore import Qt as _Qt
+            if parent is None:
+                self.setAttribute(_Qt.WA_DontShowOnScreen, True)
+                self.hide()
+        except Exception:
+            pass
         self._stock = stock
         self._unit = unit or 'pcs'
         self.setAlignment(Qt.AlignCenter)
@@ -253,6 +274,7 @@ class ProductCard(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         w, h = card_size
         self._card_h = int(h)
+        self._design_w = int(w)
         self.setFixedSize(int(w), int(h))
         # Compact cards may sit under touch min — intentional for density
         self.setMinimumHeight(int(h) if self._compact else TOUCH_MIN * 2)
@@ -289,6 +311,7 @@ class ProductCard(QFrame):
 
         pad = 10 if self._compact else 12
         vpad = 8 if self._compact else 10
+        self._pad = pad
         lay = QVBoxLayout(self)
         # Extra right pad so stock badge / price never clips the card edge
         lay.setContentsMargins(pad, vpad, pad + 6, vpad)
@@ -297,6 +320,7 @@ class ProductCard(QFrame):
         top = QHBoxLayout()
         top.setSpacing(8 if self._compact else 10)
         icon_sz = 28 if self._compact else 44
+        self._icon_sz = icon_sz
         self._icon = CategoryIcon(cat, size=icon_sz, category_meta=self._category_meta)
         top.addWidget(self._icon, 0, Qt.AlignTop)
 
@@ -305,32 +329,34 @@ class ProductCard(QFrame):
         tcol.setContentsMargins(0, 0, 0, 0)
         self._name = QLabel()
         self._name.setObjectName('posProdName')
-        # Allow 2 lines even in compact — breathing room for longer product names
+        # Wrap up to 3 lines (taller cards) — badge lives on the bottom row, not beside name
         self._name.setWordWrap(True)
         self._name.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        name_lines = 2
-        # Reserve badge column (~90) so names never paint under / past the pill
-        self._set_elided(self._name, name, max(72, w - (icon_sz + 48 + 90)), name_lines)
+        self._display_name = name
+        self._name_lines = 2 if self._compact else 3
         tcol.addWidget(self._name)
         if sku:
             self._sku = QLabel(sku)
             self._sku.setObjectName('posProdSku')
-            self._set_elided(self._sku, sku, w - (icon_sz + 36), 1)
+            self._sku_text = sku
             tcol.addWidget(self._sku)
         else:
             self._sku = None
+            self._sku_text = ''
         if self._compact:
             # Zero price → muted "not priced" (never bold KES 0.00)
             if self._unpriced:
                 self._price = QLabel('—')
                 self._price.setToolTip('No sell price set')
+                self._price_text = '—'
             else:
                 price_txt = f'{self._currency} {safe_price(price)}'
                 self._price = QLabel()
-                self._set_elided(self._price, price_txt, max(72, w - (icon_sz + 36)), 1)
+                self._price_text = price_txt
                 self._price.setToolTip(price_txt)
             self._price.setObjectName('posProdPrice')
-            self._badge = StockBadge(stock_n, unit)
+            self._badge = StockBadge(stock_n, unit, parent=self)
+            self._badge.setObjectName('posStockBadge')
             self._badge.setVisible(True)
             tcol.addWidget(self._price)
             badge_row = QHBoxLayout()
@@ -349,15 +375,16 @@ class ProductCard(QFrame):
             if self._unpriced:
                 self._price = QLabel('—')
                 self._price.setToolTip('No sell price set')
+                self._price_text = '—'
             else:
                 price_txt = f'{self._currency} {safe_price(price)}'
                 self._price = QLabel()
-                # Leave room for stock badge (~88px) so KES amounts never clip
-                self._set_elided(self._price, price_txt, max(70, w - (pad * 2 + 96)), 1)
+                self._price_text = price_txt
                 self._price.setToolTip(price_txt)
             self._price.setObjectName('posProdPrice')
             bot.addWidget(self._price, 1)
-            self._badge = StockBadge(stock_n, unit)
+            self._badge = StockBadge(stock_n, unit, parent=self)
+            self._badge.setObjectName('posStockBadge')
             self._badge.setVisible(True)
             bot.addWidget(self._badge, 0, Qt.AlignRight | Qt.AlignVCenter)
             lay.addLayout(bot)
@@ -374,7 +401,69 @@ class ProductCard(QFrame):
             tip_bits.insert(0, name)
             tip_bits.append(f'Stock: {stock} {unit}')
         self.setToolTip('\n'.join(tip_bits))
+        self._name.setToolTip(name)
+        self._reflow_text()
+        # Real elevation — QSS alone can't do soft shadows in Qt; this is what
+        # gives cards a "lifted" modern feel instead of a flat outlined box.
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(18)
+        self._shadow.setOffset(0, 3)
+        self.setGraphicsEffect(self._shadow)
         self.refresh_theme()
+
+    def _name_width_budget(self) -> int:
+        """Width available for the product name (icon column only — badge is bottom-row)."""
+        w = max(int(self.width() or 0), int(getattr(self, '_card_h', 0) and self.minimumWidth() or 0),
+                int(self.minimumWidth() or 0))
+        if w < 80:
+            w = int(self.sizeHint().width() or 0) or 220
+            # Prefer designed card width stored at construct
+            try:
+                w = max(w, int(self.maximumWidth() if self.maximumWidth() < 10000 else 0) or 0)
+            except Exception:
+                pass
+            # Fall back to fixed size from construct
+            try:
+                fw = int(self.size().width() or 0)
+                if fw > 80:
+                    w = fw
+            except Exception:
+                pass
+        # Use stored design width when still unknown (pre-show)
+        design_w = int(getattr(self, '_design_w', 0) or 0)
+        if design_w > 80:
+            w = max(w, design_w)
+        icon_sz = int(getattr(self, '_icon_sz', 44) or 44)
+        pad = int(getattr(self, '_pad', 12) or 12)
+        return max(96, w - (icon_sz + pad * 2 + 18))
+
+    def _reflow_text(self):
+        """Re-wrap name/sku/price for current card width (fixes clip on stretch)."""
+        name = getattr(self, '_display_name', '') or ''
+        name_w = self._name_width_budget()
+        lines = int(getattr(self, '_name_lines', 2) or 2)
+        if hasattr(self, '_name') and self._name is not None:
+            self._set_elided(self._name, name, name_w, lines)
+            self._name.setToolTip(name)
+        sku = getattr(self, '_sku_text', '') or ''
+        if self._sku is not None and sku:
+            self._set_elided(self._sku, sku, name_w, 1)
+        price_txt = getattr(self, '_price_text', '') or ''
+        if hasattr(self, '_price') and self._price is not None and price_txt and price_txt != '—':
+            # Leave room for stock badge on the price row (~88px) in non-compact
+            if getattr(self, '_compact', False):
+                pw = name_w
+            else:
+                pad = int(getattr(self, '_pad', 12) or 12)
+                pw = max(70, int(self.width() or getattr(self, '_design_w', 220) or 220) - (pad * 2 + 96))
+            self._set_elided(self._price, price_txt, pw, 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            self._reflow_text()
+        except Exception:
+            pass
 
     def unlock_width(self, min_w: int | None = None):
         """Allow horizontal stretch in Checkout Pro 2-column grid."""
@@ -389,6 +478,10 @@ class ProductCard(QFrame):
         sp = self.sizePolicy()
         sp.setHorizontalPolicy(QSizePolicy.Expanding)
         self.setSizePolicy(sp)
+        try:
+            self._reflow_text()
+        except Exception:
+            pass
 
     @staticmethod
     def _set_elided(label: QLabel, text: str, width: int, max_lines: int):
@@ -451,7 +544,7 @@ class ProductCard(QFrame):
         r = RADIUS['lg'] if getattr(self, '_compact', False) else RADIUS['xl']
         if self._oos:
             self.setStyleSheet(
-                f"QFrame#posProdCard{{background:{C['panel']};border:1px solid {C['border']};"
+                f"QFrame#posProdCard{{background:{C['panel']};border:1px dashed {C['border']};"
                 f"border-radius:{r}px;}}")
         elif hover:
             self.setStyleSheet(
@@ -462,9 +555,26 @@ class ProductCard(QFrame):
                 f"QFrame#posProdCard{{background:{C['card2']};border:1px solid {C['border']};"
                 f"border-radius:{r}px;}}"
                 f"QFrame#posProdCard:hover{{background:{C['hover']};border-color:{C['gold']};}}")
+        # Elevation — flat for out-of-stock (reads as disabled/receded), soft lift
+        # at rest, a touch stronger + gold-tinted on hover so the tile feels "pressable".
+        sh = getattr(self, '_shadow', None)
+        if sh is not None:
+            if self._oos:
+                sh.setEnabled(False)
+            else:
+                sh.setEnabled(True)
+                if hover:
+                    sh.setBlurRadius(26)
+                    sh.setOffset(0, 5)
+                    sh.setColor(QColor(*_parse_hex_rgb(C['gold']), 90))
+                else:
+                    sh.setBlurRadius(16)
+                    sh.setOffset(0, 3)
+                    sh.setColor(QColor(0, 0, 0, 70))
         name_sz = '13px' if getattr(self, '_compact', False) else '14px'
+        name_color = C['muted'] if self._oos else C['text']
         self._name.setStyleSheet(
-            f"QLabel#posProdName{{color:{C['text']}; font-size:{name_sz}; font-weight:800; "
+            f"QLabel#posProdName{{color:{name_color}; font-size:{name_sz}; font-weight:800; "
             f"line-height:1.2; background:transparent; border:none;}}")
         if self._sku is not None:
             # Secondary metadata — readable at retail counter (was 9px muted)
@@ -473,7 +583,7 @@ class ProductCard(QFrame):
                 f"letter-spacing:0.2px; background:transparent; border:none;}}")
         # Slightly smaller so "KES 1,070.00" never clips card edge
         price_sz = '14px' if getattr(self, '_compact', False) else '15px'
-        if getattr(self, '_unpriced', False):
+        if getattr(self, '_unpriced', False) or self._oos:
             self._price.setStyleSheet(
                 f"QLabel#posProdPrice{{color:{C['muted']}; font-size:13px; font-weight:600; "
                 f"background:transparent; border:none;}}")
@@ -598,8 +708,8 @@ class QuantityControl(QWidget):
         bd = C['border2']
         hover = C['hover']
         gold = C['gold']
-        btn_min = 38 if getattr(self, '_touch', False) else 30
-        font_sz = 20 if getattr(self, '_touch', False) else 18
+        btn_min = 38 if getattr(self, '_touch', False) else max(22, int(self.height() or 34) - 8)
+        font_sz = 18 if getattr(self, '_touch', False) else 15
         # Flat shell only — buttons/spin stay transparent (avoids dark semicircle artifacts)
         self.setStyleSheet(
             f"QWidget#qtyControl{{background:{shell};border:1.5px solid {bd};"
@@ -617,6 +727,111 @@ class QuantityControl(QWidget):
         )
 
 
+# ── Cart table geometry ───────────────────────────────────────────────────────
+# Single source of truth for the table-density cart. The column header is built
+# from the same numbers as the rows, so the two can never drift apart again.
+CART_ROW_H = 56
+CART_CTRL_H = 34
+CART_ROW_MARGINS = (10, 10, 10, 10)
+CART_ROW_SPACING = 8
+CART_COL_IDX_W = 22
+CART_COL_QTY_W = 100
+CART_COL_PRICE_W = 88
+CART_COL_DISC_W = 100
+CART_COL_TOTAL_W = 96
+CART_COL_RM_W = 28
+CART_COL_NAME_STRETCH = 3
+# Cashier viewport: 5 complete compact rows (name/qty/price); Review still expands.
+CART_CASHIER_ROWS = 5
+CART_TABLE_ROW_GAP = 4
+CART_COL_HDR_H = 28
+CART_FLASH_MS = 520
+
+
+def cart_viewport_px(rows: int = CART_CASHIER_ROWS, *, include_header: bool = False) -> int:
+    """Pixel height for ``rows`` complete table-density cart lines."""
+    n = max(1, int(rows or CART_CASHIER_ROWS))
+    body = n * CART_ROW_H + max(0, n - 1) * CART_TABLE_ROW_GAP + 8
+    if include_header:
+        body += CART_COL_HDR_H
+    return body
+
+
+class MoneyEdit(QDoubleSpinBox):
+    """Right-aligned KES editor for cart price — typed, not stepped.
+
+    A ± stepper would need ~120px; the price column is 96px so the extra 26px
+    goes to the product name instead. Exposes ``_spin`` / ``refresh_theme`` so
+    it is drop-in compatible with QuantityControl inside CartLineRow.
+    """
+
+    def __init__(self, value=0.0, parent=None, *, width=CART_COL_PRICE_W, height=42):
+        super().__init__(parent)
+        self.setObjectName('posCartMoneyEdit')
+        self._spin = self
+        self.setRange(0.0, 99999999.0)
+        self.setDecimals(2)
+        self.setSingleStep(1.0)
+        self.setValue(float(value or 0))
+        self.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setFixedWidth(int(width))
+        self.setFixedHeight(int(height))
+        self.setFrame(False)
+        self.refresh_theme()
+
+    def refresh_theme(self):
+        self.setStyleSheet(
+            f"QDoubleSpinBox#posCartMoneyEdit{{background:{C['input']};color:{C['text']};"
+            f"border:1.5px solid {C['border2']};border-radius:10px;"
+            f"padding:0 8px;font-size:14px;font-weight:700;}}"
+            f"QDoubleSpinBox#posCartMoneyEdit:focus{{border-color:{C['gold']};}}"
+            f"QDoubleSpinBox#posCartMoneyEdit::up-button,"
+            f"QDoubleSpinBox#posCartMoneyEdit::down-button{{width:0;height:0;border:none;}}")
+
+
+def build_cart_column_header(parent=None) -> QWidget:
+    """Cart column header sharing CartLineRow's exact column geometry.
+
+    Each caption is given the same fixed width and alignment as the control it
+    labels, so headers stay locked to their column at every panel width.
+    """
+    hdr = QWidget(parent)
+    hdr.setObjectName('posCartColHdr')
+    hdr.setAttribute(Qt.WA_StyledBackground, True)
+    hl = QHBoxLayout(hdr)
+    left, _top, right, _bot = CART_ROW_MARGINS
+    hl.setContentsMargins(left, 6, right, 6)
+    hl.setSpacing(CART_ROW_SPACING)
+
+    def cap(text: str, width: int | None, align, stretch: int = 0, tip: str = ''):
+        lab = QLabel(text)
+        lab.setObjectName('posCartColLab')
+        lab.setAlignment(align | Qt.AlignVCenter)
+        if tip:
+            lab.setToolTip(tip)
+        if width is not None:
+            lab.setFixedWidth(width)
+        if stretch:
+            hl.addWidget(lab, stretch)
+        else:
+            hl.addWidget(lab, 0)
+        return lab
+
+    cap('#', CART_COL_IDX_W, Qt.AlignCenter)
+    cap('Product', None, Qt.AlignLeft, CART_COL_NAME_STRETCH)
+    cap('Qty', CART_COL_QTY_W, Qt.AlignCenter, 0, 'Line quantity — use − / + or type')
+    cap('Price', CART_COL_PRICE_W, Qt.AlignRight, 0, 'Unit price — double-click a row to edit')
+    cap('Disc', CART_COL_DISC_W, Qt.AlignCenter, 0, 'Per-item discount (KES) — editable on every line')
+    cap('Total', CART_COL_TOTAL_W, Qt.AlignRight, 0, 'Line total after discount')
+    # Spacer matching the remove button so every caption above stays on column
+    spacer = QLabel('')
+    spacer.setObjectName('posCartColLab')
+    spacer.setFixedWidth(CART_COL_RM_W)
+    hl.addWidget(spacer, 0)
+    return hdr
+
+
 # ── Cart line (shopping-cart row — not spreadsheet) ───────────────────────────
 
 class CartLineRow(QFrame):
@@ -628,42 +843,41 @@ class CartLineRow(QFrame):
     rowClicked = pyqtSignal()
 
     def __init__(self, item: dict, currency='KES', parent=None, *,
-                 density='card', index=1):
+                 density='table', index=1):
         super().__init__(parent)
         self._item = item or {}
         self._currency = currency or 'KES'
         self._selected = False
-        self._density = density if density in ('card', 'table') else 'card'
+        self._flashing = False
+        self._density = 'table'
         self._index = int(index)
         self.setObjectName('posCartLine')
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
-
-        if self._density == 'table':
-            self._build_table()
-        else:
-            self._build_card()
+        self._build_table()
+        # Drop-shadow on 56px rows blurs the product name into dashed noise.
+        self._shadow = None
         self._sync_labels()
         self.refresh_theme()
 
     def _build_table(self):
-        """Compact: # | Product | Qty ± | Price/Disc labels | Total | trash — fixed row, no overflow."""
+        """Compact-but-legible: # | Product | Qty ± | Price/Disc labels | Total | trash."""
         self._editing_money = False
-        # Must fit QuantityControl(height=28) + 2px borders without painting into next row
-        self.setFixedHeight(48)
-        self.setMinimumHeight(48)
-        self.setMaximumHeight(48)
+        # Compact POS list row — 5+ lines visible; not a hero product card.
+        self.setFixedHeight(CART_ROW_H)
+        self.setMinimumHeight(CART_ROW_H)
+        self.setMaximumHeight(CART_ROW_H)
         try:
             self.setAttribute(Qt.WA_StyledBackground, True)
         except Exception:
             pass
         root = QHBoxLayout(self)
-        root.setContentsMargins(6, 6, 4, 6)
-        root.setSpacing(6)
+        root.setContentsMargins(*CART_ROW_MARGINS)
+        root.setSpacing(CART_ROW_SPACING)
 
         self._idx_lbl = QLabel(str(self._index))
         self._idx_lbl.setObjectName('posCartIdx')
-        self._idx_lbl.setFixedWidth(18)
+        self._idx_lbl.setFixedWidth(CART_COL_IDX_W)
         self._idx_lbl.setAlignment(Qt.AlignCenter)
         root.addWidget(self._idx_lbl)
 
@@ -673,9 +887,19 @@ class CartLineRow(QFrame):
         self._name = QLabel(pname)
         self._name.setObjectName('posCartName')
         self._name.setWordWrap(False)
+        self._name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._name.setMinimumHeight(22)
+        try:
+            nf = QFont(self._name.font())
+            nf.setPixelSize(15)
+            nf.setBold(True)
+            nf.setStyleStrategy(QFont.PreferAntialias)
+            self._name.setFont(nf)
+        except Exception:
+            pass
         tip = f'{pname}\n{sku}' if sku else pname
         self._name.setToolTip(tip)
-        root.addWidget(self._name, 3)
+        root.addWidget(self._name, CART_COL_NAME_STRETCH)
         self._sku = QLabel('')
         self._sku.hide()
 
@@ -687,23 +911,23 @@ class CartLineRow(QFrame):
 
         self._qty = QuantityControl(
             value=float(self._item.get('quantity') or 1),
-            step=0.25, minimum=0.25, width=100, touch=False, height=28)
+            step=0.25, minimum=0.25, width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
         self._qty.valueChanged.connect(self.qtyChanged.emit)
         root.addWidget(self._qty, 0)
 
-        # Contextual money editors — labels by default; spinboxes only when double-clicked
-        self._price = QuantityControl(
-            value=float(self._item.get('unit_price') or 0),
-            step=1.0, minimum=0.0, maximum=99999999.0,
-            snap=False, decimals=2, width=96, touch=False, height=28)
+        # Contextual money editors — label by default, typed editor on double-click.
+        # Both are the same fixed width so the column never shifts while editing.
+        self._price = MoneyEdit(
+            float(self._item.get('unit_price') or 0), width=CART_COL_PRICE_W, height=CART_CTRL_H)
         self._price.valueChanged.connect(self.priceChanged.emit)
         self._price_lbl = QLabel()
         self._price_lbl.setObjectName('posCartMoneyLbl')
         self._price_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._price_lbl.setMinimumWidth(70)
+        self._price_lbl.setFixedWidth(CART_COL_PRICE_W)
         self._price_lbl.setToolTip('Double-click row to edit price')
         self._price_lbl.setCursor(Qt.PointingHandCursor)
         money_price = QWidget()
+        money_price.setFixedWidth(CART_COL_PRICE_W)
         mpl = QHBoxLayout(money_price)
         mpl.setContentsMargins(0, 0, 0, 0)
         mpl.setSpacing(0)
@@ -714,32 +938,35 @@ class CartLineRow(QFrame):
         self._disc = QuantityControl(
             value=float(self._item.get('discount') or 0),
             step=10.0, minimum=0.0, maximum=999999.0,
-            snap=False, width=72, touch=False, height=28)
+            snap=False, width=CART_COL_DISC_W, touch=False, height=CART_CTRL_H)
         self._disc.valueChanged.connect(self.discChanged.emit)
+        self._disc.setToolTip('Per-item discount (KES)')
         self._disc_lbl = QLabel()
         self._disc_lbl.setObjectName('posCartMoneyLbl')
         self._disc_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._disc_lbl.setMinimumWidth(48)
-        self._disc_lbl.setToolTip('Double-click row to edit discount')
+        self._disc_lbl.setFixedWidth(CART_COL_DISC_W)
+        self._disc_lbl.setToolTip('Per-item discount (KES)')
         self._disc_lbl.setCursor(Qt.PointingHandCursor)
+        self._disc_lbl.hide()  # filled in _sync_labels
         money_disc = QWidget()
+        money_disc.setFixedWidth(CART_COL_DISC_W)
         mdl = QHBoxLayout(money_disc)
         mdl.setContentsMargins(0, 0, 0, 0)
         mdl.setSpacing(0)
         mdl.addWidget(self._disc_lbl)
         mdl.addWidget(self._disc)
         root.addWidget(money_disc, 0)
+        self._disc.hide()
 
         self._line_total = QLabel()
         self._line_total.setObjectName('posCartLineTot')
         self._line_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._line_total.setMinimumWidth(96)
-        self._line_total.setMaximumWidth(120)
+        self._line_total.setFixedWidth(CART_COL_TOTAL_W)
         root.addWidget(self._line_total, 0)
 
         self._rm = QPushButton('×')
         self._rm.setObjectName('posCartRemove')
-        self._rm.setFixedSize(22, 22)
+        self._rm.setFixedSize(CART_COL_RM_W, CART_COL_RM_W)
         self._rm.setCursor(Qt.PointingHandCursor)
         self._rm.setToolTip('Remove line')
         self._rm.setFlat(True)
@@ -748,117 +975,9 @@ class CartLineRow(QFrame):
         self._set_money_edit_mode(False)
 
     def _build_card(self):
-        # Must fit thumb+name+sku AND qty/price/disc action row — never clip/overlap
-        self.setMinimumHeight(128)
-        self.setMaximumHeight(148)
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 8, 10, 8)
-        root.setSpacing(6)
-
-        top = QHBoxLayout()
-        top.setSpacing(10)
-
-        cat = self._item.get('category') or 'General'
-        self._thumb = CategoryIcon(cat, size=40)
-        top.addWidget(self._thumb, 0, Qt.AlignTop)
-
-        info = QVBoxLayout()
-        info.setSpacing(2)
-        info.setContentsMargins(0, 0, 0, 0)
-        self._name = QLabel((self._item.get('product_name') or '').strip() or 'Item')
-        self._name.setObjectName('posCartName')
-        self._name.setWordWrap(True)
-        info.addWidget(self._name)
-        sku = (self._item.get('sku') or '').strip()
-        self._sku = QLabel(sku if sku else f"#{self._item.get('product_id', '')}")
-        self._sku.setObjectName('posCartSku')
-        info.addWidget(self._sku)
-        self._unit_lbl = QLabel()
-        self._unit_lbl.setObjectName('posCartUnit')
-        info.addWidget(self._unit_lbl)
-        info.addStretch(1)
-        top.addLayout(info, 1)
-
-        totals = QVBoxLayout()
-        totals.setSpacing(4)
-        totals.setContentsMargins(0, 0, 0, 0)
-        self._line_total = QLabel()
-        self._line_total.setObjectName('posCartLineTot')
-        self._line_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        totals.addWidget(self._line_total)
-        self._save_lbl = QLabel('')
-        self._save_lbl.setObjectName('posCartSave')
-        self._save_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._save_lbl.hide()
-        totals.addWidget(self._save_lbl)
-        totals.addStretch(1)
-        top.addLayout(totals)
-
-        self._rm = QPushButton('Remove')
-        self._rm.setObjectName('posCartRemove')
-        self._rm.setMinimumHeight(TOUCH_MIN)
-        self._rm.setMinimumWidth(84)
-        self._rm.setCursor(Qt.PointingHandCursor)
-        self._rm.setToolTip('Remove line')
-        self._rm.clicked.connect(self.removeClicked.emit)
-        top.addWidget(self._rm, 0, Qt.AlignTop)
-        root.addLayout(top)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-
-        qty_box = QFrame()
-        qty_box.setObjectName('posCartQtyBox')
-        ql = QHBoxLayout(qty_box)
-        ql.setContentsMargins(10, 8, 10, 8)
-        ql.setSpacing(8)
-        qty_cap = QLabel('Qty')
-        qty_cap.setObjectName('posCartCap')
-        self._qty = QuantityControl(
-            value=float(self._item.get('quantity') or 1),
-            step=0.25, minimum=0.25, width=148, touch=True)
-        self._qty.valueChanged.connect(self.qtyChanged.emit)
-        ql.addWidget(qty_cap)
-        ql.addWidget(self._qty, 1)
-        actions.addWidget(qty_box, 1)
-
-        disc_box = QFrame()
-        disc_box.setObjectName('posCartDiscBox')
-        dl = QHBoxLayout(disc_box)
-        dl.setContentsMargins(10, 8, 10, 8)
-        dl.setSpacing(8)
-        disc_cap = QLabel('Discount')
-        disc_cap.setObjectName('posCartDiscCap')
-        self._disc = QuantityControl(
-            value=float(self._item.get('discount') or 0),
-            step=10.0, minimum=0.0, maximum=999999.0,
-            snap=False, width=148, touch=True)
-        self._disc.valueChanged.connect(self.discChanged.emit)
-        dl.addWidget(disc_cap)
-        dl.addWidget(self._disc, 1)
-        actions.addWidget(disc_box, 1)
-
-        price_box = QFrame()
-        price_box.setObjectName('posCartPriceBox')
-        pl = QHBoxLayout(price_box)
-        pl.setContentsMargins(10, 8, 10, 8)
-        pl.setSpacing(8)
-        price_cap = QLabel('Price')
-        price_cap.setObjectName('posCartCap')
-        self._price = QuantityControl(
-            value=float(self._item.get('unit_price') or 0),
-            step=1.0, minimum=0.0, maximum=99999999.0,
-            snap=False, decimals=2, width=148, touch=True)
-        self._price.valueChanged.connect(self.priceChanged.emit)
-        pl.addWidget(price_cap)
-        pl.addWidget(self._price, 1)
-        actions.addWidget(price_box, 1)
-
-        root.addLayout(actions)
-        self._idx_lbl = None
-        self._price_lbl = None
-        self._disc_lbl = None
-        self._editing_money = False
+        """Legacy card density — same compact table row (hero cards hid the cart)."""
+        self._density = 'table'
+        self._build_table()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -873,16 +992,16 @@ class CartLineRow(QFrame):
         super().mouseDoubleClickEvent(event)
 
     def _set_money_edit_mode(self, on: bool):
-        """Table density: show price/disc spinboxes only while editing."""
+        """Table density: price/disc spinboxes on demand — idle rows show labels."""
         if self._density != 'table':
             return
         self._editing_money = bool(on)
         show_edit = self._editing_money
         if getattr(self, '_price_lbl', None) is not None:
             self._price_lbl.setVisible(not show_edit)
+        self._price.setVisible(show_edit)
         if getattr(self, '_disc_lbl', None) is not None:
             self._disc_lbl.setVisible(not show_edit)
-        self._price.setVisible(show_edit)
         self._disc.setVisible(show_edit)
         if show_edit:
             try:
@@ -898,10 +1017,33 @@ class CartLineRow(QFrame):
         # Leaving selection collapses money editors (labels only) — reduces misclicks
         if self._density == 'table' and not on:
             self._set_money_edit_mode(False)
-        self.refresh_theme()
+        if not getattr(self, '_flashing', False):
+            self.refresh_theme()
 
     def is_selected(self) -> bool:
         return bool(self._selected)
+
+    def flash_added(self, ms: int = CART_FLASH_MS):
+        """Brief gold wash when a line is newly added — does not change selection."""
+        self._flashing = True
+        try:
+            self.setStyleSheet(
+                f"QFrame#posCartLine{{background:{qss_alpha(C['gold'], 0.28)};"
+                f"border:2px solid {C['gold']};border-radius:{RADIUS['sm']}px;}}"
+                f"QLabel{{background:transparent;}}")
+        except Exception:
+            pass
+        try:
+            QTimer.singleShot(max(120, int(ms)), self._end_flash)
+        except Exception:
+            self._end_flash()
+
+    def _end_flash(self):
+        self._flashing = False
+        try:
+            self.refresh_theme()
+        except Exception:
+            pass
 
     def focus_qty_editor(self):
         try:
@@ -927,7 +1069,7 @@ class CartLineRow(QFrame):
         if getattr(self, '_price_lbl', None) is not None:
             self._price_lbl.setText(f'{up:,.2f}')
         if getattr(self, '_disc_lbl', None) is not None:
-            self._disc_lbl.setText(f'{disc:,.2f}')
+            self._disc_lbl.setText('—' if disc <= 0.009 else f'{disc:,.2f}')
             self._disc_lbl.setProperty('mbtHasDisc', '1' if disc > 0.009 else '0')
             self._disc_lbl.style().unpolish(self._disc_lbl); self._disc_lbl.style().polish(self._disc_lbl)
         if self._save_lbl is not None:
@@ -964,17 +1106,20 @@ class CartLineRow(QFrame):
             self._idx_lbl.setText(str(self._index))
 
     def refresh_theme(self):
+        if getattr(self, '_flashing', False):
+            return
         # Selection gold only when selected — avoid yellow wash on every control
         border = C['gold'] if self._selected else C['border']
-        bg = qss_alpha(C['gold'], 0.10) if self._selected else C['card2']
+        stripe = C['card'] if (int(getattr(self, '_index', 1) or 1) % 2) else C['card2']
+        bg = qss_alpha(C['gold'], 0.10) if self._selected else stripe
         hover_bg = C['hover'] if not self._selected else qss_alpha(C['gold'], 0.14)
         rad = RADIUS['sm'] if self._density == 'table' else RADIUS['lg']
         bw = '2px' if self._selected else ('1px' if self._density == 'table' else '1.5px')
         rm_pad = '0' if self._density == 'table' else '0 10px'
-        rm_size = '13px' if self._density == 'table' else '12px'
-        name_sz = '13px' if self._density == 'table' else '14px'
-        tot_sz = '14px' if self._density == 'table' else '16px'
-        money_sz = '12px' if self._density == 'table' else '13px'
+        rm_size = '17px' if self._density == 'table' else '12px'
+        name_sz = '15px'
+        tot_sz = '15px'
+        money_sz = '14px'
         if self._density == 'table':
             rm_bg, rm_bd = 'transparent', 'transparent'
             rm_hover = f"background:{C['err_dim']};color:{C['err']};"
@@ -990,11 +1135,12 @@ class CartLineRow(QFrame):
             f"border:1px solid {C['border']};border-radius:10px;}}"
             f"QFrame#posCartDiscBox{{background:{C['input']};"
             f"border:1px solid {C['border']};border-radius:10px;}}"
-            f"QLabel#posCartName{{color:{C['text']};font-size:{name_sz};font-weight:700;"
-            f"background:transparent;}}"
+            f"QLabel#posCartName{{color:{C['text']};font-size:{name_sz};font-weight:800;"
+            f"background:transparent;min-height:22px;padding:0;}}"
             f"QLabel#posCartSku{{color:{C['text2']};font-size:11px;font-weight:600;"
             f"background:transparent;}}"
-            f"QLabel#posCartIdx{{color:{C['text2']};font-size:11px;font-weight:800;"
+            f"QLabel#posCartIdx{{color:{C['text2']};"
+            f"font-size:{'12px' if self._density == 'table' else '11px'};font-weight:800;"
             f"background:transparent;}}"
             f"QLabel#posCartUnit{{color:{C['text2']};font-size:12px;font-weight:600;"
             f"background:transparent;}}"
@@ -1015,6 +1161,11 @@ class CartLineRow(QFrame):
             f"font-weight:800;font-size:{rm_size};padding:{rm_pad};}}"
             f"QPushButton#posCartRemove:hover{{{rm_hover}}}"
         )
+        sh = getattr(self, '_shadow', None)
+        if sh is not None:
+            sh.setEnabled(self._selected)
+            if self._selected:
+                sh.setColor(QColor(*_parse_hex_rgb(C['gold']), 70))
         for qc in (self._qty, self._disc, self._price):
             qc.refresh_theme()
         if self._thumb is not None:
@@ -1034,7 +1185,7 @@ class CartList(QWidget):
         self.setObjectName('posCartList')
         self._rows = []
         self._selected_idx = -1
-        self._density = 'card'
+        self._density = 'table'
         self._col_hdr = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1047,8 +1198,8 @@ class CartList(QWidget):
         self._scroll.setFrameShape(QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll.setMinimumHeight(160)
-        self._scroll.setMaximumHeight(420)
+        self._scroll.setMinimumHeight(cart_viewport_px(CART_CASHIER_ROWS))
+        self._scroll.setMaximumHeight(16777215)
         self._scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
         try:
             from desktop.utils.no_wheel_small_scroll import mark_wheel_scroll
@@ -1061,7 +1212,7 @@ class CartList(QWidget):
         self._body.setObjectName('posCartListBody')
         self._lay = QVBoxLayout(self._body)
         self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(8)
+        self._lay.setSpacing(CART_TABLE_ROW_GAP)
         self._empty = QLabel('Cart is empty\nTap a product to add it.')
         self._empty.setAlignment(Qt.AlignCenter)
         self._empty.setObjectName('posCartEmpty')
@@ -1075,17 +1226,19 @@ class CartList(QWidget):
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll)
         self._expanded = False
+        # 0 = legacy sizing; N = fixed viewport of N table rows (Review lifts via expanded).
+        self._cashier_rows = 0
         self.refresh_theme()
 
     def selected_index(self) -> int:
         return int(self._selected_idx)
 
     def set_density(self, density: str):
-        density = 'table' if density == 'table' else 'card'
+        density = 'table'
         if self._density == density:
             return
         self._density = density
-        self._lay.setSpacing(2 if density == 'table' else 6)
+        self._lay.setSpacing(CART_TABLE_ROW_GAP)
         # Force rebuild on next set_items
         items = [dict(r._item) for r in self._rows]
         cur = self._currency if hasattr(self, '_currency') else 'KES'
@@ -1097,23 +1250,45 @@ class CartList(QWidget):
         # Remove previous header from outer layout
         if self._col_hdr is not None:
             self._outer.removeWidget(self._col_hdr)
-            self._col_hdr.setParent(None)
-            self._col_hdr.hide()
+            try:
+                from desktop.utils.quiet_ui import safe_detach
+                safe_detach(self._col_hdr)
+            except Exception:
+                self._col_hdr.hide()
+                self._col_hdr.setParent(None)
         self._col_hdr = hdr
         if hdr is not None:
             self._outer.insertWidget(0, hdr)
             hdr.show()
 
     def set_expanded(self, expanded: bool):
-        """Review / Checkout Pro: lift height cap so long carts fill the pane."""
+        """Review mode: lift the cashier viewport so extra tall rows can fill the pane.
+
+        When False and ``set_cashier_viewport`` is active, the list keeps at least
+        CART_CASHIER_ROWS complete lines visible and only the cart body scrolls.
+        """
         self._expanded = bool(expanded)
         self._fit_scroll_to_rows()
 
+    def set_cashier_viewport(self, rows: int = CART_CASHIER_ROWS):
+        """Fix the cart body to ``rows`` complete table lines (header stays above).
+
+        Review (``set_expanded(True)``) overrides this until Restore. Pass 0 to
+        disable and fall back to legacy hug/expand sizing.
+        """
+        self._cashier_rows = max(0, int(rows or 0))
+        self._fit_scroll_to_rows()
+
+    def cashier_viewport_height(self) -> int:
+        """Pixel height of the fixed cart-body viewport (scroll area only)."""
+        rows = int(getattr(self, '_cashier_rows', 0) or 0) or CART_CASHIER_ROWS
+        return cart_viewport_px(rows)
+
     def _fit_scroll_to_rows(self):
-        """Size cart scroll for content — prefer scrolling over clipping into summary."""
+        """Size cart scroll — cashier viewport, Review expand, or legacy hug."""
         n = len(getattr(self, '_rows', []) or [])
-        row_h = 50 if self._density == 'table' else 140
-        spacing = 2 if self._density == 'table' else 6
+        row_h = CART_ROW_H
+        spacing = CART_TABLE_ROW_GAP
         needed = max(n, 1) * row_h + max(n - 1, 0) * spacing + 12
         hdr = 0
         if self._col_hdr is not None and self._col_hdr.isVisible():
@@ -1121,8 +1296,36 @@ class CartList(QWidget):
                 hdr = max(22, int(self._col_hdr.sizeHint().height()))
             except Exception:
                 hdr = 22
-        if self._density == 'table' and n and n <= 10:
-            # Table carts: hug content so summary sits under last row (no huge empty band)
+        cashier = int(getattr(self, '_cashier_rows', 0) or 0)
+        if self._expanded:
+            # Review: pane height is owned by the cart splitter — soft floor only.
+            self._scroll.setMinimumHeight(80)
+            self._scroll.setMaximumHeight(16777215)
+            try:
+                sp = self.sizePolicy()
+                sp.setVerticalPolicy(QSizePolicy.Expanding)
+                self.setSizePolicy(sp)
+                self.setMaximumHeight(16777215)
+                self.setMinimumHeight(80)
+            except Exception:
+                pass
+        elif cashier > 0 and self._density == 'table':
+            # Cashier mode: at least N rows visible; body scrolls when more
+            # items exist. Grows with the cart↔summary splitter so payment /
+            # summary can shrink and give the list more room.
+            viewport_h = cart_viewport_px(cashier)
+            self._scroll.setMinimumHeight(viewport_h)
+            self._scroll.setMaximumHeight(16777215)
+            try:
+                sp = self.sizePolicy()
+                sp.setVerticalPolicy(QSizePolicy.Expanding)
+                self.setSizePolicy(sp)
+                self.setMinimumHeight(viewport_h + max(hdr, CART_COL_HDR_H))
+                self.setMaximumHeight(16777215)
+            except Exception:
+                pass
+        elif self._density == 'table' and n and n <= 10:
+            # Table carts (non-cashier): hug content so summary sits under last row
             self._scroll.setMinimumHeight(needed)
             self._scroll.setMaximumHeight(needed + 4)
             try:
@@ -1133,20 +1336,10 @@ class CartList(QWidget):
                 self.setMaximumHeight(needed + hdr + 8)
             except Exception:
                 pass
-        elif self._expanded:
-            self._scroll.setMinimumHeight(min(max(needed, 120), 240))
-            self._scroll.setMaximumHeight(16777215)
-            try:
-                sp = self.sizePolicy()
-                sp.setVerticalPolicy(QSizePolicy.Expanding)
-                self.setSizePolicy(sp)
-                self.setMaximumHeight(16777215)
-                self.setMinimumHeight(0)
-            except Exception:
-                pass
         else:
-            self._scroll.setMinimumHeight(min(max(needed, 140), 220))
-            self._scroll.setMaximumHeight(480)
+            floor = cart_viewport_px(CART_CASHIER_ROWS)
+            self._scroll.setMinimumHeight(min(max(needed, floor), max(floor, 420)))
+            self._scroll.setMaximumHeight(16777215)
             try:
                 sp = self.sizePolicy()
                 sp.setVerticalPolicy(QSizePolicy.Expanding)
@@ -1169,10 +1362,14 @@ class CartList(QWidget):
             except Exception:
                 pass
             try:
-                w.hide()
-                w.setParent(None)
+                from desktop.utils.quiet_ui import safe_detach
+                safe_detach(w)
             except Exception:
-                pass
+                try:
+                    w.hide()
+                    w.setParent(None)
+                except Exception:
+                    pass
             # Immediate delete — deleteLater leaves ghost rows that paint over table density
             try:
                 from PyQt5 import sip
@@ -1210,11 +1407,31 @@ class CartList(QWidget):
             row.removeClicked.connect(lambda idx=i: self.removeClicked.emit(idx))
             row.rowClicked.connect(lambda idx=i: self.select_index(idx, focus_qty=False))
             self._lay.insertWidget(stretch_idx + i, row)
+            try:
+                from PyQt5.QtCore import Qt as _Qt
+                row.setAttribute(_Qt.WA_DontShowOnScreen, False)
+            except Exception:
+                pass
+            try:
+                from desktop.utils.quiet_ui import safe_show
+                safe_show(row)
+            except Exception:
+                try:
+                    row.show()
+                except Exception:
+                    pass
             self._rows.append(row)
         self._fit_scroll_to_rows()
         if select_index is None:
             select_index = len(self._rows) - 1
         self.select_index(select_index, focus_qty=True, scroll=True)
+        # Newest line: ensure visible + brief highlight (cashier scan feedback).
+        try:
+            flash_idx = int(select_index)
+            if 0 <= flash_idx < len(self._rows):
+                QTimer.singleShot(0, lambda i=flash_idx: self._scroll_and_flash(i))
+        except Exception:
+            pass
 
     def select_index(self, idx: int, focus_qty: bool = False, scroll: bool = True):
         if not self._rows:
@@ -1240,6 +1457,17 @@ class CartList(QWidget):
             self._scroll.ensureWidgetVisible(row, 0, 24)
         except Exception:
             pass
+
+    def _scroll_and_flash(self, idx: int):
+        if not (0 <= idx < len(self._rows)):
+            return
+        self.scroll_to_index(idx)
+        row = self._rows[idx]
+        if hasattr(row, 'flash_added'):
+            try:
+                row.flash_added()
+            except Exception:
+                pass
 
     def update_row(self, idx: int, item: dict):
         if 0 <= idx < len(self._rows):
@@ -1272,7 +1500,22 @@ class PaymentButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor if enabled else Qt.ForbiddenCursor)
         self.setMinimumHeight(56)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(14)
+        self._shadow.setOffset(0, 2)
+        self._shadow.setEnabled(False)
+        self.setGraphicsEffect(self._shadow)
+        self.toggled.connect(self._sync_shadow)
         self.refresh_theme()
+
+    def _sync_shadow(self, *_args):
+        sh = getattr(self, '_shadow', None)
+        if sh is None:
+            return
+        checked = self.isChecked() and self.isEnabled() and not self._secondary
+        sh.setEnabled(checked)
+        if checked:
+            sh.setColor(QColor(*_parse_hex_rgb(C['gold']), 80))
 
     def set_compact_style(self, compact: bool = True):
         self._compact = bool(compact)
@@ -1292,17 +1535,19 @@ class PaymentButton(QPushButton):
                 f"border:1px dashed {C['border2']};border-radius:{RADIUS['md']}px;"
                 f"font-size:11px;font-weight:700;min-height:{mh}px;padding:{pad};}}"
                 f"QPushButton#posPayToggle:disabled{{color:{muted};}}")
+            self._sync_shadow()
             return
         self.setStyleSheet(
             f"QPushButton#posPayToggle{{background:{C['card2']};color:{C['text2']};"
             f"border:1.5px solid {C['border']};border-radius:{RADIUS['md']}px;"
             f"font-size:{fsz};font-weight:700;min-height:{mh}px;padding:{pad};}}"
-            f"QPushButton#posPayToggle:checked{{background:{qss_alpha(C['gold'], 0.28)};"
-            f"color:{C['gold']};border:2px solid {C['gold']};font-weight:900;}}"
+            f"QPushButton#posPayToggle:checked{{background:{qss_alpha(C['gold'], 0.14)};"
+            f"color:{C['text']};border:2px solid {C['gold']};font-weight:800;}}"
             f"QPushButton#posPayToggle:hover:!checked{{background:{C['hover']};"
-            f"color:{C['text']};border-color:{qss_alpha(C['gold'], 0.45)};}}"
-            f"QPushButton#posPayToggle:pressed{{background:{qss_alpha(C['gold'], 0.14)};}}"
+            f"color:{C['text']};border-color:{qss_alpha(C['gold'], 0.40)};}}"
+            f"QPushButton#posPayToggle:pressed{{background:{qss_alpha(C['gold'], 0.12)};}}"
         )
+        self._sync_shadow()
 
 
 class PaymentSegment(QWidget):
@@ -1337,6 +1582,11 @@ class PaymentSegment(QWidget):
                 'Mixed': 'Split',
             }.get(key, label)
             b = PaymentButton(key, pretty, enabled=enabled, secondary=not enabled)
+            if key == 'Mixed':
+                b.setToolTip(
+                    'Split Pay — two tenders on one sale (cash + M-Pesa/card/bank). '
+                    'With Paid now, tenders must cover the total. '
+                    'With Part pay, leftover becomes customer debt.')
             if enabled:
                 b.clicked.connect(lambda _=False, k=key: self.select(k, emit=True))
             lay.addWidget(b, i // 3, i % 3)
@@ -1402,7 +1652,12 @@ class PaymentSegment(QWidget):
         if old is not None:
             while old.count():
                 old.takeAt(0)
-            QWidget().setLayout(old)
+            sink = QWidget()
+            from PyQt5.QtCore import Qt as _Qt
+            sink.setAttribute(_Qt.WA_DontShowOnScreen, True)
+            sink.hide()
+            sink.setLayout(old)
+            sink.deleteLater()
         if row:
             lay = QHBoxLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)
@@ -1441,6 +1696,7 @@ class SummaryCard(QFrame):
         self.disc_label = QLabel('Discount (KES)')
         self.disc_edit = None  # set by host (KES QLineEdit)
         self._tax_lbl = self._row('Tax')
+        self._tax_row_w = getattr(self._tax_lbl, '_row_w', None)
         self._savings_row_w = QWidget()
         srl = QHBoxLayout(self._savings_row_w)
         srl.setContentsMargins(0, 0, 0, 0)
@@ -1466,6 +1722,9 @@ class SummaryCard(QFrame):
         tot.addStretch()
         tot.addWidget(self._tot_lbl)
         lay.addLayout(tot)
+        # No drop-shadow: SummaryCard sits under the cart splitter handle. A
+        # QGraphicsDropShadowEffect paints into the gutter and makes drag feel
+        # broken even though the handle still shows its tooltip.
         self.refresh_theme()
 
     def set_pro_chrome(self, enabled: bool = True):
@@ -1477,10 +1736,67 @@ class SummaryCard(QFrame):
         if lay is not None:
             lay.setContentsMargins(12, 10, 12, 10)
             lay.setSpacing(6 if self._pro else 8)
+        # Always kill drop-shadow — it paints into the cart/summary splitter
+        # handle on Classic/Explorer and makes the yellow grip look dead.
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
         self.refresh_theme()
 
+    def set_review_compact(self, enabled: bool = True):
+        """Review Cart: tighter margins so Order Summary stays a strip under rows."""
+        self._review_compact = bool(enabled)
+        self._apply_density()
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
+        self.updateGeometry()
+
+    def set_pinned_strip(self, enabled: bool = True):
+        """Always-visible cashier strip (foot): Subtotal / Discount / Tax / Total due."""
+        self._pinned_strip = bool(enabled)
+        if hasattr(self, '_section') and self._section is not None:
+            # Foot already sits under Amount Paid — skip duplicate "Order Summary" chrome.
+            self._section.setVisible(not self._pinned_strip)
+        if self._pinned_strip:
+            try:
+                self._total_hdr.setText('Total due')
+            except Exception:
+                pass
+        elif getattr(self, '_total_hdr', None) is not None:
+            try:
+                self._total_hdr.setText('Grand Total')
+            except Exception:
+                pass
+        self._apply_density()
+        try:
+            self.setGraphicsEffect(None)
+        except Exception:
+            pass
+        self.updateGeometry()
+
+    def _apply_density(self):
+        lay = self.layout()
+        if lay is None:
+            return
+        compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
+        if compact:
+            lay.setContentsMargins(10, 6, 10, 8)
+            lay.setSpacing(4)
+        elif getattr(self, '_pro', False):
+            lay.setContentsMargins(12, 10, 12, 10)
+            lay.setSpacing(6)
+        else:
+            lay.setContentsMargins(16, 14, 16, 14)
+            lay.setSpacing(8)
+
     def _row(self, label: str) -> QLabel:
-        row = QHBoxLayout()
+        w = QWidget()
+        row = QHBoxLayout(w)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
         l = QLabel(label)
         l.setObjectName('posTotMute')
         v = QLabel('KES 0.00')
@@ -1488,13 +1804,20 @@ class SummaryCard(QFrame):
         row.addWidget(l)
         row.addStretch()
         row.addWidget(v)
-        self._body.addLayout(row)
+        v._row_w = w
+        self._body.addWidget(w)
         return v
 
     def set_amounts(self, currency, sub, tax, total, discount=0.0):
         cur = currency or 'KES'
         self._sub_lbl.setText(f'{cur} {sub:,.2f}')
         self._tax_lbl.setText(f'{cur} {tax:,.2f}')
+        tax_row = getattr(self, '_tax_row_w', None) or getattr(self._tax_lbl, '_row_w', None)
+        if tax_row is not None:
+            try:
+                tax_row.setVisible(abs(float(tax or 0)) > 0.009)
+            except Exception:
+                tax_row.setVisible(True)
         text = f'{cur} {total:,.2f}'
         self._tot_lbl.setText(text)
         try:
@@ -1515,10 +1838,13 @@ class SummaryCard(QFrame):
         """Brief gold highlight when Grand Total changes — no heavy deps."""
         try:
             gold = C['gold']
+            compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
+            px = 22 if compact else 30
+            flash_px = 24 if compact else 32
             base = (
-                f"color:{gold};font-size:30px;font-weight:900;background:transparent;")
+                f"color:{gold};font-size:{px}px;font-weight:900;background:transparent;")
             flash = (
-                f"color:{C.get('gold_lt', gold)};font-size:32px;font-weight:900;"
+                f"color:{C.get('gold_lt', gold)};font-size:{flash_px}px;font-weight:900;"
                 f"background:transparent;")
             self._tot_lbl.setStyleSheet(flash)
             QTimer.singleShot(160, lambda: self._tot_lbl.setStyleSheet(base))
@@ -1526,6 +1852,10 @@ class SummaryCard(QFrame):
             pass
 
     def refresh_theme(self):
+        compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
+        tot_px = 22 if compact else 30
+        hdr_px = 13 if compact else 15
+        mute_px = 13 if compact else 14
         self.setStyleSheet(
             f"QFrame#posTotFrame{{background:{C['panel']};border:1px solid {C['border']};"
             f"border-radius:{RADIUS['lg']}px;}}")
@@ -1534,21 +1864,21 @@ class SummaryCard(QFrame):
             f"color:{C['muted']};font-size:11px;font-weight:800;letter-spacing:0.8px;"
             f"text-transform:uppercase;background:transparent;")
         self._total_hdr.setStyleSheet(
-            f"color:{C['text']};font-size:15px;font-weight:800;background:transparent;")
+            f"color:{C['text']};font-size:{hdr_px}px;font-weight:800;background:transparent;")
         self._tot_lbl.setStyleSheet(
-            f"color:{C['gold']};font-size:30px;font-weight:900;background:transparent;")
+            f"color:{C['gold']};font-size:{tot_px}px;font-weight:900;background:transparent;")
         for w in self.findChildren(QLabel):
             if w.objectName() == 'posTotMute':
                 w.setStyleSheet(
-                    f"color:{C['text2']};font-size:14px;font-weight:600;background:transparent;")
+                    f"color:{C['text2']};font-size:{mute_px}px;font-weight:600;background:transparent;")
             elif w.objectName() == 'posTotVal':
                 w.setStyleSheet(
-                    f"color:{C['text']};font-size:14px;background:transparent;")
+                    f"color:{C['text']};font-size:{mute_px}px;font-weight:700;background:transparent;")
             elif w.objectName() == 'posTotSave':
                 w.setStyleSheet(
-                    f"color:{C['ok']};font-size:14px;font-weight:700;background:transparent;")
+                    f"color:{C['ok']};font-size:{mute_px}px;font-weight:700;background:transparent;")
         self.disc_label.setStyleSheet(
-            f"color:{C['text2']};font-size:14px;font-weight:600;background:transparent;")
+            f"color:{C['text2']};font-size:{mute_px}px;font-weight:600;background:transparent;")
 
 
 # ── CustomerCard ──────────────────────────────────────────────────────────────
@@ -1746,8 +2076,8 @@ class CustomerCard(QFrame):
             w = self.window()
             api = getattr(w, 'api', None) or getattr(self.parent(), 'api', None)
         if api is None:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, 'Customers', 'Customer list is not available yet.')
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, 'Customer list is not available yet.')
             return
         picker = CustomerPickerDialog(self.window(), api)
         if picker.exec_() != picker.Accepted:
@@ -1795,8 +2125,8 @@ class CustomerCard(QFrame):
             w = self.window()
             api = getattr(w, 'api', None) or getattr(self.parent(), 'api', None)
         if api is None:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, 'Customers', 'Cannot add customer — API unavailable.')
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, 'Cannot add customer — API unavailable.')
             return
         create = QuickCustomerDialog(self.window(), api)
         if create.exec_() != create.Accepted:
@@ -1821,7 +2151,8 @@ class CustomerCard(QFrame):
                 pass
         except Exception:
             pass
-        parent_dlg.accept()
+        if parent_dlg is not None and hasattr(parent_dlg, 'accept'):
+            parent_dlg.accept()
 
     def refresh_theme(self):
         walk_in = 'walk-in' in (self._btn.text() or '').lower()
@@ -2087,13 +2418,19 @@ class PosSearchBar(QLineEdit):
             self.removeAction(self._scan_act)
             self._scan_act = None
         if self._pro_icons:
-            from PyQt5.QtGui import QIcon
-            from PyQt5.QtWidgets import QStyle
-            style = self.style()
-            lead = style.standardIcon(QStyle.SP_FileDialogContentsView)
-            scan = style.standardIcon(QStyle.SP_ComputerIcon)
-            self._lead_act = self.addAction(lead, QLineEdit.LeadingPosition)
-            self._scan_act = self.addAction(scan, QLineEdit.TrailingPosition)
+            # Painted house icons — the Qt stock icons here were a document page
+            # and a desktop monitor, which read as placeholder art.
+            try:
+                from desktop.utils.nav_icons import icon_barcode, icon_search
+                self._lead_act = self.addAction(
+                    icon_search(16), QLineEdit.LeadingPosition)
+                self._scan_act = self.addAction(
+                    icon_barcode(16), QLineEdit.TrailingPosition)
+                if self._scan_act is not None:
+                    self._scan_act.setToolTip('Scan a barcode into this field')
+            except Exception:
+                self._lead_act = None
+                self._scan_act = None
         self.refresh_theme()
 
     def keyPressEvent(self, event):
@@ -2160,6 +2497,13 @@ class ProductGrid(QWidget):
         pad = 10 if self._pro_density else max(PADDING - 4, 10)
         self._grid.setSpacing(gap)
         self._grid.setContentsMargins(pad, pad, pad, pad)
+        # AlignLeft pins the grid to its sizeHint, so Pro's Expanding cards could
+        # never take the width they were unlocked for. Let the grid fill instead.
+        try:
+            self._grid.setAlignment(
+                Qt.AlignTop if self._pro_density else (Qt.AlignTop | Qt.AlignLeft))
+        except Exception:
+            pass
         # Prevent rows from stealing vertical space from each other
         try:
             self._grid.setRowStretch(99, 1)
@@ -2187,10 +2531,14 @@ class ProductGrid(QWidget):
             w = item.widget()
             if w:
                 try:
-                    w.hide()
-                    w.setParent(None)
+                    from desktop.utils.quiet_ui import safe_detach
+                    safe_detach(w)
                 except Exception:
-                    pass
+                    try:
+                        w.hide()
+                        w.setParent(None)
+                    except Exception:
+                        pass
                 try:
                     from PyQt5 import sip
                     if not sip.isdeleted(w):
@@ -2204,16 +2552,38 @@ class ProductGrid(QWidget):
         self._hint.hide()
 
     def columns_for_width(self, available: int) -> int:
-        card_w = 220 if self._pro_density else (220 if self._is_light else 214)
+        """Columns that genuinely fit ``available`` px.
+
+        This used to floor the width at 640px and the column count at 2, so a
+        ~410px Checkout Pro column still laid out two 260px cards and clipped
+        the right-hand one against the cart panel. Narrow rails now drop to a
+        single full-width card instead.
+        """
+        card_w = 248 if self._pro_density else (248 if self._is_light else 240)
         gap = self._grid.horizontalSpacing() or GAP
-        cols = max(2, int((max(640, available) + gap) // (card_w + gap)))
-        return min(4, cols)
+        avail = max(120, int(available))
+        cols = max(1, int((avail + gap) // (card_w + gap)))
+        # Prefer readable cards over cramming 4–5 skinny tiles
+        return min(2 if self._pro_density else 3, cols)
 
     def populate(self, products: list, columns: int = 3, *, chunked: bool = False):
-        self.clear()
         all_prods = list(products or [])
         self._total_count = len(all_prods)
         visible = all_prods[: self.MAX_VISIBLE]
+        cols = max(1, int(columns))
+        new_ids = [p.get('id') for p in visible]
+        old_ids = [p.get('id') for p in (self._products or [])]
+        if (
+            new_ids
+            and new_ids == old_ids
+            and cols == int(getattr(self, '_last_populate_cols', -1) or -1)
+            and not chunked
+            and self._grid.count() > 0
+        ):
+            self._products = visible
+            return
+        self.clear()
+        self._last_populate_cols = cols
         self._products = visible
         if self._total_count > 0:
             lo, hi = 1, len(visible)
@@ -2230,17 +2600,23 @@ class ProductGrid(QWidget):
                     f"color:{C['muted']}; font-size:11px; font-weight:600; "
                     f"background:transparent; padding:2px 8px;")
                 self._hint.show()
-        # Pro: room for icon + 2-line name + SKU + price + stock badge
+        # Pro: room for icon + 2–3 line name + SKU + price + stock badge
         if self._pro_density:
-            card_size = (268, 140) if self._is_light else (260, 136)
+            card_size = (268, 152) if self._is_light else (260, 148)
         else:
-            # Wider + taller so KES price + stock badge never clip
-            card_size = (236, 164) if self._is_light else (230, 160)
+            # Taller cards so names wrap instead of "DAP Fertili…"
+            card_size = (248, 178) if self._is_light else (240, 174)
         cols = max(1, int(columns))
+        if self._pro_density and cols == 1:
+            # One full-width card per row reads as a product list row; keeping
+            # the tile height would leave a wide band of empty card.
+            card_size = (card_size[0], 104)
         cmap = self._categories_by_name or {}
-        for c in range(cols):
+        # Clear stretch left by a wider column count, or a single column would
+        # still be laid out inside its old half/third of the row.
+        for c in range(8):
             try:
-                self._grid.setColumnStretch(c, 1)
+                self._grid.setColumnStretch(c, 1 if c < cols else 0)
             except Exception:
                 pass
         if not visible:

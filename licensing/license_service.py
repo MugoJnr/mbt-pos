@@ -20,7 +20,7 @@ from licensing.license_engine import (
     STATE_ACTIVE, STATE_EXPIRING, STATE_WARNING,
     STATE_CRITICAL, STATE_EXPIRED, STATE_TAMPERED,
     STATE_UNACTIVATED, STATE_INACTIVE,
-    _MASTER_SECRET, _verify_sig,
+    _verify_sig,
 )
 
 logger = logging.getLogger('license_service')
@@ -183,8 +183,13 @@ class LicenseService(threading.Thread):
                 return
             from backend.cloud.license_server import get_license_server
             from backend.cloud_backup.device_manager import get_or_create_device_id
-            device_id = get_or_create_device_id() or self.engine.device_id
-            ok, msg, data = get_license_server().validate(key, device_id)
+            cloud_device_id = get_or_create_device_id() or self.engine.device_id
+            engine_device_id = self.engine.device_id
+            server = get_license_server()
+            ok, msg, data = server.validate(
+                key, cloud_device_id,
+                device_aliases=[engine_device_id, cloud_device_id],
+            )
             self.engine.apply_cloud_validation(ok, data, msg)
             if not ok:
                 logger.warning('Cloud license invalid: %s', msg)

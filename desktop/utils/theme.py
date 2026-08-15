@@ -712,16 +712,25 @@ QProgressBar::chunk {{
     border-radius: 4px;
 }}
 
-/* ── DIALOGS ── */
+/* --- DIALOGS / MESSAGE BOX (Fusion + QSS; avoid white Win chrome) --- */
 QMessageBox {{
     background: {p['card2']};
+    color: {p['text']};
     border: 1px solid {p['border2']};
     border-radius: {r_xl}px;
 }}
 QMessageBox QLabel {{
-    color: {p['text']}; font-size: 14px; background: transparent;
+    color: {p['text']}; font-size: 14px; background: transparent; min-width: 280px;
 }}
-QMessageBox QPushButton {{ min-width: 90px; color: {p['text']}; }}
+QMessageBox QPushButton {{
+    background: {p['card']}; color: {p['text']};
+    border: 1px solid {p['border2']}; border-radius: {r_md}px;
+    min-width: 90px; min-height: 34px; padding: 6px 16px; font-weight: 700;
+}}
+QMessageBox QPushButton:hover {{ border-color: {p['gold']}; color: {p['gold']}; }}
+QMessageBox QPushButton:default {{
+    background: {p['gold']}; color: {gold_fg}; border: none;
+}}; }}
 
 QDialogButtonBox QPushButton {{
     background: {p['card2']}; color: {p['text']};
@@ -740,7 +749,15 @@ QDialogButtonBox QPushButton[text="Save"] {{
 }}
 
 /* ── MISC ── */
-QSplitter::handle {{ background: {p['border']}; width: 1px; height: 1px; }}
+/* Do NOT pin handle width/height to 1px — that made POS gutters un-grabbable.
+   POS PosSplitter sets its own 14px handle size; other splitters keep a usable 6px. */
+QSplitter::handle {{ background: {p['border']}; width: 6px; height: 6px; }}
+QSplitter#posSplitter::handle,
+QSplitter#posCartSplitter::handle {{
+    background: transparent;
+    width: 16px;
+    height: 16px;
+}}
 
 QListWidget {{
     background: {p['card']}; color: {p['text']};

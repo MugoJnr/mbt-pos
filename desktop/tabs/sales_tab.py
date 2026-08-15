@@ -15,6 +15,7 @@ from desktop.utils.pos_components import (
 )
 from desktop.utils.option_lists import POS_PAYMENT_METHODS
 from desktop.utils.select_controls import Select
+from desktop.utils.quiet_ui import info_toast, sale_complete_feedback, soft_warn
 
 
 def _sfx(event: str, **kw):
@@ -58,6 +59,8 @@ class SalesTab(QWidget):
         # until payment method change or sale reset.
         self._cash_paid_dirty = False
         self._paid_programmatic = False
+        self._elec_paid_dirty = False
+        self._elec_programmatic = False
         self._held = None  # park/resume single slot (session + durable JSON)
         self._focus_mode = False  # session-only; MainWindow hides sidebar/topbar
         self._cart_maximized = False  # hide product grid; cart fills Sales tab
@@ -67,6 +70,7 @@ class SalesTab(QWidget):
         self._catalog_ttl_s = 45.0
         self._grid_painted = False
         self._resize_filter_timer = None
+        self._search_filter_timer = None
         try:
             from desktop.utils.shop_time import shop_today
             self._business_day = shop_today()
@@ -114,7 +118,60 @@ class SalesTab(QWidget):
             layout_id = DEFAULT_CHECKOUT_LAYOUT
         self._checkout_layout = layout_id
         apply_layout_shell(self, layout_id)
+        self._sync_layout_combo(layout_id)
         self._update_hold_buttons()
+
+    def _sync_layout_combo(self, layout_id: str):
+        """Keep POS Layout combo aligned without re-firing change handlers."""
+        combo = getattr(self, '_layout_combo', None)
+        if combo is None:
+            return
+        from desktop.pos.layout_ids import normalize_layout_id
+        lid = normalize_layout_id(layout_id)
+        try:
+            combo.blockSignals(True)
+            idx = combo.findData(lid)
+            if idx >= 0 and combo.currentIndex() != idx:
+                combo.setCurrentIndex(idx)
+            combo.show()
+        except Exception:
+            pass
+        finally:
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def _on_layout_combo_changed(self, *_args):
+        """Toolbar Layout combo — persist + apply immediately."""
+        combo = getattr(self, '_layout_combo', None)
+        if combo is None:
+            return
+        lid = combo.currentData()
+        if not lid:
+            return
+        if lid == getattr(self, '_checkout_layout', None):
+            return
+        self.set_checkout_layout(lid)
+        try:
+            from desktop.pos.layout_ids import CHECKOUT_LAYOUT_KEY
+            self.api.update_settings({CHECKOUT_LAYOUT_KEY: lid})
+        except Exception:
+            pass
+        # Keep Settings → Checkout Layout in sync when that tab is open
+        try:
+            w = self.window()
+            tabs = getattr(w, '_tabs', None) or {}
+            settings = tabs.get('settings')
+            sc = getattr(settings, 'pos_checkout_layout', None) if settings else None
+            if sc is not None:
+                sc.blockSignals(True)
+                sidx = sc.findData(lid)
+                if sidx >= 0:
+                    sc.setCurrentIndex(sidx)
+                sc.blockSignals(False)
+        except Exception:
+            pass
 
     def set_checkout_layout(self, layout_id: str, *, animate: bool = True) -> str:
         """Switch Retail Classic / Product Explorer / Checkout Pro without restart.
@@ -128,6 +185,7 @@ class SalesTab(QWidget):
         if lid == getattr(self, '_checkout_layout', None) and getattr(self, '_shell', None):
             # Still re-apply if shell is empty (first paint edge case)
             if self._shell.layout() is not None and self._shell.layout().count() > 0:
+                self._sync_layout_combo(lid)
                 return lid
 
         # Snapshot UI values that live on widgets (already on self.cart / spins)
@@ -156,6 +214,8 @@ class SalesTab(QWidget):
                     self._shell.update()
                 except Exception:
                     pass
+
+        self._sync_layout_combo(lid)
 
         # Restore search/category where appropriate (widgets are the same instances)
         try:
@@ -217,6 +277,12 @@ class SalesTab(QWidget):
                 'Restore sidebar and top bar' if enabled else
                 'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
         self.focus_mode_toggled.emit(enabled)
+        try:
+            from desktop.pos.layouts.splitters import reveal_cart_stack
+            QTimer.singleShot(0, lambda: reveal_cart_stack(self))
+            QTimer.singleShot(120, lambda: reveal_cart_stack(self))
+        except Exception:
+            pass
 
     def _toggle_cart_maximized(self):
         self.set_cart_maximized(not bool(getattr(self, '_cart_maximized', False)))
@@ -242,7 +308,10 @@ class SalesTab(QWidget):
         pf = getattr(self, '_payment_footer_bar', None)
         if pf is not None and layout_id == 'retail_classic':
             pf.setVisible(not enabled)
-        if layout_id == 'checkout_pro' and actions is not None:
+        # All layouts: hide the payment/customer rail in Review so the line list
+        # owns vertical space. Complete Sale stays on Classic/Explorer foot;
+        # Checkout Pro cashiers Restore to pay (same as prior Pro Review).
+        if actions is not None:
             actions.setVisible(not enabled)
 
         focus_panel = sale if layout_id == 'checkout_pro' else cart
@@ -273,12 +342,32 @@ class SalesTab(QWidget):
                         cart.setFixedWidth(880)
 
         if clist is not None and hasattr(clist, 'set_expanded'):
+            # Review expands the cart; cashier mode keeps the 5-row viewport.
             clist.set_expanded(enabled)
+            if hasattr(clist, 'set_cashier_viewport'):
+                try:
+                    from desktop.utils.pos_components import CART_CASHIER_ROWS
+                    clist.set_cashier_viewport(0 if enabled else CART_CASHIER_ROWS)
+                except Exception:
+                    pass
+
+        summary = getattr(self, '_summary', None)
+        if summary is not None and hasattr(summary, 'set_review_compact'):
+            try:
+                summary.set_review_compact(enabled)
+            except Exception:
+                pass
 
         hdr = getattr(self, '_sale_hdr', None)
         if hdr is not None:
             try:
-                hdr.setText('Review Cart' if enabled else 'Current Sale')
+                if enabled:
+                    hdr.setText('Review Cart')
+                elif layout_id == 'checkout_pro':
+                    n = len(getattr(self, 'cart', []) or [])
+                    hdr.setText(f'Current Sale ({n} item{"s" if n != 1 else ""})')
+                else:
+                    hdr.setText('Current Sale')
             except Exception:
                 pass
 
@@ -288,6 +377,22 @@ class SalesTab(QWidget):
             btn.setToolTip(
                 'Return to product picker' if enabled else
                 'Enlarge the cart to review and edit many items. Esc or Restore to add products again.')
+            # Pro chrome hides Review in the header; show it while maximized so
+            # cashiers can Restore without hunting the quick-actions pad.
+            if layout_id == 'checkout_pro':
+                try:
+                    btn.setVisible(True)
+                    cnt = getattr(self, '_cnt', None)
+                    if cnt is not None:
+                        n = len(getattr(self, 'cart', []) or [])
+                        cnt.setText(f'{n} item{"s" if n != 1 else ""}')
+                        cnt.setVisible(bool(enabled))
+                    if not enabled:
+                        btn.hide()
+                        if cnt is not None:
+                            cnt.hide()
+                except Exception:
+                    pass
 
         try:
             sc = getattr(self, '_cart_max_esc', None)
@@ -307,6 +412,17 @@ class SalesTab(QWidget):
             self.updateGeometry()
             if focus_panel is not None:
                 focus_panel.updateGeometry()
+        except Exception:
+            pass
+
+        # After Focus/Review/layout: cart splitter + rows must paint with height.
+        # Review installs an 80–90% list bias; Restore re-applies persisted sizes.
+        try:
+            from desktop.pos.layouts.splitters import install_cart, reveal_cart_stack
+            reveal_cart_stack(self)
+            install_cart(self, layout_id)
+            QTimer.singleShot(0, lambda: reveal_cart_stack(self))
+            QTimer.singleShot(120, lambda: reveal_cart_stack(self))
         except Exception:
             pass
 
@@ -363,6 +479,10 @@ class SalesTab(QWidget):
 
     def on_show(self):
         """Show path: paint first; reuse cached catalog when fresh."""
+        try:
+            self._ensure_business_day_current()
+        except Exception:
+            pass
         try:
             self._on_payment_changed(self._pay.currentText())
         except Exception:
@@ -421,6 +541,39 @@ class SalesTab(QWidget):
         method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
         return method in ('Cash', 'Mixed')
 
+    def _is_part_sale(self) -> bool:
+        if getattr(self, '_pro_sale_type', '') == 'part':
+            return True
+        method = self._pay.currentText() if hasattr(self, '_pay') else ''
+        return method == 'Part Payment'
+
+    def _is_credit_sale(self) -> bool:
+        if getattr(self, '_pro_sale_type', '') == 'credit':
+            return True
+        method = self._pay.currentText() if hasattr(self, '_pay') else ''
+        return method in ('Credit Sale', 'Credit Account')
+
+    def _tendered_now(self, method=None) -> tuple:
+        """Cash + electronic collected at till (excludes leftover debt)."""
+        method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
+        cash = float(self._paid.value() or 0) if hasattr(self, '_paid') else 0.0
+        elec = self._elec_portion() if self._is_split_method(method) else 0.0
+        if elec < 0.009:
+            return round(cash, 2), 0.0, round(cash, 2)
+        return round(cash, 2), round(elec, 2), round(cash + elec, 2)
+
+    def _prepare_part_pay_amounts(self):
+        """If amounts still cover the bill, clear them so Part pay is a remainder."""
+        if not self._is_part_sale():
+            return
+        due = self._amount_due()
+        _cash, _elec, paid = self._tendered_now()
+        if paid + 0.009 < due:
+            return
+        self._set_paid_value(0.0, mark_clean=True)
+        if hasattr(self, '_elec_paid'):
+            self._set_elec_value(0.0, mark_clean=True)
+
     def _cash_due_amount(self) -> float:
         """Cash portion due (post rounding) — used for Cash Paid autofill on split."""
         info = self._rounding_info or self._compute_rounding()
@@ -429,7 +582,74 @@ class SalesTab(QWidget):
             return round(float(info.get('cash_rounded', 0)), 2)
         return round(float(info.get('amount_due', self._amount_due())), 2)
 
+    def _set_elec_value(self, value: float, *, mark_clean: bool = False):
+        if not hasattr(self, '_elec_paid'):
+            return
+        self._elec_programmatic = True
+        try:
+            self._elec_paid.blockSignals(True)
+            self._elec_paid.setValue(round(float(value or 0), 2))
+        except Exception:
+            pass
+        finally:
+            try:
+                self._elec_paid.blockSignals(False)
+            except Exception:
+                pass
+            self._elec_programmatic = False
+        if mark_clean:
+            self._elec_paid_dirty = False
+
+    def _maybe_autofill_split_remainder(self) -> bool:
+        """When Mixed and cash is typed, fill electronic with the unpaid remainder."""
+        if not hasattr(self, '_elec_paid'):
+            return False
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        if method != 'Mixed':
+            return False
+        if self._is_part_sale():
+            return False
+        if not getattr(self, '_cash_paid_dirty', False):
+            return False
+        if getattr(self, '_elec_paid_dirty', False):
+            return False
+        raw_due = round(max(0.0, float(self._total or 0) - float(self._credit_to_apply or 0)), 2)
+        cash = float(self._paid.value() or 0) if hasattr(self, '_paid') else 0.0
+        from desktop.utils.payment_tenders import remainder_electronic
+        rem = remainder_electronic(raw_due, cash, 0.0)
+        if abs(float(self._elec_paid.value() or 0) - rem) < 0.009:
+            return False
+        self._set_elec_value(rem, mark_clean=True)
+        return True
+
+    def _sync_split_mpesa_ui(self):
+        method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        if method == 'M-Pesa':
+            return
+        show = method == 'Mixed' and self._elec_method_name() == 'M-Pesa'
+        if hasattr(self, '_mpesa_frame'):
+            try:
+                self._mpesa_frame.setVisible(show)
+            except RuntimeError:
+                pass
+        if show:
+            cfg = self._cfg()
+            till = cfg.get('mpesa_till', '').strip()
+            pb = cfg.get('mpesa_paybill', '').strip()
+            biz = cfg.get('mpesa_business_name', '') or cfg.get('shop_name', 'Shop')
+            parts = [biz]
+            if till:
+                parts.append(f'Till: {till}')
+            if pb:
+                parts.append(f'Paybill: {pb}')
+            if not till and not pb:
+                parts.append('Set Till/Paybill in Settings → M-Pesa')
+            if hasattr(self, '_mpesa_info'):
+                self._mpesa_info.setText(' · '.join(parts))
+
     def _on_elec_paid_changed(self, *_args):
+        if not getattr(self, '_elec_programmatic', False):
+            self._elec_paid_dirty = True
         # Split tender: remaining cash due re-fills Cash Paid when not dirty
         self._recalc()
 
@@ -467,6 +687,9 @@ class SalesTab(QWidget):
             except Exception:
                 if method in ('Cash', 'Mixed'):
                     self._cash_paid_dirty = True
+            if method == 'Mixed' and self._maybe_autofill_split_remainder():
+                self._compute_rounding()
+                self._update_rounding_ui()
         self._calc_change()
 
     def _focus_cash_paid(self):
@@ -529,6 +752,8 @@ class SalesTab(QWidget):
                 and cfg.get('autofill_cash_paid', '1') != '0'
             )
         if not ok:
+            return False
+        if self._is_part_sale():
             return False
         # Split: only autofill the cash portion, not electronic + cash
         due = self._cash_due_amount()
@@ -611,7 +836,7 @@ class SalesTab(QWidget):
                     f"QFrame#posRoundFrame{{background:{C['card2']};"
                     f"border:1px solid {C['border2']};border-radius:8px;}}")
 
-        # Split tender panel — only when Mixed (Cash optional strip clutters Classic/Explorer)
+        # Split tender panel — Mixed / Split Pay tile (all layouts)
         show_split = method == 'Mixed'
         if hasattr(self, '_split_frame'):
             self._split_frame.setVisible(show_split)
@@ -624,25 +849,38 @@ class SalesTab(QWidget):
                     f"color:{mute};font-size:12px;background:transparent;")
                 self._split_hdr.setStyleSheet(
                     f"color:{mute};font-size:11px;font-weight:700;background:transparent;")
-                # Force Mixed label when electronic amount entered on Cash
                 elec = float(info.get('electronic') or 0)
                 cash_due = float(info.get('cash_rounded') or 0)
                 cash_paid = float(self._paid.value() or 0) if hasattr(self, '_paid') else cash_due
                 cur = self._currency
                 em = self._elec_method_name()
                 if elec > 0.009:
-                    self._split_summary.setText(
-                        f'{em} {cur} {elec:,.2f}  +  Cash {cur} {cash_paid:,.2f}'
-                        f'  =  {cur} {elec + cash_paid:,.2f}'
-                        f'   (cash due {cur} {cash_due:,.2f})')
-                    self._split_hdr.setText('Split payment')
+                    total_tender = round(elec + cash_paid, 2)
+                    if self._is_part_sale():
+                        due_now = self._amount_due()
+                        bal = max(0.0, round(due_now - total_tender, 2))
+                        self._split_summary.setText(
+                            f'{em} {cur} {elec:,.2f}  +  Cash {cur} {cash_paid:,.2f}'
+                            f'  =  {cur} {total_tender:,.2f}'
+                            f'   ·  on account {cur} {bal:,.2f}')
+                        self._split_hdr.setText('Split Pay — remainder on account')
+                    else:
+                        self._split_summary.setText(
+                            f'{em} {cur} {elec:,.2f}  +  Cash {cur} {cash_paid:,.2f}'
+                            f'  =  {cur} {total_tender:,.2f}'
+                            f'   (cash due {cur} {cash_due:,.2f})')
+                        self._split_hdr.setText('Split Pay')
                 else:
-                    self._split_summary.setText(
-                        'Enter electronic amount for 2-way pay '
-                        '(e.g. M-Pesa + Cash). Leave 0 for cash only.')
-                    self._split_hdr.setText(
-                        'Split payment (optional)' if method == 'Cash'
-                        else 'Split payment — enter both tenders')
+                    if self._is_part_sale():
+                        self._split_summary.setText(
+                            f'Type cash and {em} paid now. Anything left is customer debt.')
+                        self._split_hdr.setText('Split Pay — remainder on account')
+                    else:
+                        self._split_summary.setText(
+                            f'Type cash paid (e.g. 500). Remaining due is {em}. '
+                            'Or type the electronic amount first — cash fills the rest.')
+                        self._split_hdr.setText('Split Pay — cash + electronic')
+                self._sync_split_mpesa_ui()
 
 
     def _is_till_method(self, method=None):
@@ -720,7 +958,7 @@ class SalesTab(QWidget):
         method = self._pay.currentText()
         if self._is_till_method():
             self._set_paid_value(self._amount_due())
-        elif method in ('Cash', 'Mixed'):
+        elif method in ('Cash', 'Mixed') and not self._is_part_sale():
             self._maybe_autofill_cash_paid(focus=False)
         self._calc_change()
 
@@ -740,6 +978,20 @@ class SalesTab(QWidget):
                 b.blockSignals(True)
                 b.setChecked(k == method)
                 b.blockSignals(False)
+        # Credit Sale leaves tender tiles unchecked. Part pay keeps Cash/Split/etc.
+        if method in ('Credit Sale', 'Credit Account'):
+            if hasattr(self, '_pay_btns'):
+                for b in self._pay_btns.values():
+                    if not b.isEnabled():
+                        continue
+                    b.blockSignals(True)
+                    b.setChecked(False)
+                    b.blockSignals(False)
+        try:
+            from desktop.pos.checkout_pro_chrome import sync_sale_type_from_method
+            sync_sale_type_from_method(self, method)
+        except Exception:
+            pass
 
         from desktop.utils.auto_fill import AutoFillService
 
@@ -755,13 +1007,16 @@ class SalesTab(QWidget):
         # Switching payment method resets Cash Paid dirty flag for Cash/Mixed
         if AutoFillService.is_cash_like(method):
             self._cash_paid_dirty = False
+            self._elec_paid_dirty = False
         else:
             # Leaving split methods — clear electronic portion
             if hasattr(self, '_elec_paid'):
                 self._elec_paid.blockSignals(True)
                 self._elec_paid.setValue(0)
                 self._elec_paid.blockSignals(False)
+            self._elec_paid_dirty = False
 
+        part = self._is_part_sale()
         if is_mpesa:
             cfg = self._cfg()
             till = cfg.get('mpesa_till', '').strip()
@@ -775,22 +1030,27 @@ class SalesTab(QWidget):
             if not till and not pb:
                 parts.append('Set Till/Paybill in Settings → M-Pesa')
             self._mpesa_info.setText(' · '.join(parts))
-            # Received Amount for Till variance (not Cash Paid auto-fill)
             self._set_cash_paid_ui_visible(True)
             if hasattr(self, '_amount_paid_cap'):
                 self._amount_paid_cap.setText('Amount Paid')
             self._paid.setEnabled(True)
-            self._set_paid_value(self._amount_due())
-            self._paid.setToolTip('Amount Paid — enter what customer paid via Till')
+            if part:
+                self._paid.setToolTip('Amount paid now via Till (remainder on account)')
+                self._chg_lbl.setText('Balance Due')
+                if self._paid.value() + 0.009 >= self._amount_due():
+                    self._set_paid_value(0.0, mark_clean=True)
+            else:
+                self._set_paid_value(self._amount_due())
+                self._paid.setToolTip('Amount Paid — enter what customer paid via Till')
+                self._chg_lbl.setText('Change')
             self._pay_lbl.setText('Method')
             if getattr(self, '_checkout_layout', '') == 'checkout_pro':
-                self._chg_lbl.setText('Change')
+                if not part:
+                    self._chg_lbl.setText('Change')
                 if hasattr(self, '_cash_paid_lbl'):
                     self._cash_paid_lbl.hide()
                 if hasattr(self, '_pay_lbl'):
                     self._pay_lbl.hide()
-            else:
-                self._chg_lbl.setText('Change')
         elif method in ('Credit Sale', 'Credit Account'):
             self._set_cash_paid_ui_visible(True)
             if hasattr(self, '_amount_paid_cap'):
@@ -801,15 +1061,24 @@ class SalesTab(QWidget):
             self._paid.setToolTip('')
             self._chg_lbl.setText('Change')
         elif AutoFillService.hides_cash_paid_ui(method):
-            # Card / Bank / Cheque / Airtel — hide Cash Paid & Change
-            self._set_cash_paid_ui_visible(False)
-            self._set_paid_value(self._amount_due())
-            self._paid.setEnabled(False)
-            self._mpesa_ref.clear()
-            self._paid.setToolTip('')
-            self._chg_lbl.setText('Change')
+            if part:
+                self._set_cash_paid_ui_visible(True)
+                if hasattr(self, '_amount_paid_cap'):
+                    self._amount_paid_cap.setText('Amount Paid')
+                self._paid.setEnabled(True)
+                self._mpesa_ref.clear()
+                self._paid.setToolTip('Amount paid now (remainder on account)')
+                self._chg_lbl.setText('Balance Due')
+                if self._paid.value() + 0.009 >= self._amount_due():
+                    self._set_paid_value(0.0, mark_clean=True)
+            else:
+                self._set_cash_paid_ui_visible(False)
+                self._set_paid_value(self._amount_due())
+                self._paid.setEnabled(False)
+                self._mpesa_ref.clear()
+                self._paid.setToolTip('')
+                self._chg_lbl.setText('Change')
         elif method == 'Part Payment':
-            # Partial pay — never auto-fill amount (intentional credit remainder)
             self._set_cash_paid_ui_visible(True)
             if hasattr(self, '_amount_paid_cap'):
                 self._amount_paid_cap.setText('Amount Paid')
@@ -817,19 +1086,33 @@ class SalesTab(QWidget):
             self._mpesa_ref.clear()
             self._paid.setToolTip('Amount paid now (remainder on credit)')
             self._chg_lbl.setText('Balance Due')
-            # Leave current paid unless zeroed for a fresh part-payment flow
             if self._paid.value() <= 0.009:
                 self._set_paid_value(0.0)
         else:
-            # Cash / Mixed — smart Cash Paid = Amount Due (post rounding)
+            # Cash / Mixed
             self._set_cash_paid_ui_visible(True)
             if hasattr(self, '_amount_paid_cap'):
-                self._amount_paid_cap.setText('Amount Paid')
+                self._amount_paid_cap.setText(
+                    'Cash paid' if method == 'Mixed' else 'Amount Paid')
             self._paid.setEnabled(True)
             self._mpesa_ref.clear()
-            self._paid.setToolTip('Amount Paid — defaults to Amount Due; edit for change')
-            self._chg_lbl.setText('Change')
-            self._maybe_autofill_cash_paid(focus=False)
+            if part:
+                self._paid.setToolTip(
+                    'Cash paid now. On Split, enter M-Pesa/card too; leftover is debt.'
+                    if method == 'Mixed'
+                    else 'Amount paid now (remainder on account)')
+                self._chg_lbl.setText('Balance Due')
+                if method == 'Mixed':
+                    self._sync_split_mpesa_ui()
+            else:
+                self._paid.setToolTip(
+                    'Cash tendered. On Split Pay, remaining due is the electronic method.'
+                    if method == 'Mixed'
+                    else 'Amount Paid — defaults to Amount Due; edit for change')
+                self._chg_lbl.setText('Change')
+                self._maybe_autofill_cash_paid(focus=False)
+                if method == 'Mixed':
+                    self._sync_split_mpesa_ui()
         self._update_rounding_ui()
         self._calc_change()
 
@@ -913,24 +1196,22 @@ class SalesTab(QWidget):
 
     def _on_barcode_enter(self, text: str):
         """Barcode / SKU Enter — add exact match and clear search for next scan."""
+        t = getattr(self, '_search_filter_timer', None)
+        if t is not None:
+            t.stop()
         q = (text or '').strip()
         if not q:
             return
-        ql = q.lower()
+        from desktop.utils.pos_search import filter_pos_products, match_score
+        ranked = filter_pos_products(self.products, q, limit=8)
         hit = None
-        for p in self.products:
-            sku = (p.get('sku') or '').strip().lower()
-            bar = (p.get('barcode') or '').strip().lower()
-            if ql == sku or ql == bar or ql == str(p.get('id', '')):
-                hit = p
-                break
-        if hit is None:
-            matches = [p for p in self.products
-                       if ql in (p.get('sku') or '').lower()
-                       or ql in (p.get('barcode') or '').lower()
-                       or ql in (p.get('name') or '').lower()]
-            if len(matches) == 1:
-                hit = matches[0]
+        if ranked:
+            top = ranked[0]
+            sc = match_score(q, top)
+            if sc is not None and sc <= 1:
+                hit = top
+            elif len(ranked) == 1:
+                hit = ranked[0]
         if hit is not None:
             try:
                 stock_n = float(hit.get('stock', 0) or 0)
@@ -938,8 +1219,7 @@ class SalesTab(QWidget):
                 stock_n = 0
             if stock_n <= 0:
                 _sfx('warning')
-                QMessageBox.information(self, 'Out of stock',
-                                        f'{(hit.get("name") or "Item")} is out of stock.')
+                soft_warn(self, f'{(hit.get("name") or "Item")} is out of stock.')
             else:
                 self._add(hit, from_scan=True)
             self._search.clear()
@@ -993,8 +1273,31 @@ class SalesTab(QWidget):
                 pass
 
     def _filter(self, defer: bool = False):
-        q   = self._search.text().strip().lower()
-        cat = self._cat.currentText()
+        # QLineEdit.textChanged / QComboBox.currentTextChanged pass a str.
+        if isinstance(defer, str):
+            t = getattr(self, '_search_filter_timer', None)
+            if t is None:
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.setInterval(120)
+                t.timeout.connect(lambda: self._apply_product_filter(False))
+                self._search_filter_timer = t
+            t.start()
+            return
+        self._apply_product_filter(bool(defer))
+
+    def _apply_product_filter(self, defer: bool = False):
+        from desktop.utils.pos_search import SEARCH_LIMIT, filter_pos_products
+        q = ''
+        try:
+            q = self._search.text()
+        except Exception:
+            q = ''
+        cat = ''
+        try:
+            cat = self._cat.currentText()
+        except Exception:
+            cat = ''
         try:
             from desktop.utils.display_category import display_category as _dcat
 
@@ -1009,21 +1312,9 @@ class SalesTab(QWidget):
                 return (cat in ('All Categories', 'All', '')
                         or (p.get('category') or 'General') == cat)
 
-        filtered = [p for p in self.products
-                    if (not q or q in p.get('name', '').lower()
-                        or q in (p.get('sku') or '').lower()
-                        or q in (p.get('barcode') or '').lower())
-                    and _cat_match(p)]
-        # Light typo tolerance when substring finds nothing
-        if q and not filtered and len(q) >= 3:
-            import difflib
-            names = {
-                (p.get('name') or '').lower(): p
-                for p in self.products
-                if _cat_match(p)
-            }
-            close = difflib.get_close_matches(q, names.keys(), n=12, cutoff=0.62)
-            filtered = [names[n] for n in close]
+        filtered = filter_pos_products(
+            self.products, q, category=cat, cat_match=_cat_match,
+            limit=SEARCH_LIMIT)
         show_empty = getattr(self, '_show_empty_overlay', None)
         if not filtered:
             self._prod_grid.clear()
@@ -1039,7 +1330,7 @@ class SalesTab(QWidget):
                 getattr(self, '_categories_by_name', None) or {})
             cols = self._product_columns()
             # Typing / category change: sync. Tab open: chunked for smoothness.
-            use_chunk = bool(defer) and not q
+            use_chunk = bool(defer) and not str(q or '').strip()
             self._prod_grid.populate(filtered, columns=cols, chunked=use_chunk)
             self._grid_painted = True
 
@@ -1050,7 +1341,16 @@ class SalesTab(QWidget):
             return
         if visible and panel is not None:
             try:
-                empty.setGeometry(0, 56, max(120, panel.width()), max(80, panel.height() - 56))
+                scroll = getattr(self, '_prod_scroll', None)
+                if scroll is not None and scroll.isVisible():
+                    empty.setGeometry(scroll.geometry())
+                else:
+                    top = 56
+                    chips = getattr(self, '_cat_chips', None)
+                    if chips is not None and chips.isVisible():
+                        top = max(top, chips.y() + chips.height())
+                    empty.setGeometry(
+                        0, top, max(120, panel.width()), max(80, panel.height() - top))
                 empty.raise_()
             except Exception:
                 pass
@@ -1071,18 +1371,28 @@ class SalesTab(QWidget):
 
     def _product_columns(self) -> int:
         layout_id = getattr(self, '_checkout_layout', 'product_explorer')
-        # Checkout Pro: ~2-column product grid (narrow left rail).
         if layout_id == 'checkout_pro':
-            return 2
+            # Measured, not assumed: a hardcoded 2 clipped the right-hand card
+            # whenever the Pro product column was under ~560px.
+            try:
+                left = getattr(self, '_product_panel', None) or self._left_panel
+                available = int(left.width()) - 48
+            except Exception:
+                available = 380
+            if hasattr(self, '_prod_grid'):
+                return self._prod_grid.columns_for_width(available)
+            return 1
         try:
             left = getattr(self, '_product_panel', None) or self._left_panel
-            available = max(640, left.width() - 48)
+            # Measured, never floored: the catalog column is drag-resizable now,
+            # so a minimum of 640 would clip cards once it is narrowed.
+            available = max(160, left.width() - 48)
         except Exception:
             available = 760
         if layout_id == 'retail_classic':
             # Prefer denser list feel on supermarket layout
             if hasattr(self, '_prod_grid'):
-                return min(5, max(3, self._prod_grid.columns_for_width(available)))
+                return min(5, self._prod_grid.columns_for_width(available))
         if hasattr(self, '_prod_grid'):
             return self._prod_grid.columns_for_width(available)
         card_w = 214 if self._is_light else 206
@@ -1250,8 +1560,21 @@ class SalesTab(QWidget):
         self._cnt.setText(f"{n} item{'s' if n != 1 else ''}")
         if getattr(self, '_checkout_layout', '') == 'checkout_pro':
             hdr = getattr(self, '_sale_hdr', None)
-            if hdr is not None:
+            if hdr is not None and not getattr(self, '_cart_maximized', False):
                 hdr.setText(f'Current Sale ({n} item{"s" if n != 1 else ""})')
+            elif getattr(self, '_cart_maximized', False):
+                cnt = getattr(self, '_cnt', None)
+                if cnt is not None:
+                    try:
+                        cnt.setText(f'{n} item{"s" if n != 1 else ""}')
+                        cnt.show()
+                    except Exception:
+                        pass
+        try:
+            from desktop.pos.layouts.splitters import reveal_cart_stack
+            reveal_cart_stack(self)
+        except Exception:
+            pass
         self._recalc()
         self._update_hold_buttons()
 
@@ -1265,6 +1588,12 @@ class SalesTab(QWidget):
             self._resume_btn.setToolTip(
                 f'Restore held cart ({n} item{"s" if n != 1 else ""})'
                 if n else 'No held sale')
+        # Checkout Pro mirrors these buttons as tiles — keep both in step
+        try:
+            from desktop.pos.checkout_pro_chrome import sync_quick_action_state
+            sync_quick_action_state(self)
+        except Exception:
+            pass
 
     def _snapshot_pos(self):
         import copy
@@ -1289,27 +1618,43 @@ class SalesTab(QWidget):
             pay = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
         except Exception:
             pass
+        amount_paid = 0.0
+        try:
+            amount_paid = float(self._paid.value() or 0)
+        except Exception:
+            pass
+        elec = 0.0
+        emethod = ''
+        try:
+            elec = self._elec_portion() if self._is_split_method(pay) else 0.0
+            emethod = self._elec_method_name() if elec > 0.009 else ''
+        except Exception:
+            pass
+        mpesa_ref = ''
+        try:
+            mpesa_ref = self._mpesa_ref.text().strip() if hasattr(self, '_mpesa_ref') else ''
+        except Exception:
+            pass
         return {
             'cart': copy.deepcopy(self.cart),
             'customer_id': cust_id,
             'disc': disc_txt,
             'note': note,
             'payment': pay,
+            'sale_type': getattr(self, '_pro_sale_type', 'cash'),
             'credit_to_apply': float(getattr(self, '_credit_to_apply', 0) or 0),
+            'amount_paid': amount_paid,
+            'electronic_paid': elec,
+            'electronic_method': emethod,
+            'mpesa_ref': mpesa_ref,
         }
 
     def _hold_sale(self):
         if not self.cart:
             _sfx('warning')
-            QMessageBox.information(self, 'Empty Cart', 'Add items before holding a sale.')
+            soft_warn(self, 'Add items before holding a sale.')
             return
-        if self._held and self._held.get('cart'):
-            r = QMessageBox.question(
-                self, 'Replace Held Sale?',
-                'A sale is already held. Replace it with the current cart?',
-                QMessageBox.Yes | QMessageBox.No)
-            if r != QMessageBox.Yes:
-                return
+        replaced = bool(self._held and self._held.get('cart'))
         snap = self._snapshot_pos()
         self._held = snap
         try:
@@ -1320,24 +1665,18 @@ class SalesTab(QWidget):
         self._clear()
         self._update_hold_buttons()
         _sfx('ok')
-        QMessageBox.information(
-            self, 'Sale Held',
-            'Cart parked. Use Resume to restore it.\n'
-            '(Saved locally — survives leaving Sales / restarting the app.)')
+        if replaced:
+            info_toast(self, 'Held sale replaced — use Resume to restore.')
+        else:
+            info_toast(self, 'Sale held — use Resume to restore.')
 
     def _suspend_sale(self):
         """Checkout Pro Suspend — same park backend as Hold (design label)."""
         if not self.cart:
             _sfx('warning')
-            QMessageBox.information(self, 'Empty Cart', 'Add items before suspending a sale.')
+            soft_warn(self, 'Add items before suspending a sale.')
             return
-        if self._held and self._held.get('cart'):
-            r = QMessageBox.question(
-                self, 'Replace Suspended Sale?',
-                'A sale is already parked. Replace it with the current cart?',
-                QMessageBox.Yes | QMessageBox.No)
-            if r != QMessageBox.Yes:
-                return
+        replaced = bool(self._held and self._held.get('cart'))
         snap = self._snapshot_pos()
         self._held = snap
         try:
@@ -1348,9 +1687,10 @@ class SalesTab(QWidget):
         self._clear()
         self._update_hold_buttons()
         _sfx('ok')
-        QMessageBox.information(
-            self, 'Sale Suspended',
-            'Sale suspended and parked locally. Restore it from Resume / Hold.')
+        if replaced:
+            info_toast(self, 'Parked sale replaced — restore from Resume / Hold.')
+        else:
+            info_toast(self, 'Sale suspended — restore from Resume / Hold.')
 
     def _open_recent_sales(self):
         """Open business-day sales browser for the selected (or today) date."""
@@ -1359,6 +1699,36 @@ class SalesTab(QWidget):
     def _business_day_iso(self) -> str:
         from desktop.utils.shop_time import business_day_iso
         return business_day_iso(getattr(self, '_business_day', None))
+
+    def _ensure_business_day_current(self):
+        """Refresh QDateEdit max to shop today; unstick stale 'today' after year/clock drift."""
+        from datetime import date as date_cls
+        from desktop.utils.security import can_set_business_day
+        from desktop.utils.shop_time import shop_today
+        from desktop.utils.date_controls import apply_shop_day_edit
+        today = shop_today()
+        ed = getattr(self, '_biz_date', None)
+        cur = getattr(self, '_business_day', today)
+        if not isinstance(cur, date_cls):
+            try:
+                cur = date_cls(cur.year(), cur.month(), cur.day())
+            except Exception:
+                cur = today
+        if ed is not None:
+            old_max = ed.maximumDate()
+            try:
+                old_max_d = date_cls(old_max.year(), old_max.month(), old_max.day())
+            except Exception:
+                old_max_d = today
+            # Max was frozen before calendar/clock moved forward → prior "today" pin
+            if old_max_d < today and (not can_set_business_day(self.user) or cur >= old_max_d):
+                cur = today
+        if not can_set_business_day(self.user) or cur > today:
+            cur = today
+        self._business_day = cur
+        if ed is not None:
+            self._business_day = apply_shop_day_edit(ed, cur, today=today)
+        self._sync_business_day_warn()
 
     def _sync_business_day_warn(self):
         warn = getattr(self, '_biz_warn', None)
@@ -1374,16 +1744,14 @@ class SalesTab(QWidget):
     def _on_business_day_changed(self, qdate):
         from desktop.utils.security import can_set_business_day
         from desktop.utils.shop_time import shop_today
+        from desktop.utils.date_controls import apply_shop_day_edit
         from datetime import date as date_cls
-        from PyQt5.QtCore import QDate
         today = shop_today()
+        ed = getattr(self, '_biz_date', None)
         if not can_set_business_day(self.user):
             self._business_day = today
-            ed = getattr(self, '_biz_date', None)
             if ed is not None:
-                ed.blockSignals(True)
-                ed.setDate(QDate(today.year, today.month, today.day))
-                ed.blockSignals(False)
+                apply_shop_day_edit(ed, today, today=today)
             self._sync_business_day_warn()
             return
         try:
@@ -1391,14 +1759,10 @@ class SalesTab(QWidget):
         except Exception:
             return
         if new_day > today:
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, 'Invalid Date', 'Sale date cannot be in the future.')
-            ed = getattr(self, '_biz_date', None)
-            if ed is not None:
-                ed.blockSignals(True)
-                ed.setDate(QDate(today.year, today.month, today.day))
-                ed.blockSignals(False)
+            soft_warn(self, 'Sale date cannot be in the future.')
             new_day = today
+            if ed is not None:
+                apply_shop_day_edit(ed, today, today=today)
         old = getattr(self, '_business_day', today)
         self._business_day = new_day
         self._sync_business_day_warn()
@@ -1417,14 +1781,14 @@ class SalesTab(QWidget):
 
     def _reset_business_day_today(self):
         from desktop.utils.shop_time import shop_today
-        from PyQt5.QtCore import QDate
+        from desktop.utils.date_controls import apply_shop_day_edit
         today = shop_today()
         ed = getattr(self, '_biz_date', None)
+        self._business_day = today
         if ed is not None:
-            ed.setDate(QDate(today.year, today.month, today.day))
-        else:
-            self._business_day = today
-            self._sync_business_day_warn()
+            # Must raise maximumDate before setDate or Qt keeps the old year
+            self._business_day = apply_shop_day_edit(ed, today, today=today)
+        self._sync_business_day_warn()
 
     def _open_business_day_sales(self):
         from desktop.dialogs.business_day_dialog import (
@@ -1479,10 +1843,9 @@ class SalesTab(QWidget):
         except Exception:
             pass
         _sfx('ok')
-        QMessageBox.information(
-            self, 'Copied to Cart',
-            f'{len(items)} line(s) loaded for business day {self._business_day_iso()}.\n'
-            'Review quantities and Complete Sale when ready.',
+        info_toast(
+            self,
+            f'{len(items)} line(s) loaded for {self._business_day_iso()} — review then Complete Sale.',
         )
 
     def _focus_notes(self):
@@ -1508,7 +1871,7 @@ class SalesTab(QWidget):
             except Exception:
                 held = None
         if not held or not held.get('cart'):
-            QMessageBox.information(self, 'Nothing Held', 'No parked sale to restore.')
+            soft_warn(self, 'No parked sale to restore.')
             return
         if self.cart:
             r = QMessageBox.question(
@@ -1527,6 +1890,14 @@ class SalesTab(QWidget):
             self._note.setText(str(held.get('note') or ''))
         pay = held.get('payment') or 'Cash'
         self._select_pay_method(pay)
+        st = held.get('sale_type')
+        if st and hasattr(self, '_sale_type') and hasattr(self._sale_type, 'set_current'):
+            try:
+                self._sale_type.set_current(st, emit=True)
+            except Exception:
+                self._pro_sale_type = st
+        elif st:
+            self._pro_sale_type = st
         self._credit_to_apply = float(held.get('credit_to_apply') or 0)
         cid = held.get('customer_id')
         try:
@@ -1535,6 +1906,26 @@ class SalesTab(QWidget):
             elif hasattr(self, '_customer') and hasattr(self._customer, 'select_walk_in'):
                 self._customer.select_walk_in()
             self._on_customer_changed()
+        except Exception:
+            pass
+        # Restore tenders after sale-type chrome so Part pay does not wipe them
+        try:
+            em = (held.get('electronic_method') or '').strip()
+            if em and hasattr(self, '_elec_method'):
+                idx = self._elec_method.findText(em)
+                if idx >= 0:
+                    self._elec_method.setCurrentIndex(idx)
+            elec = float(held.get('electronic_paid') or 0)
+            paid = float(held.get('amount_paid') or 0)
+            if elec > 0.009:
+                self._set_elec_value(elec, mark_clean=False)
+                self._elec_paid_dirty = True
+            if paid > 0.009 or elec > 0.009:
+                self._set_paid_value(paid, mark_clean=False)
+                self._cash_paid_dirty = True
+            ref = (held.get('mpesa_ref') or '').strip()
+            if ref and hasattr(self, '_mpesa_ref'):
+                self._mpesa_ref.setText(ref)
         except Exception:
             pass
         self._held = None
@@ -1656,9 +2047,7 @@ class SalesTab(QWidget):
             self._refresh_cart()
 
     def _cart_disc_value(self):
-        # Checkout Pro shows combined total in the disc field — never parse it back as cart disc
-        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
-            return float(getattr(self, '_pro_cart_disc', 0.0) or 0.0)
+        """Cart-level discount only (not line discounts). Same across all layouts."""
         parsed = self._parse_kes(self._disc.text())
         return 0.0 if parsed is None else parsed
 
@@ -1668,7 +2057,13 @@ class SalesTab(QWidget):
             parsed = 0.0
         self._disc.blockSignals(True)
         self._disc.setText(f'{parsed:.2f}')
+        self._disc.setReadOnly(False)
         self._disc.blockSignals(False)
+        # Keep legacy Pro mirror in sync if present
+        try:
+            self._pro_cart_disc = float(parsed)
+        except Exception:
+            pass
         self._recalc()
 
     def _recalc(self):
@@ -1690,6 +2085,10 @@ class SalesTab(QWidget):
             self._disc.blockSignals(True)
             self._disc.setText(f'{cart_dis:.2f}')
             self._disc.blockSignals(False)
+        try:
+            self._pro_cart_disc = float(cart_dis)
+        except Exception:
+            pass
         dis = round(line_dis + cart_dis, 2)
         tax = round(max(0, sub - dis) * rate, 2)
         tot = round(max(0, sub - dis) + tax, 2)
@@ -1700,31 +2099,22 @@ class SalesTab(QWidget):
             self._sub_lbl.setText(f'{cur} {sub:,.2f}')
             self._tax_lbl.setText(f'{cur} {tax:,.2f}')
             self._tot_lbl.setText(f'{cur} {tot:,.2f}')
-        # Checkout Pro: disc field is a read-only TOTAL (line + cart), never fed back into cart_dis
-        if getattr(self, '_checkout_layout', '') == 'checkout_pro':
-            try:
-                if hasattr(self, '_disc_lbl') and self._disc_lbl is not None:
-                    self._disc_lbl.setText(f'Total Discount ({cur})')
-                    self._disc_lbl.setToolTip(
-                        f'Line discounts {line_dis:,.2f} + cart {cart_dis:,.2f}')
-                if hasattr(self, '_disc') and self._disc is not None:
-                    self._disc.blockSignals(True)
-                    self._disc.setReadOnly(True)
-                    self._disc.setText(f'{dis:.2f}')
-                    self._disc.setToolTip(
-                        f'Total discount {cur} {dis:,.2f} (lines {line_dis:,.2f}). '
-                        'Double-click a cart row to edit line Disc.')
-                    self._disc.blockSignals(False)
-            except Exception:
-                pass
-        elif hasattr(self, '_disc') and self._disc.isReadOnly():
-            try:
+        # Cart-level Discount field stays editable on every layout (line Disc is per row)
+        try:
+            if hasattr(self, '_disc_lbl') and self._disc_lbl is not None:
+                self._disc_lbl.setText(f'Discount ({cur})')
+                tip = (
+                    f'Cart-level discount in {cur}. '
+                    f'Line discounts currently {line_dis:,.2f} (edit Disc on each cart row).'
+                )
+                self._disc_lbl.setToolTip(tip)
+            if hasattr(self, '_disc') and self._disc is not None:
                 self._disc.setReadOnly(False)
-                self._disc.setToolTip('Click, type e.g. 60, press Enter')
-                if hasattr(self, '_disc_lbl') and self._disc_lbl is not None:
-                    self._disc_lbl.setText(f'Discount ({cur})')
-            except Exception:
-                pass
+                self._disc.setToolTip(
+                    f'Cart discount ({cur}). Type amount and press Enter. '
+                    'Per-item Disc is on each cart line.')
+        except Exception:
+            pass
         # Cap credit apply to new total
         if self._credit_to_apply > tot:
             self._credit_to_apply = tot
@@ -1748,12 +2138,12 @@ class SalesTab(QWidget):
         self._compute_rounding()
         self._update_rounding_ui()
         method = self._pay.currentText()
-        # Recalc Amount Due → update Cash Paid ONLY if not manually dirty
-        if method in ('Cash', 'Mixed'):
+        part = self._is_part_sale()
+        if method in ('Cash', 'Mixed') and not part:
             self._maybe_autofill_cash_paid(focus=False)
-        elif method == 'M-Pesa':
+        elif method == 'M-Pesa' and not part:
             self._set_paid_value(self._amount_due())
-        elif method in ('Card', 'Bank Transfer', 'Cheque', 'Airtel Money'):
+        elif method in ('Card', 'Bank Transfer', 'Cheque', 'Airtel Money') and not part:
             self._set_paid_value(self._amount_due())
         self._calc_change()
 
@@ -1771,13 +2161,16 @@ class SalesTab(QWidget):
         )
         chg_sz = FS['change'] if self._is_light else '22px'
 
-        if method == 'Part Payment':
-            rem = max(0.0, round(due - paid, 2))
+        if self._is_part_sale() or method == 'Part Payment':
+            cash, elec, paid_now = self._tendered_now(method)
+            rem = max(0.0, round(due - paid_now, 2))
             self._chg_lbl.setText('Balance Due')
             self._chg.setText(f'{self._currency} {rem:,.2f}')
             tone = ok_color if rem < 0.01 else warn_color
             self._chg.setStyleSheet(
                 f"color:{tone};font-size:{chg_sz};font-weight:700;background:transparent;")
+            if hasattr(self, '_split_frame') and self._split_frame.isVisible():
+                self._update_rounding_ui()
         elif AutoFillService.is_cash_like(method) or method in ('Credit Sale', 'Credit Account'):
             elec = self._elec_portion() if self._is_split_method(method) else 0.0
             # Split: Change/Remaining is vs cash portion only
@@ -1844,70 +2237,95 @@ class SalesTab(QWidget):
         StateResetManager.reset_pos(self, cfg, force_walk_in=True)
 
     def _process(self):
+        if getattr(self, '_processing_sale', False):
+            return
         if not self.cart:
             _sfx('warning')
-            QMessageBox.warning(self, 'Empty Cart', 'Add items before charging.'); return
+            soft_warn(self, 'Add items before charging.')
+            return
         # Quotation mode (Checkout Pro): print preview only — no stock / payment
         if getattr(self, '_pro_sale_type', 'cash') == 'quotation':
             self._preview()
             return
+        self._processing_sale = True
+        charge = getattr(self, '_charge_btn', None)
+        if charge is not None:
+            try:
+                charge.setEnabled(False)
+            except Exception:
+                pass
+        try:
+            self._process_impl()
+        finally:
+            self._processing_sale = False
+            if charge is not None:
+                try:
+                    charge.setEnabled(True)
+                except Exception:
+                    pass
+
+    def _process_impl(self):
         pay_method = self._pay.currentText()
-        is_debt = pay_method in ('Part Payment', 'Credit Sale', 'Credit Account')
+        is_part = self._is_part_sale()
+        is_credit = self._is_credit_sale()
+        is_debt = is_part or is_credit
         due = self._amount_due()
         credit_applied = round(float(self._credit_to_apply or 0), 2)
         cfg = self.config_getter() or {}
         variance_enabled = cfg.get('variance_enabled', '1') == '1'
 
-        if pay_method in ('Cash', 'Mixed'):
+        if pay_method in ('Cash', 'Mixed') and not is_part:
             elec = self._elec_portion()
             cash_due = self._cash_due_amount()
             cash_paid = float(self._paid.value() or 0)
+            if pay_method == 'Mixed' and elec < 0.009 and cash_paid + 0.009 < due:
+                from desktop.utils.payment_tenders import remainder_electronic
+                rem = remainder_electronic(due, cash_paid, 0.0)
+                if rem > 0.009:
+                    self._set_elec_value(rem, mark_clean=True)
+                    self._compute_rounding()
+                    due = self._amount_due()
+                    elec = self._elec_portion()
+                    cash_due = self._cash_due_amount()
             if elec > 0.009:
                 if cash_paid + 0.009 < cash_due:
                     em = self._elec_method_name()
-                    QMessageBox.warning(
-                        self, 'Insufficient',
-                        f'Cash Paid is less than the cash portion due '
-                        f'({self._currency} {cash_due:,.2f}).\n\n'
-                        f'{em}: {self._currency} {elec:,.2f}\n'
-                        f'Cash due: {self._currency} {cash_due:,.2f}')
+                    soft_warn(
+                        self,
+                        f'Cash Paid is less than cash due '
+                        f'({self._currency} {cash_due:,.2f}); '
+                        f'{em}: {self._currency} {elec:,.2f}.')
                     return
             elif cash_paid + 0.009 < due:
-                QMessageBox.warning(
-                    self, 'Insufficient',
-                    'Cash Paid is less than Amount Due.\n\n'
-                    'Pay the remainder in cash, use Split payment '
-                    '(Electronic + Cash), or use Part Payment / Credit Sale.')
+                soft_warn(
+                    self,
+                    'Cash Paid is less than Amount Due — pay remainder, Split, or Part Payment.')
                 return
-        if pay_method == 'Part Payment' and self._paid.value() >= self._total:
-            QMessageBox.information(
-                self, 'No Balance',
-                'Amount paid covers the full total — use "Cash" instead of "Part Payment".')
-            return
+        if is_part:
+            _c, _e, _paid_chk = self._tendered_now(pay_method)
+            if _paid_chk < 0.01:
+                soft_warn(self, 'Enter the amount paid now — leftover becomes customer debt.')
+                return
+            if _paid_chk + 0.009 >= due:
+                soft_warn(self, 'Paid covers the full total — use Paid now instead of Part pay.')
+                return
         if pay_method == 'M-Pesa':
             if not cfg.get('mpesa_till', '').strip() and not cfg.get('mpesa_paybill', '').strip():
-                r = QMessageBox.question(
-                    self, 'M-Pesa Not Configured',
-                    'Till/Paybill is not set in Settings.\n\nRecord sale anyway?',
-                    QMessageBox.Yes | QMessageBox.No)
-                if r != QMessageBox.Yes:
-                    return
-            if self._paid.value() + 0.009 < due:
-                QMessageBox.warning(
-                    self, 'Insufficient',
+                soft_warn(
+                    self,
+                    'M-Pesa till/paybill not set in Settings — recording sale anyway.')
+            if not is_part and self._paid.value() + 0.009 < due:
+                soft_warn(
+                    self,
                     f'Received Amount is less than Expected ({self._currency} {due:,.2f}).')
                 return
 
-        # Amount actually collected via payment method (Till / cash / card)
-        if pay_method in ('Credit Sale', 'Credit Account'):
+        if is_credit:
             paid_now = 0.0
             cash_paid_now = 0.0
             elec_now = 0.0
         else:
-            cash_paid_now = float(self._paid.value() or 0)
-            elec_now = self._elec_portion() if self._is_split_method(pay_method) else 0.0
-            # amount_paid = total tendered (both methods when split)
-            paid_now = round(cash_paid_now + elec_now, 2) if elec_now > 0.009 else cash_paid_now
+            cash_paid_now, elec_now, paid_now = self._tendered_now(pay_method)
         elec_method_name = self._elec_method_name() if elec_now > 0.009 else ''
 
         cust_id = None
@@ -1936,9 +2354,7 @@ class SalesTab(QWidget):
             except Exception:
                 pass
         if credit_applied > 0.009 and not cust_id:
-            QMessageBox.warning(
-                self, 'Customer Required',
-                'Select a customer to apply store credit.')
+            soft_warn(self, 'Select a customer to apply store credit.')
             return
 
         variance_payload = None
@@ -1990,7 +2406,7 @@ class SalesTab(QWidget):
                         u.get('full_name') or u.get('username') or 'manager')
             if variance_payload.get('handling') == 'return_change':
                 change_amount = excess
-            # Confirm till payment with split description
+            # No centered Confirm M-Pesa modal — cashier already chose Till / M-Pesa
             handle_label = {
                 'return_change': 'Return Change',
                 'additional_payment': 'Additional Customer Payment',
@@ -2000,21 +2416,15 @@ class SalesTab(QWidget):
                 'advance': 'Advance Payment',
                 'miscellaneous': 'Miscellaneous',
             }.get(variance_payload['handling'], variance_payload['handling'])
-            if self._is_till_method(pay_method) and QMessageBox.question(
-                self, 'Confirm M-Pesa',
-                f'Confirm customer paid {self._currency} {paid_now:,.2f} via M-Pesa?\n\n'
-                f'Sale: {self._currency} {self._total:,.2f}\n'
-                f'Credit applied: {self._currency} {credit_applied:,.2f}\n'
-                f'Excess {self._currency} {excess:,.2f} → {handle_label}',
-                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
-                return
+            if self._is_till_method(pay_method):
+                info_toast(
+                    self,
+                    f'M-Pesa {self._currency} {paid_now:,.2f} · excess → {handle_label}',
+                    tone='ok',
+                    ms=2500,
+                )
         elif pay_method == 'M-Pesa':
-            if QMessageBox.question(
-                self, 'Confirm M-Pesa',
-                f'Confirm customer paid {self._currency} {paid_now:,.2f} via M-Pesa?',
-                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
-                return
-            # Variance disabled: treat excess as change returned (do not inflate sales)
+            # Proceed without Yes/No — Amount Paid already entered
             change_amount = max(0.0, excess)
         elif not is_debt and not variance_payload:
             if self._is_split_method(pay_method) and elec_now > 0.009:
@@ -2034,14 +2444,44 @@ class SalesTab(QWidget):
             sale_total = round(cart_total + round_adj, 2) if abs(round_adj) > 0.009 else cart_total
             elec = float(info.get('electronic') or elec_now or 0)
             is_split = elec > 0.009 and self._is_split_method(pay_method)
-            pay_label = (
-                'mixed' if is_split
-                else (pay_method.lower() if pay_method else 'cash')
-            )
+            if is_part:
+                pay_label = 'part payment'
+            elif is_credit:
+                pay_label = 'credit sale'
+            else:
+                pay_label = (
+                    'mixed' if is_split
+                    else (pay_method.lower() if pay_method else 'cash')
+                )
+            from desktop.utils.payment_tenders import build_tenders, format_tenders
+            tenders = []
+            if is_split:
+                tenders = build_tenders(
+                    cash_paid=cash_paid_now,
+                    electronic_paid=elec,
+                    electronic_method=elec_method_name,
+                    store_credit=credit_applied,
+                )
+            elif is_part and paid_now > 0.009:
+                tenders = build_tenders(
+                    cash_paid=paid_now if pay_method in ('Cash', 'Part Payment') else 0.0,
+                    electronic_paid=(
+                        paid_now if pay_method not in ('Cash', 'Part Payment', 'Mixed')
+                        else 0.0
+                    ),
+                    electronic_method=(
+                        pay_method if pay_method not in ('Cash', 'Part Payment', 'Mixed')
+                        else ''
+                    ),
+                    store_credit=credit_applied,
+                )
+                if pay_method not in ('Cash', 'Part Payment', 'Mixed') and paid_now > 0.009:
+                    elec = paid_now
+                    elec_method_name = pay_method
+                    cash_paid_now = 0.0
             note_bits = [self._note.text().strip()]
             if is_split:
-                note_bits.append(
-                    f'Split: {elec_method_name} {elec:,.2f} + Cash {cash_paid_now:,.2f}')
+                note_bits.append('Split: ' + format_tenders(tenders))
             notes_joined = ' | '.join(b for b in note_bits if b)
             sale_payload = {
                 'items':          self.cart,
@@ -2052,16 +2492,21 @@ class SalesTab(QWidget):
                 'original_total': cart_total,
                 'cash_rounding_adj': round_adj,
                 'electronic_paid': elec,
-                'electronic_method': elec_method_name if is_split else '',
-                'cash_paid':      cash_paid_now if is_split else paid_now,
+                'electronic_method': elec_method_name if elec > 0.009 else '',
+                'cash_paid':      cash_paid_now if (is_split or elec > 0.009) else paid_now,
                 'cash_original':  float(info.get('cash_original') or 0),
                 'cash_rounded':   float(info.get('cash_rounded') or 0),
                 'payment_method': pay_label,
                 'amount_paid':    paid_now,
                 'change_amount':  change_amount,
                 'credit_applied': credit_applied,
+                'payment_tenders': tenders,
                 'notes':          notes_joined,
-                'mpesa_ref':      self._mpesa_ref.text().strip() if pay_method == 'M-Pesa' else '',
+                'mpesa_ref': (
+                    self._mpesa_ref.text().strip()
+                    if (pay_method == 'M-Pesa' or (is_split and elec_method_name == 'M-Pesa'))
+                    else ''
+                ),
                 'sale_date':      self._business_day_iso(),
             }
             if cust_id:
@@ -2087,7 +2532,8 @@ class SalesTab(QWidget):
                         receipt_number=rn,
                         total=cart_total,
                         paid=paid_now + credit_applied,
-                        method=pay_method,
+                        method=pay_label,
+                        tenders=tenders,
                     )
                 else:
                     msg = (
@@ -2120,7 +2566,7 @@ class SalesTab(QWidget):
                             msg += f'Wallet:   {self._currency} {float(wb):,.2f}\n'
                     elif change_amount > 0:
                         msg += f'Change:   {self._currency} {change_amount:,.2f}\n'
-                    QMessageBox.information(self, 'Sale Complete', msg)
+                    sale_complete_feedback(self, 'Sale Complete', msg)
                 self._try_print_receipt(sid, rn)
                 # Refresh stock/products first, then force After Sale defaults
                 # (Walk-in must win after credit sale — do not leave John selected).
@@ -2136,10 +2582,10 @@ class SalesTab(QWidget):
             else:
                 err = (res or {}).get('error') if isinstance(res, dict) else None
                 _sfx('error')
-                QMessageBox.critical(self, 'Error', err or 'Failed to record sale.')
+                soft_warn(self, err or 'Failed to record sale.')
         except Exception as e:
             _sfx('error')
-            QMessageBox.critical(self, 'Error', str(e))
+            soft_warn(self, f'Sale failed: {e}')
 
     def _get_printer(self):
         if self._printer_mgr is None:
@@ -2234,22 +2680,19 @@ class SalesTab(QWidget):
             ).fetchone()
             db.close()
             if not row:
-                QMessageBox.warning(self, 'Not Found',
-                                    f'No sale found: {receipt}')
+                soft_warn(self, f'No sale found: {receipt}')
                 return
             if row['status'] == 'voided':
-                QMessageBox.warning(self, 'Voided',
-                                    'This sale was voided — receipt not reprinted.')
+                soft_warn(self, 'This sale was voided — receipt not reprinted.')
                 return
             data = self._build_print_data(row['id'], receipt)
             if not data:
-                QMessageBox.warning(self, 'Error', 'Could not load sale data.')
+                soft_warn(self, 'Could not load sale data.')
                 return
             self._get_printer().print_receipt(data)
-            QMessageBox.information(self, 'Sent',
-                                    f'Receipt {receipt} sent to printer queue.')
+            info_toast(self, f'Receipt {receipt} sent to printer.')
         except Exception as e:
-            QMessageBox.warning(self, 'Print Error', str(e))
+            soft_warn(self, f'Print error: {e}')
 
     def _void_sale(self):
         """Void a completed sale from POS (reason dropdown + Super-Admin PIN)."""
@@ -2266,17 +2709,16 @@ class SalesTab(QWidget):
             _sfx('ok')
             self.sale_completed.emit()
 
-    def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method):
+    def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method,
+                             tenders=None):
         """Auto-create debt linked to this completed sale (no orphan path)."""
         cust_id = None
         if hasattr(self, '_customer'):
             cust_id = self._customer.selected_id()
         if not cust_id or not sale_id or not receipt_number:
-            QMessageBox.critical(
-                self, 'Debt Invoice Error',
-                'The sale was recorded but debt could not be created '
-                '(missing customer, sale, or receipt).\n\n'
-                'Contact an admin — do not create orphan debts from Debt Management.')
+            soft_warn(
+                self,
+                'Sale recorded but debt invoice missing customer/sale/receipt — contact admin.')
             return
         try:
             from datetime import date as _date, timedelta as _td
@@ -2290,9 +2732,18 @@ class SalesTab(QWidget):
                 'due_date': (_date.today() + _td(days=30)).isoformat(),
                 'notes': f'Auto from POS {method}',
             })
-            if res and res.get('success'):
+            # Idempotent: create_sale may already have created the invoice.
+            if res and (res.get('success') or res.get('invoice_id')):
                 bal = float(res.get('balance') or 0)
                 inv = res.get('invoice_number', '')
+                if not inv and res.get('invoice_id'):
+                    try:
+                        existing = self.api.get_debt_invoice(int(res['invoice_id']))
+                        inv = (existing or {}).get('invoice_number') or inv
+                        if bal <= 0 and existing:
+                            bal = float(existing.get('balance') or 0)
+                    except Exception:
+                        pass
                 msg = (
                     f'✓  Credit sale recorded\n\n'
                     f'Receipt:  {receipt_number}\n'
@@ -2301,22 +2752,27 @@ class SalesTab(QWidget):
                     f'Paid now: {self._currency} {paid:,.2f}\n'
                     f'Balance:  {self._currency} {bal:,.2f}\n'
                 )
+                try:
+                    from desktop.utils.payment_tenders import format_tenders
+                    tlabel = format_tenders(tenders)
+                    if tlabel:
+                        msg += f'Tenders:  {tlabel}\n'
+                except Exception:
+                    pass
                 if bal <= 0.009:
                     msg += '\n✓ Fully paid'
                 else:
                     msg += '\n! Outstanding balance due'
-                QMessageBox.information(self, 'Sale Complete', msg)
+                sale_complete_feedback(self, 'Sale Complete', msg)
             else:
                 err = (res or {}).get('error', 'Failed to create debt invoice.')
-                QMessageBox.critical(
-                    self, 'Debt Invoice Error',
-                    f'The sale was recorded ({receipt_number}).\n'
-                    f'Debt create failed: {err}')
+                soft_warn(
+                    self,
+                    f'Sale {receipt_number} recorded — debt create failed: {err}')
         except Exception as e:
-            QMessageBox.critical(
-                self, 'Debt Invoice Error',
-                f'The sale was recorded ({receipt_number}).\n'
-                f'Failed to create debt: {e}')
+            soft_warn(
+                self,
+                f'Sale {receipt_number} recorded — debt create failed: {e}')
 
     def _get_debt_parent(self):
         """Minimal proxy so debt dialogs get api + currency."""
@@ -2329,7 +2785,8 @@ class SalesTab(QWidget):
 
     def _preview(self):
         if not self.cart:
-            QMessageBox.information(self, 'Empty', 'Add items to preview.'); return
+            soft_warn(self, 'Add items to preview.')
+            return
         try:
             from printing.printer_engine import generate_receipt_text
             cfg  = self.config_getter() or {}
@@ -2368,4 +2825,4 @@ class SalesTab(QWidget):
             cb = SecondaryBtn('Close'); cb.clicked.connect(dlg.close); lv.addWidget(cb)
             dlg.exec_()
         except Exception as e:
-            QMessageBox.critical(self, 'Preview Error', str(e))
+            soft_warn(self, f'Preview error: {e}')

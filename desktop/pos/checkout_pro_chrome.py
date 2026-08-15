@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
-    QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QSizePolicy, QVBoxLayout, QWidget, QMessageBox, QInputDialog,
+    QAbstractItemView, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QListWidget, QListWidgetItem, QPushButton, QRadioButton, QSizePolicy,
+    QVBoxLayout, QWidget, QMessageBox, QInputDialog,
 )
 
 from desktop.utils.theme import C, RADIUS, qss_alpha
@@ -112,6 +113,9 @@ def ensure_checkout_body_order(tab) -> None:
     always_show = {
         '_cust_card', '_pay_hdr', '_pay_seg', '_amount_paid_block', '_chg_frame', '_note',
     }
+    foot = getattr(tab, '_checkout_foot', None)
+    if getattr(tab, '_totals_pinned', False):
+        always_show -= {'_amount_paid_block', '_chg_frame'}
     ordered_named = []
     seen = set()
     for name in names:
@@ -127,6 +131,8 @@ def ensure_checkout_body_order(tab) -> None:
         seen.add(wid)
         ordered_named.append((name, w))
     for name, w in ordered_named:
+        if getattr(tab, '_totals_pinned', False) and _alive(foot) and w.parent() is foot:
+            continue
         try:
             bl.addWidget(w)
             if name in always_show:
@@ -165,8 +171,8 @@ def style_quiet_secondary_actions(tab) -> None:
         b = getattr(tab, name, None)
         if _alive(b):
             try:
-                b.setMinimumHeight(32)
-                b.setMaximumHeight(34)
+                b.setMinimumHeight(36)
+                b.setMaximumHeight(40)
                 b.setStyleSheet(quiet)
             except Exception:
                 pass
@@ -176,8 +182,8 @@ def style_quiet_secondary_actions(tab) -> None:
             try:
                 # Outline-only danger — never solid fill (avoids looking like active toggle)
                 b.setObjectName('posQuietDanger')
-                b.setMinimumHeight(32)
-                b.setMaximumHeight(34)
+                b.setMinimumHeight(36)
+                b.setMaximumHeight(40)
                 b.setStyleSheet(danger_q)
             except Exception:
                 pass
@@ -284,11 +290,303 @@ def apply_checkout_foot_rhythm(tab, *, pro_primary_only: bool = False) -> None:
             pass
 
 
+def _place_summary_in_pro_center(tab) -> None:
+    """Checkout Pro: Subtotal / Discount / Total due sit at the bottom of Current Sale."""
+    from desktop.utils.quiet_ui import safe_show
+
+    summary = getattr(tab, '_summary', None)
+    wrap = getattr(tab, '_sale_summary_wrap', None)
+    host = wrap if _alive(wrap) else summary
+    sp = getattr(tab, '_cart_splitter', None)
+    if not _alive(host) or not _alive(summary) or not _alive(sp):
+        return
+    if hasattr(summary, 'set_pinned_strip'):
+        try:
+            summary.set_pinned_strip(False)
+        except Exception:
+            pass
+    if hasattr(summary, 'set_pro_chrome'):
+        try:
+            summary.set_pro_chrome(True)
+        except Exception:
+            pass
+    try:
+        host.setMaximumHeight(16777215)
+        host.setMinimumHeight(88)
+        pol = host.sizePolicy()
+        pol.setHorizontalPolicy(QSizePolicy.Preferred)
+        pol.setVerticalPolicy(QSizePolicy.Preferred)
+        host.setSizePolicy(pol)
+        host.setStyleSheet(
+            'QWidget#posSaleSummaryWrap{background:transparent;border:none;}')
+    except Exception:
+        pass
+    try:
+        host.setAttribute(Qt.WA_DontShowOnScreen, False)
+        summary.setAttribute(Qt.WA_DontShowOnScreen, False)
+    except Exception:
+        pass
+    already = False
+    try:
+        for i in range(sp.count()):
+            if sp.widget(i) is host:
+                already = True
+                break
+    except Exception:
+        already = False
+    if not already:
+        try:
+            sp.addWidget(host)
+        except Exception:
+            pass
+    safe_show(host)
+    safe_show(summary)
+
+
+def pin_checkout_totals(tab) -> None:
+    """Keep Amount Paid on screen; pin Order Summary in the foot except Checkout Pro.
+
+    Checkout Pro puts Subtotal / Discount / Total due at the bottom of the
+    center Current Sale column. Classic / Explorer keep the summary strip in
+    the sticky pay foot so it is not scrolled away.
+    """
+    from desktop.utils.quiet_ui import safe_show
+
+    foot = getattr(tab, '_checkout_foot', None)
+    if not _alive(foot):
+        return
+    fl = foot.layout()
+    if fl is None:
+        return
+    summary = getattr(tab, '_summary', None)
+    wrap = getattr(tab, '_sale_summary_wrap', None)
+    host = wrap if _alive(wrap) else summary
+    is_pro = getattr(tab, '_checkout_layout', '') == 'checkout_pro'
+    if is_pro:
+        _place_summary_in_pro_center(tab)
+        host = None
+    elif not _alive(host) or not _alive(summary):
+        return
+
+    if (not is_pro) and _alive(summary):
+        if hasattr(summary, 'set_pinned_strip'):
+            try:
+                summary.set_pinned_strip(True)
+            except Exception:
+                pass
+        elif hasattr(summary, 'set_review_compact'):
+            try:
+                summary.set_review_compact(True)
+            except Exception:
+                pass
+
+    disc = getattr(tab, '_disc', None)
+    if _alive(disc):
+        try:
+            disc.setReadOnly(False)
+            disc.setMinimumHeight(32)
+            disc.setMaximumHeight(36)
+            disc.setFixedWidth(128)
+            disc.show()
+        except Exception:
+            pass
+    disc_lbl = getattr(tab, '_disc_lbl', None)
+    if _alive(disc_lbl):
+        try:
+            disc_lbl.show()
+        except Exception:
+            pass
+
+    amt = (
+        getattr(tab, '_amount_paid_block', None)
+        or getattr(tab, '_amount_block', None)
+    )
+    chg = getattr(tab, '_chg_frame', None)
+    pro_row = getattr(tab, '_pro_amount_sale_row', None)
+
+    if _alive(host):
+        try:
+            host.setMaximumHeight(220)
+            host.setMinimumHeight(100)
+            pol = host.sizePolicy()
+            pol.setHorizontalPolicy(QSizePolicy.Preferred)
+            pol.setVerticalPolicy(QSizePolicy.Maximum)
+            host.setSizePolicy(pol)
+        except Exception:
+            pass
+        if _alive(wrap):
+            wrap.setStyleSheet(
+                'QWidget#posSaleSummaryWrap{background:transparent;border:none;}')
+
+    # Foot stack (top → Complete Sale): totals, Amount Paid, Change, utilities, charge.
+    stack = []
+    if _alive(host):
+        stack.append(host)
+    if _alive(amt):
+        stack.append(amt)
+    if _alive(chg):
+        stack.append(chg)
+    for w in reversed(stack):
+        try:
+            w.setAttribute(Qt.WA_DontShowOnScreen, False)
+        except Exception:
+            pass
+        try:
+            fl.insertWidget(0, w)
+        except Exception:
+            pass
+        safe_show(w)
+        try:
+            w.show()
+        except Exception:
+            pass
+
+    if _alive(pro_row):
+        try:
+            pro_row.hide()
+        except Exception:
+            pass
+
+    tab._totals_pinned = True
+    style_amount_paid(tab)
+
+    # Classic/Explorer: cart list owns Current Sale when summary lives in the foot.
+    if not is_pro:
+        sp = getattr(tab, '_cart_splitter', None)
+        if _alive(sp) and sp.count() == 1:
+            try:
+                pane = sp.widget(0)
+                if _alive(pane):
+                    pane.setMaximumHeight(16777215)
+                    pane.setMinimumHeight(0)
+                    sp.setStretchFactor(0, 1)
+            except Exception:
+                pass
+
+
+def apply_secondary_action_grid(tab) -> None:
+    """Two-row Classic/Explorer footer so Clear…Returns never cram into one strip."""
+    foot = getattr(tab, '_checkout_foot', None)
+    if not _alive(foot):
+        return
+    fl = foot.layout()
+    if fl is None:
+        return
+    # Already converted?
+    if getattr(tab, '_sec_actions_grid_ok', False):
+        style_quiet_secondary_actions(tab)
+        return
+
+    buttons = []
+    for name in (
+        '_clr_btn', '_hold_btn', '_resume_btn', '_prv_btn',
+        '_reprint_btn', '_void_btn', '_returns_help_btn',
+    ):
+        b = getattr(tab, name, None)
+        if _alive(b):
+            buttons.append(b)
+    if len(buttons) < 4:
+        return
+
+    # Remove old QHBoxLayout row of secondary actions (first layout item before spacers/charge)
+    old_row = getattr(tab, '_checkout_sec_row', None)
+    try:
+        if old_row is not None:
+            # Detach widgets from old layout without deleting buttons
+            while old_row.count():
+                item = old_row.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    try:
+                        w.hide()
+                        w.setAttribute(Qt.WA_DontShowOnScreen, True)
+                    except Exception:
+                        pass
+                    # Keep parent until grid reparents — never free top-level.
+                    # (setParent(None) here caused brief OS flash popups.)
+            fl.removeItem(old_row)
+    except Exception:
+        pass
+
+    from PyQt5.QtWidgets import QGridLayout
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(8)
+    grid.setVerticalSpacing(6)
+    cols = 4
+    for i, b in enumerate(buttons):
+        try:
+            b.setMinimumHeight(36)
+            b.setMaximumHeight(40)
+            b.setMinimumWidth(0)
+            b.setMaximumWidth(16777215)
+            if hasattr(b, 'setFixedWidth'):
+                # Undo Classic Clear fixed-width crush
+                b.setMinimumWidth(64)
+        except Exception:
+            pass
+        grid.addWidget(b, i // cols, i % cols)
+        b.show()
+    # Insert grid at top of foot (before breathing spacer / Complete Sale)
+    fl.insertLayout(0, grid)
+    tab._checkout_sec_row = grid
+    tab._sec_actions_grid_ok = True
+    style_quiet_secondary_actions(tab)
+
+
 def apply_shared_checkout_chrome(tab) -> None:
     """Explorer + Classic: Amount Paid treatment, quiet foot, denser payment stack."""
     ensure_checkout_body_order(tab)
     style_amount_paid(tab)
     align_checkout_control_baselines(tab)
+
+    # Ensure Pro accessory widgets exist so New Customer + cart Disc header work here too
+    try:
+        ensure_pro_widgets(tab)
+    except Exception:
+        pass
+
+    # Table cart column header (includes Disc) on Classic / Explorer
+    clist = getattr(tab, '_cart_list', None)
+    col_hdr = getattr(tab, '_cart_col_hdr', None)
+    if _alive(clist) and _alive(col_hdr) and hasattr(clist, 'set_column_header'):
+        try:
+            clist.set_column_header(col_hdr)
+            _style_col_hdr(col_hdr)
+        except Exception:
+            pass
+
+    # New Customer reachable on Classic / Explorer (same as Pro)
+    cust = getattr(tab, '_cust_card', None)
+    new_btn = getattr(tab, '_new_cust_btn', None)
+    if _alive(cust) and _alive(new_btn) and hasattr(cust, 'set_pro_row'):
+        try:
+            cust.set_pro_row(True, new_btn)
+            _style_new_cust(new_btn)
+            new_btn.show()
+        except Exception:
+            pass
+
+    # Cart-level Discount always visible + editable
+    disc = getattr(tab, '_disc', None)
+    disc_lbl = getattr(tab, '_disc_lbl', None)
+    if _alive(disc):
+        try:
+            disc.setReadOnly(False)
+            disc.setMinimumWidth(120)
+            disc.setFixedWidth(150)
+            disc.show()
+        except Exception:
+            pass
+    if _alive(disc_lbl):
+        try:
+            disc_lbl.setText('Discount (KES)')
+            disc_lbl.setToolTip(
+                'Cart-level discount for the whole sale. '
+                'Per-item Disc is on each cart line.')
+            disc_lbl.show()
+        except Exception:
+            pass
 
     pay_hdr = getattr(tab, '_pay_hdr', None)
     style_section_header(pay_hdr, 'Payment Method')
@@ -300,6 +598,33 @@ def apply_shared_checkout_chrome(tab) -> None:
         w = getattr(tab, name, None)
         if _alive(w):
             w.hide()
+
+    # Credit Sale + Part Payment: Sale options on Classic / Explorer (same as Pro)
+    st = getattr(tab, '_sale_type', None)
+    body = getattr(tab, '_actions_body', None)
+    bl = body.layout() if _alive(body) else None
+    if _alive(st) and bl is not None:
+        try:
+            if hasattr(st, 'set_horizontal'):
+                st.set_horizontal(True)
+            st.refresh_theme()
+            # Place after payment tiles / before Amount Paid
+            amt = (
+                getattr(tab, '_amount_paid_block', None)
+                or getattr(tab, '_amount_block', None)
+            )
+            insert_at = bl.count()
+            if _alive(amt):
+                for i in range(bl.count()):
+                    item = bl.itemAt(i)
+                    if item is not None and item.widget() is amt:
+                        insert_at = i
+                        break
+            if st.parent() is not body:
+                bl.insertWidget(insert_at, st)
+            st.show()
+        except Exception:
+            pass
 
     chg = getattr(tab, '_chg_frame', None)
     if _alive(chg):
@@ -321,10 +646,21 @@ def apply_shared_checkout_chrome(tab) -> None:
     if _alive(body):
         bl = body.layout()
         if bl is not None:
-            bl.setContentsMargins(12, 8, 12, 8)
-            bl.setSpacing(6)
+            bl.setContentsMargins(12, 6, 12, 6)
+            bl.setSpacing(5)
+
+    # Ensure Amount Paid + Change stay reachable (not buried under a tall cart)
+    for name in ('_amount_paid_block', '_amount_block', '_paid', '_chg_frame', '_amount_paid_cap'):
+        w = getattr(tab, name, None)
+        if _alive(w):
+            try:
+                w.show()
+            except Exception:
+                pass
 
     apply_checkout_foot_rhythm(tab, pro_primary_only=False)
+    apply_secondary_action_grid(tab)
+    pin_checkout_totals(tab)
 
 def _stash(tab, *widgets) -> None:
     stash = getattr(tab, '_layout_stash', None)
@@ -345,69 +681,71 @@ class CategoryChipBar(QWidget):
     categorySelected = pyqtSignal(str)  # 'All' or category name
     viewAllClicked = pyqtSignal()
 
+    CHIP_BAR_H = 108
+    CHIP_PILL_H = 34
+    CHIP_HOST_H = 56  # air around 34px pills + 1px borders so bottoms stay round
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posCatChipBar')
-        self.setMaximumHeight(44)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumHeight(self.CHIP_BAR_H)
+        self.setMaximumHeight(self.CHIP_BAR_H)
+        self.setFixedHeight(self.CHIP_BAR_H)
         self._selected = 'All'
         self._chips = {}
-        root = QHBoxLayout(self)
-        # Extra right margin so More never clips against the card edge
-        root.setContentsMargins(8, 2, 12, 2)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(10, 26, 12, 26)
+        outer.setSpacing(0)
+        outer.setAlignment(Qt.AlignVCenter)
+
+        self._wrap = QWidget(self)
+        self._wrap.setObjectName('posCatChipWrap')
+        self._wrap.setFixedHeight(self.CHIP_HOST_H)
+        self._wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        root = QHBoxLayout(self._wrap)
+        root.setContentsMargins(0, 11, 0, 11)
         root.setSpacing(10)
+        root.setAlignment(Qt.AlignVCenter)
+        self._flow = root
+        outer.addWidget(self._wrap, 1)
 
         self._view_all = QPushButton('View All')
         self._view_all.setObjectName('posCatViewAll')
         self._view_all.setCursor(Qt.PointingHandCursor)
         self._view_all.setFlat(True)
         self._view_all.setMinimumWidth(76)
-        self._view_all.setMaximumHeight(28)
+        self._view_all.setFixedHeight(self.CHIP_PILL_H)
         self._view_all.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self._view_all.clicked.connect(self.viewAllClicked.emit)
-
-        from PyQt5.QtWidgets import QScrollArea
-        self._scroll = QScrollArea()
-        self._scroll.setObjectName('posCatChipScroll')
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setFixedHeight(34)
-        self._scroll.setStyleSheet(
-            'QScrollArea{border:none;background:transparent;}'
-            'QScrollBar:horizontal{height:4px;background:transparent;}'
-            'QScrollBar::handle:horizontal{background:rgba(128,128,128,0.35);border-radius:2px;}')
-        try:
-            from desktop.utils.no_wheel_small_scroll import mark_wheel_scroll
-            mark_wheel_scroll(self._scroll, True)
-        except Exception:
-            pass
-
-        self._wrap = QWidget()
-        self._wrap.setObjectName('posCatChipWrap')
-        self._flow = QHBoxLayout(self._wrap)
-        self._flow.setContentsMargins(0, 0, 0, 0)
-        self._flow.setSpacing(5)
-        self._flow.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self._scroll.setWidget(self._wrap)
-        root.addWidget(self._scroll, 1)
+        # Placeholders so set_categories can insert chips before More.
+        self._scroll = self
+        root.addStretch(1)
         root.addWidget(self._view_all, 0)
         self.refresh_theme()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         # Re-pack when the product column width changes (laptop / 3-col layouts)
+        self.repack_for_width(force=False)
+
+    def repack_for_width(self, force: bool = False):
+        """Recompute visible chips for the current product-column width.
+
+        Called from resize and from the column splitter so a drag that narrows
+        the catalog never leaves clipped tabs or a missing More control.
+        """
         if getattr(self, '_packing', False):
             return
         labels = getattr(self, '_all_labels', None)
         if not labels or not self.isVisible():
             return
         try:
-            w = self._scroll.viewport().width() if self._scroll.viewport() else 0
+            w = max(0, int(self.width()) - 100)
         except Exception:
             return
         prev = getattr(self, '_last_pack_w', -1)
-        if abs(w - prev) < 24:
+        if not force and abs(w - prev) < 8:
             return
         self._last_pack_w = w
         sel = self._selected
@@ -419,100 +757,121 @@ class CategoryChipBar(QWidget):
             self._packing = False
 
     def set_categories(self, names: list):
-        while self._flow.count():
-            item = self._flow.takeAt(0)
-            w = item.widget()
-            if w is not None:
+        # Keep More; remove only chip buttons (immediate — deleteLater left ghosts overlapping).
+        to_kill = []
+        for i in range(self._flow.count() - 1, -1, -1):
+            item = self._flow.itemAt(i)
+            w = item.widget() if item is not None else None
+            if w is None or w is self._view_all:
+                continue
+            self._flow.removeWidget(w)
+            to_kill.append(w)
+        for w in to_kill:
+            try:
+                w.hide()
+                w.setParent(None)
+            except Exception:
+                pass
+            try:
                 w.deleteLater()
+            except Exception:
+                pass
+        # Drop leftover spacers/stretches except the trailing stretch before More
+        while self._flow.count() > 1:
+            item = self._flow.takeAt(0)
+            if item is None:
+                break
         self._chips.clear()
         labels = ['All'] + [n for n in (names or []) if n and n != 'All']
         self._all_labels = list(labels)
-        # Pack chips to available scroll width so More never overlaps labels
         try:
-            avail = int(self._scroll.viewport().width()) if self._scroll.viewport() else 0
+            avail = max(160, int(self.width()) - 100)
         except Exception:
-            avail = 0
-        if avail < 80:
-            try:
-                avail = max(160, int(self.width()) - 100)
-            except Exception:
-                avail = 360
-        # Leave breathing room inside the scroll viewport
+            avail = 360
         budget = max(100, avail - 12)
         shown = []
         used = 0
-        spacing = 5
+        spacing = 10
         for name in labels:
             try:
                 fm = self.fontMetrics()
-                elide_px = 96 if len(name) > 8 else 110
+                elide_px = 96 if avail < 320 else (110 if avail < 420 else (120 if len(name) > 10 else 132))
                 text = fm.elidedText(name, Qt.ElideRight, elide_px)
-                chip_w = min(elide_px + 18, max(52, fm.horizontalAdvance(text) + 22))
+                chip_w = min(elide_px + 20, max(56, fm.horizontalAdvance(text) + 28))
             except Exception:
                 text = name
                 chip_w = 88
             need = chip_w + (spacing if shown else 0)
-            # Always keep All + at least one named chip when present; after that stop when budget exceeded
             if shown and used + need > budget and len(shown) >= 2:
                 break
             shown.append((name, text, chip_w))
             used += need
-            # Hard cap so overflow always goes through More on dense category sets
-            if len(shown) >= 4:
+            cap = 2 if avail < 300 else (3 if avail < 420 else 4)
+            if len(shown) >= cap:
                 break
+        insert_at = 0
         for name, text, chip_w in shown:
             b = QPushButton()
             b.setObjectName('posCatChip')
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumHeight(26)
-            b.setMaximumHeight(28)
+            b.setFixedHeight(self.CHIP_PILL_H)
             b.setToolTip(name)
             b.setText(text)
-            b.setMaximumWidth(chip_w)
-            b.setMinimumWidth(min(56, chip_w))
+            b.setFixedWidth(chip_w)
             b.clicked.connect(lambda _=False, n=name: self.select(n, emit=True))
-            self._flow.addWidget(b)
+            self._flow.insertWidget(insert_at, b, 0)
+            insert_at += 1
             self._chips[name] = b
-        # If selected category was truncated, still keep a chip for it
         if self._selected not in self._chips and self._selected and self._selected != 'All':
             b = QPushButton()
             b.setObjectName('posCatChip')
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumHeight(26)
-            b.setMaximumHeight(28)
+            b.setFixedHeight(self.CHIP_PILL_H)
             b.setToolTip(self._selected)
             try:
                 fm = b.fontMetrics()
                 b.setText(fm.elidedText(self._selected, Qt.ElideRight, 96))
-                b.setMaximumWidth(110)
+                b.setFixedWidth(110)
             except Exception:
                 b.setText(self._selected)
             b.clicked.connect(lambda _=False, n=self._selected: self.select(n, emit=True))
-            self._flow.addWidget(b)
+            self._flow.insertWidget(insert_at, b, 0)
             self._chips[self._selected] = b
-        self._flow.addSpacing(4)
-        self._flow.addStretch(1)
+        # Keep More on the right with a gap, not overlapping chips.
+        self._flow.insertStretch(max(0, self._flow.count() - 1), 1)
         overflow = max(0, len(labels) - len(shown))
+        self._view_all.setVisible(True)
         if overflow:
             self._view_all.setText('More ▾')
             self._view_all.setToolTip(f'{overflow} more categories — open full list')
         else:
             self._view_all.setText('View All')
             self._view_all.setToolTip('Browse all categories')
-        try:
-            self._last_pack_w = int(self._scroll.viewport().width()) if self._scroll.viewport() else avail
-        except Exception:
-            self._last_pack_w = avail
-        self.select(self._selected if self._selected in self._chips else 'All', emit=False)
+        self._last_pack_w = avail
+        keep = self._selected if (
+            self._selected in self._chips or self._selected == 'All') else 'All'
+        self.select(keep, emit=False)
         self.refresh_theme()
 
     def select(self, name: str, emit=True):
         name = name or 'All'
-        if name.startswith('All'):
+        if str(name).lower().startswith('all'):
             name = 'All'
-        self._selected = name if name in self._chips else 'All'
+        self._selected = name
+        # Overflow pick: pin the chosen name as a chip so it is not dropped to All.
+        if (name != 'All' and name not in self._chips
+                and not getattr(self, '_packing', False)):
+            self._packing = True
+            try:
+                labels = [n for n in (getattr(self, '_all_labels', None) or [])
+                          if n and n != 'All']
+                if name not in labels:
+                    labels.append(name)
+                self.set_categories(labels)
+            finally:
+                self._packing = False
         for k, b in self._chips.items():
             b.blockSignals(True)
             b.setChecked(k == self._selected)
@@ -530,20 +889,23 @@ class CategoryChipBar(QWidget):
             if on:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['gold']};color:#1A1A1A;"
-                    f"border:none;border-radius:12px;padding:3px 10px;"
+                    f"border:none;border-radius:17px;padding:0 14px;margin:0;"
+                    f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:800;}}")
             else:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['card2']};color:{C['text2']};"
-                    f"border:1px solid {C['border']};border-radius:12px;padding:3px 10px;"
+                    f"border:1px solid {C['border']};border-radius:17px;padding:0 14px;margin:0;"
+                    f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:700;}}"
                     f"QPushButton#posCatChip:hover{{border-color:{C['gold']};color:{C['text']};}}")
 
     def refresh_theme(self):
         self._view_all.setStyleSheet(
             f"QPushButton#posCatViewAll{{color:{C['text2']};font-size:10px;font-weight:700;"
-            f"background:{C['card2']};border:1px solid {C['border']};border-radius:12px;"
-            f"padding:3px 12px;min-width:72px;}}"
+            f"background:{C['card2']};border:1px solid {C['border']};border-radius:17px;"
+            f"padding:0 12px;margin:0;min-width:72px;"
+            f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;}}"
             f"QPushButton#posCatViewAll:hover{{border-color:{C['gold']};color:{C['text']};}}")
         self.setStyleSheet(
             f"QWidget#posCatChipBar,QWidget#posCatChipWrap{{background:transparent;}}")
@@ -553,31 +915,52 @@ class CategoryChipBar(QWidget):
 # ── Sale type radios ──────────────────────────────────────────────────────────
 
 class SaleTypeGroup(QWidget):
-    """Cash Sale / Credit Sale / Quotation — maps onto existing payment paths."""
-    saleTypeChanged = pyqtSignal(str)  # cash | credit | quotation
+    """Paid now / On account / Part pay / Quote — maps onto existing payment paths."""
+    saleTypeChanged = pyqtSignal(str)  # cash | credit | part | quotation
+
+    _OPTIONS = (
+        ('cash', 'Paid now'),
+        ('credit', 'On account'),
+        ('part', 'Part pay'),
+        ('quotation', 'Quote only'),
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posSaleType')
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 6, 8, 6)
-        lay.setSpacing(3)
-        hdr = QLabel('Sale options')
-        hdr.setObjectName('posSaleTypeHdr')
-        hdr.setToolTip('Separate from tender: Paid now / On account / Quote')
-        lay.addWidget(hdr)
+        self._horizontal = False
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(8, 6, 8, 6)
+        self._root.setSpacing(3)
+        self._hdr = QLabel('Sale options')
+        self._hdr.setObjectName('posSaleTypeHdr')
+        self._hdr.setToolTip(
+            'Sale workflow (separate from tender tiles):\n'
+            'Paid now · On account (credit) · Part pay · Quote only')
+        self._root.addWidget(self._hdr)
+        self._radio_host = QWidget(self)
+        self._radio_host.setObjectName('posSaleTypeRadios')
+        self._radio_lay = QVBoxLayout(self._radio_host)
+        self._radio_lay.setContentsMargins(0, 0, 0, 0)
+        self._radio_lay.setSpacing(3)
+        self._root.addWidget(self._radio_host)
         self._group = QButtonGroup(self)
         self._radios = {}
-        for key, label in (
-            ('cash', 'Paid now'),
-            ('credit', 'On account'),
-            ('quotation', 'Quote only'),
-        ):
+        for key, label in self._OPTIONS:
             rb = QRadioButton(label)
             rb.setObjectName('posSaleTypeRadio')
+            rb.setToolTip({
+                'cash': 'Collect full payment now (Cash / M-Pesa / Card / Bank / Split)',
+                'credit': 'Credit Sale — charge to customer account (pay later)',
+                'part': (
+                    'Part Payment — collect some now (one method or Split), '
+                    'remainder on the customer account'
+                ),
+                'quotation': 'Save / print a quote only — no stock or payment',
+            }.get(key, ''))
             self._group.addButton(rb)
             self._radios[key] = rb
-            lay.addWidget(rb)
+            self._radio_lay.addWidget(rb)
             rb.toggled.connect(lambda on, k=key: on and self.saleTypeChanged.emit(k))
         self._radios['cash'].setChecked(True)
         self.refresh_theme()
@@ -596,14 +979,76 @@ class SaleTypeGroup(QWidget):
         if emit:
             self.saleTypeChanged.emit(self.current())
 
+    def _detach_radio_layout(self):
+        while self._radio_lay.count():
+            self._radio_lay.takeAt(0)
+        old = self._radio_host.layout()
+        if old is not None:
+            sink = QWidget()
+            sink.setAttribute(Qt.WA_DontShowOnScreen, True)
+            sink.hide()
+            sink.setLayout(old)
+            sink.deleteLater()
+
+    def set_grid(self, cols: int = 2):
+        """Two-up radios — full rail width, so no option is ever clipped.
+
+        A single row needs ~360px of label text and a single column starves the
+        Amount Paid field beside it; 2x2 fits a ~400px rail comfortably.
+        """
+        if getattr(self, '_grid_cols', None) == int(cols):
+            return
+        self._grid_cols = int(cols)
+        self._horizontal = None  # neither pure v nor pure h any more
+        self._detach_radio_layout()
+        self._root.setContentsMargins(10, 8, 10, 10)
+        self._root.setSpacing(8)
+        self._radio_lay = QGridLayout(self._radio_host)
+        self._radio_lay.setContentsMargins(0, 2, 0, 2)
+        self._radio_lay.setHorizontalSpacing(10)
+        self._radio_lay.setVerticalSpacing(8)
+        for i, (key, _label) in enumerate(self._OPTIONS):
+            self._radio_lay.addWidget(self._radios[key], i // cols, i % cols)
+        for c in range(int(cols)):
+            self._radio_lay.setColumnStretch(c, 1)
+        self.refresh_theme()
+
+    def set_horizontal(self, horizontal: bool = True):
+        """Compact single-row radios for Classic / Explorer rails."""
+        horizontal = bool(horizontal)
+        if horizontal == self._horizontal:
+            return
+        self._horizontal = horizontal
+        self._grid_cols = None
+        self._detach_radio_layout()
+        if horizontal:
+            self._root.setContentsMargins(6, 4, 6, 4)
+            self._root.setSpacing(2)
+            self._radio_lay = QHBoxLayout(self._radio_host)
+            self._radio_lay.setContentsMargins(0, 0, 0, 0)
+            self._radio_lay.setSpacing(8)
+            for key, _label in self._OPTIONS:
+                self._radio_lay.addWidget(self._radios[key], 1)
+        else:
+            self._root.setContentsMargins(8, 6, 8, 6)
+            self._root.setSpacing(3)
+            self._radio_lay = QVBoxLayout(self._radio_host)
+            self._radio_lay.setContentsMargins(0, 0, 0, 0)
+            self._radio_lay.setSpacing(3)
+            for key, _label in self._OPTIONS:
+                self._radio_lay.addWidget(self._radios[key])
+        self.refresh_theme()
+
     def refresh_theme(self):
+        fs = 11 if self._horizontal else 12
         self.setStyleSheet(
             f"QWidget#posSaleType{{background:{C['card2']};border:1px solid {C['border']};"
             f"border-radius:{RADIUS['md']}px;}}"
+            f"QWidget#posSaleTypeRadios{{background:transparent;border:none;}}"
             f"QLabel#posSaleTypeHdr{{color:{C['text2']};font-size:11px;font-weight:800;"
             f"letter-spacing:0.4px;background:transparent;}}"
-            f"QRadioButton#posSaleTypeRadio{{color:{C['text']};font-size:12px;font-weight:700;"
-            f"spacing:6px;background:transparent;}}"
+            f"QRadioButton#posSaleTypeRadio{{color:{C['text']};font-size:{fs}px;font-weight:700;"
+            f"spacing:6px;background:transparent;min-height:{28 if not self._horizontal else 22}px;}}"
             f"QRadioButton#posSaleTypeRadio::indicator{{width:14px;height:14px;}}"
             f"QRadioButton#posSaleTypeRadio::indicator:checked{{"
             f"background:{C['gold']};border:2px solid {C['gold']};border-radius:8px;}}"
@@ -614,27 +1059,46 @@ class SaleTypeGroup(QWidget):
 # ── Quick action tile ─────────────────────────────────────────────────────────
 
 class QuickActionTile(QPushButton):
+    """Labeled tile in the Pro rail's Sale Actions pad — one click, never buried."""
+
     def __init__(self, label: str, accent: str, parent=None):
         super().__init__(label, parent)
         self._accent = accent
         self.setObjectName('posQuickTile')
         self.setCursor(Qt.PointingHandCursor)
-        # Match Classic secondary action height (quiet supporting controls)
-        self.setMinimumHeight(32)
-        self.setMaximumHeight(34)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Grow with leftover rail height; cap so they stay buttons, not banners
+        self.setMinimumHeight(40)
+        self.setMaximumHeight(64)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.refresh_theme()
 
     def refresh_theme(self):
         a = self._accent
         self.setStyleSheet(
-            f"QPushButton#posQuickTile{{background:transparent;color:{C['text2']};"
+            f"QPushButton#posQuickTile{{background:{C['card2']};color:{C['text2']};"
             f"border:1px solid {C['border']};border-radius:8px;"
-            f"font-size:11px;font-weight:600;padding:3px 4px;text-align:center;}}"
+            f"font-size:11px;font-weight:700;padding:3px 4px;text-align:center;}}"
             f"QPushButton#posQuickTile:hover{{border-color:{a};color:{a};"
-            f"background:{qss_alpha(a, 0.08)};}}"
-            f"QPushButton#posQuickTile:pressed{{background:{qss_alpha(a, 0.14)};}}"
-            f"QPushButton#posQuickTile:disabled{{color:{C['muted']};border-color:{C['border']};}}")
+            f"background:{qss_alpha(a, 0.10)};}}"
+            f"QPushButton#posQuickTile:pressed{{background:{qss_alpha(a, 0.18)};}}"
+            f"QPushButton#posQuickTile:disabled{{color:{C['muted']};"
+            f"background:{C['panel']};border-color:{C['border']};}}")
+
+
+_QUICK_ACTION_TIPS = {
+    '_hold_sale': 'Park the current cart (in-memory; cleared on exit)',
+    '_resume_held': 'Restore the held cart',
+    '_suspend_sale': 'Suspend this sale to the register queue',
+    '_clear': 'Clear every line from the cart',
+    '_void_sale': 'Void a completed sale (reason + Super-Admin PIN)',
+    '_open_return_sale': 'Return items from a completed receipt (restock + refund)',
+    '_reprint_receipt': 'Reprint a completed receipt',
+    '_preview': 'Preview / print the current sale',
+    '_open_recent_sales': 'Browse recent sales for this business day',
+    '_focus_notes': 'Add a note to this sale',
+    '_toggle_cart_maximized': 'Enlarge the cart to review and edit many lines',
+    '_toggle_focus_mode': 'Maximize Point of Sale — hide sidebar and top bar (Esc to exit)',
+}
 
 
 def ensure_pro_widgets(tab) -> None:
@@ -646,7 +1110,12 @@ def ensure_pro_widgets(tab) -> None:
         tab._cat_chips = chips
 
     if not _alive(getattr(tab, '_sale_type', None)):
-        st = SaleTypeGroup()
+        st = SaleTypeGroup(tab)
+        st.hide()
+        try:
+            st.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
         st.saleTypeChanged.connect(lambda k: _on_sale_type(tab, k))
         tab._sale_type = st
 
@@ -659,28 +1128,54 @@ def ensure_pro_widgets(tab) -> None:
         tab._new_cust_btn = btn
 
     if not _alive(getattr(tab, '_quick_actions', None)):
-        wrap = QWidget()
+        wrap = QWidget(tab)
+        wrap.hide()
+        try:
+            wrap.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
         wrap.setObjectName('posQuickActions')
+        wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         gl = QGridLayout(wrap)
         gl.setContentsMargins(0, 2, 0, 0)
-        gl.setHorizontalSpacing(6)
-        gl.setVerticalSpacing(6)
+        gl.setHorizontalSpacing(8)
+        gl.setVerticalSpacing(8)
+        info = C.get('info', '#3B82F6')
+        warn = C.get('warn', C['gold'])
+        # Every secondary POS action the shared footer owns is mirrored here, so
+        # Checkout Pro hides the cramped footer strip without burying anything.
         specs = [
             ('Hold Sale', C['gold'], '_hold_sale'),
-            ('Suspend Sale', C.get('warn', C['gold']), '_suspend_sale'),
+            ('Resume', C['gold'], '_resume_held'),
+            ('Suspend Sale', warn, '_suspend_sale'),
+            ('Clear Cart', C['err'], '_clear'),
             ('Void Sale', C['err'], '_void_sale'),
-            ('Recent Sales', C.get('info', '#3B82F6'), '_open_recent_sales'),
-            ('Print Preview', C['text2'], '_preview'),
+            ('Return / Exchange', warn, '_open_return_sale'),
+            ('Reprint', info, '_reprint_receipt'),
+            ('Print Preview', info, '_preview'),
+            ('Recent Sales', info, '_open_recent_sales'),
             ('Notes', C['text2'], '_focus_notes'),
+            ('Review Cart', C['text2'], '_toggle_cart_maximized'),
+            ('Focus Mode', C['text2'], '_toggle_focus_mode'),
         ]
         tiles = {}
         for i, (label, accent, handler) in enumerate(specs):
             t = QuickActionTile(label, accent)
+            t.setToolTip(_QUICK_ACTION_TIPS.get(handler, label))
             t.clicked.connect(lambda _=False, h=handler: _call_tab(tab, h))
             gl.addWidget(t, i // 3, i % 3)
             tiles[handler] = t
+        for c in range(3):
+            gl.setColumnStretch(c, 1)
+        for r in range(4):
+            gl.setRowStretch(r, 1)
         tab._quick_action_tiles = tiles
         tab._quick_actions = wrap
+
+    if not _alive(getattr(tab, '_quick_actions_cap', None)):
+        cap = QLabel('Sale Actions')
+        cap.setObjectName('posQuickActionsCap')
+        tab._quick_actions_cap = cap
 
     if not _alive(getattr(tab, '_amount_block', None)):
         # Prefer shared panel_factory Amount Paid block when present
@@ -710,25 +1205,10 @@ def ensure_pro_widgets(tab) -> None:
             lay.insertWidget(0, paid_cap)
 
     if not _alive(getattr(tab, '_cart_col_hdr', None)):
-        hdr = QWidget()
-        hdr.setObjectName('posCartColHdr')
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(10, 4, 10, 4)
-        hl.setSpacing(6)
-        for text, stretch in (
-            ('#', 0), ('Product', 4), ('Qty', 2),
-            ('Price', 1), ('Disc*', 1), ('Total', 1), ('', 0),
-        ):
-            lab = QLabel(text)
-            lab.setObjectName('posCartColLab')
-            if text.startswith('Disc'):
-                lab.setToolTip('Green = discount applied on that line')
-            if stretch:
-                hl.addWidget(lab, stretch)
-            else:
-                lab.setFixedWidth(22 if text == '#' else 28)
-                hl.addWidget(lab)
-        tab._cart_col_hdr = hdr
+        # Built from CartLineRow's own column spec — captions cannot drift off
+        # their columns the way the old hand-tuned stretch factors did.
+        from desktop.utils.pos_components import build_cart_column_header
+        tab._cart_col_hdr = build_cart_column_header()
 
 
 def _call_tab(tab, name: str):
@@ -739,73 +1219,246 @@ def _call_tab(tab, name: str):
 
 def _on_chip_category(tab, name: str):
     cat = getattr(tab, '_cat', None)
-    if cat is None:
-        return
-    target = 'All Categories' if name == 'All' else name
-    idx = cat.findText(target)
-    if idx < 0 and name != 'All':
-        # fuzzy: category may be stored without exact match
-        for i in range(cat.count()):
-            if cat.itemText(i).lower() == name.lower():
-                idx = i
-                break
-    if idx >= 0:
-        cat.setCurrentIndex(idx)
-    else:
-        tab._filter()
+    target = 'All Categories' if (not name or name == 'All') else name
+    idx = -1
+    if cat is not None:
+        idx = cat.findText(target)
+        if idx < 0 and name not in ('All', '', None):
+            for i in range(cat.count()):
+                item = cat.itemText(i)
+                if item.lower() == str(name).lower() or item.lower().endswith(
+                        str(name).lower()):
+                    idx = i
+                    break
+                # "A — Antibiotics" vs "Antibiotics"
+                if '—' in item and item.split('—', 1)[-1].strip().lower() == str(name).lower():
+                    idx = i
+                    break
+                if '—' in str(name) and str(name).split('—', 1)[-1].strip().lower() == item.lower():
+                    idx = i
+                    break
+        if idx >= 0:
+            cat.blockSignals(True)
+            try:
+                cat.setCurrentIndex(idx)
+            finally:
+                cat.blockSignals(False)
+        elif target == 'All Categories':
+            cat.blockSignals(True)
+            try:
+                cat.setCurrentIndex(0)
+            finally:
+                cat.blockSignals(False)
+    try:
+        tab._apply_product_filter(False)
+    except Exception:
+        try:
+            tab._filter()
+        except Exception:
+            pass
 
 
 def _on_view_all_categories(tab):
+    """More ▾ — pick any category from a clickable list. View All — all products."""
+    chips = getattr(tab, '_cat_chips', None)
+    labels = []
+    if chips is not None:
+        labels = [n for n in (getattr(chips, '_all_labels', None) or []) if n]
+    shown = set((getattr(chips, '_chips', None) or {}).keys()) if chips is not None else set()
+    overflow = [n for n in labels if n != 'All' and n not in shown]
+    if overflow and chips is not None and _alive(getattr(chips, '_view_all', None)):
+        _show_category_pick_popup(tab, chips, labels)
+        return
     cat = getattr(tab, '_cat', None)
     if cat is not None:
-        cat.setCurrentIndex(0)
-    chips = getattr(tab, '_cat_chips', None)
+        cat.blockSignals(True)
+        try:
+            cat.setCurrentIndex(0)
+        finally:
+            cat.blockSignals(False)
     if chips is not None:
         chips.select('All', emit=False)
     try:
-        tab._filter()
+        tab._apply_product_filter(False)
+    except Exception:
+        try:
+            tab._filter()
+        except Exception:
+            pass
+
+
+def _show_category_pick_popup(tab, chips, labels):
+    """Single-column popup list — not QMenu (global QWidget QSS + auto-columns
+    made items look like dead labels and ate clicks)."""
+    btn = chips._view_all
+    names = ['All'] + [n for n in labels if n and n != 'All']
+    popup = QFrame(chips.window() if chips.window() else chips, Qt.Popup)
+    popup.setObjectName('posCatOverflow')
+    popup.setAttribute(Qt.WA_StyledBackground, True)
+    popup.setAutoFillBackground(True)
+    popup.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+    bg = C.get('card') or '#121C30'
+    fg = C.get('text') or '#F5F7FA'
+    hover = C.get('hover') or '#162A44'
+    sel = C.get('selected') or hover
+    gold = C.get('gold') or '#F2A800'
+    border = C.get('border2') or C.get('border') or '#18283E'
+    popup.setStyleSheet(
+        f"QFrame#posCatOverflow{{background:{bg};color:{fg};"
+        f"border:1px solid {border};border-radius:8px;}}"
+        f"QListWidget#posCatOverflowList,QListWidget#posCatOverflowList QWidget{{"
+        f"background:{bg};color:{fg};border:none;outline:0;}}"
+        f"QListWidget#posCatOverflowList{{padding:4px;}}"
+        f"QListWidget#posCatOverflowList::item{{background:{bg};color:{fg};"
+        f"padding:8px 14px;min-height:32px;border-radius:6px;}}"
+        f"QListWidget#posCatOverflowList::item:hover{{background:{hover};color:{fg};}}"
+        f"QListWidget#posCatOverflowList::item:selected{{background:{sel};color:{gold};}}"
+    )
+    lay = QVBoxLayout(popup)
+    lay.setContentsMargins(6, 6, 6, 6)
+    lay.setSpacing(0)
+    lst = QListWidget(popup)
+    lst.setObjectName('posCatOverflowList')
+    lst.setAttribute(Qt.WA_StyledBackground, True)
+    lst.setAutoFillBackground(True)
+    lst.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+    lst.setMouseTracking(True)
+    lst.setFocusPolicy(Qt.StrongFocus)
+    lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    lst.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    lst.setSelectionMode(QAbstractItemView.SingleSelection)
+    lst.setWrapping(False)
+    try:
+        lst.setFlow(QListWidget.TopToBottom)
+        lst.setViewMode(QListWidget.ListMode)
     except Exception:
         pass
+    try:
+        vp = lst.viewport()
+        vp.setAutoFillBackground(True)
+        vp.setAttribute(Qt.WA_StyledBackground, True)
+        vp.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        vp.setStyleSheet(f"background:{bg};color:{fg};")
+    except Exception:
+        pass
+    current = chips.current() if chips is not None else 'All'
+    for n in names:
+        label = 'All categories' if n == 'All' else n
+        item = QListWidgetItem(label)
+        item.setData(Qt.UserRole, n)
+        lst.addItem(item)
+        if n == current or (n == 'All' and str(current).lower().startswith('all')):
+            lst.setCurrentItem(item)
+    lay.addWidget(lst)
+
+    picked = {'done': False}
+
+    def _pick(item):
+        if picked['done'] or item is None:
+            return
+        picked['done'] = True
+        name = item.data(Qt.UserRole) or item.text() or 'All'
+        popup.close()
+        popup.deleteLater()
+        chips.select(name, emit=True)
+
+    lst.itemClicked.connect(_pick)
+    lst.itemActivated.connect(_pick)
+
+    fm = lst.fontMetrics()
+    w = 240
+    for n in names:
+        label = 'All categories' if n == 'All' else n
+        w = max(w, fm.horizontalAdvance(label) + 48)
+    row_h = lst.sizeHintForRow(0)
+    if row_h < 16:
+        row_h = 36
+    h = min(360, max(48, row_h * min(len(names), 12) + 16))
+    popup.setFixedSize(min(420, w), h)
+    pos = btn.mapToGlobal(btn.rect().bottomLeft())
+    popup.move(pos)
+    popup.show()
+    lst.setFocus()
+    tab._cat_overflow_popup = popup
+
+
+def _charge_label_for_sale_type(key: str) -> str:
+    return {
+        'credit': 'Complete Credit Sale  (F9)',
+        'part': 'Complete Part Payment  (F9)',
+        'quotation': 'Save Quotation  (F9)',
+    }.get(key, 'Complete Sale  (F9)')
 
 
 def _on_sale_type(tab, key: str):
     tab._pro_sale_type = key
+    pay = getattr(tab, '_pay', None)
     if key == 'credit':
         try:
             tab._select_pay_method('Credit Sale')
         except Exception:
             pass
-        charge = getattr(tab, '_charge_btn', None)
-        if charge is not None:
-            charge.setText('Complete Credit Sale  (F9)')
-    elif key == 'quotation':
-        charge = getattr(tab, '_charge_btn', None)
-        if charge is not None:
-            charge.setText('Save Quotation  (F9)')
-    else:
-        # Restore tender method if stuck on Credit Sale
-        pay = getattr(tab, '_pay', None)
+    elif key == 'part':
+        # Keep Cash / M-Pesa / Split tiles so cashiers can split tenders
+        # and still leave a debt for the remainder.
         try:
-            if pay is not None and pay.currentText() == 'Credit Sale':
+            current = pay.currentText() if pay is not None else 'Cash'
+            if current in ('Credit Sale', 'Credit Account', 'Part Payment'):
+                tab._select_pay_method('Cash')
+            elif hasattr(tab, '_on_payment_changed'):
+                tab._on_payment_changed(current)
+            if hasattr(tab, '_prepare_part_pay_amounts'):
+                tab._prepare_part_pay_amounts()
+        except Exception:
+            pass
+    elif key == 'quotation':
+        pass
+    else:
+        # Restore tender method if stuck on credit / part payment
+        try:
+            if pay is not None and pay.currentText() in (
+                'Credit Sale', 'Credit Account', 'Part Payment',
+            ):
                 tab._select_pay_method('Cash')
         except Exception:
             pass
-        charge = getattr(tab, '_charge_btn', None)
-        if charge is not None:
-            charge.setText('Complete Sale  (F9)')
+    charge = getattr(tab, '_charge_btn', None)
+    if charge is not None:
+        charge.setText(_charge_label_for_sale_type(key))
+
+
+def sync_sale_type_from_method(tab, method: str) -> None:
+    """Keep Sale options radios aligned when tender tiles / combo change."""
+    st = getattr(tab, '_sale_type', None)
+    if not _alive(st):
+        return
+    if method in ('Credit Sale', 'Credit Account'):
+        want = 'credit'
+    elif method == 'Part Payment':
+        want = 'part'
+    else:
+        # Do not clobber Quote only when cashier is only changing tender
+        if getattr(tab, '_pro_sale_type', 'cash') == 'quotation':
+            return
+        # Tender tiles (Cash / Split / M-Pesa) stay under Part pay
+        if getattr(tab, '_pro_sale_type', 'cash') == 'part':
+            want = 'part'
+        else:
+            want = 'cash'
+    if st.current() != want:
+        st.set_current(want, emit=False)
+    tab._pro_sale_type = want
+    charge = getattr(tab, '_charge_btn', None)
+    if _alive(charge):
+        charge.setText(_charge_label_for_sale_type(want))
 
 
 def _on_new_customer(tab):
     card = getattr(tab, '_cust_card', None)
     if card is not None and hasattr(card, '_pick_create'):
-        # Open create dialog without outer picker
-        from PyQt5.QtWidgets import QDialog
-        dummy = QDialog(tab)
-        dummy.setAttribute(Qt.WA_DontShowOnScreen, True)
-        try:
-            card._pick_create(dummy)
-        finally:
-            dummy.deleteLater()
+        # Open create dialog without outer picker — never use a QDialog
+        # dummy (Windows can still flash an empty framed HWND).
+        card._pick_create(None)
         return
     if card is not None and hasattr(card, '_open_picker'):
         card._open_picker()
@@ -840,6 +1493,10 @@ def apply_checkout_pro_chrome(tab) -> None:
         w = getattr(tab, name, None)
         if _alive(w):
             w.hide()
+    # Layout switcher stays visible so cashiers can leave Checkout Pro without Settings
+    layout_combo = getattr(tab, '_layout_combo', None)
+    if _alive(layout_combo):
+        layout_combo.show()
 
     product = getattr(tab, '_product_panel', None)
     chips = tab._cat_chips
@@ -857,7 +1514,23 @@ def apply_checkout_pro_chrome(tab) -> None:
                             idx = i + 1
                             break
                 pl.insertWidget(idx, chips)
+            try:
+                from PyQt5.QtWidgets import QSizePolicy as _SP
+                if _alive(search_bar):
+                    search_bar.setSizePolicy(_SP.Expanding, _SP.Fixed)
+                chips.setSizePolicy(_SP.Expanding, _SP.Fixed)
+                chips.setFixedHeight(CategoryChipBar.CHIP_BAR_H)
+            except Exception:
+                pass
+            try:
+                pl.setSpacing(10)
+            except Exception:
+                pass
             chips.show()
+            try:
+                chips.raise_()
+            except Exception:
+                pass
     sync_category_chips(tab)
 
     # Force-clear ghost empty overlay when catalog is present
@@ -875,7 +1548,19 @@ def apply_checkout_pro_chrome(tab) -> None:
     search = getattr(tab, '_search', None)
     if _alive(search) and hasattr(search, 'set_pro_icons'):
         search.set_pro_icons(True)
-        search.setPlaceholderText('Search or scan barcode, product name, SKU...')
+        # The long form clipped to "Search or sca..." once the Layout combo took
+        # its fixed 168px out of a ~410px column. Full text moves to the tooltip.
+        search.setPlaceholderText('Search or scan…')
+        search.setToolTip('Search or scan barcode, product name or SKU')
+    if _alive(layout_combo):
+        layout_combo.setFixedWidth(150)
+        layout_combo.setToolTip(
+            'Checkout layout — Retail Classic / Product Explorer / Checkout Pro.\n'
+            'Also available in Settings → Jump: Checkout')
+    search_row_lay = search_bar.layout() if _alive(search_bar) else None
+    if search_row_lay is not None:
+        search_row_lay.setContentsMargins(12, 10, 12, 10)
+        search_row_lay.setSpacing(8)
 
     # Larger cards / fill scroll
     grid = getattr(tab, '_prod_grid', None)
@@ -898,8 +1583,13 @@ def apply_checkout_pro_chrome(tab) -> None:
     if _alive(clist):
         if hasattr(clist, 'set_density'):
             clist.set_density('table')
+        review = bool(getattr(tab, '_cart_maximized', False))
+        if hasattr(clist, 'set_cashier_viewport'):
+            from desktop.utils.pos_components import CART_CASHIER_ROWS
+            clist.set_cashier_viewport(0 if review else CART_CASHIER_ROWS)
         if hasattr(clist, 'set_expanded'):
-            clist.set_expanded(True)
+            # Review expands further; otherwise min 5 rows, grows with splitter.
+            clist.set_expanded(review)
         # Prefer cart_list as the sole scroller — hide outer wrapper scroll host padding
         col_hdr = tab._cart_col_hdr
         if _alive(col_hdr) and hasattr(clist, 'set_column_header'):
@@ -907,36 +1597,72 @@ def apply_checkout_pro_chrome(tab) -> None:
         col_hdr.refresh_theme = lambda: _style_col_hdr(col_hdr)  # type: ignore
         _style_col_hdr(col_hdr)
 
-    # Pack cart against summary — empty stretch below summary, not between cart & totals
+    # Cart stays a 5-row minimum viewport; Order Summary sits under it.
+    # Leftover Current Sale height goes INTO the cart↔summary splitter (drag to
+    # grow the list and shrink summary / give room for more line items).
     try:
         sale = getattr(tab, '_sale_panel', None)
         cart_scroll = getattr(tab, '_sale_cart_scroll', None)
         sl = sale.layout() if _alive(sale) else None
         if sl is not None and _alive(cart_scroll):
-            for i in range(sl.count()):
-                item = sl.itemAt(i)
-                if item and item.widget() is cart_scroll:
-                    sl.setStretch(i, 0)
-                    break
             spacer = getattr(tab, '_sale_bottom_stretch', None)
-            if not _alive(spacer):
-                from PyQt5.QtWidgets import QSizePolicy, QWidget
-                spacer = QWidget()
-                spacer.setObjectName('posSaleBottomStretch')
-                spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-                tab._sale_bottom_stretch = spacer
-            # Ensure spacer is last child (after summary)
-            if spacer.parent() is not sale:
-                sl.addWidget(spacer, 1)
-            else:
-                sl.setStretchFactor(spacer, 1)
-            cart_scroll.setMinimumHeight(0)
+            if _alive(spacer):
+                try:
+                    sl.removeWidget(spacer)
+                    from desktop.utils.quiet_ui import safe_detach
+                    safe_detach(spacer)
+                except Exception:
+                    pass
+            try:
+                cart_scroll.setMaximumHeight(16777215)
+                cart_scroll.setMinimumHeight(0)
+            except Exception:
+                pass
+            # Drop waste stretch below the stack — splitter owns leftover height.
+            try:
+                for i in range(sl.count() - 1, -1, -1):
+                    item = sl.itemAt(i)
+                    if item is not None and item.spacerItem() is not None:
+                        sl.takeAt(i)
+                tab._sale_tail_stretch_ok = False
+            except Exception:
+                pass
+            try:
+                cart_sp = getattr(tab, '_cart_splitter', None)
+                if _alive(cart_sp):
+                    for i in range(sl.count()):
+                        item = sl.itemAt(i)
+                        if item is not None and item.widget() is cart_sp:
+                            sl.setStretch(i, 1)
+                            break
+            except Exception:
+                pass
     except Exception:
         pass
 
     summary = getattr(tab, '_summary', None)
     if _alive(summary) and hasattr(summary, 'set_pro_chrome'):
         summary.set_pro_chrome(True)
+    # Keep cart-level Discount editable + clearly labeled (never read-only total)
+    disc = getattr(tab, '_disc', None)
+    disc_lbl = getattr(tab, '_disc_lbl', None)
+    if _alive(disc):
+        try:
+            disc.setReadOnly(False)
+            disc.setMinimumWidth(120)
+            disc.setFixedWidth(150)
+            disc.show()
+        except Exception:
+            pass
+    if _alive(disc_lbl):
+        try:
+            disc_lbl.setText('Discount (KES)')
+            disc_lbl.setToolTip(
+                'Cart-level discount for the whole sale. '
+                'Per-item Disc is on each cart line.')
+            disc_lbl.show()
+        except Exception:
+            pass
 
     # ── Right rail: customer row, payment row, amount+sale type, quick acts ──
     cust = getattr(tab, '_cust_card', None)
@@ -990,10 +1716,10 @@ def apply_checkout_pro_chrome(tab) -> None:
             f"QFrame#posChangeDue{{background:{qss_alpha(C['ok'], 0.12)};"
             f"border:1.5px solid {qss_alpha(C['ok'], 0.36)};border-radius:10px;}}")
 
-    # Hide always-visible note line — Notes quick action opens it
+    # Sale note stays visible in the rail (the Notes tile just focuses it)
     note = getattr(tab, '_note', None)
     if _alive(note):
-        note.hide()
+        note.show()
 
     # Split UI only when Mixed is selected (event-driven)
     split = getattr(tab, '_split_frame', None)
@@ -1012,17 +1738,12 @@ def apply_checkout_pro_chrome(tab) -> None:
     if _alive(body):
         bl = body.layout()
         if bl is not None:
-            bl.setContentsMargins(12, 6, 12, 4)
-            bl.setSpacing(4)
-            # Insert amount+sale-type row and quick actions if missing
+            bl.setContentsMargins(12, 8, 12, 10)
+            bl.setSpacing(10)
+            # Insert amount/change stack, sale options, note and action pad
             _ensure_body_pro_sections(tab, bl)
-            # Prefer content at top of expandable body (no leading stretch)
-            try:
-                bl.setAlignment(Qt.AlignTop)
-            except Exception:
-                pass
 
-    # Footer: only Complete Sale — same Classic breathing room / height rhythm
+    # Footer: only Complete Sale — payment/utility stack scrolls in the body above.
     for name in (
         '_clr_btn', '_hold_btn', '_resume_btn', '_prv_btn', '_reprint_btn',
         '_void_btn', '_returns_help_btn',
@@ -1030,61 +1751,35 @@ def apply_checkout_pro_chrome(tab) -> None:
         b = getattr(tab, name, None)
         if _alive(b):
             b.hide()
+    # Keep Payment Method + Sale Actions in the scrollable body (not the foot).
+    foot = getattr(tab, '_checkout_foot', None)
+    if _alive(foot):
+        fl = foot.layout()
+        body = getattr(tab, '_actions_body', None)
+        bl = body.layout() if _alive(body) else None
+        if fl is not None and bl is not None:
+            for name in ('_pay_hdr', '_pay_seg', '_quick_actions', '_quick_actions_cap'):
+                w = getattr(tab, name, None)
+                if not _alive(w):
+                    continue
+                try:
+                    if w.parent() is foot:
+                        fl.removeWidget(w)
+                        bl.addWidget(w)
+                        w.show()
+                except Exception:
+                    pass
     apply_checkout_foot_rhythm(tab, pro_primary_only=True)
+    pin_checkout_totals(tab)
     charge = getattr(tab, '_charge_btn', None)
     if _alive(charge):
-        st = getattr(tab, '_pro_sale_type', 'cash')
-        if st == 'credit':
-            charge.setText('Complete Credit Sale  (F9)')
-        elif st == 'quotation':
-            charge.setText('Save Quotation  (F9)')
-        else:
-            charge.setText('Complete Sale  (F9)')
-
-    # Nest quick actions into foot (above Complete Sale) — Classic bottom-action rhythm
-    qa = getattr(tab, '_quick_actions', None)
-    foot = getattr(tab, '_checkout_foot', None)
-    if _alive(qa) and _alive(foot):
-        fl = foot.layout()
-        if fl is not None:
-            try:
-                # Remove from body if present
-                bp = getattr(tab, '_actions_body', None)
-                if _alive(bp):
-                    bl = bp.layout()
-                    if bl is not None:
-                        for i in range(bl.count()):
-                            item = bl.itemAt(i)
-                            if item is not None and item.widget() is qa:
-                                bl.takeAt(i)
-                                break
-                # Insert just above charge button
-                insert_at = fl.count()
-                if _alive(charge):
-                    for i in range(fl.count()):
-                        item = fl.itemAt(i)
-                        if item is not None and item.widget() is charge:
-                            insert_at = i
-                            break
-                if qa.parent() is not foot:
-                    fl.insertWidget(insert_at, qa)
-                qa.show()
-                qgl = qa.layout()
-                if qgl is not None:
-                    qgl.setContentsMargins(0, 0, 0, 0)
-                    qgl.setHorizontalSpacing(6)
-                    qgl.setVerticalSpacing(5)
-            except Exception:
-                pass
+        charge.setText(_charge_label_for_sale_type(
+            getattr(tab, '_pro_sale_type', 'cash')))
 
     style_quiet_secondary_actions(tab)
 
-    # Sync void tile permission
-    tiles = getattr(tab, '_quick_action_tiles', {}) or {}
-    void_tile = tiles.get('_void_sale')
-    if _alive(void_tile):
-        void_tile.setEnabled(getattr(tab, '_void_btn', None) is not None)
-        void_tile.setVisible(getattr(tab, '_void_btn', None) is not None)
+    # Mirror permission / availability from the shared footer buttons
+    sync_quick_action_state(tab)
 
     qa = getattr(tab, '_quick_actions', None)
     if _alive(qa):
@@ -1096,11 +1791,47 @@ def apply_checkout_pro_chrome(tab) -> None:
     if _alive(chips):
         chips.refresh_theme()
 
+    # 3.0.35: cart stack must paint after Pro chrome (DontShowOnScreen park).
+    try:
+        from desktop.pos.layouts.splitters import install_cart, reveal_cart_stack
+        reveal_cart_stack(tab)
+        install_cart(tab, 'checkout_pro')
+        pin_checkout_totals(tab)
+    except Exception:
+        pass
+
+
+def sync_quick_action_state(tab) -> None:
+    """Keep Pro action tiles in step with the shared footer buttons they mirror.
+
+    Void is permission-gated and Hold / Resume depend on cart state, so the
+    tiles must not offer actions the underlying button would refuse.
+    """
+    tiles = getattr(tab, '_quick_action_tiles', None) or {}
+    if not tiles:
+        return
+    void_tile = tiles.get('_void_sale')
+    if _alive(void_tile):
+        allowed = getattr(tab, '_void_btn', None) is not None
+        void_tile.setEnabled(allowed)
+        void_tile.setVisible(allowed)
+    for handler, btn_name in (
+        ('_resume_held', '_resume_btn'),
+        ('_hold_sale', '_hold_btn'),
+    ):
+        tile = tiles.get(handler)
+        btn = getattr(tab, btn_name, None)
+        if _alive(tile) and _alive(btn):
+            tile.setEnabled(btn.isEnabled())
+            tip = btn.toolTip()
+            if tip:
+                tile.setToolTip(tip)
+
 
 def _style_col_hdr(hdr: QWidget):
     hdr.setStyleSheet(
         f"QWidget#posCartColHdr{{background:transparent;border-bottom:1px solid {C['border']};}}"
-        f"QLabel#posCartColLab{{color:{C['muted']};font-size:10px;font-weight:800;"
+        f"QLabel#posCartColLab{{color:{C['muted']};font-size:11px;font-weight:800;"
         f"letter-spacing:0.4px;background:transparent;}}")
 
 
@@ -1148,7 +1879,12 @@ def _ensure_body_pro_sections(tab, bl):
     # Unified payment card — denser, Classic-aligned insets
     pay_card = getattr(tab, '_pro_pay_card', None)
     if not _alive(pay_card):
-        pay_card = QFrame()
+        pay_card = QFrame(tab)
+        pay_card.hide()
+        try:
+            pay_card.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
         pay_card.setObjectName('posProPayCard')
         pcl = QVBoxLayout(pay_card)
         pcl.setContentsMargins(10, 8, 10, 8)
@@ -1174,25 +1910,37 @@ def _ensure_body_pro_sections(tab, bl):
     style_section_header(tab._pro_pay_cap, 'Checkout')
     tab._pro_pay_cap.show()
 
+    # Amount Paid + Change stack. When totals are foot-pinned, leave them in
+    # the sticky foot (do not nest back into the scrolling Checkout card).
     row = getattr(tab, '_pro_amount_sale_row', None)
-    if not _alive(row):
-        row = QWidget()
+    amt_block = (
+        getattr(tab, '_amount_paid_block', None)
+        or getattr(tab, '_amount_block', None)
+    )
+    if getattr(tab, '_totals_pinned', False):
+        if _alive(row):
+            try:
+                row.hide()
+            except Exception:
+                pass
+    elif not _alive(row):
+        row = QWidget(tab)
+        row.hide()
+        try:
+            row.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
         row.setObjectName('posProAmountSaleRow')
-        rl = QHBoxLayout(row)
+        rl = QVBoxLayout(row)
         rl.setContentsMargins(0, 0, 0, 0)
-        rl.setSpacing(8)
+        rl.setSpacing(6)
 
-        left = QWidget()
-        ll = QVBoxLayout(left)
-        ll.setContentsMargins(0, 0, 0, 0)
-        ll.setSpacing(4)
-        # Prefer shared Amount Paid block (caption + spin already nested)
         amt_block = (
             getattr(tab, '_amount_paid_block', None)
             or getattr(tab, '_amount_block', None)
         )
         if _alive(amt_block):
-            ll.addWidget(amt_block)
+            rl.addWidget(amt_block)
         else:
             cap = getattr(tab, '_amount_paid_cap', None)
             if not _alive(cap):
@@ -1200,31 +1948,42 @@ def _ensure_body_pro_sections(tab, bl):
                 cap.setObjectName('posAmountCap')
                 tab._amount_paid_cap = cap
             style_section_header(cap, 'Amount Paid')
-            ll.addWidget(cap)
+            rl.addWidget(cap)
             paid = getattr(tab, '_paid', None)
             if _alive(paid):
-                ll.addWidget(paid)
+                rl.addWidget(paid)
         chg = getattr(tab, '_chg_frame', None)
         if _alive(chg):
-            ll.addWidget(chg)
-        rl.addWidget(left, 3)
-
-        st = getattr(tab, '_sale_type', None)
-        if _alive(st):
-            rl.addWidget(st, 2)
+            rl.addWidget(chg)
         tab._pro_amount_sale_row = row
     else:
         # Ensure Amount Paid stays styled when row already exists
         style_amount_paid(tab)
+
+    # Sale options becomes its own full-width labeled block below the card
+    st = getattr(tab, '_sale_type', None)
+    if _alive(st):
+        if hasattr(st, 'set_grid'):
+            st.set_grid(2)
+        elif hasattr(st, 'set_horizontal'):
+            st.set_horizontal(False)
+        st.refresh_theme()
+        try:
+            st.setAttribute(Qt.WA_DontShowOnScreen, False)
+        except Exception:
+            pass
+        from desktop.utils.quiet_ui import safe_show
+        safe_show(st)
 
     for i in range(bl.count() - 1, -1, -1):
         item = bl.itemAt(i)
         if item is not None and item.spacerItem() is not None:
             bl.takeAt(i)
 
-    # Nest customer → payment method → amount/sale into pay_card
+    # Nest customer → amount/sale into pay_card. Payment Method stays in the
+    # scrollable body with Customer / Amount / Sale Options / Notes / Actions so
+    # the whole payment block scrolls together; only Complete Sale is foot-pinned.
     pcl = tab._pro_pay_card_lay
-    pay_seg = getattr(tab, '_pay_seg', None)
     cust = getattr(tab, '_cust_card', None)
     if _alive(cust) and cust.parent() is not pay_card:
         try:
@@ -1232,43 +1991,110 @@ def _ensure_body_pro_sections(tab, bl):
         except Exception:
             pass
         pcl.insertWidget(1, cust)
-    if _alive(pay_hdr) and pay_hdr.parent() is not pay_card:
-        pcl.addWidget(pay_hdr)
-    if _alive(pay_seg) and pay_seg.parent() is not pay_card:
-        pcl.addWidget(pay_seg)
-    if row.parent() is not pay_card:
-        pcl.addWidget(row)
-    row.show()
+    if _alive(row) and not getattr(tab, '_totals_pinned', False):
+        if row.parent() is not pay_card:
+            pcl.addWidget(row)
+        row.show()
+    elif _alive(row):
+        try:
+            row.hide()
+        except Exception:
+            pass
     pay_card.show()
 
-    if pay_card.parent() is None or pay_card not in [
+    def _in_body(w):
+        return _alive(w) and w in [
             bl.itemAt(i).widget() for i in range(bl.count())
-            if bl.itemAt(i) and bl.itemAt(i).widget()]:
-        insert_at = 0
-        bl.insertWidget(insert_at, pay_card)
+            if bl.itemAt(i) and bl.itemAt(i).widget()]
+
+    if not _in_body(pay_card):
+        bl.insertWidget(0, pay_card)
+
+    # Payment Method (header + tiles) stays in the body — immediately under Checkout.
+    pay_seg = getattr(tab, '_pay_seg', None)
+    if _alive(pay_hdr) and not _in_body(pay_hdr):
+        idx = 1
+        for i in range(bl.count()):
+            item = bl.itemAt(i)
+            if item is not None and item.widget() is pay_card:
+                idx = i + 1
+                break
+        bl.insertWidget(idx, pay_hdr)
+        pay_hdr.show()
+    elif _alive(pay_hdr):
+        pay_hdr.show()
+    if _alive(pay_seg) and not _in_body(pay_seg):
+        idx = 2
+        for i in range(bl.count()):
+            item = bl.itemAt(i)
+            if item is not None and item.widget() is pay_hdr:
+                idx = i + 1
+                break
+        bl.insertWidget(idx, pay_seg)
+        pay_seg.show()
+    elif _alive(pay_seg):
+        pay_seg.show()
+
+    # Sale options directly under the Checkout card (full rail width, 2x2)
+    if _alive(st) and not _in_body(st):
+        bl.addWidget(st)
+
+    # Sale note is a listed feature — keep the field itself visible rather than
+    # reachable only through the Notes tile.
+    note = getattr(tab, '_note', None)
+    if _alive(note):
+        note.setPlaceholderText('Note for this sale (optional)…')
+        note.setMinimumHeight(40)
+        note.setMaximumHeight(44)
+        if not _in_body(note):
+            bl.addWidget(note)
+        note.show()
+
+    cap = getattr(tab, '_quick_actions_cap', None)
+    if _alive(cap):
+        style_section_header(cap, 'Sale Actions')
+        cap.setContentsMargins(0, 4, 0, 2)
+        if not _in_body(cap):
+            bl.addWidget(cap)
+        cap.show()
 
     qa = getattr(tab, '_quick_actions', None)
     if _alive(qa):
-        if qa.parent() is None or qa not in [
-                bl.itemAt(i).widget() for i in range(bl.count())
-                if bl.itemAt(i) and bl.itemAt(i).widget()]:
+        qa.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        if not _in_body(qa):
             bl.addWidget(qa)
         qa.show()
-        # Tighten quick-action grid to Classic secondary visual weight
         qgl = qa.layout()
         if qgl is not None:
             try:
                 qgl.setContentsMargins(0, 0, 0, 0)
-                qgl.setHorizontalSpacing(6)
-                qgl.setVerticalSpacing(5)
+                qgl.setHorizontalSpacing(8)
+                qgl.setVerticalSpacing(8)
+                if hasattr(qgl, 'setRowStretch'):
+                    for r in range(4):
+                        qgl.setRowStretch(r, 1)
+                    for c in range(3):
+                        qgl.setColumnStretch(c, 1)
             except Exception:
                 pass
-    # Keep payment stack tight: no expanding spacer inside body (foot owns leftover height)
+        for t in qa.findChildren(QuickActionTile):
+            t.setMinimumHeight(40)
+            t.setMaximumHeight(64)
+            t.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    # Leftover rail height goes into Sale Actions (not an empty stretch).
     try:
         for i in range(bl.count() - 1, -1, -1):
             item = bl.itemAt(i)
             if item is not None and item.spacerItem() is not None:
                 bl.takeAt(i)
+        for i in range(bl.count()):
+            item = bl.itemAt(i)
+            w = item.widget() if item is not None else None
+            bl.setStretch(i, 1 if w is qa else 0)
+        body = getattr(tab, '_actions_body', None)
+        if _alive(body):
+            body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
     except Exception:
         pass
 
@@ -1310,30 +2136,22 @@ def restore_shared_chrome(tab) -> None:
     clist = getattr(tab, '_cart_list', None)
     if _alive(clist):
         if hasattr(clist, 'set_density'):
-            clist.set_density('card')
+            clist.set_density('table')
         if hasattr(clist, 'set_column_header'):
             clist.set_column_header(None)
         if hasattr(clist, 'set_expanded'):
             clist.set_expanded(bool(getattr(tab, '_cart_maximized', False)))
 
-    # Restore sale panel stretch (cart fills, no bottom spacer)
+    # Restore sale panel stretch (cart fills, no bottom spacer). The cart/summary
+    # split is owned by the draggable cart splitter's own per-layout minimums.
     try:
         sale = getattr(tab, '_sale_panel', None)
-        cart_scroll = getattr(tab, '_sale_cart_scroll', None)
         spacer = getattr(tab, '_sale_bottom_stretch', None)
         sl = sale.layout() if _alive(sale) else None
-        if sl is not None:
-            if _alive(spacer):
-                sl.removeWidget(spacer)
-                spacer.setParent(None)
-                spacer.hide()
-            if _alive(cart_scroll):
-                for i in range(sl.count()):
-                    item = sl.itemAt(i)
-                    if item and item.widget() is cart_scroll:
-                        sl.setStretch(i, 1)
-                        break
-                cart_scroll.setMinimumHeight(260)
+        if sl is not None and _alive(spacer):
+            sl.removeWidget(spacer)
+            from desktop.utils.quiet_ui import safe_detach
+            safe_detach(spacer)
     except Exception:
         pass
 
@@ -1388,15 +2206,27 @@ def restore_shared_chrome(tab) -> None:
 
     pay_card = getattr(tab, '_pro_pay_card', None)
     if _alive(pay_card):
-        # Re-home pay_seg / pay_hdr into body before stashing card
-        body = getattr(tab, '_actions_body', None)
-        bl = body.layout() if _alive(body) else None
-        pay_seg = getattr(tab, '_pay_seg', None)
-        if bl is not None and _alive(pay_seg):
-            bl.insertWidget(1, pay_seg)
-            pay_seg.show()
         pay_card.hide()
         _stash(tab, pay_card)
+
+    # Payment Method was pinned in the footer during Pro Chrome — move it
+    # back into the checkout body for Classic/Explorer layouts.
+    body = getattr(tab, '_actions_body', None)
+    bl = body.layout() if _alive(body) else None
+    pay_hdr = getattr(tab, '_pay_hdr', None)
+    pay_seg = getattr(tab, '_pay_seg', None)
+    if bl is not None:
+        if _alive(pay_hdr):
+            bl.insertWidget(0, pay_hdr)
+            pay_hdr.show()
+        if _alive(pay_seg):
+            bl.insertWidget(1 if _alive(pay_hdr) else 0, pay_seg)
+            pay_seg.show()
+
+    cap = getattr(tab, '_quick_actions_cap', None)
+    if _alive(cap):
+        cap.hide()
+        _stash(tab, cap)
 
     qa = getattr(tab, '_quick_actions', None)
     if _alive(qa):

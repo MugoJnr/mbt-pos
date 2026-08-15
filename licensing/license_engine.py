@@ -13,12 +13,140 @@ import os, sys, json, time, uuid, hashlib, hmac, base64
 import sqlite3, platform, threading, logging, requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
-from runtime_security import get_activation_hmac_secret
-
 logger = logging.getLogger('license_engine')
 
-# Local license HMAC material — prefer env / per-install secret.
-_MASTER_SECRET = get_activation_hmac_secret().encode('utf-8')
+# Local license crypto secret — lazy-loaded; co-located with lc.db (see below).
+_MASTER_SECRET_CACHE: bytes | None = None
+_LEGACY_SECRET_CANDIDATES: list[bytes] | None = None
+
+
+def _lic_store_dir() -> str:
+    return os.path.dirname(_hidden_db_path())
+
+
+def _license_crypto_secret_path() -> str:
+    return os.path.join(_lic_store_dir(), 'crypto.secret')
+
+
+def _legacy_config_secret_path() -> str:
+    try:
+        from mbt_paths import get_project_root
+        return os.path.join(get_project_root(), 'config', '.activation_hmac_secret')
+    except Exception:
+        return ''
+
+
+def _license_db_has_token() -> bool:
+    try:
+        db = sqlite3.connect(_hidden_db_path())
+        row = db.execute(
+            "SELECT 1 FROM license_data WHERE key='license_token' LIMIT 1"
+        ).fetchone()
+        db.close()
+        return bool(row)
+    except Exception:
+        return False
+
+
+def _read_secret_file(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            val = f.read().strip()
+        return val if len(val) >= 32 else ''
+    except Exception:
+        return ''
+
+
+def _write_secret_file(path: str, value: str) -> None:
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(value)
+    os.replace(tmp, path)
+
+
+def _machine_guid_recovery_secret() -> str:
+    """Deterministic per-PC secret when lc.db exists but crypto.secret was lost."""
+    mg = _win_machine_guid()
+    if not mg:
+        return ''
+    return hashlib.sha256(f'mbt-pos-local-v2:{mg}'.encode()).hexdigest()
+
+
+def _resolve_local_license_secret() -> str:
+    """Stable secret for encrypting the local license store.
+
+    Stored next to lc.db so activation survives reinstalls and config wipes.
+    Falls back to legacy config/.activation_hmac_secret, then MachineGuid
+    recovery when a license row already exists on this PC.
+    """
+    env = (os.environ.get('MBT_ACTIVATION_HMAC_SECRET') or '').strip()
+    if len(env) >= 32:
+        return env
+
+    canonical = _license_crypto_secret_path()
+    val = _read_secret_file(canonical)
+    if val:
+        return val
+
+    legacy_path = _legacy_config_secret_path()
+    if legacy_path:
+        val = _read_secret_file(legacy_path)
+        if val:
+            try:
+                _write_secret_file(canonical, val)
+                logger.info('Migrated license crypto secret into %s', _lic_store_dir())
+            except Exception as e:
+                logger.warning('Could not migrate license secret: %s', e)
+            return val
+
+    if _license_db_has_token():
+        recovered = _machine_guid_recovery_secret()
+        if recovered:
+            # Do not persist until decrypt confirms this secret (see
+            # _decrypt_payload_with_secrets). Writing here would overwrite a
+            # still-valid co-located/legacy secret with a guess.
+            return recovered
+
+    import secrets
+    val = secrets.token_urlsafe(48)
+    _write_secret_file(canonical, val)
+    return val
+
+
+def _legacy_secret_candidates() -> list[bytes]:
+    """Secrets that may have encrypted an older lc.db on this PC."""
+    global _LEGACY_SECRET_CANDIDATES
+    if _LEGACY_SECRET_CANDIDATES is not None:
+        return _LEGACY_SECRET_CANDIDATES
+    seen: list[bytes] = []
+
+    def _add(raw: str):
+        if raw and len(raw) >= 32:
+            b = raw.encode('utf-8')
+            if b not in seen:
+                seen.append(b)
+
+    _add(_resolve_local_license_secret())
+    legacy_path = _legacy_config_secret_path()
+    if legacy_path:
+        _add(_read_secret_file(legacy_path))
+    recovered = _machine_guid_recovery_secret()
+    if recovered:
+        _add(recovered)
+    _LEGACY_SECRET_CANDIDATES = seen
+    return seen
+
+
+def _master_secret_bytes() -> bytes:
+    global _MASTER_SECRET_CACHE
+    if _MASTER_SECRET_CACHE is None:
+        _MASTER_SECRET_CACHE = _resolve_local_license_secret().encode('utf-8')
+    return _MASTER_SECRET_CACHE
+
+
+def _with_secret(secret: bytes | None) -> bytes:
+    return secret if secret is not None else _master_secret_bytes()
 
 # ── Plans ─────────────────────────────────────────────────────────────────────
 PLANS = {
@@ -169,6 +297,77 @@ def _read_raw_license_token() -> Optional[str]:
         return None
 
 
+def _hmac_hex(key: bytes, data: bytes) -> str:
+    return hmac.new(key, data, hashlib.sha256).hexdigest()
+
+
+def _decrypt_payload_with_secrets(
+    token: str,
+    device_id: str,
+    secrets: list[bytes] | None = None,
+) -> Optional[dict]:
+    """Decrypt a store blob. HMAC may be the PBKDF2 key (legacy) or the secret."""
+    try:
+        b64, sig = token.rsplit('.', 1)
+        enc = base64.b64decode(b64)
+    except Exception:
+        return None
+    matched_secret: bytes | None = None
+    payload = None
+    for secret in secrets or _legacy_secret_candidates():
+        try:
+            key = hashlib.pbkdf2_hmac(
+                'sha256', device_id.encode(), secret, iterations=100_000, dklen=32
+            )
+            if hmac.compare_digest(_hmac_hex(key, enc), sig) or hmac.compare_digest(
+                _hmac_hex(secret, enc), sig
+            ):
+                payload = json.loads(_xor_encrypt(enc, key))
+                matched_secret = secret
+                break
+        except Exception:
+            continue
+    if payload is None:
+        return None
+    if matched_secret is not None:
+        try:
+            canonical = _license_crypto_secret_path()
+            if _read_secret_file(canonical) != matched_secret.decode('utf-8', errors='ignore'):
+                _write_secret_file(canonical, matched_secret.decode('utf-8'))
+                global _MASTER_SECRET_CACHE
+                _MASTER_SECRET_CACHE = matched_secret
+        except Exception:
+            pass
+    return payload
+
+
+def _unwrap_license_blob(raw: str, device_id: str) -> Optional[str]:
+    """Outer store wrapper → inner license token string."""
+    outer = _decrypt_payload_with_secrets(raw, device_id)
+    if not outer:
+        return None
+    if isinstance(outer.get('v'), str) and outer['v']:
+        return outer['v']
+    if outer.get('device_id') and outer.get('expires_at'):
+        return raw
+    return None
+
+
+def _resolve_inner_license_token() -> tuple[Optional[str], Optional[str]]:
+    """Return (inner_token, device_id) when lc.db holds a license."""
+    raw = _read_raw_license_token()
+    if not raw:
+        return None, None
+    for did in _fingerprint_device_id_candidates():
+        inner = _unwrap_license_blob(raw, did)
+        if not inner:
+            continue
+        lic = _decrypt_payload_with_secrets(inner, did)
+        if lic and lic.get('expires_at'):
+            return inner, did
+    return None, None
+
+
 def _fingerprint_device_id_candidates() -> list:
     """Ids to try when matching an existing license (incl. migration)."""
     seen = []
@@ -188,12 +387,11 @@ def resolve_device_id() -> str:
     Licensed PCs: use whichever id decrypts the stored token (legacy wmic OK).
     Unlicensed PCs: prefer stable MachineGuid fingerprint over stale cache.
     """
-    token = _read_raw_license_token()
-    if token:
-        for did in _fingerprint_device_id_candidates():
-            if decrypt_payload(token, did):
-                _write_cached_device_id(did)
-                return did
+    _inner, did = _resolve_inner_license_token()
+    if _inner and did:
+        _write_cached_device_id(did)
+        return did
+    if _read_raw_license_token():
         logger.warning('License token present but could not decrypt with any device ID')
 
     canonical = _get_device_fingerprint()
@@ -216,21 +414,28 @@ def get_device_id() -> str:
     return resolve_device_id()
 
 
+def __getattr__(name: str):
+    # license_keygen / tests import _MASTER_SECRET at module level
+    if name == '_MASTER_SECRET':
+        return _master_secret_bytes()
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CRYPTOGRAPHIC HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _sign(data: bytes, secret: bytes = _MASTER_SECRET) -> str:
-    return hmac.new(secret, data, hashlib.sha256).hexdigest()
+def _sign(data: bytes, secret: bytes | None = None) -> str:
+    return hmac.new(_with_secret(secret), data, hashlib.sha256).hexdigest()
 
-def _verify_sig(data: bytes, sig: str, secret: bytes = _MASTER_SECRET) -> bool:
+def _verify_sig(data: bytes, sig: str, secret: bytes | None = None) -> bool:
     if not sig:
         return False
     return hmac.compare_digest(_sign(data, secret), sig)
 
-def _derive_key(device_id: str) -> bytes:
+def _derive_key(device_id: str, secret: bytes | None = None) -> bytes:
     return hashlib.pbkdf2_hmac(
-        'sha256', device_id.encode(), _MASTER_SECRET,
+        'sha256', device_id.encode(), _with_secret(secret),
         iterations=100_000, dklen=32)
 
 def _xor_encrypt(data: bytes, key: bytes) -> bytes:
@@ -242,16 +447,11 @@ def encrypt_payload(payload: dict, device_id: str) -> str:
     key = _derive_key(device_id)
     raw = json.dumps(payload, separators=(',', ':')).encode()
     enc = _xor_encrypt(raw, key)
+    # HMAC uses the derived key so existing shop tokens stay readable.
     return base64.b64encode(enc).decode() + '.' + _sign(enc, key)
 
 def decrypt_payload(token: str, device_id: str) -> Optional[dict]:
-    try:
-        b64, sig = token.rsplit('.', 1)
-        enc = base64.b64decode(b64)
-        key = _derive_key(device_id)
-        if not _verify_sig(enc, sig, key): return None
-        return json.loads(_xor_encrypt(enc, key))
-    except Exception: return None
+    return _decrypt_payload_with_secrets(token, device_id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -482,7 +682,11 @@ class LicenseEngine:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_from_store(self):
-        token = self.store.get('license_token')
+        inner, matched_did = _resolve_inner_license_token()
+        if matched_did and matched_did != self.device_id:
+            self.device_id = matched_did
+            self.store = LicenseStore(self.device_id)
+        token = inner or self.store.get('license_token')
         if not token:
             # Revoke must survive revalidate() — empty token alone looks
             # like "never activated" and would skip the revoked hard-lock UI.
@@ -676,9 +880,10 @@ class LicenseEngine:
                 actor_email = ''
             result = activate_license_on_device(
                 key_str,
-                device_id,
+                self.device_id,
                 actor_email=actor_email,
                 actor_is_admin=False,
+                device_aliases=[device_id, self.device_id],
             )
             if result.get('ok'):
                 lic = result.get('license') or {}
@@ -861,7 +1066,9 @@ class LicenseEngine:
         self.store.set('last_cloud_check_ts', now)
         if not ok:
             status = (payload or {}).get('status') or message
-            if 'revok' in str(status).lower() or 'suspend' in str(status).lower() or 'invalid' in str(message).lower():
+            msg_l = str(message or '').lower()
+            st_l = str(status).lower()
+            if st_l in ('revoked', 'suspended') or 'revoked' in msg_l or 'suspended' in msg_l:
                 self.revoke_from_cloud(reason=f'Cloud validation failed: {message or status}')
                 return False, message or 'License invalid on cloud'
             self.store.set('requires_online', True)
@@ -956,6 +1163,9 @@ class LicenseEngine:
 
     def has_local_license_payload(self) -> bool:
         """True when a decryptable license token exists for this device."""
+        inner, _did = _resolve_inner_license_token()
+        if inner:
+            return True
         return bool(self._license_data and self._license_data.get('expires_at'))
 
     @property

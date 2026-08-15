@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-07-24-v3.0.12"
-APP_VERSION   = "3.0.12"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-08-15-v3.0.46"
+APP_VERSION   = "3.0.46"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -55,8 +55,18 @@ def install_crash_handler():
             return
         msg = ''.join(traceback.format_exception(exc_type, exc, tb))
         log.error('Unhandled exception:\n%s', msg)
+        # Prefer non-modal status when MainWindow exists (avoid cashier surprise OK)
         try:
             app = QApplication.instance()
+            win = None
+            if app:
+                for w in app.topLevelWidgets():
+                    if w.__class__.__name__ == 'MainWindow' and w.isVisible():
+                        win = w
+                        break
+            if win is not None and hasattr(win, '_set_status'):
+                win._set_status(f'Error: {exc}'[:120])
+                return
             if app:
                 QMessageBox.critical(
                     None, 'MBT POS - Unexpected Error',
@@ -595,13 +605,9 @@ class MainWindow(QMainWindow):
             'Idle session logout after %.0fs inactivity',
             self._idle_elapsed_sec(),
         )
+        # Non-modal: status only Ã¢â‚¬â€ login screen is the next step (no surprise OK)
         try:
-            QMessageBox.information(
-                self,
-                'Session expired',
-                'You were signed out due to inactivity.\n'
-                'Sign in again to continue.',
-            )
+            self._set_status('Signed out due to inactivity')
         except Exception:
             pass
         self._perform_logout(confirm=False)
@@ -942,10 +948,43 @@ class MainWindow(QMainWindow):
                     STATE_EXPIRED:   "License Expired\n\nYour subscription has expired.\nPlease contact MugoByte Technologies to renew.",
                 }.get(state, "License invalid.")
 
-                QMessageBox.critical(self, 'MBT POS - License', reason)
+                # Avoid stealing focus mid-sale: status + license tab first;
+                # modal only when cart/payment is idle (or hard revoke/tamper).
+                busy = False
+                try:
+                    busy = not self.is_safe_to_auto_update()
+                except Exception:
+                    try:
+                        pos = self._tabs.get('sales')
+                        cart = getattr(pos, 'cart', None) if pos is not None else None
+                        busy = bool(cart)
+                    except Exception:
+                        busy = False
 
-                if state in (STATE_TAMPERED, STATE_INACTIVE):
-                    # Hard close ? no way to continue
+                short = {
+                    STATE_TAMPERED: 'License tampered Ã¢â‚¬â€ contact support',
+                    STATE_INACTIVE: 'License revoked Ã¢â‚¬â€ contact support',
+                    STATE_EXPIRED: 'License expired Ã¢â‚¬â€ renew to continue',
+                }.get(state, 'License invalid')
+                try:
+                    self._set_status(short)
+                except Exception:
+                    pass
+
+                hard = state in (STATE_TAMPERED, STATE_INACTIVE)
+                if hard or not busy:
+                    QMessageBox.critical(self, 'MBT POS - License', reason)
+                else:
+                    # Soft: cashier can finish the sale; re-check on next idle tick
+                    log.warning('License %s deferred modal (POS busy): %s', state, short)
+                    try:
+                        if 'license' in self._tabs:
+                            self._goto('license')
+                    except Exception:
+                        pass
+
+                if hard:
+                    # Hard close Ã¢â‚¬â€ no way to continue
                     QApplication.quit()
 
             # 3. Warn on tamper
@@ -1143,9 +1182,21 @@ class MainWindow(QMainWindow):
         self._schedule_unattended_install()
 
     def _ui_force_update(self, version, reason):
-        QMessageBox.warning(
-            self, 'Update Required',
-            reason or f'Please update to v{version} to continue using MBT POS.')
+        # Non-modal: same pattern as install-fail Ã¢â‚¬â€ Update button + status (no surprise OK)
+        self._pending_update_version = version
+        title = f'Update required: v{version}'
+        try:
+            self._set_status(title)
+        except Exception:
+            pass
+        btn = getattr(self, '_update_btn', None)
+        if btn is not None:
+            btn.setText(f'  Update required v{version}  ')
+            btn.setToolTip(
+                reason or f'Please update to v{version} to continue using MBT POS.')
+            btn.show()
+            btn.raise_()
+        log.warning('Force update required (non-modal): v%s Ã¢â‚¬â€ %s', version, reason or '')
 
     def _restore_pending_update(self):
         """If a update was downloaded while UI was not ready, show the button."""
@@ -1225,6 +1276,11 @@ class MainWindow(QMainWindow):
         except Exception:
             helper_ok = False
         dlg = QMessageBox(self)
+        try:
+            from desktop.utils.quiet_ui import style_message_box
+            style_message_box(dlg)
+        except Exception:
+            pass
         dlg.setWindowTitle(f'Update v{version} Ready')
         if helper_ok:
             perm = (
@@ -1254,7 +1310,16 @@ class MainWindow(QMainWindow):
                 ok, err = self._updater.install_and_restart(
                     path, unattended=False)
                 if not ok:
-                    QMessageBox.warning(self, 'Update Blocked', err)
+                    msg = (err or '').strip()
+                    if not msg:
+                        from desktop.utils.quiet_ui import soft_warn
+                        soft_warn(self, 'Update could not be installed.')
+                        try:
+                            self._set_status('Update could not be installed.')
+                        except Exception:
+                            pass
+                    else:
+                        QMessageBox.warning(self, 'Update Blocked', msg)
                     return
                 self._pending_installer_path = getattr(
                     self._updater, '_installer_path', path) or path
@@ -1743,8 +1808,12 @@ class MainWindow(QMainWindow):
         if fab is not None:
             # Dashboard owns a quick-action FAB + payment charts at the fold ?
             # hide Copilot chip here so it never covers By Payment / last KPI row.
+            # Point of Sale: the checkout rail fills its own bottom-right corner
+            # with the Sale Actions pad + Complete Sale, so a floating chip lands
+            # on top of them. AI stays one click away via the sidebar (AI
+            # Operations) — quiet-POS wins over an overlay during checkout.
             active = getattr(self, '_active_tab_id', None) or ''
-            if active == 'dashboard':
+            if active in ('dashboard', 'sales'):
                 fab.hide()
             else:
                 fab.show()
@@ -2121,6 +2190,40 @@ class MainWindow(QMainWindow):
         self._sync_lbl.setText(
             {'syncing':'Syncing', 'synced':'Synced', 'failed':'Failed', 'idle':'Idle'}.get(s, s))
 
+    def _set_status(self, text: str, *, transient: bool = True):
+        """Non-modal status strip Ã¢â‚¬â€ never steal focus with a MessageBox."""
+        msg = (text or '').strip()
+        if not msg:
+            return
+        try:
+            lbl = getattr(self, '_sync_lbl', None)
+            if lbl is not None:
+                lbl.setText(msg[:48])
+                lbl.setToolTip(msg)
+        except Exception:
+            pass
+        log.info('status: %s', msg)
+        # Clear transient status back to sync idle after a few seconds
+        if transient:
+            try:
+                QTimer.singleShot(8000, lambda: self._clear_transient_status(msg))
+            except Exception:
+                pass
+
+    def _clear_transient_status(self, expected: str):
+        try:
+            lbl = getattr(self, '_sync_lbl', None)
+            if lbl is None:
+                return
+            tip = (lbl.toolTip() or '')
+            if tip.startswith(expected[:40]) or (lbl.text() or '').startswith(expected[:20]):
+                # Leave sync state to InternetMonitor; show Idle placeholder
+                if not (lbl.text() or '').lower().startswith(('sync', 'failed', 'idle')):
+                    lbl.setText('Idle')
+                    lbl.setToolTip('')
+        except Exception:
+            pass
+
     def _tick(self):
         now = datetime.now()
         self._clk.setText(
@@ -2311,6 +2414,12 @@ def _show_login(api: APIClient = None):
     api.set_token(ud['token'])
     _main_window = MainWindow(ud, api, icon)
     _main_window.show()
+    try:
+        install = getattr(QApplication.instance(), '_mbt_install_tl_logger', None)
+        if callable(install):
+            install(_main_window)
+    except Exception:
+        pass
 
 
 def main():
@@ -2355,6 +2464,18 @@ def main():
         install_no_wheel_small_scroll(app)
     except Exception:
         log.exception('Failed to install no-wheel small-scroll filter')
+    try:
+        from desktop.utils.quiet_ui import (
+            install_dark_messagebox_style,
+            install_orphan_flash_guard,
+            install_toplevel_debug_logger,
+        )
+        install_dark_messagebox_style()
+        install_orphan_flash_guard()
+        # Defer logger until main window exists — hooked after show below
+        app._mbt_install_tl_logger = install_toplevel_debug_logger
+    except Exception:
+        log.exception('Failed to install empty message-box guard')
     install_crash_handler()
     app.setApplicationName("MBT POS")
     app.setOrganizationName("MugoByte Technologies")

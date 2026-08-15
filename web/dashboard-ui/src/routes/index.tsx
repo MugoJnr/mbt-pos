@@ -197,6 +197,17 @@ function Dashboard() {
   const topCategories = Array.isArray(cc.top_categories) ? cc.top_categories : [];
   const bak = liveQ.data?.backup || {};
   const syncPending = Number(liveQ.data?.sync?.pending || 0);
+  const liveOffline = liveQ.isError || (!liveQ.isLoading && !liveQ.data);
+  const bakLabel = liveOffline
+    ? "OFFLINE"
+    : String(bak.status || "—").toUpperCase();
+  const bakTone = liveOffline
+    ? "warn"
+    : bak.status === "ok"
+      ? "ok"
+      : bak.status === "error"
+        ? "err"
+        : "warn";
 
   const healthScore = Number(healthQ.data?.score ?? 0);
   const healthOverall =
@@ -358,12 +369,8 @@ function Dashboard() {
         ) : (
           <Badge tone="muted">Sync clear</Badge>
         )}
-        <Badge
-          tone={
-            bak.status === "ok" ? "ok" : bak.status === "error" ? "warn" : "warn"
-          }
-        >
-          Backup {String(bak.status || "—").toUpperCase()}
+        <Badge tone={bakTone}>
+          Backup {bakLabel}
         </Badge>
       </div>
 

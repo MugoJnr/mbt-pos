@@ -1568,18 +1568,24 @@ def cloud_updates_list():
             from backend.cloud.update_center import get_update_center
             from backend.cloud.platform_service import service_select
             center = get_update_center()
-            latest = center.check_for_update(current) if current else None
+            latest_for_client = center.check_for_update(current) if current else None
             rows = service_select(
                 'app_updates',
                 'select=*&order=published_at.desc&limit=50',
             ) or []
+            # Always expose newest published row as `latest` (Downloads badge).
+            # service_select may be empty under RLS — fall back to service-role tip.
+            latest_row = rows[0] if rows else center.get_latest()
+            if latest_row and not rows:
+                rows = [latest_row]
             return jsonify({
                 'updates': rows,
-                'latest_for_client': latest,
-                'update_available': bool(latest),
+                'latest': latest_row,
+                'latest_for_client': latest_for_client,
+                'update_available': bool(latest_for_client),
             })
         except Exception as e:
-            return jsonify({'updates': [], 'latest_for_client': None,
+            return jsonify({'updates': [], 'latest': None, 'latest_for_client': None,
                             'update_available': False, 'error': str(e)})
     return _inner()
 

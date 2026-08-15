@@ -248,6 +248,15 @@ if not exist "dist\MBT_POS\MBT_POS.exe" (
 echo  [OK] dist\MBT_POS\MBT_POS.exe ready.
 echo.
 
+:: Embed checksum into freeze tree before NSIS (non-empty _internal/version.json)
+echo  [3b/5] Embedding version.json checksum into freeze tree...
+"%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
+if errorlevel 1 (
+    echo  [ERROR] Could not embed checksum into freeze tree.
+    pause & exit /b 1
+)
+echo.
+
 :: ════════════════════════════════════════════════════════════════
 :: STEP 4 — NSIS
 :: ════════════════════════════════════════════════════════════════
@@ -270,12 +279,23 @@ if "!NSIS_CMD!"=="" (
     )
 )
 
-if not "!NSIS_CMD!"=="" (
-    "!NSIS_CMD!" installer.nsi
-    if not errorlevel 1 ( echo  [OK] dist\MBT_POS_Setup.exe ready.
-    ) else ( echo  [!] NSIS failed. Use dist\MBT_POS.exe directly. )
-) else (
+if "!NSIS_CMD!"=="" (
     echo  [!] NSIS unavailable. Use dist\MBT_POS.exe directly.
+) else (
+    "!NSIS_CMD!" installer.nsi
+    if errorlevel 1 (
+        echo  [!] NSIS failed. Use dist\MBT_POS.exe directly.
+    ) else (
+        echo  [OK] dist\MBT_POS_Setup.exe ready — stamping published SHA...
+        "%PY_EXE%" scripts\publish_release_3.py --stamp-only
+        if errorlevel 1 (
+            echo  [ERROR] checksum stamp failed.
+            pause & exit /b 1
+        )
+        echo  [OK] version.json + sidecar stamped to Setup SHA-256.
+        echo       Note: re-run BUILD ^(or nsis after stamp+embed^) if you need the
+        echo       packaged _internal checksum to match this exact Setup binary.
+    )
 )
 echo.
 

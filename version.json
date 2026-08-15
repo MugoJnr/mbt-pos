@@ -1,13 +1,7 @@
 {
-    "version": "3.0.12",
-    "build": "RC-2026-07-24-v3.0.12",
-    "build_date": "2026-07-24",
-    "release_notes": "MBT POS 3.0.12: Publish channel catch-up. AppData local backups (fixes Live Backup ERROR on Program Files). Portal /licenses redirect. Touch-target footer + Return/Exchange panel wiring. Keeps 3.0.11 snappy POS open + 3.0.10 offline fail-open. Business-day picker included.",
-    "github_repo": "MugoJnr/mbt-pos",
-    "asset_name": "MBT_POS_Setup.exe",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
-    "checksum_sha256": "ff44e8f8b5da81b19696f08f385c428422eb8f08dfd26c0ba075ca2c7ea1f106",
-    "checksum_note": "Publish SHA-256 in GitHub release notes as [checksum_sha256: HEX] and/or upload MBT_POS_Setup.exe.sha256 sidecar. Required for unattended install.",
-    "min_required_version": "1.0.0",
-    "force_update": false
+    "version": "3.0.46",
+    "build": "RC-2026-08-15-v3.0.46",
+    "released": "2026-08-15",
+    "release_notes": "Checkout Pro: payment rail fills the column; More category popup lists all categories. Totals under the cart; Split + Part pay, hold tenders.",
+    "checksum_sha256": "1f2743a3c10d734f6a48f85eb49468e4ab56a91a13cd4b4172ff23d5e50e3aa7"
 }

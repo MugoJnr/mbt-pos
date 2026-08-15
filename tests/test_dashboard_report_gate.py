@@ -99,8 +99,8 @@ class DashboardReportGate(unittest.TestCase):
         # Move sale to other_day so ranges diverge cleanly
         db = self.ac._db()
         db.execute(
-            "UPDATE sales SET created_at=? WHERE id=?",
-            (other_day.isoformat() + 'T12:00:00', sale_id),
+            "UPDATE sales SET created_at=?, sale_date=? WHERE id=?",
+            (other_day.isoformat() + 'T12:00:00', other_day.isoformat(), sale_id),
         )
         db.commit()
         db.close()

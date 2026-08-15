@@ -1,4 +1,6 @@
 """Suppliers list + receive stock dialogs (V05 receiving MVP)."""
+from desktop.utils.quiet_ui import info_toast
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -146,9 +148,7 @@ class ReceiveStockDialog(QDialog):
             notes=self._notes.text().strip(),
         )
         if res and res.get('success'):
-            QMessageBox.information(
-                self, 'Received',
-                f"Stock {res.get('old_stock')} → {res.get('new_stock')}")
+            info_toast(self, f"Stock received · on hand {res.get('new_stock')}")
             self.accept()
             return
         QMessageBox.critical(self, 'Error', (res or {}).get('error', 'Receive failed.'))

@@ -82,9 +82,12 @@ def _shop_already_ready(engine) -> bool:
         initialized = False
     has_local = False
     try:
+        from licensing.license_engine import _read_raw_license_token, _resolve_inner_license_token
+        inner, _ = _resolve_inner_license_token()
         has_local = bool(
-            getattr(engine, 'has_local_license_payload', lambda: False)()
-            or engine.store.get('license_token')
+            inner
+            or getattr(engine, 'has_local_license_payload', lambda: False)()
+            or _read_raw_license_token()
         )
     except Exception:
         has_local = False

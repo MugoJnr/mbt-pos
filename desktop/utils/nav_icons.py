@@ -299,6 +299,27 @@ def icon_refresh(size=16, accent=None) -> QIcon:
     return _paint_base(size, draw, accent=accent)
 
 
+def icon_search(size=16, accent=None) -> QIcon:
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(muted, max(1.4, s * 0.11), Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QRectF(s * 0.16, s * 0.16, s * 0.50, s * 0.50))
+        p.drawLine(QPointF(s * 0.62, s * 0.62), QPointF(s * 0.86, s * 0.86))
+    return _paint_base(size, draw, accent=accent)
+
+
+def icon_barcode(size=16, accent=None) -> QIcon:
+    def draw(p, s, gold, muted):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(muted))
+        # Alternating bar widths read as a barcode at 16px
+        x = s * 0.14
+        for w in (0.06, 0.03, 0.08, 0.03, 0.05, 0.03, 0.07):
+            p.drawRect(QRectF(x, s * 0.20, s * w, s * 0.60))
+            x += s * (w + 0.045)
+    return _paint_base(size, draw, accent=accent)
+
+
 def icon_sun(size=16, accent=None) -> QIcon:
     def draw(p, s, gold, muted):
         p.setPen(QPen(gold, max(1.2, s * 0.09), Qt.SolidLine, Qt.RoundCap))

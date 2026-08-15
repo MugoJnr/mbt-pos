@@ -288,9 +288,31 @@ class CloudLicenseServer:
             if normalize_product_id(r.get('product_id') or DEFAULT_PRODUCT_ID) == pid
         ]
 
+    def _activation_device_ids(self, device_id: str, aliases: list | None) -> list[str]:
+        ids: list[str] = []
+        for raw in (device_id, *(aliases or [])):
+            did = str(raw or '').strip()
+            if did and did not in ids:
+                ids.append(did)
+        return ids
+
+    def _find_active_activation(self, license_id: str, device_ids: list[str]) -> dict | None:
+        from urllib.parse import quote
+        for did in device_ids:
+            rows = self._rows(
+                'license_activations',
+                f'license_id=eq.{quote(str(license_id), safe="")}'
+                f'&device_id=eq.{quote(did, safe="")}'
+                f'&is_active=eq.true&select=*',
+            )
+            if rows:
+                return rows[0]
+        return None
+
     def activate(self, license_key: str, device_id: str, org_id: str,
                  *, actor_email: str = '', actor_is_admin: bool = False,
-                 product_id: str | None = None) -> tuple[bool, str, dict | None]:
+                 product_id: str | None = None,
+                 device_aliases: list | None = None) -> tuple[bool, str, dict | None]:
         from urllib.parse import quote
         rows = self._rows('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
         if not rows:
@@ -329,30 +351,31 @@ class CloudLicenseServer:
                 return False, (
                     f'This key is reserved for {assigned}, not {actor}.'
                 ), None
-        if reserved and device_id and reserved != device_id:
+        ids = self._activation_device_ids(device_id, device_aliases)
+        if reserved and ids and reserved not in ids:
             return False, (
                 'This key is reserved for a different device. '
                 'Ask your administrator to clear or update the device reservation.'
             ), None
 
-        if lic.get('activated_devices', 0) >= lic.get('max_devices', 1):
-            # Allow re-activation of same device
-            existing = self._rows(
-                'license_activations',
-                f'license_id=eq.{lic["id"]}&device_id=eq.{quote(device_id, safe="")}&is_active=eq.true&select=*',
-            )
-            if not existing:
-                return False, f'Device limit reached ({lic["max_devices"]})', None
+        # Same physical PC (hardware id or persisted MBT-PC-*) must not consume
+        # another seat or require a new key after restart.
+        existing = self._find_active_activation(lic['id'], ids)
+        if existing:
             return True, 'Already activated', {
-                'token': existing[0].get('activation_token'),
+                'token': existing.get('activation_token'),
                 'plan': lic['plan'],
                 'expires_at': lic.get('expires_at'),
             }
 
-        token = generate_activation_token(license_key, device_id)
+        if lic.get('activated_devices', 0) >= lic.get('max_devices', 1):
+            return False, f'Device limit reached ({lic["max_devices"]})', None
+
+        canonical_id = ids[0] if ids else device_id
+        token = generate_activation_token(license_key, canonical_id)
         self._insert('license_activations', {
             'license_id': lic['id'],
-            'device_id': device_id,
+            'device_id': canonical_id,
             'org_id': org_id,
             'activation_token': token,
             'is_active': True,
@@ -371,7 +394,8 @@ class CloudLicenseServer:
         })
         return True, 'Activated', {'token': token, 'plan': lic['plan'], 'expires_at': lic.get('expires_at')}
 
-    def validate(self, license_key: str, device_id: str) -> tuple[bool, str, dict | None]:
+    def validate(self, license_key: str, device_id: str,
+                 device_aliases: list | None = None) -> tuple[bool, str, dict | None]:
         from urllib.parse import quote
         rows = self._rows('licenses', f'license_key=eq.{quote(license_key, safe="")}&select=*')
         if not rows:
@@ -380,10 +404,9 @@ class CloudLicenseServer:
         if lic['status'] != 'active':
             return False, f'License {lic["status"]}', None
 
-        activations = self._rows(
-            'license_activations',
-            f'license_id=eq.{lic["id"]}&device_id=eq.{quote(device_id, safe="")}&is_active=eq.true&select=*',
-        )
+        ids = self._activation_device_ids(device_id, device_aliases)
+        found = self._find_active_activation(lic['id'], ids)
+        activations = [found] if found else []
         if not activations:
             return False, 'Device not activated', None
 

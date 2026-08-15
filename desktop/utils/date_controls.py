@@ -28,6 +28,42 @@ def _as_qdate(value: Optional[Union[QDate, date_cls]] = None) -> QDate:
     return QDate.currentDate()
 
 
+def apply_shop_day_edit(
+    edit: QDateEdit,
+    day: Optional[Union[QDate, date_cls]] = None,
+    *,
+    today: Optional[date_cls] = None,
+    block_signals: bool = True,
+) -> date_cls:
+    """
+    Set a QDateEdit to ``day``, always refreshing maximumDate to shop today first.
+
+    Qt clamps setDate() to the current maximumDate. If maximumDate was frozen at
+    construction (e.g. last year), Today / setDate(2026-…) silently stays on
+    2025-… — raise max before setDate to avoid that.
+    """
+    try:
+        from desktop.utils.shop_time import shop_today
+        shop = today or shop_today()
+    except Exception:
+        shop = today or date_cls.today()
+    target = _as_qdate(day if day is not None else shop)
+    target_d = date_cls(target.year(), target.month(), target.day())
+    if target_d > shop:
+        target_d = shop
+        target = QDate(shop.year, shop.month, shop.day)
+    qd_max = QDate(shop.year, shop.month, shop.day)
+    if block_signals:
+        edit.blockSignals(True)
+    try:
+        edit.setMaximumDate(qd_max)
+        edit.setDate(target)
+    finally:
+        if block_signals:
+            edit.blockSignals(False)
+    return target_d
+
+
 def _calendar_arrow_qss() -> str:
     path = os.path.join(_assets_root(), 'icons', 'calendar.svg')
     if os.path.isfile(path):
@@ -74,13 +110,14 @@ def make_date_edit(
     d = QDateEdit()
     d.setCalendarPopup(True)
     d.setDisplayFormat(DATE_DISPLAY_FMT)
-    d.setDate(_as_qdate(initial))
     d.setMinimumHeight(height)
     d.setMinimumWidth(min_width)
     d.setMaximumWidth(max(min_width + 40, 200))
     d.setMinimumDate(QDate(2000, 1, 1))
     today = QDate.currentDate()
+    # Max before setDate — Qt clamps setDate to maximumDate
     d.setMaximumDate(today.addYears(5) if allow_future else today)
+    d.setDate(_as_qdate(initial))
     d.setProperty('mbtDateEdit', True)
     style_date_edit(d)
     return d

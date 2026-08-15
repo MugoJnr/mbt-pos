@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+from desktop.utils.quiet_ui import soft_warn
 from desktop.utils.theme import C
 from desktop.utils.category_visuals import (
     all_icons, search_icons, find_icon, favorite_ids, recent_ids,
@@ -343,7 +344,7 @@ class IconPickerDialog(QDialog):
 
     def _accept(self):
         if not self._selected:
-            QMessageBox.information(self, 'Icon', 'Please select an icon.')
+            soft_warn(self, 'Please select an icon.')
             return
         push_recent(self._selected.get('id'))
         self.accept()

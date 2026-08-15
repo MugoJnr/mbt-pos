@@ -1,4 +1,6 @@
 """Return / exchange dialog — partial restock against a completed receipt."""
+from desktop.utils.quiet_ui import info_toast
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QDoubleSpinBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
@@ -152,11 +154,10 @@ class ReturnSaleDialog(QDialog):
             refund_method=self._method.currentText(),
         )
         if res and res.get('success'):
-            QMessageBox.information(
-                self, 'Return recorded',
-                f"Refund: {float(res.get('refund_total') or 0):,.2f}\n"
-                f"Return receipt: {res.get('receipt_number')}\n"
-                f"Stock restored.")
+            info_toast(
+                self,
+                f"Return recorded · {res.get('receipt_number') or 'ok'}",
+            )
             self.accept()
             return
         QMessageBox.critical(self, 'Error', (res or {}).get('error', 'Return failed.'))

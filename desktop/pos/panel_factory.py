@@ -25,10 +25,86 @@ class _KesEdit(QLineEdit):
         QTimer.singleShot(0, self.selectAll)
 
 
+class BusinessDayBar(QFrame):
+    """Business-day chrome that stays legible in a narrow Checkout Pro column.
+
+    The wide form needs ~560px (QSS forces min-width:140px on QDateEdit and
+    8px/16px padding on outline buttons), but the Pro product column is ~420px.
+    Rather than hide Today / View day / Copy sale — all mid-sale actions — the
+    bar switches to short labels and tighter insets so every button stays a
+    single click away at any width.
+    """
+
+    #: Below this width the bar uses short labels + compact insets.
+    COMPACT_UNDER = 620
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('posBusinessDayBar')
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._compact = None  # force first apply
+        self._label = None
+        self._date = None
+        self._buttons = ()
+
+    def bind(self, label, date_edit, buttons):
+        """Register the widgets whose sizing flips between wide / compact."""
+        self._label = label
+        self._date = date_edit
+        self._buttons = tuple(buttons)
+        self._apply(self.width() < self.COMPACT_UNDER)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply(self.width() < self.COMPACT_UNDER)
+
+    def _apply(self, compact: bool):
+        compact = bool(compact)
+        if compact == self._compact or self._date is None:
+            return
+        self._compact = compact
+        lay = self.layout()
+        if lay is not None:
+            lay.setContentsMargins(*((10, 6, 10, 6) if compact else (16, 8, 16, 8)))
+            lay.setSpacing(6 if compact else 8)
+        if self._label is not None:
+            # Caption is redundant once the date field carries its own tooltip
+            self._label.setVisible(not compact)
+        # Inline QSS beats the global QDateEdit{min-width:140px} rule
+        dw = 116 if compact else 150
+        self._date.setStyleSheet(
+            f"QDateEdit{{min-width:{dw}px;max-width:{dw}px;"
+            f"padding:4px 28px 4px 8px;font-size:{12 if compact else 13}px;}}"
+            if compact else
+            f"QDateEdit{{min-width:{dw}px;padding:6px 34px 6px 12px;font-size:13px;}}")
+        for btn, short, wide in self._buttons:
+            btn.setText(short if compact else wide)
+            btn.setStyleSheet(
+                f"QPushButton#outlineBtn{{padding:4px 8px;font-size:11px;"
+                f"font-weight:600;}}" if compact else '')
+        self.updateGeometry()
+
+
 def build_shared_panels(tab) -> None:
     """Create product / sale / actions panels and attach widgets onto ``tab``."""
+    # Park every new panel under an invisible stash from birth — never free HWND.
+    stash = getattr(tab, '_layout_stash', None)
+    if stash is None:
+        stash = QWidget(tab)
+        stash.hide()
+        try:
+            stash.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
+        tab._layout_stash = stash
+
     # ── Product browser ───────────────────────────────────────────────────────
-    product = QFrame()
+    product = QFrame(stash)
+    product.hide()
+    try:
+        product.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
     product.setObjectName('posProductPanel')
     product.setAttribute(Qt.WA_StyledBackground, True)
     ll = QVBoxLayout(product)
@@ -36,27 +112,27 @@ def build_shared_panels(tab) -> None:
     ll.setSpacing(0)
 
     # ── Business day bar (sale date) — visible on all checkout layouts ────────
-    biz = QFrame()
-    biz.setObjectName('posBusinessDayBar')
-    biz.setAttribute(Qt.WA_StyledBackground, True)
+    biz = BusinessDayBar(product)
     bf = QHBoxLayout(biz)
     bf.setContentsMargins(16, 8, 16, 8)
     bf.setSpacing(8)
     biz_lbl = QLabel('Business day')
+    biz_lbl.setObjectName('posBizDayCap')
     biz_lbl.setStyleSheet(
         f"color:{C['text2']};font-size:12px;font-weight:700;background:transparent;")
     bf.addWidget(biz_lbl)
     from desktop.utils.security import can_set_business_day
     from desktop.utils.shop_time import shop_today
+    from desktop.utils.date_controls import apply_shop_day_edit
     today = shop_today()
     tab._business_day = today
     tab._biz_date = QDateEdit()
     tab._biz_date.setCalendarPopup(True)
     tab._biz_date.setDisplayFormat('yyyy-MM-dd')
-    tab._biz_date.setDate(QDate(today.year, today.month, today.day))
-    tab._biz_date.setMaximumDate(QDate(today.year, today.month, today.day))
+    tab._biz_date.setMinimumDate(QDate(2000, 1, 1))
+    # Raise maximumDate before setDate (Qt clamps otherwise — stale year bug)
+    tab._business_day = apply_shop_day_edit(tab._biz_date, today, today=today)
     tab._biz_date.setMinimumHeight(34)
-    tab._biz_date.setMinimumWidth(130)
     can_biz = can_set_business_day(tab.user)
     tab._biz_date.setEnabled(can_biz)
     tab._biz_date.setToolTip(
@@ -79,16 +155,28 @@ def build_shared_panels(tab) -> None:
     tab._biz_copy_btn.clicked.connect(tab._open_business_day_sales)
     bf.addWidget(tab._biz_copy_btn)
     tab._biz_warn = QLabel('')
+    tab._biz_warn.setObjectName('posBizDayWarn')
     tab._biz_warn.setStyleSheet(
         f"color:{C.get('warn', '#D97706')};font-size:12px;font-weight:700;"
         f"background:transparent;")
     bf.addWidget(tab._biz_warn, 1)
+    # Short/wide label pairs so every action survives the narrow Pro column
+    biz.bind(biz_lbl, tab._biz_date, (
+        (tab._biz_today_btn, 'Today', 'Today'),
+        (tab._biz_view_btn, 'View', 'View day'),
+        (tab._biz_copy_btn, 'Copy', 'Copy sale…'),
+    ))
     tab._business_day_bar = biz
     ll.addWidget(biz)
 
-    search_bar = QWidget()
+    search_bar = QWidget(product)
+    search_bar.setObjectName('posSearchBarRow')
+    search_bar.setAttribute(Qt.WA_StyledBackground, True)
+    # Object-scoped: an unqualified `border-bottom` here cascades onto every
+    # child label and paints stray hairlines under captions.
     search_bar.setStyleSheet(
-        f"background:transparent; border-bottom:1px solid {C['border']};")
+        f"QWidget#posSearchBarRow{{background:transparent;"
+        f"border-bottom:1px solid {C['border']};}}")
     sf = QHBoxLayout(search_bar)
     sf.setContentsMargins(16, 14, 16, 14)
     sf.setSpacing(10)
@@ -105,6 +193,34 @@ def build_shared_panels(tab) -> None:
     tab._cat.addItem('All Categories')
     tab._cat.currentTextChanged.connect(tab._filter)
     sf.addWidget(tab._cat)
+    # Checkout layout switcher — always visible (incl. Checkout Pro); also in Settings → Checkout
+    from desktop.pos.layout_ids import CHECKOUT_LAYOUTS, normalize_layout_id
+    tab._layout_combo = QComboBox()
+    tab._layout_combo.setObjectName('posLayoutCombo')
+    tab._layout_combo.setMinimumHeight(44)
+    tab._layout_combo.setFixedWidth(168)
+    tab._layout_combo.setToolTip(
+        'POS checkout layout:\n'
+        'Retail Classic — supermarket two-column + bottom payment\n'
+        'Product Explorer — card grid + Current Sale (default)\n'
+        'Checkout Pro — products | cart | actions\n'
+        'Also available in Settings → Jump: Checkout')
+    for key, label in CHECKOUT_LAYOUTS:
+        tab._layout_combo.addItem(label, key)
+    try:
+        _lid = normalize_layout_id(
+            (tab.api.get_settings() or {}).get('pos_checkout_layout'))
+        _lidx = tab._layout_combo.findData(_lid)
+        tab._layout_combo.setCurrentIndex(_lidx if _lidx >= 0 else 1)
+    except Exception:
+        tab._layout_combo.setCurrentIndex(1)
+    try:
+        from desktop.utils.pos_light_theme import style_cat_combo
+        style_cat_combo(tab._layout_combo, is_light=bool(getattr(tab, '_is_light', False)))
+    except Exception:
+        pass
+    tab._layout_combo.currentIndexChanged.connect(tab._on_layout_combo_changed)
+    sf.addWidget(tab._layout_combo)
     ref = IconBtn('', 40, 40)
     try:
         from desktop.utils.nav_icons import apply_button_icon
@@ -124,7 +240,7 @@ def build_shared_panels(tab) -> None:
     tab._search_bar = search_bar
     ll.addWidget(search_bar)
 
-    scroll = QScrollArea()
+    scroll = QScrollArea(product)
     scroll.setObjectName('posProductScroll')
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -151,15 +267,24 @@ def build_shared_panels(tab) -> None:
     tab._left_panel = product
 
     # ── Current Sale panel (cart + summary) ───────────────────────────────────
-    sale = QFrame()
+    sale = QFrame(stash)
+    sale.hide()
+    try:
+        sale.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
     sale.setObjectName('posSalePanel')
     sale.setAttribute(Qt.WA_StyledBackground, True)
     sl = QVBoxLayout(sale)
     sl.setContentsMargins(0, 0, 0, 0)
     sl.setSpacing(0)
 
-    hdr = QWidget()
-    hdr.setStyleSheet(f"border-bottom:1px solid {C['border']};")
+    hdr = QWidget(sale)
+    hdr.setObjectName('posSaleHdrRow')
+    hdr.setAttribute(Qt.WA_StyledBackground, True)
+    hdr.setStyleSheet(
+        f"QWidget#posSaleHdrRow{{background:transparent;"
+        f"border-bottom:1px solid {C['border']};}}")
     tab._cart_hdr = hdr
     ch = QHBoxLayout(hdr)
     ch.setContentsMargins(16, 14, 16, 14)
@@ -177,17 +302,19 @@ def build_shared_panels(tab) -> None:
     ch.addWidget(tab._cart_max_btn)
     sl.addWidget(hdr)
 
-    cart_scroll = QScrollArea()
+    cart_scroll = QScrollArea(sale)
     cart_scroll.setObjectName('posSaleCartScroll')
     cart_scroll.setWidgetResizable(True)
     cart_scroll.setFrameShape(QFrame.NoFrame)
     cart_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    cart_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     cart_scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
     mark_wheel_scroll(cart_scroll, True)
     cart_host = QWidget()
-    cart_host.setStyleSheet('background:transparent;')
+    cart_host.setObjectName('posSaleCartHost')
+    cart_host.setStyleSheet('QWidget#posSaleCartHost{background:transparent;}')
     cbl = QVBoxLayout(cart_host)
-    cbl.setContentsMargins(16, 12, 16, 12)
+    cbl.setContentsMargins(10, 8, 10, 8)
     cbl.setSpacing(8)
 
     tab._ctbl = None
@@ -200,12 +327,16 @@ def build_shared_panels(tab) -> None:
     cbl.addWidget(tab._cart_list, 1)
     cart_scroll.setWidget(cart_host)
     tab._sale_cart_scroll = cart_scroll
-    sl.addWidget(cart_scroll, 1)
 
     # Pinned totals at bottom of sale panel
-    sum_wrap = QWidget()
+    sum_wrap = QWidget(sale)
+    sum_wrap.setObjectName('posSaleSummaryWrap')
+    sum_wrap.setAttribute(Qt.WA_StyledBackground, True)
+    # Object-scoped: the unqualified form leaked a 1px rule onto every totals
+    # label, drawing hairlines under Subtotal / Tax / Grand Total.
     sum_wrap.setStyleSheet(
-        f"background:transparent;border-top:1px solid {C['border']};")
+        f"QWidget#posSaleSummaryWrap{{background:transparent;"
+        f"border-top:1px solid {C['border']};}}")
     swl = QVBoxLayout(sum_wrap)
     swl.setContentsMargins(16, 10, 16, 12)
     swl.setSpacing(8)
@@ -220,7 +351,7 @@ def build_shared_panels(tab) -> None:
     disc_row = QHBoxLayout()
     disc_row.setContentsMargins(0, 0, 0, 0)
     tab._disc_lbl.setToolTip(
-        'Cart discount in KES. You can also set Disc per line in the cart.')
+        'Cart-level discount in KES (whole sale). Per-item Disc is on each cart line.')
     tab._disc = _KesEdit()
     tab._disc.setObjectName('cartDisc')
     tab._disc.setText('0.00')
@@ -228,7 +359,9 @@ def build_shared_panels(tab) -> None:
     tab._disc.setMinimumHeight(38)
     tab._disc.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     tab._disc.setPlaceholderText('0')
-    tab._disc.setToolTip('Click, type e.g. 60, press Enter')
+    tab._disc.setToolTip(
+        'Cart discount (KES). Type amount and press Enter. '
+        'Per-item Disc is editable on each cart line.')
     tab._disc.setStyleSheet(
         f"QLineEdit#cartDisc{{"
         f"background:{C['input']};color:{C['text']};"
@@ -236,27 +369,56 @@ def build_shared_panels(tab) -> None:
         f"padding:4px 8px;font-size:14px;font-weight:700;}}"
         f"QLineEdit#cartDisc:focus{{border-color:{C['gold']};}}"
     )
+    tab._disc.setReadOnly(False)
     tab._disc.editingFinished.connect(tab._commit_cart_disc)
     tab._disc.returnPressed.connect(tab._commit_cart_disc)
     tab._summary.disc_edit = tab._disc
+    # Prefer clear "Discount (KES)" label from SummaryCard
+    try:
+        tab._disc_lbl.setText('Discount (KES)')
+    except Exception:
+        pass
     disc_row.addWidget(tab._disc_lbl)
     disc_row.addStretch()
     disc_row.addWidget(tab._disc)
     tab._summary._body.insertLayout(2, disc_row)
     swl.addWidget(tab._summary)
-    sl.addWidget(sum_wrap, 0)
     tab._sale_summary_wrap = sum_wrap
+
+    # Cart list vs order-summary/totals: user-draggable so a busy cart (many
+    # lines) or a detailed summary (discount + savings + tax) can claim more
+    # height — same drag-to-resize philosophy as the column splitter.
+    from desktop.pos.layouts import splitters
+    cart_split = splitters.ensure_cart_splitter(tab)
+    cart_split.addWidget(cart_scroll)
+    cart_split.addWidget(sum_wrap)
+    sl.addWidget(cart_split, 1)
+    try:
+        from desktop.utils.quiet_ui import safe_show
+        # Parent is sale (not free) — clear birth DontShow so first paint works
+        # even before the first install_cart settle timer.
+        cart_split.setAttribute(Qt.WA_DontShowOnScreen, False)
+        safe_show(cart_split)
+        safe_show(cart_scroll)
+        safe_show(sum_wrap)
+    except Exception:
+        pass
     tab._sale_panel = sale
 
     # ── Actions panel body (customer + payment) + sticky foot ─────────────────
-    actions = QFrame()
+    actions = QFrame(stash)
+    actions.hide()
+    try:
+        actions.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
     actions.setObjectName('posActionsPanel')
     actions.setAttribute(Qt.WA_StyledBackground, True)
     al = QVBoxLayout(actions)
     al.setContentsMargins(0, 0, 0, 0)
     al.setSpacing(0)
 
-    body = QWidget()
+    body = QWidget(actions)
     body.setStyleSheet('background:transparent;')
     bl = QVBoxLayout(body)
     bl.setContentsMargins(16, 12, 16, 12)
@@ -416,7 +578,7 @@ def build_shared_panels(tab) -> None:
     sfl = QVBoxLayout(tab._split_frame)
     sfl.setContentsMargins(12, 8, 12, 8)
     sfl.setSpacing(6)
-    tab._split_hdr = QLabel('Split payment (optional)')
+    tab._split_hdr = QLabel('Split Pay — cash + M-Pesa / card / bank')
     tab._split_hdr.setStyleSheet(
         f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
     sfl.addWidget(tab._split_hdr)
@@ -499,7 +661,22 @@ def build_shared_panels(tab) -> None:
 
     tab._actions_body = body
 
-    foot = QWidget()
+    body_scroll = QScrollArea(actions)
+    body_scroll.setObjectName('posActionsBodyScroll')
+    body_scroll.setWidgetResizable(True)
+    body_scroll.setFrameShape(QFrame.NoFrame)
+    body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    body_scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
+    mark_wheel_scroll(body_scroll, True)
+    body_scroll.setWidget(body)
+    tab._actions_body_scroll = body_scroll
+
+    foot = QWidget(stash)
+    foot.hide()
+    try:
+        foot.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
     foot.setObjectName('posCheckoutFoot')
     foot.setAttribute(Qt.WA_StyledBackground, True)
     foot.setStyleSheet(
@@ -563,11 +740,15 @@ def build_shared_panels(tab) -> None:
     tab._charge_btn.clicked.connect(tab._process)
     fl.addWidget(tab._charge_btn)
 
-    al.addWidget(body, 1)
+    al.addWidget(body_scroll, 1)
     al.addWidget(foot, 0)
     tab._actions_panel = actions
 
     # Classic bottom payment bar host (filled by shell assembler)
-    tab._payment_footer_bar = QFrame()
+    tab._payment_footer_bar = QFrame(stash)
     tab._payment_footer_bar.setObjectName('posPaymentFooter')
+    try:
+        tab._payment_footer_bar.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
     tab._payment_footer_bar.hide()

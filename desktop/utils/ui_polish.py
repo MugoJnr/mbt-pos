@@ -104,8 +104,11 @@ class ToastNotification(QFrame):
     def __init__(self, message: str, tone: str = "ok", parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("mbtToast")
-        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        # Child overlay of the main window — never a ToolTip/Tool HWND
+        # (those look like surprise floating OS popups to cashiers).
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(10)
@@ -141,8 +144,30 @@ class ToastNotification(QFrame):
         tone: str = "ok",
         ms: int = 4000,
     ) -> "ToastNotification":
-        toast = cls(message, tone=tone, parent=parent.window() if parent else None)
-        host = parent.window() if parent else parent
+        host = None
+        try:
+            host = parent.window() if parent is not None else None
+        except Exception:
+            host = parent
+        if host is None:
+            try:
+                from PyQt5.QtWidgets import QApplication
+                app = QApplication.instance()
+                if app is not None:
+                    host = app.activeWindow()
+                    if host is None:
+                        for w in app.topLevelWidgets():
+                            if w is not None and w.isVisible() and (
+                                w.__class__.__name__ == "MainWindow"
+                            ):
+                                host = w
+                                break
+            except Exception:
+                host = None
+        if host is None:
+            # Never create a free top-level toast HWND
+            return None  # type: ignore[return-value]
+        toast = cls(message, tone=tone, parent=host)
         toast.setParent(host)
         toast.show()
         toast.raise_()

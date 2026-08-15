@@ -296,9 +296,9 @@ class _OverviewTab(QWidget):
             self, 'Credit Sales via POS',
             'Credit and part-payment sales are created on the POS tab.\n\n'
             '1. Add items to the cart\n'
-            '2. Choose Payment Method ? Credit Sale (or Part Payment)\n'
+            '2. Choose Sale options: On account, or Part pay (Cash / M-Pesa / Split)\n'
             '3. Select or create a customer (stay on POS)\n'
-            '4. Complete checkout ? debt is linked to the sale automatically\n\n'
+            '4. Complete checkout — debt is linked to the sale automatically\n\n'
             'Debt Management is for collecting payments and viewing history only.')
 
     def refresh(self):
@@ -619,7 +619,7 @@ class _InvoicesTab(QWidget):
         QMessageBox.information(
             self, 'No Orphan Debts',
             'Debts must be created from a completed POS credit / part-payment sale.\n\n'
-            'Go to POS ? choose Credit Sale or Part Payment ? complete checkout.\n'
+            'Go to POS — choose On account or Part pay — complete checkout.\n'
             'The debt is linked automatically to the sale invoice.')
 
     def _on_row_clicked(self, row, _col):
@@ -1124,7 +1124,7 @@ class _NewInvoiceDialog(QDialog):
             'Management is disabled.\n\n'
             'Debts must come from a completed POS sale:\n'
             '1. Go to the POS tab\n'
-            '2. Add items and choose Credit Sale or Part Payment\n'
+            '2. Add items and choose On account or Part pay (optionally Split)\n'
             '3. Select a customer and complete checkout\n\n'
             'Debt Management is for collecting payments and viewing history only.')
         msg.setWordWrap(True)

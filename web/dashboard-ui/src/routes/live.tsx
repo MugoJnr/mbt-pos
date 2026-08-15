@@ -30,6 +30,12 @@ function LivePage() {
   const syncPending = Number(d.sync?.pending || 0);
   const bak = d.backup || {};
   const ai = d.ai || {};
+  const liveOffline = liveQ.isError || (!liveQ.isLoading && !liveQ.data);
+  const bakStatus = liveOffline
+    ? "offline"
+    : String(bak.status || "—").toLowerCase();
+  const bakAccent =
+    bakStatus === "ok" ? "ok" : bakStatus === "error" ? "err" : "warn";
 
   return (
     <AppShell title="Live Monitoring">
@@ -66,21 +72,17 @@ function LivePage() {
         />
         <KpiCard
           label="Backup"
-          value={String(bak.status || "—").toUpperCase()}
+          value={bakStatus.toUpperCase()}
           sub={
-            bak.note
+            liveOffline
+              ? "Tunnel / API unreachable"
+              : bak.note
               ? String(bak.note).slice(0, 48)
               : bak.created_at
                 ? String(bak.created_at).slice(0, 16)
                 : "No history"
           }
-          accent={
-            bak.status === "ok"
-              ? "ok"
-              : bak.status === "error"
-                ? "err"
-                : "warn"
-          }
+          accent={bakAccent}
           icon={<HardDrive className="h-5 w-5" />}
         />
         <KpiCard

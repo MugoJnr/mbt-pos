@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from desktop.utils.quiet_ui import info_toast
 from desktop.utils.theme import C, apply_themed_dialog
 from desktop.utils.widgets import DangerBtn, PrimaryBtn, SecondaryBtn
 
@@ -301,10 +302,10 @@ class EditSaleDialog(QDialog):
         if res.get('error'):
             QMessageBox.critical(self, 'Edit Failed', str(res['error']))
             return
-        QMessageBox.information(
-            self, 'Sale Updated',
-            f"Receipt {res.get('receipt_number')} updated.\n"
-            f"New total: {self.currency} {float(res.get('total') or 0):,.2f}"
+        tot = float(res.get('total') or 0)
+        info_toast(
+            self,
+            f"Sale updated · {self.currency} {tot:,.2f}",
         )
         self.accept()
 

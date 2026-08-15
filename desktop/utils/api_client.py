@@ -653,6 +653,12 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
         if 'electronic_paid' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+        if 'electronic_method' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN electronic_method TEXT")
+        if 'cash_paid' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN cash_paid REAL DEFAULT 0")
+        if 'payment_tenders' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN payment_tenders TEXT")
         if 'original_sale_id' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN original_sale_id INTEGER")
         if 'sale_date' not in sales_cols:
@@ -1859,6 +1865,20 @@ class APIClient:
             if abs(cash_rounding_adj) > 0.009:
                 notes = (notes + f' | CashRounding: {cash_rounding_adj:+.2f}').strip(' |')
             emethod = (data.get('electronic_method') or '').strip()
+            cash_paid_col = round(float(data.get('cash_paid') or 0), 2)
+            tenders = data.get('payment_tenders')
+            if isinstance(tenders, (list, dict)):
+                tenders_json = json.dumps(tenders)
+            else:
+                tenders_json = (tenders or '').strip() or None
+            if not tenders_json and electronic_paid > 0.009:
+                from desktop.utils.payment_tenders import build_tenders
+                tenders_json = json.dumps(build_tenders(
+                    cash_paid=cash_paid_col or round(amount_paid - electronic_paid, 2),
+                    electronic_paid=electronic_paid,
+                    electronic_method=emethod,
+                    store_credit=credit_applied,
+                ))
             if electronic_paid > 0.009 and emethod and 'split:' not in notes.lower():
                 cash_bit = round(float(data.get('cash_paid') or (amount_paid - electronic_paid)), 2)
                 notes = (
@@ -1872,8 +1892,9 @@ class APIClient:
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,mpesa_ref,"
                 "credit_applied,customer_id,variance_handling,"
                 "original_total,cash_rounding_adj,electronic_paid,"
+                "electronic_method,cash_paid,payment_tenders,"
                 "sale_date,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
@@ -1892,6 +1913,9 @@ class APIClient:
                  original_total,
                  cash_rounding_adj,
                  electronic_paid,
+                 emethod or None,
+                 cash_paid_col,
+                 tenders_json,
                  sale_date_s,
                  created_at_s)
             )
@@ -2046,13 +2070,47 @@ class APIClient:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
                 out['variance'] = variance_result
+
+            # Credit / Part Payment: create debt invoice in the same API path so
+            # web POS / API clients cannot leave orphan credit sales without debt.
+            # Desktop UI still calls create_debt_invoice; duplicate is idempotent.
+            pay_method = (data.get('payment_method') or '').strip()
+            pay_l = pay_method.lower()
+            is_debt_sale = pay_l in (
+                'credit sale', 'credit account', 'part payment', 'on account',
+            )
+            if is_debt_sale and customer_id:
+                try:
+                    # amount already applied at till (cash/electronic) + store credit
+                    paid_now = round(float(amount_paid or 0) + float(credit_applied or 0), 2)
+                    debt_total = round(float(original_total if abs(cash_rounding_adj) < 0.009 else total), 2)
+                    inv = self.create_debt_invoice({
+                        'customer_id': int(customer_id),
+                        'sale_id': int(sale_id),
+                        'receipt_number': rn,
+                        'total_amount': debt_total,
+                        'amount_paid': paid_now,
+                        'payment_method': pay_method,
+                        'notes': f'Auto from sale {pay_method}',
+                    })
+                    if inv.get('success') or inv.get('invoice_id'):
+                        out['debt_invoice_id'] = inv.get('invoice_id')
+                        out['debt_invoice_number'] = inv.get('invoice_number')
+                        out['debt_balance'] = inv.get('balance')
+                    else:
+                        out['debt_warning'] = inv.get('error') or 'Debt invoice not created'
+                        logger.error('create_sale auto-debt failed: %s', inv)
+                except Exception as _de:
+                    out['debt_warning'] = str(_de)
+                    logger.error('create_sale auto-debt exception: %s', _de, exc_info=True)
+
             return out
 
         except Exception as e:
             try: db.rollback()
             except Exception: pass
             logger.error(f"create_sale failed: {e}", exc_info=True)
-            raise   # re-raise so the UI shows the real error message
+            return {'error': str(e)}
         finally:
             try: db.execute("PRAGMA foreign_keys=ON")
             except Exception: pass
@@ -2264,6 +2322,13 @@ class APIClient:
                 sale['debt_invoice_id'] = debt.get('id')
                 sale['debt_invoice_number'] = debt.get('invoice_number')
                 sale['debt_status'] = debt.get('status')
+            try:
+                from desktop.utils.payment_tenders import parse_tenders
+                parsed = parse_tenders(sale.get('payment_tenders'))
+                if parsed:
+                    sale['payment_tenders'] = parsed
+            except Exception:
+                pass
             return sale
         finally:
             db.close()
@@ -2662,7 +2727,20 @@ class APIClient:
             orig_rn = sale['receipt_number'] or str(sale_id)
             refund_total = 0.0
             restock_lines = []
-            now = datetime.now().isoformat()
+            from desktop.utils.shop_time import business_day_iso, sale_created_at_for_day
+            orig_day = ''
+            try:
+                orig_day = (sale['sale_date'] or '') if 'sale_date' in sale.keys() else ''
+            except Exception:
+                orig_day = ''
+            if not orig_day:
+                try:
+                    orig_day = str(sale['created_at'] or '')[:10]
+                except Exception:
+                    orig_day = ''
+            sale_date_s = business_day_iso(orig_day or None)
+            created_at_s = sale_created_at_for_day(sale_date_s)
+            now = created_at_s
 
             for spec in items:
                 si_id = int(spec.get('sale_item_id') or 0)
@@ -2747,13 +2825,14 @@ class APIClient:
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
-                "status,original_sale_id,customer_id)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "status,original_sale_id,customer_id,sale_date,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ret_rn, self._user_id, self._username or 'staff',
                  -refund_total, 0, 0, -refund_total, method,
                  -refund_total, 0,
                  f"RETURN of {orig_rn}: {reason}",
-                 'return', sale_id, sale['customer_id'] if 'customer_id' in sale.keys() else None),
+                 'return', sale_id, sale['customer_id'] if 'customer_id' in sale.keys() else None,
+                 sale_date_s, created_at_s),
             )
             ret_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             for rl in restock_lines:
@@ -3182,7 +3261,7 @@ class APIClient:
     def get_report_summary(self, start: str, end: str) -> dict:
         db = _db()
         try:
-            summary = _row(db.execute("""
+            summary = _row(db.execute(f"""
                 SELECT COUNT(*) as total_transactions,
                        COALESCE(SUM(total),0) as total_revenue,
                        COALESCE(SUM(
@@ -3229,7 +3308,7 @@ class APIClient:
                          WHEN LOWER(COALESCE(payment_method,'')) IN
                               ('bank transfer','bank','bank payment')
                          THEN COALESCE(amount_paid,0) ELSE 0 END),0) as bank_collected
-                FROM sales WHERE date(created_at) BETWEEN ? AND ?
+                FROM sales WHERE {_sale_day_expr()} BETWEEN ? AND ?
                 AND status IN ('completed','return')
             """, (start, end)))
 
@@ -3247,20 +3326,20 @@ class APIClient:
             summary['collected_revenue'] = round(collected_sales + debt_collected, 2)
             summary['total_sales'] = float(summary.get('total_revenue') or 0)
 
-            top_products = _rows(db.execute("""
+            top_products = _rows(db.execute(f"""
                 SELECT si.product_name,
                        SUM(si.quantity) as qty_sold,
                        SUM(si.total)    as revenue,
                        COUNT(si.id)     as transactions
                 FROM sale_items si JOIN sales s ON si.sale_id=s.id
-                WHERE date(s.created_at) BETWEEN ? AND ?
+                WHERE {_sale_day_expr('s')} BETWEEN ? AND ?
                   AND s.status IN ('completed','return')
                 GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
             """, (start, end)))
 
-            by_payment = _rows(db.execute("""
+            by_payment = _rows(db.execute(f"""
                 SELECT payment_method,COUNT(*) as count,SUM(total) as total
-                FROM sales WHERE date(created_at) BETWEEN ? AND ?
+                FROM sales WHERE {_sale_day_expr()} BETWEEN ? AND ?
                 AND status IN ('completed','return') GROUP BY payment_method
             """, (start, end)))
 
@@ -3570,17 +3649,22 @@ class APIClient:
             # Prefer canonical receipt from sale
             receipt_number = sale_rn or receipt_number
 
-            # Prevent duplicate debt for same sale
+            # Prevent duplicate debt for same sale (idempotent success)
             existing = _row(db.execute(
-                "SELECT id, invoice_number FROM debt_invoices "
+                "SELECT id, invoice_number, balance, amount_paid, status FROM debt_invoices "
                 "WHERE sale_id=? AND status NOT IN ('cancelled')",
                 (int(sale_id),)
             ))
             if existing:
                 return {
-                    'error': f'Debt already exists for this sale ({existing.get("invoice_number")}).',
+                    'success': True,
+                    'already_existed': True,
                     'invoice_id': existing.get('id'),
                     'invoice_number': existing.get('invoice_number'),
+                    'balance': existing.get('balance'),
+                    'amount_paid': existing.get('amount_paid'),
+                    'sale_id': int(sale_id),
+                    'receipt_number': receipt_number,
                 }
 
             total = float(data['total_amount'])

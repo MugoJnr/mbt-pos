@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from desktop.utils.theme import C, apply_themed_dialog
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
 from desktop.utils.shop_time import shop_today, business_day_iso
+from desktop.utils.quiet_ui import soft_warn, info_toast
 
 
 class BusinessDaySalesDialog(QDialog):
@@ -116,12 +117,13 @@ class BusinessDaySalesDialog(QDialog):
             if status in ('completed', 'return'):
                 completed_total += total
                 completed_n += 1
+            from desktop.utils.payment_tenders import format_sale_payment
             vals = [
                 s.get('receipt_number') or '',
                 time_s,
                 s.get('cashier_name') or '',
                 f"{self.currency} {total:,.2f}",
-                s.get('payment_method') or '',
+                format_sale_payment(s),
                 status,
             ]
             for c, v in enumerate(vals):
@@ -147,7 +149,7 @@ class BusinessDaySalesDialog(QDialog):
     def _view_selected(self):
         sid = self._selected_sale_id()
         if not sid:
-            QMessageBox.information(self, 'Select a Sale', 'Choose a sale row first.')
+            soft_warn(self, 'Choose a sale row first.')
             return
         from desktop.dialogs.receipt_detail_dialog import open_receipt_detail
         edited = open_receipt_detail(
@@ -180,12 +182,12 @@ class BusinessDaySalesDialog(QDialog):
     def _copy_selected(self):
         sid = self._selected_sale_id()
         if not sid:
-            QMessageBox.information(self, 'Select a Sale', 'Choose a sale to copy.')
+            soft_warn(self, 'Choose a sale to copy.')
             return
         sale = self.api.get_sale(sid) or {}
         items = self._lines_from_sale(sale)
         if not items:
-            QMessageBox.warning(self, 'Empty', 'That sale has no line items to copy.')
+            soft_warn(self, 'That sale has no line items to copy.')
             return
         self.selected_sale_id = sid
         self.copy_items = items
@@ -204,9 +206,7 @@ class BusinessDaySalesDialog(QDialog):
             sale = self.api.get_sale(int(sid)) or {}
             items.extend(self._lines_from_sale(sale))
         if not items:
-            QMessageBox.information(
-                self, 'Nothing to Copy',
-                'No completed sale lines on this business day.')
+            info_toast(self, 'No completed sale lines on this business day.')
             return
         # Merge identical product lines (same product_id + unit_price)
         merged = {}

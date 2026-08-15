@@ -63,6 +63,35 @@ class LicenseOfflineGraceTests(unittest.TestCase):
         self.assertTrue(bool(self.engine.store.get('offline_lock')))
         self.assertTrue(bool(self.engine.store.get('requires_online')))
 
+    def test_activation_survives_wiped_config_hmac_secret(self):
+        """Shop PCs must stay licensed after config/.activation_hmac_secret is gone."""
+        import launcher
+
+        cfg_dir = os.path.join(self._tmpdir.name, 'config')
+        os.makedirs(cfg_dir, exist_ok=True)
+        hmac_path = os.path.join(cfg_dir, '.activation_hmac_secret')
+        with open(hmac_path, 'w', encoding='utf-8') as f:
+            f.write('legacy-config-hmac-secret-value-not-used-after-wipe-xxxx')
+
+        ok, message = self.engine.activate_from_cloud(
+            plan='pro',
+            duration_days=365,
+            license_key='MBT-PRO-TEST-PERSIST',
+        )
+        self.assertTrue(ok, message)
+        self.assertTrue(self.engine.is_valid)
+
+        os.remove(hmac_path)
+        self.le._MASTER_SECRET_CACHE = None
+        self.le._LEGACY_SECRET_CANDIDATES = None
+
+        eng2 = self.le.LicenseEngine()
+        self.assertTrue(eng2.is_valid, 'license must decrypt without config HMAC secret')
+        self.assertTrue(eng2.has_local_license_payload())
+        self.assertTrue(launcher._shop_already_ready(eng2))
+        crypto = os.path.join(os.path.dirname(self._db_path), 'crypto.secret')
+        self.assertTrue(os.path.isfile(crypto), 'secret must be co-located with lc.db')
+
 
 if __name__ == '__main__':
     unittest.main()

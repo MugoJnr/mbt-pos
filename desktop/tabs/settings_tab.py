@@ -149,7 +149,7 @@ class SettingsTab(QWidget):
             ('receipts', 'Receipts'),
             ('mpesa', 'M-Pesa'),
             ('sync', 'Sync'),
-            ('workflow', 'Workflow'),
+            ('workflow', 'Checkout'),
             ('cloud', 'Cloud'),
         ):
             b = GhostBtn(label, 28)
@@ -472,8 +472,10 @@ class SettingsTab(QWidget):
         cv_body.addWidget(cv_w)
         lay.addWidget(cvg)
 
-        # ── Workflow / After Sale defaults ────────────────────────────────────
-        wg, wf_body = section_card('>', 'Workflow', 'After Sale defaults for POS checkout')
+        # ── POS Checkout (layout + after-sale defaults) ───────────────────────
+        wg, wf_body = section_card(
+            '>', 'POS Checkout',
+            'Checkout Layout + after-sale defaults (also on POS toolbar)')
         self._section_anchors['workflow'] = wg
         wform = make_form(); wf_w = QWidget(); wf_w.setLayout(wform)
         self.after_sale_default_customer = QComboBox()
@@ -1610,6 +1612,18 @@ class SettingsTab(QWidget):
                 sales.set_checkout_layout(lid)
             except Exception:
                 pass
+        # Keep POS toolbar Layout combo in sync
+        try:
+            combo = getattr(sales, '_layout_combo', None) if sales else None
+            if combo is not None:
+                combo.blockSignals(True)
+                cidx = combo.findData(lid)
+                if cidx >= 0:
+                    combo.setCurrentIndex(cidx)
+                combo.blockSignals(False)
+                combo.show()
+        except Exception:
+            pass
 
     def _save_audio_settings(self):
         panel = getattr(self, '_audio_panel', None)

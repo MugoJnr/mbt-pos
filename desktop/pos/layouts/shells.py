@@ -19,8 +19,13 @@ from desktop.pos.layout_ids import (
 )
 
 
-def clear_layout(layout: QLayout | None) -> None:
-    """Detach children without deleting them (safe for reparenting)."""
+def clear_layout(layout: QLayout | None, park_under: QWidget | None = None) -> None:
+    """Detach children without deleting them (safe for reparenting).
+
+    Prefer parking under ``park_under`` (hidden stash). ``setParent(None)`` creates
+    a free Windows HWND with maximize/close chrome — that is the empty floating
+    popup cashiers report.
+    """
     if layout is None:
         return
     try:
@@ -31,11 +36,34 @@ def clear_layout(layout: QLayout | None) -> None:
         item = layout.takeAt(0)
         w = item.widget()
         if w is not None:
-            w.setParent(None)
+            try:
+                w.hide()
+                w.setAttribute(Qt.WA_DontShowOnScreen, True)
+            except Exception:
+                try:
+                    w.hide()
+                except Exception:
+                    pass
+            if park_under is not None and w is not park_under:
+                try:
+                    w.setParent(park_under)
+                    w.hide()
+                except Exception:
+                    pass
+            else:
+                # Last resort: DontShowOnScreen already set; detach without paint.
+                try:
+                    from desktop.utils.quiet_ui import safe_detach
+                    safe_detach(w)
+                except Exception:
+                    try:
+                        w.setParent(None)
+                    except Exception:
+                        pass
             continue
         child = item.layout()
         if child is not None:
-            clear_layout(child)
+            clear_layout(child, park_under=park_under)
 
 
 def _alive(obj) -> bool:
@@ -48,6 +76,53 @@ def _alive(obj) -> bool:
         return False
 
 
+def _park_new(tab, widget: QWidget) -> QWidget:
+    """Create chrome under the invisible stash — never as a free top-level."""
+    stash = _ensure_stash(tab)
+    try:
+        widget.hide()
+        widget.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
+    widget.setParent(stash)
+    widget.hide()
+    return widget
+
+
+def _ensure_stash(tab) -> QWidget:
+    stash = getattr(tab, '_layout_stash', None)
+    if _alive(stash):
+        return stash
+    host = getattr(tab, '_shell', None) or tab
+    stash = QWidget(host)
+    stash.setObjectName('posLayoutStash')
+    stash.hide()
+    stash.setAttribute(Qt.WA_DontShowOnScreen, True)
+    tab._layout_stash = stash
+    return stash
+
+
+def _reclaim_actions_body(tab, body) -> None:
+    """Take the checkout body back from its QScrollArea before re-layout.
+
+    ``QScrollArea.setWidget`` keeps driving its widget's geometry even after the
+    widget is added to another layout, which pinned the body at the scroll's own
+    width (640px) and made the payment rail's contents overflow the panel.
+    ``takeWidget`` is the only way to hand ownership back to the layout.
+    """
+    scroll = getattr(tab, '_actions_body_scroll', None)
+    if not _alive(scroll) or not _alive(body):
+        return
+    try:
+        if scroll.widget() is not body:
+            return
+        body.hide()          # never let takeWidget expose a parentless top-level
+        scroll.takeWidget()
+        _stash(tab, body)
+    except Exception:
+        pass
+
+
 def _replace_layout(host: QWidget) -> None:
     """Remove existing layout from host so a new one can be assigned."""
     if not _alive(host):
@@ -55,19 +130,26 @@ def _replace_layout(host: QWidget) -> None:
     old = host.layout()
     if old is None:
         return
-    clear_layout(old)
-    QWidget().setLayout(old)
+    # Sink must never become a visible top-level — park under host's window.
+    sink = QWidget(host.window() if host.window() is not None else host)
+    sink.setAttribute(Qt.WA_DontShowOnScreen, True)
+    sink.hide()
+    # Park widgets under sink FIRST — never free top-level during takeAt.
+    clear_layout(old, park_under=sink)
+    sink.setLayout(old)
+    sink.deleteLater()
 
 
 def _stash(tab, *widgets) -> None:
     """Park unused chrome under an invisible stash so Qt/sip won't GC it."""
-    stash = getattr(tab, '_layout_stash', None)
-    if not _alive(stash):
-        stash = QWidget(tab)
-        stash.hide()
-        tab._layout_stash = stash
+    stash = _ensure_stash(tab)
     for w in widgets:
         if _alive(w) and w is not stash:
+            try:
+                w.hide()
+                w.setAttribute(Qt.WA_DontShowOnScreen, True)
+            except Exception:
+                pass
             w.setParent(stash)
             w.hide()
 
@@ -79,6 +161,20 @@ def apply_layout_shell(tab, layout_id: str) -> str:
     if shell is None:
         return lid
 
+    from desktop.utils.quiet_ui import (
+        begin_layout_orphan_guard,
+        end_layout_orphan_guard,
+        hide_orphan_pos_flashes,
+        safe_show,
+    )
+    begin_layout_orphan_guard()
+    try:
+        return _apply_layout_shell_inner(tab, lid, shell, safe_show, hide_orphan_pos_flashes)
+    finally:
+        end_layout_orphan_guard()
+
+
+def _apply_layout_shell_inner(tab, lid: str, shell, safe_show, hide_orphan_pos_flashes) -> str:
     # Exit review mode chrome before reparenting
     if getattr(tab, '_cart_maximized', False):
         tab._cart_maximized = False
@@ -104,19 +200,25 @@ def apply_layout_shell(tab, layout_id: str) -> str:
     body = tab._actions_body
     foot = tab._checkout_foot
 
-    for p in (product, sale, actions, body, foot):
-        if _alive(p):
-            p.setParent(None)
-            p.show()
+    _reclaim_actions_body(tab, body)
+
+    # Park panels under the invisible stash — NEVER setParent(None).
+    # Free top-level HWNDs get Windows maximize/close chrome (empty floating popup).
+    _stash(tab, product, sale, actions, body, foot)
 
     # Park previous shell chrome (explorer/classic right frames, payment footer)
     prev = []
     for name in ('_explorer_right', '_classic_right', '_payment_footer_bar',
-                 '_explorer_scroll', '_classic_actions_scroll'):
+                 '_explorer_scroll', '_classic_actions_scroll',
+                 '_actions_body_scroll'):
         w = getattr(tab, name, None)
         if _alive(w):
             prev.append(w)
     _stash(tab, *prev)
+    try:
+        hide_orphan_pos_flashes(tab)
+    except Exception:
+        pass
 
     _replace_layout(shell)
 
@@ -129,6 +231,9 @@ def apply_layout_shell(tab, layout_id: str) -> str:
 
     tab._checkout_layout = lid
     tab._left_panel = product
+
+    from desktop.pos.layouts import splitters as _splitters
+    _splitters.install_cart(tab, lid)
 
     if lid == LAYOUT_CHECKOUT_PRO:
         try:
@@ -147,18 +252,38 @@ def apply_layout_shell(tab, layout_id: str) -> str:
         if _alive(clist) and hasattr(clist, 'set_density'):
             try:
                 clist.set_density('table')
+                # Cashier min 5 rows; cart owns Current Sale (totals are foot-pinned).
+                # Review (set_expanded) still expands further when toggled.
+                if hasattr(clist, 'set_cashier_viewport'):
+                    from desktop.utils.pos_components import CART_CASHIER_ROWS
+                    clist.set_cashier_viewport(CART_CASHIER_ROWS)
                 if hasattr(clist, 'set_expanded'):
-                    clist.set_expanded(True)
+                    clist.set_expanded(bool(getattr(tab, '_cart_maximized', False)))
             except Exception:
                 pass
-        # Outer sale cart scroll must not crush table rows into the summary
+        # Outer sale cart scroll must not crush table rows into the summary.
+        # The cart/summary split now lives on the cart splitter (drag-resizable),
+        # so the scroll area and inner list only need a soft floor — a high
+        # fixed min here previously left free=0 on short Classic rails.
         try:
             from PyQt5.QtCore import Qt as _Qt
             cart_scroll = getattr(tab, '_sale_cart_scroll', None)
             if _alive(cart_scroll):
-                cart_scroll.setMinimumHeight(260)
+                cart_scroll.setMinimumHeight(72)
+                cart_scroll.setMaximumHeight(16777215)
                 cart_scroll.setVerticalScrollBarPolicy(_Qt.ScrollBarAsNeeded)
                 cart_scroll.setWidgetResizable(True)
+            clist = getattr(tab, '_cart_list', None)
+            if _alive(clist) and hasattr(clist, '_scroll'):
+                try:
+                    clist._scroll.setMaximumHeight(16777215)
+                    if hasattr(clist, 'setMaximumHeight'):
+                        clist.setMaximumHeight(16777215)
+                except Exception:
+                    pass
+            # Re-apply cart splitter floors AFTER chrome mins so free travel sticks.
+            from desktop.pos.layouts import splitters as _splitters2
+            _splitters2.install_cart(tab, lid)
         except Exception:
             pass
         # Compact payment tiles + foot so Classic bottom strip doesn't clip
@@ -170,8 +295,10 @@ def apply_layout_shell(tab, layout_id: str) -> str:
                 tab._pay_seg.set_row_layout(True)
         except Exception:
             pass
-        # Hide duplicate Method combo + idle split strip (Pro already hides these)
-        for name in ('_pay_lbl', '_pay', '_cash_paid_lbl', '_var_frame', '_split_frame'):
+        # Hide duplicate Method combo. Split panel is shown only when Mixed
+        # is selected (_update_rounding_ui) — do not hide it here or Split Pay
+        # never appears on Classic / Explorer.
+        for name in ('_pay_lbl', '_pay', '_cash_paid_lbl', '_var_frame'):
             w = getattr(tab, name, None)
             if _alive(w):
                 try:
@@ -207,13 +334,46 @@ def apply_layout_shell(tab, layout_id: str) -> str:
             apply_shared_checkout_chrome(tab)
         except Exception:
             pass
+        # Reveal cart stack after Classic/Explorer chrome settles.
+        try:
+            from desktop.pos.layouts.splitters import reveal_cart_stack
+            from PyQt5.QtCore import QTimer
+            reveal_cart_stack(tab)
+            QTimer.singleShot(0, lambda t=tab: reveal_cart_stack(t))
+            QTimer.singleShot(120, lambda t=tab: reveal_cart_stack(t))
+        except Exception:
+            pass
 
+    # Show only after panels are re-parented into the new shell tree.
+    # Never show parentless widgets — that opens a brief top-level OS window.
     try:
-        product.show()
-        sale.show()
-        actions.show()
+        for p in (product, sale, actions, body, foot):
+            if _alive(p):
+                safe_show(p)
+        right = getattr(tab, '_right_panel', None)
+        if _alive(right):
+            safe_show(right)
+        scroll = getattr(tab, '_checkout_scroll', None)
+        if _alive(scroll):
+            safe_show(scroll)
         shell.updateGeometry()
         tab.updateGeometry()
+    except Exception:
+        pass
+    # Re-assert column widths after show() — hidden children previously received
+    # no space and could leave Checkout Pro looking like a catalog-only pane.
+    try:
+        from desktop.pos.layouts import splitters as _splitters
+        sp = getattr(tab, '_pos_splitter', None)
+        if _alive(sp) and sp.count() >= 2:
+            _splitters.apply_sizes(tab, lid, sp.count())
+        chips = getattr(tab, '_cat_chips', None)
+        if _alive(chips) and hasattr(chips, 'repack_for_width'):
+            chips.repack_for_width(force=True)
+    except Exception:
+        pass
+    try:
+        hide_orphan_pos_flashes(tab)
     except Exception:
         pass
     return lid
@@ -233,10 +393,16 @@ def _ensure_explorer_scroll(tab):
     host = getattr(tab, '_explorer_scroll_host', None)
     hl = getattr(tab, '_explorer_scroll_lay', None)
     if _alive(scroll) and _alive(host) and _alive(hl):
-        clear_layout(hl)
+        clear_layout(hl, park_under=_ensure_stash(tab))
         return scroll, host, hl
 
-    scroll = QScrollArea()
+    scroll = QScrollArea(_ensure_stash(tab))
+    scroll.hide()
+    try:
+        scroll.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
+    _park_new(tab, scroll)
     scroll.setObjectName('posExplorerScroll')
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(QFrame.NoFrame)
@@ -247,7 +413,8 @@ def _ensure_explorer_scroll(tab):
         mark_wheel_scroll(scroll, True)
     except Exception:
         pass
-    host = QWidget()
+    host = QWidget(scroll)  # never parentless
+    host.hide()
     host.setStyleSheet('background:transparent;')
     hl = QVBoxLayout(host)
     hl.setContentsMargins(0, 0, 0, 0)
@@ -270,9 +437,9 @@ def _compact_checkout_foot(tab, compact: bool) -> None:
         if b is None:
             continue
         try:
-            b.setMinimumHeight(32 if compact else 36)
+            b.setMinimumHeight(36 if compact else 40)
             if hasattr(b, 'setMaximumHeight'):
-                b.setMaximumHeight(34 if compact else 38)
+                b.setMaximumHeight(40 if compact else 44)
         except Exception:
             pass
     if not compact:
@@ -304,41 +471,43 @@ def _compact_checkout_foot(tab, compact: bool) -> None:
                 pass
 
 
-def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
-    """Browse-first grid + Current Sale / payment column (prior POS philosophy)."""
-    lay = QHBoxLayout(shell)
-    lay.setContentsMargins(0, 0, 0, 0)
-    # Match Classic panel-gap (pixel alignment across layouts)
-    lay.setSpacing(10)
+def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_name: str):
+    """Classic / Explorer right column geometry.
 
-    _style_card(product, 'posProductPanel')
-    product.setMinimumWidth(0)
-    product.setMaximumWidth(16777215)
-    sp = product.sizePolicy()
-    sp.setHorizontalPolicy(QSizePolicy.Expanding)
-    product.setSizePolicy(sp)
-    lay.addWidget(product, 6)
-
-    right = getattr(tab, '_explorer_right', None)
-    if not _alive(right):
-        right = QFrame()
-        tab._explorer_right = right
-    _style_card(right, 'posCartPanel')
-    # Browse-first: slightly narrower checkout rail than Classic (more catalog pixels)
-    right.setMinimumWidth(480)
-    right.setMaximumWidth(680)
-    right.setFixedWidth(560)
-    right.show()
+    Top: Current Sale (cart↔summary splitter) — stretch, drag to grow the list.
+    Middle: scrollable payment / customer / sale-options / utilities zone.
+    Bottom: Complete Sale pinned (never scrolls away).
+    """
     _replace_layout(right)
     rl = QVBoxLayout(right)
     rl.setContentsMargins(0, 0, 0, 0)
     rl.setSpacing(0)
 
-    scroll, host, hl = _ensure_explorer_scroll(tab)
-    scroll.show()
+    scroll, _host, hl = _ensure_explorer_scroll(tab)
+    scroll.setObjectName(scroll_name)
+    scroll.hide()  # parentless/stash scroll must not .show() yet
+    try:
+        scroll.setAttribute(Qt.WA_DontShowOnScreen, False)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setMinimumHeight(140)
+        scroll.setMaximumHeight(16777215)
+    except Exception:
+        pass
 
     sale.setObjectName('posSalePanel')
     sale.setStyleSheet('QFrame#posSalePanel{background:transparent;border:none;}')
+    try:
+        from desktop.utils.pos_components import cart_viewport_px, CART_CASHIER_ROWS
+        sale.setMinimumHeight(cart_viewport_px(CART_CASHIER_ROWS, include_header=True))
+        sale.setMaximumHeight(16777215)
+        sp = sale.sizePolicy()
+        sp.setVerticalPolicy(QSizePolicy.Expanding)
+        sale.setSizePolicy(sp)
+    except Exception:
+        pass
+
     actions.setObjectName('posActionsPanel')
     actions.setStyleSheet('QFrame#posActionsPanel{background:transparent;border:none;}')
     _replace_layout(actions)
@@ -346,7 +515,6 @@ def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
     al.setContentsMargins(0, 0, 0, 0)
     al.setSpacing(0)
     al.addWidget(body, 1)
-    # Same Classic quiet secondary + Complete Sale breathing room
     _compact_checkout_foot(tab, True)
     try:
         bl = body.layout()
@@ -356,84 +524,100 @@ def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
     except Exception:
         pass
 
-    hl.addWidget(sale, 1)
-    hl.addWidget(actions, 0)
-    rl.addWidget(scroll, 1)
+    # Payment-only scroll — cart stays above so tall payment never pushes it off.
+    hl.addWidget(actions, 1)
+    # Bias leftover height to the cart↔summary stack; payment scrolls as needed.
+    rl.addWidget(sale, 3)
+    rl.addWidget(scroll, 2)
     rl.addWidget(foot, 0)
+    tab._checkout_scroll = scroll
+    return scroll
 
-    lay.addWidget(right, 5)
+
+def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
+    """Browse-first grid + Current Sale / payment column (prior POS philosophy)."""
+    from desktop.pos.layouts import splitters
+
+    lay = QHBoxLayout(shell)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    split = splitters.ensure_splitter(tab)
+
+    _style_card(product, 'posProductPanel')
+    sp = product.sizePolicy()
+    sp.setHorizontalPolicy(QSizePolicy.Expanding)
+    product.setSizePolicy(sp)
+    split.addWidget(product)
+
+    right = getattr(tab, '_explorer_right', None)
+    if not _alive(right):
+        right = QFrame(_ensure_stash(tab))
+        right.hide()
+        try:
+            right.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
+        _park_new(tab, right)
+        tab._explorer_right = right
+    _style_card(right, 'posCartPanel')
+    right.hide()  # stay hidden until parented into shell
+
+    _wire_stacked_right_rail(
+        tab, right, sale, actions, body, foot, scroll_name='posExplorerScroll')
+
+    split.addWidget(right)
+    lay.addWidget(split, 1)
+    from desktop.utils.quiet_ui import safe_show
+    safe_show(split)
+    splitters.install(tab, LAYOUT_PRODUCT_EXPLORER, (product, right))
     tab._right_panel = right
     tab._center_panel = None
-    tab._checkout_scroll = scroll
     tab._classic_right = getattr(tab, '_classic_right', None)
 
 
 def _assemble_retail_classic(tab, shell, product, sale, actions, body, foot):
     """Two-column Classic: large catalog | cart + payment stacked (same pattern as Explorer)."""
+    from desktop.pos.layouts import splitters
+
     lay = QHBoxLayout(shell)
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(10)
+    lay.setSpacing(0)
+    split = splitters.ensure_splitter(tab)
 
     _style_card(product, 'posProductPanel')
-    product.setMinimumWidth(0)
-    product.setMaximumWidth(16777215)
     sp = product.sizePolicy()
     sp.setHorizontalPolicy(QSizePolicy.Expanding)
     product.setSizePolicy(sp)
-    lay.addWidget(product, 7)
+    split.addWidget(product)
 
     right = getattr(tab, '_classic_right', None)
     if not _alive(right):
-        right = QFrame()
+        right = QFrame(_ensure_stash(tab))
+        right.hide()
+        try:
+            right.setAttribute(Qt.WA_DontShowOnScreen, True)
+        except Exception:
+            pass
+        _park_new(tab, right)
         tab._classic_right = right
     _style_card(right, 'posCartPanel')
-    right.setMinimumWidth(480)
-    right.setMaximumWidth(700)
-    right.setFixedWidth(600)
-    right.show()
-    _replace_layout(right)
-    rl = QVBoxLayout(right)
-    rl.setContentsMargins(0, 0, 0, 0)
-    rl.setSpacing(0)
+    right.hide()  # stay hidden until parented into shell
 
-    # Park unused classic payment footer if present
+    # Park unused classic payment footer if present (hide before detach)
     pay_foot = getattr(tab, '_payment_footer_bar', None)
     if _alive(pay_foot):
-        pay_foot.hide()
-        pay_foot.setParent(None)
+        _stash(tab, pay_foot)
 
-    scroll, host, hl = _ensure_explorer_scroll(tab)
-    # Reuse explorer scroll host for classic stack (cart then payment)
-    scroll.setObjectName('posClassicScroll')
-    scroll.show()
+    _wire_stacked_right_rail(
+        tab, right, sale, actions, body, foot, scroll_name='posClassicScroll')
 
-    sale.setObjectName('posSalePanel')
-    sale.setStyleSheet('QFrame#posSalePanel{background:transparent;border:none;}')
-    actions.setObjectName('posActionsPanel')
-    actions.setStyleSheet('QFrame#posActionsPanel{background:transparent;border:none;}')
-    _replace_layout(actions)
-    al = QVBoxLayout(actions)
-    al.setContentsMargins(0, 0, 0, 0)
-    al.setSpacing(0)
-    al.addWidget(body, 1)
-    _compact_checkout_foot(tab, True)
-    try:
-        bl = body.layout()
-        if bl is not None:
-            bl.setContentsMargins(12, 8, 12, 8)
-            bl.setSpacing(6)
-    except Exception:
-        pass
-
-    hl.addWidget(sale, 1)
-    hl.addWidget(actions, 0)
-    rl.addWidget(scroll, 1)
-    rl.addWidget(foot, 0)
-
-    lay.addWidget(right, 5)
+    split.addWidget(right)
+    lay.addWidget(split, 1)
+    from desktop.utils.quiet_ui import safe_show
+    safe_show(split)
+    splitters.install(tab, LAYOUT_RETAIL_CLASSIC, (product, right))
     tab._right_panel = right
     tab._center_panel = None
-    tab._checkout_scroll = scroll
 
     charge = getattr(tab, '_charge_btn', None)
     if _alive(charge):
@@ -446,25 +630,28 @@ def _assemble_retail_classic(tab, shell, product, sale, actions, body, foot):
 
 
 def _assemble_checkout_pro(tab, shell, product, sale, actions, body, foot):
-    """Three fixed columns — product + cart list scroll; right actions never scroll."""
+    """Three columns — adjustable cart↔summary; payment may scroll; Complete Sale pinned.
+
+    Default width target: products ~25% | Current Sale ~50% | payment ~25%.
+    Scroll layers (independent):
+      1) CartList min ~3 rows; grows when the cart↔summary splitter is dragged
+      2) Payment body scroll when the right rail is shorter than content
+      3) Complete Sale stays in the sticky foot — never scrolls off-screen
+    """
+    from desktop.pos.layouts import splitters
+
     lay = QHBoxLayout(shell)
     lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(10)
+    lay.setSpacing(0)
+    split = splitters.ensure_splitter(tab)
 
     _style_card(product, 'posProductPanel')
-    product.setMinimumWidth(260)
-    product.setMaximumWidth(16777215)
-    lay.addWidget(product, 4)
+    split.addWidget(product)
 
     _style_card(sale, 'posSalePanel')
-    sale.setMinimumWidth(360)
-    sale.setMaximumWidth(16777215)
-    lay.addWidget(sale, 5)
+    split.addWidget(sale)
 
     _style_card(actions, 'posActionsPanel')
-    # Wide enough that payment tiles / Amount Paid / Complete Sale never clip
-    actions.setMinimumWidth(380)
-    actions.setMaximumWidth(560)
     _replace_layout(actions)
     al = QVBoxLayout(actions)
     al.setContentsMargins(0, 0, 0, 0)
@@ -488,15 +675,42 @@ def _assemble_checkout_pro(tab, shell, product, sale, actions, body, foot):
     except Exception:
         pass
     _compact_checkout_foot(tab, True)
-    # Classic pattern: body expands, content packs top; foot sticky (no empty top rail)
-    al.addWidget(body, 1)
+    # Payment stack scrolls inside the rail; Complete Sale stays pinned below.
+    body_scroll = getattr(tab, '_actions_body_scroll', None)
+    if _alive(body_scroll):
+        try:
+            body.setAttribute(Qt.WA_DontShowOnScreen, False)
+            body_scroll.setAttribute(Qt.WA_DontShowOnScreen, False)
+            body_scroll.setWidgetResizable(True)
+            body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            body_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            if body_scroll.widget() is not body:
+                body_scroll.setWidget(body)
+            al.addWidget(body_scroll, 1)
+            tab._checkout_scroll = body_scroll
+        except Exception:
+            al.addWidget(body, 1)
+            tab._checkout_scroll = getattr(tab, '_sale_cart_scroll', None)
+    else:
+        al.addWidget(body, 1)
+        tab._checkout_scroll = getattr(tab, '_sale_cart_scroll', None)
     al.addWidget(foot, 0)
-    lay.addWidget(actions, 5)
+    split.addWidget(actions)
+    lay.addWidget(split, 1)
+    from desktop.utils.quiet_ui import safe_show
+    safe_show(split)
+    splitters.install(tab, LAYOUT_CHECKOUT_PRO, (product, sale, actions))
 
     tab._right_panel = actions
     tab._center_panel = sale
-    tab._checkout_scroll = getattr(tab, '_sale_cart_scroll', None)
-    # Cart list fills sale pane (no 520px compress)
+    # Cashier viewport: 5 rows; Review (set_expanded) overrides to tall list.
     clist = getattr(tab, '_cart_list', None)
-    if _alive(clist) and hasattr(clist, 'set_expanded'):
-        clist.set_expanded(True)
+    if _alive(clist):
+        try:
+            if hasattr(clist, 'set_cashier_viewport'):
+                from desktop.utils.pos_components import CART_CASHIER_ROWS
+                clist.set_cashier_viewport(CART_CASHIER_ROWS)
+            if hasattr(clist, 'set_expanded'):
+                clist.set_expanded(bool(getattr(tab, '_cart_maximized', False)))
+        except Exception:
+            pass
