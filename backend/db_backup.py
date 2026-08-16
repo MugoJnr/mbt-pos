@@ -93,22 +93,26 @@ def send_db_backup_now(
         zip_path = ''
 
         try:
-            if on_progress:
-                on_progress('Creating database snapshot…')
-            zip_path, size, digest = create_db_backup_zip()
-
             uploaded = False
+            size = 0
+            digest = ''
+
             try:
-                from backend.cloud_backup.paths import is_cloud_configured
-                if is_cloud_configured():
+                from backend.cloud_backup.paths import is_cloud_configured, is_logged_in
+                if is_cloud_configured() and is_logged_in():
                     from backend.cloud_backup.sync_manager import SyncManager
-                    mgr = SyncManager()
                     if on_progress:
                         on_progress('Uploading to MugoByte Platform…')
-                    mgr.run_backup_now(reason=reason)
-                    uploaded = True
+                    result = SyncManager.instance().run_backup(reason=reason)
+                    uploaded = bool(result.get('ok')) or bool(result.get('queued'))
+                    size = int(result.get('size') or 0)
             except Exception as e:
                 logger.warning('Cloud upload failed, keeping local copy: %s', e)
+
+            if not uploaded:
+                if on_progress:
+                    on_progress('Creating database snapshot…')
+                zip_path, size, digest = create_db_backup_zip()
 
             from backend.cloud.notification_engine import get_notification_engine
             engine = get_notification_engine(config_getter=config_getter)

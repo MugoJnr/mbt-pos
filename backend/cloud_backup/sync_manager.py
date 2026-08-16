@@ -40,6 +40,7 @@ from backend.cloud_backup.paths import (
     load_identity,
     load_json,
     offline_queue_path,
+    save_cloud_config,
     save_identity,
     save_json,
 )
@@ -244,6 +245,26 @@ def _payload_hash(payload: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _read_shop_setting(key: str, default: str = '') -> str:
+    """Read a system_settings value without importing Flask app."""
+    try:
+        conn = sqlite3.connect(get_db_path(), timeout=5)
+        configure_sqlite_connection(conn)
+        row = conn.execute(
+            "SELECT value FROM system_settings WHERE key=? LIMIT 1",
+            (key,),
+        ).fetchone()
+        conn.close()
+        return str(row[0]) if row and row[0] is not None else default
+    except Exception:
+        return default
+
+
+def _shop_auto_backup_enabled() -> bool:
+    """Settings → Automatic database backup (default ON)."""
+    return str(_read_shop_setting('auto_db_backup', '1')).strip() != '0'
+
+
 def _app_version() -> str:
     try:
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -406,6 +427,64 @@ class SyncManager:
             'analytics_backfill_complete': bool(backfill.get('completed_at')),
         }
 
+    def _ensure_cloud_backup_enabled(self) -> None:
+        """When a Portal session is active, keep cloud auto-backup ON unless skipped."""
+        ident = load_identity()
+        if ident.get('cloud_skipped') or not ident.get('access_token'):
+            return
+        if not _shop_auto_backup_enabled():
+            return
+        cfg = load_cloud_config()
+        if not cfg.get('enabled'):
+            cfg['enabled'] = True
+            save_cloud_config(cfg)
+
+    def _ensure_logged_in_identity(self) -> bool:
+        """Repair missing business_id when access_token exists (stale AppData)."""
+        ident = load_identity()
+        if not ident.get('access_token') or ident.get('cloud_skipped'):
+            return False
+        if ident.get('business_id'):
+            return True
+        try:
+            client = SupabaseClient()
+            uid = str(ident.get('user_id') or '')
+            if not uid:
+                return False
+            owned = client.rest_select(
+                'businesses',
+                f'owner_user_id=eq.{quote(uid, safe="")}'
+                f'&select=id,name,org_id&limit=5',
+            ) or []
+            if owned:
+                bid = str(owned[0].get('id') or '')
+                ident['business_id'] = bid
+                if owned[0].get('org_id'):
+                    ident['org_id'] = owned[0]['org_id']
+            else:
+                biz = client.ensure_business(
+                    uid,
+                    (ident.get('email') or 'My Business').split('@')[0],
+                )
+                bid = str((biz or {}).get('id') or '')
+                if not bid:
+                    return False
+                ident['business_id'] = bid
+                if (biz or {}).get('org_id'):
+                    ident['org_id'] = biz['org_id']
+            save_identity(ident)
+            logger.info('Repaired cloud identity business_id → %s', ident['business_id'])
+            return True
+        except Exception as e:
+            logger.debug('Identity repair deferred: %s', e)
+            return False
+
+    def _session_ready_for_backup(self) -> bool:
+        self._ensure_cloud_backup_enabled()
+        if not is_logged_in():
+            self._ensure_logged_in_identity()
+        return is_logged_in()
+
     def _loop(self):
         # Initial delay so POS UI can finish booting
         self._stop.wait(20)
@@ -413,7 +492,7 @@ class SyncManager:
             cfg = load_cloud_config()
             interval_min = max(1, int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN))
             try:
-                if is_logged_in() and is_cloud_configured():
+                if self._session_ready_for_backup() and is_cloud_configured():
                     self.ensure_historical_backfill()
                     # Drain multiple prioritized batches per tick so sales are not
                     # stuck behind stock_movement / audit_log floods.
@@ -422,7 +501,12 @@ class SyncManager:
                         if flushed <= 0:
                             break
                 self.flush_offline_queue()
-                if cfg.get('enabled') and is_logged_in() and is_cloud_configured():
+                if (
+                    cfg.get('enabled')
+                    and _shop_auto_backup_enabled()
+                    and self._session_ready_for_backup()
+                    and is_cloud_configured()
+                ):
                     state = load_json(backup_state_path(), {})
                     last = state.get('last_backup_at') or ''
                     due = True

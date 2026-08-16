@@ -4,6 +4,7 @@ Business registration & login against Supabase Auth + businesses/devices tables.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from backend.cloud_backup.device_manager import (
@@ -24,6 +25,21 @@ from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 from backend.cloud_backup.sync_manager import _app_version
 
 logger = logging.getLogger('cloud_backup.auth')
+
+
+def _kickoff_backup_after_login() -> None:
+    """Run first encrypted snapshot soon after Portal sign-in."""
+    try:
+        from backend.cloud_backup import get_sync_manager
+
+        mgr = get_sync_manager()
+        threading.Thread(
+            target=lambda: mgr.run_backup(reason='post_login'),
+            name='MBT-PostLoginBackup',
+            daemon=True,
+        ).start()
+    except Exception as e:
+        logger.info('Post-login backup kickoff deferred: %s', e)
 
 
 def _kickoff_analytics_after_registration(device_row: dict | None) -> None:
@@ -169,6 +185,7 @@ def create_business(
     cfg = load_cloud_config()
     cfg['enabled'] = True
     save_cloud_config(cfg)
+    _kickoff_backup_after_login()
 
     return {
         'ok': True,
@@ -235,6 +252,7 @@ def login_existing(email: str, password: str) -> dict[str, Any]:
     cfg = load_cloud_config()
     cfg['enabled'] = True
     save_cloud_config(cfg)
+    _kickoff_backup_after_login()
 
     backups = []
     try:

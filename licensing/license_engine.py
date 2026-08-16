@@ -957,12 +957,39 @@ class LicenseEngine:
                     source='mbt_cloud',
                 )
                 if ok:
+                    self._wire_cloud_backup_after_activation(result)
                     return True, message
                 return False, message
             return False, result.get('message') or 'Cloud activation failed'
         except Exception as e:
             logger.warning('Cloud key activation failed: %s', e)
             return False, str(e)
+
+    def _wire_cloud_backup_after_activation(self, result: dict) -> None:
+        """Persist org linkage and kick off backup when a Portal session exists."""
+        try:
+            from backend.cloud_backup.paths import (
+                is_logged_in,
+                load_cloud_config,
+                load_identity,
+                save_cloud_config,
+                save_identity,
+            )
+            from backend.cloud_backup.auth_service import _kickoff_backup_after_login
+
+            lic = result.get('license') or {}
+            org_id = str(lic.get('org_id') or '')
+            ident = load_identity()
+            if org_id and ident.get('org_id') != org_id:
+                ident['org_id'] = org_id
+                save_identity(ident)
+            if is_logged_in():
+                cfg = load_cloud_config()
+                cfg['enabled'] = True
+                save_cloud_config(cfg)
+                _kickoff_backup_after_login()
+        except Exception as e:
+            logger.debug('Cloud backup wire after activation: %s', e)
 
     def activate_from_cloud(
         self,

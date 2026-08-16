@@ -62,3 +62,21 @@ def test_unconfigured_message_is_shop_friendly():
     msg = cloud_unconfigured_message()
     assert 'portal.mugobyte.com' in msg
     assert 'Cloud is not configured on this PC' not in msg
+
+
+def test_send_db_backup_now_calls_run_backup():
+    import inspect
+    from backend import db_backup
+
+    src = inspect.getsource(db_backup.send_db_backup_now)
+    assert 'run_backup_now' not in src
+    assert 'run_backup' in src
+
+
+def test_sync_manager_respects_auto_db_backup_setting():
+    import inspect
+    from backend.cloud_backup import sync_manager as sm
+
+    loop_src = inspect.getsource(sm.SyncManager._loop)
+    assert '_shop_auto_backup_enabled' in loop_src
+    assert '_session_ready_for_backup' in inspect.getsource(sm.SyncManager)
