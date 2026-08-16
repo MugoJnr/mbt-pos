@@ -182,6 +182,7 @@ class UpdateCenter:
     @staticmethod
     def _version_gt(a: str, b: str) -> bool:
         def parts(v):
+            v = str(v or '').lstrip('v').strip()
             return [int(x) for x in v.split('.') if x.isdigit()]
         pa, pb = parts(a), parts(b)
         for i in range(max(len(pa), len(pb))):

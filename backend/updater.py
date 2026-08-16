@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 GITHUB_REPO     = "MugoJnr/mbt-pos"
 GITHUB_API      = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 ASSET_NAME      = "MBT_POS_Setup.exe"
+GITHUB_LATEST_DOWNLOAD = (
+    f"https://github.com/{GITHUB_REPO}/releases/latest/download/{ASSET_NAME}"
+)
 CHECKSUM_ASSET_NAMES = (
     'MBT_POS_Setup.exe.sha256',
     'MBT_POS_Setup.sha256',
@@ -869,6 +872,71 @@ def resolve_release_checksum(notes: str, assets: list, asset_url: str,
     return fetch_sidecar_checksum(asset_url, headers)
 
 
+def _parse_version_from_download_url(url: str) -> str:
+    """Extract 3.0.52 from .../releases/download/v3.0.52/MBT_POS_Setup.exe."""
+    if not url:
+        return ''
+    m = re.search(r'/releases/download/v([^/]+)/', url, re.I)
+    if not m:
+        return ''
+    return m.group(1).lstrip('v').strip()
+
+
+def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
+    """
+    Resolve latest release without api.github.com (often blocked on shop LANs).
+
+    Follows releases/latest/download → .../download/vX.Y.Z/MBT_POS_Setup.exe
+    and loads checksum from the published .sha256 sidecar on github.com.
+    """
+    headers = dict(headers or {})
+    headers.setdefault('User-Agent', 'MBT-POS/update-check')
+    asset_url = ''
+    version = ''
+    redirect_urls: list[str] = []
+
+    try:
+        import requests
+        resp = requests.head(
+            GITHUB_LATEST_DOWNLOAD,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+        redirect_urls = [h.url for h in resp.history if h.url]
+        if resp.url:
+            redirect_urls.append(resp.url)
+    except Exception as e:
+        logger.debug('redirect HEAD via requests failed: %s', e)
+        try:
+            req = urllib.request.Request(
+                GITHUB_LATEST_DOWNLOAD, method='HEAD', headers=headers)
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                if resp.url:
+                    redirect_urls.append(resp.url)
+        except Exception as e2:
+            logger.debug('redirect HEAD via urllib failed: %s', e2)
+            return {}
+
+    for url in redirect_urls:
+        version = _parse_version_from_download_url(url)
+        if version:
+            asset_url = url
+            break
+
+    if not version:
+        return {}
+
+    checksum = fetch_sidecar_checksum(asset_url, headers)
+    return {
+        'version': version,
+        'notes': '',
+        'asset_url': asset_url,
+        'min_required_version': '0.0.0',
+        'checksum_sha256': checksum,
+    }
+
+
 # ── Main updater class ─────────────────────────────────────────────────────────
 
 class UpdateChecker:
@@ -1175,6 +1243,29 @@ class UpdateChecker:
                 logger.warning(
                     f"Update API attempt {attempt}/{FETCH_RETRIES} failed: {e}")
                 time.sleep(min(attempt * 2, 6))
+
+        # api.github.com blocked/rate-limited — resolve via github.com redirect
+        redirect_info = fetch_release_via_github_redirect(headers)
+        if redirect_info.get('version') and redirect_info.get('asset_url'):
+            version = redirect_info['version']
+            asset_url = redirect_info['asset_url']
+            notes = (cloud or {}).get('release_notes') or redirect_info.get('notes') or ''
+            checksum = redirect_info.get('checksum_sha256') or cloud_checksum or ''
+            if not checksum:
+                checksum = fetch_sidecar_checksum(asset_url, headers)
+            if cloud and cloud.get('download_url') and not asset_url:
+                asset_url = cloud.get('download_url') or asset_url
+            if cloud and cloud.get('checksum_sha256') and not checksum:
+                checksum = normalize_checksum(cloud.get('checksum_sha256') or '') or checksum
+            logger.info(
+                'Using GitHub redirect fallback for v%s (API unavailable)', version)
+            return {
+                'version':              version,
+                'notes':                notes[:2000],
+                'asset_url':            asset_url,
+                'min_required_version': str((cloud or {}).get('min_version') or '0.0.0'),
+                'checksum_sha256':      normalize_checksum(checksum) or '',
+            }
 
         # GitHub unreachable — use Portal Update Center if it has a newer build
         if cloud and cloud.get('download_url'):
