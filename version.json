@@ -1,7 +1,8 @@
 {
-    "version": "3.0.55",
-    "build": "RC-2026-08-16-v3.0.55",
+    "version": "3.0.57",
+    "build": "RC-2026-08-16-v3.0.57",
     "released": "2026-08-16",
-    "release_notes": "Fix first-time activation hitting device limit: heal inflated seat counters, reuse inactive/retry seats, stop double cloud activation after Portal claim, and align MBT-PC vs hardware fingerprint device IDs.",
-    "checksum_sha256": ""
+    "release_notes": "Fix POS business-day control not opening the calendar: replace the fragile QDateEdit-in-frame picker with one bordered QPushButton that opens a modal calendar (manager+) and stays read-only for cashiers.",
+    "checksum_sha256": "a9b1b790197ca4c268f36179a93065610ff9b7600edab54e8557c313b6147321",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.57/MBT_POS_Setup.exe"
 }

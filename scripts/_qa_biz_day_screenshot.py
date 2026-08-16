@@ -9,8 +9,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from PyQt5.QtCore import QDate, Qt, QTimer
-from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QApplication, QLabel, QDateEdit, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QDateEdit, QVBoxLayout, QWidget
 
 from desktop.utils.theme import ThemeManager
 from desktop.pos.panel_factory import BusinessDayBar
@@ -22,7 +21,7 @@ def main() -> int:
         os.path.join(ROOT, '..', '..', '.cursor', 'projects', 'c-Users-mugoj-OneDrive-Desktop-MBT-POS', 'assets')
     )
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, 'biz_day_picker_after_3053.png')
+    out_path = os.path.join(out_dir, 'biz_day_picker_3057.png')
 
     app = QApplication(sys.argv)
     ThemeManager.apply(False, app)
@@ -35,9 +34,6 @@ def main() -> int:
     lay = QVBoxLayout(shell)
 
     bar = BusinessDayBar(shell)
-    lbl = QLabel('Business day')
-    lbl.setObjectName('posBizDayCap')
-    lbl.setCursor(Qt.PointingHandCursor)
     de = QDateEdit()
     de.setCalendarPopup(True)
     de.setDisplayFormat('yyyy-MM-dd')
@@ -46,9 +42,10 @@ def main() -> int:
     today = SecondaryBtn('Today', 32)
     view = SecondaryBtn('View day', 32)
     copy = SecondaryBtn('Copy sale…', 32)
+    from PyQt5.QtWidgets import QLabel
     warn = QLabel('')
     warn.setObjectName('posBizDayWarn')
-    bar.setup(lbl, de, (
+    bar.setup(None, de, (
         (today, 'Today', 'Today'),
         (view, 'View', 'View day'),
         (copy, 'Copy', 'Copy sale…'),

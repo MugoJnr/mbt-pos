@@ -247,99 +247,69 @@ def _calendar_icon_qss() -> str:
     )
 
 
-def biz_day_picker_qss(*, date_width: int | None = None, micro: bool = False) -> str:
-    """Widget-level QSS for the POS business-day picker shell.
+def biz_day_button_qss(*, date_width: int | None = None, micro: bool = False) -> str:
+    """Widget-level QSS for the POS business-day picker button.
 
-    Applied directly on ``_BizDayPicker`` so the outline survives the global
-    ``QFrame {{ border: none; }}`` rule and Windows/Qt frame painting quirks.
+    Applied directly on ``_BizDayButton`` so the outline survives the global
+    ``QPushButton {{ border: none; }}`` / ``QFrame {{ border: none; }}`` rules.
     """
     p = C
     r_md = RADIUS['md']
     gold_border_hover = qss_alpha(p['gold'], 0.45)
-    cal_arrow = _calendar_icon_qss().replace('{p_muted}', p['muted'])
     min_h = 32 if micro else 34
 
     if micro:
         dw = date_width or 104
-        date_block = (
-            f"min-width:{dw}px;max-width:{dw}px;"
-            f"padding:3px 24px 3px 4px;font-size:11px;"
-        )
+        width_block = f"min-width:{dw}px;max-width:{max(dw + 40, 144)}px;"
+        pad = "padding:3px 10px;font-size:11px;"
     elif date_width is not None and date_width < 130:
         dw = date_width
-        date_block = (
-            f"min-width:{dw}px;max-width:{dw}px;"
-            f"padding:4px 26px 4px 6px;font-size:12px;"
-        )
+        width_block = f"min-width:{dw}px;max-width:{max(dw + 80, 160)}px;"
+        pad = "padding:4px 12px;font-size:12px;"
     elif date_width is not None:
-        date_block = f"min-width:{date_width}px;padding:6px 34px 6px 4px;font-size:13px;"
+        width_block = f"min-width:{date_width}px;"
+        pad = "padding:6px 14px;font-size:13px;"
     else:
-        date_block = "min-width:150px;padding:6px 34px 6px 4px;font-size:13px;"
+        width_block = "min-width:220px;"
+        pad = "padding:6px 14px;font-size:13px;"
 
     return f"""
-QFrame#posBizDayPicker {{
+QPushButton#posBizDayBtn {{
     background-color: transparent;
     color: {p['text']};
     border: 1px solid {p['border2']};
     border-radius: {r_md}px;
     min-height: {min_h}px;
+    text-align: left;
+    font-weight: 600;
+    {width_block}
+    {pad}
 }}
-QFrame#posBizDayPicker:hover {{
+QPushButton#posBizDayBtn:hover {{
     background-color: {p['hover']};
     border-color: {gold_border_hover};
+    color: {p['text']};
 }}
-QFrame#posBizDayPicker[active="true"] {{
+QPushButton#posBizDayBtn:pressed {{
+    background-color: {p['hover']};
+    border-color: {p['gold']};
+}}
+QPushButton#posBizDayBtn:focus {{
+    outline: none;
     border-color: {p['gold']};
     background-color: {p['hover']};
 }}
-QFrame#posBizDayPicker:disabled {{
+QPushButton#posBizDayBtn:disabled {{
     color: {p['muted']};
     border-color: {p['border']};
     background-color: {p['panel']};
 }}
-QLabel#posBizDayCap {{
-    color: {p['text2']};
-    font-size: 12px;
-    font-weight: 700;
-    background: transparent;
-    border: none;
-    padding: 0;
-}}
-QFrame#posBizDayPicker:disabled QLabel#posBizDayCap {{
-    color: {p['muted']};
-}}
-QDateEdit#posBizDayDate {{
-    background: transparent;
-    color: {p['text']};
-    border: none;
-    border-radius: 0;
-    min-height: 28px;
-    min-width: 0;
-    {date_block}
-}}
-QDateEdit#posBizDayDate:focus {{
-    border: none;
-    background: transparent;
-}}
-QDateEdit#posBizDayDate:disabled {{
-    color: {p['muted']};
-    background: transparent;
-}}
-QDateEdit#posBizDayDate::drop-down {{
-    subcontrol-origin: padding;
-    subcontrol-position: center right;
-    width: 30px;
-    border: none;
-    border-left: 1px solid {p['border']};
-    background: transparent;
-}}
-QDateEdit#posBizDayDate::drop-down:hover {{
-    background: {p['hover']};
-}}
-QDateEdit#posBizDayDate::down-arrow {{
-    {cal_arrow}
-}}
 """
+
+
+def biz_day_picker_qss(*, date_width: int | None = None, micro: bool = False) -> str:
+    """Backward-compatible alias — prefer ``biz_day_button_qss``."""
+    return biz_day_button_qss(date_width=date_width, micro=micro)
 
 
 def _build_stylesheet(p):
@@ -375,12 +345,14 @@ QWidget {{ background: transparent; border: none; }}
 }}
 QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; border: none; }}
 QFrame {{ border: none; }}
-/* POS business-day picker — explicit ID beats QFrame{{border:none}} on Windows */
-QFrame#posBizDayPicker {{
+/* POS business-day picker — explicit ID beats global border resets on Windows */
+QFrame#posBusinessDayBar QPushButton#posBizDayBtn {{
     background-color: transparent;
     border: 1px solid {p['border2']};
     border-radius: {r_md}px;
     min-height: 34px;
+    text-align: left;
+    font-weight: 600;
 }}
 
 /* ── SIDEBAR (AppShell) ── */
@@ -975,67 +947,29 @@ QPushButton#loginEyeBtn:hover {{ color: {p['gold']}; border-color: {p['gold']}; 
     border-color: {p['gold']};
 }}
 
-/* Business day — one bordered picker (caption + date + chevron) */
-QFrame#posBusinessDayBar QFrame#posBizDayPicker {{
+/* Business day — one bordered button (caption + date + chevron) */
+QFrame#posBusinessDayBar QPushButton#posBizDayBtn {{
     background: transparent;
     color: {p['text']};
     border: 1px solid {p['border2']};
     border-radius: {r_md}px;
     min-height: 34px;
+    text-align: left;
+    font-weight: 600;
+    padding: 6px 14px;
 }}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker:hover {{
+QFrame#posBusinessDayBar QPushButton#posBizDayBtn:hover {{
     background: {p['hover']};
     border-color: {gold_border_hover};
 }}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker[active="true"] {{
+QFrame#posBusinessDayBar QPushButton#posBizDayBtn:focus {{
     border-color: {p['gold']};
     background: {p['hover']};
 }}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker:disabled {{
+QFrame#posBusinessDayBar QPushButton#posBizDayBtn:disabled {{
     color: {p['muted']};
     border-color: {p['border']};
     background: {p['panel']};
-}}
-QFrame#posBusinessDayBar QLabel#posBizDayCap {{
-    color: {p['text2']};
-    font-size: 12px;
-    font-weight: 700;
-    background: transparent;
-    border: none;
-    padding: 0 0 0 10px;
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker:disabled QLabel#posBizDayCap {{
-    color: {p['muted']};
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate {{
-    background: transparent;
-    color: {p['text']};
-    border: none;
-    border-radius: 0;
-    min-height: 28px;
-    min-width: 0;
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate:focus {{
-    border: none;
-    background: transparent;
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate:disabled {{
-    color: {p['muted']};
-    background: transparent;
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::drop-down {{
-    subcontrol-origin: padding;
-    subcontrol-position: center right;
-    width: 30px;
-    border: none;
-    border-left: 1px solid {p['border']};
-    background: transparent;
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::drop-down:hover {{
-    background: {p['hover']};
-}}
-QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::down-arrow {{
-    {cal_arrow}
 }}
 
 /* Empty states */

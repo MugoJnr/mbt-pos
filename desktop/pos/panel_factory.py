@@ -1,13 +1,13 @@
 """Build shared POS panels once — SalesTab owns business logic; panels are pure UI."""
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, QDate, QTimer, QEvent
+from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtWidgets import (
     QAbstractSpinBox, QComboBox, QDateEdit, QDoubleSpinBox, QFrame, QHBoxLayout,
-    QLabel, QLineEdit, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from desktop.utils.theme import C, RADIUS, PADDING, GAP, qss_alpha, biz_day_picker_qss
+from desktop.utils.theme import C, RADIUS, PADDING, GAP, qss_alpha, biz_day_button_qss
 from desktop.utils.widgets import H2, Caption, PrimaryBtn, SecondaryBtn, DangerBtn, IconBtn
 from desktop.utils.pos_components import (
     ProductGrid, PaymentSegment, SummaryCard, CustomerCard, CartList, PosSearchBar,
@@ -25,56 +25,73 @@ class _KesEdit(QLineEdit):
         QTimer.singleShot(0, self.selectAll)
 
 
-class _BizDayPicker(QFrame):
-    """Outline control shell — caption + date + chevron read as one button."""
+class _BizDayButton(QPushButton):
+    """One bordered button — caption, date, chevron; opens a calendar dialog."""
+
+    _CAPTION = 'Business day'
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName('posBizDayPicker')
-        self.setFrameShape(QFrame.Box)
-        self.setLineWidth(0)
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setObjectName('posBizDayBtn')
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._date = None
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 4, 2, 4)
-        lay.setSpacing(6)
-        self._lay = lay
+        self._show_caption = True
+        self.clicked.connect(self._pick_date)
         self.apply_style()
 
     def apply_style(self, *, date_width: int | None = None, micro: bool = False) -> None:
-        """Direct QSS on the picker — not reliant on app-wide cascade."""
-        self.setStyleSheet(biz_day_picker_qss(date_width=date_width, micro=micro))
+        """Direct QSS on the button — survives global QPushButton/QFrame resets."""
+        self.setStyleSheet(biz_day_button_qss(date_width=date_width, micro=micro))
 
     def bind_date(self, date_edit: QDateEdit) -> None:
+        """Hidden QDateEdit keeps dateChanged / apply_shop_day_edit wiring."""
         self._date = date_edit
         date_edit.setObjectName('posBizDayDate')
-        date_edit.setCursor(Qt.PointingHandCursor)
-        date_edit.setFocusPolicy(Qt.StrongFocus)
-        date_edit.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        date_edit.setCalendarPopup(False)
+        date_edit.hide()
+        try:
+            date_edit.dateChanged.disconnect(self._sync_label)
+        except TypeError:
+            pass
+        date_edit.dateChanged.connect(self._sync_label)
+        self._sync_label(date_edit.date())
 
-    def bind_label(self, label: QLabel) -> None:
-        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+    def set_show_caption(self, show: bool) -> None:
+        self._show_caption = bool(show)
+        self._sync_label()
 
-    def activate_date(self) -> None:
+    def _sync_label(self, qdate: QDate | None = None) -> None:
+        if not self._date:
+            return
+        if qdate is None:
+            qdate = self._date.date()
+        iso = qdate.toString('yyyy-MM-dd')
+        if self._show_caption:
+            self.setText(f'{self._CAPTION}  |  {iso}  ▼')
+        else:
+            self.setText(f'{iso}  ▼')
+
+    def set_editable(self, editable: bool) -> None:
+        self.setEnabled(editable)
+        self.setCursor(Qt.PointingHandCursor if editable else Qt.ArrowCursor)
+
+    def _pick_date(self) -> None:
         if not self.isEnabled() or not self._date or not self._date.isEnabled():
             return
-        self._date.setFocus(Qt.MouseFocusReason)
-        QTimer.singleShot(0, self._open_calendar)
-
-    def _open_calendar(self) -> None:
-        if not self._date or not self._date.isEnabled() or not self._date.calendarPopup():
+        from desktop.utils.date_controls import apply_shop_day_edit, pick_shop_day_dialog
+        from desktop.utils.shop_time import shop_today
+        today = shop_today()
+        picked = pick_shop_day_dialog(
+            self.window(),
+            self._date.date(),
+            title='Select business day',
+            min_date=QDate(2000, 1, 1),
+            max_date=QDate(today.year, today.month, today.day),
+        )
+        if picked is None:
             return
-        for btn in self._date.findChildren(QToolButton):
-            btn.click()
-            return
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.isEnabled():
-            self.activate_date()
-            event.accept()
-            return
-        super().mousePressEvent(event)
+        apply_shop_day_edit(self._date, picked, today=today)
 
 
 class BusinessDayBar(QFrame):
@@ -99,9 +116,8 @@ class BusinessDayBar(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._mode = None  # (compact, stacked, micro) — force first apply
-        self._label = None
         self._date = None
-        self._picker = _BizDayPicker(self)
+        self._picker = _BizDayButton(self)
         self._warn = None
         self._buttons = ()
         self._root = QVBoxLayout(self)
@@ -116,15 +132,9 @@ class BusinessDayBar(QFrame):
 
     def setup(self, label, date_edit, buttons, warn_label):
         """Build rows and register widgets for responsive wide / compact / stacked."""
-        if self._label is not None and self._label is not label:
-            self._label.removeEventFilter(self)
-        self._label = label
+        del label  # caption lives inside _BizDayButton; kept for caller compat
         self._date = date_edit
         self._picker.bind_date(date_edit)
-        if self._label is not None:
-            self._picker.bind_label(self._label)
-            self._label.installEventFilter(self)
-        self._date.installEventFilter(self)
         self._warn = warn_label
         self._buttons = tuple(buttons)
         for lay in (self._row1, self._row2):
@@ -133,22 +143,6 @@ class BusinessDayBar(QFrame):
         self._apply_layout(force=True)
 
     bind = setup  # alias for callers/tests
-
-    def eventFilter(self, obj, event):
-        if obj is self._label and event.type() == QEvent.MouseButtonRelease:
-            if event.button() == Qt.LeftButton:
-                self._picker.activate_date()
-                return True
-        if obj is self._date and event.type() == QEvent.MouseButtonRelease:
-            if event.button() == Qt.LeftButton:
-                self._picker.activate_date()
-                return True
-        if obj is self._date and event.type() in (QEvent.FocusIn, QEvent.FocusOut):
-            active = event.type() == QEvent.FocusIn
-            self._picker.setProperty('active', active)
-            self._picker.style().unpolish(self._picker)
-            self._picker.style().polish(self._picker)
-        return super().eventFilter(obj, event)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -162,16 +156,6 @@ class BusinessDayBar(QFrame):
     def _clear_row(self, lay: QHBoxLayout) -> None:
         while lay.count():
             lay.takeAt(0)
-
-    def _rebuild_picker(self, *, compact: bool) -> None:
-        while self._picker._lay.count():
-            self._picker._lay.takeAt(0)
-        if not compact and self._label is not None:
-            self._label.show()
-            self._picker._lay.addWidget(self._label)
-        elif self._label is not None:
-            self._label.hide()
-        self._picker._lay.addWidget(self._date, 1)
 
     def _apply_layout(self, force: bool = False, width: int | None = None) -> None:
         if self._date is None:
@@ -200,7 +184,7 @@ class BusinessDayBar(QFrame):
         view_btn = self._buttons[1][0] if len(self._buttons) > 1 else None
         copy_btn = self._buttons[2][0] if len(self._buttons) > 2 else None
 
-        self._rebuild_picker(compact=compact)
+        self._picker.set_show_caption(not compact)
 
         if micro:
             dw = 104
@@ -209,11 +193,6 @@ class BusinessDayBar(QFrame):
         else:
             dw = 150
         self._picker.apply_style(date_width=dw, micro=micro)
-        self._date.setStyleSheet('')
-        self._date.setSizePolicy(
-            QSizePolicy.Expanding if stacked else QSizePolicy.Fixed,
-            QSizePolicy.Fixed,
-        )
         self._picker.setMinimumHeight(34 if not micro else 32)
         self._picker.setSizePolicy(
             QSizePolicy.Expanding if stacked else QSizePolicy.Fixed,
@@ -281,30 +260,26 @@ def build_shared_panels(tab) -> None:
 
     # ── Business day bar (sale date) — visible on all checkout layouts ────────
     biz = BusinessDayBar(product)
-    biz_lbl = QLabel('Business day')
-    biz_lbl.setObjectName('posBizDayCap')
-    biz_lbl.setCursor(Qt.PointingHandCursor)
     from desktop.utils.security import can_set_business_day
     from desktop.utils.shop_time import shop_today
     from desktop.utils.date_controls import apply_shop_day_edit
     today = shop_today()
     tab._business_day = today
     tab._biz_date = QDateEdit()
-    tab._biz_date.setCalendarPopup(True)
+    tab._biz_date.setCalendarPopup(False)
     tab._biz_date.setDisplayFormat('yyyy-MM-dd')
     tab._biz_date.setMinimumDate(QDate(2000, 1, 1))
     # Raise maximumDate before setDate (Qt clamps otherwise — stale year bug)
     tab._business_day = apply_shop_day_edit(tab._biz_date, today, today=today)
-    tab._biz_date.setMinimumHeight(34)
     can_biz = can_set_business_day(tab.user)
     tab._biz_date.setEnabled(can_biz)
-    biz._picker.setEnabled(can_biz)
     tab._biz_date.setToolTip(
         'Sale / reporting date (Nairobi shop calendar). Manager+ can backdate.'
         if can_biz else
         'Cashiers record sales for today only. Ask a manager to backdate.'
     )
     biz._picker.setToolTip(tab._biz_date.toolTip())
+    biz._picker.set_editable(can_biz)
     tab._biz_date.dateChanged.connect(tab._on_business_day_changed)
     tab._biz_today_btn = SecondaryBtn('Today', 32)
     tab._biz_today_btn.setEnabled(can_biz)
@@ -321,7 +296,7 @@ def build_shared_panels(tab) -> None:
         f"color:{C.get('warn', '#D97706')};font-size:12px;font-weight:700;"
         f"background:transparent;")
     # Short/wide label pairs; two-row stack below STACK_UNDER keeps controls visible
-    biz.setup(biz_lbl, tab._biz_date, (
+    biz.setup(None, tab._biz_date, (
         (tab._biz_today_btn, 'Today', 'Today'),
         (tab._biz_view_btn, 'View', 'View day'),
         (tab._biz_copy_btn, 'Copy', 'Copy sale…'),

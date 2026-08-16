@@ -8,8 +8,17 @@ import os
 from datetime import date as date_cls
 from typing import Optional, Union
 
-from PyQt5.QtCore import QDate
-from PyQt5.QtWidgets import QDateEdit, QHBoxLayout, QLabel, QWidget
+from PyQt5.QtCore import QDate, Qt
+from PyQt5.QtWidgets import (
+    QCalendarWidget,
+    QDateEdit,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
 from desktop.utils.theme import C, RADIUS, TOUCH_MIN, _assets_root
 
@@ -26,6 +35,47 @@ def _as_qdate(value: Optional[Union[QDate, date_cls]] = None) -> QDate:
     if isinstance(value, date_cls):
         return QDate(value.year, value.month, value.day)
     return QDate.currentDate()
+
+
+def pick_shop_day_dialog(
+    parent: QWidget,
+    initial: Optional[Union[QDate, date_cls]] = None,
+    *,
+    title: str = 'Select business day',
+    min_date: Optional[Union[QDate, date_cls]] = None,
+    max_date: Optional[Union[QDate, date_cls]] = None,
+) -> Optional[date_cls]:
+    """Modal calendar — reliable on Windows packaged builds (no QDateEdit popup)."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setModal(True)
+    dlg.setMinimumWidth(340)
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(12, 12, 12, 12)
+    lay.setSpacing(10)
+
+    cal = QCalendarWidget(dlg)
+    cal.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+    cal.setGridVisible(True)
+    cal.setSelectedDate(_as_qdate(initial))
+    if min_date is not None:
+        cal.setMinimumDate(_as_qdate(min_date))
+    if max_date is not None:
+        cal.setMaximumDate(_as_qdate(max_date))
+
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    bb.button(QDialogButtonBox.Ok).setDefault(True)
+    bb.accepted.connect(dlg.accept)
+    bb.rejected.connect(dlg.reject)
+    lay.addWidget(cal)
+    lay.addWidget(bb)
+
+    if dlg.exec_() != QDialog.Accepted:
+        return None
+    sel = cal.selectedDate()
+    if not sel.isValid():
+        return None
+    return date_cls(sel.year(), sel.month(), sel.day())
 
 
 def apply_shop_day_edit(
