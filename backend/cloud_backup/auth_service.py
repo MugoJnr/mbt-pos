@@ -70,6 +70,14 @@ def _register_device_for_business(business: dict, user_id: str, email: str, sess
     device = get_device_info()
     business_id = business.get('id') or ''
     business_name = business.get('name') or 'My Business'
+    hw_fp = ''
+    try:
+        from licensing.license_engine import get_device_id as hw_id
+        hw_fp = (hw_id() or '').strip()
+    except Exception:
+        pass
+    if not hw_fp:
+        hw_fp = (load_identity().get('hardware_fingerprint') or '').strip()
     device_row = None
     try:
         org = ensure_org_for_business(business, user_id)
@@ -81,7 +89,7 @@ def _register_device_for_business(business: dict, user_id: str, email: str, sess
             hostname=device.get('hostname') or '',
             platform_str=device.get('platform') or '',
             mbt_version=_app_version(),
-            hardware_fingerprint=device.get('device_id') or '',
+            hardware_fingerprint=hw_fp or device['device_id'],
             actor_user_id=user_id,
             verify_org_access=True,
         )

@@ -1195,6 +1195,8 @@ def claim_license_for_identity(
         )
 
     def _free(lic: dict) -> bool:
+        if hasattr(server, 'seats_available'):
+            return server.seats_available(lic)
         try:
             return int(lic.get('activated_devices') or 0) < int(lic.get('max_devices') or 1)
         except Exception:

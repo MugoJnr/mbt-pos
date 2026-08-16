@@ -1,7 +1,7 @@
 {
-    "version": "3.0.54",
-    "build": "RC-2026-08-16-v3.0.54",
+    "version": "3.0.55",
+    "build": "RC-2026-08-16-v3.0.55",
     "released": "2026-08-16",
-    "release_notes": "Fix automatic cloud backup for signed-in shops: repair stale AppData business_id, improve sync scheduling, and harden auth token refresh.",
-    "checksum_sha256": "c4ffed028f5f1b27a28cdfd33fcf91aa479cf77a2c6c4610349f9495628e4ed2"
+    "release_notes": "Fix first-time activation hitting device limit: heal inflated seat counters, reuse inactive/retry seats, stop double cloud activation after Portal claim, and align MBT-PC vs hardware fingerprint device IDs.",
+    "checksum_sha256": ""
 }

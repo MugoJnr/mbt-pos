@@ -930,19 +930,24 @@ class LicenseEngine:
         try:
             from backend.cloud.platform_service import activate_license_on_device
             from backend.cloud_backup.device_manager import get_or_create_device_id
-            device_id = get_or_create_device_id() or self.device_id
-            actor_email = ''
-            try:
-                from backend.cloud_backup.paths import load_identity
-                actor_email = (load_identity().get('email') or '').strip()
-            except Exception:
-                actor_email = ''
+            from backend.cloud_backup.paths import load_identity
+            canonical_id = get_or_create_device_id() or self.device_id
+            ident = load_identity()
+            aliases = []
+            for raw in (
+                self.device_id,
+                str(ident.get('hardware_fingerprint') or '').strip(),
+            ):
+                val = str(raw or '').strip()
+                if val and val != canonical_id and val not in aliases:
+                    aliases.append(val)
+            actor_email = (ident.get('email') or '').strip()
             result = activate_license_on_device(
                 key_str,
-                self.device_id,
+                canonical_id,
                 actor_email=actor_email,
                 actor_is_admin=False,
-                device_aliases=[device_id, self.device_id],
+                device_aliases=aliases,
             )
             if result.get('ok'):
                 lic = result.get('license') or {}

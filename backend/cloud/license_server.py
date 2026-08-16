@@ -330,18 +330,100 @@ class CloudLicenseServer:
                             out.append(val)
         return out
 
-    def _find_active_activation(self, license_id: str, device_ids: list[str]) -> dict | None:
+    def _pick_canonical_device_id(self, device_ids: list[str]) -> str:
+        """Prefer stable MBT-PC-* over legacy hardware fingerprints."""
+        for did in device_ids:
+            val = str(did or '').strip()
+            if val.startswith('MBT-PC-'):
+                return val
+        return str(device_ids[0] or '').strip() if device_ids else ''
+
+    def _list_activations(self, license_id: str, *, active_only: bool | None = None) -> list[dict]:
         from urllib.parse import quote
+        q = f'license_id=eq.{quote(str(license_id), safe="")}&select=*'
+        if active_only is True:
+            q += '&is_active=eq.true'
+        elif active_only is False:
+            q += '&is_active=eq.false'
+        return self._rows('license_activations', q) or []
+
+    def _count_active_seats(self, license_id: str) -> int:
+        acts = self._list_activations(license_id, active_only=True)
+        return len({
+            str(a.get('device_id') or '').strip()
+            for a in acts
+            if str(a.get('device_id') or '').strip()
+        })
+
+    def _sync_activated_devices(self, license_id: str) -> int:
+        count = self._count_active_seats(license_id)
+        self._update('licenses', f'id=eq.{license_id}', {'activated_devices': count})
+        return count
+
+    def seats_available(self, lic: dict) -> bool:
+        """True when the license has a free active seat (ignores stale counters)."""
+        lid = str(lic.get('id') or '')
+        max_dev = int(lic.get('max_devices') or 1)
+        if lid:
+            return self._count_active_seats(lid) < max_dev
+        try:
+            return int(lic.get('activated_devices') or 0) < max_dev
+        except Exception:
+            return True
+
+    def _find_activation(
+        self, license_id: str, device_ids: list[str], *, active_only: bool = True,
+    ) -> dict | None:
+        from urllib.parse import quote
+        active_filter = '&is_active=eq.true' if active_only else ''
         for did in self._expand_device_aliases(device_ids):
             rows = self._rows(
                 'license_activations',
                 f'license_id=eq.{quote(str(license_id), safe="")}'
                 f'&device_id=eq.{quote(did, safe="")}'
-                f'&is_active=eq.true&select=*',
+                f'{active_filter}&select=*',
             )
             if rows:
                 return rows[0]
         return None
+
+    def _find_active_activation(self, license_id: str, device_ids: list[str]) -> dict | None:
+        return self._find_activation(license_id, device_ids, active_only=True)
+
+    def _reactivate_seat(
+        self,
+        lic: dict,
+        activation: dict,
+        canonical_id: str,
+        *,
+        actor: str = '',
+    ) -> tuple[bool, str, dict | None]:
+        """Reuse an inactive seat for the same physical PC without consuming a new seat."""
+        token_device = canonical_id or str(activation.get('device_id') or '')
+        token = generate_activation_token(lic['license_key'], token_device)
+        self._update('license_activations', f'id=eq.{activation["id"]}', {
+            'is_active': True,
+            'activation_token': token,
+            'device_id': token_device,
+        })
+        self._sync_activated_devices(lic['id'])
+        patch: dict[str, Any] = {
+            'status': 'active',
+            'claim_status': 'claimed',
+        }
+        if not lic.get('claimed_at'):
+            patch['claimed_at'] = datetime.now().isoformat()
+        if not lic.get('activated_at'):
+            patch['activated_at'] = datetime.now().isoformat()
+        self._update('licenses', f'id=eq.{lic["id"]}', patch)
+        self._log_history(lic['id'], 'reactivated', actor or None, {
+            'device_id': token_device,
+        })
+        return True, 'Already activated', {
+            'token': token,
+            'plan': lic['plan'],
+            'expires_at': lic.get('expires_at'),
+        }
 
     def activate(self, license_key: str, device_id: str, org_id: str,
                  *, actor_email: str = '', actor_is_admin: bool = False,
@@ -394,19 +476,35 @@ class CloudLicenseServer:
             ), None
 
         # Same physical PC (hardware id or persisted MBT-PC-*) must not consume
-        # another seat or require a new key after restart.
+        # another seat or require a new key after restart / retry.
         existing = self._find_active_activation(lic['id'], ids)
         if existing:
+            self._sync_activated_devices(lic['id'])
+            token = existing.get('activation_token') or generate_activation_token(
+                license_key, existing.get('device_id') or self._pick_canonical_device_id(expanded or ids),
+            )
             return True, 'Already activated', {
-                'token': existing.get('activation_token'),
+                'token': token,
                 'plan': lic['plan'],
                 'expires_at': lic.get('expires_at'),
             }
 
-        if lic.get('activated_devices', 0) >= lic.get('max_devices', 1):
-            return False, f'Device limit reached ({lic["max_devices"]})', None
+        inactive = self._find_activation(lic['id'], ids, active_only=False)
+        if inactive and not inactive.get('is_active', True):
+            canonical = self._pick_canonical_device_id(expanded or ids)
+            return self._reactivate_seat(
+                lic, inactive, canonical or str(inactive.get('device_id') or ''), actor=actor,
+            )
 
-        canonical_id = ids[0] if ids else device_id
+        max_dev = int(lic.get('max_devices') or 1)
+        active_count = self._count_active_seats(lic['id'])
+        if active_count >= max_dev:
+            # Heal inflated activated_devices counters before rejecting.
+            synced = self._sync_activated_devices(lic['id'])
+            if synced >= max_dev:
+                return False, f'Device limit reached ({max_dev})', None
+
+        canonical_id = self._pick_canonical_device_id(expanded or ids) or device_id
         token = generate_activation_token(license_key, canonical_id)
         self._insert('license_activations', {
             'license_id': lic['id'],
@@ -415,8 +513,9 @@ class CloudLicenseServer:
             'activation_token': token,
             'is_active': True,
         }, upsert=True, on_conflict='license_id,device_id')
+        seat_count = self._sync_activated_devices(lic['id'])
         patch = {
-            'activated_devices': int(lic.get('activated_devices') or 0) + 1,
+            'activated_devices': seat_count,
             'activated_at': datetime.now().isoformat(),
             'status': 'active',
             'claim_status': 'claimed',
@@ -455,7 +554,10 @@ class CloudLicenseServer:
         }
 
     def suspend(self, license_id: str, actor: str | None = None) -> bool:
-        self._update('licenses', f'id=eq.{license_id}', {'status': 'suspended'})
+        self._update('licenses', f'id=eq.{license_id}', {
+            'status': 'suspended',
+            'activated_devices': 0,
+        })
         # Stop activations immediately so validate() and re-activate cannot succeed.
         try:
             self._update('license_activations', f'license_id=eq.{license_id}', {'is_active': False})
@@ -478,6 +580,7 @@ class CloudLicenseServer:
         self._update('licenses', f'id=eq.{license_id}', {
             'status': 'revoked',
             'revoked_at': datetime.now().isoformat(),
+            'activated_devices': 0,
         })
         try:
             self._update('license_activations', f'license_id=eq.{license_id}', {'is_active': False})
@@ -523,6 +626,7 @@ class CloudLicenseServer:
             'activation_token': token,
             'is_active': True,
         }, upsert=True, on_conflict='license_id,device_id')
+        self._sync_activated_devices(license_id)
         self._log_history(license_id, 'transferred', actor, {'from': old_device_id, 'to': new_device_id})
         return True, 'Device transferred'
 

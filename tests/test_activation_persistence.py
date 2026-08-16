@@ -51,7 +51,11 @@ class _FakeLicenseServer(CloudLicenseServer):
         if table == 'license_activations':
             out = []
             for row in self.activations:
-                if row.get('license_id') != 'L1' or not row.get('is_active'):
+                if row.get('license_id') != 'L1':
+                    continue
+                if 'is_active=eq.true' in query and not row.get('is_active'):
+                    continue
+                if 'is_active=eq.false' in query and row.get('is_active', True):
                     continue
                 if 'device_id=eq.' in query:
                     want = query.split('device_id=eq.')[1].split('&')[0]
@@ -65,12 +69,27 @@ class _FakeLicenseServer(CloudLicenseServer):
 
     def _insert(self, table, row, **_kw):
         if table == 'license_activations':
+            for i, existing in enumerate(self.activations):
+                if (
+                    existing.get('license_id') == row.get('license_id')
+                    and existing.get('device_id') == row.get('device_id')
+                ):
+                    self.activations[i] = {**existing, **dict(row)}
+                    return
             self.activations.append(dict(row))
 
     def _update(self, table, query, patch):
         self.updates.append((table, query, dict(patch)))
         if table == 'licenses':
             self.licenses['LIC1'].update(patch)
+        if table == 'license_activations' and query.startswith('id=eq.'):
+            act_id = query.split('id=eq.')[1].split('&')[0]
+            for i, row in enumerate(self.activations):
+                if str(row.get('id') or act_id) == act_id or row.get('device_id') == act_id:
+                    self.activations[i] = {**row, **patch}
+                    if 'id' not in self.activations[i]:
+                        self.activations[i]['id'] = act_id
+                    break
 
     def _log_history(self, *a, **k):
         pass
@@ -152,6 +171,42 @@ class ActivationSeatTests(unittest.TestCase):
         ok, msg, _ = s.assign_license('L1', assigned_email='not-an-email')
         self.assertFalse(ok)
         self.assertIn('email', msg.lower())
+
+    def test_inflated_counter_healed_on_activate(self):
+        s = _FakeLicenseServer()
+        s.licenses['LIC1']['activated_devices'] = 1
+        ok, msg, _ = s.activate('MBT-TRI-TEST', 'MBT-PC-AAAA', 'org1')
+        self.assertTrue(ok, msg)
+        self.assertEqual(s.licenses['LIC1']['activated_devices'], 1)
+
+    def test_inactive_seat_reactivated_without_new_seat(self):
+        s = _FakeLicenseServer()
+        s.activations = [{
+            'id': 'A-old',
+            'license_id': 'L1',
+            'device_id': 'MBT-PC-OLD',
+            'is_active': False,
+            'activation_token': 'old',
+        }]
+        s.licenses['LIC1']['activated_devices'] = 1
+        ok, msg, _ = s.activate(
+            'MBT-TRI-TEST', 'MBT-PC-OLD', 'org1',
+            device_aliases=['50057578b04c341371688631804b222466e7fde8'],
+        )
+        self.assertTrue(ok, msg)
+        self.assertIn('already', msg.lower())
+        self.assertEqual(len([a for a in s.activations if a.get('is_active')]), 1)
+        self.assertEqual(s.licenses['LIC1']['activated_devices'], 1)
+
+    def test_mbt_pc_preferred_over_hardware_fingerprint(self):
+        s = _FakeLicenseServer()
+        hw = 'e' * 40
+        ok, msg, _ = s.activate(
+            'MBT-TRI-TEST', hw, 'org1',
+            device_aliases=['MBT-PC-PREF'],
+        )
+        self.assertTrue(ok, msg)
+        self.assertEqual(s.activations[0]['device_id'], 'MBT-PC-PREF')
 
 
 class EmailClaimReuseTests(unittest.TestCase):
@@ -252,6 +307,30 @@ class EmailClaimReuseTests(unittest.TestCase):
                     device_id='MBT-PC-OTHER',
                 )
         self.assertIn('no free device seat', str(ctx.exception).lower())
+
+
+class ClaimMirrorTests(unittest.TestCase):
+    def test_mirror_claimed_license_skips_second_cloud_activate(self):
+        from licensing import cloud_onboarding as co
+        from unittest.mock import MagicMock
+
+        engine = MagicMock()
+        engine.activate_from_cloud.return_value = (True, 'Licensed')
+        engine._wire_cloud_backup_after_activation = MagicMock()
+        claimed = {
+            'ok': True,
+            'license': {
+                'license_key': 'MBT-TRI-MIRROR',
+                'plan': 'trial',
+                'expires_at': '2027-01-01',
+                'org_id': 'org1',
+            },
+            'activation': {'plan': 'trial'},
+        }
+        result = co._mirror_claimed_license(engine, claimed)
+        self.assertTrue(result.get('ok'))
+        engine.activate_with_key.assert_not_called()
+        engine.activate_from_cloud.assert_called_once()
 
 
 class SplitterScaleTests(unittest.TestCase):

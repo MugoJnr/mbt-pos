@@ -88,6 +88,14 @@ def _resolve_org_id(ident: dict) -> str:
 
 
 def _seats_free(lic: dict) -> bool:
+    acts = lic.get('activations') or lic.get('license_activations') or []
+    if acts:
+        active = {
+            str(a.get('device_id') or '').strip()
+            for a in acts
+            if isinstance(a, dict) and a.get('is_active', True) and str(a.get('device_id') or '').strip()
+        }
+        return len(active) < int(lic.get('max_devices') or 1)
     try:
         return int(lic.get('activated_devices') or 0) < int(lic.get('max_devices') or 1)
     except Exception:
@@ -206,6 +214,36 @@ def _activate_chosen(engine, license_key: str) -> dict:
     }
 
 
+def _mirror_claimed_license(engine, claimed: dict) -> dict:
+    """Mirror a Portal claim locally without a second cloud seat activation."""
+    lic = claimed.get('license') or {}
+    activation = claimed.get('activation') or {}
+    key = str(lic.get('license_key') or '')
+    if not key:
+        return {
+            'ok': False,
+            'reason': 'activate_failed',
+            'message': 'Claim returned no license key.',
+        }
+    try:
+        ok, message = engine.activate_from_cloud(
+            plan=lic.get('plan') or activation.get('plan') or 'trial',
+            expires_at=lic.get('expires_at') or activation.get('expires_at'),
+            license_key=key,
+            source='mbt_cloud',
+        )
+        if ok:
+            engine._wire_cloud_backup_after_activation(claimed)
+        return {
+            'ok': bool(ok),
+            'message': message,
+            'reason': '' if ok else 'activate_failed',
+            'license_key': key,
+        }
+    except Exception as e:
+        return {'ok': False, 'reason': 'activate_failed', 'message': str(e)}
+
+
 def auto_claim_device_license(engine, email: str = '', password: str = '') -> dict:
     """
     Login (optional here if already signed in) → find a license seat for this
@@ -275,7 +313,7 @@ def auto_claim_device_license(engine, email: str = '', password: str = '') -> di
             )
         key = str((claimed.get('license') or {}).get('license_key') or '')
         if claimed.get('ok') and key:
-            local = _activate_chosen(engine, key)
+            local = _mirror_claimed_license(engine, claimed)
             if local.get('ok'):
                 org_from_lic = str((claimed.get('license') or {}).get('org_id') or '')
                 _persist_org_id(org_from_lic)
