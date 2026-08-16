@@ -1,7 +1,7 @@
 {
-    "version": "3.0.52",
-    "build": "RC-2026-08-16-v3.0.52",
+    "version": "3.0.53",
+    "build": "RC-2026-08-16-v3.0.53",
     "released": "2026-08-16",
-    "release_notes": "Business day control is one bordered button: caption, date, and chevron open the calendar on click (matches outline buttons). Cashiers without backdate permission see the control disabled.",
-    "checksum_sha256": "4539f882f312f14a8a58a42a697703e99cff15be9b9d3e63a6393c68111d3b69"
+    "release_notes": "Business day picker: visible outline button (label + date + chevron) with full-area click to open calendar; fixes QSS border not rendering on Windows.",
+    "checksum_sha256": "2cdc674e74274dd0f7295c827104abea206c8649342db3b691e50249887370a2"
 }

@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
-from desktop.utils.theme import C, RADIUS, PADDING, GAP, qss_alpha
+from desktop.utils.theme import C, RADIUS, PADDING, GAP, qss_alpha, biz_day_picker_qss
 from desktop.utils.widgets import H2, Caption, PrimaryBtn, SecondaryBtn, DangerBtn, IconBtn
 from desktop.utils.pos_components import (
     ProductGrid, PaymentSegment, SummaryCard, CustomerCard, CartList, PosSearchBar,
@@ -31,21 +31,33 @@ class _BizDayPicker(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posBizDayPicker')
+        self.setFrameShape(QFrame.Box)
+        self.setLineWidth(0)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
         self._date = None
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(10, 4, 2, 4)
         lay.setSpacing(6)
         self._lay = lay
+        self.apply_style()
+
+    def apply_style(self, *, date_width: int | None = None, micro: bool = False) -> None:
+        """Direct QSS on the picker — not reliant on app-wide cascade."""
+        self.setStyleSheet(biz_day_picker_qss(date_width=date_width, micro=micro))
 
     def bind_date(self, date_edit: QDateEdit) -> None:
         self._date = date_edit
         date_edit.setObjectName('posBizDayDate')
         date_edit.setCursor(Qt.PointingHandCursor)
+        date_edit.setFocusPolicy(Qt.StrongFocus)
+        date_edit.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def bind_label(self, label: QLabel) -> None:
+        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
     def activate_date(self) -> None:
-        if not self._date or not self._date.isEnabled():
+        if not self.isEnabled() or not self._date or not self._date.isEnabled():
             return
         self._date.setFocus(Qt.MouseFocusReason)
         QTimer.singleShot(0, self._open_calendar)
@@ -58,8 +70,10 @@ class _BizDayPicker(QFrame):
             return
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.LeftButton and self.isEnabled():
             self.activate_date()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
 
@@ -108,6 +122,7 @@ class BusinessDayBar(QFrame):
         self._date = date_edit
         self._picker.bind_date(date_edit)
         if self._label is not None:
+            self._picker.bind_label(self._label)
             self._label.installEventFilter(self)
         self._date.installEventFilter(self)
         self._warn = warn_label
@@ -187,26 +202,14 @@ class BusinessDayBar(QFrame):
 
         self._rebuild_picker(compact=compact)
 
-        # Inline QSS beats the global QDateEdit{min-width:140px} rule.
         if micro:
             dw = 104
-            date_ss = (
-                f"QDateEdit#posBizDayDate{{min-width:{dw}px;max-width:{dw}px;"
-                f"padding:3px 24px 3px 4px;font-size:11px;}}"
-            )
         elif compact:
             dw = 112 if stacked else 116
-            date_ss = (
-                f"QDateEdit#posBizDayDate{{min-width:{dw}px;max-width:{dw}px;"
-                f"padding:4px 26px 4px 6px;font-size:12px;}}"
-            )
         else:
             dw = 150
-            date_ss = (
-                f"QDateEdit#posBizDayDate{{min-width:{dw}px;"
-                f"padding:6px 34px 6px 4px;font-size:13px;}}"
-            )
-        self._date.setStyleSheet(date_ss)
+        self._picker.apply_style(date_width=dw, micro=micro)
+        self._date.setStyleSheet('')
         self._date.setSizePolicy(
             QSizePolicy.Expanding if stacked else QSizePolicy.Fixed,
             QSizePolicy.Fixed,
