@@ -1522,6 +1522,8 @@ class PaymentButton(QPushButton):
         h = 40 if self._compact else 56
         self.setMinimumHeight(h)
         self.setMaximumHeight(h + 6)
+        if self._compact:
+            self.setMinimumWidth(0)
         self.refresh_theme()
 
     def refresh_theme(self):
@@ -1645,7 +1647,7 @@ class PaymentSegment(QWidget):
                 lay.setVerticalSpacing(gap)
 
     def set_row_layout(self, row: bool = True):
-        """Checkout Pro: five equal tiles in one horizontal row."""
+        """Checkout Pro: five equal tiles in one horizontal row (or 3×2 grid when narrow)."""
         old = self.layout()
         keys = list(self._btns.keys())
         widgets = [self._btns[k] for k in keys]
@@ -1664,13 +1666,16 @@ class PaymentSegment(QWidget):
             lay.setSpacing(6)
             for b in widgets:
                 b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                b.setMinimumWidth(0)
                 lay.addWidget(b, 1)
         else:
             lay = QGridLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)
-            lay.setHorizontalSpacing(8)
-            lay.setVerticalSpacing(8)
+            lay.setHorizontalSpacing(5)
+            lay.setVerticalSpacing(5)
             for i, b in enumerate(widgets):
+                b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                b.setMinimumWidth(0)
                 lay.addWidget(b, i // 3, i % 3)
         self.refresh_theme()
 

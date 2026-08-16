@@ -1479,6 +1479,140 @@ def sync_category_chips(tab) -> None:
     chips.select('All' if cur.lower().startswith('all') else cur, emit=False)
 
 
+NARROW_RAIL = 340
+NARROW_PRODUCT = 400
+
+
+def sync_pro_square_layout(tab) -> None:
+    """Repack Checkout Pro chrome on square / narrow shells (1024²–1280²)."""
+    from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO, normalize_layout_id
+
+    if normalize_layout_id(getattr(tab, '_checkout_layout', '')) != LAYOUT_CHECKOUT_PRO:
+        return
+
+    actions = getattr(tab, '_actions_panel', None)
+    product = getattr(tab, '_product_panel', None)
+    rail_w = int(actions.width()) if _alive(actions) else 0
+    prod_w = int(product.width()) if _alive(product) else 0
+    narrow_rail = rail_w > 0 and rail_w < NARROW_RAIL
+    narrow_prod = prod_w > 0 and prod_w < NARROW_PRODUCT
+
+    pay_seg = getattr(tab, '_pay_seg', None)
+    if _alive(pay_seg):
+        try:
+            if hasattr(pay_seg, 'set_row_layout'):
+                pay_seg.set_row_layout(not narrow_rail)
+            if hasattr(pay_seg, 'set_compact'):
+                pay_seg.set_compact(True)
+        except Exception:
+            pass
+
+    new_btn = getattr(tab, '_new_cust_btn', None)
+    if _alive(new_btn):
+        try:
+            if narrow_rail:
+                new_btn.setText('+ New')
+                new_btn.setFixedWidth(68)
+            else:
+                new_btn.setText('+ New Customer')
+                new_btn.setMaximumWidth(16777215)
+        except Exception:
+            pass
+
+    layout_combo = getattr(tab, '_layout_combo', None)
+    if _alive(layout_combo):
+        try:
+            layout_combo.setFixedWidth(112 if narrow_prod else 150)
+        except Exception:
+            pass
+
+    search_bar = getattr(tab, '_search_bar', None)
+    search_row_lay = search_bar.layout() if _alive(search_bar) else None
+    if search_row_lay is not None:
+        try:
+            if narrow_prod:
+                search_row_lay.setContentsMargins(8, 8, 8, 8)
+                search_row_lay.setSpacing(6)
+            else:
+                search_row_lay.setContentsMargins(12, 10, 12, 10)
+                search_row_lay.setSpacing(8)
+        except Exception:
+            pass
+
+    pay_card = getattr(tab, '_pro_pay_card', None)
+    pcl = getattr(tab, '_pro_pay_card_lay', None)
+    if _alive(pay_card) and pcl is not None:
+        try:
+            inset = 6 if narrow_rail else 10
+            pcl.setContentsMargins(inset, 8, inset, 8)
+        except Exception:
+            pass
+
+    paid = getattr(tab, '_paid', None)
+    if _alive(paid):
+        try:
+            paid.setMinimumHeight(44 if narrow_rail else 48)
+        except Exception:
+            pass
+
+    chips = getattr(tab, '_cat_chips', None)
+    if _alive(chips) and hasattr(chips, 'repack_for_width'):
+        try:
+            chips.repack_for_width(force=True)
+        except Exception:
+            pass
+
+    qa = getattr(tab, '_quick_actions', None)
+    if _alive(qa):
+        try:
+            from PyQt5.QtWidgets import QSizePolicy as _SP
+            qa.setSizePolicy(_SP.Expanding, _SP.Preferred)
+            gl = qa.layout()
+            if gl is not None:
+                cols = 2 if narrow_rail else 3
+                tiles = list(getattr(tab, '_quick_action_tiles', {}) or {})
+                if tiles:
+                    order = [
+                        '_hold_sale', '_resume_held', '_suspend_sale', '_clear',
+                        '_void_sale', '_open_return_sale', '_reprint_receipt', '_preview',
+                        '_open_recent_sales', '_focus_notes', '_toggle_cart_maximized',
+                        '_toggle_focus_mode',
+                    ]
+                    widgets = [tiles[k] for k in order if k in tiles and _alive(tiles[k])]
+                    while gl.count():
+                        gl.takeAt(0)
+                    for i, t in enumerate(widgets):
+                        t.setMinimumWidth(0)
+                        t.setSizePolicy(_SP.Expanding, _SP.Fixed)
+                        gl.addWidget(t, i // cols, i % cols)
+                    for c in range(cols):
+                        gl.setColumnStretch(c, 1)
+        except Exception:
+            pass
+
+    body = getattr(tab, '_actions_body', None)
+    scroll = getattr(tab, '_actions_body_scroll', None)
+    for w in (body, scroll, pay_card):
+        if not _alive(w):
+            continue
+        try:
+            from PyQt5.QtWidgets import QSizePolicy as _SP
+            pol = w.sizePolicy()
+            pol.setHorizontalPolicy(_SP.Ignored if narrow_rail else _SP.Preferred)
+            w.setSizePolicy(pol)
+            w.setMinimumWidth(0)
+            w.setMaximumWidth(16777215)
+        except Exception:
+            pass
+    if _alive(body):
+        try:
+            for ch in body.findChildren(QWidget):
+                if _alive(ch):
+                    ch.setMinimumWidth(0)
+        except Exception:
+            pass
+
+
 def apply_checkout_pro_chrome(tab) -> None:
     """Visually align shared panels with the approved Checkout Pro reference."""
     ensure_pro_widgets(tab)
@@ -1799,6 +1933,7 @@ def apply_checkout_pro_chrome(tab) -> None:
         pin_checkout_totals(tab)
     except Exception:
         pass
+    sync_pro_square_layout(tab)
 
 
 def sync_quick_action_state(tab) -> None:

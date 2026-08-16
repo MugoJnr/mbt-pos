@@ -1,7 +1,7 @@
 {
-    "version": "3.0.50",
-    "build": "RC-2026-08-16-v3.0.50",
+    "version": "3.0.52",
+    "build": "RC-2026-08-16-v3.0.52",
     "released": "2026-08-16",
-    "release_notes": "Fix activation screen after restart: clock false-tamper, MBT-PC token migration, sign-in reuses existing seat without a new key. Includes 3.0.49 org heartbeat fixes.",
-    "checksum_sha256": "b97a50004f3f9e9426789284202b703477f1fa3e09590da556fa7132aaafcc74"
+    "release_notes": "Business day control is one bordered button: caption, date, and chevron open the calendar on click (matches outline buttons). Cashiers without backdate permission see the control disabled.",
+    "checksum_sha256": "4539f882f312f14a8a58a42a697703e99cff15be9b9d3e63a6393c68111d3b69"
 }

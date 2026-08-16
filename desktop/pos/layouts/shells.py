@@ -370,6 +370,9 @@ def _apply_layout_shell_inner(tab, lid: str, shell, safe_show, hide_orphan_pos_f
         chips = getattr(tab, '_cat_chips', None)
         if _alive(chips) and hasattr(chips, 'repack_for_width'):
             chips.repack_for_width(force=True)
+        biz = getattr(tab, '_business_day_bar', None)
+        if _alive(biz) and hasattr(biz, '_apply_layout'):
+            biz._apply_layout(force=True)
     except Exception:
         pass
     try:

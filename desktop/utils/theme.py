@@ -873,6 +873,69 @@ QPushButton#loginEyeBtn:hover {{ color: {p['gold']}; border-color: {p['gold']}; 
     border-color: {p['gold']};
 }}
 
+/* Business day — one bordered picker (caption + date + chevron) */
+QFrame#posBusinessDayBar QFrame#posBizDayPicker {{
+    background: transparent;
+    color: {p['text']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    min-height: 34px;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker:hover {{
+    background: {p['hover']};
+    border-color: {gold_border_hover};
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker[active="true"] {{
+    border-color: {p['gold']};
+    background: {p['hover']};
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker:disabled {{
+    color: {p['muted']};
+    border-color: {p['border']};
+    background: {p['panel']};
+}}
+QFrame#posBusinessDayBar QLabel#posBizDayCap {{
+    color: {p['text2']};
+    font-size: 12px;
+    font-weight: 700;
+    background: transparent;
+    border: none;
+    padding: 0 0 0 10px;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker:disabled QLabel#posBizDayCap {{
+    color: {p['muted']};
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate {{
+    background: transparent;
+    color: {p['text']};
+    border: none;
+    border-radius: 0;
+    min-height: 28px;
+    min-width: 0;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate:focus {{
+    border: none;
+    background: transparent;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate:disabled {{
+    color: {p['muted']};
+    background: transparent;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 30px;
+    border: none;
+    border-left: 1px solid {p['border']};
+    background: transparent;
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::drop-down:hover {{
+    background: {p['hover']};
+}}
+QFrame#posBusinessDayBar QFrame#posBizDayPicker QDateEdit#posBizDayDate::down-arrow {{
+    {cal_arrow}
+}}
+
 /* Empty states */
 QFrame#mbtEmptyState {{
     background: transparent;

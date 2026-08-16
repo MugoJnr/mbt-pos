@@ -271,6 +271,19 @@ class SplitterScaleTests(unittest.TestCase):
         self.assertEqual(sum(sizes), 800)
         self.assertTrue(all(s > 0 for s in sizes))
 
+    def test_pro_narrow_square_rebalance(self):
+        from desktop.pos.layouts.splitters import (
+            NARROW_SHELL, _mins_for, default_sizes, LAYOUT_CHECKOUT_PRO,
+        )
+        avail = 992
+        self.assertLessEqual(avail, NARROW_SHELL)
+        mins = _mins_for(LAYOUT_CHECKOUT_PRO, 3, avail)
+        self.assertEqual(sum(mins), avail)
+        self.assertGreater(mins[2], mins[0])  # pay rail ≥ catalog on square
+        sizes = default_sizes(LAYOUT_CHECKOUT_PRO, avail, 3)
+        self.assertEqual(sum(sizes), avail)
+        self.assertGreaterEqual(sizes[2], int(avail * 0.30))
+
 
 class RestartPersistenceTests(unittest.TestCase):
     def test_local_license_survives_new_engine(self):

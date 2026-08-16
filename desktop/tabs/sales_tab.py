@@ -528,6 +528,24 @@ class SalesTab(QWidget):
                     t_sp.timeout.connect(_rescale_columns)
                     self._splitter_resize_timer = t_sp
                 t_sp.start()
+            from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO, normalize_layout_id
+            if normalize_layout_id(getattr(self, '_checkout_layout', '')) == LAYOUT_CHECKOUT_PRO:
+                t_sq = getattr(self, '_pro_square_layout_timer', None)
+                if t_sq is None:
+                    t_sq = QTimer(self)
+                    t_sq.setSingleShot(True)
+                    t_sq.setInterval(120)
+
+                    def _sync_square():
+                        try:
+                            from desktop.pos.checkout_pro_chrome import sync_pro_square_layout
+                            sync_pro_square_layout(self)
+                        except Exception:
+                            pass
+
+                    t_sq.timeout.connect(_sync_square)
+                    self._pro_square_layout_timer = t_sq
+                t_sq.start()
         except Exception:
             pass
         try:

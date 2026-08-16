@@ -55,6 +55,8 @@ HARD_MIN_WIDTHS = {
     LAYOUT_PRODUCT_EXPLORER: (200, 240),
     LAYOUT_RETAIL_CLASSIC: (200, 240),
 }
+# Square / tablet shells (1024²–1280²) — shipped floors starve catalog & clip the pay rail.
+NARROW_SHELL = 1120
 
 
 def _mins_for(lid: str, count: int, available: int | None = None) -> tuple:
@@ -68,6 +70,34 @@ def _mins_for(lid: str, count: int, available: int | None = None) -> tuple:
         else:
             mins = tuple(240 for _ in range(max(1, count)))
     mins = tuple(int(n) for n in mins)
+    if (
+        available is not None
+        and lid == LAYOUT_CHECKOUT_PRO
+        and count == 3
+        and int(available) <= NARROW_SHELL
+    ):
+        hard = HARD_MIN_WIDTHS.get(lid, (140, 220, 200))
+        avail = max(sum(hard), int(available))
+        # Sale scrolls; catalog + payment need readable width on square displays.
+        rail_pct = 0.36 if avail < 900 else 0.34
+        rail = max(hard[2], int(avail * rail_pct))
+        side = max(hard[0], int(avail * 0.30))
+        mid = max(hard[1], avail - side - rail)
+        if side + mid + rail > avail:
+            mid = max(hard[1], avail - side - rail)
+        if side + mid + rail > avail:
+            side = max(hard[0], avail - mid - rail)
+        return (side, mid, rail)
+    if (
+        available is not None
+        and count == 2
+        and int(available) <= NARROW_SHELL
+    ):
+        hard = HARD_MIN_WIDTHS.get(lid, (200, 240))
+        avail = max(sum(hard), int(available))
+        pin = max(hard[1], min(_PINNED_RAIL.get(lid, 560), int(avail * 0.52)))
+        side = max(hard[0], avail - pin)
+        return (side, pin)
     if available is None or available >= sum(mins):
         return mins
     hard = HARD_MIN_WIDTHS.get(lid)
@@ -1119,13 +1149,21 @@ def default_sizes(lid: str, total: int, count: int) -> list:
     mins = _mins_for(lid, count, total)
     total = max(sum(mins), int(total))
     if count >= 3:
-        # Catalog needs ~560px for two 248px Pro cards; 25/50/25 left one column
-        # at 1366–1920 and failed the Checkout Pro layout cert.
-        side = max(mins[0], int(total * 0.41))
-        rail = max(mins[2], int(total * 0.22))
-        mid = max(mins[1], total - side - rail)
+        if total <= NARROW_SHELL:
+            # Square tablets: bias to catalog + pay; Current Sale scrolls internally.
+            side = max(mins[0], int(total * 0.30))
+            rail = max(mins[2], int(total * 0.34))
+            mid = max(mins[1], total - side - rail)
+        else:
+            # Catalog needs ~560px for two 248px Pro cards; 25/50/25 left one column
+            # at 1366–1920 and failed the Checkout Pro layout cert.
+            side = max(mins[0], int(total * 0.41))
+            rail = max(mins[2], int(total * 0.22))
+            mid = max(mins[1], total - side - rail)
         return _clamp_to_mins([side, mid, rail], mins, total)
     pin = _PINNED_RAIL.get(lid, 560)
+    if total <= NARROW_SHELL:
+        pin = max(mins[1], min(pin, int(total * 0.52)))
     # Never let the pinned rail starve the catalog on small screens.
     pin = max(mins[1], min(pin, total - mins[0]))
     return _clamp_to_mins([max(mins[0], total - pin), pin], mins, total)
@@ -1157,6 +1195,15 @@ def apply_sizes(tab, lid: str, count: int) -> None:
         and sum(saved) > 0 and (saved[0] / float(sum(saved))) < 0.35
     ):
         # Pre-3.0.50 defaults (25% catalog) clipped to one product column.
+        saved = None
+        cfg.pop(lid, None)
+        _queue_flush(tab)
+    if (
+        saved and len(saved) == count and lid == LAYOUT_CHECKOUT_PRO and count >= 3
+        and usable <= NARROW_SHELL and sum(saved) > 0
+        and (saved[2] / float(sum(saved))) < 0.28
+    ):
+        # Poisoned narrow saves starved the payment rail on square tablets.
         saved = None
         cfg.pop(lid, None)
         _queue_flush(tab)
@@ -1220,8 +1267,14 @@ def install(tab, lid: str, panes) -> None:
     if not _alive(sp):
         return
     lid = normalize_layout_id(lid)
-    avail = max(1, int(sp.width() or 0) - HANDLE_W * max(0, (len(panes) or sp.count()) - 1))
-    mins = _mins_for(lid, len(panes) or sp.count(), avail if avail > 80 else None)
+    count = sp.count()
+    raw_total = max(
+        int(sp.width() or 0),
+        int(getattr(tab, 'width', lambda: 0)()) - 24,
+        720,
+    )
+    avail = max(1, raw_total - HANDLE_W * max(0, (len(panes) or count) - 1))
+    mins = _mins_for(lid, len(panes) or count, avail if avail > 80 else None)
     for i, pane in enumerate(panes):
         if not _alive(pane):
             continue
@@ -1278,6 +1331,9 @@ def install(tab, lid: str, panes) -> None:
                 cfg.pop(lid, None)
                 _queue_flush(tab)
                 apply_sizes(tab, lid, count)
+            if lid == LAYOUT_CHECKOUT_PRO:
+                from desktop.pos.checkout_pro_chrome import sync_pro_square_layout
+                sync_pro_square_layout(tab)
         except Exception:
             pass
 
