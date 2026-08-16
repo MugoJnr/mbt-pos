@@ -15,12 +15,13 @@ STATE_FILE = LOG_DIR / "_e2e_fresh_user_state.json"
 
 from _cdp_gmail_auth import CDP, ensure_gmail, find_page, pages  # noqa: E402
 from _open_auth_link import open_url  # noqa: E402
+from _e2e_env import require_e2e_admin  # noqa: E402
 
-ADMIN_EMAIL = "eugenemugo@gmail.com"
-ADMIN_PASSWORD = "MugoByteLive!daeb4c"
+ADMIN_EMAIL, ADMIN_PASSWORD = require_e2e_admin()
 
 ts = datetime.now().strftime("%Y%m%d%H%M")
-NEW_EMAIL = f"eugenemugo+mbte2e{ts}@gmail.com"
+_local, _domain = ADMIN_EMAIL.split("@", 1)
+NEW_EMAIL = f"{_local}+mbte2e{ts}@{_domain}"
 NEW_PASSWORD = "MbtE2eFresh!2026"
 NEW_BUSINESS = f"E2E Fresh Shop {ts}"
 NEW_FIRST = "E2E"

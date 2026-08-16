@@ -410,17 +410,18 @@ def _ensure_schema(conn: sqlite3.Connection):
         FOREIGN KEY(sale_id) REFERENCES sales(id)
     );
     """)
-    # Seed default admin if missing
+    # Production never creates a known default credential. API-only development
+    # may opt in with an explicit, non-empty bootstrap password.
+    bootstrap_password = os.environ.get('MBT_BOOTSTRAP_ADMIN_PASSWORD', '').strip()
     existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-    if not existing:
-        import os as _os2, hashlib as _hl
-        salt = _os2.urandom(16).hex()
-        pw_hash = salt + ':' + _hl.sha256((salt + 'admin123').encode()).hexdigest()
+    if not existing and bootstrap_password:
+        from roles import default_tab_permissions
+        import json as _json
+        pw_hash = _hash_pw(bootstrap_password)
         conn.execute(
             "INSERT INTO users (username,password_hash,role,full_name,tab_permissions) VALUES (?,?,?,?,?)",
             ('admin', pw_hash, 'superadmin', 'Shop Owner',
-             '["dashboard","sales","inventory","consumption","debt","accounting","reports","notes",'
-             '"settings","admin","license","diagnostics","security"]')
+             _json.dumps(default_tab_permissions('superadmin')))
         )
     _migrate_columns(conn)
     # Seed default settings if missing (per-shop; see config/deploy.py)

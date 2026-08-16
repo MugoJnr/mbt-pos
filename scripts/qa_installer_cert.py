@@ -252,6 +252,7 @@ def customer_journey_isolated() -> None:
         shutil.rmtree(cert_root, ignore_errors=True)
     cert_root.mkdir(parents=True)
     os.environ["MBT_DATA_ROOT"] = str(cert_root)
+    os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
     os.environ.setdefault("MBT_AUTO_SUPERADMIN_PIN", "1110")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
@@ -295,10 +296,12 @@ def customer_journey_isolated() -> None:
     try:
         from desktop.utils.api_client import APIClient
 
+        from _qa_local_auth import qa_login
+
         api = APIClient("http://127.0.0.1:5050")
         # Ensure schema
         _ = api.get_products()
-        login = api.login("admin", "admin123")
+        login = qa_login(api)
         if not login or not login.get("token"):
             # Fresh DB may need default admin seed via migrate
             rec("journey.login", "FAIL", str(login)[:200])

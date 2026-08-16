@@ -40,7 +40,7 @@ Critical path mostly works in tip source, but production cutover is blocked by i
 | Module | Result | Notes |
 |--------|--------|-------|
 | SQLite integrity / FK | **PASS** | `integrity_check=ok`, `foreign_key_check=0`, 0 orphan `sale_items`, 1433 sales |
-| Auth login (admin) | **PASS** | `admin` / `admin123` → `superadmin` |
+| Auth login (admin) | **PASS** | Setup wizard creates local admin; dev CI may set `MBT_BOOTSTRAP_ADMIN_PASSWORD` |
 | Authz (cashier) tip | **PASS** (after fix) | Retest on `:5055` — see below |
 | Authz (cashier) live `:5050` | **FAIL** (stale process) | Pre-fix leaks observed |
 | API health / version / live / search | **PASS** | On `:5050` |

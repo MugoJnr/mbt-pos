@@ -16,6 +16,6 @@ end = date.today().isoformat()
 start = (date.today() - timedelta(days=30)).isoformat()
 q = f"SELECT COUNT(*), SUM(total) FROM sales WHERE {expr} BETWEEN ? AND ? AND status IN ('completed','return')"
 print("q count", db.execute(q, (start, end)).fetchone())
-api = APIClient("http://127.0.0.1:5050")
-api.login("admin", "admin123")
+os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
+from _qa_local_auth import qa_admin_password, qa_admin_user, qa_login
 print("summary", api.get_report_summary(start, end))

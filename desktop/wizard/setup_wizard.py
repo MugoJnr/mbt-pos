@@ -1513,7 +1513,10 @@ class SetupWizard(QDialog):
 
             # Create/update admin user (same hash format as login API)
             admin_user = self._data.get('admin_user', 'admin')
-            admin_pw   = self._data.get('admin_pw', 'admin123')
+            admin_pw = (self._data.get('admin_pw') or '').strip()
+            if not admin_pw:
+                raise ValueError(
+                    'Admin password missing — complete the Admin Account setup step.')
 
             from desktop.utils.api_client import _hash_pw
             from roles import default_tab_permissions
@@ -1543,6 +1546,6 @@ class SetupWizard(QDialog):
                 from PyQt5.QtWidgets import QMessageBox
                 QMessageBox.warning(None, 'Setup Warning',
                     f'Settings were saved but some configuration failed:\n{e}\n\n'
-                    'You can log in with the default password "admin123" and update it in Admin → Users.')
+                    'Re-run setup from Settings → Reset Setup Wizard, or contact support.')
             except Exception:
                 pass

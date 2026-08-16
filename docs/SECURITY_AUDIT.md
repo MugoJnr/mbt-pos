@@ -26,9 +26,10 @@
 ## Findings
 
 1. **Resolved:** Hardcoded JWT / activation secrets removed from production paths.
-2. **Resolved:** Device sync requires approved devices.
-3. **Resolved:** Supabase Auth uses the verified Resend SMTP configuration and branded templates.
-4. **Residual:** Rotate any historical tokens that appeared in local config or chat tooling.
+2. **Resolved:** Known default local admin password (`admin123`) removed from production DB bootstrap; use setup wizard or `MBT_BOOTSTRAP_ADMIN_PASSWORD` (dev/CI only).
+3. **Resolved:** Device sync requires approved devices.
+4. **Resolved:** Supabase Auth uses the verified Resend SMTP configuration and branded templates.
+5. **Residual:** Rotate any historical tokens that appeared in local config or chat tooling.
 
 ## Remediation
 

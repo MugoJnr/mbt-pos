@@ -13,7 +13,7 @@ export const Route = createFileRoute("/_auth/forgot-password")({
 });
 
 function ForgotPage() {
-  const [email, setEmail] = useState("eugenemugo@gmail.com");
+  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
 

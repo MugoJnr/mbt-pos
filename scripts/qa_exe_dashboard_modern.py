@@ -28,8 +28,11 @@ user = {
     }
 }
 
+os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
+from _qa_local_auth import qa_login
+
 try:
-    result = api.login("admin", "admin123")
+    result = qa_login(api)
     if result and result.get("user"):
         user = {"user": result["user"]}
 except Exception as exc:

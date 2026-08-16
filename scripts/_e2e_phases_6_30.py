@@ -136,7 +136,7 @@ def open_dialog(fn, label: str) -> bool:
 win = None
 login_res = None
 admin_user = "admin"
-admin_pw = "admin123"
+admin_pw = os.environ.get("MBT_BOOTSTRAP_ADMIN_PASSWORD", "").strip()
 
 if needs_wizard():
     try:
@@ -178,10 +178,13 @@ if needs_wizard():
 else:
     rec("6", "setup_wizard", "PASS", "already initialized")
 
-login_res = api.login(admin_user, admin_pw)
+login_res = api.login(admin_user, admin_pw) if admin_pw else None
 if not login_res or not login_res.get("token"):
-    login_res = api.login("admin", "admin123")
-    admin_user, admin_pw = "admin", "admin123"
+    os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
+    from _qa_local_auth import qa_admin_password, qa_admin_user, qa_login
+
+    login_res = qa_login(api)
+    admin_user, admin_pw = qa_admin_user(), qa_admin_password()
 if not login_res or not login_res.get("token"):
     rec("6", "local_login", "FAIL", str(login_res)[:200])
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2), encoding="utf-8")

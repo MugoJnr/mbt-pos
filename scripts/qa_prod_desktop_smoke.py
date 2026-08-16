@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("MBT_AUTO_SUPERADMIN_PIN", "1110")
+os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
@@ -66,8 +67,9 @@ try:
     init_db()
 except Exception as e:
     log(f"init_db via backend.app skipped: {e}")
+from _qa_local_auth import qa_login
 api = APIClient("http://127.0.0.1:5050")
-res = api.login("admin", "admin123")
+res = qa_login(api)
 if not res or not res.get("token"):
     rec("auth.admin", "FAIL", str(res)[:200])
     (OUT / "desktop_smoke_results.json").write_text(json.dumps(R, indent=2), encoding="utf-8")
