@@ -94,7 +94,12 @@ def _shop_already_ready(engine) -> bool:
     if not (initialized or has_local):
         return False
     try:
-        if engine.store.get('tampered'):
+        decryptable = bool(
+            getattr(engine, '_license_data', None)
+            or getattr(engine, 'has_local_license_payload', lambda: False)()
+        )
+        # Clock false-tamper must not force the activation wall after reboot.
+        if engine.store.get('tampered') and not decryptable:
             return False
         if engine.store.get('revoked') and not getattr(engine, '_license_data', None):
             return False
@@ -120,7 +125,9 @@ def _shop_already_ready(engine) -> bool:
             return True
     except Exception:
         pass
-    return bool(initialized and has_local)
+    # Raw/decryptable local token is enough — init flag can be missing after
+    # a reinstall, but the shop must not be sent back to the activation wall.
+    return bool(has_local or initialized)
 
 
 def check_license():

@@ -2563,6 +2563,9 @@ class ProductGrid(QWidget):
         gap = self._grid.horizontalSpacing() or GAP
         avail = max(120, int(available))
         cols = max(1, int((avail + gap) // (card_w + gap)))
+        # Pro cards shrink via unlock_width (~85% tile) — two fit above ~470px rail.
+        if self._pro_density and cols == 1 and avail >= 470:
+            cols = 2
         # Prefer readable cards over cramming 4–5 skinny tiles
         return min(2 if self._pro_density else 3, cols)
 

@@ -1119,11 +1119,11 @@ def default_sizes(lid: str, total: int, count: int) -> list:
     mins = _mins_for(lid, count, total)
     total = max(sum(mins), int(total))
     if count >= 3:
-        # Shipped Checkout Pro proportions: 25 / 50 / 25.
-        side = max(mins[0], int(total * 0.25))
-        rail = max(mins[2], int(total * 0.25))
+        # Catalog needs ~560px for two 248px Pro cards; 25/50/25 left one column
+        # at 1366–1920 and failed the Checkout Pro layout cert.
+        side = max(mins[0], int(total * 0.41))
+        rail = max(mins[2], int(total * 0.22))
         mid = max(mins[1], total - side - rail)
-        # If mid stole from the sides on a tight shell, re-clamp.
         return _clamp_to_mins([side, mid, rail], mins, total)
     pin = _PINNED_RAIL.get(lid, 560)
     # Never let the pinned rail starve the catalog on small screens.
@@ -1152,6 +1152,14 @@ def apply_sizes(tab, lid: str, count: int) -> None:
 
     cfg = _read_cfg(tab)
     saved = cfg.get(lid)
+    if (
+        saved and len(saved) == count and lid == LAYOUT_CHECKOUT_PRO and count >= 3
+        and sum(saved) > 0 and (saved[0] / float(sum(saved))) < 0.35
+    ):
+        # Pre-3.0.50 defaults (25% catalog) clipped to one product column.
+        saved = None
+        cfg.pop(lid, None)
+        _queue_flush(tab)
     sizes = None
     if saved and len(saved) == count and sum(saved) > 0 and _sizes_meet_mins(saved, mins):
         # Saved on a different window width — keep the ratio, not the pixels.

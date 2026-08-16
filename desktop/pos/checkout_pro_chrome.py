@@ -1716,10 +1716,10 @@ def apply_checkout_pro_chrome(tab) -> None:
             f"QFrame#posChangeDue{{background:{qss_alpha(C['ok'], 0.12)};"
             f"border:1.5px solid {qss_alpha(C['ok'], 0.36)};border-radius:10px;}}")
 
-    # Sale note stays visible in the rail (the Notes tile just focuses it)
+    # Sale note: Pro uses the Notes tile (not a permanent field in the rail).
     note = getattr(tab, '_note', None)
     if _alive(note):
-        note.show()
+        note.hide()
 
     # Split UI only when Mixed is selected (event-driven)
     split = getattr(tab, '_split_frame', None)
@@ -2039,8 +2039,7 @@ def _ensure_body_pro_sections(tab, bl):
     if _alive(st) and not _in_body(st):
         bl.addWidget(st)
 
-    # Sale note is a listed feature — keep the field itself visible rather than
-    # reachable only through the Notes tile.
+    # Sale note is reachable via the Notes quick-action tile (keeps rail compact).
     note = getattr(tab, '_note', None)
     if _alive(note):
         note.setPlaceholderText('Note for this sale (optional)…')
@@ -2048,7 +2047,7 @@ def _ensure_body_pro_sections(tab, bl):
         note.setMaximumHeight(44)
         if not _in_body(note):
             bl.addWidget(note)
-        note.show()
+        note.hide()
 
     cap = getattr(tab, '_quick_actions_cap', None)
     if _alive(cap):

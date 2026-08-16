@@ -154,6 +154,106 @@ class ActivationSeatTests(unittest.TestCase):
         self.assertIn('email', msg.lower())
 
 
+class EmailClaimReuseTests(unittest.TestCase):
+    def test_pick_license_reuses_full_seat_on_same_device(self):
+        from licensing.cloud_onboarding import _pick_license
+
+        lic = {
+            'status': 'active',
+            'assigned_email': 'edmus.cloud@gmail.com',
+            'reserved_device_id': 'MBT-PC-52E5',
+            'activated_devices': 1,
+            'max_devices': 1,
+            'license_key': 'MBT-TRI-KEEP',
+        }
+        chosen = _pick_license(
+            [lic],
+            '50057578b04c341371688631804b222466e7fde8',
+            identity_email='edmus.cloud@gmail.com',
+            aliases=['MBT-PC-52E5'],
+        )
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen['license_key'], 'MBT-TRI-KEEP')
+
+    def test_claim_full_seat_remirrors_same_device(self):
+        from backend.cloud import platform_service as ps
+
+        class _Srv:
+            def find_licenses_for_email(self, email, org_id=None, product_id=None):
+                return [{
+                    'id': 'L1',
+                    'license_key': 'MBT-TRI-KEEP',
+                    'status': 'active',
+                    'org_id': 'org-edmus',
+                    'assigned_email': email,
+                    'reserved_device_id': 'MBT-PC-52E5',
+                    'activated_devices': 1,
+                    'max_devices': 1,
+                    'product_id': 'mbt-pos',
+                }]
+
+            def _activation_device_ids(self, device_id, aliases):
+                ids = []
+                for raw in (device_id, *(aliases or [])):
+                    if raw and raw not in ids:
+                        ids.append(raw)
+                return ids
+
+            def _expand_device_aliases(self, ids):
+                return list(ids)
+
+            def _find_active_activation(self, license_id, ids):
+                return {'id': 'A1', 'device_id': 'MBT-PC-52E5'}
+
+        captured = {}
+
+        def _activate(key, device_id, org_id=None, **kw):
+            captured['key'] = key
+            return {'ok': True, 'license': {'license_key': key, 'org_id': org_id}}
+
+        with patch.object(ps, 'get_license_server', return_value=_Srv()), \
+             patch.object(ps, 'activate_license_on_device', side_effect=_activate):
+            result = ps.claim_license_for_identity(
+                email='edmus.cloud@gmail.com',
+                device_id='MBT-PC-52E5',
+            )
+        self.assertTrue(result.get('ok'))
+        self.assertEqual(captured['key'], 'MBT-TRI-KEEP')
+
+    def test_claim_full_seat_other_device_rejected(self):
+        from backend.cloud import platform_service as ps
+        from backend.cloud_backup.supabase_client import SupabaseError
+
+        class _FullOther:
+            def find_licenses_for_email(self, email, org_id=None, product_id=None):
+                return [{
+                    'id': 'L1',
+                    'license_key': 'MBT-TRI-KEEP',
+                    'status': 'active',
+                    'reserved_device_id': 'MBT-PC-52E5',
+                    'activated_devices': 1,
+                    'max_devices': 1,
+                    'product_id': 'mbt-pos',
+                }]
+
+            def _activation_device_ids(self, device_id, aliases):
+                return [device_id]
+
+            def _expand_device_aliases(self, ids):
+                return list(ids)
+
+            def _find_active_activation(self, license_id, ids):
+                return None
+
+        with patch.object(ps, 'get_license_server', return_value=_FullOther()):
+            with self.assertRaises(SupabaseError) as ctx:
+                ps.claim_license_for_identity(
+                    email='edmus.cloud@gmail.com',
+                    device_id='MBT-PC-OTHER',
+                )
+        self.assertIn('no free device seat', str(ctx.exception).lower())
+
+
 class SplitterScaleTests(unittest.TestCase):
     def test_pro_mins_scale_below_960(self):
         from desktop.pos.layouts.splitters import _mins_for, LAYOUT_CHECKOUT_PRO

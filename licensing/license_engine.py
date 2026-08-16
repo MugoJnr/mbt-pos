@@ -100,13 +100,17 @@ def _resolve_local_license_secret() -> str:
                 logger.warning('Could not migrate license secret: %s', e)
             return val
 
-    if _license_db_has_token():
-        recovered = _machine_guid_recovery_secret()
-        if recovered:
-            # Do not persist until decrypt confirms this secret (see
-            # _decrypt_payload_with_secrets). Writing here would overwrite a
-            # still-valid co-located/legacy secret with a guess.
+    recovered = _machine_guid_recovery_secret()
+    if recovered:
+        # Prefer a per-PC secret so activation survives crypto.secret deletion.
+        if _license_db_has_token():
+            # Token already exists: do not overwrite a still-valid file secret.
             return recovered
+        try:
+            _write_secret_file(canonical, recovered)
+        except Exception as e:
+            logger.warning('Could not persist MachineGuid license secret: %s', e)
+        return recovered
 
     import secrets
     val = secrets.token_urlsafe(48)
@@ -270,7 +274,12 @@ def _read_cached_device_id() -> Optional[str]:
     try:
         with open(_device_id_cache_path(), 'r', encoding='utf-8') as f:
             did = f.read().strip()
-            return did if len(did) == 40 else None
+            if len(did) == 40:
+                return did
+            # Older builds bound the local token to the cloud id (MBT-PC-XXXX).
+            if did.startswith('MBT-PC-') and len(did) >= 10:
+                return did
+            return None
     except Exception:
         return None
 
@@ -368,13 +377,34 @@ def _resolve_inner_license_token() -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def _cloud_identity_device_ids() -> list:
+    """Cloud device id + fingerprint from identity (Edmus-style MBT-PC-XXXX)."""
+    out = []
+    try:
+        from backend.cloud_backup.paths import load_identity
+        ident = load_identity() or {}
+    except Exception:
+        return out
+    for key in ('device_id', 'hardware_fingerprint'):
+        val = str(ident.get(key) or '').strip()
+        if val:
+            out.append(val)
+    return out
+
+
 def _fingerprint_device_id_candidates() -> list:
     """Ids to try when matching an existing license (incl. migration)."""
     seen = []
+    extra = []
+    try:
+        extra = _cloud_identity_device_ids()
+    except Exception:
+        extra = []
     for did in (
         _read_cached_device_id(),
         _get_device_fingerprint(),
         _get_legacy_wmic_fingerprint(),
+        *extra,
     ):
         if did and did not in seen:
             seen.append(did)
@@ -714,8 +744,42 @@ class LicenseEngine:
             return
 
         self._license_data = data
+        self._maybe_rebind_to_canonical_fingerprint(matched_did)
         self._maybe_clear_stale_tamper()
         self._evaluate_state()
+
+    def _maybe_rebind_to_canonical_fingerprint(self, matched_did: str | None):
+        """Rewrite MBT-PC-* / legacy-wmic tokens onto the stable MachineGuid id."""
+        canonical = _get_device_fingerprint()
+        if not canonical or not self._license_data:
+            return
+        if matched_did == canonical:
+            _write_cached_device_id(canonical)
+            return
+        allow = False
+        if matched_did and str(matched_did).startswith('MBT-PC-'):
+            allow = True
+        elif matched_did and matched_did == _get_legacy_wmic_fingerprint():
+            allow = True
+        if not allow:
+            return
+        try:
+            lic = dict(self._license_data)
+            lic['device_id'] = canonical
+            self.device_id = canonical
+            self.store = LicenseStore(canonical)
+            token = encrypt_payload(lic, canonical)
+            self.store.set('license_token', token)
+            self.store.set('tampered', False)
+            self.store.set('revoked', False)
+            self._license_data = lic
+            _write_cached_device_id(canonical)
+            self.store.log(
+                'DEVICE_ID_MIGRATED',
+                f'{str(matched_did)[:16]} → MachineGuid fingerprint',
+            )
+        except Exception as e:
+            logger.warning('Could not migrate license device id: %s', e)
 
     def _maybe_clear_stale_tamper(self):
         """Clear false tamper flags when the license token is still valid."""
@@ -740,29 +804,24 @@ class LicenseEngine:
         local_now  = int(time.time())
         last_local = self.store.get('last_checked_ts', 0)
 
-        # Anti-rollback uses LOCAL time only (trusted time must not be stored
-        # in highest_ts_seen — that caused false tamper after restart when the
-        # PC clock was behind internet time).
+        # Clock jumps after reboot (no NTP yet, CMOS lag) must NOT brick a
+        # valid local license — that put Edmus back on the activation screen.
         if last_local and local_now < (last_local - 3600):
             self._tamper_count += 1
             self.store.log('TIME_ROLLBACK',
                 f'Local clock went back: last={last_local} now={local_now} '
-                f'delta={last_local - local_now}s')
-            self._state = STATE_TAMPERED
-            self.store.set('tampered', True)
-            return
+                f'delta={last_local - local_now}s (ignored — license kept)')
 
-        highest = self.store.get('highest_ts_seen', 0)
+        highest = int(self.store.get('highest_ts_seen', 0) or 0)
         if highest and local_now < (highest - 3600):
-            self._state = STATE_TAMPERED
-            self.store.set('tampered', True)
             self.store.log('ROLLBACK_HIGHEST',
-                f'now={local_now} highest_ever={highest}')
-            return
-
-        if local_now > highest:
+                f'now={local_now} highest_ever={highest} (ignored — license kept)')
+            # Do not advance anchors while the clock is still catching up.
+        elif local_now > highest:
             self.store.set('highest_ts_seen', local_now)
-        self.store.set('last_checked_ts', local_now)
+            self.store.set('last_checked_ts', local_now)
+        else:
+            self.store.set('last_checked_ts', local_now)
 
         # Never fetch internet time here — that blocked offline shop startup for
         # 10–30+ seconds (DNS/HTTPS hang). Use cache only; bg service may refresh.
@@ -1120,10 +1179,12 @@ class LicenseEngine:
     @property
     def state(self) -> str:
         with self._lock:
-            # If a previous run flagged tamper, honour it permanently
-            if self.store.get('tampered'):
+            # Stale clock-tamper flags must not override a decryptable license.
+            if self.store.get('tampered') and not self._license_data:
                 self._state = STATE_TAMPERED
                 return STATE_TAMPERED
+            if self.store.get('tampered') and self._license_data:
+                self._maybe_clear_stale_tamper()
             if self.store.get('revoked') and not self._license_data:
                 self._state = STATE_INACTIVE
                 return STATE_INACTIVE
@@ -1147,8 +1208,10 @@ class LicenseEngine:
         an already-activated shop — that maps to STATE_CRITICAL and still opens.
         Hard blocks: tamper, revoke without token, expired, unactivated.
         """
-        if self.store.get('tampered'):
+        if self.store.get('tampered') and not self._license_data:
             return False
+        if self.store.get('tampered') and self._license_data:
+            self._maybe_clear_stale_tamper()
         if self.store.get('revoked') and not self._license_data:
             return False
         # Evaluate real license (ignores offline_lock short-circuit via property)

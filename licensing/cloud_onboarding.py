@@ -94,22 +94,50 @@ def _seats_free(lic: dict) -> bool:
         return True
 
 
-def _device_already_on(lic: dict, device_id: str) -> bool:
+def _device_id_set(device_id: str, aliases: list | None = None) -> set:
+    out = set()
+    for raw in (device_id, *(aliases or [])):
+        val = str(raw or '').strip()
+        if val:
+            out.add(val)
+    return out
+
+
+def _device_already_on(lic: dict, device_id: str, aliases: list | None = None) -> bool:
+    ids = _device_id_set(device_id, aliases)
+    reserved = str(lic.get('reserved_device_id') or '').strip()
+    if reserved and reserved in ids:
+        return True
     for act in (lic.get('activations') or lic.get('license_activations') or []):
-        if isinstance(act, dict) and str(act.get('device_id')) == device_id and act.get('is_active', True):
+        if not isinstance(act, dict) or not act.get('is_active', True):
+            continue
+        if str(act.get('device_id') or '').strip() in ids:
             return True
     return False
 
 
-def _pick_license(licenses: list[dict], device_id: str, identity_email: str = '') -> Optional[dict]:
-    """Prefer reserved email/device matches, then existing activation, then free seats."""
+def _pick_license(
+    licenses: list[dict],
+    device_id: str,
+    identity_email: str = '',
+    aliases: list | None = None,
+) -> Optional[dict]:
+    """Prefer this PC's existing seat, then reserved email/device, then free seats."""
     email = (identity_email or '').strip().lower()
     usable = [lic for lic in licenses if str(lic.get('status') or '') not in _TERMINAL_STATUSES]
+    ids = _device_id_set(device_id, aliases)
 
-    # Exact reserved device for this machine
+    for lic in usable:
+        if _device_already_on(lic, device_id, aliases):
+            assigned = str(lic.get('assigned_email') or '').strip().lower()
+            if assigned and email and assigned != email:
+                continue
+            return lic
+
+    # Exact reserved device for this machine (new claim)
     for lic in usable:
         reserved = str(lic.get('reserved_device_id') or '').strip()
-        if reserved and reserved == device_id and _seats_free(lic):
+        if reserved and reserved in ids and _seats_free(lic):
             assigned = str(lic.get('assigned_email') or '').strip().lower()
             if not assigned or not email or assigned == email:
                 return lic
@@ -121,18 +149,14 @@ def _pick_license(licenses: list[dict], device_id: str, identity_email: str = ''
             if assigned != email or not _seats_free(lic):
                 continue
             reserved = str(lic.get('reserved_device_id') or '').strip()
-            if not reserved or reserved == device_id:
+            if not reserved or reserved in ids:
                 return lic
 
-    for lic in usable:
-        if _device_already_on(lic, device_id):
-            return lic
     for lic in usable:
         if str(lic.get('status') or '') in ('active', 'trial') and _seats_free(lic):
             reserved = str(lic.get('reserved_device_id') or '').strip()
             assigned = str(lic.get('assigned_email') or '').strip().lower()
-            # Skip keys reserved for someone/something else
-            if reserved and reserved != device_id:
+            if reserved and reserved not in ids:
                 continue
             if assigned and email and assigned != email:
                 continue
@@ -141,7 +165,7 @@ def _pick_license(licenses: list[dict], device_id: str, identity_email: str = ''
         if _seats_free(lic):
             reserved = str(lic.get('reserved_device_id') or '').strip()
             assigned = str(lic.get('assigned_email') or '').strip().lower()
-            if reserved and reserved != device_id:
+            if reserved and reserved not in ids:
                 continue
             if assigned and email and assigned != email:
                 continue
@@ -217,6 +241,15 @@ def auto_claim_device_license(engine, email: str = '', password: str = '') -> di
     from backend.cloud_backup.device_manager import get_or_create_device_id
     device_id = get_or_create_device_id() or getattr(engine, 'device_id', '') or ''
     identity_email = (ident.get('email') or email or '').strip()
+    aliases = []
+    for raw in (
+        device_id,
+        getattr(engine, 'device_id', '') or '',
+        str(ident.get('hardware_fingerprint') or '').strip(),
+    ):
+        val = str(raw or '').strip()
+        if val and val not in aliases:
+            aliases.append(val)
 
     # 1) Prefer email-reserved claim via Portal (works even when the key lives
     #    under a different org than the shop's own organization).
@@ -231,12 +264,14 @@ def auto_claim_device_license(engine, email: str = '', password: str = '') -> di
                 email=identity_email,
                 device_id=device_id,
                 org_id=None,
+                device_aliases=aliases,
             )
         else:
             claimed = claim_license_via_portal(
                 email=identity_email,
                 device_id=device_id,
                 org_id=None,
+                device_aliases=aliases,
             )
         key = str((claimed.get('license') or {}).get('license_key') or '')
         if claimed.get('ok') and key:
@@ -269,7 +304,9 @@ def auto_claim_device_license(engine, email: str = '', password: str = '') -> di
         logger.warning('license lookup failed: %s', e)
         return {'ok': False, 'reason': 'lookup_failed', 'message': str(e)}
 
-    chosen = _pick_license(licenses, device_id, identity_email=identity_email)
+    chosen = _pick_license(
+        licenses, device_id, identity_email=identity_email, aliases=aliases,
+    )
     if not chosen:
         return {
             'ok': False,

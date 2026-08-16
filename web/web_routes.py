@@ -1127,11 +1127,15 @@ def cloud_licenses_claim():
                 return jsonify({'error': 'Signed-in email required'}), 400
             if org_id:
                 org_id = _resolve_request_org_id(org_id, admin=False) or org_id
+            aliases = data.get('device_aliases') or data.get('aliases') or []
+            if not isinstance(aliases, list):
+                aliases = []
             result = claim_license_for_identity(
                 email=email,
                 device_id=device_id,
                 org_id=org_id or None,
                 product_id=product_id,
+                device_aliases=aliases,
             )
             return jsonify(result)
         except Exception as e:

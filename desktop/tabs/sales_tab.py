@@ -503,6 +503,34 @@ class SalesTab(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         try:
+            sp = getattr(self, '_pos_splitter', None)
+            if sp is not None and sp.count() >= 2:
+                t_sp = getattr(self, '_splitter_resize_timer', None)
+                if t_sp is None:
+                    t_sp = QTimer(self)
+                    t_sp.setSingleShot(True)
+                    t_sp.setInterval(100)
+
+                    def _rescale_columns():
+                        if getattr(self, '_pos_splitter_dragging', False):
+                            return
+                        from desktop.pos.layout_ids import normalize_layout_id
+                        from desktop.pos.layouts.splitters import apply_sizes
+                        s = getattr(self, '_pos_splitter', None)
+                        if s is None or s.count() < 2:
+                            return
+                        apply_sizes(
+                            self,
+                            normalize_layout_id(getattr(self, '_checkout_layout', '')),
+                            s.count(),
+                        )
+
+                    t_sp.timeout.connect(_rescale_columns)
+                    self._splitter_resize_timer = t_sp
+                t_sp.start()
+        except Exception:
+            pass
+        try:
             cols = self._product_columns()
             if getattr(self, '_last_cols', None) == cols:
                 return

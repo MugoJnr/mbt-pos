@@ -1097,7 +1097,13 @@ def activate_license_on_device(
     }
 
 
-def claim_license_via_portal(*, email: str, device_id: str, org_id: str | None = None) -> dict:
+def claim_license_via_portal(
+    *,
+    email: str,
+    device_id: str,
+    org_id: str | None = None,
+    device_aliases: list | None = None,
+) -> dict:
     """Claim a reserved seat through Portal when the shop PC has no service role."""
     import requests
 
@@ -1110,6 +1116,8 @@ def claim_license_via_portal(*, email: str, device_id: str, org_id: str | None =
     }
     if org_id:
         payload['org_id'] = org_id
+    if device_aliases:
+        payload['device_aliases'] = [str(x) for x in device_aliases if str(x or '').strip()]
     r = requests.post(
         f'{portal_api_base()}/api/cloud/licenses/claim',
         headers={
@@ -1156,10 +1164,11 @@ def claim_license_for_identity(
     device_id: str,
     org_id: str | None = None,
     product_id: str | None = None,
+    device_aliases: list | None = None,
 ) -> dict:
     """
-    Customer claim: find a license reserved for this email (prefer exact reserved
-    device, then any free reserved seat) and activate it onto device_id.
+    Customer claim: find a license reserved for this email (prefer this PC even
+    when the seat is already used, then any free seat) and activate it.
     When product_id is set (e.g. pulse), only seats for that product are claimed.
     """
     from backend.cloud.license_server import DEFAULT_PRODUCT_ID, normalize_product_id
@@ -1172,7 +1181,6 @@ def claim_license_for_identity(
     server = get_license_server()
     pid = normalize_product_id(product_id) if product_id else None
     reserved = server.find_licenses_for_email(email_n, org_id=org_id, product_id=pid) or []
-    # Prefer reserved_device_id match, then free seats, skip terminal statuses
     terminal = {'revoked', 'suspended', 'expired', 'cancelled'}
     candidates = [l for l in reserved if str(l.get('status') or '') not in terminal]
     if not candidates:
@@ -1189,12 +1197,31 @@ def claim_license_for_identity(
         except Exception:
             return True
 
-    chosen = None
-    for lic in candidates:
+    ids = server._activation_device_ids(device_id, device_aliases)
+    expanded = server._expand_device_aliases(ids)
+
+    def _on_this_pc(lic: dict) -> bool:
         reserved_dev = str(lic.get('reserved_device_id') or '').strip()
-        if reserved_dev and reserved_dev == device_id and _free(lic):
+        if reserved_dev and reserved_dev in expanded:
+            return True
+        try:
+            return bool(server._find_active_activation(str(lic.get('id') or ''), ids))
+        except Exception:
+            return False
+
+    chosen = None
+    # Same till already licensed — remirror locally. Do not require a free seat
+    # (that forced a new key every time Edmus signed in).
+    for lic in candidates:
+        if _on_this_pc(lic):
             chosen = lic
             break
+    if not chosen:
+        for lic in candidates:
+            reserved_dev = str(lic.get('reserved_device_id') or '').strip()
+            if reserved_dev and reserved_dev == device_id and _free(lic):
+                chosen = lic
+                break
     if not chosen:
         for lic in candidates:
             reserved_dev = str(lic.get('reserved_device_id') or '').strip()
@@ -1220,6 +1247,7 @@ def claim_license_for_identity(
         actor_email=email_n,
         actor_is_admin=False,
         product_id=pid or chosen.get('product_id') or DEFAULT_PRODUCT_ID,
+        device_aliases=ids,
     )
 
 
