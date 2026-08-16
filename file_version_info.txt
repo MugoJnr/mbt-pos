@@ -3,8 +3,8 @@
 # PyInstaller Windows version resource for MBT POS
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(3, 0, 52, 0),
-    prodvers=(3, 0, 52, 0),
+    filevers=(3, 0, 54, 0),
+    prodvers=(3, 0, 54, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,

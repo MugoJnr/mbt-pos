@@ -1,7 +1,7 @@
 {
-    "version": "3.0.53",
-    "build": "RC-2026-08-16-v3.0.53",
+    "version": "3.0.54",
+    "build": "RC-2026-08-16-v3.0.54",
     "released": "2026-08-16",
-    "release_notes": "Business day picker: visible outline button (label + date + chevron) with full-area click to open calendar; fixes QSS border not rendering on Windows.",
-    "checksum_sha256": "2cdc674e74274dd0f7295c827104abea206c8649342db3b691e50249887370a2"
+    "release_notes": "Fix automatic cloud backup for signed-in shops: repair stale AppData business_id, improve sync scheduling, and harden auth token refresh.",
+    "checksum_sha256": "c4ffed028f5f1b27a28cdfd33fcf91aa479cf77a2c6c4610349f9495628e4ed2"
 }

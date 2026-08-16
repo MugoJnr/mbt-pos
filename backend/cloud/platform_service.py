@@ -729,14 +729,17 @@ def _find_org_device(org_id: str, device_identifier: str) -> dict | None:
     )
     if rows:
         return rows[0]
-    # Also allow lookup by UUID primary key
-    rows = service_select(
-        'devices',
-        f'org_id=eq.{quote(str(org_id), safe="")}'
-        f'&id=eq.{quote(str(device_identifier), safe="")}'
-        '&select=*&limit=1',
-    )
-    return rows[0] if rows else None
+    # Also allow lookup by UUID primary key (never pass MBT-PC-* into id=eq)
+    ident = str(device_identifier or '').strip()
+    if len(ident) == 36 and ident.count('-') == 4:
+        rows = service_select(
+            'devices',
+            f'org_id=eq.{quote(str(org_id), safe="")}'
+            f'&id=eq.{quote(ident, safe="")}'
+            '&select=*&limit=1',
+        )
+        return rows[0] if rows else None
+    return None
 
 
 def _device_is_revoked(device: dict | None) -> bool:
