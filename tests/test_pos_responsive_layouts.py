@@ -127,6 +127,8 @@ class PosResponsiveLayoutsTests(unittest.TestCase):
     def test_critical_cashier_controls_survive_layout_and_size_changes(self):
         from desktop.pos.layout_ids import (
             LAYOUT_CHECKOUT_PRO,
+            LAYOUT_MODERN_CHECKOUT,
+            LAYOUT_PRODUCT_EXPLORER,
             LAYOUT_SIMPLE_COUNTER,
             LAYOUT_RETAIL_CLASSIC,
         )
@@ -134,7 +136,8 @@ class PosResponsiveLayoutsTests(unittest.TestCase):
         # Includes 16:9, 4:3, square-ish, and the smallest supported desktop size.
         sizes = ((1920, 1080), (1600, 900), (1440, 900), (1366, 768),
                  (1280, 720), (1280, 1024), (1024, 768))
-        for layout in (LAYOUT_SIMPLE_COUNTER, LAYOUT_RETAIL_CLASSIC,
+        for layout in (LAYOUT_SIMPLE_COUNTER, LAYOUT_PRODUCT_EXPLORER,
+                       LAYOUT_MODERN_CHECKOUT, LAYOUT_RETAIL_CLASSIC,
                        LAYOUT_CHECKOUT_PRO):
             self.tab.set_checkout_layout(layout)
             for width, height in sizes:
@@ -157,6 +160,24 @@ class PosResponsiveLayoutsTests(unittest.TestCase):
                         self._assert_widget_on_tab(self.tab._cat_chips, "Category chips")
                     self.assertEqual(len(self.tab.cart), 1)
                     self.assertEqual(self.tab._search.text(), "Responsive")
+
+    def test_modern_checkout_category_rail_uses_existing_filter(self):
+        from desktop.pos.layout_ids import LAYOUT_MODERN_CHECKOUT
+
+        self.tab.set_checkout_layout(LAYOUT_MODERN_CHECKOUT)
+        self.tab.resize(1440, 900)
+        self.tab.show()
+        self.app.processEvents()
+        from PyQt5.QtWidgets import QPushButton
+
+        rail = self.tab._modern_category_rail
+        buttons = rail.findChildren(QPushButton)
+        labels = [button.text() for button in buttons]
+        self.assertIn("All Products", labels)
+        self.assertIn("General", labels)
+        next(button for button in buttons if button.text() == "General").click()
+        self.app.processEvents()
+        self.assertEqual(self.tab._cat.currentText(), "General")
 
 
 if __name__ == "__main__":

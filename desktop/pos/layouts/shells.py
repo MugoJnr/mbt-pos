@@ -7,12 +7,14 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QFrame, QHBoxLayout, QLayout, QScrollArea, QSizePolicy,
+    QFrame, QHBoxLayout, QLayout, QScrollArea, QSizePolicy, QPushButton, QLabel,
     QVBoxLayout, QWidget,
 )
 
 from desktop.pos.layout_ids import (
     LAYOUT_CHECKOUT_PRO,
+    LAYOUT_MODERN_CHECKOUT,
+    LAYOUT_PRODUCT_EXPLORER,
     LAYOUT_SIMPLE_COUNTER,
     LAYOUT_RETAIL_CLASSIC,
     normalize_layout_id,
@@ -226,11 +228,15 @@ def _apply_layout_shell_inner(tab, lid: str, shell, safe_show, hide_orphan_pos_f
         _assemble_checkout_pro(tab, shell, product, sale, actions, body, foot)
     elif lid == LAYOUT_RETAIL_CLASSIC:
         _assemble_retail_classic(tab, shell, product, sale, actions, body, foot)
+    elif lid == LAYOUT_PRODUCT_EXPLORER:
+        _assemble_product_explorer(tab, shell, product, sale, actions, body, foot)
+    elif lid == LAYOUT_MODERN_CHECKOUT:
+        _assemble_modern_checkout(tab, shell, product, sale, actions, body, foot)
     else:
         _assemble_simple_counter(tab, shell, product, sale, actions, body, foot)
 
     tab._checkout_layout = lid
-    tab._left_panel = product
+    tab._left_panel = getattr(tab, '_modern_catalog', product) if lid == LAYOUT_MODERN_CHECKOUT else product
 
     from desktop.pos.layouts import splitters as _splitters
     _splitters.install_cart(tab, lid)
@@ -581,6 +587,136 @@ def _assemble_simple_counter(tab, shell, product, sale, actions, body, foot):
     tab._right_panel = right
     tab._center_panel = None
     tab._classic_right = getattr(tab, '_classic_right', None)
+
+
+def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
+    """Restored browse-first layout retained for existing shops."""
+    _assemble_two_column_checkout(
+        tab, shell, product, sale, actions, body, foot,
+        layout_id=LAYOUT_PRODUCT_EXPLORER, right_attr='_product_explorer_right',
+        scroll_name='posProductExplorerScroll')
+
+
+def _assemble_modern_checkout(tab, shell, product, sale, actions, body, foot):
+    """Modern two-panel checkout using the existing cart and payment engine."""
+    catalog = _ensure_modern_catalog(tab, product)
+    _assemble_two_column_checkout(
+        tab, shell, catalog, sale, actions, body, foot,
+        layout_id=LAYOUT_MODERN_CHECKOUT, right_attr='_modern_checkout_right',
+        scroll_name='posModernCheckoutScroll')
+
+
+def _ensure_modern_catalog(tab, product):
+    """Reference-style dynamic category rail around the shared product panel."""
+    host = getattr(tab, '_modern_catalog', None)
+    if not _alive(host):
+        host = QFrame(_ensure_stash(tab))
+        host.setObjectName('posModernCatalog')
+        host.setStyleSheet('QFrame#posModernCatalog{background:#07192D;border:none;}')
+        root = QVBoxLayout(host)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+        header = QFrame(host)
+        header.setObjectName('posModernHeader')
+        header.setStyleSheet(
+            'QFrame#posModernHeader{background:#09213B;border:1px solid #1D3858;border-radius:10px;}'
+            'QLabel{background:transparent;color:#F8FAFC;}')
+        head_lay = QHBoxLayout(header)
+        head_lay.setContentsMargins(14, 10, 14, 10)
+        brand = QLabel('MBT POS')
+        brand.setStyleSheet('font-size:20px;font-weight:900;color:#F9C73D;background:transparent;')
+        day = QLabel(f'Business Day: {getattr(tab, "_business_day", "Today")}')
+        day.setStyleSheet('font-size:12px;font-weight:700;color:#D7E5F5;background:transparent;')
+        status = QLabel('OPEN')
+        status.setStyleSheet('font-size:11px;font-weight:900;color:#55E6A5;background:#103A32;border-radius:6px;padding:5px 8px;')
+        head_lay.addWidget(brand)
+        head_lay.addStretch(1)
+        head_lay.addWidget(day)
+        head_lay.addWidget(status)
+        root.addWidget(header)
+        content = QWidget(host)
+        lay = QHBoxLayout(content)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        rail = QScrollArea(content)
+        rail.setObjectName('posModernCategoryRail')
+        rail.setWidgetResizable(True)
+        rail.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        rail.setFixedWidth(156)
+        rail.setFrameShape(QFrame.NoFrame)
+        rail.setStyleSheet(
+            'QScrollArea#posModernCategoryRail{background:#0B1E36;border:none;}'
+            'QScrollArea#posModernCategoryRail QWidget{background:#0B1E36;}')
+        rail_body = QWidget(rail)
+        rail_body.setObjectName('posModernCategoryRailBody')
+        rail_lay = QVBoxLayout(rail_body)
+        rail_lay.setContentsMargins(8, 8, 4, 8)
+        rail_lay.setSpacing(5)
+        rail.setWidget(rail_body)
+        lay.addWidget(rail)
+        lay.addWidget(product, 1)
+        root.addWidget(content, 1)
+        tab._modern_catalog = host
+        tab._modern_catalog_content = content
+        tab._modern_category_rail = rail_body
+        tab._modern_category_lay = rail_lay
+    else:
+        layout = tab._modern_catalog_content.layout()
+        if product.parentWidget() is not tab._modern_catalog_content:
+            layout.addWidget(product, 1)
+    rail_lay = tab._modern_category_lay
+    while rail_lay.count():
+        item = rail_lay.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.deleteLater()
+    cat = getattr(tab, '_cat', None)
+    labels = ['All Products']
+    if cat is not None:
+        labels.extend(cat.itemText(i) for i in range(cat.count())
+                      if cat.itemText(i) and not cat.itemText(i).lower().startswith('all'))
+    for label in labels:
+        button = QPushButton(label, tab._modern_category_rail)
+        button.setMinimumHeight(38)
+        button.setCheckable(True)
+        active = (cat is None and label == 'All Products') or (
+            cat is not None and ((label == 'All Products' and cat.currentText().lower().startswith('all'))
+                             or cat.currentText() == label))
+        button.setChecked(active)
+        button.setStyleSheet(
+            'QPushButton{color:#E5EDF8;background:#102744;border:1px solid #233C60;'
+            'border-radius:7px;text-align:left;padding:0 10px;font-weight:600;}'
+            'QPushButton:checked{color:#FFD056;background:#263847;border-color:#C99A2E;}')
+        target = 'All Categories' if label == 'All Products' else label
+        button.clicked.connect(lambda _checked=False, value=target: cat.setCurrentText(value) if cat else None)
+        rail_lay.addWidget(button)
+    rail_lay.addStretch(1)
+    return host
+
+
+def _assemble_two_column_checkout(tab, shell, product, sale, actions, body, foot, *, layout_id, right_attr, scroll_name):
+    """Shared two-panel shell; widgets remain the real shared POS controls."""
+    from desktop.pos.layouts import splitters
+    lay = QHBoxLayout(shell)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    split = splitters.ensure_splitter(tab)
+    _style_card(product, 'posProductPanel')
+    split.addWidget(product)
+    right = getattr(tab, right_attr, None)
+    if not _alive(right):
+        right = QFrame(_ensure_stash(tab))
+        _park_new(tab, right)
+        setattr(tab, right_attr, right)
+    _style_card(right, 'posCartPanel')
+    _wire_stacked_right_rail(tab, right, sale, actions, body, foot, scroll_name=scroll_name)
+    split.addWidget(right)
+    lay.addWidget(split, 1)
+    from desktop.utils.quiet_ui import safe_show
+    safe_show(split)
+    splitters.install(tab, layout_id, (product, right))
+    tab._right_panel = right
+    tab._center_panel = None
 
 
 def _assemble_retail_classic(tab, shell, product, sale, actions, body, foot):
