@@ -34,9 +34,20 @@ import tempfile
 import threading
 import urllib.request
 import urllib.error
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class UpdateManifest:
+    """Immutable metadata owned by one download operation."""
+    version: str
+    asset_url: str
+    checksum_sha256: str = ''
+    expected_bytes: int = 0
+    operation_id: str = ''
 
 # ── GitHub repo — change to your actual repo ──────────────────────────────────
 GITHUB_REPO     = "MugoJnr/mbt-pos"
@@ -966,6 +977,9 @@ class UpdateChecker:
         self._pending_checksum = ''
         self._pending_notes = ''
         self._expected_bytes = 0
+        self._manifest_lock = threading.RLock()
+        self._active_manifest: UpdateManifest | None = None
+        self._queued_manifest: UpdateManifest | None = None
         self._download_warned_version = ''
         self._has_updater_lock = False
         self._install_lock = threading.Lock()
@@ -1131,7 +1145,7 @@ class UpdateChecker:
                         f"Please update to v{remote_version} to continue.")
                 # Still download the update
                 if asset_url and _version_gt(remote_version, self.current_version):
-                    self._start_download(asset_url, remote_version)
+                    self._start_download(asset_url, remote_version, info.get('checksum_sha256') or '', info.get('expected_bytes') or 0)
                 return True
 
             # Normal update available
@@ -1146,7 +1160,7 @@ class UpdateChecker:
                 if self.on_update_available:
                     self.on_update_available(remote_version, notes, asset_url)
                 if asset_url:
-                    self._start_download(asset_url, remote_version)
+                    self._start_download(asset_url, remote_version, info.get('checksum_sha256') or '', info.get('expected_bytes') or 0)
                 else:
                     logger.warning(
                         f"Release v{remote_version} has no {ASSET_NAME} asset")
@@ -1430,8 +1444,21 @@ class UpdateChecker:
             return size >= int(expect * 0.98)
         return size >= int(EXPECTED_INSTALLER_BYTES * 0.85)
 
-    def _start_download(self, url: str, version: str):
+    def _start_download(self, url: str, version: str, checksum: str = '', expected_bytes: int = 0):
         """Start background download of the installer."""
+        manifest = UpdateManifest(
+            version=(version or '').lstrip('v'), asset_url=url,
+            checksum_sha256=normalize_checksum(checksum),
+            expected_bytes=int(expected_bytes or 0), operation_id=uuid.uuid4().hex)
+        with self._manifest_lock:
+            active = self._active_manifest
+            if active and _version_gt(active.version, manifest.version):
+                logger.info('Update download v%s ignored; v%s is newer', manifest.version, active.version)
+                return
+            if active and _version_gt(manifest.version, active.version):
+                self._queued_manifest = manifest
+                logger.info('Update operation %s v%s superseded by %s v%s', active.operation_id, active.version, manifest.operation_id, manifest.version)
+                return
         if self._dl_thread and self._dl_thread.is_alive():
             return   # already downloading
         if self._installer_path and os.path.exists(self._installer_path):
@@ -1453,21 +1480,28 @@ class UpdateChecker:
                     self.on_download_ready(self._installer_path, version)
                     return
 
-        self._pending_version = version
-        self._pending_asset_url = url
+        self._pending_version = manifest.version
+        self._pending_asset_url = manifest.asset_url
+        self._pending_checksum = manifest.checksum_sha256
+        self._expected_bytes = manifest.expected_bytes
+        with self._manifest_lock:
+            self._active_manifest = manifest
         self._dl_thread = threading.Thread(
-            target=self._download, args=(url, version),
+            target=self._download, args=(manifest.asset_url, manifest.version, manifest),
             daemon=True, name='UpdateDownload')
         self._dl_thread.start()
 
-    def _download(self, url: str, version: str):
+    def _download(self, url: str, version: str, manifest: UpdateManifest | None = None):
         """
         Download installer to TEMP folder silently (resumable + retries).
         Shows no UI. Signals on_download_ready when complete and verified.
         """
+        manifest = manifest or UpdateManifest(version, url, normalize_checksum(self._pending_checksum), self._expected_bytes, uuid.uuid4().hex)
+        checksum = manifest.checksum_sha256
+        expected_bytes = manifest.expected_bytes
         dest = os.path.join(
             tempfile.gettempdir(),
-            f'MBT_POS_Setup_v{version}.exe'
+            f'MBT_POS_Setup_v{manifest.version}.exe.part'
         )
 
         # Already downloaded in a previous run
@@ -1481,8 +1515,8 @@ class UpdateChecker:
                     pass
                 return
             if self._download_complete_enough(size):
-                if self._pending_checksum:
-                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                if checksum:
+                    ok, detail = verify_installer_checksum(dest, checksum)
                     if not ok:
                         logger.warning(
                             f'Cached installer checksum failed ({detail}) — re-download')
@@ -1517,8 +1551,8 @@ class UpdateChecker:
                 _ensure_ssl_certs()
                 headers = {'User-Agent': f'MBT-POS/{self.current_version}'}
                 # Refresh checksum from sidecar if still missing
-                if not self._pending_checksum:
-                    self._pending_checksum = fetch_sidecar_checksum(url, headers)
+                if not checksum:
+                    checksum = fetch_sidecar_checksum(url, headers)
 
                 self._http_download_file(url, dest, headers)
 
@@ -1531,8 +1565,8 @@ class UpdateChecker:
                     time.sleep(min(attempt * 3, 15))
                     continue
 
-                if self._pending_checksum:
-                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                if checksum:
+                    ok, detail = verify_installer_checksum(dest, checksum)
                     if not ok:
                         logger.error(f'Checksum verification failed: {detail}')
                         try:
@@ -1549,12 +1583,28 @@ class UpdateChecker:
                         self._schedule_download_retry(url, version)
                         return
 
-                logger.info(f"Update downloaded: {dest} ({size/1024/1024:.1f} MB)")
+                with self._manifest_lock:
+                    current = self._active_manifest
+                    superseded = bool(self._queued_manifest) or current is not manifest
+                if superseded:
+                    logger.info('Ignoring superseded update completion v%s operation=%s', manifest.version, manifest.operation_id)
+                    with self._manifest_lock:
+                        queued = self._queued_manifest
+                        self._active_manifest = None
+                        self._queued_manifest = None
+                    if queued:
+                        threading.Timer(0.01, lambda: self._start_download(
+                            queued.asset_url, queued.version, queued.checksum_sha256,
+                            queued.expected_bytes)).start()
+                    return
+                final_dest = dest[:-5] if dest.endswith('.part') else dest
+                os.replace(dest, final_dest)
+                logger.info(f"Update downloaded: {final_dest} ({size/1024/1024:.1f} MB)")
                 self._download_warned_version = ''
-                _unblock_windows_file(dest)
-                self._installer_path = dest
+                _unblock_windows_file(final_dest)
+                self._installer_path = final_dest
                 if self.on_download_ready:
-                    self.on_download_ready(dest, version)
+                    self.on_download_ready(final_dest, version)
                 return
 
             except Exception as e:
