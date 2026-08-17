@@ -746,6 +746,31 @@ CART_CASHIER_ROWS = 5
 CART_TABLE_ROW_GAP = 4
 CART_COL_HDR_H = 28
 CART_FLASH_MS = 520
+# Narrow Current Sale column — tighter fixed columns (name still stretches).
+CART_COL_COMPACT = {
+    'qty': 72,
+    'price': 72,
+    'disc': 72,
+    'total': 80,
+}
+
+
+def cart_table_min_width(*, compact: bool = False, name_min: int = 48) -> int:
+    """Natural table width — used for horizontal scroll when the pane is narrower."""
+    if compact:
+        qty = CART_COL_COMPACT['qty']
+        price = CART_COL_COMPACT['price']
+        disc = CART_COL_COMPACT['disc']
+        total = CART_COL_COMPACT['total']
+    else:
+        qty = CART_COL_QTY_W
+        price = CART_COL_PRICE_W
+        disc = CART_COL_DISC_W
+        total = CART_COL_TOTAL_W
+    fixed = CART_COL_IDX_W + qty + price + disc + total + CART_COL_RM_W
+    gaps = CART_ROW_SPACING * 6
+    margins = CART_ROW_MARGINS[0] + CART_ROW_MARGINS[2]
+    return fixed + gaps + margins + max(32, int(name_min))
 
 
 def cart_viewport_px(rows: int = CART_CASHIER_ROWS, *, include_header: bool = False) -> int:
@@ -829,7 +854,39 @@ def build_cart_column_header(parent=None) -> QWidget:
     spacer.setObjectName('posCartColLab')
     spacer.setFixedWidth(CART_COL_RM_W)
     hl.addWidget(spacer, 0)
+    hdr._pos_col_widths = (
+        CART_COL_IDX_W, None, CART_COL_QTY_W, CART_COL_PRICE_W,
+        CART_COL_DISC_W, CART_COL_TOTAL_W, CART_COL_RM_W,
+    )
     return hdr
+
+
+def apply_cart_column_header_widths(hdr: QWidget | None, *, compact: bool = False) -> None:
+    """Keep column captions aligned with CartLineRow when the sale pane narrows."""
+    if hdr is None or not hasattr(hdr, '_pos_col_widths'):
+        return
+    base = hdr._pos_col_widths
+    compact_map = CART_COL_COMPACT
+    widths = list(base)
+    if compact:
+        widths[2] = compact_map['qty']
+        widths[3] = compact_map['price']
+        widths[4] = compact_map['disc']
+        widths[5] = compact_map['total']
+    lay = hdr.layout()
+    if lay is None:
+        return
+    for i in range(lay.count()):
+        item = lay.itemAt(i)
+        w = item.widget() if item is not None else None
+        if w is None:
+            continue
+        spec = widths[i] if i < len(widths) else None
+        if spec is None:
+            w.setMinimumWidth(32)
+            w.setMaximumWidth(16777215)
+        else:
+            w.setFixedWidth(int(spec))
 
 
 # ── Cart line (shopping-cart row — not spreadsheet) ───────────────────────────
@@ -927,7 +984,9 @@ class CartLineRow(QFrame):
         self._price_lbl.setToolTip('Double-click row to edit price')
         self._price_lbl.setCursor(Qt.PointingHandCursor)
         money_price = QWidget()
+        money_price.setObjectName('posCartMoneyCol')
         money_price.setFixedWidth(CART_COL_PRICE_W)
+        self._money_price = money_price
         mpl = QHBoxLayout(money_price)
         mpl.setContentsMargins(0, 0, 0, 0)
         mpl.setSpacing(0)
@@ -949,7 +1008,9 @@ class CartLineRow(QFrame):
         self._disc_lbl.setCursor(Qt.PointingHandCursor)
         self._disc_lbl.hide()  # filled in _sync_labels
         money_disc = QWidget()
+        money_disc.setObjectName('posCartMoneyCol')
         money_disc.setFixedWidth(CART_COL_DISC_W)
+        self._money_disc = money_disc
         mdl = QHBoxLayout(money_disc)
         mdl.setContentsMargins(0, 0, 0, 0)
         mdl.setSpacing(0)
@@ -972,7 +1033,55 @@ class CartLineRow(QFrame):
         self._rm.setFlat(True)
         self._rm.clicked.connect(self.removeClicked.emit)
         root.addWidget(self._rm, 0)
+        self._compact_cols = False
         self._set_money_edit_mode(False)
+
+    def set_compact_columns(self, compact: bool = False) -> None:
+        """Tighten fixed columns when the Current Sale pane is narrow."""
+        compact = bool(compact)
+        if getattr(self, '_compact_cols', False) == compact:
+            return
+        self._compact_cols = compact
+        qty_w = CART_COL_COMPACT['qty'] if compact else CART_COL_QTY_W
+        price_w = CART_COL_COMPACT['price'] if compact else CART_COL_PRICE_W
+        disc_w = CART_COL_COMPACT['disc'] if compact else CART_COL_DISC_W
+        total_w = CART_COL_COMPACT['total'] if compact else CART_COL_TOTAL_W
+        try:
+            if hasattr(self._qty, 'set_column_width'):
+                self._qty.set_column_width(qty_w)
+            elif hasattr(self._qty, 'setFixedWidth'):
+                self._qty.setFixedWidth(qty_w)
+        except Exception:
+            pass
+        for w in (self._price_lbl, self._price):
+            try:
+                w.setFixedWidth(price_w)
+            except Exception:
+                pass
+        mp = getattr(self, '_money_price', None)
+        if mp is not None:
+            try:
+                mp.setFixedWidth(price_w)
+            except Exception:
+                pass
+        for w in (self._disc_lbl, self._disc):
+            try:
+                if hasattr(w, 'set_column_width'):
+                    w.set_column_width(disc_w)
+                else:
+                    w.setFixedWidth(disc_w)
+            except Exception:
+                pass
+        md = getattr(self, '_money_disc', None)
+        if md is not None:
+            try:
+                md.setFixedWidth(disc_w)
+            except Exception:
+                pass
+        try:
+            self._line_total.setFixedWidth(total_w)
+        except Exception:
+            pass
 
     def _build_card(self):
         """Legacy card density — same compact table row (hero cards hid the cart)."""
@@ -1228,7 +1337,61 @@ class CartList(QWidget):
         self._expanded = False
         # 0 = legacy sizing; N = fixed viewport of N table rows (Review lifts via expanded).
         self._cashier_rows = 0
+        self._compact_table = False
         self.refresh_theme()
+
+    def set_compact_table(self, compact: bool = False) -> None:
+        """Use tighter column widths when the sale pane is narrower than the table."""
+        compact = bool(compact)
+        if getattr(self, '_compact_table', False) == compact:
+            return
+        self._compact_table = compact
+        for row in list(getattr(self, '_rows', None) or []):
+            if hasattr(row, 'set_compact_columns'):
+                try:
+                    row.set_compact_columns(compact)
+                except Exception:
+                    pass
+        try:
+            apply_cart_column_header_widths(self._col_hdr, compact=compact)
+        except Exception:
+            pass
+        self.sync_width_fit()
+
+    def sync_width_fit(self, avail_w: int | None = None) -> None:
+        """Scroll horizontally instead of clipping when the pane is narrower than the table."""
+        if avail_w is None:
+            avail_w = int(self.width() or 0)
+        compact = bool(getattr(self, '_compact_table', False))
+        need = cart_table_min_width(compact=compact)
+        scroll = self._scroll
+        body = self._body
+        try:
+            scroll.setMinimumWidth(0)
+            self.setMinimumWidth(0)
+            sp = self.sizePolicy()
+            sp.setHorizontalPolicy(QSizePolicy.Ignored)
+            self.setSizePolicy(sp)
+        except Exception:
+            pass
+        if avail_w > 0 and avail_w < need:
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            body.setMinimumWidth(need)
+        else:
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            body.setMinimumWidth(0)
+        try:
+            scroll.updateGeometry()
+            self.updateGeometry()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            self.sync_width_fit(int(self.width() or 0))
+        except Exception:
+            pass
 
     def selected_index(self) -> int:
         return int(self._selected_idx)

@@ -42,6 +42,17 @@ def generate_device_id() -> str:
 def get_or_create_device_id() -> str:
     ident = load_identity()
     did = (ident.get('device_id') or '').strip()
+
+    # Always keep hardware_fingerprint aligned with stable MachineGuid bind id.
+    try:
+        from licensing.license_engine import _get_device_fingerprint
+        fp = _get_device_fingerprint()
+        if fp and str(ident.get('hardware_fingerprint') or '').strip() != fp:
+            ident['hardware_fingerprint'] = fp
+            save_identity(ident)
+    except Exception:
+        pass
+
     if did.startswith('MBT-PC-') and len(did) >= 10:
         return did
     if len(did) == 40 and all(c in '0123456789abcdef' for c in did.lower()):
@@ -53,8 +64,8 @@ def get_or_create_device_id() -> str:
     ident['hostname'] = platform.node() or ''
     ident['platform'] = platform.platform()
     try:
-        from licensing.license_engine import get_device_id as hw_id
-        ident['hardware_fingerprint'] = hw_id()
+        from licensing.license_engine import _get_device_fingerprint
+        ident['hardware_fingerprint'] = _get_device_fingerprint()
     except Exception:
         pass
     save_identity(ident)

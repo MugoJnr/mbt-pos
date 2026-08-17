@@ -1,7 +1,7 @@
 """Build shared POS panels once — SalesTab owns business logic; panels are pure UI."""
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, QDate
+from PyQt5.QtCore import Qt, QDate, QSize
 from PyQt5.QtWidgets import (
     QAbstractSpinBox, QComboBox, QDateEdit, QDoubleSpinBox, QFrame, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -14,6 +14,15 @@ from desktop.utils.pos_components import (
 )
 from desktop.utils.option_lists import POS_PAYMENT_METHODS
 from desktop.utils.select_controls import Select
+
+
+class _ShrinkablePanel(QFrame):
+    """POS column pane — splitter floor is minimumWidth(), not child sizeHints."""
+
+    def minimumSizeHint(self):
+        w = max(0, int(self.minimumWidth()))
+        h = super().minimumSizeHint().height()
+        return QSize(w, h)
 
 
 class _KesEdit(QLineEdit):
@@ -91,7 +100,8 @@ class _BizDayButton(QPushButton):
         )
         if picked is None:
             return
-        apply_shop_day_edit(self._date, picked, today=today)
+        # Must emit dateChanged so SalesTab._on_business_day_changed updates _business_day.
+        apply_shop_day_edit(self._date, picked, today=today, block_signals=False)
 
 
 class BusinessDayBar(QFrame):
@@ -402,7 +412,7 @@ def build_shared_panels(tab) -> None:
     tab._left_panel = product
 
     # ── Current Sale panel (cart + summary) ───────────────────────────────────
-    sale = QFrame(stash)
+    sale = _ShrinkablePanel(stash)
     sale.hide()
     try:
         sale.setAttribute(Qt.WA_DontShowOnScreen, True)

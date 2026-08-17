@@ -9,7 +9,7 @@ Offline-first license validation with:
   • Tamper → immediate lock on first confirmed attack
   • Remote activation / revoke / extend via Portal command center
 """
-import os, sys, json, time, uuid, hashlib, hmac, base64
+import os, sys, json, time, uuid, hashlib, hmac, base64, shutil
 import sqlite3, platform, threading, logging, requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
@@ -20,12 +20,61 @@ _MASTER_SECRET_CACHE: bytes | None = None
 _LEGACY_SECRET_CANDIDATES: list[bytes] | None = None
 
 
+def _legacy_roaming_lic_dir() -> str:
+    """Old license folder under %APPDATA% (Roaming) — may not persist on shop PCs."""
+    if platform.system() == 'Windows':
+        base = os.environ.get('APPDATA', os.path.expanduser('~'))
+        return os.path.join(base, 'MugoByte', '.mbt_lic')
+    if platform.system() == 'Darwin':
+        return os.path.expanduser('~/Library/Application Support/MugoByte/.mbt_lic')
+    return os.path.expanduser('~/.config/mugobyte/.mbt_lic')
+
+
+def _migrate_legacy_lic_store(canonical_dir: str, legacy_dir: str) -> None:
+    """One-time copy from Roaming → LocalAppData when the new store is empty."""
+    try:
+        if os.path.normcase(os.path.abspath(canonical_dir)) == os.path.normcase(
+            os.path.abspath(legacy_dir)
+        ):
+            return
+        canon_db = os.path.join(canonical_dir, 'lc.db')
+        legacy_db = os.path.join(legacy_dir, 'lc.db')
+        if os.path.isfile(canon_db) and os.path.getsize(canon_db) > 512:
+            return
+        if not os.path.isfile(legacy_db):
+            return
+        os.makedirs(canonical_dir, exist_ok=True)
+        for name in os.listdir(legacy_dir):
+            src = os.path.join(legacy_dir, name)
+            dst = os.path.join(canonical_dir, name)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+        logger.info('Migrated license store %s → %s', legacy_dir, canonical_dir)
+    except Exception as e:
+        logger.warning('License store migration skipped: %s', e)
+
+
 def _lic_store_dir() -> str:
-    return os.path.dirname(_hidden_db_path())
+    if platform.system() == 'Windows':
+        local = (os.environ.get('LOCALAPPDATA') or '').strip()
+        roaming = os.environ.get('APPDATA', os.path.expanduser('~'))
+        if local:
+            canonical = os.path.join(local, 'MugoByte', '.mbt_lic')
+            legacy = _legacy_roaming_lic_dir()
+            _migrate_legacy_lic_store(canonical, legacy)
+            os.makedirs(canonical, exist_ok=True)
+            return canonical
+        d = os.path.join(roaming, 'MugoByte', '.mbt_lic')
+    elif platform.system() == 'Darwin':
+        d = os.path.expanduser('~/Library/Application Support/MugoByte/.mbt_lic')
+    else:
+        d = os.path.expanduser('~/.config/mugobyte/.mbt_lic')
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def _license_crypto_secret_path() -> str:
-    return os.path.join(_lic_store_dir(), 'crypto.secret')
+    return os.path.join(os.path.dirname(_hidden_db_path()), 'crypto.secret')
 
 
 def _legacy_config_secret_path() -> str:
@@ -550,15 +599,40 @@ def _allocated_days_from_payload(data: dict) -> Optional[int]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _hidden_db_path() -> str:
-    if platform.system() == 'Windows':
-        base = os.environ.get('APPDATA', os.path.expanduser('~'))
-        d = os.path.join(base, 'MugoByte', '.mbt_lic')
-    elif platform.system() == 'Darwin':
-        d = os.path.expanduser('~/Library/Application Support/MugoByte/.mbt_lic')
-    else:
-        d = os.path.expanduser('~/.config/mugobyte/.mbt_lic')
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, 'lc.db')
+    return os.path.join(_lic_store_dir(), 'lc.db')
+
+
+def _sync_cloud_identity_fingerprint(device_id: str = '') -> None:
+    """Keep cloud_identity hardware_fingerprint aligned with the stable local bind id."""
+    try:
+        from backend.cloud_backup.paths import load_identity, save_identity
+        from backend.cloud_backup.device_manager import get_or_create_device_id
+
+        ident = load_identity()
+        fp = _get_device_fingerprint()
+        changed = False
+        if fp and str(ident.get('hardware_fingerprint') or '').strip() != fp:
+            ident['hardware_fingerprint'] = fp
+            changed = True
+        if device_id and str(ident.get('device_id') or '').strip() != str(device_id).strip():
+            ident['device_id'] = str(device_id).strip()
+            changed = True
+        if not str(ident.get('device_id') or '').strip().startswith('MBT-PC-'):
+            get_or_create_device_id()
+            ident = load_identity()
+        if changed:
+            save_identity(ident)
+    except Exception as e:
+        logger.debug('cloud identity fingerprint sync: %s', e)
+
+
+def _verify_license_token_on_disk() -> bool:
+    """True when lc.db contains a non-empty license_token row."""
+    try:
+        raw = _read_raw_license_token()
+        return bool(raw and str(raw).strip())
+    except Exception:
+        return False
 
 
 class LicenseStore:
@@ -1030,8 +1104,17 @@ class LicenseEngine:
             'version': 2,
         }
         with self._lock:
-            _write_cached_device_id(self.device_id)
-            token = encrypt_payload(lic, self.device_id)
+            try:
+                from backend.cloud_backup.device_manager import get_or_create_device_id
+                cloud_device_id = get_or_create_device_id() or self.device_id
+            except Exception:
+                cloud_device_id = self.device_id
+            bind_id = _get_device_fingerprint() or self.device_id
+            self.device_id = bind_id
+            self.store = LicenseStore(bind_id)
+            lic['device_id'] = bind_id
+            _write_cached_device_id(bind_id)
+            token = encrypt_payload(lic, bind_id)
             self.store.set('license_token', token)
             self.store.set('last_checked_ts', local_now)
             self.store.set('highest_ts_seen', local_now)
@@ -1046,6 +1129,11 @@ class LicenseEngine:
                 'CLOUD_ACTIVATED',
                 f"Plan={lic['plan']} Days={allocated} Key={license_key[:16]}…",
             )
+            _sync_cloud_identity_fingerprint(cloud_device_id)
+            if not _verify_license_token_on_disk():
+                self._license_data = {}
+                self._state = STATE_UNACTIVATED
+                return False, 'Activation could not be saved on this PC — try again.'
         plan_name = PLANS.get(lic['plan'], {}).get('name', lic['plan'])
         return True, f"Cloud license activated! Plan: {plan_name} ({allocated} days)"
 

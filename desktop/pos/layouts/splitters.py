@@ -44,14 +44,14 @@ CART_FREE_TRAVEL = 120
 # Checkout Pro: catalog | Current Sale | payment — never let Sale/pay collapse
 # to an invisible gutter (that is what produced the products-only screenshot).
 MIN_WIDTHS = {
-    LAYOUT_CHECKOUT_PRO: (240, 420, 300),
+    LAYOUT_CHECKOUT_PRO: (240, 280, 300),
     LAYOUT_PRODUCT_EXPLORER: (360, 460),
     LAYOUT_RETAIL_CLASSIC: (360, 460),
 }
 # When the shell is narrower than the sum of floors (1024×768, square, 150% DPI),
 # scale down instead of forcing overflow / overlapping panes.
 HARD_MIN_WIDTHS = {
-    LAYOUT_CHECKOUT_PRO: (140, 220, 200),
+    LAYOUT_CHECKOUT_PRO: (140, 180, 200),
     LAYOUT_PRODUCT_EXPLORER: (200, 240),
     LAYOUT_RETAIL_CLASSIC: (200, 240),
 }
@@ -76,7 +76,7 @@ def _mins_for(lid: str, count: int, available: int | None = None) -> tuple:
         and count == 3
         and int(available) <= NARROW_SHELL
     ):
-        hard = HARD_MIN_WIDTHS.get(lid, (140, 220, 200))
+        hard = HARD_MIN_WIDTHS.get(lid, (140, 180, 200))
         avail = max(sum(hard), int(available))
         # Sale scrolls; catalog + payment need readable width on square displays.
         rail_pct = 0.36 if avail < 900 else 0.34
@@ -557,6 +557,13 @@ def _on_moved(tab) -> None:
     tab._pos_splitter_user_gen = getattr(tab, '_pos_splitter_gen', 0)
     _remember(tab)
     _queue_relayout(tab)
+    try:
+        from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO, normalize_layout_id
+        if normalize_layout_id(getattr(tab, '_checkout_layout', '')) == LAYOUT_CHECKOUT_PRO:
+            from desktop.pos.checkout_pro_chrome import sync_pro_sale_panel
+            sync_pro_sale_panel(tab)
+    except Exception:
+        pass
     # Category chips pack to the product-column width — nudge them on drag.
     try:
         chips = getattr(tab, '_cat_chips', None)
@@ -1294,6 +1301,12 @@ def install(tab, lid: str, panes) -> None:
             sp.setStretchFactor(i, 1)
         except Exception:
             pass
+        if lid == LAYOUT_CHECKOUT_PRO and i == 1:
+            try:
+                from desktop.pos.checkout_pro_chrome import sync_pro_sale_panel
+                sync_pro_sale_panel(tab)
+            except Exception:
+                pass
     try:
         sp.setChildrenCollapsible(False)
         sp.setHandleWidth(HANDLE_W)

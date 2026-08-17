@@ -1,6 +1,8 @@
 """Activation persistence: same device must not consume extra seats."""
 from __future__ import annotations
 
+import os
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -337,7 +339,7 @@ class SplitterScaleTests(unittest.TestCase):
     def test_pro_mins_scale_below_960(self):
         from desktop.pos.layouts.splitters import _mins_for, LAYOUT_CHECKOUT_PRO
         wide = _mins_for(LAYOUT_CHECKOUT_PRO, 3, 1200)
-        self.assertEqual(sum(wide), 960)
+        self.assertEqual(sum(wide), 820)  # 240+280+300 shipped floors
         narrow = _mins_for(LAYOUT_CHECKOUT_PRO, 3, 720)
         self.assertLessEqual(sum(narrow), 720)
         self.assertGreaterEqual(narrow[1], 220)
@@ -365,6 +367,116 @@ class SplitterScaleTests(unittest.TestCase):
 
 
 class RestartPersistenceTests(unittest.TestCase):
+    def test_roaming_license_migrates_to_localappdata(self):
+        import tempfile
+        import licensing.license_engine as le
+
+        tmp = tempfile.mkdtemp()
+        local_lic = os.path.join(tmp, 'local', '.mbt_lic')
+        roam_lic = os.path.join(tmp, 'roam', '.mbt_lic')
+        os.makedirs(roam_lic, exist_ok=True)
+        roam_db = os.path.join(roam_lic, 'lc.db')
+        mg = 'persist-test-machine-guid'
+        fp = __import__('hashlib').sha256(f'mg:{mg}'.encode()).hexdigest()[:40]
+
+        # Seed legacy Roaming store
+        seed_patches = [
+            patch.object(le, '_hidden_db_path', return_value=roam_db),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+            patch.object(le, '_device_id_cache_path', return_value=os.path.join(roam_lic, 'device.id')),
+            patch.object(le, '_license_crypto_secret_path', return_value=os.path.join(roam_lic, 'crypto.secret')),
+        ]
+        le._MASTER_SECRET_CACHE = None
+        le._LEGACY_SECRET_CANDIDATES = None
+        for p in seed_patches:
+            p.start()
+        try:
+            store = le.LicenseStore(fp)
+            lic = {
+                'device_id': fp,
+                'plan': 'trial',
+                'issued_at': 1,
+                'expires_at': 9999999999,
+                'duration_days': 30,
+                'activated_at': 1,
+                'version': 2,
+            }
+            store.set('license_token', le.encrypt_payload(lic, fp))
+        finally:
+            for p in seed_patches:
+                p.stop()
+
+        load_patches = [
+            patch.object(le, '_lic_store_dir', return_value=local_lic),
+            patch.object(le, '_legacy_roaming_lic_dir', return_value=roam_lic),
+            patch.object(le, '_hidden_db_path', return_value=os.path.join(local_lic, 'lc.db')),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+            patch.object(le, '_device_id_cache_path', return_value=os.path.join(local_lic, 'device.id')),
+            patch.object(le, '_license_crypto_secret_path', return_value=os.path.join(local_lic, 'crypto.secret')),
+        ]
+        le._MASTER_SECRET_CACHE = None
+        le._LEGACY_SECRET_CANDIDATES = None
+        os.makedirs(local_lic, exist_ok=True)
+        for p in load_patches:
+            p.start()
+        try:
+            le._migrate_legacy_lic_store(local_lic, roam_lic)
+            e1 = le.LicenseEngine()
+            self.assertTrue(e1.is_valid, 'migrated legacy token must load')
+            self.assertTrue(os.path.isfile(os.path.join(local_lic, 'lc.db')))
+            e2 = le.LicenseEngine()
+            self.assertTrue(e2.is_valid)
+        finally:
+            for p in load_patches:
+                p.stop()
+            le._MASTER_SECRET_CACHE = None
+            le._LEGACY_SECRET_CANDIDATES = None
+
+    def test_cloud_mirror_persists_for_relaunch(self):
+        import tempfile
+        import launcher
+        import licensing.license_engine as le
+        from licensing import cloud_onboarding as co
+
+        tmp = tempfile.mkdtemp()
+        lic_dir = os.path.join(tmp, '.mbt_lic')
+        os.makedirs(lic_dir, exist_ok=True)
+        mg = 'cloud-mirror-guid-001'
+        fp = __import__('hashlib').sha256(f'mg:{mg}'.encode()).hexdigest()[:40]
+
+        patches = [
+            patch.object(le, '_lic_store_dir', return_value=lic_dir),
+            patch.object(le, '_hidden_db_path', return_value=os.path.join(lic_dir, 'lc.db')),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+            patch.object(le, '_device_id_cache_path', return_value=os.path.join(lic_dir, 'device.id')),
+            patch.object(le, '_license_crypto_secret_path', return_value=os.path.join(lic_dir, 'crypto.secret')),
+            patch.object(le, '_sync_cloud_identity_fingerprint'),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            e1 = le.LicenseEngine()
+            claimed = {
+                'ok': True,
+                'license': {
+                    'license_key': 'MBT-TRI-PERSIST',
+                    'plan': 'trial',
+                    'expires_at': '2027-06-01T00:00:00Z',
+                    'org_id': 'org-test',
+                },
+                'activation': {'plan': 'trial'},
+            }
+            res = co._mirror_claimed_license(e1, claimed)
+            self.assertTrue(res.get('ok'), res)
+            self.assertTrue(le._verify_license_token_on_disk())
+
+            e2 = le.LicenseEngine()
+            self.assertTrue(e2.is_valid)
+            self.assertTrue(launcher._shop_already_ready(e2))
+        finally:
+            for p in patches:
+                p.stop()
+
     def test_local_license_survives_new_engine(self):
         import os
         import tempfile

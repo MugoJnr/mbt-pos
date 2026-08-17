@@ -1481,6 +1481,53 @@ def sync_category_chips(tab) -> None:
 
 NARROW_RAIL = 340
 NARROW_PRODUCT = 400
+NARROW_SALE = 480
+
+
+def sync_pro_sale_panel(tab) -> None:
+    """Let the center Current Sale column shrink with column splitters — scroll/compact, don't clip."""
+    from desktop.pos.layout_ids import LAYOUT_CHECKOUT_PRO, normalize_layout_id
+
+    if normalize_layout_id(getattr(tab, '_checkout_layout', '')) != LAYOUT_CHECKOUT_PRO:
+        return
+    sale = getattr(tab, '_sale_panel', None)
+    if not _alive(sale):
+        return
+    sw = int(sale.width() or 0)
+    narrow = sw > 0 and sw < NARROW_SALE
+    try:
+        from PyQt5.QtWidgets import QSizePolicy as _SP
+        sale.setMaximumWidth(16777215)
+        pol = sale.sizePolicy()
+        pol.setHorizontalPolicy(_SP.Ignored)
+        pol.setVerticalPolicy(_SP.Preferred)
+        sale.setSizePolicy(pol)
+        for attr in ('_sale_cart_scroll', '_sale_summary_wrap', '_cart_hdr', '_cart_splitter'):
+            w = getattr(tab, attr, None)
+            if not _alive(w):
+                continue
+            w.setMinimumWidth(0)
+            w.setMaximumWidth(16777215)
+            p = w.sizePolicy()
+            p.setHorizontalPolicy(_SP.Ignored)
+            w.setSizePolicy(p)
+    except Exception:
+        pass
+    clist = getattr(tab, '_cart_list', None)
+    if _alive(clist):
+        try:
+            if hasattr(clist, 'set_compact_table'):
+                clist.set_compact_table(narrow)
+            if hasattr(clist, 'sync_width_fit'):
+                clist.sync_width_fit(sw)
+        except Exception:
+            pass
+    disc = getattr(tab, '_disc', None)
+    if _alive(disc):
+        try:
+            disc.setFixedWidth(100 if narrow else 150)
+        except Exception:
+            pass
 
 
 def sync_pro_square_layout(tab) -> None:
@@ -1611,6 +1658,8 @@ def sync_pro_square_layout(tab) -> None:
                     ch.setMinimumWidth(0)
         except Exception:
             pass
+
+    sync_pro_sale_panel(tab)
 
 
 def apply_checkout_pro_chrome(tab) -> None:
