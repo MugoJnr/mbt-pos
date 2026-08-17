@@ -3,6 +3,6 @@
     "build": "RC-2026-08-17-v3.0.63",
     "released": "2026-08-17",
     "release_notes": "Simple Counter replaces the redundant Product Explorer layout. The POS toolbar now reflows without overlapping controls on compact cashier screens.",
-    "checksum_sha256": "",
+    "checksum_sha256": "64f72796aee744d7a298d7d68b576a8444632694c68abf9f0d7395e574fc8bcd",
     "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.63/MBT_POS_Setup.exe"
 }
