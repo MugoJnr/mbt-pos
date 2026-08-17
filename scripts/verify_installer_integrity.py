@@ -1,6 +1,9 @@
 ﻿"""Verify dist Setup SHA256 matches version.json, sidecar, and embedded freeze tree."""
 from __future__ import annotations
 
+# An installer cannot embed its own final hash.  Only post-build release
+# metadata and the sidecar are authoritative for the installer checksum.
+
 import hashlib
 import json
 import sys
@@ -10,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
 SIDECAR = ROOT / "dist" / "MBT_POS_Setup.exe.sha256"
 VERSION_JSON = ROOT / "version.json"
-INTERNAL = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
 MIN_BYTES = 50_000_000
 
 
@@ -38,14 +40,6 @@ def main() -> int:
         errors.append("version.json checksum_sha256 empty or invalid")
     elif declared != file_hash:
         errors.append(f"version.json mismatch: declared={declared} file={file_hash}")
-    if INTERNAL.is_file():
-        emb = (json.loads(INTERNAL.read_text(encoding="utf-8-sig")).get("checksum_sha256") or "").strip().lower()
-        if len(emb) != 64:
-            errors.append("embedded _internal/version.json checksum empty")
-        elif emb != file_hash:
-            errors.append(f"embedded mismatch: embedded={emb} file={file_hash}")
-    else:
-        errors.append(f"missing embedded tree: {INTERNAL}")
     if SIDECAR.is_file():
         side = SIDECAR.read_text(encoding="utf-8").strip().split()[0].lower()
         if side != file_hash:
@@ -62,7 +56,7 @@ def main() -> int:
     print(f"INTEGRITY PASS v{ver}")
     print(f"setup_sha256={file_hash}")
     print(f"size={size}")
-    print("version.json == sidecar == embedded == Setup.exe")
+    print("version.json == sidecar == Setup.exe")
     return 0
 
 

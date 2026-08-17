@@ -1,4 +1,4 @@
-"""Stamp version.json checksum from dist Setup and optionally publish.
+"""Stamp release metadata from dist Setup and optionally publish.
 
 Usage:
   python scripts/publish_release_3.py [--publish] [--install]
@@ -35,62 +35,24 @@ def stamp_checksum() -> dict:
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
     vj["checksum_sha256"] = digest
     VERSION_JSON.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-    # Also stamp into packaged tree if present (next NSIS / local run)
-    packaged = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
-    if packaged.is_file():
-        packaged.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-    # Keep a root-level copy next to the frozen EXE when present
-    packaged_root = ROOT / "dist" / "MBT_POS" / "version.json"
-    if packaged_root.parent.is_dir():
-        packaged_root.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
     SIDECAR.write_text(f"{digest}  MBT_POS_Setup.exe\n", encoding="utf-8", newline="\n")
-    # Patch installed Program Files copy when present (QA / same-PC upgrade)
-    for pf in (
-        Path(r"C:\Program Files\MugoByte\MBT POS\_internal\version.json"),
-        Path(r"C:\Program Files\MugoByte\MBT POS\version.json"),
-    ):
-        if pf.is_file():
-            try:
-                pf.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-                print(f"stamped install: {pf}")
-            except OSError as e:
-                print(f"warn: could not stamp {pf}: {e}")
     print(f"version={vj['version']} sha256={digest} size={SETUP.stat().st_size}")
     return vj
 
 
-def embed_checksum_before_nsis() -> None:
-    """Copy root version.json (must already carry checksum_sha256) into freeze tree.
+def prepare_build_metadata() -> None:
+    """Clear the prior release hash before PyInstaller consumes version.json.
 
-    Call after PyInstaller and before makensis so Setup embeds a non-empty SHA.
-    After makensis, run stamp_checksum() so root/sidecar match the new Setup bytes.
-    One optional second makensis after stamp embeds the matching Setup SHA into the
-    next installer build (BUILD.bat does freeze → nsis → stamp → nsis → stamp).
+    An installer cannot contain its own final SHA-256: adding the hash changes the
+    installer bytes and therefore its hash. The released installer is verified only
+    from post-build release metadata and its sidecar.
     """
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
-    digest = (vj.get("checksum_sha256") or "").strip()
-    if len(digest) != 64:
-        # Prefer existing Setup hash if we are rebuilding installer only
-        if SETUP.is_file():
-            vj["checksum_sha256"] = sha256_file(SETUP)
-            VERSION_JSON.write_text(
-                json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n"
-            )
-            digest = vj["checksum_sha256"]
-        else:
-            raise SystemExit(
-                "version.json checksum_sha256 empty and no dist Setup to hash — "
-                "build Setup once, then re-run with stamp"
-            )
-    internal = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
-    if not internal.parent.is_dir():
-        raise SystemExit(f"Missing freeze tree: {internal.parent}")
-    payload = json.dumps(vj, indent=4) + "\n"
-    internal.write_text(payload, encoding="utf-8", newline="\n")
-    (ROOT / "dist" / "MBT_POS" / "version.json").write_text(
-        payload, encoding="utf-8", newline="\n"
+    vj["checksum_sha256"] = ""
+    VERSION_JSON.write_text(
+        json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n"
     )
-    print(f"embedded checksum into freeze tree: {digest}")
+    print("prepared version.json without a self-referential installer checksum")
 
 
 def gh_release(vj: dict) -> None:
@@ -170,13 +132,13 @@ def main() -> None:
     ap.add_argument("--install", action="store_true")
     ap.add_argument("--stamp-only", action="store_true")
     ap.add_argument(
-        "--embed-before-nsis",
+        "--prepare-build",
         action="store_true",
-        help="Copy version.json with checksum into dist/MBT_POS before makensis",
+        help="Clear the previous release checksum before PyInstaller runs",
     )
     args = ap.parse_args()
-    if args.embed_before_nsis:
-        embed_checksum_before_nsis()
+    if args.prepare_build:
+        prepare_build_metadata()
         return
     vj = stamp_checksum()
     if args.stamp_only:

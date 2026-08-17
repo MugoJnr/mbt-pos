@@ -230,6 +230,12 @@ echo        Do not close this window.
 echo.
 
 cd /d "%SOURCE_DIR%"
+echo  [3a/5] Clearing prior release checksum from build metadata...
+"%PY_EXE%" scripts\publish_release_3.py --prepare-build
+if errorlevel 1 (
+    echo  [ERROR] Could not prepare build metadata.
+    pause & exit /b 1
+)
 taskkill /F /IM MBT_POS.exe >nul 2>&1
 if exist build rd /s /q build
 if exist dist  rd /s /q dist
@@ -246,15 +252,6 @@ if not exist "dist\MBT_POS\MBT_POS.exe" (
     pause & exit /b 1
 )
 echo  [OK] dist\MBT_POS\MBT_POS.exe ready.
-echo.
-
-:: Embed checksum into freeze tree before NSIS (non-empty _internal/version.json)
-echo  [3b/5] Embedding version.json checksum into freeze tree...
-"%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
-if errorlevel 1 (
-    echo  [ERROR] Could not embed checksum into freeze tree.
-    pause & exit /b 1
-)
 echo.
 
 :: ════════════════════════════════════════════════════════════════
@@ -286,30 +283,18 @@ if "!NSIS_CMD!"=="" (
     if errorlevel 1 (
         echo  [!] NSIS failed. Use dist\MBT_POS.exe directly.
     ) else (
-        echo  [OK] dist\MBT_POS_Setup.exe ready — stamping published SHA...
+        echo  [OK] dist\MBT_POS_Setup.exe ready — stamping release SHA...
         "%PY_EXE%" scripts\publish_release_3.py --stamp-only
         if errorlevel 1 (
             echo  [ERROR] checksum stamp failed.
             pause & exit /b 1
         )
-        echo  [OK] version.json + sidecar stamped to Setup SHA-256.
-        echo  [4b/5] Re-embed checksum and rebuild installer (embedded SHA match)...
-        "%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
+        "%PY_EXE%" scripts\verify_installer_integrity.py
         if errorlevel 1 (
-            echo  [ERROR] Re-embed checksum failed.
+            echo  [ERROR] Installer integrity gate failed. Nothing may be published.
             pause & exit /b 1
         )
-        "!NSIS_CMD!" installer.nsi
-        if errorlevel 1 (
-            echo  [ERROR] Second NSIS build failed.
-            pause & exit /b 1
-        )
-        "%PY_EXE%" scripts\publish_release_3.py --stamp-only
-        if errorlevel 1 (
-            echo  [ERROR] Final checksum stamp failed.
-            pause & exit /b 1
-        )
-        echo  [OK] Embedded checksum matches final Setup SHA-256.
+        echo  [OK] Release metadata and sidecar match final Setup SHA-256.
     )
 )
 echo.
