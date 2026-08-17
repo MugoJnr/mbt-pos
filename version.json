@@ -3,6 +3,6 @@
     "build": "RC-2026-08-17-v3.0.61",
     "released": "2026-08-17",
     "release_notes": "Fix activation not surviving app close/restart: migrate Roaming license store when LocalAppData lc.db exists but has no token (empty schema was blocking migration), use deterministic MachineGuid crypto secret on Windows, fsync license writes, and skip stale tamper re-activation walls.",
-    "checksum_sha256": "",
+    "checksum_sha256": "681e796ad3a5d77af40ac504cdc828a6850ec128acf750cf20bc4ecbcc9ad8cb",
     "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.61/MBT_POS_Setup.exe"
 }
