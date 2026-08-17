@@ -81,6 +81,7 @@ def _shop_already_ready(engine) -> bool:
     except Exception:
         initialized = False
     has_local = False
+    decryptable = False
     try:
         from licensing.license_engine import _read_raw_license_token, _resolve_inner_license_token
         inner, _ = _resolve_inner_license_token()
@@ -89,16 +90,29 @@ def _shop_already_ready(engine) -> bool:
             or getattr(engine, 'has_local_license_payload', lambda: False)()
             or _read_raw_license_token()
         )
+        decryptable = bool(
+            inner
+            or getattr(engine, '_license_data', None)
+            or getattr(engine, 'has_local_license_payload', lambda: False)()
+        )
     except Exception:
         has_local = False
+        decryptable = False
     if not (initialized or has_local):
         return False
     try:
-        decryptable = bool(
-            getattr(engine, '_license_data', None)
-            or getattr(engine, 'has_local_license_payload', lambda: False)()
-        )
-        # Clock false-tamper must not force the activation wall after reboot.
+        # Stale tamper flags from clock rollback must not force re-activation
+        # when a license token is still on disk for this PC.
+        if engine.store.get('tampered') and has_local and not decryptable:
+            try:
+                engine.store.set('tampered', False)
+                engine.revalidate()
+                decryptable = bool(
+                    getattr(engine, '_license_data', None)
+                    or getattr(engine, 'has_local_license_payload', lambda: False)()
+                )
+            except Exception:
+                pass
         if engine.store.get('tampered') and not decryptable:
             return False
         if engine.store.get('revoked') and not getattr(engine, '_license_data', None):
@@ -131,9 +145,10 @@ def _shop_already_ready(engine) -> bool:
 
 
 def check_license():
-    from licensing.license_engine import LicenseEngine
+    from licensing.license_engine import LicenseEngine, ensure_license_store_ready
     from licensing.activation_ui import show_activation_screen
 
+    ensure_license_store_ready()
     engine = LicenseEngine(PROJECT_ROOT)
     if engine.is_valid:
         return

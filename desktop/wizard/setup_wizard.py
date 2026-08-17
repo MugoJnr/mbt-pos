@@ -38,6 +38,24 @@ def needs_wizard() -> bool:
     return not os.path.exists(INIT_FLAG)
 
 
+def device_has_persisted_license() -> bool:
+    """True when a license token exists locally (even if grace/cloud flags are set)."""
+    try:
+        from licensing.license_engine import LicenseEngine, _read_raw_license_token
+        eng = LicenseEngine(PROJECT_ROOT)
+        if eng.is_valid:
+            return True
+        if _read_raw_license_token():
+            try:
+                from launcher import _shop_already_ready
+                return _shop_already_ready(eng)
+            except Exception:
+                return True
+        return bool(getattr(eng, 'has_local_license_payload', lambda: False)())
+    except Exception:
+        return False
+
+
 def mark_initialized():
     os.makedirs(os.path.dirname(INIT_FLAG), exist_ok=True)
     with open(INIT_FLAG, 'w') as f:
@@ -112,7 +130,7 @@ class SetupWizard(QDialog):
         try:
             from licensing.license_engine import LicenseEngine
             eng = LicenseEngine(PROJECT_ROOT)
-            if getattr(eng, 'is_valid', False):
+            if getattr(eng, 'is_valid', False) or device_has_persisted_license():
                 self._data['license_activated'] = True
                 try:
                     self._data['license_key'] = eng.store.get('cloud_license_key') or ''
@@ -611,8 +629,7 @@ class SetupWizard(QDialog):
         already_licensed = bool(self._data.get('license_activated'))
         if not already_licensed:
             try:
-                from licensing.license_engine import LicenseEngine
-                if LicenseEngine(PROJECT_ROOT).is_valid:
+                if device_has_persisted_license():
                     already_licensed = True
                     self._data['license_activated'] = True
             except Exception:
@@ -1255,8 +1272,7 @@ class SetupWizard(QDialog):
         if step == 2:
             if not self._data.get('license_activated'):
                 try:
-                    from licensing.license_engine import LicenseEngine
-                    if LicenseEngine(PROJECT_ROOT).is_valid:
+                    if device_has_persisted_license():
                         self._data['license_activated'] = True
                         if hasattr(self, 'w_lic_status'):
                             self.w_lic_status.setText("✓ License already active on this device")
@@ -1330,8 +1346,7 @@ class SetupWizard(QDialog):
         elif step == 2:
             if not self._data.get('license_activated'):
                 try:
-                    from licensing.license_engine import LicenseEngine
-                    if LicenseEngine(PROJECT_ROOT).is_valid:
+                    if device_has_persisted_license():
                         self._data['license_activated'] = True
                 except Exception:
                     pass

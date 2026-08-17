@@ -30,8 +30,27 @@ def _legacy_roaming_lic_dir() -> str:
     return os.path.expanduser('~/.config/mugobyte/.mbt_lic')
 
 
+def _store_has_license_token(db_path: str) -> bool:
+    """True when lc.db contains a non-empty license_token row."""
+    if not os.path.isfile(db_path):
+        return False
+    try:
+        db = sqlite3.connect(db_path)
+        row = db.execute(
+            "SELECT value FROM license_data WHERE key='license_token' LIMIT 1"
+        ).fetchone()
+        db.close()
+        return bool(row and str(row[0] or '').strip())
+    except Exception:
+        return False
+
+
 def _migrate_legacy_lic_store(canonical_dir: str, legacy_dir: str) -> None:
-    """One-time copy from Roaming → LocalAppData when the new store is empty."""
+    """One-time copy from Roaming → LocalAppData when canonical has no license.
+
+    Do not use file size — an empty schema lc.db is ~20KB and would block
+    migration forever, leaving shops stuck on the activation screen after restart.
+    """
     try:
         if os.path.normcase(os.path.abspath(canonical_dir)) == os.path.normcase(
             os.path.abspath(legacy_dir)
@@ -39,15 +58,21 @@ def _migrate_legacy_lic_store(canonical_dir: str, legacy_dir: str) -> None:
             return
         canon_db = os.path.join(canonical_dir, 'lc.db')
         legacy_db = os.path.join(legacy_dir, 'lc.db')
-        if os.path.isfile(canon_db) and os.path.getsize(canon_db) > 512:
+        if _store_has_license_token(canon_db):
             return
         if not os.path.isfile(legacy_db):
+            return
+        if not _store_has_license_token(legacy_db):
             return
         os.makedirs(canonical_dir, exist_ok=True)
         for name in os.listdir(legacy_dir):
             src = os.path.join(legacy_dir, name)
             dst = os.path.join(canonical_dir, name)
-            if os.path.isfile(src) and not os.path.exists(dst):
+            if not os.path.isfile(src):
+                continue
+            if name == 'lc.db':
+                shutil.copy2(src, dst)
+            elif not os.path.exists(dst):
                 shutil.copy2(src, dst)
         logger.info('Migrated license store %s → %s', legacy_dir, canonical_dir)
     except Exception as e:
@@ -151,9 +176,8 @@ def _resolve_local_license_secret() -> str:
 
     recovered = _machine_guid_recovery_secret()
     if recovered:
-        # Prefer a per-PC secret so activation survives crypto.secret deletion.
+        # Windows: deterministic per-PC secret survives crypto.secret loss/reinstall.
         if _license_db_has_token():
-            # Token already exists: do not overwrite a still-valid file secret.
             return recovered
         try:
             _write_secret_file(canonical, recovered)
@@ -163,7 +187,10 @@ def _resolve_local_license_secret() -> str:
 
     import secrets
     val = secrets.token_urlsafe(48)
-    _write_secret_file(canonical, val)
+    try:
+        _write_secret_file(canonical, val)
+    except Exception as e:
+        logger.warning('Could not persist license crypto secret: %s', e)
     return val
 
 
@@ -628,11 +655,12 @@ def _sync_cloud_identity_fingerprint(device_id: str = '') -> None:
 
 def _verify_license_token_on_disk() -> bool:
     """True when lc.db contains a non-empty license_token row."""
-    try:
-        raw = _read_raw_license_token()
-        return bool(raw and str(raw).strip())
-    except Exception:
-        return False
+    return _store_has_license_token(_hidden_db_path())
+
+
+def ensure_license_store_ready() -> str:
+    """Resolve canonical license dir and migrate legacy Roaming store if needed."""
+    return _lic_store_dir()
 
 
 class LicenseStore:
@@ -658,7 +686,12 @@ class LicenseStore:
         db  = sqlite3.connect(self.db_path)
         db.execute("INSERT OR REPLACE INTO license_data (key,value,ts) VALUES (?,?,?)",
                    (key, enc, int(time.time())))
-        db.commit(); db.close()
+        db.commit()
+        try:
+            os.fsync(db.fileno())
+        except Exception:
+            pass
+        db.close()
 
     def get(self, key: str, default=None):
         try:

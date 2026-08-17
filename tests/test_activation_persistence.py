@@ -477,6 +477,87 @@ class RestartPersistenceTests(unittest.TestCase):
             for p in patches:
                 p.stop()
 
+    def test_empty_local_schema_does_not_block_roaming_migration(self):
+        """Empty LocalAppData lc.db (~20KB) must not skip Roaming license migration."""
+        import tempfile
+        import launcher
+        import licensing.license_engine as le
+
+        tmp = tempfile.mkdtemp()
+        local_lic = os.path.join(tmp, 'local', '.mbt_lic')
+        roam_lic = os.path.join(tmp, 'roam', '.mbt_lic')
+        os.makedirs(local_lic, exist_ok=True)
+        os.makedirs(roam_lic, exist_ok=True)
+        mg = 'empty-schema-block-test'
+        fp = __import__('hashlib').sha256(f'mg:{mg}'.encode()).hexdigest()[:40]
+
+        roam_db = os.path.join(roam_lic, 'lc.db')
+        seed = [
+            patch.object(le, '_lic_store_dir', return_value=roam_lic),
+            patch.object(le, '_hidden_db_path', return_value=roam_db),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+            patch.object(le, '_device_id_cache_path', return_value=os.path.join(roam_lic, 'device.id')),
+            patch.object(le, '_license_crypto_secret_path', return_value=os.path.join(roam_lic, 'crypto.secret')),
+        ]
+        le._MASTER_SECRET_CACHE = None
+        le._LEGACY_SECRET_CANDIDATES = None
+        for p in seed:
+            p.start()
+        try:
+            store = le.LicenseStore(fp)
+            lic = {
+                'device_id': fp,
+                'plan': 'trial',
+                'issued_at': 1,
+                'expires_at': 9999999999,
+                'duration_days': 30,
+                'activated_at': 1,
+                'version': 2,
+            }
+            store.set('license_token', le.encrypt_payload(lic, fp))
+        finally:
+            for p in seed:
+                p.stop()
+
+        local_db = os.path.join(local_lic, 'lc.db')
+        empty_seed = [
+            patch.object(le, '_lic_store_dir', return_value=local_lic),
+            patch.object(le, '_hidden_db_path', return_value=local_db),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+        ]
+        le._MASTER_SECRET_CACHE = None
+        le._LEGACY_SECRET_CANDIDATES = None
+        for p in empty_seed:
+            p.start()
+        try:
+            le.LicenseStore('x' * 40)
+        finally:
+            for p in empty_seed:
+                p.stop()
+        self.assertGreater(os.path.getsize(local_db), 512, 'empty schema should be large')
+
+        load = [
+            patch.object(le, '_lic_store_dir', return_value=local_lic),
+            patch.object(le, '_legacy_roaming_lic_dir', return_value=roam_lic),
+            patch.object(le, '_hidden_db_path', return_value=local_db),
+            patch.object(le, '_win_machine_guid', return_value=mg),
+            patch.object(le, '_device_id_cache_path', return_value=os.path.join(local_lic, 'device.id')),
+            patch.object(le, '_license_crypto_secret_path', return_value=os.path.join(local_lic, 'crypto.secret')),
+        ]
+        le._MASTER_SECRET_CACHE = None
+        le._LEGACY_SECRET_CANDIDATES = None
+        for p in load:
+            p.start()
+        try:
+            le._migrate_legacy_lic_store(local_lic, roam_lic)
+            self.assertTrue(le._store_has_license_token(local_db))
+            eng = le.LicenseEngine()
+            self.assertTrue(eng.is_valid)
+            self.assertTrue(launcher._shop_already_ready(eng))
+        finally:
+            for p in load:
+                p.stop()
+
     def test_local_license_survives_new_engine(self):
         import os
         import tempfile

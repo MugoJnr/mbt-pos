@@ -293,8 +293,23 @@ if "!NSIS_CMD!"=="" (
             pause & exit /b 1
         )
         echo  [OK] version.json + sidecar stamped to Setup SHA-256.
-        echo       Note: re-run BUILD ^(or nsis after stamp+embed^) if you need the
-        echo       packaged _internal checksum to match this exact Setup binary.
+        echo  [4b/5] Re-embed checksum and rebuild installer (embedded SHA match)...
+        "%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
+        if errorlevel 1 (
+            echo  [ERROR] Re-embed checksum failed.
+            pause & exit /b 1
+        )
+        "!NSIS_CMD!" installer.nsi
+        if errorlevel 1 (
+            echo  [ERROR] Second NSIS build failed.
+            pause & exit /b 1
+        )
+        "%PY_EXE%" scripts\publish_release_3.py --stamp-only
+        if errorlevel 1 (
+            echo  [ERROR] Final checksum stamp failed.
+            pause & exit /b 1
+        )
+        echo  [OK] Embedded checksum matches final Setup SHA-256.
     )
 )
 echo.
