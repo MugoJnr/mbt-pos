@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import QSizePolicy, QSplitter, QSplitterHandle, QWidget
 
 from desktop.pos.layout_ids import (
     LAYOUT_CHECKOUT_PRO,
-    LAYOUT_PRODUCT_EXPLORER,
+    LAYOUT_SIMPLE_COUNTER,
     LAYOUT_RETAIL_CLASSIC,
     normalize_layout_id,
 )
@@ -45,14 +45,14 @@ CART_FREE_TRAVEL = 120
 # to an invisible gutter (that is what produced the products-only screenshot).
 MIN_WIDTHS = {
     LAYOUT_CHECKOUT_PRO: (240, 280, 300),
-    LAYOUT_PRODUCT_EXPLORER: (360, 460),
+    LAYOUT_SIMPLE_COUNTER: (360, 460),
     LAYOUT_RETAIL_CLASSIC: (360, 460),
 }
 # When the shell is narrower than the sum of floors (1024×768, square, 150% DPI),
 # scale down instead of forcing overflow / overlapping panes.
 HARD_MIN_WIDTHS = {
     LAYOUT_CHECKOUT_PRO: (140, 180, 200),
-    LAYOUT_PRODUCT_EXPLORER: (200, 240),
+    LAYOUT_SIMPLE_COUNTER: (200, 240),
     LAYOUT_RETAIL_CLASSIC: (200, 240),
 }
 # Square / tablet shells (1024²–1280²) — shipped floors starve catalog & clip the pay rail.
@@ -170,7 +170,7 @@ def _clamp_to_mins(sizes: list, mins: tuple, total: int) -> list:
 # Shipped starting widths: Pro keeps 25/50/25, Classic/Explorer keep the rail
 # widths they had as fixed panels.
 _PINNED_RAIL = {
-    LAYOUT_PRODUCT_EXPLORER: 560,
+    LAYOUT_SIMPLE_COUNTER: 560,
     LAYOUT_RETAIL_CLASSIC: 600,
 }
 
@@ -184,7 +184,7 @@ _CART_LIST_FLOOR = cart_viewport_px(CART_CASHIER_ROWS, include_header=True)
 CART_MIN_HEIGHTS = {
     # Cashier viewport ≈ header + 5×76px rows; splitter grows the list further.
     LAYOUT_CHECKOUT_PRO: (_CART_LIST_FLOOR, 140),
-    LAYOUT_PRODUCT_EXPLORER: (_CART_LIST_FLOOR, 110),
+    LAYOUT_SIMPLE_COUNTER: (_CART_LIST_FLOOR, 110),
     LAYOUT_RETAIL_CLASSIC: (_CART_LIST_FLOOR, 110),
 }
 # Absolute floor even after short-rail scaling — never drop below 5 table rows.

@@ -1,4 +1,4 @@
-"""Compose shared POS panels into Retail Classic / Product Explorer / Checkout Pro.
+"""Compose shared POS panels into Retail Classic / Simple Counter / Checkout Pro.
 
 Panels are created once by SalesTab and reparented here — never duplicated.
 Business logic stays on SalesTab; this module only arranges geometry.
@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 
 from desktop.pos.layout_ids import (
     LAYOUT_CHECKOUT_PRO,
-    LAYOUT_PRODUCT_EXPLORER,
+    LAYOUT_SIMPLE_COUNTER,
     LAYOUT_RETAIL_CLASSIC,
     normalize_layout_id,
 )
@@ -227,7 +227,7 @@ def _apply_layout_shell_inner(tab, lid: str, shell, safe_show, hide_orphan_pos_f
     elif lid == LAYOUT_RETAIL_CLASSIC:
         _assemble_retail_classic(tab, shell, product, sale, actions, body, foot)
     else:
-        _assemble_product_explorer(tab, shell, product, sale, actions, body, foot)
+        _assemble_simple_counter(tab, shell, product, sale, actions, body, foot)
 
     tab._checkout_layout = lid
     tab._left_panel = product
@@ -537,8 +537,13 @@ def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_na
     return scroll
 
 
-def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
-    """Browse-first grid + Current Sale / payment column (prior POS philosophy)."""
+def _assemble_simple_counter(tab, shell, product, sale, actions, body, foot):
+    """Fast two-column counter: catalogue | Current Sale, payment and checkout.
+
+    This replaces Product Explorer.  It retains the same shared panels and
+    handlers, so cash, M-Pesa, split, debt, stock checks and receipt actions
+    behave exactly as they do in the other checkout layouts.
+    """
     from desktop.pos.layouts import splitters
 
     lay = QHBoxLayout(shell)
@@ -572,7 +577,7 @@ def _assemble_product_explorer(tab, shell, product, sale, actions, body, foot):
     lay.addWidget(split, 1)
     from desktop.utils.quiet_ui import safe_show
     safe_show(split)
-    splitters.install(tab, LAYOUT_PRODUCT_EXPLORER, (product, right))
+    splitters.install(tab, LAYOUT_SIMPLE_COUNTER, (product, right))
     tab._right_panel = right
     tab._center_panel = None
     tab._classic_right = getattr(tab, '_classic_right', None)

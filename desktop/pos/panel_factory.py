@@ -242,6 +242,107 @@ class BusinessDayBar(QFrame):
         self.updateGeometry()
 
 
+class PosSearchToolbar(QFrame):
+    """Keep every catalog control reachable when a checkout pane gets narrow.
+
+    The product pane can be just a few hundred pixels wide in all three POS
+    layouts.  A fixed-width, single-row toolbar made the category, layout and
+    focus controls paint on top of each other at ordinary 1024px cashier
+    displays.  The same widgets are rearranged here; no POS actions are hidden
+    or replaced when the pane shrinks.
+    """
+
+    WIDE_UNDER = 740
+    MICRO_UNDER = 420
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('posSearchBarRow')
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QWidget#posSearchBarRow{{background:transparent;"
+            f"border-bottom:1px solid {C['border']};}}")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mode = None
+        self._root = QVBoxLayout(self)
+        self._rows = tuple(QHBoxLayout() for _ in range(3))
+        for row in self._rows:
+            self._root.addLayout(row)
+        self._search = self._category = self._layout_combo = None
+        self._refresh = self._focus = None
+
+    def setup(self, search, category, layout_combo, refresh, focus) -> None:
+        self._search, self._category, self._layout_combo = search, category, layout_combo
+        self._refresh, self._focus = refresh, focus
+        self._apply_layout(force=True)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_layout(force=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_layout(width=event.size().width())
+
+    @staticmethod
+    def _clear(row: QHBoxLayout) -> None:
+        while row.count():
+            row.takeAt(0)
+
+    def _apply_layout(self, *, force: bool = False, width: int | None = None) -> None:
+        if self._search is None:
+            return
+        w = int(width if width is not None else self.width())
+        if w <= 0 and self.parentWidget() is not None:
+            w = self.parentWidget().width()
+        mode = 'micro' if w < self.MICRO_UNDER else ('compact' if w < self.WIDE_UNDER else 'wide')
+        if not force and mode == self._mode:
+            return
+        self._mode = mode
+        for row in self._rows:
+            self._clear(row)
+            row.setSpacing(6 if mode != 'wide' else 10)
+        self._root.setContentsMargins(*( (8, 8, 8, 8) if mode == 'micro' else
+                                         ((10, 10, 10, 10) if mode == 'compact' else (16, 14, 16, 14)) ))
+        self._root.setSpacing(6 if mode != 'wide' else 0)
+
+        if mode == 'wide':
+            self._category.setFixedWidth(220)
+            self._layout_combo.setFixedWidth(168)
+            self._focus.setMinimumWidth(96)
+            self._rows[0].addWidget(self._search, 1)
+            self._rows[0].addWidget(self._category)
+            self._rows[0].addWidget(self._layout_combo)
+            self._rows[0].addWidget(self._refresh)
+            self._rows[0].addWidget(self._focus)
+            self.setMinimumHeight(72)
+        elif mode == 'compact':
+            self._category.setMinimumWidth(130)
+            self._category.setMaximumWidth(16777215)
+            self._layout_combo.setMinimumWidth(130)
+            self._layout_combo.setMaximumWidth(16777215)
+            self._focus.setMinimumWidth(76)
+            self._rows[0].addWidget(self._search, 1)
+            self._rows[0].addWidget(self._refresh)
+            self._rows[0].addWidget(self._focus)
+            self._rows[1].addWidget(self._category, 1)
+            self._rows[1].addWidget(self._layout_combo, 1)
+            self.setMinimumHeight(118)
+        else:
+            self._category.setMinimumWidth(0)
+            self._category.setMaximumWidth(16777215)
+            self._layout_combo.setMinimumWidth(0)
+            self._layout_combo.setMaximumWidth(16777215)
+            self._focus.setMinimumWidth(76)
+            self._rows[0].addWidget(self._search, 1)
+            self._rows[0].addWidget(self._refresh)
+            self._rows[1].addWidget(self._category, 1)
+            self._rows[2].addWidget(self._layout_combo, 1)
+            self._rows[2].addWidget(self._focus)
+            self.setMinimumHeight(164)
+        self.updateGeometry()
+
+
 def build_shared_panels(tab) -> None:
     """Create product / sale / actions panels and attach widgets onto ``tab``."""
     # Park every new panel under an invisible stash from birth — never free HWND.
@@ -314,40 +415,26 @@ def build_shared_panels(tab) -> None:
     tab._business_day_bar = biz
     ll.addWidget(biz)
 
-    search_bar = QWidget(product)
-    search_bar.setObjectName('posSearchBarRow')
-    search_bar.setAttribute(Qt.WA_StyledBackground, True)
-    # Object-scoped: an unqualified `border-bottom` here cascades onto every
-    # child label and paints stray hairlines under captions.
-    search_bar.setStyleSheet(
-        f"QWidget#posSearchBarRow{{background:transparent;"
-        f"border-bottom:1px solid {C['border']};}}")
-    sf = QHBoxLayout(search_bar)
-    sf.setContentsMargins(16, 14, 16, 14)
-    sf.setSpacing(10)
+    search_bar = PosSearchToolbar(product)
     tab._search = PosSearchBar()
     tab._search.textChanged.connect(tab._filter)
     tab._search.submitted.connect(tab._on_barcode_enter)
-    sf.addWidget(tab._search, 1)
     tab._cat = QComboBox()
     tab._cat.setObjectName('posCatCombo')
     tab._cat.setMinimumHeight(44)
-    tab._cat.setFixedWidth(220)
     from desktop.utils.pos_light_theme import style_cat_combo
     style_cat_combo(tab._cat, is_light=bool(getattr(tab, '_is_light', False)))
     tab._cat.addItem('All Categories')
     tab._cat.currentTextChanged.connect(tab._filter)
-    sf.addWidget(tab._cat)
     # Checkout layout switcher — always visible (incl. Checkout Pro); also in Settings → Checkout
     from desktop.pos.layout_ids import CHECKOUT_LAYOUTS, normalize_layout_id
     tab._layout_combo = QComboBox()
     tab._layout_combo.setObjectName('posLayoutCombo')
     tab._layout_combo.setMinimumHeight(44)
-    tab._layout_combo.setFixedWidth(168)
     tab._layout_combo.setToolTip(
         'POS checkout layout:\n'
         'Retail Classic — supermarket two-column + bottom payment\n'
-        'Product Explorer — card grid + Current Sale (default)\n'
+        'Simple Counter — card grid + Current Sale and payment rail (default)\n'
         'Checkout Pro — products | cart | actions\n'
         'Also available in Settings → Jump: Checkout')
     for key, label in CHECKOUT_LAYOUTS:
@@ -365,7 +452,6 @@ def build_shared_panels(tab) -> None:
     except Exception:
         pass
     tab._layout_combo.currentIndexChanged.connect(tab._on_layout_combo_changed)
-    sf.addWidget(tab._layout_combo)
     ref = IconBtn('', 40, 40)
     try:
         from desktop.utils.nav_icons import apply_button_icon
@@ -373,14 +459,13 @@ def build_shared_panels(tab) -> None:
     except Exception:
         pass
     ref.clicked.connect(lambda: tab.refresh(force=True))
-    sf.addWidget(ref)
     tab._refresh_btn = ref
     tab._focus_btn = SecondaryBtn('Focus', 40)
     tab._focus_btn.setMinimumWidth(96)
     tab._focus_btn.setToolTip(
         'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
     tab._focus_btn.clicked.connect(tab._toggle_focus_mode)
-    sf.addWidget(tab._focus_btn)
+    search_bar.setup(tab._search, tab._cat, tab._layout_combo, ref, tab._focus_btn)
     tab._theme_btn = None
     tab._search_bar = search_bar
     ll.addWidget(search_bar)

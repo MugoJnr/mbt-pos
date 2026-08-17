@@ -15,14 +15,15 @@ class LayoutIdsTests(unittest.TestCase):
     def test_normalize(self):
         from desktop.pos.layout_ids import (
             normalize_layout_id, LAYOUT_CHECKOUT_PRO, LAYOUT_RETAIL_CLASSIC,
-            LAYOUT_PRODUCT_EXPLORER, DEFAULT_CHECKOUT_LAYOUT,
+            LAYOUT_SIMPLE_COUNTER, DEFAULT_CHECKOUT_LAYOUT,
         )
         self.assertEqual(normalize_layout_id('checkout_pro'), LAYOUT_CHECKOUT_PRO)
         self.assertEqual(normalize_layout_id('Checkout Pro'), LAYOUT_CHECKOUT_PRO)
         self.assertEqual(normalize_layout_id('retail'), LAYOUT_RETAIL_CLASSIC)
         self.assertEqual(normalize_layout_id(''), DEFAULT_CHECKOUT_LAYOUT)
         self.assertEqual(normalize_layout_id('nope'), DEFAULT_CHECKOUT_LAYOUT)
-        self.assertEqual(normalize_layout_id('product_explorer'), LAYOUT_PRODUCT_EXPLORER)
+        self.assertEqual(normalize_layout_id('product_explorer'), LAYOUT_SIMPLE_COUNTER)
+        self.assertEqual(normalize_layout_id('simple counter'), LAYOUT_SIMPLE_COUNTER)
 
 
 class MultiLayoutSwitchTests(unittest.TestCase):
@@ -53,7 +54,7 @@ class MultiLayoutSwitchTests(unittest.TestCase):
 
     def test_switch_reuses_same_widgets(self):
         from desktop.pos.layout_ids import (
-            LAYOUT_CHECKOUT_PRO, LAYOUT_RETAIL_CLASSIC, LAYOUT_PRODUCT_EXPLORER,
+            LAYOUT_CHECKOUT_PRO, LAYOUT_RETAIL_CLASSIC, LAYOUT_SIMPLE_COUNTER,
         )
         tab = self.tab
         tab.cart = [{
@@ -62,7 +63,7 @@ class MultiLayoutSwitchTests(unittest.TestCase):
         }]
         tab._cart_select_idx = 0
         tab._refresh_cart()
-        for lid in (LAYOUT_RETAIL_CLASSIC, LAYOUT_CHECKOUT_PRO, LAYOUT_PRODUCT_EXPLORER):
+        for lid in (LAYOUT_RETAIL_CLASSIC, LAYOUT_CHECKOUT_PRO, LAYOUT_SIMPLE_COUNTER):
             tab.set_checkout_layout(lid)
             self.assertEqual(tab._checkout_layout, lid)
             self.assertEqual(len(tab.cart), 1)

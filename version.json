@@ -1,8 +1,8 @@
 {
-    "version": "3.0.62",
-    "build": "RC-2026-08-17-v3.0.62",
+    "version": "3.0.63",
+    "build": "RC-2026-08-17-v3.0.63",
     "released": "2026-08-17",
-    "release_notes": "Fix installer integrity: checksum is stamped only after the final installer is built, with a mandatory verification gate before publishing.",
-    "checksum_sha256": "34ba57078df02265344a305dc15a0f08024fd324f4b60d71544723cfb2b62c05",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.62/MBT_POS_Setup.exe"
+    "release_notes": "Simple Counter replaces the redundant Product Explorer layout. The POS toolbar now reflows without overlapping controls on compact cashier screens.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.63/MBT_POS_Setup.exe"
 }

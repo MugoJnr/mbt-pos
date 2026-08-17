@@ -17,7 +17,7 @@ class CartViewportMath(unittest.TestCase):
         )
         from desktop.pos.layouts.splitters import CART_LIST_HARD_MIN, CART_MIN_HEIGHTS
         from desktop.pos.layout_ids import (
-            LAYOUT_CHECKOUT_PRO, LAYOUT_PRODUCT_EXPLORER, LAYOUT_RETAIL_CLASSIC,
+            LAYOUT_CHECKOUT_PRO, LAYOUT_SIMPLE_COUNTER, LAYOUT_RETAIL_CLASSIC,
         )
 
         self.assertEqual(CART_CASHIER_ROWS, 5)
@@ -26,7 +26,7 @@ class CartViewportMath(unittest.TestCase):
         five = cart_viewport_px(5)
         self.assertGreaterEqual(five, 5 * CART_ROW_H)
         self.assertGreaterEqual(CART_LIST_HARD_MIN, five)
-        for lid in (LAYOUT_CHECKOUT_PRO, LAYOUT_PRODUCT_EXPLORER, LAYOUT_RETAIL_CLASSIC):
+        for lid in (LAYOUT_CHECKOUT_PRO, LAYOUT_SIMPLE_COUNTER, LAYOUT_RETAIL_CLASSIC):
             self.assertGreaterEqual(
                 CART_MIN_HEIGHTS[lid][0], CART_LIST_HARD_MIN,
                 f'{lid} cart floor too short')
