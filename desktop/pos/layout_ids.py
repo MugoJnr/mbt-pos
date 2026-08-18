@@ -4,14 +4,18 @@ CHECKOUT_LAYOUT_KEY = 'pos_checkout_layout'
 
 LAYOUT_RETAIL_CLASSIC = 'retail_classic'
 LAYOUT_PRODUCT_EXPLORER = 'product_explorer'
+LAYOUT_SIMPLE_COUNTER = 'simple_counter'
+LAYOUT_MODERN_CHECKOUT = 'modern_checkout'
 LAYOUT_CHECKOUT_PRO = 'checkout_pro'
 
-# Default matches the prior POS chrome (card grid + Current Sale column).
-DEFAULT_CHECKOUT_LAYOUT = LAYOUT_PRODUCT_EXPLORER
+# Default is the streamlined counter: catalogue plus one clear sale/payment rail.
+DEFAULT_CHECKOUT_LAYOUT = LAYOUT_SIMPLE_COUNTER
 
 CHECKOUT_LAYOUTS = (
     (LAYOUT_RETAIL_CLASSIC, 'Retail Classic'),
     (LAYOUT_PRODUCT_EXPLORER, 'Product Explorer'),
+    (LAYOUT_SIMPLE_COUNTER, 'Simple Counter'),
+    (LAYOUT_MODERN_CHECKOUT, 'Modern Checkout'),
     (LAYOUT_CHECKOUT_PRO, 'Checkout Pro'),
 )
 
@@ -22,6 +26,10 @@ _ALIASES = {
     'explorer': LAYOUT_PRODUCT_EXPLORER,
     'product_explorer': LAYOUT_PRODUCT_EXPLORER,
     'current': LAYOUT_PRODUCT_EXPLORER,
+    'simple': LAYOUT_SIMPLE_COUNTER,
+    'simple_counter': LAYOUT_SIMPLE_COUNTER,
+    'modern': LAYOUT_MODERN_CHECKOUT,
+    'modern_checkout': LAYOUT_MODERN_CHECKOUT,
     'pro': LAYOUT_CHECKOUT_PRO,
     'checkout_pro': LAYOUT_CHECKOUT_PRO,
     'checkout-pro': LAYOUT_CHECKOUT_PRO,
@@ -43,4 +51,4 @@ def layout_label(layout_id: str) -> str:
     for key, label in CHECKOUT_LAYOUTS:
         if key == lid:
             return label
-    return 'Product Explorer'
+    return 'Simple Counter'

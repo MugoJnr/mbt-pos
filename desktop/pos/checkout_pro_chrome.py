@@ -1738,7 +1738,7 @@ def apply_checkout_pro_chrome(tab) -> None:
     if _alive(layout_combo):
         layout_combo.setFixedWidth(150)
         layout_combo.setToolTip(
-            'Checkout layout — Retail Classic / Product Explorer / Checkout Pro.\n'
+            'Checkout layout — Retail Classic / Simple Counter / Checkout Pro.\n'
             'Also available in Settings → Jump: Checkout')
     search_row_lay = search_bar.layout() if _alive(search_bar) else None
     if search_row_lay is not None:

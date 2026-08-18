@@ -515,7 +515,7 @@ class SettingsTab(QWidget):
             self.pos_checkout_layout.addItem(label, key)
         self.pos_checkout_layout.setToolTip(
             'Retail Classic: supermarket two-column + bottom payment.\n'
-            'Product Explorer: card grid + Current Sale (default).\n'
+            'Simple Counter: card grid + Current Sale and payment rail (default).\n'
             'Checkout Pro: three columns — products | cart | actions.\n'
             'Cart, customer, and payment state are preserved when switching.')
         wf_hint = QLabel(
@@ -1524,7 +1524,7 @@ class SettingsTab(QWidget):
             'autofill_credit_customer_info':
                 '1' if self.autofill_credit_customer_info.isChecked() else '0',
             'pos_checkout_layout':
-                self.pos_checkout_layout.currentData() or 'product_explorer',
+                self.pos_checkout_layout.currentData() or 'simple_counter',
         }
         if hasattr(self, 'fin_currency'):
             code = self.fin_currency.currentText().strip().upper() or 'KES'
@@ -1597,7 +1597,7 @@ class SettingsTab(QWidget):
     def _apply_checkout_layout_live(self):
         """Push Checkout Layout to Sales tab immediately (no restart)."""
         try:
-            lid = self.pos_checkout_layout.currentData() or 'product_explorer'
+            lid = self.pos_checkout_layout.currentData() or 'simple_counter'
         except Exception:
             return
         w = self.window()

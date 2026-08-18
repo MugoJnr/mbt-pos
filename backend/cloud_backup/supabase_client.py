@@ -203,7 +203,12 @@ class SupabaseClient:
         try:
             return fn()
         except SupabaseError as e:
-            if e.status in (401, 403):
+            # Only an expired/invalid authentication token is recoverable by a
+            # refresh.  A 403 is an authorization boundary (wrong business,
+            # revoked membership, or an RLS policy) and must be returned to
+            # the caller unchanged; retrying it can hide a real account-link
+            # problem and makes cross-shop diagnostics misleading.
+            if e.status == 401:
                 self.refresh_session()
                 return fn()
             raise

@@ -487,7 +487,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         ('after_sale_auto_clear_cart', '1'),
         ('after_sale_reset_discounts', '1'),
         ('after_sale_reset_notes', '1'),
-        ('pos_checkout_layout', 'product_explorer'),
+        ('pos_checkout_layout', 'simple_counter'),
     ):
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():

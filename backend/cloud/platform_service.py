@@ -86,6 +86,25 @@ def _service_headers(client: SupabaseClient) -> dict:
     }
 
 
+def _service_request_with_session_retry(client: SupabaseClient, request):
+    """Run a user-scoped service request, refreshing an expired JWT once.
+
+    Desktop installs have no service-role secret by design.  Their requests use
+    the stored Supabase user session, whose short-lived access token must be
+    renewed transparently.  A 403 is deliberately *not* retried: it represents
+    a real RLS/permission decision, not an expired session.
+    """
+    response = request(_service_headers(client))
+    if response.status_code != 401 or str(client.service or '').strip():
+        return response
+    try:
+        client.refresh_session()
+    except Exception as e:
+        logger.info('Cloud session refresh failed after 401: %s', e)
+        return response
+    return request(_service_headers(client))
+
+
 def service_select(table: str, query: str = '', *, timeout: float = 8) -> list:
     client = _svc()
     if not client.configured:
@@ -94,7 +113,10 @@ def service_select(table: str, query: str = '', *, timeout: float = 8) -> list:
     if query:
         url = f'{url}?{query}'
     try:
-        r = client._session.get(url, headers=_service_headers(client), timeout=timeout)
+        r = _service_request_with_session_retry(
+            client,
+            lambda headers: client._session.get(url, headers=headers, timeout=timeout),
+        )
     except Exception as e:
         logger.warning('service_select %s network error: %s', table, e)
         return []
@@ -112,10 +134,11 @@ def service_select_strict(table: str, query: str = '', *, prefer: str = '') -> l
     url = client._url(f'/rest/v1/{table}')
     if query:
         url = f'{url}?{query}'
-    headers = _service_headers(client)
-    if prefer:
-        headers['Prefer'] = prefer
-    r = client._session.get(url, headers=headers, timeout=60)
+    def request(headers):
+        if prefer:
+            headers['Prefer'] = prefer
+        return client._session.get(url, headers=headers, timeout=60)
+    r = _service_request_with_session_retry(client, request)
     if r.status_code >= 400:
         raise SupabaseError(
             f'select {table} failed ({r.status_code}): {r.text[:300]}',
@@ -140,11 +163,12 @@ def service_select_page(
     base = query.strip('&')
     page_q = f'{base}&limit={limit}&offset={offset}' if base else f'limit={limit}&offset={offset}'
     url = client._url(f'/rest/v1/{table}?{page_q}')
-    headers = _service_headers(client)
-    headers['Prefer'] = 'count=exact'
-    headers['Range-Unit'] = 'items'
-    headers['Range'] = f'{offset}-{offset + limit - 1}'
-    r = client._session.get(url, headers=headers, timeout=60)
+    def request(headers):
+        headers['Prefer'] = 'count=exact'
+        headers['Range-Unit'] = 'items'
+        headers['Range'] = f'{offset}-{offset + limit - 1}'
+        return client._session.get(url, headers=headers, timeout=60)
+    r = _service_request_with_session_retry(client, request)
     if r.status_code >= 400:
         raise SupabaseError(
             f'select {table} failed ({r.status_code}): {r.text[:300]}',
@@ -165,12 +189,13 @@ def service_insert(table: str, row: dict, upsert: bool = False, on_conflict: str
     prefer = 'return=representation'
     if upsert:
         prefer += ',resolution=merge-duplicates'
-    h = _service_headers(client)
-    h['Prefer'] = prefer
     url = client._url(f'/rest/v1/{table}')
     if upsert and on_conflict:
         url = f'{url}?on_conflict={on_conflict}'
-    r = client._session.post(url, headers=h, json=row, timeout=30)
+    def request(headers):
+        headers['Prefer'] = prefer
+        return client._session.post(url, headers=headers, json=row, timeout=30)
+    r = _service_request_with_session_retry(client, request)
     if r.status_code >= 400:
         raise SupabaseError(f'Insert {table} failed ({r.status_code}): {r.text[:300]}', r.status_code)
     data = r.json() if r.content else None
@@ -179,11 +204,10 @@ def service_insert(table: str, row: dict, upsert: bool = False, on_conflict: str
 
 def service_update(table: str, query: str, patch: dict) -> Any:
     client = _svc()
-    r = client._session.patch(
-        client._url(f'/rest/v1/{table}?{query}'),
-        headers=_service_headers(client),
-        json=patch,
-        timeout=30,
+    url = client._url(f'/rest/v1/{table}?{query}')
+    r = _service_request_with_session_retry(
+        client,
+        lambda headers: client._session.patch(url, headers=headers, json=patch, timeout=30),
     )
     if r.status_code >= 400:
         raise SupabaseError(f'Update {table} failed ({r.status_code}): {r.text[:300]}', r.status_code)
@@ -281,6 +305,31 @@ def license_key_org_id(license_key: str) -> str:
         f'license_key=eq.{quote(str(license_key), safe="")}&select=org_id&limit=1',
     )
     return str(rows[0].get('org_id') or '') if rows else ''
+
+
+def list_backups_for_org(org_id: str, limit: int = 30) -> list[dict]:
+    """Return backup metadata for one authorized organization.
+
+    The Portal never receives storage credentials or raw backup files.  It sees
+    only metadata after its route has checked organization membership.
+    """
+    if not org_id:
+        return []
+    bounded_limit = max(1, min(int(limit), 100))
+    businesses = service_select_strict(
+        'businesses',
+        f'org_id=eq.{quote(str(org_id), safe="")}&select=id&limit=100',
+    )
+    business_ids = [str(row.get('id') or '') for row in businesses if row.get('id')]
+    if not business_ids:
+        return []
+    # The identifiers are UUIDs obtained from Supabase, not request input.
+    values = ','.join(business_ids)
+    return service_select_strict(
+        'backups',
+        f'business_id=in.({values})&order=created_at.desc&limit={bounded_limit}'
+        '&select=id,business_id,device_id,size_bytes,mbt_version,schema_version,reason,created_at',
+    )
 
 
 def cloud_public_config() -> dict:

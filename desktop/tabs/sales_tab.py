@@ -174,7 +174,7 @@ class SalesTab(QWidget):
             pass
 
     def set_checkout_layout(self, layout_id: str, *, animate: bool = True) -> str:
-        """Switch Retail Classic / Product Explorer / Checkout Pro without restart.
+        """Switch Retail Classic / Simple Counter / Checkout Pro without restart.
 
         Preserves cart, customer, payment, and search state — only geometry changes.
         """
@@ -300,7 +300,7 @@ class SalesTab(QWidget):
         shell = getattr(self, '_shell', None)
         shell_lay = shell.layout() if shell is not None else None
         clist = getattr(self, '_cart_list', None)
-        layout_id = getattr(self, '_checkout_layout', 'product_explorer')
+        layout_id = getattr(self, '_checkout_layout', 'simple_counter')
 
         if left is not None:
             left.setVisible(not enabled)
@@ -336,7 +336,7 @@ class SalesTab(QWidget):
                     from desktop.pos.layouts.shells import apply_layout_shell
                     apply_layout_shell(self, layout_id)
                 except Exception:
-                    if layout_id == 'product_explorer' and cart is not None:
+                    if layout_id == 'simple_counter' and cart is not None:
                         cart.setMinimumWidth(740)
                         cart.setMaximumWidth(920)
                         cart.setFixedWidth(880)
@@ -1416,7 +1416,7 @@ class SalesTab(QWidget):
         refresh_pos_components(self)
 
     def _product_columns(self) -> int:
-        layout_id = getattr(self, '_checkout_layout', 'product_explorer')
+        layout_id = getattr(self, '_checkout_layout', 'simple_counter')
         if layout_id == 'checkout_pro':
             # Measured, not assumed: a hardcoded 2 clipped the right-hand card
             # whenever the Pro product column was under ~560px.

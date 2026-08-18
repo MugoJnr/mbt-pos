@@ -209,9 +209,13 @@ function AdminLicensesPage() {
   });
 
   const lic = licQ.data || {};
-  const state = lic.state || "unknown";
-  const isActive = state === "active";
-  const isExpiring = state === "expiring";
+  // The Portal is a cloud control plane, not a POS installation. Its server
+  // legitimately has no device-bound local token, so treating the fallback
+  // /license/status response as a locked POS is misleading.
+  const hasDesktopStatus = lic.source === "license_engine";
+  const state = hasDesktopStatus ? (lic.state || "unknown") : "cloud managed";
+  const isActive = hasDesktopStatus && state === "active";
+  const isExpiring = hasDesktopStatus && state === "expiring";
   const cloudLicenses: CloudLicense[] = cloudQ.data?.licenses || [];
 
   async function doExport() {
@@ -257,9 +261,13 @@ function AdminLicensesPage() {
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
               {isActive ? <CheckCircle2 className="h-5 w-5 text-success" /> : <AlertTriangle className="h-5 w-5 text-warning" />}
             </div>
-            <div className="mt-3 text-xs uppercase tracking-wide text-muted-foreground">This POS</div>
+            <div className="mt-3 text-xs uppercase tracking-wide text-muted-foreground">
+              {hasDesktopStatus ? "This POS" : "Portal licensing"}
+            </div>
             <div className="mt-1 font-display text-xl font-semibold capitalize">{state}</div>
-            <Badge className="mt-2" variant={lic.is_valid ? "default" : "destructive"}>{lic.is_valid ? "Valid" : "Locked"}</Badge>
+            <Badge className="mt-2" variant={hasDesktopStatus ? (lic.is_valid ? "default" : "destructive") : "default"}>
+              {hasDesktopStatus ? (lic.is_valid ? "Valid" : "Locked") : "Cloud control plane"}
+            </Badge>
           </CardContent>
         </Card>
         <Card>

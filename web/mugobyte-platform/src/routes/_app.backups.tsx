@@ -1,16 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  CloudUpload, CheckCircle2, AlertTriangle, RefreshCw,
-  Download, Calendar, HardDrive,
+  CheckCircle2, AlertTriangle, RefreshCw,
+  Calendar, HardDrive,
 } from "lucide-react";
-import { toast } from "sonner";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { GET, POST } from "@/lib/api";
+import { GET } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/_app/backups")({
   component: BackupsPage,
@@ -18,37 +18,33 @@ export const Route = createFileRoute("/_app/backups")({
 });
 
 type BackupStatus = {
-  enabled?: boolean;
-  provider?: string;
-  last_backup?: string;
-  status?: string;
-  size_mb?: number;
-  schedule?: string;
-  storage_used_mb?: number;
-  storage_limit_mb?: number;
+  id?: string;
+  business_id?: string;
+  device_id?: string;
+  size_bytes?: number;
+  mbt_version?: string;
+  schema_version?: number;
+  reason?: string;
+  created_at?: string;
+};
+
+type BackupResponse = {
+  backups?: BackupStatus[];
   error?: string;
 };
 
 function BackupsPage() {
+  const { orgId } = useAuth();
   const statusQ = useQuery({
-    queryKey: ["backup-status"],
-    queryFn: () => GET<BackupStatus>("/backup/status"),
+    queryKey: ["backup-status", orgId],
+    queryFn: () => GET<BackupResponse>("/cloud/backups", { org_id: orgId }),
     refetchInterval: 30_000,
+    enabled: Boolean(orgId),
   });
-
-  const runMut = useMutation({
-    mutationFn: () => POST("/backup/run"),
-    onSuccess: () => {
-      toast.success("Backup started");
-      statusQ.refetch();
-    },
-    onError: () => toast.error("Backup failed to start"),
-  });
-
-  const s = statusQ.data || {};
-  const usedMb = s.storage_used_mb ?? 0;
-  const limitMb = s.storage_limit_mb ?? 20480;
-  const pct = Math.round((usedMb / limitMb) * 100);
+  const backups = statusQ.data?.backups || [];
+  const latest = backups[0];
+  const usedBytes = backups.reduce((total, backup) => total + (backup.size_bytes || 0), 0);
+  const usedMb = usedBytes / (1024 * 1024);
 
   return (
     <PageShell>
@@ -61,55 +57,61 @@ function BackupsPage() {
             <Button variant="outline" onClick={() => statusQ.refetch()}>
               <RefreshCw className="mr-1.5 h-4 w-4" />Refresh
             </Button>
-            <Button onClick={() => runMut.mutate()} disabled={runMut.isPending}>
-              <CloudUpload className="mr-1.5 h-4 w-4" />
-              {runMut.isPending ? "Starting…" : "Backup now"}
-            </Button>
           </>
         }
       />
 
-      {statusQ.isLoading ? (
+      {!orgId ? (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <AlertTriangle className="mx-auto mb-3 h-5 w-5 text-warning" />
+            <p className="font-medium">Select a business to view its backups</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Backups are isolated by business. Choose the shop from the Business menu above.
+            </p>
+          </CardContent>
+        </Card>
+      ) : statusQ.isLoading ? (
         <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">Loading backup status…</CardContent></Card>
-      ) : s.error && !s.last_backup ? (
+      ) : statusQ.data?.error ? (
         <Card><CardContent className="flex gap-3 p-6 text-sm text-destructive">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          {s.error}
+          {statusQ.data.error}
         </CardContent></Card>
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-3">
             <StatusCard
-              icon={s.status === "success" || s.status === "ok" ? CheckCircle2 : AlertTriangle}
-              ok={s.status === "success" || s.status === "ok"}
+              icon={latest ? CheckCircle2 : AlertTriangle}
+              ok={Boolean(latest)}
               label="Last backup"
-              value={s.last_backup ? s.last_backup.slice(0, 19).replace("T", " ") : "Never"}
-              sub={s.status ?? "unknown"}
+              value={latest?.created_at ? latest.created_at.slice(0, 19).replace("T", " ") : "Never"}
+              sub={latest ? "Cloud snapshot" : "No snapshot yet"}
             />
             <StatusCard
               icon={Calendar}
-              ok={Boolean(s.schedule)}
-              label="Schedule"
-              value={s.schedule ?? "Not configured"}
-              sub={s.provider ?? "local"}
+              ok
+              label="Snapshots"
+              value={String(backups.length)}
+              sub="Recent cloud history"
             />
             <StatusCard
               icon={HardDrive}
-              ok={pct < 80}
+              ok
               label="Storage used"
-              value={`${(usedMb / 1024).toFixed(1)} GB`}
-              sub={`of ${(limitMb / 1024).toFixed(0)} GB`}
+              value={`${usedMb.toFixed(1)} MB`}
+              sub="Shown history"
             />
           </div>
 
           <Card>
             <CardHeader>
               <CardTitle className="font-display">Storage usage</CardTitle>
-              <CardDescription>{(usedMb / 1024).toFixed(2)} GB used of {(limitMb / 1024).toFixed(0)} GB total</CardDescription>
+              <CardDescription>{usedMb.toFixed(2)} MB across the recent cloud snapshots shown here.</CardDescription>
             </CardHeader>
             <CardContent>
-              <Progress value={pct} className="h-3" />
-              <p className="mt-2 text-xs text-muted-foreground">{pct}% — {pct > 80 ? "Consider archiving older backup files." : "Storage is healthy."}</p>
+              <Progress value={backups.length ? 100 : 0} className="h-3" />
+              <p className="mt-2 text-xs text-muted-foreground">Cloud storage is private to the selected business. Run a new backup in MBT POS.</p>
             </CardContent>
           </Card>
 
@@ -119,18 +121,21 @@ function BackupsPage() {
               <CardDescription>Recent automated and manual backup runs.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {s.last_backup ? (
-                <BackupRow
-                  name="Latest backup"
-                  date={s.last_backup}
-                  status={s.status ?? "ok"}
-                  size={s.size_mb ? `${s.size_mb.toFixed(1)} MB` : "—"}
-                />
+              {backups.length ? (
+                backups.map((backup, index) => (
+                  <BackupRow
+                    key={backup.id || `${backup.created_at || "backup"}-${index}`}
+                    name={index === 0 ? "Latest backup" : `Backup ${index + 1}`}
+                    date={backup.created_at || ""}
+                    status="ok"
+                    size={backup.size_bytes ? `${(backup.size_bytes / (1024 * 1024)).toFixed(1)} MB` : "—"}
+                  />
+                ))
               ) : (
                 <p className="text-sm text-muted-foreground">No backup history yet. Run your first backup now.</p>
               )}
               <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
-                Full backup history with individual restore points is reserved for the MugoByte cloud backup service integration. The backend endpoint is <code>/api/backup/status</code>.
+                Restore is performed inside MBT POS so the application can check compatibility and preserve a pre-restore copy of the shop database.
               </div>
             </CardContent>
           </Card>
@@ -174,7 +179,7 @@ function BackupRow({ name, date, status, size }: { name: string; date: string; s
       </div>
       <div className="flex items-center gap-2">
         <Badge variant={ok ? "default" : "secondary"}>{status}</Badge>
-        <Button variant="outline" size="sm"><Download className="mr-1 h-3.5 w-3.5" />Download</Button>
+        <span className="text-xs text-muted-foreground">Restore in MBT POS</span>
       </div>
     </div>
   );
