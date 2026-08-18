@@ -868,6 +868,33 @@ def cloud_licenses_list():
     return _inner()
 
 
+@web.route('/api/cloud/backups', methods=['GET'])
+def cloud_backups_list():
+    """Cloud Portal backup history, restricted to the selected organization."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id = _resolve_request_org_id(request.args.get('org_id') or '')
+            if not org_id:
+                return jsonify({'backups': [], 'org_id': ''})
+            raw_limit = request.args.get('limit') or '30'
+            try:
+                limit = max(1, min(int(raw_limit), 100))
+            except (TypeError, ValueError):
+                limit = 30
+            from backend.cloud.platform_service import list_backups_for_org
+            return jsonify({
+                'backups': list_backups_for_org(org_id, limit=limit),
+                'org_id': org_id,
+            })
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
 @web.route('/api/cloud/licenses', methods=['POST'])
 def cloud_licenses_create():
     from backend.app import token_required
