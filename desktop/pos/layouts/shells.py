@@ -494,8 +494,13 @@ def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_na
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setMinimumHeight(140)
+        scroll.setMinimumHeight(110)
         scroll.setMaximumHeight(16777215)
+        # Ensure scrollbar track has dedicated space and does not cut off or overlap content on the right
+        scroll.setStyleSheet(
+            f"QScrollArea#{scroll_name}{{background:transparent;border:none;padding-right:4px;}}"
+            f"QScrollArea#{scroll_name} > QWidget > QWidget{{background:transparent;border:none;}}"
+        )
     except Exception:
         pass
 
@@ -503,7 +508,8 @@ def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_na
     sale.setStyleSheet('QFrame#posSalePanel{background:transparent;border:none;}')
     try:
         from desktop.utils.pos_components import cart_viewport_px, CART_CASHIER_ROWS
-        sale.setMinimumHeight(cart_viewport_px(CART_CASHIER_ROWS, include_header=True))
+        # Cart viewport minimum: 3 cashier rows floor (~180px) so lower checkout stays on screen
+        sale.setMinimumHeight(cart_viewport_px(3, include_header=True))
         sale.setMaximumHeight(16777215)
         sp = sale.sizePolicy()
         sp.setVerticalPolicy(QSizePolicy.Expanding)
@@ -522,16 +528,16 @@ def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_na
     try:
         bl = body.layout()
         if bl is not None:
-            bl.setContentsMargins(12, 8, 12, 8)
-            bl.setSpacing(6)
+            bl.setContentsMargins(8, 4, 8, 4)
+            bl.setSpacing(4)
     except Exception:
         pass
 
     # Payment-only scroll — cart stays above so tall payment never pushes it off.
     hl.addWidget(actions, 1)
-    # Bias leftover height to the cart↔summary stack; payment scrolls as needed.
-    rl.addWidget(sale, 3)
-    rl.addWidget(scroll, 2)
+    # Bias leftover height to the cart↔summary stack; payment scrolls only if window is exceptionally tiny.
+    rl.addWidget(sale, 1)
+    rl.addWidget(scroll, 0)
     rl.addWidget(foot, 0)
     tab._checkout_scroll = scroll
     return scroll
@@ -625,7 +631,8 @@ def _assemble_retail_classic(tab, shell, product, sale, actions, body, foot):
     charge = getattr(tab, '_charge_btn', None)
     if _alive(charge):
         try:
-            charge.setMinimumHeight(54)
+            charge.setMinimumHeight(48)
+            charge.setMaximumHeight(52)
             charge.setText('$  Complete Sale')
         except Exception:
             pass

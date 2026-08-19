@@ -181,14 +181,15 @@ _PINNED_RAIL = {
 # Cart list floor is hard — poisoned persisted sizes that collapse the list to
 # ~0px (header still shows "N items") are scrubbed below.
 _CART_LIST_FLOOR = cart_viewport_px(CART_CASHIER_ROWS, include_header=True)
+_CART_CLASSIC_FLOOR = cart_viewport_px(4, include_header=True)
 CART_MIN_HEIGHTS = {
     # Cashier viewport ≈ header + 5×76px rows; splitter grows the list further.
     LAYOUT_CHECKOUT_PRO: (_CART_LIST_FLOOR, 140),
-    LAYOUT_PRODUCT_EXPLORER: (_CART_LIST_FLOOR, 110),
-    LAYOUT_RETAIL_CLASSIC: (_CART_LIST_FLOOR, 110),
+    LAYOUT_PRODUCT_EXPLORER: (_CART_CLASSIC_FLOOR, 90),
+    LAYOUT_RETAIL_CLASSIC: (_CART_CLASSIC_FLOOR, 90),
 }
-# Absolute floor even after short-rail scaling — never drop below 5 table rows.
-CART_LIST_HARD_MIN = cart_viewport_px(CART_CASHIER_ROWS)
+# Absolute floor even after short-rail scaling — never drop below 4 table rows on stacked rails.
+CART_LIST_HARD_MIN = cart_viewport_px(4)
 # Shipped starting split: cart gets the larger share, totals keep their natural size.
 CART_DEFAULT_RATIO = 0.70
 # Checkout Pro (non-Review): pack cart to the 5-row cashier viewport; summary sits under it.

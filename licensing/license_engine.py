@@ -838,13 +838,17 @@ class LicenseEngine:
         if not data:
             # Token exists but cannot be decrypted with THIS device's key
             # → either tampered, or DB was copied from a different machine
+            self._license_data = {}
             self._state = STATE_TAMPERED
+            self.store.set('tampered', True)
             self.store.log('TAMPER_DETECT', 'Decryption failed — wrong device or tampered token')
             return
 
         # Hard device binding check — device_id baked into token
         if data.get('device_id') != self.device_id:
+            self._license_data = {}
             self._state = STATE_TAMPERED
+            self.store.set('tampered', True)
             self.store.log('DEVICE_MISMATCH',
                 f"Token device={data.get('device_id','?')[:8]}… "
                 f"Current={self.device_id[:8]}…")

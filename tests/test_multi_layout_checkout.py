@@ -30,9 +30,13 @@ class MultiLayoutSwitchTests(unittest.TestCase):
     def setUpClass(cls):
         from PyQt5.QtWidgets import QApplication
         cls.app = QApplication.instance() or QApplication([])
-        db = Path(os.environ.get('LOCALAPPDATA', '')) / 'MugoByte' / 'MBT POS' / 'mbt_pos.db'
+        from mbt_paths import get_db_path, ensure_data_dirs, get_project_root
+        ensure_data_dirs(get_project_root())
+        db = Path(get_db_path())
         if not db.exists():
-            raise unittest.SkipTest(f'no local db at {db}')
+            import sqlite3
+            db.parent.mkdir(parents=True, exist_ok=True)
+            sqlite3.connect(str(db)).close()
         from desktop.utils.api_client import APIClient
         from desktop.tabs.sales_tab import SalesTab
         cls.api = APIClient(str(db))

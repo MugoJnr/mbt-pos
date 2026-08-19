@@ -63,6 +63,7 @@ class SalesTab(QWidget):
         self._elec_programmatic = False
         self._held = None  # park/resume single slot (session + durable JSON)
         self._focus_mode = False  # session-only; MainWindow hides sidebar/topbar
+        self._processing_sale = False  # atomic click debounce guard
         self._cart_maximized = False  # hide product grid; cart fills Sales tab
         # Catalog cache — avoid full DB + grid rebuild on every tab switch
         self._catalog_loaded = False

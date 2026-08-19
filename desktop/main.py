@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-08-17-v3.0.61"
-APP_VERSION   = "3.0.61"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-08-18-v3.0.70"
+APP_VERSION   = "3.0.70"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -290,6 +290,18 @@ class LoginDialog(QDialog):
         fl.addLayout(pw_row)
         fl.addSpacing(6)
         fl.addWidget(self._btn)
+
+        # Forgot password button
+        self._forgot_btn = QPushButton("Forgot password?")
+        self._forgot_btn.setObjectName("loginForgotBtn")
+        self._forgot_btn.setCursor(Qt.PointingHandCursor)
+        self._forgot_btn.clicked.connect(self._forgot_password)
+        self._forgot_btn.setStyleSheet(
+            f"QPushButton#loginForgotBtn {{ background:transparent; color:{C['text2']};"
+            f" border:none; font-size:12px; font-weight:600; padding:6px; }}"
+            f"QPushButton#loginForgotBtn:hover {{ color:{C['gold']}; text-decoration:underline; }}")
+        fl.addWidget(self._forgot_btn, 0, Qt.AlignCenter)
+
         fl.addStretch()
         fl.addWidget(foot)
         root.addWidget(form)
@@ -407,6 +419,194 @@ class LoginDialog(QDialog):
         except Exception as e:
             self._set_msg(f"Could not open database.\n{e}", err=True)
         self._btn.setText("SIGN IN"); self._btn.setEnabled(True)
+
+    def _forgot_password(self):
+        """Self-service password recovery using Super-Admin PIN or cloud organization credentials."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Account & Password Recovery")
+        dlg.setFixedWidth(460)
+        from desktop.utils.theme import apply_themed_dialog
+        apply_themed_dialog(dlg)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        title = QLabel("Password Recovery")
+        title.setStyleSheet(f"color:{C['gold']}; font-size:16px; font-weight:700;")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "Reset an administrator or staff password using your Super-Admin PIN or your device's Activation License Key."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
+        layout.addWidget(desc)
+
+        # Mode Selector Buttons (PIN vs License Key)
+        mode_box = QHBoxLayout()
+        mode_box.setSpacing(8)
+        btn_pin_mode = QPushButton("Super-Admin PIN")
+        btn_key_mode = QPushButton("License / Portal Key")
+        btn_pin_mode.setCheckable(True); btn_pin_mode.setChecked(True)
+        btn_key_mode.setCheckable(True); btn_key_mode.setChecked(False)
+        btn_pin_mode.setMinimumHeight(34); btn_key_mode.setMinimumHeight(34)
+        btn_pin_mode.setCursor(Qt.PointingHandCursor); btn_key_mode.setCursor(Qt.PointingHandCursor)
+
+        mode_ss = (
+            f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; border:1px solid {C['border2']};"
+            f" border-radius:8px; font-size:12px; font-weight:700; }}"
+            f"QPushButton:checked {{ background:{C['gold']}; color:{C.get('gold_fg', '#0A0F1A')}; border:none; }}"
+        )
+        btn_pin_mode.setStyleSheet(mode_ss)
+        btn_key_mode.setStyleSheet(mode_ss)
+        mode_box.addWidget(btn_pin_mode)
+        mode_box.addWidget(btn_key_mode)
+        layout.addLayout(mode_box)
+
+        field_ss = (
+            f"QLineEdit {{"
+            f" background:{C['input']}; color:{C['text']};"
+            f" border:1.5px solid {C['border2']}; border-radius:10px;"
+            f" padding:8px 12px; font-size:13.5px; }}"
+            f"QLineEdit:focus {{ border-color:{C['gold']}; background:{C['card']}; }}"
+        )
+
+        pin_input = QLineEdit()
+        pin_input.setPlaceholderText("Super-Admin PIN")
+        pin_input.setEchoMode(QLineEdit.Password)
+        pin_input.setMinimumHeight(42)
+        pin_input.setStyleSheet(field_ss)
+        layout.addWidget(pin_input)
+
+        key_input = QLineEdit()
+        key_input.setPlaceholderText("License Key (e.g. MBT-TRI-XXXX-XXXX-XXXX)")
+        key_input.setMinimumHeight(42)
+        key_input.setStyleSheet(field_ss)
+        key_input.hide()
+        layout.addWidget(key_input)
+
+        def _switch_mode(is_key):
+            if is_key:
+                btn_pin_mode.setChecked(False)
+                btn_key_mode.setChecked(True)
+                pin_input.hide()
+                key_input.show()
+                new_pin_input.show()
+            else:
+                btn_pin_mode.setChecked(True)
+                btn_key_mode.setChecked(False)
+                key_input.hide()
+                new_pin_input.hide()
+                pin_input.show()
+
+        btn_pin_mode.clicked.connect(lambda: _switch_mode(False))
+        btn_key_mode.clicked.connect(lambda: _switch_mode(True))
+
+        user_input = QLineEdit()
+        user_input.setPlaceholderText("Target Username (e.g. admin)")
+        user_input.setText(self._u.text().strip() or "admin")
+        user_input.setMinimumHeight(42)
+        user_input.setStyleSheet(field_ss)
+        layout.addWidget(user_input)
+
+        new_pw_input = QLineEdit()
+        new_pw_input.setPlaceholderText("New Password (min 6 characters)")
+        new_pw_input.setEchoMode(QLineEdit.Password)
+        new_pw_input.setMinimumHeight(42)
+        new_pw_input.setStyleSheet(field_ss)
+        layout.addWidget(new_pw_input)
+
+        confirm_pw_input = QLineEdit()
+        confirm_pw_input.setPlaceholderText("Confirm New Password")
+        confirm_pw_input.setEchoMode(QLineEdit.Password)
+        confirm_pw_input.setMinimumHeight(42)
+        confirm_pw_input.setStyleSheet(field_ss)
+        layout.addWidget(confirm_pw_input)
+
+        new_pin_input = QLineEdit()
+        new_pin_input.setPlaceholderText("Optional: Set New Super-Admin PIN (4-6 digits)")
+        new_pin_input.setEchoMode(QLineEdit.Password)
+        new_pin_input.setMinimumHeight(42)
+        new_pin_input.setStyleSheet(field_ss)
+        new_pin_input.hide()
+        layout.addWidget(new_pin_input)
+
+        err_lbl = QLabel("")
+        err_lbl.setWordWrap(True)
+        err_lbl.setStyleSheet(f"color:{C['err']}; font-size:12px; font-weight:600;")
+        err_lbl.hide()
+        layout.addWidget(err_lbl)
+
+        btn_box = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setMinimumHeight(40)
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.clicked.connect(dlg.reject)
+        cancel_btn.setStyleSheet(
+            f"QPushButton {{ background:{C['card2']}; color:{C['text2']}; border:1px solid {C['border2']};"
+            f" border-radius:10px; font-size:13px; font-weight:700; padding:8px 16px; }}"
+            f"QPushButton:hover {{ color:{C['text']}; border-color:{C['border']}; }}"
+        )
+
+        submit_btn = QPushButton("RESET PASSWORD")
+        submit_btn.setMinimumHeight(40)
+        submit_btn.setCursor(Qt.PointingHandCursor)
+        gold_fg = C.get('gold_fg', '#0A0F1A')
+        submit_btn.setStyleSheet(
+            f"QPushButton {{ background:{C['gold']}; color:{gold_fg}; border:none;"
+            f" border-radius:10px; font-size:13px; font-weight:800; padding:8px 16px; }}"
+            f"QPushButton:hover {{ background:{C['gold_lt']}; }}"
+        )
+
+        def _do_reset():
+            uname = user_input.text().strip()
+            npw = new_pw_input.text()
+            cpw = confirm_pw_input.text()
+
+            if not uname:
+                err_lbl.setText("Target username is required.")
+                err_lbl.show(); return
+            if len(npw) < 6:
+                err_lbl.setText("Password must be at least 6 characters.")
+                err_lbl.show(); return
+            if npw != cpw:
+                err_lbl.setText("Passwords do not match.")
+                err_lbl.show(); return
+
+            if btn_key_mode.isChecked():
+                lkey = key_input.text().strip()
+                if not lkey:
+                    err_lbl.setText("Activation License Key is required.")
+                    err_lbl.show(); return
+                npin = new_pin_input.text().strip()
+                res = self.api.reset_admin_via_license_key(lkey, uname, npw, npin)
+            else:
+                pin = pin_input.text().strip()
+                if not pin:
+                    err_lbl.setText("Super-Admin PIN is required.")
+                    err_lbl.show(); return
+                res = self.api.reset_forgotten_admin_password(pin, uname, npw)
+
+            if res.get('success'):
+                QMessageBox.information(
+                    dlg, "Password Reset",
+                    f"Password for user '{res.get('username')}' has been reset successfully.\nYou can now sign in."
+                )
+                self._u.setText(res.get('username'))
+                self._p.setText(npw)
+                self._set_msg(f"Password reset for '{res.get('username')}'. Sign in now.")
+                dlg.accept()
+            else:
+                err_lbl.setText(res.get('error') or "Reset failed.")
+                err_lbl.show()
+
+        submit_btn.clicked.connect(_do_reset)
+        btn_box.addWidget(cancel_btn)
+        btn_box.addWidget(submit_btn)
+        layout.addLayout(btn_box)
+
+        dlg.exec_()
 
     def _set_msg(self, txt, err=False):
         self._msg.setText(txt)
@@ -2452,12 +2652,12 @@ def main():
         app.setStyle('Fusion')
     except Exception:
         pass
-    # App-wide: mouse wheel must scroll panels, never nudge spinbox values
+    # App-wide: mouse wheel & touchpad scroll must scroll pages/panels, never modify value controls
     try:
-        from desktop.utils.no_wheel_spinbox import install_no_wheel_spinboxes
-        install_no_wheel_spinboxes(app)
+        from desktop.utils.no_wheel_controls import install_systemwide_no_wheel_protection
+        install_systemwide_no_wheel_protection(app)
     except Exception:
-        log.exception('Failed to install no-wheel spinbox filter')
+        log.exception('Failed to install system-wide no-wheel controls protection filter')
     # App-wide: tiny panels must not steal wheel from large lists / pages
     try:
         from desktop.utils.no_wheel_small_scroll import install_no_wheel_small_scroll

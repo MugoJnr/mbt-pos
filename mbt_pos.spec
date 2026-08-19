@@ -53,9 +53,6 @@ a = Analysis(
     binaries=_extra_binaries,
     datas=[
         (os.path.join(HERE, 'assets'),      'assets'),
-        (os.path.join(HERE, 'backend'),     'backend'),
-        (os.path.join(HERE, 'desktop'),     'desktop'),
-        (os.path.join(HERE, 'licensing'),   'licensing'),
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
         (os.path.join(HERE, 'version.json'), '.'),

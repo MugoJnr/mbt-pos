@@ -46,8 +46,11 @@ web/dashboard-ui/.tanstack/
 
 config/vendor_ai.local.json
 config/vendor_ai.bin
-
-
-config/vendor_ai.local.json
-config/vendor_ai.bin
+*.key
+*.enc
+.jwt_secret
+crypto.secret
+.activation_hmac_secret
+Safety-Backup/cloud_config.json
+_build_secret.txt
 

@@ -1682,17 +1682,17 @@ class PaymentButton(QPushButton):
 
     def set_compact_style(self, compact: bool = True):
         self._compact = bool(compact)
-        h = 40 if self._compact else 56
+        h = 34 if self._compact else 56
         self.setMinimumHeight(h)
-        self.setMaximumHeight(h + 6)
+        self.setMaximumHeight(h + 4)
         if self._compact:
             self.setMinimumWidth(0)
         self.refresh_theme()
 
     def refresh_theme(self):
         muted = C['muted']
-        mh = 40 if getattr(self, '_compact', False) else 56
-        pad = '4px 2px' if getattr(self, '_compact', False) else '8px 4px'
+        mh = 34 if getattr(self, '_compact', False) else 56
+        pad = '2px 2px' if getattr(self, '_compact', False) else '8px 4px'
         fsz = '12px' if getattr(self, '_compact', False) else '13px'
         if not self.isEnabled() or self._secondary:
             self.setStyleSheet(
@@ -1951,8 +1951,8 @@ class SummaryCard(QFrame):
             return
         compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
         if compact:
-            lay.setContentsMargins(10, 6, 10, 8)
-            lay.setSpacing(4)
+            lay.setContentsMargins(8, 3, 8, 4)
+            lay.setSpacing(2)
         elif getattr(self, '_pro', False):
             lay.setContentsMargins(12, 10, 12, 10)
             lay.setSpacing(6)
@@ -2114,7 +2114,8 @@ class CustomerCard(QFrame):
                         self._pro_row.layout().addWidget(new_btn)
                     new_btn.show()
                     self._new_btn_slot = new_btn
-            self._btn.setMinimumHeight(36)
+            self._btn.setMinimumHeight(32)
+            self._btn.setMaximumHeight(36)
         else:
             if self._pro_row is not None:
                 rl = self._pro_row.layout()

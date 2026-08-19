@@ -1,8 +1,8 @@
 {
-    "version": "3.0.61",
-    "build": "RC-2026-08-17-v3.0.61",
-    "released": "2026-08-17",
-    "release_notes": "Fix activation not surviving app close/restart: migrate Roaming license store when LocalAppData lc.db exists but has no token (empty schema was blocking migration), use deterministic MachineGuid crypto secret on Windows, fsync license writes, and skip stale tamper re-activation walls.",
-    "checksum_sha256": "681e796ad3a5d77af40ac504cdc828a6850ec128acf750cf20bc4ecbcc9ad8cb",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.61/MBT_POS_Setup.exe"
+    "version": "3.0.70",
+    "build": "RC-2026-08-19-v3.0.70",
+    "released": "2026-08-19",
+    "release_notes": "MBT POS v3.0.70 Production Release: certified multi-layout checkout (Retail Classic single-screen density, Product Explorer, Checkout Pro, Expanded Review), system-wide accidental scroll protection, offline/online licensing persistence, debounced atomic checkout, split tender & part-payment debt lifecycle.",
+    "checksum_sha256": "fe937dc0708e8db7fe22c17d541a0275ec9671050a601d794b5e3591a3f4a022",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.70/MBT_POS_Setup_v3.0.70.exe"
 }

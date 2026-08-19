@@ -33,10 +33,10 @@ def style_amount_paid(tab) -> None:
     if _alive(cap):
         cap.setText('Amount Paid')
         cap.setObjectName('posAmountCap')
-        cap.setMinimumHeight(18)
+        cap.setMinimumHeight(15)
         cap.setStyleSheet(
-            f"QLabel#posAmountCap{{color:{_C['text']};font-size:13px;font-weight:800;"
-            f"letter-spacing:0.3px;background:transparent;padding:0 0 2px 0;margin:0;}}")
+            f"QLabel#posAmountCap{{color:{_C['text']};font-size:12px;font-weight:800;"
+            f"letter-spacing:0.3px;background:transparent;padding:0;margin:0;}}")
         cap.show()
 
     paid = getattr(tab, '_paid', None)
@@ -44,7 +44,8 @@ def style_amount_paid(tab) -> None:
         return
     paid.setObjectName('posAmountPaid')
     paid.setToolTip('Amount Paid')
-    paid.setMinimumHeight(48)
+    paid.setMinimumHeight(38)
+    paid.setMaximumHeight(42)
     try:
         paid.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     except Exception:
@@ -68,12 +69,12 @@ def style_amount_paid(tab) -> None:
     paid.setStyleSheet(
         f"QDoubleSpinBox#posAmountPaid{{"
         f"background:{_C['card']};color:{_C['text']};"
-        f"border:2.5px solid {_C['text2']};border-radius:10px;"
-        f"padding:8px 14px;font-size:18px;font-weight:800;"
+        f"border:2px solid {_C['text2']};border-radius:8px;"
+        f"padding:4px 10px;font-size:16px;font-weight:800;"
         f"selection-background-color:{qss_alpha(_C['gold'], 0.22)};"
         f"selection-color:{_C['text']};}}"
         f"QDoubleSpinBox#posAmountPaid:focus{{"
-        f"border:2.5px solid {_C['gold']};background:{_C['input']};}}"
+        f"border:2px solid {_C['gold']};background:{_C['input']};}}"
         f"QDoubleSpinBox#posAmountPaid:hover{{"
         f"border-color:{_C['gold']};}}"
         f"QDoubleSpinBox#posAmountPaid:disabled{{"
@@ -171,8 +172,8 @@ def style_quiet_secondary_actions(tab) -> None:
         b = getattr(tab, name, None)
         if _alive(b):
             try:
-                b.setMinimumHeight(36)
-                b.setMaximumHeight(40)
+                b.setMinimumHeight(32)
+                b.setMaximumHeight(36)
                 b.setStyleSheet(quiet)
             except Exception:
                 pass
@@ -182,8 +183,8 @@ def style_quiet_secondary_actions(tab) -> None:
             try:
                 # Outline-only danger — never solid fill (avoids looking like active toggle)
                 b.setObjectName('posQuietDanger')
-                b.setMinimumHeight(36)
-                b.setMaximumHeight(40)
+                b.setMinimumHeight(32)
+                b.setMaximumHeight(36)
                 b.setStyleSheet(danger_q)
             except Exception:
                 pass
@@ -205,9 +206,9 @@ def style_section_header(label, text: str | None = None) -> None:
         return
     if text is not None:
         label.setText(text)
-    label.setMinimumHeight(18)
+    label.setMinimumHeight(16)
     label.setStyleSheet(
-        f"color:{C['text2']};font-size:12px;font-weight:800;letter-spacing:0.3px;"
+        f"color:{C['text2']};font-size:11px;font-weight:800;letter-spacing:0.3px;"
         f"background:transparent;padding:0;margin:0;")
 
 
@@ -216,18 +217,18 @@ def align_checkout_control_baselines(tab) -> None:
     paid = getattr(tab, '_paid', None)
     if _alive(paid):
         try:
-            paid.setMinimumHeight(48)
-            paid.setMaximumHeight(52)
+            paid.setMinimumHeight(42)
+            paid.setMaximumHeight(46)
         except Exception:
             pass
     chg = getattr(tab, '_chg_frame', None)
     if _alive(chg):
         try:
-            chg.setMinimumHeight(44)
-            chg.setMaximumHeight(52)
+            chg.setMinimumHeight(38)
+            chg.setMaximumHeight(44)
             lay = chg.layout()
             if lay is not None:
-                lay.setContentsMargins(12, 8, 12, 8)
+                lay.setContentsMargins(8, 4, 8, 4)
         except Exception:
             pass
     pay_seg = getattr(tab, '_pay_seg', None)
@@ -239,15 +240,15 @@ def align_checkout_control_baselines(tab) -> None:
     note = getattr(tab, '_note', None)
     if _alive(note):
         try:
-            note.setMinimumHeight(36)
-            note.setMaximumHeight(40)
+            note.setMinimumHeight(32)
+            note.setMaximumHeight(36)
         except Exception:
             pass
     new_btn = getattr(tab, '_new_cust_btn', None)
     if _alive(new_btn):
         try:
-            new_btn.setMinimumHeight(36)
-            new_btn.setMaximumHeight(38)
+            new_btn.setMinimumHeight(32)
+            new_btn.setMaximumHeight(36)
         except Exception:
             pass
 
@@ -259,32 +260,31 @@ def apply_checkout_foot_rhythm(tab, *, pro_primary_only: bool = False) -> None:
         return
     fl = foot.layout()
     if fl is not None:
-        # Match Retail Classic: inset 12, top pad, bottom pad
-        top = 12 if pro_primary_only else 8
-        fl.setContentsMargins(12, top, 12, 12)
-        fl.setSpacing(8)
-        # Ensure one 10px breath before Complete Sale (idempotent)
+        top = 8 if pro_primary_only else 4
+        fl.setContentsMargins(8, top, 8, 8)
+        fl.setSpacing(4)
+        # Ensure one 6px breath before Complete Sale (idempotent)
         if not getattr(tab, '_foot_breathing_ok', False):
             charge = getattr(tab, '_charge_btn', None)
             if _alive(charge):
                 for i in range(fl.count()):
                     item = fl.itemAt(i)
                     if item is not None and item.widget() is charge:
-                        # Only insert if previous item isn't already a spacer ≥8px
+                        # Only insert if previous item isn't already a spacer ≥4px
                         prev = fl.itemAt(i - 1) if i > 0 else None
                         need = True
                         if prev is not None and prev.spacerItem() is not None:
-                            need = prev.spacerItem().sizeHint().height() < 8
+                            need = prev.spacerItem().sizeHint().height() < 4
                         if need:
-                            fl.insertSpacing(i, 10)
+                            fl.insertSpacing(i, 6)
                         tab._foot_breathing_ok = True
                         break
     style_quiet_secondary_actions(tab)
     charge = getattr(tab, '_charge_btn', None)
     if _alive(charge):
         try:
-            charge.setMinimumHeight(54)
-            charge.setMaximumHeight(58)
+            charge.setMinimumHeight(48)
+            charge.setMaximumHeight(52)
             charge.show()
         except Exception:
             pass
@@ -406,8 +406,8 @@ def pin_checkout_totals(tab) -> None:
 
     if _alive(host):
         try:
-            host.setMaximumHeight(220)
-            host.setMinimumHeight(100)
+            host.setMaximumHeight(160)
+            host.setMinimumHeight(68)
             pol = host.sizePolicy()
             pol.setHorizontalPolicy(QSizePolicy.Preferred)
             pol.setVerticalPolicy(QSizePolicy.Maximum)
@@ -511,18 +511,18 @@ def apply_secondary_action_grid(tab) -> None:
     from PyQt5.QtWidgets import QGridLayout
     grid = QGridLayout()
     grid.setContentsMargins(0, 0, 0, 0)
-    grid.setHorizontalSpacing(8)
-    grid.setVerticalSpacing(6)
+    grid.setHorizontalSpacing(6)
+    grid.setVerticalSpacing(4)
     cols = 4
     for i, b in enumerate(buttons):
         try:
-            b.setMinimumHeight(36)
-            b.setMaximumHeight(40)
+            b.setMinimumHeight(32)
+            b.setMaximumHeight(36)
             b.setMinimumWidth(0)
             b.setMaximumWidth(16777215)
             if hasattr(b, 'setFixedWidth'):
                 # Undo Classic Clear fixed-width crush
-                b.setMinimumWidth(64)
+                b.setMinimumWidth(54)
         except Exception:
             pass
         grid.addWidget(b, i // cols, i % cols)
@@ -555,6 +555,15 @@ def apply_shared_checkout_chrome(tab) -> None:
             _style_col_hdr(col_hdr)
         except Exception:
             pass
+
+    # Ensure Current Sale header, item counter, and Review button are visible
+    for name in ('_sale_hdr', '_cnt', '_cart_max_btn'):
+        w = getattr(tab, name, None)
+        if _alive(w):
+            try:
+                w.show()
+            except Exception:
+                pass
 
     # New Customer reachable on Classic / Explorer (same as Pro)
     cust = getattr(tab, '_cust_card', None)
@@ -592,6 +601,16 @@ def apply_shared_checkout_chrome(tab) -> None:
     style_section_header(pay_hdr, 'Payment Method')
     if _alive(pay_hdr):
         pay_hdr.show()
+
+    pay_seg = getattr(tab, '_pay_seg', None)
+    if _alive(pay_seg):
+        try:
+            if hasattr(pay_seg, 'set_row_layout'):
+                pay_seg.set_row_layout(True)
+            if hasattr(pay_seg, 'set_compact'):
+                pay_seg.set_compact(True)
+        except Exception:
+            pass
 
     # Hide legacy method combo / cash-paid label (tiles + Amount Paid replace them)
     for name in ('_pay_lbl', '_pay', '_cash_paid_lbl', '_var_frame'):
@@ -646,8 +665,8 @@ def apply_shared_checkout_chrome(tab) -> None:
     if _alive(body):
         bl = body.layout()
         if bl is not None:
-            bl.setContentsMargins(12, 6, 12, 6)
-            bl.setSpacing(5)
+            bl.setContentsMargins(8, 4, 8, 4)
+            bl.setSpacing(4)
 
     # Ensure Amount Paid + Change stay reachable (not buried under a tall cart)
     for name in ('_amount_paid_block', '_amount_block', '_paid', '_chg_frame', '_amount_paid_cap'):

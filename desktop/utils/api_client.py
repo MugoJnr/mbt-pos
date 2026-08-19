@@ -1145,6 +1145,135 @@ class APIClient:
         finally:
             db.close()
 
+    def reset_forgotten_admin_password(self, pin: str, target_username: str, new_password: str) -> dict:
+        """Self-service emergency reset for admin/superadmin accounts using Super-Admin PIN."""
+        if not pin or not pin.strip():
+            return {'error': 'Super-Admin PIN is required.'}
+        if not target_username or not target_username.strip():
+            return {'error': 'Target username is required.'}
+        if not new_password or len(new_password) < 6:
+            return {'error': 'New password must be at least 6 characters.'}
+
+        from desktop.utils.security import _pin_hash
+        db = _db()
+        try:
+            cfg_rows = db.execute("SELECT value FROM system_settings WHERE key='superadmin_pin_hash'").fetchone()
+            stored_pin_hash = cfg_rows['value'] if cfg_rows else None
+            if not stored_pin_hash:
+                return {'error': 'Super-Admin PIN is not set on this system. Contact MugoByte support.'}
+
+            if _pin_hash(pin.strip()) != stored_pin_hash:
+                _audit(None, 'SYSTEM', 'EMERGENCY_RESET_FAIL', 'security', f"target={target_username} invalid_pin")
+                return {'error': 'Incorrect Super-Admin PIN.'}
+
+            user = _row(db.execute(
+                "SELECT id, username, role FROM users WHERE LOWER(username)=LOWER(?) AND is_active=1",
+                (target_username.strip(),)
+            ))
+            if not user:
+                return {'error': f"User '{target_username}' not found."}
+
+            pw_hash = _hash_pw(new_password)
+            db.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, user['id']))
+            db.commit()
+
+            # Clear any failed login lockouts for this username
+            key = target_username.strip().lower()
+            if key in _LOGIN_ATTEMPTS:
+                _LOGIN_ATTEMPTS.pop(key, None)
+                _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
+
+            _audit(user['id'], user['username'], 'EMERGENCY_RESET_SUCCESS', 'security', f"role={user['role']} pin_authorized")
+            return {'success': True, 'username': user['username']}
+        finally:
+            db.close()
+
+    def reset_admin_via_license_key(self, license_key: str, target_username: str, new_password: str, new_pin: str = '') -> dict:
+        """Emergency Tier-2 reset using the device's activation key (offline & online compatible)."""
+        clean_key = (license_key or '').strip().upper()
+        if not clean_key:
+            return {'error': 'Activation License Key is required.'}
+        if not target_username or not target_username.strip():
+            return {'error': 'Target username is required.'}
+        if not new_password or len(new_password) < 6:
+            return {'error': 'New password must be at least 6 characters.'}
+
+        # Check local cryptographic license store binding
+        from licensing.license_engine import LicenseEngine
+        try:
+            engine = LicenseEngine()
+            engine_status = engine.get_status_dict()
+            active_key = (engine_status.get('license_key') or '').strip().upper()
+            
+            # If engine doesn't have key directly in status, check store directly
+            if not active_key:
+                active_key = (engine.store.get('cloud_license_key') or '').strip().upper()
+
+            # Compare provided key with the device's authenticated license key
+            key_matched = False
+            if active_key and clean_key == active_key:
+                key_matched = True
+            elif active_key and clean_key.replace('-', '') == active_key.replace('-', ''):
+                key_matched = True
+
+            # If local key didn't match directly, try cloud query only if local key is not present
+            if not key_matched and not active_key:
+                try:
+                    from backend.cloud.platform_service import service_select
+                    rows = service_select('licenses', f"license_key=eq.{clean_key}&is_active=eq.true")
+                    if rows and len(rows) > 0:
+                        # Ensure this device is in license_activations for this key
+                        did = engine.device_id
+                        acts = service_select('license_activations', f"license_id=eq.{rows[0]['id']}&is_active=eq.true")
+                        for a in acts:
+                            if a.get('device_id') == did or a.get('device_alias') == did:
+                                key_matched = True
+                                break
+                except Exception:
+                    pass
+
+            if not key_matched:
+                _audit(None, 'SYSTEM', 'LICENSE_KEY_RESET_FAIL', 'security', f"target={target_username} key_mismatch")
+                return {'error': 'License key does not match the activation key for this PC.'}
+
+            db = _db()
+            try:
+                user = _row(db.execute(
+                    "SELECT id, username, role FROM users WHERE LOWER(username)=LOWER(?) AND is_active=1",
+                    (target_username.strip(),)
+                ))
+                if not user:
+                    return {'error': f"User '{target_username}' not found."}
+
+                pw_hash = _hash_pw(new_password)
+                db.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, user['id']))
+
+                # If a new PIN was provided, update the Super-Admin PIN as well
+                if new_pin and len(new_pin.strip()) >= 4:
+                    from desktop.utils.security import _pin_hash
+                    p_hash = _pin_hash(new_pin.strip())
+                    db.execute(
+                        "INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                        ('superadmin_pin_hash', p_hash, datetime.now().isoformat())
+                    )
+
+                db.commit()
+
+                # Clear lockout
+                key = target_username.strip().lower()
+                if key in _LOGIN_ATTEMPTS:
+                    _LOGIN_ATTEMPTS.pop(key, None)
+                    _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
+
+                _audit(user['id'], user['username'], 'LICENSE_KEY_RESET_SUCCESS', 'security', f"role={user['role']} key_authorized")
+                return {'success': True, 'username': user['username']}
+            finally:
+                db.close()
+
+        except Exception as e:
+            logger.error(f"reset_admin_via_license_key: {e}")
+            return {'error': f"Verification error: {e}"}
+
     # ── SETTINGS ────────────────────────────────────────────────────────────────
 
     def get_settings(self) -> dict:
