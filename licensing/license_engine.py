@@ -277,12 +277,12 @@ def _collect_hardware_probe_parts() -> list:
     if platform.system() == 'Windows':
         import subprocess
         for cmd, prefix in [
-            ('wmic cpu get ProcessorId /value',        'ProcessorId='),
-            ('wmic baseboard get SerialNumber /value', 'SerialNumber='),
-            ('wmic diskdrive get SerialNumber /value', 'SerialNumber='),
+            (['wmic', 'cpu', 'get', 'ProcessorId', '/value'], 'ProcessorId='),
+            (['wmic', 'baseboard', 'get', 'SerialNumber', '/value'], 'SerialNumber='),
+            (['wmic', 'diskdrive', 'get', 'SerialNumber', '/value'], 'SerialNumber='),
         ]:
             try:
-                out = subprocess.check_output(cmd, shell=True,
+                out = subprocess.check_output(cmd, shell=False,
                                                stderr=subprocess.DEVNULL,
                                                timeout=5).decode(errors='ignore')
                 for line in out.splitlines():
@@ -728,7 +728,7 @@ class LicenseStore:
 
 _TIME_SOURCES = [
     'https://worldtimeapi.org/api/timezone/Etc/UTC',
-    'http://worldclockapi.com/api/json/utc/now',
+    'https://worldclockapi.com/api/json/utc/now',
 ]
 
 # Session cache — never block POS startup on unreachable time APIs.

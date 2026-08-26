@@ -1,8 +1,8 @@
 {
-    "version": "3.0.70",
-    "build": "RC-2026-08-19-v3.0.70",
-    "released": "2026-08-19",
-    "release_notes": "MBT POS v3.0.70 Production Release: certified multi-layout checkout (Retail Classic single-screen density, Product Explorer, Checkout Pro, Expanded Review), system-wide accidental scroll protection, offline/online licensing persistence, debounced atomic checkout, split tender & part-payment debt lifecycle.",
-    "checksum_sha256": "fe937dc0708e8db7fe22c17d541a0275ec9671050a601d794b5e3591a3f4a022",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.70/MBT_POS_Setup_v3.0.70.exe"
+    "version": "3.0.71",
+    "build": "RC-2026-08-26-v3.0.71",
+    "released": "2026-08-26",
+    "release_notes": "MBT POS v3.0.71 Release Candidate: unified release metadata, verified updater checksums, hardened recovery controls, safe credential packaging, reliable update-helper layout, and POS/UI regression repairs.",
+    "checksum_sha256": "9b9c29eb8c27ff43b1fc3e0516df3305c75f9962d86cff15d70285d9b95b368d",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.71/MBT_POS_Setup.exe"
 }

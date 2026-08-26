@@ -386,7 +386,7 @@ def pin_checkout_totals(tab) -> None:
             disc.setReadOnly(False)
             disc.setMinimumHeight(32)
             disc.setMaximumHeight(36)
-            disc.setFixedWidth(128)
+            disc.setFixedWidth(64 if not is_pro else 128)
             disc.show()
         except Exception:
             pass
@@ -465,7 +465,7 @@ def pin_checkout_totals(tab) -> None:
 
 
 def apply_secondary_action_grid(tab) -> None:
-    """Two-row Classic/Explorer footer so Clear…Returns never cram into one strip."""
+    """Build the two-row Classic/Explorer Clear…Returns action grid."""
     foot = getattr(tab, '_checkout_foot', None)
     if not _alive(foot):
         return
@@ -532,6 +532,33 @@ def apply_secondary_action_grid(tab) -> None:
     tab._checkout_sec_row = grid
     tab._sec_actions_grid_ok = True
     style_quiet_secondary_actions(tab)
+
+
+def move_secondary_actions_to_scroll(tab) -> None:
+    """Keep secondary actions reachable without crushing pinned checkout totals.
+
+    At high Windows scaling the sticky footer cannot safely contain the totals,
+    amount, change, two utility rows, and Complete Sale.  The utility grid is
+    therefore part of the existing scrollable checkout body; payment-critical
+    totals and Complete Sale remain pinned.
+    """
+    grid = getattr(tab, '_checkout_sec_row', None)
+    foot = getattr(tab, '_checkout_foot', None)
+    body = getattr(tab, '_actions_body', None)
+    if grid is None or not _alive(foot) or not _alive(body):
+        return
+    fl = foot.layout()
+    bl = body.layout()
+    if fl is None or bl is None:
+        return
+    if getattr(tab, '_sec_actions_in_body', False):
+        return
+    try:
+        fl.removeItem(grid)
+        bl.addLayout(grid)
+        tab._sec_actions_in_body = True
+    except Exception:
+        return
 
 
 def apply_shared_checkout_chrome(tab) -> None:
@@ -679,6 +706,7 @@ def apply_shared_checkout_chrome(tab) -> None:
 
     apply_checkout_foot_rhythm(tab, pro_primary_only=False)
     apply_secondary_action_grid(tab)
+    move_secondary_actions_to_scroll(tab)
     pin_checkout_totals(tab)
 
 def _stash(tab, *widgets) -> None:

@@ -242,6 +242,91 @@ class BusinessDayBar(QFrame):
         self.updateGeometry()
 
 
+class SearchToolbar(QFrame):
+    """Responsive product filters that wrap instead of clipping narrow columns."""
+
+    STACK_UNDER = 700
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('posSearchBarRow')
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"QFrame#posSearchBarRow{{background:transparent;"
+            f"border-bottom:1px solid {C['border']};}}")
+        self._mode = None
+        self._widgets = ()
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(16, 14, 16, 14)
+        self._root.setSpacing(6)
+        self._row1 = QHBoxLayout()
+        self._row2 = QHBoxLayout()
+        self._root.addLayout(self._row1)
+        self._root.addLayout(self._row2)
+
+    def setup(self, search, category, layout, refresh, focus) -> None:
+        self._widgets = (search, category, layout, refresh, focus)
+        self._apply_layout(force=True)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_layout(force=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_layout(width=event.size().width())
+
+    @staticmethod
+    def _clear(layout) -> None:
+        while layout.count():
+            layout.takeAt(0)
+
+    def _apply_layout(self, force: bool = False, width: int | None = None) -> None:
+        if len(self._widgets) != 5:
+            return
+        w = int(width if width is not None else self.width())
+        if w <= 0 and self.parentWidget() is not None:
+            w = self.parentWidget().width()
+        stacked = w < self.STACK_UNDER
+        if not force and stacked == self._mode:
+            return
+        self._mode = stacked
+        search, category, layout, refresh, focus = self._widgets
+        self._clear(self._row1)
+        self._clear(self._row2)
+        if stacked:
+            self._root.setContentsMargins(10, 6, 10, 6)
+            self._row1.setSpacing(6)
+            self._row2.setSpacing(6)
+            for combo in (category, layout):
+                combo.setMinimumWidth(0)
+                combo.setMaximumWidth(16777215)
+                combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            search.setMinimumWidth(80)
+            focus.setMinimumWidth(70)
+            focus.setMaximumWidth(90)
+            self._row1.addWidget(search, 1)
+            self._row1.addWidget(refresh)
+            self._row1.addWidget(focus)
+            self._row2.addWidget(category, 1)
+            self._row2.addWidget(layout, 1)
+        else:
+            self._root.setContentsMargins(16, 14, 16, 14)
+            self._row1.setSpacing(10)
+            category.setFixedWidth(220)
+            layout.setFixedWidth(168)
+            focus.setMinimumWidth(96)
+            focus.setMaximumWidth(16777215)
+            self._row1.addWidget(search, 1)
+            self._row1.addWidget(category)
+            self._row1.addWidget(layout)
+            self._row1.addWidget(refresh)
+            self._row1.addWidget(focus)
+        self._row2.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumHeight(92 if stacked else 72)
+        self.updateGeometry()
+
+
 def build_shared_panels(tab) -> None:
     """Create product / sale / actions panels and attach widgets onto ``tab``."""
     # Park every new panel under an invisible stash from birth — never free HWND.
@@ -314,21 +399,10 @@ def build_shared_panels(tab) -> None:
     tab._business_day_bar = biz
     ll.addWidget(biz)
 
-    search_bar = QWidget(product)
-    search_bar.setObjectName('posSearchBarRow')
-    search_bar.setAttribute(Qt.WA_StyledBackground, True)
-    # Object-scoped: an unqualified `border-bottom` here cascades onto every
-    # child label and paints stray hairlines under captions.
-    search_bar.setStyleSheet(
-        f"QWidget#posSearchBarRow{{background:transparent;"
-        f"border-bottom:1px solid {C['border']};}}")
-    sf = QHBoxLayout(search_bar)
-    sf.setContentsMargins(16, 14, 16, 14)
-    sf.setSpacing(10)
+    search_bar = SearchToolbar(product)
     tab._search = PosSearchBar()
     tab._search.textChanged.connect(tab._filter)
     tab._search.submitted.connect(tab._on_barcode_enter)
-    sf.addWidget(tab._search, 1)
     tab._cat = QComboBox()
     tab._cat.setObjectName('posCatCombo')
     tab._cat.setMinimumHeight(44)
@@ -337,7 +411,6 @@ def build_shared_panels(tab) -> None:
     style_cat_combo(tab._cat, is_light=bool(getattr(tab, '_is_light', False)))
     tab._cat.addItem('All Categories')
     tab._cat.currentTextChanged.connect(tab._filter)
-    sf.addWidget(tab._cat)
     # Checkout layout switcher — always visible (incl. Checkout Pro); also in Settings → Checkout
     from desktop.pos.layout_ids import CHECKOUT_LAYOUTS, normalize_layout_id
     tab._layout_combo = QComboBox()
@@ -365,22 +438,23 @@ def build_shared_panels(tab) -> None:
     except Exception:
         pass
     tab._layout_combo.currentIndexChanged.connect(tab._on_layout_combo_changed)
-    sf.addWidget(tab._layout_combo)
     ref = IconBtn('', 40, 40)
     try:
         from desktop.utils.nav_icons import apply_button_icon
         apply_button_icon(ref, 'refresh', 18)
     except Exception:
         pass
+    ref.setToolTip('Refresh products')
+    ref.setAccessibleName('Refresh products')
     ref.clicked.connect(lambda: tab.refresh(force=True))
-    sf.addWidget(ref)
     tab._refresh_btn = ref
     tab._focus_btn = SecondaryBtn('Focus', 40)
     tab._focus_btn.setMinimumWidth(96)
     tab._focus_btn.setToolTip(
         'Maximize Point of Sale — hide sidebar and top bar. Esc or Restore to exit.')
     tab._focus_btn.clicked.connect(tab._toggle_focus_mode)
-    sf.addWidget(tab._focus_btn)
+    search_bar.setup(
+        tab._search, tab._cat, tab._layout_combo, ref, tab._focus_btn)
     tab._theme_btn = None
     tab._search_bar = search_bar
     ll.addWidget(search_bar)
@@ -526,6 +600,7 @@ def build_shared_panels(tab) -> None:
     disc_row.addWidget(tab._disc_lbl)
     disc_row.addStretch()
     disc_row.addWidget(tab._disc)
+    tab._summary._disc_row = disc_row
     tab._summary._body.insertLayout(2, disc_row)
     swl.addWidget(tab._summary)
     tab._sale_summary_wrap = sum_wrap

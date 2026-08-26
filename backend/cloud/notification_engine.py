@@ -251,13 +251,19 @@ class NotificationEngine:
             db.close()
 
     def update_preference(self, event_type: str, channel: str, enabled: bool) -> bool:
-        if channel not in ('dashboard', 'email', 'push'):
+        statements = {
+            'dashboard': "UPDATE notification_preferences SET dashboard=? WHERE event_type=?",
+            'email': "UPDATE notification_preferences SET email=? WHERE event_type=?",
+            'push': "UPDATE notification_preferences SET push=? WHERE event_type=?",
+        }
+        statement = statements.get(channel)
+        if not statement:
             return False
         db = self._db()
         try:
             ensure_notification_schema(db)
             db.execute(
-                f"UPDATE notification_preferences SET {channel}=? WHERE event_type=?",
+                statement,
                 (1 if enabled else 0, event_type),
             )
             db.commit()
@@ -266,11 +272,19 @@ class NotificationEngine:
             db.close()
 
     def _is_enabled(self, event_type: str, channel: str) -> bool:
+        statements = {
+            'dashboard': "SELECT dashboard FROM notification_preferences WHERE event_type=?",
+            'email': "SELECT email FROM notification_preferences WHERE event_type=?",
+            'push': "SELECT push FROM notification_preferences WHERE event_type=?",
+        }
+        statement = statements.get(channel)
+        if not statement:
+            return False
         db = self._db()
         try:
             ensure_notification_schema(db)
             row = db.execute(
-                f"SELECT {channel} FROM notification_preferences WHERE event_type=?",
+                statement,
                 (event_type,),
             ).fetchone()
             return bool(row[channel]) if row else True

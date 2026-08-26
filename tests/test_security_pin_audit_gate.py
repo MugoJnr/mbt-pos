@@ -83,6 +83,50 @@ class SuperadminPinAndSaleEditAuditGate(unittest.TestCase):
         self.assertIn('def ask_superadmin_pin', sec_src)
         self.assertIn('MBT_AUTO_SUPERADMIN_PIN', sec_src)
 
+    def test_emergency_pin_cannot_reset_cashier(self):
+        from desktop.utils.security import set_superadmin_pin
+
+        self.assertTrue(set_superadmin_pin('998877', self.api))
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
+            ('cashier-reset-target', 'legacy:hash', 'cashier'),
+        )
+        db.commit()
+        before = db.execute(
+            "SELECT password_hash FROM users WHERE username=?",
+            ('cashier-reset-target',),
+        ).fetchone()['password_hash']
+        db.close()
+
+        result = self.api.reset_forgotten_admin_password(
+            '998877', 'cashier-reset-target', 'Changed123')
+        self.assertIn('error', result)
+        self.assertIn('admin', result['error'].lower())
+
+        db = self.ac._db()
+        after = db.execute(
+            "SELECT password_hash FROM users WHERE username=?",
+            ('cashier-reset-target',),
+        ).fetchone()['password_hash']
+        db.close()
+        self.assertEqual(before, after)
+
+    def test_emergency_recovery_throttles_repeated_bad_pin(self):
+        from desktop.utils.security import set_superadmin_pin
+
+        self.assertTrue(set_superadmin_pin('998877', self.api))
+        last = None
+        for _ in range(self.ac.LOGIN_MAX_FAILED_ATTEMPTS):
+            last = self.api.reset_forgotten_admin_password(
+                '000000', 'admin', 'Changed123')
+        self.assertIn('error', last)
+
+        blocked = self.api.reset_forgotten_admin_password(
+            '998877', 'admin', 'Changed123')
+        self.assertTrue(blocked.get('locked'), blocked)
+        self.assertGreater(blocked.get('retry_after', 0), 0)
+
     def test_s05_sale_edits_audit_log(self):
         created = self.api.create_sale({
             'items': [{

@@ -17,7 +17,10 @@ os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_PROD_VALIDATION")
+OUT = Path(os.environ.get(
+    "MBT_QA_OUT",
+    r"C:\Users\mugoj\OneDrive\Desktop\QA_PROD_VALIDATION",
+))
 OUT.mkdir(parents=True, exist_ok=True)
 SHOTS = OUT / "desktop_shots"
 SHOTS.mkdir(exist_ok=True)
@@ -87,7 +90,10 @@ dm.MainWindow._theme_apply_pending_tabs = lambda self: None
 dm.MainWindow._warm_remaining_tabs = lambda self: None
 dm.MainWindow._qa_dump_theme_evidence = lambda self: None
 dm.MainWindow._qa_dump_theme_evidence_late = lambda self: None
-QMainWindow.showMaximized = lambda self: (self.resize(1600, 1000), self.show())
+QA_WIDTH = max(1024, int(os.environ.get("MBT_QA_WIDTH", "1600")))
+QA_HEIGHT = max(720, int(os.environ.get("MBT_QA_HEIGHT", "1000")))
+QMainWindow.showMaximized = lambda self: (
+    self.resize(QA_WIDTH, QA_HEIGHT), self.show())
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -634,10 +640,15 @@ except Exception as e:
 if win is not None:
     try:
         win.close()
+        win.deleteLater()
+        pump(5)
     except Exception:
         pass
 
 (OUT / "desktop_smoke_results.json").write_text(json.dumps(R, indent=2), encoding="utf-8")
 fails = [r for r in R if r["status"] == "FAIL"]
 log(f"done fails={len(fails)} total={len(R)}")
-sys.exit(1 if fails else 0)
+app.quit()
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(1 if fails else 0)

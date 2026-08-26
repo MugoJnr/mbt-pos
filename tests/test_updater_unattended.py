@@ -183,6 +183,22 @@ class PathAndJobTests(unittest.TestCase):
                 self.assertNotIn('command', job)
                 self.assertNotIn('args', job)
 
+    def test_frozen_helper_is_found_in_deploy_directory(self):
+        from backend.updater import find_update_helper_script
+
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, 'MBT_POS.exe')
+            helper = os.path.join(td, 'deploy', 'MBT_UpdateHelper.ps1')
+            os.makedirs(os.path.dirname(helper))
+            with open(helper, 'w', encoding='utf-8') as f:
+                f.write('# helper')
+            with patch('backend.updater.sys.frozen', True, create=True), \
+                 patch('backend.updater.sys.executable', exe):
+                self.assertEqual(
+                    os.path.normcase(find_update_helper_script()),
+                    os.path.normcase(helper),
+                )
+
 
 class UnattendedFallbackTests(unittest.TestCase):
     def test_missing_checksum_blocks_unattended(self):
@@ -205,6 +221,24 @@ class UnattendedFallbackTests(unittest.TestCase):
                  patch('backend.updater.preflight_install',
                        return_value={'ok': True, 'path': path}):
                 ok, err = uc.install_and_restart(path, unattended=True)
+                self.assertFalse(ok)
+                self.assertIn('checksum', err.lower())
+
+    def test_missing_checksum_blocks_manual_install(self):
+        from backend.updater import UpdateChecker
+
+        uc = UpdateChecker('3.0.0')
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'MBT_POS_Setup_v3.1.0.exe')
+            with open(path, 'wb') as f:
+                f.write(b'z' * 2_000_000)
+            uc._pending_version = '3.1.0'
+            uc._pending_checksum = ''
+            with patch('backend.updater.is_safe_installer_path',
+                       return_value=True), \
+                 patch('backend.updater.preflight_install',
+                       return_value={'ok': True, 'path': path}):
+                ok, err = uc.install_and_restart(path, unattended=False)
                 self.assertFalse(ok)
                 self.assertIn('checksum', err.lower())
 

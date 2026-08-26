@@ -699,7 +699,9 @@ def find_update_helper_script() -> str:
     """Locate MBT_UpdateHelper.ps1 next to the installed EXE or in deploy/."""
     candidates = []
     if getattr(sys, 'frozen', False):
-        candidates.append(os.path.join(os.path.dirname(sys.executable), 'MBT_UpdateHelper.ps1'))
+        exe_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(exe_dir, 'deploy', 'MBT_UpdateHelper.ps1'))
+        candidates.append(os.path.join(exe_dir, 'MBT_UpdateHelper.ps1'))
     try:
         from mbt_paths import get_project_root
         # Dev tree: repo/deploy; frozen data root will not have it
@@ -1590,7 +1592,7 @@ class UpdateChecker:
         unattended=False (manual Update button):
           - Prefers helper when available
           - Falls back to one-time UAC RunAs on legacy PCs
-          - Missing checksum allowed only for this manual path (logged)
+          - Requires the same published SHA-256 as unattended installs
 
         Restart happens only after successful install.
         Returns (True, '') on success, (False, error_message) on failure.
@@ -1648,15 +1650,11 @@ class UpdateChecker:
                     'Update file failed security verification.\n\n'
                     f'Detail: {detail}\n\n'
                     'The installer will not run. MBT POS will re-download it.')
-        elif unattended:
-            return False, (
-                'Automatic install blocked: release checksum is missing.\n\n'
-                'Publish SHA-256 with the GitHub release (notes tag or '
-                '.sha256 sidecar). Manual Update may still work as fallback.')
         else:
-            logger.warning(
-                'Manual install without checksum — legacy/fallback path')
-            _log_update(f'Install WARN v{version}: missing checksum (manual)')
+            return False, (
+                'Update install blocked: release checksum is missing.\n\n'
+                'Publish SHA-256 with the GitHub release (notes tag or '
+                '.sha256 sidecar), then check for updates again.')
 
         use_helper = is_update_helper_registered()
         if unattended and not use_helper:

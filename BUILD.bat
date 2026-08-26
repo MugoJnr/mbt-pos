@@ -203,7 +203,7 @@ echo.
 :: ════════════════════════════════════════════════════════════════
 echo  [2d/5] Verifying secrets are not bundled...
 cd /d "%SOURCE_DIR%"
-"%PY_EXE%" -c "import pathlib,sys; p=pathlib.Path('mbt_pos.spec').read_text(encoding='utf-8'); bad=[x for x in ('deploy.local.json','cloud_config.json','vendor_ai.bin') if \"'\"+x+\"'\" in p and 'allowed_files' not in p]; sys.exit('Unsafe secret file in spec: '+','.join(bad)) if bad else print('  [OK] Runtime secrets excluded from installer')"
+"%PY_EXE%" -c "import pathlib,sys; p=pathlib.Path('mbt_pos.spec').read_text(encoding='utf-8'); bad=[x for x in ('deploy.local.json','cloud_config.json','vendor_ai.bin') if (\"'\"+x+\"',\") in p or ('\"'+x+'\",') in p]; sys.exit('Unsafe secret file in spec: '+','.join(bad)) if bad else print('  [OK] Runtime secrets excluded from installer')"
 if errorlevel 1 (
     echo  [ERROR] Secret safety gate failed.
     pause & exit /b 1
@@ -248,11 +248,11 @@ if not exist "dist\MBT_POS\MBT_POS.exe" (
 echo  [OK] dist\MBT_POS\MBT_POS.exe ready.
 echo.
 
-:: Embed checksum into freeze tree before NSIS (non-empty _internal/version.json)
-echo  [3b/5] Embedding version.json checksum into freeze tree...
-"%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
+:: The packaged runtime manifest must not claim the enclosing installer's hash.
+echo  [3b/5] Verifying packaged runtime manifest...
+"%PY_EXE%" -c "import json,pathlib,sys; p=pathlib.Path('dist/MBT_POS/_internal/version.json'); d=json.loads(p.read_text(encoding='utf-8-sig')); sys.exit('Packaged runtime manifest contains self-referential checksum') if d.get('checksum_sha256') else print('  [OK] Runtime manifest version='+str(d.get('version')))"
 if errorlevel 1 (
-    echo  [ERROR] Could not embed checksum into freeze tree.
+    echo  [ERROR] Runtime version manifest is invalid.
     pause & exit /b 1
 )
 echo.
@@ -292,24 +292,12 @@ if "!NSIS_CMD!"=="" (
             echo  [ERROR] checksum stamp failed.
             pause & exit /b 1
         )
-        echo  [OK] version.json + sidecar stamped to Setup SHA-256.
-        echo  [4b/5] Re-embed checksum and rebuild installer (embedded SHA match)...
-        "%PY_EXE%" scripts\publish_release_3.py --embed-before-nsis
+        "%PY_EXE%" scripts\verify_installer_integrity.py
         if errorlevel 1 (
-            echo  [ERROR] Re-embed checksum failed.
+            echo  [ERROR] Final installer integrity verification failed.
             pause & exit /b 1
         )
-        "!NSIS_CMD!" installer.nsi
-        if errorlevel 1 (
-            echo  [ERROR] Second NSIS build failed.
-            pause & exit /b 1
-        )
-        "%PY_EXE%" scripts\publish_release_3.py --stamp-only
-        if errorlevel 1 (
-            echo  [ERROR] Final checksum stamp failed.
-            pause & exit /b 1
-        )
-        echo  [OK] Embedded checksum matches final Setup SHA-256.
+        echo  [OK] Release manifest + sidecar match final Setup SHA-256.
     )
 )
 echo.

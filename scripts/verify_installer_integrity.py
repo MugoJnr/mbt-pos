@@ -1,4 +1,4 @@
-﻿"""Verify dist Setup SHA256 matches version.json, sidecar, and embedded freeze tree."""
+﻿"""Verify installer hash metadata and packaged runtime version are consistent."""
 from __future__ import annotations
 
 import hashlib
@@ -39,11 +39,15 @@ def main() -> int:
     elif declared != file_hash:
         errors.append(f"version.json mismatch: declared={declared} file={file_hash}")
     if INTERNAL.is_file():
-        emb = (json.loads(INTERNAL.read_text(encoding="utf-8-sig")).get("checksum_sha256") or "").strip().lower()
-        if len(emb) != 64:
-            errors.append("embedded _internal/version.json checksum empty")
-        elif emb != file_hash:
-            errors.append(f"embedded mismatch: embedded={emb} file={file_hash}")
+        internal = json.loads(INTERNAL.read_text(encoding="utf-8-sig"))
+        if internal.get("version") != vj.get("version"):
+            errors.append(
+                "embedded version mismatch: "
+                f"embedded={internal.get('version')} release={vj.get('version')}")
+        embedded_hash = (internal.get("checksum_sha256") or "").strip()
+        if embedded_hash:
+            errors.append(
+                "embedded manifest must not carry its enclosing installer hash")
     else:
         errors.append(f"missing embedded tree: {INTERNAL}")
     if SIDECAR.is_file():
@@ -62,7 +66,7 @@ def main() -> int:
     print(f"INTEGRITY PASS v{ver}")
     print(f"setup_sha256={file_hash}")
     print(f"size={size}")
-    print("version.json == sidecar == embedded == Setup.exe")
+    print("version.json == sidecar == Setup.exe; embedded version matches")
     return 0
 
 

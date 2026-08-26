@@ -1,6 +1,6 @@
 {
   "flask_port": 5050,
-  "flask_host": "0.0.0.0",
+  "flask_host": "127.0.0.1",
   "base_domain": "mugobyte.com",
   "tunnel_domain": "",
   "tunnel_name": "",

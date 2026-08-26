@@ -3,11 +3,26 @@
 # MugoByte Technologies | mugobyte.com
 # Build with: python -m PyInstaller mbt_pos.spec
 
+import json
 import os
 HERE = os.path.abspath(SPECPATH)
 
 _cf_bin = os.path.join(HERE, 'tools', 'cloudflared.exe')
 _extra_binaries = [(_cf_bin, '.')] if os.path.isfile(_cf_bin) else []
+
+
+def _runtime_version_manifest():
+    """Create the packaged manifest without a self-referential installer hash."""
+    source = os.path.join(HERE, 'version.json')
+    with open(source, encoding='utf-8-sig') as f:
+        payload = json.load(f)
+    payload['checksum_sha256'] = ''
+    target = os.path.join(HERE, 'build', '_release_manifest', 'version.json')
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(payload, f, indent=4)
+        f.write('\n')
+    return target
 
 def _web_datas_without_node_modules():
     """Ship web/ for Flask routes + dashboard-ui/dist only (skip node_modules/src)."""
@@ -26,11 +41,10 @@ def _web_datas_without_node_modules():
 
 
 def _safe_config_datas():
-    """Bundle config code and public templates.
+    """Bundle config code and public templates only.
 
-    NOTE: deploy.local.json (vendor Cloudflare/OpenRouter tokens) is bundled on
-    purpose so every install auto-provisions {shop}.mugobyte.com and AI with no
-    per-PC setup. This ships a zone-wide secret inside the exe by design.
+    Runtime vendor credentials belong in the per-machine AppData configuration
+    or a server-side proxy. A local deploy file must never enter an installer.
     """
     config_root = os.path.join(HERE, 'config')
     allowed_files = {
@@ -38,7 +52,6 @@ def _safe_config_datas():
         'deploy.py',
         'cloud_config.example.json',
         'deploy.local.json.example',
-        'deploy.local.json',
         'web_config.json',
     }
     return [
@@ -55,7 +68,7 @@ a = Analysis(
         (os.path.join(HERE, 'assets'),      'assets'),
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
-        (os.path.join(HERE, 'version.json'), '.'),
+        (_runtime_version_manifest(), '.'),
     ] + _safe_config_datas() + _web_datas_without_node_modules() + (
         [(os.path.join(HERE, 'web_launcher.py'), '.')]
         if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []
