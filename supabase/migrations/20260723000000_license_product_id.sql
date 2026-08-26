@@ -1,6 +1,8 @@
 -- Multi-product licenses: MBT POS, Pulse, and future apps.
 -- Safe to re-run (IF NOT EXISTS).
 
+begin;
+
 ALTER TABLE public.licenses
   ADD COLUMN IF NOT EXISTS product_id text NOT NULL DEFAULT 'mbt-pos';
 
@@ -18,3 +20,5 @@ CREATE INDEX IF NOT EXISTS licenses_product_id_idx
 CREATE INDEX IF NOT EXISTS licenses_email_product_idx
   ON public.licenses (lower(assigned_email), product_id)
   WHERE assigned_email IS NOT NULL AND assigned_email <> '';
+
+commit;
