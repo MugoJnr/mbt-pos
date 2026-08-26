@@ -24,7 +24,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION_TAG = "3.0.2"
+VERSION_TAG = "3.0.71"
 MARKER_DB = b"MBT_POS_SIM_DB_v1\n" + b"\x00" * 64 + b"payload-ok\n"
 MARKER_WAL = b"MBT_POS_SIM_WAL_v1\n"
 MARKER_SHM = b"MBT_POS_SIM_SHM_v1\n"

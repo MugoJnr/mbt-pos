@@ -22,6 +22,19 @@ if ROOT not in sys.path:
 from backend import cloudflare_setup as cf
 
 
+class TestLocalWebBind(unittest.TestCase):
+    def test_default_bind_is_loopback_for_tunnel_only_access(self):
+        from backend import web_service
+
+        with open(
+                os.path.join(ROOT, 'config', 'web_config.json'),
+                encoding='utf-8') as handle:
+            config = json.load(handle)
+        self.assertEqual(cf._DEFAULT_CFG['flask_host'], '127.0.0.1')
+        self.assertEqual(web_service._DEFAULT_HOST, '127.0.0.1')
+        self.assertEqual(config['flask_host'], '127.0.0.1')
+
+
 class TestSubdomainSanitize(unittest.TestCase):
     def test_basic_slug(self):
         self.assertEqual(cf.shop_to_subdomain('Edmus Shop'), 'edmus-shop')

@@ -35,53 +35,20 @@ def stamp_checksum() -> dict:
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
     vj["checksum_sha256"] = digest
     VERSION_JSON.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-    # Also stamp into packaged tree if present (next NSIS / local run)
-    packaged = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
-    if packaged.is_file():
-        packaged.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-    # Keep a root-level copy next to the frozen EXE when present
-    packaged_root = ROOT / "dist" / "MBT_POS" / "version.json"
-    if packaged_root.parent.is_dir():
-        packaged_root.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
     SIDECAR.write_text(f"{digest}  MBT_POS_Setup.exe\n", encoding="utf-8", newline="\n")
-    # Patch installed Program Files copy when present (QA / same-PC upgrade)
-    for pf in (
-        Path(r"C:\Program Files\MugoByte\MBT POS\_internal\version.json"),
-        Path(r"C:\Program Files\MugoByte\MBT POS\version.json"),
-    ):
-        if pf.is_file():
-            try:
-                pf.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
-                print(f"stamped install: {pf}")
-            except OSError as e:
-                print(f"warn: could not stamp {pf}: {e}")
     print(f"version={vj['version']} sha256={digest} size={SETUP.stat().st_size}")
     return vj
 
 
 def embed_checksum_before_nsis() -> None:
-    """Copy root version.json (must already carry checksum_sha256) into freeze tree.
+    """Write a runtime manifest with no enclosing-installer checksum.
 
-    Call after PyInstaller and before makensis so Setup embeds a non-empty SHA.
-    After makensis, run stamp_checksum() so root/sidecar match the new Setup bytes.
-    One optional second makensis after stamp embeds the matching Setup SHA into the
-    next installer build (BUILD.bat does freeze → nsis → stamp → nsis → stamp).
+    An installer cannot contain its own final SHA-256: embedding that digest
+    changes the installer bytes. Integrity is published externally in the root
+    release manifest, sidecar, GitHub notes, and cloud update row.
     """
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
-    digest = (vj.get("checksum_sha256") or "").strip()
-    if len(digest) != 64:
-        # Prefer existing Setup hash if we are rebuilding installer only
-        if SETUP.is_file():
-            vj["checksum_sha256"] = sha256_file(SETUP)
-            VERSION_JSON.write_text(
-                json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n"
-            )
-            digest = vj["checksum_sha256"]
-        else:
-            raise SystemExit(
-                "version.json checksum_sha256 empty and no dist Setup to hash — "
-                "build Setup once, then re-run with stamp"
-            )
+    vj["checksum_sha256"] = ""
     internal = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
     if not internal.parent.is_dir():
         raise SystemExit(f"Missing freeze tree: {internal.parent}")
@@ -90,7 +57,7 @@ def embed_checksum_before_nsis() -> None:
     (ROOT / "dist" / "MBT_POS" / "version.json").write_text(
         payload, encoding="utf-8", newline="\n"
     )
-    print(f"embedded checksum into freeze tree: {digest}")
+    print("embedded runtime manifest (external installer checksum)")
 
 
 def gh_release(vj: dict) -> None:
@@ -106,13 +73,16 @@ def gh_release(vj: dict) -> None:
 
 [checksum_sha256: {vj['checksum_sha256']}]
 """
-    # Delete draft if exists with same tag
-    subprocess.run(
-        ["gh", "release", "delete", tag, "--yes", "--cleanup-tag"],
+    exists = subprocess.run(
+        ["gh", "release", "view", tag],
         cwd=str(ROOT),
         check=False,
         capture_output=True,
+        text=True,
     )
+    if exists.returncode == 0:
+        raise SystemExit(
+            f"GitHub release {tag} already exists; refusing destructive replacement")
     cmd = [
         "gh",
         "release",

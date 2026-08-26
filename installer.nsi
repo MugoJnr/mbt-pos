@@ -10,6 +10,8 @@
 ;=============================================================================
 ; General Settings
 ;=============================================================================
+!define APP_VERSION "3.0.71"
+!define APP_VERSION_QUAD "3.0.71.0"
 Unicode True
 Name "MBT POS"
 OutFile "dist\MBT_POS_Setup.exe"
@@ -91,13 +93,13 @@ FunctionEnd
 ;=============================================================================
 ; Version Info
 ;=============================================================================
-VIProductVersion "3.0.61.0"
+VIProductVersion "${APP_VERSION_QUAD}"
 VIAddVersionKey "ProductName"     "MBT POS"
 VIAddVersionKey "CompanyName"     "MugoByte Technologies"
 VIAddVersionKey "LegalCopyright"  "(c) 2026 MugoByte Technologies"
 VIAddVersionKey "FileDescription" "MBT POS Installer - auto new/upgrade"
-VIAddVersionKey "FileVersion"     "3.0.61"
-VIAddVersionKey "ProductVersion"  "3.0.61"
+VIAddVersionKey "FileVersion"     "${APP_VERSION}"
+VIAddVersionKey "ProductVersion"  "${APP_VERSION}"
 
 ;=============================================================================
 ; Installer Sections
@@ -110,15 +112,15 @@ Section "MBT POS" SecMain
     ; UPGRADE: back up the real runtime paths before replacing binaries.
     ${If} $IsUpgrade == "1"
         DetailPrint "Upgrade detected - backing up database..."
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61"
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\config"
-        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\license"
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\mbt_pos.db"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\mbt_pos.db-wal"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\mbt_pos.db-shm"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\config"'
-        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\license\lc.db"'
-        nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\3.0.61\license\lc.db.roaming"'
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}"
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\config"
+        CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license"
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-wal"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-shm"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\config"'
+        nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db"'
+        nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.roaming"'
         DetailPrint "Database, settings, and encrypted license backup complete."
     ${Else}
         DetailPrint "New installation - Setup Wizard will run on first launch."
@@ -130,25 +132,27 @@ Section "MBT POS" SecMain
     ; Onedir build: MBT_POS.exe + python311.dll + libs
     File /r "dist\MBT_POS\*.*"
 
-    ; Elevated unattended-update helper (least privilege scheduled task)
+    ; Elevated unattended-update helper stored in a dedicated deploy directory
+    SetOutPath "$INSTDIR\deploy"
     File "deploy\MBT_UpdateHelper.ps1"
     File "deploy\register_update_helper.ps1"
+    SetOutPath "$INSTDIR"
 
     ; Record install mode for support / diagnostics
     CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS"
     CreateDirectory "$LOCALAPPDATA\MugoByte\MBT POS\updates"
     FileOpen $1 "$LOCALAPPDATA\MugoByte\MBT POS\last_install_mode.txt" w
     FileWrite $1 "$InstallMode$\r$\n"
-    FileWrite $1 "version=3.0.61$\r$\n"
+    FileWrite $1 "version=${APP_VERSION}$\r$\n"
     FileClose $1
 
     WriteRegStr HKLM "Software\MugoByte\MBT POS" "InstallDir" "$INSTDIR"
-    WriteRegStr HKLM "Software\MugoByte\MBT POS" "Version"    "3.0.61"
+    WriteRegStr HKLM "Software\MugoByte\MBT POS" "Version"    "${APP_VERSION}"
     WriteRegStr HKLM "Software\MugoByte\MBT POS" "InstallMode" "$InstallMode"
 
     ; Register on-demand elevated helper (no always-running service).
     DetailPrint "Registering silent update helper task..."
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\register_update_helper.ps1"'
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\deploy\register_update_helper.ps1"'
 
     CreateDirectory "$SMPROGRAMS\MugoByte\MBT POS"
     CreateShortcut  "$SMPROGRAMS\MugoByte\MBT POS\MBT POS.lnk" \
@@ -169,7 +173,7 @@ Section "MBT POS" SecMain
         "DisplayName"          "MBT POS"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
-        "DisplayVersion"       "3.0.61"
+        "DisplayVersion"       "${APP_VERSION}"
     WriteRegStr HKLM \
         "Software\Microsoft\Windows\CurrentVersion\Uninstall\MBT POS" \
         "Publisher"            "MugoByte Technologies"

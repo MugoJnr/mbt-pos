@@ -1,6 +1,6 @@
 """
 Per-deployment defaults for MBT POS (multi-shop).
-Set config/deploy.local.json before building the installer.
+Local vendor credentials are runtime-only and must never be bundled.
 """
 import json
 import os
@@ -38,7 +38,7 @@ def _load_deploy_local_files() -> dict:
 
 
 def load_deploy_config() -> dict:
-    """Build-time + install defaults. Shipped inside every MBT_POS_Setup.exe."""
+    """Runtime defaults plus per-machine AppData overrides."""
     cfg = {
         'cloudflare_api_token': os.environ.get('CLOUDFLARE_API_TOKEN', '').strip(),
     }
@@ -47,11 +47,21 @@ def load_deploy_config() -> dict:
 
 
 def verify_installer_bundle() -> tuple[bool, str]:
-    """Called from BUILD.bat — verify deploy config is present."""
+    """Called from BUILD.bat — prove no local vendor secret can be bundled."""
     try:
         if not os.path.isfile(os.path.join(_DIR, 'deploy.py')):
             return False, 'config/deploy.py missing from project'
-        return True, 'Deploy config OK'
+        if os.path.isfile(_LOCAL):
+            return False, (
+                'config/deploy.local.json is present in the build tree. '
+                'Move runtime credentials to AppData before building.')
+        spec = os.path.join(os.path.dirname(_DIR), 'mbt_pos.spec')
+        if os.path.isfile(spec):
+            with open(spec, encoding='utf-8') as f:
+                text = f.read()
+            if "'deploy.local.json'," in text or '"deploy.local.json",' in text:
+                return False, 'mbt_pos.spec attempts to bundle deploy.local.json'
+        return True, 'Runtime secrets excluded from installer inputs'
     except Exception as e:
         return False, str(e)
 

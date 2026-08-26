@@ -1890,6 +1890,9 @@ class SummaryCard(QFrame):
         tot.addStretch()
         tot.addWidget(self._tot_lbl)
         lay.addLayout(tot)
+        self._total_layout = tot
+        self._disc_row = None  # supplied by the POS panel factory
+        self._pinned_row_w = None
         # No drop-shadow: SummaryCard sits under the cart splitter handle. A
         # QGraphicsDropShadowEffect paints into the gutter and makes drag feel
         # broken even though the handle still shows its tooltip.
@@ -1938,12 +1941,85 @@ class SummaryCard(QFrame):
                 self._total_hdr.setText('Grand Total')
             except Exception:
                 pass
+        self._set_pinned_row(self._pinned_strip)
         self._apply_density()
+        self.refresh_theme()
         try:
             self.setGraphicsEffect(None)
         except Exception:
             pass
         self.updateGeometry()
+
+    @staticmethod
+    def _clear_layout(layout):
+        if layout is None:
+            return
+        while layout.count():
+            layout.takeAt(0)
+
+    def _set_pinned_row(self, enabled: bool):
+        """Use one real row in the sticky foot so high-DPI layouts cannot overlap."""
+        sub_row_w = getattr(self._sub_lbl, '_row_w', None)
+        sub_row = sub_row_w.layout() if sub_row_w is not None else None
+        sub_cap = getattr(self._sub_lbl, '_row_cap', None)
+        disc_row = getattr(self, '_disc_row', None)
+        disc_edit = getattr(self, 'disc_edit', None)
+        total_row = getattr(self, '_total_layout', None)
+        if any(x is None for x in (sub_row, sub_cap, disc_row, disc_edit, total_row)):
+            return
+
+        if enabled:
+            if self._pinned_row_w is None:
+                self._pinned_row_w = QWidget(self)
+                self._pinned_row_w.setObjectName('posPinnedTotalsRow')
+                self._pinned_row = QHBoxLayout(self._pinned_row_w)
+                self._pinned_row.setContentsMargins(0, 0, 0, 0)
+                self._pinned_row.setSpacing(3)
+                self._body.addWidget(self._pinned_row_w)
+            row = self._pinned_row
+            self._clear_layout(row)
+            for layout in (sub_row, disc_row, total_row):
+                self._clear_layout(layout)
+            sub_cap.setText('Sub')
+            self.disc_label.setText('Disc')
+            self._total_hdr.setText('Total')
+            disc_edit.setMinimumWidth(52)
+            disc_edit.setMaximumWidth(64)
+            row.addWidget(sub_cap)
+            row.addWidget(self._sub_lbl)
+            row.addSpacing(2)
+            row.addWidget(self.disc_label)
+            row.addWidget(disc_edit)
+            row.addSpacing(2)
+            row.addWidget(self._total_hdr)
+            row.addWidget(self._tot_lbl)
+            sub_row_w.hide()
+            self._tax_row_w.hide()
+            self._savings_row_w.hide()
+            self._sep.hide()
+            self._pinned_row_w.show()
+            return
+
+        if self._pinned_row_w is not None:
+            self._clear_layout(self._pinned_row)
+            self._pinned_row_w.hide()
+        self._clear_layout(sub_row)
+        sub_row.addWidget(sub_cap)
+        sub_row.addStretch()
+        sub_row.addWidget(self._sub_lbl)
+        self._clear_layout(disc_row)
+        self.disc_label.setText('Discount (KES)')
+        disc_edit.setMinimumWidth(120)
+        disc_edit.setMaximumWidth(150)
+        disc_row.addWidget(self.disc_label)
+        disc_row.addStretch()
+        disc_row.addWidget(disc_edit)
+        self._clear_layout(total_row)
+        total_row.addWidget(self._total_hdr)
+        total_row.addStretch()
+        total_row.addWidget(self._tot_lbl)
+        sub_row_w.show()
+        self._sep.show()
 
     def _apply_density(self):
         lay = self.layout()
@@ -1973,6 +2049,7 @@ class SummaryCard(QFrame):
         row.addStretch()
         row.addWidget(v)
         v._row_w = w
+        v._row_cap = l
         self._body.addWidget(w)
         return v
 
@@ -2007,8 +2084,9 @@ class SummaryCard(QFrame):
         try:
             gold = C['gold']
             compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
-            px = 22 if compact else 30
-            flash_px = 24 if compact else 32
+            pinned = bool(getattr(self, '_pinned_strip', False))
+            px = 16 if pinned else (22 if compact else 30)
+            flash_px = 18 if pinned else (24 if compact else 32)
             base = (
                 f"color:{gold};font-size:{px}px;font-weight:900;background:transparent;")
             flash = (
@@ -2021,9 +2099,10 @@ class SummaryCard(QFrame):
 
     def refresh_theme(self):
         compact = bool(getattr(self, '_review_compact', False) or getattr(self, '_pinned_strip', False))
-        tot_px = 22 if compact else 30
-        hdr_px = 13 if compact else 15
-        mute_px = 13 if compact else 14
+        pinned = bool(getattr(self, '_pinned_strip', False))
+        tot_px = 16 if pinned else (22 if compact else 30)
+        hdr_px = 11 if pinned else (13 if compact else 15)
+        mute_px = 10 if pinned else (13 if compact else 14)
         self.setStyleSheet(
             f"QFrame#posTotFrame{{background:{C['panel']};border:1px solid {C['border']};"
             f"border-radius:{RADIUS['lg']}px;}}")

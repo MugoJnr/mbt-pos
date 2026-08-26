@@ -15,7 +15,7 @@ from pathlib import Path
 log = logging.getLogger('web_service')
 
 _DEFAULT_PORT = 5050
-_DEFAULT_HOST = '0.0.0.0'
+_DEFAULT_HOST = '127.0.0.1'
 
 
 def _load_web_config():

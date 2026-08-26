@@ -636,7 +636,7 @@ class SyncManager:
                         continue
                     event_id = (
                         f"bf-{entity_type}-{source_id}-"
-                        f"{hashlib.sha1(f'{org_id}:{device_id}:{entity_type}:{source_id}'.encode()).hexdigest()[:16]}"
+                        f"{hashlib.sha1(f'{org_id}:{device_id}:{entity_type}:{source_id}'.encode(), usedforsecurity=False).hexdigest()[:16]}"
                     )
                     try:
                         conn.execute(

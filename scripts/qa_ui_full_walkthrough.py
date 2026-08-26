@@ -22,7 +22,10 @@ os.environ.setdefault("MBT_SESSION_IDLE_SEC", "0")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_UI_WALKTHROUGH")
+OUT = Path(os.environ.get(
+    "MBT_QA_OUT",
+    r"C:\Users\mugoj\OneDrive\Desktop\QA_UI_WALKTHROUGH",
+))
 OUT.mkdir(parents=True, exist_ok=True)
 SHOTS = OUT / "shots"
 SHOTS.mkdir(exist_ok=True)
@@ -94,7 +97,10 @@ dm.MainWindow._restore_pending_update = lambda self: None
 dm.MainWindow._warm_remaining_tabs = lambda self: None
 dm.MainWindow._qa_dump_theme_evidence = lambda self: None
 dm.MainWindow._qa_dump_theme_evidence_late = lambda self: None
-QMainWindow.showMaximized = lambda self: (self.resize(1600, 1000), self.show())
+QA_WIDTH = max(1024, int(os.environ.get("MBT_QA_WIDTH", "1600")))
+QA_HEIGHT = max(720, int(os.environ.get("MBT_QA_HEIGHT", "1000")))
+QMainWindow.showMaximized = lambda self: (
+    self.resize(QA_WIDTH, QA_HEIGHT), self.show())
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -122,7 +128,7 @@ except Exception as e:
     rec("ui.login", "FAIL", str(e)[:200])
 
 win = MainWindow(res, api, icon)
-win.resize(1600, 1000)
+win.resize(QA_WIDTH, QA_HEIGHT)
 win.show()
 pump(20)
 win.grab().save(str(SHOTS / "01_dashboard.png"), "PNG")
@@ -158,6 +164,13 @@ def enumerate_controls(root: QWidget):
             "type": type(b).__name__,
             "text": text[:80],
             "tip": tip[:80],
+            "accessible": (b.accessibleName() or "")[:80],
+            "icon": not b.icon().isNull(),
+            "parent": type(b.parentWidget()).__name__ if b.parentWidget() else "",
+            "parent_obj": (
+                b.parentWidget().objectName()
+                if b.parentWidget() is not None else ""
+            ),
             "enabled": b.isEnabled(),
             "checkable": b.isCheckable(),
             "checked": b.isChecked() if b.isCheckable() else None,
@@ -623,6 +636,14 @@ log(f"VERDICT={report['verdict']} fails={len(fails)} partials={len(partials)}")
 
 try:
     win.close()
+    win.deleteLater()
+    pump(5)
 except Exception:
     pass
-sys.exit(0 if not fails else 1)
+app.quit()
+# PyQt 5.15 can access-violate during interpreter teardown after hundreds of
+# transient dialogs. Evidence is fully flushed above; bypass only that unstable
+# C++ finalizer path so the harness exit code reflects its recorded verdict.
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if not fails else 1)

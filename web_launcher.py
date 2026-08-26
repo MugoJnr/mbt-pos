@@ -45,7 +45,7 @@ def load_cfg():
         return load_web_config()
     except Exception:
         return {
-            "flask_port": 5050, "flask_host": "0.0.0.0",
+            "flask_port": 5050, "flask_host": "127.0.0.1",
             "tunnel_domain": "", "tunnel_name": "",
             "remote_enabled": False,
             "check_interval": 30, "max_restarts": 50, "cloudflared_exe": "",

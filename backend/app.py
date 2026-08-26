@@ -1420,4 +1420,7 @@ def create_app():
 if __name__ == '__main__':
     create_app()
     port = int(os.environ.get('PORT', os.environ.get('FLASK_PORT', 5050)))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Remote access is provided by the local Cloudflare tunnel.  Do not expose
+    # the unauthenticated development server directly to the shop LAN.
+    app.run(host=os.environ.get('FLASK_HOST', '127.0.0.1'),
+            port=port, debug=False)

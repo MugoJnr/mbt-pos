@@ -434,7 +434,7 @@ def find_cloudflared_exe() -> Optional[Path]:
 
 _DEFAULT_CFG = {
     'flask_port': DEFAULT_PORT,
-    'flask_host': '0.0.0.0',
+    'flask_host': '127.0.0.1',
     'base_domain': BASE_DOMAIN,
     'tunnel_domain': '',
     'tunnel_name': '',

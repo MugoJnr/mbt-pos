@@ -46,6 +46,7 @@ SECRET_KEY = get_jwt_secret()
 # Failed-login lockout (memory cache + system_settings persistence).
 LOGIN_MAX_FAILED_ATTEMPTS = 5
 LOGIN_LOCKOUT_SECONDS = 60
+RECOVERY_LOCKOUT_SECONDS = 15 * 60
 LOGIN_LOCKOUT_SETTING_KEY = 'login_lockout_state'
 _LOGIN_ATTEMPTS: dict[str, dict] = {}
 
@@ -90,6 +91,46 @@ def _lockout_save_to_db(db, state: dict[str, dict]) -> None:
 def clear_login_lockout_cache() -> None:
     """Test helper — clear in-process lockout cache."""
     _LOGIN_ATTEMPTS.clear()
+
+
+def _recovery_lockout_status(db, key: str) -> dict | None:
+    """Return a user-facing lock response when a recovery factor is throttled."""
+    import time
+    normalized = f"recovery:{key}".lower()
+    persisted = _lockout_load_from_db(db)
+    for cache_key, value in persisted.items():
+        _LOGIN_ATTEMPTS.setdefault(cache_key, value)
+    state = _LOGIN_ATTEMPTS.get(normalized) or {}
+    locked_until = float(state.get('locked_until') or 0)
+    if locked_until <= time.time():
+        return None
+    retry_after = max(1, int(locked_until - time.time() + 0.999))
+    return {
+        'error': f'Too many failed recovery attempts. Try again in {retry_after}s.',
+        'locked': True,
+        'retry_after': retry_after,
+    }
+
+
+def _record_recovery_attempt(db, key: str, success: bool) -> None:
+    """Persist recovery failures so app restarts cannot bypass throttling."""
+    import time
+    normalized = f"recovery:{key}".lower()
+    if success:
+        _LOGIN_ATTEMPTS.pop(normalized, None)
+    else:
+        state = _LOGIN_ATTEMPTS.get(normalized) or {
+            'fails': 0, 'locked_until': 0.0}
+        fails = int(state.get('fails') or 0) + 1
+        if fails >= LOGIN_MAX_FAILED_ATTEMPTS:
+            state = {
+                'fails': 0,
+                'locked_until': time.time() + RECOVERY_LOCKOUT_SECONDS,
+            }
+        else:
+            state = {'fails': fails, 'locked_until': 0.0}
+        _LOGIN_ATTEMPTS[normalized] = state
+    _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
 
 
 # ── Password helpers (must match backend/app.py) ────────────────────────────────
@@ -1157,12 +1198,17 @@ class APIClient:
         from desktop.utils.security import _pin_hash
         db = _db()
         try:
+            recovery_key = f"pin:{target_username.strip().lower()}"
+            locked = _recovery_lockout_status(db, recovery_key)
+            if locked:
+                return locked
             cfg_rows = db.execute("SELECT value FROM system_settings WHERE key='superadmin_pin_hash'").fetchone()
             stored_pin_hash = cfg_rows['value'] if cfg_rows else None
             if not stored_pin_hash:
                 return {'error': 'Super-Admin PIN is not set on this system. Contact MugoByte support.'}
 
             if _pin_hash(pin.strip()) != stored_pin_hash:
+                _record_recovery_attempt(db, recovery_key, False)
                 _audit(None, 'SYSTEM', 'EMERGENCY_RESET_FAIL', 'security', f"target={target_username} invalid_pin")
                 return {'error': 'Incorrect Super-Admin PIN.'}
 
@@ -1172,6 +1218,12 @@ class APIClient:
             ))
             if not user:
                 return {'error': f"User '{target_username}' not found."}
+            from roles import is_shop_admin_role
+            if not is_shop_admin_role(user.get('role')):
+                _audit(
+                    user['id'], user['username'], 'EMERGENCY_RESET_FAIL',
+                    'security', f"role={user['role']} target_not_admin")
+                return {'error': 'Emergency recovery is limited to admin accounts.'}
 
             pw_hash = _hash_pw(new_password)
             db.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, user['id']))
@@ -1181,7 +1233,7 @@ class APIClient:
             key = target_username.strip().lower()
             if key in _LOGIN_ATTEMPTS:
                 _LOGIN_ATTEMPTS.pop(key, None)
-                _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
+            _record_recovery_attempt(db, recovery_key, True)
 
             _audit(user['id'], user['username'], 'EMERGENCY_RESET_SUCCESS', 'security', f"role={user['role']} pin_authorized")
             return {'success': True, 'username': user['username']}
@@ -1197,6 +1249,15 @@ class APIClient:
             return {'error': 'Target username is required.'}
         if not new_password or len(new_password) < 6:
             return {'error': 'New password must be at least 6 characters.'}
+
+        recovery_key = f"license:{target_username.strip().lower()}"
+        gate_db = _db()
+        try:
+            locked = _recovery_lockout_status(gate_db, recovery_key)
+            if locked:
+                return locked
+        finally:
+            gate_db.close()
 
         # Check local cryptographic license store binding
         from licensing.license_engine import LicenseEngine
@@ -1233,6 +1294,11 @@ class APIClient:
                     pass
 
             if not key_matched:
+                gate_db = _db()
+                try:
+                    _record_recovery_attempt(gate_db, recovery_key, False)
+                finally:
+                    gate_db.close()
                 _audit(None, 'SYSTEM', 'LICENSE_KEY_RESET_FAIL', 'security', f"target={target_username} key_mismatch")
                 return {'error': 'License key does not match the activation key for this PC.'}
 
@@ -1244,12 +1310,21 @@ class APIClient:
                 ))
                 if not user:
                     return {'error': f"User '{target_username}' not found."}
+                from roles import is_shop_admin_role
+                if not is_shop_admin_role(user.get('role')):
+                    _audit(
+                        user['id'], user['username'], 'LICENSE_KEY_RESET_FAIL',
+                        'security', f"role={user['role']} target_not_admin")
+                    return {'error': 'Emergency recovery is limited to admin accounts.'}
 
                 pw_hash = _hash_pw(new_password)
                 db.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, user['id']))
 
                 # If a new PIN was provided, update the Super-Admin PIN as well
-                if new_pin and len(new_pin.strip()) >= 4:
+                if (
+                    new_pin and len(new_pin.strip()) >= 4
+                    and (user.get('role') or '').strip().lower() == 'superadmin'
+                ):
                     from desktop.utils.security import _pin_hash
                     p_hash = _pin_hash(new_pin.strip())
                     db.execute(
@@ -1263,7 +1338,7 @@ class APIClient:
                 key = target_username.strip().lower()
                 if key in _LOGIN_ATTEMPTS:
                     _LOGIN_ATTEMPTS.pop(key, None)
-                    _lockout_save_to_db(db, dict(_LOGIN_ATTEMPTS))
+                _record_recovery_attempt(db, recovery_key, True)
 
                 _audit(user['id'], user['username'], 'LICENSE_KEY_RESET_SUCCESS', 'security', f"role={user['role']} key_authorized")
                 return {'success': True, 'username': user['username']}
