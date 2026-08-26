@@ -1,6 +1,8 @@
 -- Link activation keys to customer email (+ optional reserved device).
 -- Safe to re-run (IF NOT EXISTS).
 
+begin;
+
 ALTER TABLE public.licenses
   ADD COLUMN IF NOT EXISTS assigned_email text,
   ADD COLUMN IF NOT EXISTS assigned_user_id uuid,
@@ -23,3 +25,5 @@ CREATE INDEX IF NOT EXISTS licenses_assigned_email_idx
 CREATE INDEX IF NOT EXISTS licenses_claim_status_idx
   ON public.licenses (claim_status)
   WHERE claim_status IS NOT NULL;
+
+commit;
