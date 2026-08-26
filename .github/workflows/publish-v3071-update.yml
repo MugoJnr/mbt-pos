@@ -1,0 +1,20 @@
+name: Publish v3.0.71 Update Metadata
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Publish exact release through production portal
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          : "${FLY_API_TOKEN:?Missing FLY_API_TOKEN repository secret}"
+          flyctl ssh console --app mbt-portal --command \
+            "python -c \"from backend.cloud.update_center import UpdateCenter; c=UpdateCenter(); r=c.publish_update(version='3.0.71', download_url='https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.71/MBT_POS_Setup.exe', checksum='9b9c29eb8c27ff43b1fc3e0516df3305c75f9962d86cff15d70285d9b95b368d', release_notes='MBT POS v3.0.71 production update: verified updater integrity, hardened recovery and credential packaging, reliable update helper, and responsive POS repairs.', is_mandatory=False); assert r and r.get('version') == '3.0.71', r; print('published', r.get('version'))\""
