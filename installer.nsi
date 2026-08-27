@@ -23,6 +23,7 @@ BrandingText "MugoByte Technologies | mugobyte.com"
 
 Var IsUpgrade
 Var InstallMode
+Var LicenseMachineDir
 
 ;=============================================================================
 ; Modern UI
@@ -107,6 +108,12 @@ VIAddVersionKey "ProductVersion"  "${APP_VERSION}"
 Section "MBT POS" SecMain
     SectionIn RO
 
+    ReadEnvStr $LicenseMachineDir "PROGRAMDATA"
+    ${If} $LicenseMachineDir == ""
+        StrCpy $LicenseMachineDir "$WINDIR\..\ProgramData"
+    ${EndIf}
+    StrCpy $LicenseMachineDir "$LicenseMachineDir\MugoByte\MBT POS\license"
+
     DetailPrint "Install mode: $InstallMode"
 
     ; UPGRADE: back up the real runtime paths before replacing binaries.
@@ -119,7 +126,7 @@ Section "MBT POS" SecMain
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-wal"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-shm"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\config"'
-        nsExec::ExecToLog 'cmd /C if exist "$COMMONAPPDATA\MugoByte\MBT POS\license\lc.db" copy /Y "$COMMONAPPDATA\MugoByte\MBT POS\license\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.machine"'
+        nsExec::ExecToLog 'cmd /C if exist "$LicenseMachineDir\lc.db" copy /Y "$LicenseMachineDir\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.machine"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db"'
         nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.roaming"'
         DetailPrint "Database, settings, and encrypted license backup complete."
@@ -135,8 +142,8 @@ Section "MBT POS" SecMain
 
     ; License is machine-scoped. Older releases stored it under whichever
     ; Windows profile performed activation, including alternate UAC admins.
-    CreateDirectory "$COMMONAPPDATA\MugoByte\MBT POS\license"
-    nsExec::ExecToLog 'icacls "$COMMONAPPDATA\MugoByte\MBT POS\license" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
+    CreateDirectory "$LicenseMachineDir"
+    nsExec::ExecToLog 'icacls "$LicenseMachineDir" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
     DetailPrint "Recovering any existing per-user activation..."
     nsExec::ExecToLog '"$INSTDIR\MBT_POS.exe" --repair-license-store'
 
