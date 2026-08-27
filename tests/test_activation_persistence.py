@@ -367,6 +367,144 @@ class SplitterScaleTests(unittest.TestCase):
 
 
 class RestartPersistenceTests(unittest.TestCase):
+    @staticmethod
+    def _seed_license_store(path, token='encrypted-license-token'):
+        import sqlite3
+        os.makedirs(path, exist_ok=True)
+        db = sqlite3.connect(os.path.join(path, 'lc.db'))
+        db.execute(
+            'CREATE TABLE IF NOT EXISTS license_data '
+            '(key TEXT PRIMARY KEY, value TEXT NOT NULL, ts INTEGER DEFAULT 0)'
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO license_data(key, value, ts) VALUES(?, ?, 1)",
+            ('license_token', token),
+        )
+        db.commit()
+        db.close()
+        with open(os.path.join(path, 'crypto.secret'), 'w', encoding='utf-8') as handle:
+            handle.write('machine-license-test-secret-value-1234567890')
+
+    def test_windows_store_is_machine_wide_and_migrates_current_user(self):
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            program_data = os.path.join(tmp, 'ProgramData')
+            local = os.path.join(tmp, 'cashier', 'Local')
+            roaming = os.path.join(tmp, 'cashier', 'Roaming')
+            legacy = os.path.join(local, 'MugoByte', '.mbt_lic')
+            self._seed_license_store(legacy)
+            env = {
+                'PROGRAMDATA': program_data,
+                'LOCALAPPDATA': local,
+                'APPDATA': roaming,
+            }
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.dict(os.environ, env, clear=False):
+                chosen = le._lic_store_dir()
+
+            expected = os.path.join(
+                program_data, 'MugoByte', 'MBT POS', 'license'
+            )
+            self.assertEqual(chosen, expected)
+            self.assertTrue(
+                le._store_has_license_token(os.path.join(expected, 'lc.db'))
+            )
+            self.assertTrue(os.path.isfile(os.path.join(expected, 'crypto.secret')))
+
+    def test_second_windows_user_reads_machine_store(self):
+        """A different cashier profile must not be sent back to activation."""
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            program_data = os.path.join(tmp, 'ProgramData')
+            machine = os.path.join(program_data, 'MugoByte', 'MBT POS', 'license')
+            self._seed_license_store(machine)
+            second_user = os.path.join(tmp, 'cashier2', 'Local')
+            env = {
+                'PROGRAMDATA': program_data,
+                'LOCALAPPDATA': second_user,
+                'APPDATA': os.path.join(tmp, 'cashier2', 'Roaming'),
+            }
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.dict(os.environ, env, clear=False):
+                chosen = le._lic_store_dir()
+                self.assertEqual(chosen, machine)
+                self.assertTrue(le._verify_license_token_on_disk())
+
+            per_user = os.path.join(second_user, 'MugoByte', '.mbt_lic')
+            self.assertFalse(os.path.isdir(per_user))
+
+    def test_readonly_machine_store_falls_back_without_losing_license(self):
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            program_data = os.path.join(tmp, 'ProgramData')
+            machine = os.path.join(program_data, 'MugoByte', 'MBT POS', 'license')
+            self._seed_license_store(machine)
+            local = os.path.join(tmp, 'cashier', 'Local')
+            env = {
+                'PROGRAMDATA': program_data,
+                'LOCALAPPDATA': local,
+                'APPDATA': os.path.join(tmp, 'cashier', 'Roaming'),
+            }
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.object(le, '_store_is_writable', return_value=False), \
+                    patch.dict(os.environ, env, clear=False):
+                chosen = le._lic_store_dir()
+
+            expected = os.path.join(local, 'MugoByte', '.mbt_lic')
+            self.assertEqual(chosen, expected)
+            self.assertTrue(
+                le._store_has_license_token(os.path.join(expected, 'lc.db')),
+                'machine token must be copied down before falling back',
+            )
+
+    def test_machine_store_survives_repeated_restarts(self):
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            program_data = os.path.join(tmp, 'ProgramData')
+            local = os.path.join(tmp, 'cashier', 'Local')
+            self._seed_license_store(os.path.join(local, 'MugoByte', '.mbt_lic'))
+            env = {
+                'PROGRAMDATA': program_data,
+                'LOCALAPPDATA': local,
+                'APPDATA': os.path.join(tmp, 'cashier', 'Roaming'),
+            }
+            machine = os.path.join(program_data, 'MugoByte', 'MBT POS', 'license')
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.dict(os.environ, env, clear=False):
+                for _ in range(3):
+                    self.assertEqual(le._lic_store_dir(), machine)
+                    self.assertTrue(le._verify_license_token_on_disk())
+
+    def test_elevated_repair_recovers_other_windows_profile(self):
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            target = os.path.join(tmp, 'ProgramData', 'MugoByte', 'MBT POS', 'license')
+            admin_store = os.path.join(
+                tmp, 'Users', 'Admin', 'AppData', 'Local', 'MugoByte', '.mbt_lic'
+            )
+            self._seed_license_store(admin_store)
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.object(le, '_program_data_lic_dir', return_value=target):
+                result = le.repair_machine_license_store([admin_store])
+
+            self.assertTrue(result['ok'], result)
+            self.assertTrue(result['changed'], result)
+            self.assertEqual(result['source'], admin_store)
+            self.assertTrue(
+                le._store_has_license_token(os.path.join(target, 'lc.db'))
+            )
+            self.assertTrue(os.path.isfile(os.path.join(target, 'crypto.secret')))
+
     def test_roaming_license_migrates_to_localappdata(self):
         import tempfile
         import licensing.license_engine as le

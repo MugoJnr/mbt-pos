@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.71"
+EXPECTED_VERSION = "3.0.72"
 OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_INSTALLER_CERT")
 if not OUT.parent.exists():
     OUT = Path(os.environ.get("USERPROFILE", "")) / "Desktop" / "QA_INSTALLER_CERT"
@@ -62,7 +62,10 @@ def sha256(path: Path) -> str:
 
 def snapshot_live() -> dict:
     local = Path(os.environ["LOCALAPPDATA"]) / "MugoByte" / "MBT POS"
-    lic = Path(os.environ.get("APPDATA", "")) / "MugoByte" / ".mbt_lic" / "lc.db"
+    lic = (
+        Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+        / "MugoByte" / "MBT POS" / "license" / "lc.db"
+    )
     snap = {"ts": datetime.now(timezone.utc).isoformat()}
     for key, p in {
         "db": local / "data" / "mbt_pos.db",

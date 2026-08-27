@@ -24,7 +24,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-VERSION_TAG = "3.0.71"
+VERSION_TAG = "3.0.72"
 MARKER_DB = b"MBT_POS_SIM_DB_v1\n" + b"\x00" * 64 + b"payload-ok\n"
 MARKER_WAL = b"MBT_POS_SIM_WAL_v1\n"
 MARKER_SHM = b"MBT_POS_SIM_SHM_v1\n"
@@ -69,8 +69,11 @@ def _assert_same(label: str, path: Path, expected_sha: str, errors: list[str]) -
 
 def _live_roots() -> tuple[Path, Path]:
     local = Path(os.environ.get("LOCALAPPDATA", "")) / "MugoByte" / "MBT POS"
-    roaming = Path(os.environ.get("APPDATA", "")) / "MugoByte" / ".mbt_lic"
-    return local, roaming
+    machine_license = (
+        Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+        / "MugoByte" / "MBT POS" / "license"
+    )
+    return local, machine_license
 
 
 def peek_live_readonly() -> dict:
@@ -98,7 +101,7 @@ def build_fixtures(root: Path) -> dict:
     """Create fake install + AppData-like trees under TEMP."""
     install = root / "install"
     userdata = root / "userdata"  # LOCALAPPDATA\MugoByte\MBT POS
-    license_dir = root / "license"  # APPDATA\MugoByte\.mbt_lic
+    license_dir = root / "license"  # PROGRAMDATA\MugoByte\MBT POS\license
 
     hashes: dict[str, str] = {}
     hashes["exe_old"] = _write_bytes(install / "MBT_POS.exe", OLD_EXE)
