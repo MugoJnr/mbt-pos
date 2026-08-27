@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import deque
 import logging
 import time
+import weakref
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +34,9 @@ def install_input_burst_guard() -> None:
     class _InputBurstFilter(QObject):
         def __init__(self):
             super().__init__(app)
-            self._presses = deque()
-            self._blocked_until = 0.0
+            self._presses_by_object = weakref.WeakKeyDictionary()
+            self._blocked_until_by_object = weakref.WeakKeyDictionary()
+            self._clickthrough_until = 0.0
 
         @staticmethod
         def _target(obj) -> str:
@@ -52,7 +54,8 @@ def install_input_burst_guard() -> None:
                     # Prevent a release/queued press intended for the dialog from
                     # activating the newly exposed control underneath it.
                     if obj.isModal() or obj.windowModality():
-                        self._blocked_until = max(self._blocked_until, now + 0.22)
+                        self._clickthrough_until = max(
+                            self._clickthrough_until, now + 0.22)
                     return False
 
                 if et not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
@@ -60,23 +63,28 @@ def install_input_burst_guard() -> None:
                 if not isinstance(obj, QWidget):
                     return False
 
-                if now < self._blocked_until:
+                if now < self._clickthrough_until:
                     log.warning("Blocked click-through on %s", self._target(obj))
                     event.accept()
                     return True
 
-                while self._presses and now - self._presses[0][0] > 0.65:
-                    self._presses.popleft()
                 target = self._target(obj)
-                self._presses.append((now, target))
+                if now < self._blocked_until_by_object.get(obj, 0.0):
+                    log.warning("Blocked repeated hardware input on %s", target)
+                    event.accept()
+                    return True
+                presses = self._presses_by_object.setdefault(obj, deque())
+                while presses and now - presses[0] > 0.30:
+                    presses.popleft()
+                presses.append(now)
 
-                # Four presses in 650 ms can be a fast legitimate workflow.
-                # A fifth is not plausible for deliberate cashier input and is
-                # the signature seen from failing touch panels.
-                if len(self._presses) >= 5:
-                    self._blocked_until = now + 1.0
-                    self._presses.clear()
-                    log.error("Blocked rapid input burst ending on %s", target)
+                # Scope the fault signature to one physical control. Rapid taps
+                # across different product cards are normal cashier input.
+                # Four presses on the exact same widget within 300 ms are not.
+                if len(presses) >= 4:
+                    self._blocked_until_by_object[obj] = now + 0.7
+                    presses.clear()
+                    log.error("Blocked same-control input burst on %s", target)
                     event.accept()
                     return True
             except RuntimeError:

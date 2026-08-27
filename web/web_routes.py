@@ -2695,7 +2695,13 @@ def adjust_stock(pid):
         )
         if changed.rowcount != 1:
             db.rollback()
-            return jsonify({'error': 'Stock changed. Refresh and try again.'}), 409
+            latest = db.execute(
+                "SELECT COALESCE(stock,0) FROM products WHERE id=?", (pid,)
+            ).fetchone()
+            return jsonify({
+                'error': 'Stock changed. Refresh and try again.',
+                'current_stock': float(latest[0] if latest else 0),
+            }), 409
         db.execute(
             "INSERT INTO stock_movements "
             "(product_id,product_name,movement_type,qty_before,qty_change,"

@@ -73,6 +73,48 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertIn('expected_stock', routes)
         self.assertIn('id="adj-pin"', dashboard)
         self.assertIn('expected_stock:Number(product?.stock||0)', dashboard)
+        self.assertIn("USER?.role === 'superadmin'", dashboard)
+        self.assertIn("res?.current_stock !== undefined", dashboard)
+        self.assertIn('id="adj-current-stock"', dashboard)
+
+    def test_installer_cert_treats_uac_cancellation_as_failure(self):
+        cert = (
+            ROOT / 'scripts' / 'qa_installer_cert.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn("$ErrorActionPreference='Stop'", cert)
+        self.assertIn('exit 1223', cert)
+        self.assertIn('if code != 0:', cert)
+
+    def test_stock_reentry_guards_cover_confirmation_and_empty_refresh(self):
+        security = (
+            ROOT / 'desktop' / 'tabs' / 'security_tab.py'
+        ).read_text(encoding='utf-8')
+        inventory = (
+            ROOT / 'desktop' / 'tabs' / 'inventory_tab.py'
+        ).read_text(encoding='utf-8')
+        apply_section = security[
+            security.index('    def _apply_adj(self):'):
+            security.index('    # ── Stock Movement Log')
+        ]
+        self.assertLess(
+            apply_section.index('self._adjustment_busy = True'),
+            apply_section.index('QMessageBox.question'),
+        )
+        refresh_section = inventory[
+            inventory.index('    def _adjust_stock_dialog(self):'):
+            inventory.index('    def _add(self):')
+        ]
+        self.assertIn('self.products = fresh_products', refresh_section)
+        self.assertNotIn('if fresh_products:', refresh_section)
+
+    def test_main_window_does_not_duplicate_service_tamper_alert(self):
+        main = (ROOT / 'desktop' / 'main.py').read_text(encoding='utf-8')
+        section = main[
+            main.index('    def _on_license_state('):
+            main.index('    def _on_update_available(')
+        ]
+        self.assertNotIn('send_tamper_alert', section)
+        self.assertIn('_replay_deferred_license_alert', section)
 
     def test_stamp_updates_external_metadata_only(self):
         from scripts import publish_release_3 as publish

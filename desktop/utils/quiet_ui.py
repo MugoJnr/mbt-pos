@@ -162,10 +162,11 @@ def _exec_styled(parent, icon, title, text, buttons, default_button=None):
     )
     fallback = default_button if default_button is not None else QMessageBox.Ok
     now = time.monotonic()
-    if (
-        key in _ACTIVE_MESSAGEBOX_KEYS
-        or now - _LAST_MESSAGEBOX_DISMISSAL.get(key, -999.0) < 1.5
-    ):
+    recently_dismissed_critical = (
+        int(icon) == int(QMessageBox.Critical)
+        and now - _LAST_MESSAGEBOX_DISMISSAL.get(key, -999.0) < 1.5
+    )
+    if key in _ACTIVE_MESSAGEBOX_KEYS or recently_dismissed_critical:
         log.warning("Suppressed duplicate QMessageBox title=%r", title)
         return fallback
     box = QMessageBox(parent)

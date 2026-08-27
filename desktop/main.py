@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-08-27-v3.0.73"
-APP_VERSION   = "3.0.73"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-08-27-v3.0.74"
+APP_VERSION   = "3.0.74"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1173,25 +1173,49 @@ class MainWindow(QMainWindow):
 
                 hard = state in (STATE_TAMPERED, STATE_INACTIVE)
                 if hard or not busy:
+                    self._pending_license_alert = None
                     QMessageBox.critical(self, 'MBT POS - License', reason)
                 else:
                     # Soft: cashier can finish the sale; re-check on next idle tick
                     log.warning('License %s deferred modal (POS busy): %s', state, short)
                     # Never navigate away from an active sale. The persistent
                     # status warning remains visible until the cashier is idle.
+                    self._queue_deferred_license_alert(state, reason)
 
                 if hard:
                     # Hard close Ã¢â‚¬â€ no way to continue
                     QApplication.quit()
 
-            # 3. Warn on tamper
-            if state == STATE_TAMPERED and self._svc_lic:
-                try:
-                    self._svc_lic.send_tamper_alert()
-                except Exception:
-                    pass
+            else:
+                self._pending_license_alert = None
 
         QTimer.singleShot(0, _ui_update)
+
+    def _queue_deferred_license_alert(self, state, reason):
+        self._pending_license_alert = (state, reason)
+        if getattr(self, '_license_alert_timer_scheduled', False):
+            return
+        self._license_alert_timer_scheduled = True
+        QTimer.singleShot(1500, self._replay_deferred_license_alert)
+
+    def _replay_deferred_license_alert(self):
+        self._license_alert_timer_scheduled = False
+        pending = getattr(self, '_pending_license_alert', None)
+        if not pending:
+            return
+        state, reason = pending
+        try:
+            if self._svc_lic is None or self._svc_lic.state != state:
+                self._pending_license_alert = None
+                return
+            if not self.is_safe_to_auto_update():
+                self._queue_deferred_license_alert(state, reason)
+                return
+        except Exception:
+            self._queue_deferred_license_alert(state, reason)
+            return
+        self._pending_license_alert = None
+        QMessageBox.critical(self, 'MBT POS - License', reason)
 
     def _on_update_available(self, version, notes, asset_url):
         self._pending_update_version = version
