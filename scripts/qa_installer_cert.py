@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.73"
+EXPECTED_VERSION = "3.0.74"
 OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_INSTALLER_CERT")
 if not OUT.parent.exists():
     OUT = Path(os.environ.get("USERPROFILE", "")) / "Desktop" / "QA_INSTALLER_CERT"
@@ -93,8 +93,10 @@ def snapshot_live() -> dict:
 def run_elevated(cmd: list[str], timeout: int = 600) -> int:
     """Run command elevated via Start-Process -Verb RunAs; wait for exit."""
     ps = (
-        "$p = Start-Process -FilePath {0} -ArgumentList {1} -Verb RunAs -Wait -PassThru; "
-        "exit $p.ExitCode"
+        "$ErrorActionPreference='Stop'; "
+        "try {{ $p = Start-Process -FilePath {0} -ArgumentList {1} "
+        "-Verb RunAs -Wait -PassThru; exit $p.ExitCode }} "
+        "catch {{ Write-Error $_; exit 1223 }}"
     ).format(
         json.dumps(cmd[0]),
         json.dumps(" ".join(cmd[1:])),
@@ -529,6 +531,10 @@ def main() -> int:
     code = run_elevated([str(SETUP), "/S"], timeout=600)
     time.sleep(3)
     rec("setup.silent_install", "PASS" if code == 0 else "FAIL", f"exit={code}")
+    if code != 0:
+        # Do not inspect and misreport an older installed version after UAC was
+        # denied or the new installer failed to start.
+        return _write_out()
 
     verify_install_layout(snap)
     customer_journey_isolated()

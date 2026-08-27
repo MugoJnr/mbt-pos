@@ -233,12 +233,19 @@ class SecurityTab(QWidget):
         self._adj_qty.setValue(float((prod or {}).get('stock') or 0))
 
     def _apply_adj(self):
+        if self._adjustment_busy:
+            return
+        self._adjustment_busy = True
+        try:
+            self._apply_adj_once()
+        finally:
+            self._adjustment_busy = False
+
+    def _apply_adj_once(self):
         role = (self.user.get('user') or self.user).get('role', '')
         if str(role).strip().lower() != ROLE_SUPERADMIN:
             QMessageBox.warning(
                 self, 'Access Denied', 'Only Super-Admin can adjust stock.')
-            return
-        if self._adjustment_busy:
             return
         if not hasattr(self, '_adj_prods') or not self._adj_prods:
             QMessageBox.warning(self, 'No Products', 'Load products first.'); return
@@ -279,24 +286,20 @@ class SecurityTab(QWidget):
             return
         if not ask_superadmin_pin(self.api, self, reason='Stock Adjustment'):
             return
-        self._adjustment_busy = True
-        try:
-            res = self.api.adjust_stock(
-                prod['id'], new_qty, reason,
-                expected_stock=float(prod.get('stock') or 0),
-            )
-            if res and res.get('success'):
-                self._adj_result.setText(
-                    f"✓  {prod['name']}: {res['old_stock']} → {res['new_stock']}")
-                self._adj_result.setStyleSheet(
-                    f"color:{C['ok']}; font-size:13px; background:transparent;")
-                self._load_products_for_adj()
-            else:
-                self._adj_result.setText(f"✗  {(res or {}).get('error','Failed')}")
-                self._adj_result.setStyleSheet(
-                    f"color:{C['err']}; font-size:13px; background:transparent;")
-        finally:
-            self._adjustment_busy = False
+        res = self.api.adjust_stock(
+            prod['id'], new_qty, reason,
+            expected_stock=float(prod.get('stock') or 0),
+        )
+        if res and res.get('success'):
+            self._adj_result.setText(
+                f"✓  {prod['name']}: {res['old_stock']} → {res['new_stock']}")
+            self._adj_result.setStyleSheet(
+                f"color:{C['ok']}; font-size:13px; background:transparent;")
+            self._load_products_for_adj()
+        else:
+            self._adj_result.setText(f"✗  {(res or {}).get('error','Failed')}")
+            self._adj_result.setStyleSheet(
+                f"color:{C['err']}; font-size:13px; background:transparent;")
 
     # ── Stock Movement Log ────────────────────────────────────────────────────
     def _build_stock_log_tab(self):

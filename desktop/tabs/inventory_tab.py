@@ -485,8 +485,7 @@ class InventoryTab(QWidget):
 
         try:
             fresh_products = self.api.get_products() or []
-            if fresh_products:
-                self.products = fresh_products
+            self.products = fresh_products
         except Exception as e:
             QMessageBox.critical(
                 self, 'Adjust Stock', f'Could not refresh inventory:\n\n{e}')
