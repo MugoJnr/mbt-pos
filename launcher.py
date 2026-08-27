@@ -13,6 +13,17 @@ if getattr(sys, 'frozen', False):
 else:
     BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+if __name__ == '__main__' and '--repair-license-store' in sys.argv:
+    # Runs elevated from the installer. Handled before any per-profile data
+    # directory is created so an alternate UAC admin leaves no shop folders.
+    import json
+
+    from licensing.license_engine import repair_machine_license_store
+
+    _repair = repair_machine_license_store()
+    print(json.dumps(_repair, sort_keys=True))
+    raise SystemExit(0 if _repair.get('ok') else 1)
+
 from mbt_paths import get_project_root, ensure_data_dirs
 
 PROJECT_ROOT = ensure_data_dirs(get_project_root())

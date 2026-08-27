@@ -1,8 +1,8 @@
 {
-    "version": "3.0.71",
-    "build": "RC-2026-08-26-v3.0.71",
-    "released": "2026-08-26",
-    "release_notes": "MBT POS v3.0.71 Release Candidate: unified release metadata, verified updater checksums, hardened recovery controls, safe credential packaging, reliable update-helper layout, and POS/UI regression repairs.",
-    "checksum_sha256": "9b9c29eb8c27ff43b1fc3e0516df3305c75f9962d86cff15d70285d9b95b368d",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.71/MBT_POS_Setup.exe"
+    "version": "3.0.72",
+    "build": "RC-2026-08-27-v3.0.72",
+    "released": "2026-08-27",
+    "release_notes": "MBT POS v3.0.72 Hotfix: activation is now stored machine-wide under ProgramData and shared by every Windows account, existing per-profile activations are recovered automatically during installation, and the installer no longer launches the POS from an elevated context. Shops that repeatedly returned to the activation screen after restart are permanently repaired.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.72/MBT_POS_Setup.exe"
 }

@@ -11,6 +11,7 @@ Offline-first license validation with:
 """
 import os, sys, json, time, uuid, hashlib, hmac, base64, shutil
 import sqlite3, platform, threading, logging, requests
+import glob
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Tuple
 logger = logging.getLogger('license_engine')
@@ -30,6 +31,24 @@ def _legacy_roaming_lic_dir() -> str:
     return os.path.expanduser('~/.config/mugobyte/.mbt_lic')
 
 
+def _legacy_local_lic_dir() -> str:
+    """Per-user store used by v3.0.71 and earlier Windows builds."""
+    base = (
+        os.environ.get('LOCALAPPDATA')
+        or os.environ.get('APPDATA')
+        or os.path.expanduser('~')
+    )
+    return os.path.join(base, 'MugoByte', '.mbt_lic')
+
+
+def _program_data_lic_dir() -> str:
+    """Machine-wide Windows store shared by installer/admin/cashier contexts."""
+    base = (os.environ.get('PROGRAMDATA') or '').strip()
+    if not base:
+        return ''
+    return os.path.join(base, 'MugoByte', 'MBT POS', 'license')
+
+
 def _store_has_license_token(db_path: str) -> bool:
     """True when lc.db contains a non-empty license_token row."""
     if not os.path.isfile(db_path):
@@ -46,7 +65,7 @@ def _store_has_license_token(db_path: str) -> bool:
 
 
 def _migrate_legacy_lic_store(canonical_dir: str, legacy_dir: str) -> None:
-    """One-time copy from Roaming → LocalAppData when canonical has no license.
+    """Copy a populated older store when the canonical store has no license.
 
     Do not use file size — an empty schema lc.db is ~20KB and would block
     migration forever, leaving shops stuck on the activation screen after restart.
@@ -79,17 +98,116 @@ def _migrate_legacy_lic_store(canonical_dir: str, legacy_dir: str) -> None:
         logger.warning('License store migration skipped: %s', e)
 
 
+def _all_windows_user_license_dirs() -> list[str]:
+    """License stores that may belong to the installing admin or a cashier."""
+    if platform.system() != 'Windows':
+        return []
+    out: list[str] = []
+
+    def _add(path: str) -> None:
+        if path and path not in out:
+            out.append(path)
+
+    _add(_legacy_local_lic_dir())
+    _add(_legacy_roaming_lic_dir())
+    system_drive = (os.environ.get('SystemDrive') or 'C:').rstrip('\\/')
+    users_root = os.path.join(system_drive + os.sep, 'Users')
+    for pattern in (
+        os.path.join(users_root, '*', 'AppData', 'Local', 'MugoByte', '.mbt_lic'),
+        os.path.join(users_root, '*', 'AppData', 'Roaming', 'MugoByte', '.mbt_lic'),
+    ):
+        for path in glob.glob(pattern):
+            _add(path)
+    return out
+
+
+def repair_machine_license_store(candidate_dirs: list[str] | None = None) -> dict:
+    """Elevated installer repair for licenses activated under another user.
+
+    v3.0.71 and older used ``%LOCALAPPDATA%``.  An installer launched with
+    alternate administrator credentials could therefore save activation under
+    the administrator profile, while the cashier's next launch saw an empty
+    store.  Move the newest populated store into ProgramData.
+    """
+    target = _program_data_lic_dir()
+    if platform.system() != 'Windows' or not target:
+        return {'ok': True, 'changed': False, 'reason': 'not_windows'}
+    target_db = os.path.join(target, 'lc.db')
+    if _store_has_license_token(target_db):
+        return {'ok': True, 'changed': False, 'reason': 'already_machine_wide'}
+
+    candidates = []
+    for path in candidate_dirs if candidate_dirs is not None else _all_windows_user_license_dirs():
+        try:
+            db_path = os.path.join(path, 'lc.db')
+            if _store_has_license_token(db_path):
+                candidates.append((os.path.getmtime(db_path), path))
+        except Exception:
+            continue
+    candidates.sort(reverse=True)
+    if not candidates:
+        return {'ok': False, 'changed': False, 'reason': 'no_populated_store'}
+
+    try:
+        os.makedirs(target, exist_ok=True)
+        source = candidates[0][1]
+        for name in os.listdir(source):
+            src = os.path.join(source, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(target, name))
+        if not _store_has_license_token(target_db):
+            return {'ok': False, 'changed': False, 'reason': 'copy_failed'}
+        logger.info('Recovered machine-wide license store from %s', source)
+        return {
+            'ok': True,
+            'changed': True,
+            'reason': 'migrated',
+            'source': source,
+            'target': target,
+        }
+    except Exception as e:
+        logger.warning('Machine-wide license repair failed: %s', e)
+        return {'ok': False, 'changed': False, 'reason': str(e)}
+
+
+def _store_is_writable(path: str) -> bool:
+    """True when the store folder exists and this account can write in it.
+
+    ``os.makedirs(exist_ok=True)`` succeeds on an existing read-only folder, so
+    an explicit write probe is required.  Without it a locked-down ProgramData
+    ACL would be selected and every LicenseStore write would raise.
+    """
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return False
+    probe = os.path.join(path, '.write_probe')
+    try:
+        with open(probe, 'w', encoding='utf-8') as handle:
+            handle.write('ok')
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
 def _lic_store_dir() -> str:
     if platform.system() == 'Windows':
-        local = (os.environ.get('LOCALAPPDATA') or '').strip()
-        roaming = os.environ.get('APPDATA', os.path.expanduser('~'))
-        if local:
-            canonical = os.path.join(local, 'MugoByte', '.mbt_lic')
-            legacy = _legacy_roaming_lic_dir()
-            _migrate_legacy_lic_store(canonical, legacy)
-            os.makedirs(canonical, exist_ok=True)
-            return canonical
-        d = os.path.join(roaming, 'MugoByte', '.mbt_lic')
+        machine = _program_data_lic_dir()
+        per_user = _legacy_local_lic_dir()
+        if machine and _store_is_writable(machine):
+            for older in (per_user, _legacy_roaming_lic_dir()):
+                _migrate_legacy_lic_store(machine, older)
+            return machine
+        if machine:
+            # Read-only/unavailable ProgramData must never re-prompt activation:
+            # seed the per-user store from the machine store before falling back.
+            logger.warning(
+                'Machine license store not writable — falling back to per-user store'
+            )
+            _migrate_legacy_lic_store(per_user, machine)
+        _migrate_legacy_lic_store(per_user, _legacy_roaming_lic_dir())
+        d = per_user
     elif platform.system() == 'Darwin':
         d = os.path.expanduser('~/Library/Application Support/MugoByte/.mbt_lic')
     else:

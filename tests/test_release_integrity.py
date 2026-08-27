@@ -33,6 +33,31 @@ class ReleaseIntegrityTests(unittest.TestCase):
             updater,
         )
 
+    def test_repair_flag_runs_before_any_profile_directory_is_created(self):
+        """Elevated repair must not seed shop folders in the admin profile."""
+        launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
+        repair_at = launcher.index("'--repair-license-store' in sys.argv")
+        paths_at = launcher.index("from mbt_paths import")
+        self.assertLess(repair_at, paths_at)
+
+    def test_installer_repairs_machine_wide_license_before_first_launch(self):
+        installer = (ROOT / "installer.nsi").read_text(encoding="utf-8")
+        self.assertNotIn('MUI_FINISHPAGE_RUN "', installer)
+        self.assertIn('SetShellVarContext all', installer)
+        self.assertIn(
+            'CreateDirectory "$COMMONAPPDATA\\MugoByte\\MBT POS\\license"',
+            installer,
+        )
+        self.assertIn('*S-1-5-32-545:(OI)(CI)M', installer)
+        self.assertIn(
+            'nsExec::ExecToLog \'"$INSTDIR\\MBT_POS.exe" '
+            '--repair-license-store\'',
+            installer,
+        )
+        repair_at = installer.index('--repair-license-store')
+        finish_at = installer.index('CreateShortcut  "$SMPROGRAMS', repair_at)
+        self.assertLess(repair_at, finish_at)
+
     def test_stamp_updates_external_metadata_only(self):
         from scripts import publish_release_3 as publish
 

@@ -10,8 +10,8 @@
 ;=============================================================================
 ; General Settings
 ;=============================================================================
-!define APP_VERSION "3.0.71"
-!define APP_VERSION_QUAD "3.0.71.0"
+!define APP_VERSION "3.0.72"
+!define APP_VERSION_QUAD "3.0.72.0"
 Unicode True
 Name "MBT POS"
 OutFile "dist\MBT_POS_Setup.exe"
@@ -41,9 +41,9 @@ Var InstallMode
 !define MUI_HEADERIMAGE
 !define MUI_HEADERIMAGE_BITMAP_NOSTRETCH
 
-; Finish - launch POS (wizard runs only on new installs via needs_wizard())
-!define MUI_FINISHPAGE_RUN "$INSTDIR\MBT_POS.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Launch MBT POS"
+; Do not launch from the elevated installer. If UAC used alternate admin
+; credentials, that would create shop data under the administrator profile.
+; The user starts MBT POS normally from the machine-wide shortcut after Finish.
 !define MUI_FINISHPAGE_LINK "Download Center - portal.mugobyte.com"
 !define MUI_FINISHPAGE_LINK_LOCATION "https://portal.mugobyte.com/downloads"
 
@@ -119,6 +119,7 @@ Section "MBT POS" SecMain
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-wal" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-wal"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" copy /Y "$LOCALAPPDATA\MugoByte\MBT POS\data\mbt_pos.db-shm" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\mbt_pos.db-shm"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\MBT POS\config\*" xcopy /E /I /Y "$LOCALAPPDATA\MugoByte\MBT POS\config" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\config"'
+        nsExec::ExecToLog 'cmd /C if exist "$COMMONAPPDATA\MugoByte\MBT POS\license\lc.db" copy /Y "$COMMONAPPDATA\MugoByte\MBT POS\license\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.machine"'
         nsExec::ExecToLog 'cmd /C if exist "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$LOCALAPPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db"'
         nsExec::ExecToLog 'cmd /C if exist "$APPDATA\MugoByte\.mbt_lic\lc.db" copy /Y "$APPDATA\MugoByte\.mbt_lic\lc.db" "$LOCALAPPDATA\MugoByte\MBT POS\backups\pre_upgrade\${APP_VERSION}\license\lc.db.roaming"'
         DetailPrint "Database, settings, and encrypted license backup complete."
@@ -131,6 +132,13 @@ Section "MBT POS" SecMain
 
     ; Onedir build: MBT_POS.exe + python311.dll + libs
     File /r "dist\MBT_POS\*.*"
+
+    ; License is machine-scoped. Older releases stored it under whichever
+    ; Windows profile performed activation, including alternate UAC admins.
+    CreateDirectory "$COMMONAPPDATA\MugoByte\MBT POS\license"
+    nsExec::ExecToLog 'icacls "$COMMONAPPDATA\MugoByte\MBT POS\license" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
+    DetailPrint "Recovering any existing per-user activation..."
+    nsExec::ExecToLog '"$INSTDIR\MBT_POS.exe" --repair-license-store'
 
     ; Elevated unattended-update helper stored in a dedicated deploy directory
     SetOutPath "$INSTDIR\deploy"
@@ -154,6 +162,7 @@ Section "MBT POS" SecMain
     DetailPrint "Registering silent update helper task..."
     nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\deploy\register_update_helper.ps1"'
 
+    SetShellVarContext all
     CreateDirectory "$SMPROGRAMS\MugoByte\MBT POS"
     CreateShortcut  "$SMPROGRAMS\MugoByte\MBT POS\MBT POS.lnk" \
                     "$INSTDIR\MBT_POS.exe" "" "$INSTDIR\MBT_POS.exe" 0 \
@@ -207,6 +216,7 @@ SectionEnd
 ; Uninstaller - AppData (sales, license, settings) left intact
 ;=============================================================================
 Section "Uninstall"
+    SetShellVarContext all
     ${If} ${RunningX64}
         SetRegView 64
     ${EndIf}
