@@ -3,6 +3,6 @@
     "build": "RC-2026-08-27-v3.0.72",
     "released": "2026-08-27",
     "release_notes": "MBT POS v3.0.72 Hotfix: activation is now stored machine-wide under ProgramData and shared by every Windows account, existing per-profile activations are recovered automatically during installation, and the installer no longer launches the POS from an elevated context. Shops that repeatedly returned to the activation screen after restart are permanently repaired.",
-    "checksum_sha256": "",
+    "checksum_sha256": "22f6b23d054f69e7f96d8ef785c173296fe90604a33ae4368311a6e7b7902134",
     "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.72/MBT_POS_Setup.exe"
 }

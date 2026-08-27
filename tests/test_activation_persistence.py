@@ -413,6 +413,41 @@ class RestartPersistenceTests(unittest.TestCase):
             )
             self.assertTrue(os.path.isfile(os.path.join(expected, 'crypto.secret')))
 
+    def test_diagnostics_report_exposes_audit_trail(self):
+        import sqlite3
+        import tempfile
+        import licensing.license_engine as le
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            machine = os.path.join(tmp, 'PD', 'MugoByte', 'MBT POS', 'license')
+            self._seed_license_store(machine)
+            db = sqlite3.connect(os.path.join(machine, 'lc.db'))
+            db.execute(
+                'CREATE TABLE IF NOT EXISTS license_log ('
+                'id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, '
+                "detail TEXT, ts INTEGER DEFAULT (strftime('%s','now')))"
+            )
+            db.execute(
+                'INSERT INTO license_log(event, detail, ts) VALUES(?, ?, ?)',
+                ('REVOKED', 'Cloud validation failed: revoked', 1756300000),
+            )
+            db.commit()
+            db.close()
+
+            with patch.object(le.platform, 'system', return_value='Windows'), \
+                    patch.object(le, '_program_data_lic_dir', return_value=machine), \
+                    patch.object(le, '_all_windows_user_license_dirs',
+                                 return_value=[]):
+                report = le.collect_activation_diagnostics()
+
+            self.assertTrue(report['machine_store_exists'])
+            self.assertEqual(len(report['stores']), 1)
+            store = report['stores'][0]
+            self.assertTrue(store['has_license_token'])
+            self.assertTrue(store['has_crypto_secret'])
+            events = [e['event'] for e in store['events']]
+            self.assertIn('REVOKED', events)
+
     def test_second_windows_user_reads_machine_store(self):
         """A different cashier profile must not be sent back to activation."""
         import tempfile

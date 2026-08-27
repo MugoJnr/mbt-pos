@@ -8,7 +8,7 @@ import logging
 import platform
 import socket
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -178,7 +178,9 @@ class DeviceService:
             info = self.get_device_info()
             from backend.cloud.platform_service import service_update
             patch = {
-                'last_seen_at': datetime.now().isoformat(),
+                # Naive local time is stored verbatim into a timestamptz column,
+                # which reported shops as hours ahead of real UTC.
+                'last_seen_at': datetime.now(timezone.utc).isoformat(),
                 'mbt_version': info['mbt_version'],
             }
             if business_id:
