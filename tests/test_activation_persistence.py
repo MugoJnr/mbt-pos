@@ -212,6 +212,37 @@ class ActivationSeatTests(unittest.TestCase):
 
 
 class EmailClaimReuseTests(unittest.TestCase):
+    def test_pick_license_prefers_paid_seat_over_newer_trial(self):
+        from licensing.cloud_onboarding import _pick_license
+
+        common = {
+            'status': 'active',
+            'assigned_email': 'edmus.cloud@gmail.com',
+            'reserved_device_id': 'MBT-PC-52E5',
+            'activated_devices': 1,
+            'max_devices': 1,
+        }
+        trial = {
+            **common,
+            'plan': 'trial',
+            'license_key': 'MBT-TRI-98A3-0FC7-C5D3',
+            'expires_at': '2026-09-06T10:06:34Z',
+        }
+        monthly = {
+            **common,
+            'plan': 'monthly',
+            'license_key': 'MBT-MON-8E18-2E4A-B824',
+            'expires_at': '2026-09-26T14:17:54Z',
+        }
+
+        chosen = _pick_license(
+            [trial, monthly],
+            'MBT-PC-52E5',
+            identity_email='edmus.cloud@gmail.com',
+        )
+
+        self.assertEqual(chosen['license_key'], 'MBT-MON-8E18-2E4A-B824')
+
     def test_pick_license_reuses_full_seat_on_same_device(self):
         from licensing.cloud_onboarding import _pick_license
 
@@ -276,6 +307,52 @@ class EmailClaimReuseTests(unittest.TestCase):
             )
         self.assertTrue(result.get('ok'))
         self.assertEqual(captured['key'], 'MBT-TRI-KEEP')
+
+    def test_cloud_claim_prefers_paid_seat_over_trial_on_same_device(self):
+        from backend.cloud import platform_service as ps
+
+        class _Srv:
+            def find_licenses_for_email(self, email, org_id=None, product_id=None):
+                common = {
+                    'status': 'active',
+                    'org_id': 'org-edmus',
+                    'assigned_email': email,
+                    'reserved_device_id': 'MBT-PC-52E5',
+                    'activated_devices': 1,
+                    'max_devices': 1,
+                    'product_id': 'mbt-pos',
+                }
+                return [
+                    {**common, 'id': 'TRIAL', 'plan': 'trial',
+                     'license_key': 'MBT-TRI-98A3-0FC7-C5D3'},
+                    {**common, 'id': 'PAID', 'plan': 'monthly',
+                     'license_key': 'MBT-MON-8E18-2E4A-B824'},
+                ]
+
+            def _activation_device_ids(self, device_id, aliases):
+                return [device_id, *(aliases or [])]
+
+            def _expand_device_aliases(self, ids):
+                return list(ids)
+
+            def _find_active_activation(self, license_id, ids):
+                return {'id': f'A-{license_id}', 'device_id': 'MBT-PC-52E5'}
+
+        captured = {}
+
+        def _activate(key, device_id, org_id=None, **kwargs):
+            captured['key'] = key
+            return {'ok': True, 'license': {'license_key': key, 'org_id': org_id}}
+
+        with patch.object(ps, 'get_license_server', return_value=_Srv()), \
+             patch.object(ps, 'activate_license_on_device', side_effect=_activate):
+            result = ps.claim_license_for_identity(
+                email='edmus.cloud@gmail.com',
+                device_id='MBT-PC-52E5',
+            )
+
+        self.assertTrue(result.get('ok'))
+        self.assertEqual(captured['key'], 'MBT-MON-8E18-2E4A-B824')
 
     def test_claim_full_seat_other_device_rejected(self):
         from backend.cloud import platform_service as ps

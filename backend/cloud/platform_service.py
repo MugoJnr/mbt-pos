@@ -1186,6 +1186,16 @@ def claim_license_for_identity(
     reserved = server.find_licenses_for_email(email_n, org_id=org_id, product_id=pid) or []
     terminal = {'revoked', 'suspended', 'expired', 'cancelled'}
     candidates = [l for l in reserved if str(l.get('status') or '') not in terminal]
+    # A purchased account can still have an older active trial. Database row
+    # order must never decide entitlement: paid seats win, then later expiry.
+    candidates.sort(
+        key=lambda lic: (
+            str(lic.get('plan') or '').strip().lower() != 'trial',
+            str(lic.get('status') or '').strip().lower() == 'active',
+            str(lic.get('expires_at') or ''),
+        ),
+        reverse=True,
+    )
     if not candidates:
         label = pid or 'portal'
         raise SupabaseError(
