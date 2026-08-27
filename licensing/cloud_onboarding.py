@@ -130,9 +130,19 @@ def _pick_license(
     identity_email: str = '',
     aliases: list | None = None,
 ) -> Optional[dict]:
-    """Prefer this PC's existing seat, then reserved email/device, then free seats."""
+    """Prefer this PC's paid seat, then reserved email/device, then free seats."""
     email = (identity_email or '').strip().lower()
     usable = [lic for lic in licenses if str(lic.get('status') or '') not in _TERMINAL_STATUSES]
+    # Accounts can retain a trial after purchasing. Never let API row order
+    # downgrade a paid shop back to that trial during automatic sign-in.
+    usable.sort(
+        key=lambda lic: (
+            str(lic.get('plan') or '').strip().lower() != 'trial',
+            str(lic.get('status') or '').strip().lower() == 'active',
+            str(lic.get('expires_at') or ''),
+        ),
+        reverse=True,
+    )
     ids = _device_id_set(device_id, aliases)
 
     for lic in usable:
