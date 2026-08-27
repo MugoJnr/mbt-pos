@@ -3,6 +3,6 @@
     "build": "RC-2026-08-27-v3.0.72",
     "released": "2026-08-27",
     "release_notes": "MBT POS v3.0.72 Hotfix: fixes the crash when searching for a product in Adjust Stock, and stops the search box losing what you typed. Activation is now stored machine-wide under ProgramData and shared by every Windows account, existing per-profile activations are recovered automatically during installation, and the installer no longer launches the POS from an elevated context, so shops that kept returning to the activation screen after restart are permanently repaired. Device check-in times are now recorded in correct UTC, hard crashes are written to logs/native_crash.log, and MBT_POS.exe --license-report exports activation history for support.",
-    "checksum_sha256": "22f6b23d054f69e7f96d8ef785c173296fe90604a33ae4368311a6e7b7902134",
+    "checksum_sha256": "884262bad61b6695ea50ec3adae42b6398636a102f8c01aa91226abdab881e51",
     "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.72/MBT_POS_Setup.exe"
 }
