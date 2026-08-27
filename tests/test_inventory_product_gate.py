@@ -135,6 +135,29 @@ class InventoryProductGate(unittest.TestCase):
         denied = self.api.adjust_stock(pid, 99, 'should fail')
         self.assertIn('error', denied)
 
+    def test_stock_adjust_rejects_stale_snapshot_and_invalid_payload(self):
+        created = self.api.create_product({
+            'name': 'Freshness Gate',
+            'price': 10.0,
+            'stock': 8,
+        })
+        pid = int(created['id'])
+
+        stale = self.api.adjust_stock(
+            pid, 5, 'cycle count', expected_stock=7)
+        self.assertIn('Stock changed', stale.get('error', ''))
+        missing_reason = self.api.adjust_stock(pid, 5, '   ', expected_stock=8)
+        self.assertIn('reason', missing_reason.get('error', '').lower())
+        invalid = self.api.adjust_stock(pid, -1, 'cycle count', expected_stock=8)
+        self.assertIn('range', invalid.get('error', '').lower())
+
+        db = self.ac._db()
+        stock = float(db.execute(
+            'SELECT stock FROM products WHERE id=?', (pid,)
+        ).fetchone()['stock'])
+        db.close()
+        self.assertEqual(stock, 8.0)
+
 
 if __name__ == '__main__':
     unittest.main()

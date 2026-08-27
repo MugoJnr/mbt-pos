@@ -19,7 +19,10 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, H2, Caption,
                                     lovable_tab_qss, Badge, section_card)
-from desktop.utils.security import ask_superadmin_pin, set_superadmin_pin, verify_superadmin_pin
+from desktop.utils.security import (
+    ROLE_SUPERADMIN, ask_superadmin_pin, set_superadmin_pin,
+    verify_superadmin_pin,
+)
 from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS
 from desktop.utils.select_controls import SearchableSelect, ReasonSelect
 
@@ -29,6 +32,7 @@ class SecurityTab(QWidget):
         super().__init__()
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
+        self._adjustment_busy = False
         self._build()
 
     # ── Build ─────────────────────────────────────────────────────────────────
@@ -177,6 +181,9 @@ class SecurityTab(QWidget):
         self._adj_prod.setMinimumHeight(42)
         self._adj_qty  = QDoubleSpinBox(); self._adj_qty.setRange(0, 999999)
         self._adj_qty.setDecimals(4); self._adj_qty.setMinimumHeight(42)
+        self._adj_qty.setEnabled(False)
+        self._adj_prod.currentIndexChanged.connect(self._sync_adjustment_quantity)
+        self._adj_prod.cleared.connect(self._sync_adjustment_quantity)
         self._adj_reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=42)
 
         for lbl, w2 in [('Product:', self._adj_prod),
@@ -212,12 +219,27 @@ class SecurityTab(QWidget):
             self._adj_prod.set_loading(True, 'Loading products…')
             self._adj_prod.set_loading(False)
             self._adj_prod.set_items(items)
+            self._adj_prod.clear_selection()
+            self._sync_adjustment_quantity()
             if not items:
                 self._adj_prod.set_empty_label('No products')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
 
+    def _sync_adjustment_quantity(self, _index=None):
+        pid = self._adj_prod.current_value()
+        prod = getattr(self, '_adj_prods', {}).get(pid)
+        self._adj_qty.setEnabled(prod is not None)
+        self._adj_qty.setValue(float((prod or {}).get('stock') or 0))
+
     def _apply_adj(self):
+        role = (self.user.get('user') or self.user).get('role', '')
+        if str(role).strip().lower() != ROLE_SUPERADMIN:
+            QMessageBox.warning(
+                self, 'Access Denied', 'Only Super-Admin can adjust stock.')
+            return
+        if self._adjustment_busy:
+            return
         if not hasattr(self, '_adj_prods') or not self._adj_prods:
             QMessageBox.warning(self, 'No Products', 'Load products first.'); return
         if not self._adj_reason.is_valid():
@@ -229,6 +251,24 @@ class SecurityTab(QWidget):
         prod = self._adj_prods.get(pid)
         if not prod:
             QMessageBox.warning(self, 'Required', 'Select a product.'); return
+        try:
+            latest_products = self.api.get_products() or []
+            latest = next((p for p in latest_products if p.get('id') == pid), None)
+        except Exception as e:
+            QMessageBox.critical(self, 'Adjustment', f'Could not refresh stock:\n\n{e}')
+            return
+        if latest is None:
+            QMessageBox.warning(self, 'Product Changed', 'This product no longer exists.')
+            self._load_products_for_adj()
+            return
+        if float(latest.get('stock') or 0) != float(prod.get('stock') or 0):
+            self._adj_prods = {p['id']: p for p in latest_products}
+            self._sync_adjustment_quantity()
+            QMessageBox.warning(
+                self, 'Stock Changed',
+                'Stock changed since it was loaded. The latest quantity is now '
+                'shown; review it and submit again.')
+            return
         new_qty = self._adj_qty.value()
         if QMessageBox.question(self, 'Confirm Adjustment',
                 f"Adjust '{prod['name']}' stock:\n"
@@ -239,17 +279,24 @@ class SecurityTab(QWidget):
             return
         if not ask_superadmin_pin(self.api, self, reason='Stock Adjustment'):
             return
-        res = self.api.adjust_stock(prod['id'], new_qty, reason)
-        if res and res.get('success'):
-            self._adj_result.setText(
-                f"✓  {prod['name']}: {res['old_stock']} → {res['new_stock']}")
-            self._adj_result.setStyleSheet(
-                f"color:{C['ok']}; font-size:13px; background:transparent;")
-            self._load_products_for_adj()
-        else:
-            self._adj_result.setText(f"✗  {res.get('error','Failed')}")
-            self._adj_result.setStyleSheet(
-                f"color:{C['err']}; font-size:13px; background:transparent;")
+        self._adjustment_busy = True
+        try:
+            res = self.api.adjust_stock(
+                prod['id'], new_qty, reason,
+                expected_stock=float(prod.get('stock') or 0),
+            )
+            if res and res.get('success'):
+                self._adj_result.setText(
+                    f"✓  {prod['name']}: {res['old_stock']} → {res['new_stock']}")
+                self._adj_result.setStyleSheet(
+                    f"color:{C['ok']}; font-size:13px; background:transparent;")
+                self._load_products_for_adj()
+            else:
+                self._adj_result.setText(f"✗  {(res or {}).get('error','Failed')}")
+                self._adj_result.setStyleSheet(
+                    f"color:{C['err']}; font-size:13px; background:transparent;")
+        finally:
+            self._adjustment_busy = False
 
     # ── Stock Movement Log ────────────────────────────────────────────────────
     def _build_stock_log_tab(self):

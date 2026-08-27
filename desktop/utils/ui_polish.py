@@ -103,6 +103,8 @@ class ToastNotification(QFrame):
 
     def __init__(self, message: str, tone: str = "ok", parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._message_key = " ".join(str(message or "").split()).casefold()
+        self._tone = tone
         self.setObjectName("mbtToast")
         # Child overlay of the main window — never a ToolTip/Tool HWND
         # (those look like surprise floating OS popups to cashiers).
@@ -167,12 +169,29 @@ class ToastNotification(QFrame):
         if host is None:
             # Never create a free top-level toast HWND
             return None  # type: ignore[return-value]
+        key = " ".join(str(message or "").split()).casefold()
+        cls._active = [t for t in cls._active if t.isVisible()]
+        for existing in cls._active:
+            if (
+                getattr(existing, "_message_key", None) == key
+                and getattr(existing, "_tone", None) == tone
+            ):
+                # A repeated service callback should not cover the POS with the
+                # same notification. Keep and reposition the original toast.
+                cls._reposition(host)
+                return existing
+        while len(cls._active) >= 3:
+            oldest = cls._active.pop(0)
+            try:
+                oldest.close()
+                oldest.deleteLater()
+            except RuntimeError:
+                pass
         toast = cls(message, tone=tone, parent=host)
         toast.setParent(host)
         toast.show()
         toast.raise_()
         # Stack from bottom
-        cls._active = [t for t in cls._active if t.isVisible()]
         cls._active.append(toast)
         cls._reposition(host)
         fade_in(toast, 180)

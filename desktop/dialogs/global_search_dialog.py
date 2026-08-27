@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
     QListWidgetItem, QLabel, QPushButton, QAbstractItemView,
@@ -187,5 +187,6 @@ class GlobalSearchDialog(QDialog):
         if not data:
             return
         module, payload = data
-        self.navigate.emit(module, payload)
         self.accept()
+        # Let QDialog.exec_ unwind before the receiver replaces the current tab.
+        QTimer.singleShot(0, lambda: self.navigate.emit(module, payload))

@@ -1,4 +1,4 @@
-"""Publish the v3.0.71 app_updates row through an authenticated Supabase dashboard session.
+"""Publish the current version.json through an authenticated Supabase dashboard.
 
 Connects to the already-signed-in eugenemugo Chrome profile over CDP and issues the
 insert through the dashboard's own pg-meta query endpoint, so no service-role key or
@@ -8,24 +8,44 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 PROJECT_REF = 'uynfglgttkaibyeglsrt'
 CDP_URL = 'http://localhost:9222'
+ROOT = Path(__file__).resolve().parents[1]
+VERSION_JSON = ROOT / 'version.json'
+SETUP = ROOT / 'dist' / 'MBT_POS_Setup.exe'
 
-SQL = """
+def _sql_literal(value) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def build_sql() -> str:
+    manifest = json.loads(VERSION_JSON.read_text(encoding='utf-8'))
+    checksum = str(manifest.get('checksum_sha256') or '').strip().lower()
+    if len(checksum) != 64 or not SETUP.is_file():
+        raise RuntimeError('Build and checksum-stamp the installer before publishing')
+    values = {
+        'version': _sql_literal(manifest['version']),
+        'notes': _sql_literal(manifest['release_notes']),
+        'url': _sql_literal(manifest['download_url']),
+        'checksum': _sql_literal(checksum),
+        'size': SETUP.stat().st_size,
+    }
+    return f"""
 insert into public.app_updates (
   version, release_notes, download_url, checksum_sha256,
   file_size_bytes, is_mandatory, min_version, published_at, is_active
 ) values (
-  '3.0.71',
-  'MBT POS v3.0.71 production update: verified updater integrity, hardened recovery and credential packaging, reliable update helper, and responsive POS repairs.',
-  'https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.71/MBT_POS_Setup.exe',
-  '9b9c29eb8c27ff43b1fc3e0516df3305c75f9962d86cff15d70285d9b95b368d',
-  58783249,
+  {values['version']},
+  {values['notes']},
+  {values['url']},
+  {values['checksum']},
+  {values['size']},
   false,
-  '3.0.70',
+  '3.0.72',
   now(),
   true
 )
@@ -111,8 +131,10 @@ def main() -> int:
             print('No authenticated Supabase dashboard tab found.', file=sys.stderr)
             return 2
         print('Using tab:', page.url)
+        page.reload(wait_until='domcontentloaded', timeout=60_000)
+        page.wait_for_timeout(8_000)
 
-        result = run(page, SQL)
+        result = run(page, build_sql())
         print('INSERT:', json.dumps(result, indent=2)[:2000])
         if not result.get('ok'):
             return 1

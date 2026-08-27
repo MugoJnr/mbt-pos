@@ -1,8 +1,8 @@
 {
-    "version": "3.0.72",
-    "build": "RC-2026-08-27-v3.0.72",
+    "version": "3.0.73",
+    "build": "RC-2026-08-27-v3.0.73",
     "released": "2026-08-27",
-    "release_notes": "MBT POS v3.0.72 Hotfix: fixes the crash when searching for a product in Adjust Stock, and stops the search box losing what you typed. Activation is now stored machine-wide under ProgramData and shared by every Windows account, existing per-profile activations are recovered automatically during installation, and the installer no longer launches the POS from an elevated context, so shops that kept returning to the activation screen after restart are permanently repaired. Device check-in times are now recorded in correct UTC, hard crashes are written to logs/native_crash.log, and MBT_POS.exe --license-report exports activation history for support.",
-    "checksum_sha256": "884262bad61b6695ea50ec3adae42b6398636a102f8c01aa91226abdab881e51",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.72/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.73 UI Stability Update: prevents ghost clicks and millisecond popup flashes, removes the production 60 Hz window scanner, suppresses rapid faulty-touch input and click-through after dialogs, deduplicates license prompts and toast notifications, and never changes tabs during an active sale. Adjust Stock now prevents duplicate submissions, validates without closing the form, clears stale product quantities during search, verifies current stock before writing, and enforces the same Super-Admin, PIN, audit, and accounting policy on desktop and web. Global Search now closes before navigating, and Copilot actions wait for the user instead of opening approval-dialog chains.",
+    "checksum_sha256": "90f76d0ac2c9dedc29420df8f06851dfdb311a0f7ba3eca46c8fd30d06f72c2e",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.73/MBT_POS_Setup.exe"
 }

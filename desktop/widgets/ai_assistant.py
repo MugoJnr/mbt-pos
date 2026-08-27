@@ -927,8 +927,9 @@ class AiAssistantPanel(QFrame):
             self._add_bubble('assistant', text, actions, structured)
         self._history.append({'role': 'assistant', 'content': text})
         self._on_conn()
-        for act in actions:
-            self._prompt_action(act)
+        # Action buttons are rendered inside the assistant response. Do not open
+        # one approval modal per action automatically; the user chooses exactly
+        # which proposal to review and approve.
 
     def _maybe_structure(self, text: str) -> Optional[dict]:
         """Lightweight structured card when response has bullet KPIs."""

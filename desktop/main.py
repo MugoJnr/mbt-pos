@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-08-27-v3.0.72"
-APP_VERSION   = "3.0.72"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-08-27-v3.0.73"
+APP_VERSION   = "3.0.73"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1177,11 +1177,8 @@ class MainWindow(QMainWindow):
                 else:
                     # Soft: cashier can finish the sale; re-check on next idle tick
                     log.warning('License %s deferred modal (POS busy): %s', state, short)
-                    try:
-                        if 'license' in self._tabs:
-                            self._goto('license')
-                    except Exception:
-                        pass
+                    # Never navigate away from an active sale. The persistent
+                    # status warning remains visible until the cashier is idle.
 
                 if hard:
                     # Hard close Ã¢â‚¬â€ no way to continue
@@ -2672,6 +2669,8 @@ def main():
         )
         install_dark_messagebox_style()
         install_orphan_flash_guard()
+        from desktop.utils.input_guard import install_input_burst_guard
+        install_input_burst_guard()
         # Defer logger until main window exists — hooked after show below
         app._mbt_install_tl_logger = install_toplevel_debug_logger
     except Exception:

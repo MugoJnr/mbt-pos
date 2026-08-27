@@ -1755,7 +1755,8 @@ class APIClient:
                 pass
         return {'success': True}
 
-    def adjust_stock(self, pid: int, new_qty, reason: str) -> dict:
+    def adjust_stock(self, pid: int, new_qty, reason: str,
+                     expected_stock=None) -> dict:
         """
         Superadmin-only direct stock adjustment.
         Caller MUST have verified PIN before calling this.
@@ -1763,7 +1764,16 @@ class APIClient:
         """
         if self._role != 'superadmin':
             return {'error': 'Only Super-Admin can adjust stock quantities.'}
-        new_qty = round(float(new_qty), 4)
+        try:
+            import math
+            new_qty = round(float(new_qty), 4)
+        except (TypeError, ValueError):
+            return {'error': 'Enter a valid stock quantity.'}
+        if not math.isfinite(new_qty) or not 0 <= new_qty <= 999999:
+            return {'error': 'Stock quantity is outside the allowed range.'}
+        reason = str(reason or '').strip()
+        if not reason:
+            return {'error': 'A reason is required for stock adjustments.'}
         db = _db()
         try:
             row = db.execute(
@@ -1772,9 +1782,23 @@ class APIClient:
             if not row:
                 return {'error': 'Product not found'}
             old_stock  = round(float(row['stock'] or 0), 4)
+            if (
+                expected_stock is not None
+                and round(float(expected_stock), 4) != old_stock
+            ):
+                return {
+                    'error': 'Stock changed. Refresh and review the latest quantity.',
+                    'current_stock': old_stock,
+                }
             qty_change = round(new_qty - old_stock, 4)
-            db.execute("UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                       (new_qty, datetime.now().isoformat(), pid))
+            changed = db.execute(
+                "UPDATE products SET stock=?, updated_at=? "
+                "WHERE id=? AND COALESCE(stock,0)=?",
+                (new_qty, datetime.now().isoformat(), pid, old_stock),
+            )
+            if changed.rowcount != 1:
+                db.rollback()
+                return {'error': 'Stock changed. Refresh and try again.'}
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
