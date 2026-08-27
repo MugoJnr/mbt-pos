@@ -44,8 +44,10 @@ class ReleaseIntegrityTests(unittest.TestCase):
         installer = (ROOT / "installer.nsi").read_text(encoding="utf-8")
         self.assertNotIn('MUI_FINISHPAGE_RUN "', installer)
         self.assertIn('SetShellVarContext all', installer)
+        self.assertNotIn('$COMMONAPPDATA', installer)
+        self.assertIn('ReadEnvStr $LicenseMachineDir "PROGRAMDATA"', installer)
         self.assertIn(
-            'CreateDirectory "$COMMONAPPDATA\\MugoByte\\MBT POS\\license"',
+            'CreateDirectory "$LicenseMachineDir"',
             installer,
         )
         self.assertIn('*S-1-5-32-545:(OI)(CI)M', installer)
