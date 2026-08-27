@@ -12,7 +12,7 @@ Offline-first license validation with:
 import os, sys, json, time, uuid, hashlib, hmac, base64, shutil
 import sqlite3, platform, threading, logging, requests
 import glob
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 logger = logging.getLogger('license_engine')
 
@@ -189,6 +189,70 @@ def _store_is_writable(path: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def collect_activation_diagnostics() -> dict:
+    """Read-only snapshot of every license store and its audit trail.
+
+    When a shop is stuck on the activation screen the audit log names the exact
+    cause — REVOKED, TAMPER_DETECT, DEVICE_MISMATCH, CLOUD_VALIDATE_FAIL,
+    TIME_ROLLBACK — which is otherwise invisible from the cloud side.
+    """
+    machine = _program_data_lic_dir()
+    report: dict = {
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+        'platform': platform.system(),
+        'machine_store': machine,
+        'machine_store_exists': bool(machine) and os.path.isdir(machine),
+        'machine_store_writable': bool(machine) and os.path.isdir(machine)
+                                  and os.access(machine, os.W_OK),
+        'stores': [],
+    }
+    seen: set[str] = set()
+    candidates = ([machine] if machine else []) + _all_windows_user_license_dirs()
+    for path in candidates:
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        db_path = os.path.join(path, 'lc.db')
+        entry: dict = {
+            'path': path,
+            'lc_db_exists': os.path.isfile(db_path),
+            'has_license_token': _store_has_license_token(db_path),
+            'has_crypto_secret': os.path.isfile(
+                os.path.join(path, 'crypto.secret')),
+            'has_device_id': os.path.isfile(os.path.join(path, 'device.id')),
+            'events': [],
+        }
+        if entry['lc_db_exists']:
+            try:
+                entry['modified'] = datetime.fromtimestamp(
+                    os.path.getmtime(db_path), timezone.utc).isoformat()
+            except OSError:
+                entry['modified'] = ''
+            try:
+                db = sqlite3.connect(db_path)
+                rows = db.execute(
+                    'SELECT ts, event, detail FROM license_log '
+                    'ORDER BY id DESC LIMIT 80'
+                ).fetchall()
+                db.close()
+                for ts, event, detail in rows:
+                    try:
+                        stamp = datetime.fromtimestamp(
+                            int(ts or 0), timezone.utc).isoformat()
+                    except Exception:
+                        stamp = str(ts)
+                    entry['events'].append({
+                        'at': stamp,
+                        'event': event,
+                        'detail': detail or '',
+                    })
+            except Exception as e:
+                entry['events_error'] = str(e)
+        report['stores'].append(entry)
+    return report
 
 
 def _lic_store_dir() -> str:

@@ -24,6 +24,25 @@ if __name__ == '__main__' and '--repair-license-store' in sys.argv:
     print(json.dumps(_repair, sort_keys=True))
     raise SystemExit(0 if _repair.get('ok') else 1)
 
+if __name__ == '__main__' and '--license-report' in sys.argv:
+    # Support tool for a shop stuck on the activation screen. The license audit
+    # log records the real cause, which the cloud side cannot show.
+    import json
+    import tempfile
+
+    from licensing.license_engine import collect_activation_diagnostics
+
+    _report = collect_activation_diagnostics()
+    _out = os.path.join(tempfile.gettempdir(), 'MBT_POS_license_report.json')
+    try:
+        with open(_out, 'w', encoding='utf-8') as _handle:
+            json.dump(_report, _handle, indent=2, sort_keys=True)
+        print(f'Report written to: {_out}')
+    except OSError as _err:
+        print(f'Could not write report file: {_err}')
+    print(json.dumps(_report, indent=2, sort_keys=True))
+    raise SystemExit(0)
+
 from mbt_paths import get_project_root, ensure_data_dirs
 
 PROJECT_ROOT = ensure_data_dirs(get_project_root())
