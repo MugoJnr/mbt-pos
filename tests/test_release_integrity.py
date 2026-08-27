@@ -60,6 +60,20 @@ class ReleaseIntegrityTests(unittest.TestCase):
         finish_at = installer.index('CreateShortcut  "$SMPROGRAMS', repair_at)
         self.assertLess(repair_at, finish_at)
 
+    def test_web_stock_adjust_matches_desktop_security_policy(self):
+        routes = (ROOT / 'web' / 'web_routes.py').read_text(encoding='utf-8')
+        dashboard = (
+            ROOT / 'web' / 'templates' / 'dashboard.html'
+        ).read_text(encoding='utf-8')
+        self.assertIn("g.current_user.get('role') != 'superadmin'", routes)
+        self.assertIn("key='superadmin_pin_hash'", routes)
+        self.assertIn('hmac.compare_digest', routes)
+        self.assertIn("'SUPERADMIN_ADJUST'", routes)
+        self.assertIn('post_stock_adjust_journal', routes)
+        self.assertIn('expected_stock', routes)
+        self.assertIn('id="adj-pin"', dashboard)
+        self.assertIn('expected_stock:Number(product?.stock||0)', dashboard)
+
     def test_stamp_updates_external_metadata_only(self):
         from scripts import publish_release_3 as publish
 

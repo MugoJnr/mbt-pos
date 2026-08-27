@@ -280,6 +280,13 @@ class LicenseService(threading.Thread):
             self.engine.revalidate()
             new_state = self.engine.state
             logger.info(f"Remote state change → {new_state}")
+            if new_state == self._last_state:
+                logger.debug("Remote license state unchanged; UI callback suppressed")
+                return
+            self._last_state = new_state
+            if new_state == STATE_TAMPERED and not self._tamper_alerted:
+                self._tamper_alerted = True
+                self.send_tamper_alert()
             if self.on_state_change:
                 self.on_state_change(new_state, self.engine.get_status_dict())
         except Exception as e:

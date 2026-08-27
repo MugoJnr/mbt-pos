@@ -84,6 +84,7 @@ class InventoryTab(QWidget):
         super().__init__()
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
+        self._adjust_stock_active = False
         self.products = []; self._build()
 
     def _role(self):
@@ -478,12 +479,24 @@ class InventoryTab(QWidget):
         if self._role() != ROLE_SUPERADMIN:
             QMessageBox.warning(self, 'Access Denied',
                 'Only Super-Admin can adjust stock.'); return
+        if self._adjust_stock_active:
+            _log.warning('Ignored duplicate Adjust Stock invocation')
+            return
+
+        try:
+            fresh_products = self.api.get_products() or []
+            if fresh_products:
+                self.products = fresh_products
+        except Exception as e:
+            QMessageBox.critical(
+                self, 'Adjust Stock', f'Could not refresh inventory:\n\n{e}')
+            return
 
         if not self.products:
             QMessageBox.information(self, 'No Products',
                 'Add products first.'); return
 
-
+        self._adjust_stock_active = True
         try:
             dlg = QDialog(self)
             dlg.setWindowTitle('Adjust Stock')
@@ -503,13 +516,16 @@ class InventoryTab(QWidget):
             qty.setRange(0, 999999)
             qty.setDecimals(4)
             qty.setMinimumHeight(40)
-            if self.products:
-                qty.setValue(_safe_float(self.products[0].get('stock'), 0))
+            qty.setEnabled(False)
+            selected = {'pid': None, 'stock': None}
 
             def _on_prod(_=None):
                 pid = prod_sel.current_value()
                 prod = next((x for x in self.products if x['id'] == pid), None)
                 if prod:
+                    selected['pid'] = pid
+                    selected['stock'] = _safe_float(prod.get('stock'), 0)
+                    qty.setEnabled(True)
                     try:
                         from desktop.utils.auto_fill import AutoFillService
                         fields = AutoFillService.product_stock_fields(prod)
@@ -521,14 +537,60 @@ class InventoryTab(QWidget):
                             f"Cost: {cost:,.2f}  ·  (reason never auto-filled)")
                     except Exception:
                         qty.setValue(_safe_float(prod.get('stock'), 0))
+                else:
+                    selected['pid'] = None
+                    selected['stock'] = None
+                    qty.setEnabled(False)
+                    qty.setValue(0)
+                    qty.setToolTip('Select a product first')
 
             prod_sel.currentIndexChanged.connect(_on_prod)
+            prod_sel.cleared.connect(_on_prod)
+            prod_sel.clear_selection()
+            _on_prod()
             reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=40)
             form.addRow('Product', prod_sel)
             form.addRow('New quantity', qty)
             form.addRow('Reason', reason)
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-            buttons.accepted.connect(dlg.accept)
+
+            def _validate_and_accept():
+                pid = prod_sel.current_value()
+                prod = next((x for x in self.products if x['id'] == pid), None)
+                if not prod:
+                    QMessageBox.warning(self, 'Required', 'Select a product.')
+                    prod_sel.setFocus()
+                    return
+                if not reason.is_valid():
+                    QMessageBox.warning(self, 'Required', reason.validation_error())
+                    reason.setFocus()
+                    return
+                try:
+                    latest_products = self.api.get_products() or []
+                    latest = next((x for x in latest_products if x['id'] == pid), None)
+                    if latest is None:
+                        QMessageBox.warning(
+                            self, 'Product Changed',
+                            'This product no longer exists. Refresh and try again.')
+                        return
+                    latest_stock = _safe_float(latest.get('stock'), 0)
+                    if latest_stock != selected['stock']:
+                        self.products = latest_products
+                        selected['stock'] = latest_stock
+                        qty.setValue(latest_stock)
+                        QMessageBox.warning(
+                            self, 'Stock Changed',
+                            'Stock changed while this form was open. The latest '
+                            'quantity is now shown; review it and submit again.')
+                        return
+                except Exception as e:
+                    QMessageBox.critical(
+                        self, 'Adjust Stock',
+                        f'Could not verify the latest stock quantity:\n\n{e}')
+                    return
+                dlg.accept()
+
+            buttons.accepted.connect(_validate_and_accept)
             buttons.rejected.connect(dlg.reject)
             form.addRow(buttons)
 
@@ -536,11 +598,7 @@ class InventoryTab(QWidget):
                 return
             pid = prod_sel.current_value()
             prod = next((x for x in self.products if x['id'] == pid), None)
-            if not prod:
-                QMessageBox.warning(self, 'Required', 'Select a product.')
-                return
-            if not reason.is_valid():
-                QMessageBox.warning(self, 'Required', reason.validation_error())
+            if not prod or not reason.is_valid():
                 return
             new_qty = round(float(qty.value()), 4)
 
@@ -548,7 +606,10 @@ class InventoryTab(QWidget):
                     reason="Adjust '%s' stock" % prod['name']):
                 return
 
-            res = self.api.adjust_stock(prod['id'], new_qty, reason.value())
+            res = self.api.adjust_stock(
+                prod['id'], new_qty, reason.value(),
+                expected_stock=selected['stock'],
+            )
             if res and res.get('success'):
                 old_s = _safe_float(res.get('old_stock'))
                 new_s = _safe_float(res.get('new_stock'))
@@ -576,6 +637,8 @@ class InventoryTab(QWidget):
                 self, 'Adjust Stock',
                 'Could not complete stock adjustment:\n\n%s\n\n'
                 'You can still add or edit products.' % e)
+        finally:
+            self._adjust_stock_active = False
 
     def _add(self):
         if not require_permission(self.user, 'inventory.create', self):

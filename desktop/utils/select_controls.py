@@ -341,6 +341,18 @@ class SearchableSelect(Select):
     def _on_edit(self, _text: str):
         self._filter_timer.start()
 
+    def current_value(self):
+        """Return data only when the visible text is an actual selected row."""
+        idx = self.currentIndex()
+        le = self.lineEdit()
+        if idx < 0 or le is None:
+            return None
+        if le.text().strip() != self.itemText(idx).strip():
+            # During the 80 ms filter debounce the combo can still expose its
+            # previous index. Never let a form submit that stale product.
+            return None
+        return super().current_value()
+
     def _current_labels(self) -> List[str]:
         return [self.itemText(i) for i in range(self.count())]
 
@@ -353,7 +365,10 @@ class SearchableSelect(Select):
         if not wanted:
             wanted = [('No matches', None)]
 
-        prev = self.current_value()
+        # Read the raw selected row before filtering. current_value() correctly
+        # rejects it as soon as the edit text changes, but it is still the row
+        # to restore if the cashier clears the query.
+        prev = super().current_value()
         if q:
             # While filtering there is deliberately no selection, so remember
             # the real one to restore when the query is cleared again.
@@ -366,6 +381,11 @@ class SearchableSelect(Select):
         # Nothing to rebuild — avoids needless model churn and popup flicker
         # on keystrokes that do not change the match set.
         if [label for label, _ in wanted] == self._current_labels():
+            if q and self.currentIndex() >= 0:
+                self.blockSignals(True)
+                self.setCurrentIndex(-1)
+                self.blockSignals(False)
+                self.cleared.emit()
             self._restore_query(le, typed)
             return
 
@@ -385,15 +405,22 @@ class SearchableSelect(Select):
         self.clear()
         for label, data in wanted:
             self.addItem(label, data)
+        cleared_selection = False
         if q:
             # Re-selecting a filtered-out row would overwrite the query the
             # cashier is still typing, so leave the selection empty instead.
+            cleared_selection = self.currentIndex() >= 0
             self.setCurrentIndex(-1)
         elif prev is not None:
             self.set_value(prev)
+        else:
+            self.setCurrentIndex(-1)
         self.blockSignals(False)
+        if cleared_selection:
+            self.cleared.emit()
 
-        self._restore_query(le, typed, cursor)
+        if q or prev is None:
+            self._restore_query(le, typed, cursor)
         matched = len(wanted) if wanted[0][1] is not None else 0
         if (q and matched > 0 and self.isVisible()
                 and le is not None and le.hasFocus()):

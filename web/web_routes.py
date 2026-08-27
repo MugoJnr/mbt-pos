@@ -2647,33 +2647,74 @@ def adjust_stock(pid):
     from backend.app import token_required
     @token_required
     def _inner():
-        if g.current_user.get('role') not in ('admin', 'superadmin'):
-            return jsonify({'error': 'Admin access required'}), 403
+        if g.current_user.get('role') != 'superadmin':
+            return jsonify({'error': 'Super-Admin access required'}), 403
         data    = request.json or {}
         try:
             new_qty = float(data.get('new_qty', 0))
+            expected_stock = float(data['expected_stock'])
         except (TypeError, ValueError):
             return jsonify({'error': 'Invalid quantity'}), 400
+        except KeyError:
+            return jsonify({'error': 'Refresh stock and try again'}), 409
+        if new_qty < 0 or new_qty > 999999:
+            return jsonify({'error': 'Quantity is outside the allowed range'}), 400
         reason  = (data.get('reason') or '').strip()
         if not reason:
             return jsonify({'error': 'Reason is required for stock adjustments'}), 400
         db  = _get_db()
+        pin = str(data.get('pin') or '')
+        pin_row = db.execute(
+            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+        ).fetchone()
+        stored_hash = str(pin_row[0] if pin_row else '')
+        if not stored_hash:
+            return jsonify({'error': 'Super-Admin PIN is not configured'}), 403
+        import hashlib
+        import hmac
+        supplied_hash = hashlib.pbkdf2_hmac(
+            'sha256', pin.encode(), b'MBT_POS_SUPERADMIN_SALT_2024', 200_000
+        ).hex()
+        if not hmac.compare_digest(supplied_hash, stored_hash):
+            return jsonify({'error': 'Incorrect Super-Admin PIN'}), 403
         row = _tr(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
         if not row:
             return jsonify({'error': 'Product not found'}), 404
         old_qty    = float(row['stock'] or 0)
+        if abs(old_qty - expected_stock) > 0.00001:
+            return jsonify({
+                'error': 'Stock changed. Refresh and review the latest quantity.',
+                'current_stock': old_qty,
+            }), 409
         qty_change = new_qty - old_qty
         user       = g.current_user
-        db.execute("UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                   (new_qty, datetime.now().isoformat(), pid))
+        changed = db.execute(
+            "UPDATE products SET stock=?, updated_at=? "
+            "WHERE id=? AND COALESCE(stock,0)=?",
+            (new_qty, datetime.now().isoformat(), pid, old_qty),
+        )
+        if changed.rowcount != 1:
+            db.rollback()
+            return jsonify({'error': 'Stock changed. Refresh and try again.'}), 409
         db.execute(
             "INSERT INTO stock_movements "
             "(product_id,product_name,movement_type,qty_before,qty_change,"
             "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (pid, row['name'], 'WEB_ADJUST', old_qty, qty_change, new_qty,
+            (pid, row['name'], 'SUPERADMIN_ADJUST', old_qty, qty_change, new_qty,
              f"WEB_pid={pid}", reason, user['id'],
              user.get('full_name') or user['username'])
         )
+        movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        try:
+            from desktop.utils.accounting_hooks import post_stock_adjust_journal
+            post_stock_adjust_journal(
+                db, product_id=pid, product_name=row['name'],
+                qty_change=qty_change, unit_cost=float(row['cost_price'] or 0),
+                reason=reason, movement_id=movement_id, user_id=user['id'],
+                username=user.get('full_name') or user['username'], safe=True,
+            )
+        except Exception:
+            current_app.logger.exception('web stock adjust accounting')
         db.commit()
         return jsonify({'success': True, 'old_stock': old_qty, 'new_stock': new_qty})
     return _inner()

@@ -148,8 +148,26 @@ def style_message_box(box) -> None:
         log.debug("style_message_box failed: %s", e)
 
 
+_ACTIVE_MESSAGEBOX_KEYS = set()
+_LAST_MESSAGEBOX_DISMISSAL = {}
+
+
 def _exec_styled(parent, icon, title, text, buttons, default_button=None):
+    import time
     from PyQt5.QtWidgets import QMessageBox
+    key = (
+        int(icon),
+        " ".join(str(title or "").split()).casefold(),
+        " ".join(str(text or "").split()).casefold(),
+    )
+    fallback = default_button if default_button is not None else QMessageBox.Ok
+    now = time.monotonic()
+    if (
+        key in _ACTIVE_MESSAGEBOX_KEYS
+        or now - _LAST_MESSAGEBOX_DISMISSAL.get(key, -999.0) < 1.5
+    ):
+        log.warning("Suppressed duplicate QMessageBox title=%r", title)
+        return fallback
     box = QMessageBox(parent)
     box.setIcon(icon)
     box.setWindowTitle(str(title or "MBT POS"))
@@ -161,7 +179,12 @@ def _exec_styled(parent, icon, title, text, buttons, default_button=None):
         except Exception:
             pass
     style_message_box(box)
-    return box.exec_()
+    _ACTIVE_MESSAGEBOX_KEYS.add(key)
+    try:
+        return box.exec_()
+    finally:
+        _ACTIVE_MESSAGEBOX_KEYS.discard(key)
+        _LAST_MESSAGEBOX_DISMISSAL[key] = time.monotonic()
 
 
 def install_empty_messagebox_guard() -> None:
@@ -335,16 +358,17 @@ def _is_intentional_toplevel(w) -> bool:
         if name in ("posLayoutStash", "mbtOrphanSink"):
             return False  # treat as flash candidates if they show
         flags = int(w.windowFlags())
-        if flags & int(Qt.ToolTip):
+        window_type = flags & int(Qt.WindowType_Mask)
+        if window_type == int(Qt.ToolTip):
             return True
-        if flags & int(Qt.Popup):
+        if window_type == int(Qt.Popup):
             return True
-        if flags & int(Qt.SplashScreen):
+        if window_type == int(Qt.SplashScreen):
             return True
         cls = type(w).__name__
         if cls in ("AiAssistantPanel", "AiFullWorkspace", "AiFabButton"):
             return True
-        if flags & int(Qt.Tool) and name in ("mbtToast", "mbtAiPanel", "mbtAiFab"):
+        if window_type == int(Qt.Tool) and name in ("mbtToast", "mbtAiPanel", "mbtAiFab"):
             return True
         # SalesTab / MainWindow shown as QA harness
         if cls in ("SalesTab", "MainWindow", "LoginDialog", "SplashScreen"):
@@ -376,13 +400,14 @@ def _is_orphan_flash_candidate(w) -> bool:
             if w.isWindow():
                 from PyQt5.QtCore import Qt
                 flags = int(w.windowFlags())
+                window_type = flags & int(Qt.WindowType_Mask)
                 name = (w.objectName() or "")
                 cls = type(w).__name__
                 if name.startswith("pos") or cls in (
                     "StockBadge", "ProductCard", "SaleTypeGroup", "CategoryChipBar",
                     "PosSplitter", "QFrame", "QScrollArea",
                 ):
-                    if not (flags & int(Qt.Popup)):
+                    if window_type != int(Qt.Popup):
                         return True
         except Exception:
             pass
@@ -679,14 +704,15 @@ def inventory_toplevels(anchor=None) -> list:
             if not w.isVisible():
                 continue
             flags = int(w.windowFlags())
+            window_type = flags & int(Qt.WindowType_Mask)
             rows.append({
                 "class": type(w).__name__,
                 "objectName": w.objectName() or "",
                 "title": (w.windowTitle() or "").strip(),
                 "is_main": bool(main is not None and w is main),
                 "is_window": bool(w.isWindow()),
-                "tooltip": bool(flags & int(Qt.ToolTip)),
-                "popup": bool(flags & int(Qt.Popup)),
+                "tooltip": window_type == int(Qt.ToolTip),
+                "popup": window_type == int(Qt.Popup),
                 "parent": type(w.parent()).__name__ if w.parent() else None,
             })
         except RuntimeError:
@@ -742,8 +768,14 @@ def log_toplevel_snapshot(anchor=None, *, reason: str = "") -> None:
 
 
 def install_toplevel_debug_logger(main_window=None) -> None:
-    """Poll top-level widgets every 16ms + orphan sweep (flash-catch cadence)."""
+    """Install the expensive 60 Hz snapshot logger only in explicit QA runs."""
+    import os
+
     global _DEBUG_TL_TIMER
+    if (os.environ.get("MBT_QA_TOPLEVEL_DEBUG") or "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return
     try:
         from PyQt5.QtCore import QTimer
         from PyQt5.QtWidgets import QApplication

@@ -68,6 +68,29 @@ class SearchableSelectTests(unittest.TestCase):
         self.assertIsNone(widget.current_value())
         widget.close()
 
+    def test_typed_text_invalidates_old_selection_before_filter_timer_runs(self):
+        widget = self._select()
+        widget.set_value(5)
+        self.assertEqual(widget.current_value(), 5)
+
+        widget.lineEdit().setText('sugar')
+
+        self.assertIsNone(widget.current_value())
+        widget.close()
+
+    def test_query_matching_every_row_still_clears_dependent_fields(self):
+        widget = self._select()
+        widget.set_value(5)
+        cleared = []
+        widget.cleared.connect(lambda: cleared.append(True))
+
+        widget.lineEdit().setText('stock:')
+        widget._apply_filter()
+
+        self.assertIsNone(widget.current_value())
+        self.assertEqual(cleared, [True])
+        widget.close()
+
     def test_model_is_not_rebuilt_behind_a_visible_popup(self):
         widget = self._select()
         widget.show()
