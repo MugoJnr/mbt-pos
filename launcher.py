@@ -47,6 +47,31 @@ from mbt_paths import get_project_root, ensure_data_dirs
 
 PROJECT_ROOT = ensure_data_dirs(get_project_root())
 
+
+def _enable_native_crash_log(base_dir: str):
+    """Record a stack trace for hard crashes, not just Python exceptions.
+
+    sys.excepthook cannot see Qt/C++ access violations, so a shop reporting
+    "it just closes" previously left nothing behind to diagnose. The handle is
+    kept open for the life of the process on purpose.
+    """
+    try:
+        import faulthandler
+
+        log_dir = os.path.join(base_dir, 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        handle = open(os.path.join(log_dir, 'native_crash.log'),
+                      'a', encoding='utf-8')
+        handle.write(f'\n=== session started {__import__("datetime").datetime.now()} ===\n')
+        handle.flush()
+        faulthandler.enable(file=handle, all_threads=True)
+        return handle
+    except Exception:
+        return None
+
+
+_CRASH_LOG_HANDLE = _enable_native_crash_log(PROJECT_ROOT)
+
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 if BUNDLE_DIR not in sys.path:

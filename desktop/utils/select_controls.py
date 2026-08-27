@@ -312,6 +312,7 @@ class SearchableSelect(Select):
             clearable=clearable, searchable=True, height=height,
             object_name='mbtSearchSelect')
         self._all_items: List[Tuple[str, object]] = []
+        self._filtered_prev = None
         self._filter_timer = QTimer(self)
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(80)
@@ -324,6 +325,8 @@ class SearchableSelect(Select):
     def set_items(self, items: Iterable, *, data_from_item: bool = False,
                   keep_selection: bool = False):
         self._all_items = []
+        if not keep_selection:
+            self._filtered_prev = None
         for it in (items or []):
             if isinstance(it, (tuple, list)) and len(it) >= 2:
                 self._all_items.append((str(it[0]), it[1]))
@@ -338,25 +341,72 @@ class SearchableSelect(Select):
     def _on_edit(self, _text: str):
         self._filter_timer.start()
 
+    def _current_labels(self) -> List[str]:
+        return [self.itemText(i) for i in range(self.count())]
+
     def _apply_filter(self):
-        q = (self.lineEdit().text() if self.lineEdit() else '').strip().lower()
+        le = self.lineEdit()
+        typed = le.text() if le is not None else ''
+        q = typed.strip().lower()
+        wanted = [(label, data) for label, data in self._all_items
+                  if not q or q in label.lower()]
+        if not wanted:
+            wanted = [('No matches', None)]
+
         prev = self.current_value()
+        if q:
+            # While filtering there is deliberately no selection, so remember
+            # the real one to restore when the query is cleared again.
+            if prev is not None:
+                self._filtered_prev = prev
+        else:
+            prev = prev if prev is not None else self._filtered_prev
+            self._filtered_prev = None
+
+        # Nothing to rebuild — avoids needless model churn and popup flicker
+        # on keystrokes that do not change the match set.
+        if [label for label, _ in wanted] == self._current_labels():
+            self._restore_query(le, typed)
+            return
+
+        cursor = le.cursorPosition() if le is not None else 0
+
+        # Rebuilding the model while the popup view is showing rows from it is
+        # a native crash on Windows. Close it first, then repopulate.
+        popup_open = False
+        try:
+            popup_open = self.view().isVisible()
+        except RuntimeError:
+            popup_open = False
+        if popup_open:
+            self.hidePopup()
+
         self.blockSignals(True)
         self.clear()
-        matched = 0
-        for label, data in self._all_items:
-            if not q or q in label.lower():
-                self.addItem(label, data)
-                matched += 1
-        if matched == 0:
-            self.addItem('No matches', None)
-        self.blockSignals(False)
-        if prev is not None:
+        for label, data in wanted:
+            self.addItem(label, data)
+        if q:
+            # Re-selecting a filtered-out row would overwrite the query the
+            # cashier is still typing, so leave the selection empty instead.
+            self.setCurrentIndex(-1)
+        elif prev is not None:
             self.set_value(prev)
-        le = self.lineEdit()
-        if (q and matched > 0 and not self.view().isVisible()
-                and self.isVisible() and le is not None and le.hasFocus()):
+        self.blockSignals(False)
+
+        self._restore_query(le, typed, cursor)
+        matched = len(wanted) if wanted[0][1] is not None else 0
+        if (q and matched > 0 and self.isVisible()
+                and le is not None and le.hasFocus()):
             self.showPopup()
+
+    def _restore_query(self, le, typed: str, cursor: int | None = None):
+        """clear() empties an editable line edit — put the query back."""
+        if le is None:
+            return
+        if le.text() != typed:
+            le.setText(typed)
+        if cursor is not None:
+            le.setCursorPosition(min(cursor, len(typed)))
 
     def set_loading(self, loading: bool, label: str = 'Loading…'):
         super().set_loading(loading, label)
