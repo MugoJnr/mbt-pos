@@ -151,6 +151,24 @@ class InstallStateLoopGuardTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, 'blocked_version')
 
+    def test_startup_recovers_stale_in_progress_when_version_already_running(self):
+        from backend.updater import (
+            UpdateChecker, load_install_state, mark_install_started,
+        )
+        with patch('backend.updater.time.time', return_value=3_000_000):
+            mark_install_started('3.0.77')
+        before = load_install_state()
+        self.assertTrue(before.get('in_progress'))
+
+        checker = UpdateChecker('3.0.77')
+        with patch('backend.updater.read_last_install_result', return_value='OK'):
+            checker._check_previous_install()
+
+        after = load_install_state()
+        self.assertFalse(after.get('in_progress'))
+        self.assertEqual(after.get('last_success_version'), '3.0.77')
+        self.assertEqual(after.get('last_result'), 'ok')
+
 
 class PathAndJobTests(unittest.TestCase):
     def test_safe_path_and_job_requires_checksum(self):
@@ -242,7 +260,7 @@ class UnattendedFallbackTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn('checksum', err.lower())
 
-    def test_missing_helper_blocks_unattended_allows_reason(self):
+    def test_unsigned_installer_requires_uac_for_install(self):
         from backend.updater import UpdateChecker
 
         uc = UpdateChecker('3.0.0')
@@ -266,10 +284,10 @@ class UnattendedFallbackTests(unittest.TestCase):
                        return_value={'ok': True, 'path': path}):
                 can, reason = uc.can_unattended_install()
                 self.assertFalse(can)
-                self.assertEqual(reason, 'helper_not_registered')
+                self.assertEqual(reason, 'requires_uac')
                 ok, err = uc.install_and_restart(path, unattended=True)
                 self.assertFalse(ok)
-                self.assertIn('helper', err.lower())
+                self.assertIn('administrator authorization', err.lower())
 
     def test_download_retry_schedules_on_incomplete(self):
         from backend.updater import UpdateChecker, DOWNLOAD_RETRY_INTERVAL

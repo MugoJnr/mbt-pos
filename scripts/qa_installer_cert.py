@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -28,10 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.74"
-OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_INSTALLER_CERT")
-if not OUT.parent.exists():
-    OUT = Path(os.environ.get("USERPROFILE", "")) / "Desktop" / "QA_INSTALLER_CERT"
+EXPECTED_VERSION = "3.0.77"
+desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
+OUT = Path(os.environ.get(
+    "MBT_QA_OUT",
+    str((desktop if desktop.is_dir() else Path(tempfile.gettempdir())) / "QA_INSTALLER_CERT"),
+))
 OUT.mkdir(parents=True, exist_ok=True)
 R: list[dict] = []
 LOG = OUT / "cert.log"
@@ -60,6 +63,40 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# The entitlement itself. Everything else in the store is runtime bookkeeping
+# the engine legitimately rewrites (cloud-check timestamps, stale offline
+# flags) plus an append-only audit log, so the file's bytes cannot be stable
+# across an install that runs --repair-license-store.
+LICENSE_ENTITLEMENT_KEYS = ("license_token", "sig", "revoked", "tampered")
+
+
+def license_store_state(path: Path) -> dict | None:
+    """Digest the licence entitlement without ever holding a plaintext value.
+
+    Opened strictly read-only through a ``mode=ro`` URI so certification can
+    never write to the real licence store.
+    """
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = dict(con.execute("SELECT key, value FROM license_data").fetchall())
+        log_rows = con.execute("SELECT COUNT(*) FROM license_log").fetchone()[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return {
+        "entitlement": {
+            key: hashlib.sha256(str(rows.get(key, "")).encode()).hexdigest()
+            for key in LICENSE_ENTITLEMENT_KEYS
+        },
+        "keys": sorted(rows),
+        "log_rows": log_rows,
+    }
+
+
 def snapshot_live() -> dict:
     local = Path(os.environ["LOCALAPPDATA"]) / "MugoByte" / "MBT POS"
     lic = (
@@ -77,6 +114,7 @@ def snapshot_live() -> dict:
             snap[key] = {"path": str(p), "sha256": sha256(p), "size": p.stat().st_size}
         else:
             snap[key] = None
+    snap["license_store"] = license_store_state(lic) if lic.is_file() else None
     cfg = local / "config"
     if cfg.is_dir():
         files = {}
@@ -129,11 +167,21 @@ def verify_install_layout(snap: dict) -> None:
     required = [
         "_internal",
         "Uninstall.exe",
-        "MBT_UpdateHelper.ps1",
-        "register_update_helper.ps1",
     ]
     missing = [n for n in required if not (inst / n).exists()]
     rec("install.files", "PASS" if not missing else "FAIL", f"missing={missing}" if missing else "ok")
+    retired = [
+        inst / "MBT_UpdateHelper.ps1",
+        inst / "register_update_helper.ps1",
+        inst / "deploy" / "MBT_UpdateHelper.ps1",
+        inst / "deploy" / "register_update_helper.ps1",
+    ]
+    stale = [str(p) for p in retired if p.exists()]
+    rec(
+        "install.unsafe_helper_removed",
+        "PASS" if not stale else "FAIL",
+        f"stale={stale}" if stale else "retired SYSTEM helper absent",
+    )
 
     # Version resource
     try:
@@ -176,6 +224,16 @@ $ver
         "install.registry",
         "PASS" if reg_ver == EXPECTED_VERSION else "FAIL",
         f"HKLM Version={reg_ver!r}",
+    )
+    helper_task = subprocess.run(
+        ["schtasks", "/Query", "/TN", "MBT_POS_UpdateHelper"],
+        capture_output=True,
+        text=True,
+    )
+    rec(
+        "install.unsafe_helper_task_removed",
+        "PASS" if helper_task.returncode != 0 else "FAIL",
+        "task absent" if helper_task.returncode != 0 else "SYSTEM task still registered",
     )
 
     # Shortcuts
@@ -220,11 +278,36 @@ $ver
 
     if snap.get("license"):
         lic = Path(snap["license"]["path"])
-        if lic.is_file():
-            ok = sha256(lic) == snap["license"]["sha256"]
-            rec("upgrade.license_preserved", "PASS" if ok else "FAIL", f"match={ok}")
-        else:
+        pre = snap.get("license_store")
+        if not lic.is_file():
             rec("upgrade.license_preserved", "FAIL", "license missing after install")
+        elif not pre:
+            rec("upgrade.license_preserved", "FAIL", "pre-install license store unreadable")
+        else:
+            post = license_store_state(lic)
+            if not post:
+                rec("upgrade.license_preserved", "FAIL", "license store unreadable after install")
+            else:
+                # The installer runs --repair-license-store, which builds the
+                # licence engine; that clears stale cloud flags and appends an
+                # audit row on a valid local licence. So compare the
+                # entitlement, not the file bytes, and require the audit trail
+                # to have only grown.
+                changed = [
+                    k for k, digest in pre["entitlement"].items()
+                    if post["entitlement"].get(k) != digest
+                ]
+                lost = sorted(set(pre["keys"]) - set(post["keys"]))
+                truncated = post["log_rows"] < pre["log_rows"]
+                ok = not changed and not lost and not truncated
+                bytes_same = sha256(lic) == snap["license"]["sha256"]
+                rec(
+                    "upgrade.license_preserved",
+                    "PASS" if ok else "FAIL",
+                    f"entitlement_changed={changed} keys_lost={lost} "
+                    f"audit_rows {pre['log_rows']}->{post['log_rows']} "
+                    f"file_bytes_identical={bytes_same}",
+                )
     else:
         rec("upgrade.license_preserved", "PASS", "no pre-existing license")
 
@@ -245,6 +328,49 @@ $ver
     )
 
 
+def seed_superadmin_pin(api, cert_root: Path) -> bool:
+    """Configure the Super-Admin PIN in the isolated database before the journey.
+
+    From v3.0.75 the backend verifies the PIN itself before any protected
+    inventory write, so a freshly created database refuses ``receive_stock``
+    with "Super-Admin PIN is not configured." until the hash row exists. The
+    harness therefore has to configure the PIN the way the product does — via
+    ``desktop.utils.security.set_superadmin_pin``, which hashes through
+    ``_pin_hash`` and stores ``superadmin_pin_hash`` in ``system_settings`` —
+    rather than bypassing or relaxing the gate.
+    """
+    from desktop.utils.api_client import get_db_path
+    from desktop.utils.security import set_superadmin_pin
+
+    db_path = Path(get_db_path()).resolve()
+    root = cert_root.resolve()
+    if root != db_path.parent and root not in db_path.parents:
+        rec(
+            "journey.superadmin_pin",
+            "FAIL",
+            "refused: resolved database is outside the isolated cert root",
+        )
+        return False
+
+    pin = os.environ.get("MBT_AUTO_SUPERADMIN_PIN", "")
+    if not pin:
+        rec("journey.superadmin_pin", "FAIL", "MBT_AUTO_SUPERADMIN_PIN not set")
+        return False
+
+    if not set_superadmin_pin(pin, api):
+        rec("journey.superadmin_pin", "FAIL", "set_superadmin_pin returned False")
+        return False
+
+    cfg = api.get_settings() or {}
+    stored = bool(cfg.get("superadmin_pin_hash"))
+    rec(
+        "journey.superadmin_pin",
+        "PASS" if stored else "FAIL",
+        "hash stored in isolated system_settings" if stored else "hash missing after write",
+    )
+    return stored
+
+
 def customer_journey_isolated() -> None:
     """Fresh data root + installed EXE binary path for API/UI journey via source APIClient.
 
@@ -258,6 +384,7 @@ def customer_journey_isolated() -> None:
     cert_root.mkdir(parents=True)
     os.environ["MBT_DATA_ROOT"] = str(cert_root)
     os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
+    os.environ.setdefault("MBT_BOOTSTRAP_ADMIN_PASSWORD", "admin123")
     os.environ.setdefault("MBT_AUTO_SUPERADMIN_PIN", "1110")
     os.environ.setdefault("PYTHONWARNINGS", "ignore")
 
@@ -314,6 +441,9 @@ def customer_journey_isolated() -> None:
         api.set_token(login["token"])
         rec("journey.login", "PASS", f"role={(login.get('user') or {}).get('role')}")
 
+        if not seed_superadmin_pin(api, cert_root):
+            return
+
         # Product
         created = api.create_product(
             {
@@ -336,7 +466,10 @@ def customer_journey_isolated() -> None:
 
         # Receive stock
         if pid and hasattr(api, "receive_stock"):
-            recv = api.receive_stock(int(pid), 25, notes="cert receive", unit_cost=40.0)
+            recv = api.receive_stock(
+                int(pid), 25, notes="cert receive", unit_cost=40.0,
+                pin=os.environ.get("MBT_AUTO_SUPERADMIN_PIN", ""),
+            )
             ok = bool(recv and recv.get("success"))
             rec("journey.receive_stock", "PASS" if ok else "FAIL", str(recv)[:200])
         else:
@@ -455,8 +588,20 @@ def customer_journey_isolated() -> None:
     except Exception:
         rec("journey.api", "FAIL", traceback.format_exc()[-600:])
 
-    # Keep evidence tree
-    shutil.copytree(cert_root, OUT / "isolated_data", dirs_exist_ok=True)
+    # Keep evidence tree, minus anything secret. The app seeds every data root
+    # it is given with copies of the cloudflared tunnel credentials, cert.pem
+    # and .jwt_secret; those must not be duplicated into a Desktop folder that
+    # outlives the run.
+    shutil.copytree(
+        cert_root,
+        OUT / "isolated_data",
+        dirs_exist_ok=True,
+        ignore=lambda _dir, names: [
+            n for n in names
+            if n.lower() in {"cloudflared", "cloudflared_backup",
+                             "cert.pem", ".jwt_secret"}
+        ],
+    )
 
 
 def repair_cycle(skip_uninstall: bool) -> None:

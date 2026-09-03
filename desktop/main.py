@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-08-27-v3.0.74"
-APP_VERSION   = "3.0.74"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-03-v3.0.76"
+APP_VERSION   = "3.0.77"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -89,6 +89,8 @@ from desktop.utils.theme            import (
     PADDING, RADIUS,
 )
 from desktop.utils.splash           import SplashScreen
+from desktop.utils.dialog_keys      import wire_dialog_keys
+from desktop.utils.lifecycle        import stop_timers
 from desktop.wizard.setup_wizard    import SetupWizard, needs_wizard, reset_wizard
 from desktop.tabs.dashboard_tab     import DashboardTab
 from desktop.tabs.sales_tab         import SalesTab
@@ -146,6 +148,27 @@ def _make_logo_label(max_w: int = 280, max_h: int = 140) -> QLabel:
     return lbl
 
 
+def _screen_for_widget(widget=None):
+    """Return the logical-pixel screen containing the window or pointer."""
+    try:
+        if widget is not None and widget.windowHandle() is not None:
+            screen = widget.windowHandle().screen()
+            if screen is not None:
+                return screen
+    except Exception:
+        pass
+    return QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+
+
+def _qa_output_dir(name: str) -> str:
+    """Use the normal Desktop for QA evidence, with a TEMP fallback."""
+    desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+    base = desktop if os.path.isdir(desktop) else tempfile.gettempdir()
+    path = os.path.join(base, name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 # ?? Signals ????????????????????????????????????????????????????????????????????
 class AppSignals(QObject):
     connection_changed = pyqtSignal(bool)
@@ -163,15 +186,30 @@ class LoginDialog(QDialog):
         self.user_data = None
         self.setWindowTitle("MBT POS")
         self.setWindowIcon(icon)
-        self.setFixedSize(460, 580)
+        self.setMinimumSize(340, 320)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         # Inherit live QApplication ThemeManager sheet ? do NOT freeze a copy
         # (stale DARK QSS on the dialog caused light-mode hybrid on login).
         self.setStyleSheet('')
         self._build()
+        preferred = self.sizeHint().expandedTo(QSize(460, 580))
+        screen = _screen_for_widget(self)
+        if screen is not None:
+            available = screen.availableGeometry()
+            preferred.setWidth(min(preferred.width(), available.width()))
+            preferred.setHeight(min(preferred.height(), available.height()))
+        self.resize(preferred)
 
     def _build(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
@@ -276,7 +314,8 @@ class LoginDialog(QDialog):
             f" letter-spacing:1.5px; padding:12px; min-height:50px; }}"
             f"QPushButton#loginBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
             f"QPushButton#loginBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
-            f"QPushButton#loginBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
+            f"QPushButton#loginBtn:disabled {{ background:{C['panel']};"
+            f" color:{C['muted']}; border:1px solid {C['border']}; }}")
 
         foot = QLabel(f"Powered by MugoByte  \u00b7  mugobyte.com  \u00b7  v{APP_VERSION}")
         foot.setObjectName("loginFooter")
@@ -305,12 +344,31 @@ class LoginDialog(QDialog):
         fl.addStretch()
         fl.addWidget(foot)
         root.addWidget(form)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        self._login_scroll = scroll
         self._login_banner = banner
         self._login_brand = brand
         self._login_tag = tag
         self._login_form = form
         self._login_foot = foot
+        # Without this the QScrollArea takes initial focus and the first
+        # keystroke goes nowhere. Enter in either field is already handled by
+        # returnPressed, so both are exempt from the dialog-level router.
+        self.setTabOrder(self._u, self._p)
+        self.setTabOrder(self._p, self._eye)
+        self.setTabOrder(self._eye, self._btn)
+        wire_dialog_keys(self, primary=self._btn,
+                         submit_exempt=(self._u, self._p))
+        self._u.setFocus(Qt.OtherFocusReason)
         self.refresh_theme()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Focus can be reassigned by the scroll area while the dialog is shown;
+        # re-assert it once the window is actually on screen.
+        if not self._u.hasFocus() and not self._p.hasFocus():
+            self._u.setFocus(Qt.ActiveWindowFocusReason)
 
     def refresh_theme(self):
         """Re-apply live ThemeManager colors to login chrome (no frozen dark copy)."""
@@ -366,7 +424,8 @@ class LoginDialog(QDialog):
                 f" letter-spacing:1.5px; padding:12px; min-height:50px; }}"
                 f"QPushButton#loginBtn:hover {{ background:{C['gold_lt']}; color:{gold_fg}; }}"
                 f"QPushButton#loginBtn:pressed {{ background:{C['gold_dk']}; color:{gold_fg}; }}"
-                f"QPushButton#loginBtn:disabled {{ background:{C['border2']}; color:{C['muted']}; }}")
+                f"QPushButton#loginBtn:disabled {{ background:{C['panel']};"
+                f" color:{C['muted']}; border:1px solid {C['border']}; }}")
         foot = getattr(self, '_login_foot', None)
         if foot is not None:
             foot.setStyleSheet(
@@ -613,14 +672,27 @@ class LoginDialog(QDialog):
         self._msg.setStyleSheet(
             f"color:{C['err'] if err else C['ok']}; font-size:13px;")
 
-    # Allow dragging the frameless window
+    # Single-pointer drag only — extra touch points must not jump the window.
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
+        if e.button() == Qt.LeftButton and getattr(self, '_drag_pos', None) is None:
             self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
+            self.grabMouse()
+        super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        if e.buttons() == Qt.LeftButton and hasattr(self, '_drag_pos'):
+        if (e.buttons() & Qt.LeftButton) and getattr(self, '_drag_pos', None) is not None:
             self.move(e.globalPos() - self._drag_pos)
+        else:
+            super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_pos = None
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+        super().mouseReleaseEvent(e)
 
 
 # ?? Main Window ????????????????????????????????????????????????????????????????
@@ -641,10 +713,13 @@ class MainWindow(QMainWindow):
         self._pending_update_version = ''
         self._pending_installer_path = None
         self._pending_update_notes = ''
+        self._windows_session_hwnd = None
+        self._resume_recovery_pending = False
+        self._closing = False
 
         self.setWindowTitle("MBT POS - MugoByte Technologies")
         self.setWindowIcon(icon)
-        self.setMinimumSize(1200, 720)
+        self.setMinimumSize(self._responsive_minimum())
         # Do NOT freeze a copy of MBT_STYLESHEET on the window ? it blocks ThemeManager
         # light/dark updates (QApp sheet never reaches #sidebar / #topbar). Inherit QApp.
         self.setStyleSheet('')
@@ -725,7 +800,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 log.warning('QA sync dump: %s', e)
         QTimer.singleShot(120, self._open_first_tab)
-        QTimer.singleShot(200, self._load_saved_theme)
         QTimer.singleShot(600, self._start_services)
         QTimer.singleShot(1600, self._initial_conn_check)
         QTimer.singleShot(2200, self._restore_pending_update)
@@ -733,6 +807,25 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(8000, self._warm_remaining_tabs)
         self._install_global_search()
         self._install_idle_watchdog()
+        self._install_windows_session_events()
+
+    def _responsive_minimum(self) -> QSize:
+        """Smallest usable shell size, clamped to the screen actually in use.
+
+        A hard 1200x720 minimum pushed the window wider than a 1024x768 screen,
+        so part of the shell sat off-screen. 960x600 still fits the 240px
+        sidebar plus a workable POS pane, and we shrink further rather than
+        exceed the available work area on very small displays.
+        """
+        want_w, want_h = 960, 600
+        screen = _screen_for_widget(self)
+        if screen is not None:
+            available = screen.availableGeometry()
+            if available.width() > 0:
+                want_w = min(want_w, available.width())
+            if available.height() > 0:
+                want_h = min(want_h, available.height())
+        return QSize(max(640, want_w), max(480, want_h))
 
     def _install_idle_watchdog(self):
         """S03: sign out after prolonged inactivity (default 45 min).
@@ -772,7 +865,11 @@ class MainWindow(QMainWindow):
             log.warning('idle watchdog: %s', e)
 
     def _note_user_activity(self):
-        self._last_activity_ts = time.time()
+        now = time.time()
+        # Mouse-move events can arrive hundreds of times per second. One write
+        # per second is sufficient for the 15-second idle watchdog.
+        if now - float(getattr(self, '_last_activity_ts', 0) or 0) >= 1.0:
+            self._last_activity_ts = now
 
     def _idle_elapsed_sec(self) -> float:
         return max(0.0, time.time() - float(getattr(self, '_last_activity_ts', time.time()) or time.time()))
@@ -815,6 +912,8 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):
         try:
             et = event.type()
+            if et == QEvent.Resize and obj is getattr(self, '_sidebar', None):
+                self._on_sidebar_resized()
             if et in (
                 QEvent.MouseMove,
                 QEvent.MouseButtonPress,
@@ -847,7 +946,10 @@ class MainWindow(QMainWindow):
     def _open_global_search(self):
         try:
             from desktop.dialogs.global_search_dialog import GlobalSearchDialog
-            dlg = GlobalSearchDialog(self.api, self)
+            dlg = GlobalSearchDialog(
+                self.api, self,
+                allowed_modules=set(getattr(self, '_nav', {}).keys()),
+            )
             dlg.navigate.connect(self._on_global_search_nav)
             dlg.exec_()
         except Exception as e:
@@ -896,6 +998,13 @@ class MainWindow(QMainWindow):
     def _open_first_tab(self):
         first = next(iter(self._nav), 'dashboard')
         self._goto(first)
+        self._load_saved_theme()
+        # _build_ui sized the splitter against the pre-maximize frame; re-apply
+        # once now that the real window width is known.
+        try:
+            self._apply_sidebar_state(persist=False)
+        except Exception as e:
+            log.debug('sidebar first-paint apply: %s', e)
 
     def _ensure_tab(self, tid: str):
         if tid in self._tabs:
@@ -936,6 +1045,12 @@ class MainWindow(QMainWindow):
 
     def _warm_remaining_tabs(self):
         """Create non-dashboard tabs one-per-tick so UI stays responsive."""
+        if (
+            getattr(self, '_theme_switching', False)
+            or getattr(self, '_theme_pending', None)
+        ):
+            QTimer.singleShot(400, self._warm_remaining_tabs)
+            return
         pending = [t for t in self._nav.keys() if t not in self._tabs]
         if not pending:
             return
@@ -950,10 +1065,7 @@ class MainWindow(QMainWindow):
     def _qa_dump_theme_evidence(self):
         """Write light/dark hybrid evidence screenshots (Desktop folder)."""
         try:
-            out = os.path.join(
-                os.path.expanduser('~'), 'OneDrive', 'Desktop',
-                'QA_EVIDENCE_LIGHT_THEME')
-            os.makedirs(out, exist_ok=True)
+            out = _qa_output_dir('QA_EVIDENCE_LIGHT_THEME')
             QApplication.processEvents()
             pm = self.grab()
             full = os.path.join(out, '01_full_light_hybrid.png')
@@ -979,9 +1091,7 @@ class MainWindow(QMainWindow):
 
     def _qa_dump_theme_evidence_late(self):
         try:
-            out = os.path.join(
-                os.path.expanduser('~'), 'OneDrive', 'Desktop',
-                'QA_EVIDENCE_LIGHT_THEME')
+            out = _qa_output_dir('QA_EVIDENCE_LIGHT_THEME')
             QApplication.processEvents()
             pm = self.grab()
             pm.save(os.path.join(out, '01b_after_dashboard_load.png'), 'PNG')
@@ -992,9 +1102,7 @@ class MainWindow(QMainWindow):
     def _qa_dump_sales_evidence(self):
         """Optional ? call manually / from tests; not auto-chained (avoids hang)."""
         try:
-            out = os.path.join(
-                os.path.expanduser('~'), 'OneDrive', 'Desktop',
-                'QA_EVIDENCE_LIGHT_THEME')
+            out = _qa_output_dir('QA_EVIDENCE_LIGHT_THEME')
             QApplication.processEvents()
             pm = self.grab()
             pm.save(os.path.join(out, '06_pos_full.png'), 'PNG')
@@ -1019,6 +1127,11 @@ class MainWindow(QMainWindow):
 
     # ?? Background services ????????????????????????????????????????????????????
     def _start_services(self):
+        # A retired window must never re-arm services, and a replayed timer must
+        # not start a second copy of every poller.
+        if self._closing or getattr(self, '_services_started', False):
+            return
+        self._services_started = True
         try:
             from backend.internet_monitor import InternetMonitor
             self._svc_net = InternetMonitor(
@@ -1141,11 +1254,15 @@ class MainWindow(QMainWindow):
                     pass
 
             # 2. Lock the app if revoked / tampered / expired
-            if state in (STATE_TAMPERED, STATE_INACTIVE, STATE_EXPIRED):
+            if state in (
+                STATE_TAMPERED, STATE_INACTIVE, STATE_EXPIRED,
+                STATE_UNACTIVATED,
+            ):
                 reason = {
                     STATE_TAMPERED:  "WARNING: License Tampered\n\nThis license has been flagged. The application will now close.",
                     STATE_INACTIVE:  "License Revoked\n\nYour license has been revoked by MugoByte Technologies.\nPlease contact support to renew.",
                     STATE_EXPIRED:   "License Expired\n\nYour subscription has expired.\nPlease contact MugoByte Technologies to renew.",
+                    STATE_UNACTIVATED: "License Missing\n\nNo valid activation was found. The application will now close.",
                 }.get(state, "License invalid.")
 
                 # Avoid stealing focus mid-sale: status + license tab first;
@@ -1162,36 +1279,45 @@ class MainWindow(QMainWindow):
                         busy = False
 
                 short = {
-                    STATE_TAMPERED: 'License tampered Ã¢â‚¬â€ contact support',
-                    STATE_INACTIVE: 'License revoked Ã¢â‚¬â€ contact support',
-                    STATE_EXPIRED: 'License expired Ã¢â‚¬â€ renew to continue',
+                    STATE_TAMPERED: 'License tampered — contact support',
+                    STATE_INACTIVE: 'License revoked — contact support',
+                    STATE_EXPIRED: 'License expired — renew to continue',
+                    STATE_UNACTIVATED: 'License missing — activation required',
                 }.get(state, 'License invalid')
                 try:
                     self._set_status(short)
                 except Exception:
                     pass
 
-                hard = state in (STATE_TAMPERED, STATE_INACTIVE)
-                if hard or not busy:
+                hard = state in (
+                    STATE_TAMPERED, STATE_INACTIVE, STATE_EXPIRED,
+                    STATE_UNACTIVATED,
+                )
+                if not busy:
                     self._pending_license_alert = None
                     QMessageBox.critical(self, 'MBT POS - License', reason)
+                    if hard:
+                        QApplication.quit()
                 else:
-                    # Soft: cashier can finish the sale; re-check on next idle tick
+                    # The cashier can finish the sale; re-check on next idle tick.
+                    # This is especially important after workstation unlock: never
+                    # put a modal in front of an in-progress payment.
                     log.warning('License %s deferred modal (POS busy): %s', state, short)
                     # Never navigate away from an active sale. The persistent
                     # status warning remains visible until the cashier is idle.
                     self._queue_deferred_license_alert(state, reason)
 
-                if hard:
-                    # Hard close Ã¢â‚¬â€ no way to continue
-                    QApplication.quit()
-
             else:
                 self._pending_license_alert = None
+                self._license_alert_retry_count = 0
 
-        QTimer.singleShot(0, _ui_update)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui_update)
 
     def _queue_deferred_license_alert(self, state, reason):
+        pending = getattr(self, '_pending_license_alert', None)
+        if pending != (state, reason):
+            self._license_alert_retry_count = 0
         self._pending_license_alert = (state, reason)
         if getattr(self, '_license_alert_timer_scheduled', False):
             return
@@ -1207,6 +1333,7 @@ class MainWindow(QMainWindow):
         try:
             if self._svc_lic is None or self._svc_lic.state != state:
                 self._pending_license_alert = None
+                self._license_alert_retry_count = 0
                 return
             if not self.is_safe_to_auto_update():
                 self._queue_deferred_license_alert(state, reason)
@@ -1215,7 +1342,9 @@ class MainWindow(QMainWindow):
             self._queue_deferred_license_alert(state, reason)
             return
         self._pending_license_alert = None
+        self._license_alert_retry_count = 0
         QMessageBox.critical(self, 'MBT POS - License', reason)
+        QApplication.quit()
 
     def _on_update_available(self, version, notes, asset_url):
         self._pending_update_version = version
@@ -1228,7 +1357,8 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         log.info(f"Update downloaded: v{version}")
         self.signals.update_ready.emit(installer_path, version)
-        QTimer.singleShot(0, self._schedule_unattended_install)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(self._schedule_unattended_install)
 
     def _on_force_update(self, version, reason):
         self._pending_update_version = version
@@ -1260,7 +1390,8 @@ class MainWindow(QMainWindow):
                     self._sync_lbl.setText(f'Update: {title}'[:40])
             except Exception:
                 pass
-        QTimer.singleShot(3000, _show)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(lambda: QTimer.singleShot(3000, _show))
 
     def _on_download_failed(self, version, title, reason):
         def _show():
@@ -1279,7 +1410,8 @@ class MainWindow(QMainWindow):
                     self._sync_lbl.setText((title or 'Update')[:40])
             except Exception:
                 pass
-        QTimer.singleShot(0, _show)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_show)
 
     def is_safe_to_auto_update(self) -> bool:
         """True when no sale/payment/dialog/critical UI would be interrupted."""
@@ -1551,17 +1683,44 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Update Failed', str(e))
 
     def _stop_services(self):
+        """Tear down everything ``_start_services`` armed.
+
+        Logout hides this window but the object survives until Qt deletes it,
+        so any poller left running keeps hitting the database and the network
+        under the previous user's session.
+        """
+        self._services_started = False
         updater = getattr(self, '_updater', None)
         if updater:
             try:
                 updater.stop()
             except Exception:
                 pass
-        for svc in (self._svc_net, self._svc_lic, self._svc_diag,
-                    getattr(self, '_svc_sched', None)):
+        self._updater = None
+        for attr in ('_svc_net', '_svc_lic', '_svc_diag', '_svc_sched'):
+            svc = getattr(self, attr, None)
             if svc:
-                try: svc.stop()
-                except Exception: pass
+                try:
+                    svc.stop()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+
+        for module, func in (
+            ('backend.cloud_backup', 'stop_cloud_backup_service'),
+            ('backend.local_db_backup', 'stop_local_backup_scheduler'),
+            ('backend.cloud.report_engine', 'stop_report_scheduler'),
+            ('backend.cloudflare_setup', 'stop_auto_cloudflare'),
+        ):
+            try:
+                mod = __import__(module, fromlist=[func])
+                getattr(mod, func)()
+            except Exception as e:
+                log.debug('%s.%s: %s', module, func, e)
+
+        stopped = stop_timers(self)
+        if stopped:
+            log.info('Stopped %d window timer(s) during teardown', stopped)
 
     # ?? UI ?????????????????????????????????????????????????????????????????????
     def _build_ui(self):
@@ -1572,8 +1731,17 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        # Sidebar and content live in a splitter so the shop can drag the nav
+        # narrower/wider. Stretch 0/1 means every extra pixel goes to the POS.
+        # ShellSplitter paints a grip in the gutter — a plain QSplitter handle
+        # is the same colour as the sidebar border and reads as decoration.
+        from desktop.utils.shell_splitter import ShellSplitter
+        split = ShellSplitter(Qt.Horizontal)
+        split.set_reset_callback(self._reset_sidebar_width)
+        self._shell_splitter = split
+
         self._sidebar = self._build_sidebar()
-        root.addWidget(self._sidebar)
+        split.addWidget(self._sidebar)
 
         right = QWidget(); right.setObjectName("content")
         rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(0)
@@ -1581,18 +1749,27 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget(); self._stack.setObjectName("pageStack")
         rl.addWidget(self._stack)
         rl.addWidget(self._build_statusbar())
-        root.addWidget(right, 1)
+        split.addWidget(right)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        root.addWidget(split, 1)
 
+        self._restore_sidebar_prefs()
+        self._connect_sidebar()
+        self._apply_sidebar_state(persist=False)
+
+    # ── Collapsible / resizable sidebar ─────────────────────────────────────────
     def _build_sidebar(self):
-        # AppShell sidebar ? 240px (matches theme QSS), logo + brand, gold active rail
-        sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(240)
+        # AppShell sidebar: logo + brand + collapse control, gold active rail.
+        # Width is applied by _apply_sidebar_state (never fixed here or in QSS).
+        sb = QWidget(); sb.setObjectName("sidebar")
         # QWidget backgrounds need styled-background or light QSS never paints
         sb.setAttribute(Qt.WA_StyledBackground, True)
         sb.setAutoFillBackground(True)
         self._sidebar = sb
         sl = QVBoxLayout(sb); sl.setContentsMargins(0,0,0,0); sl.setSpacing(0)
 
-        # Logo block ? HD mark + MBT / POS SYSTEM
+        # Logo block ? HD mark + MBT / POS SYSTEM + collapse control
         lw = QWidget(); lw.setObjectName("sidebarLogo"); lw.setFixedHeight(80)
         ll = QHBoxLayout(lw)
         ll.setContentsMargins(16, 12, 16, 12); ll.setSpacing(12)
@@ -1603,8 +1780,17 @@ class MainWindow(QMainWindow):
         t1 = QLabel("MBT"); t1.setObjectName("sidebarLogoText")
         t2 = QLabel("POS SYSTEM"); t2.setObjectName("sidebarLogoSub")
         brand.addWidget(t1); brand.addWidget(t2)
-        ll.addWidget(logo); ll.addLayout(brand, 1)
+        toggle = QPushButton()
+        toggle.setObjectName("sidebarToggle")
+        toggle.setCursor(Qt.PointingHandCursor)
+        toggle.setFocusPolicy(Qt.StrongFocus)
+        toggle.setFlat(True)
+        ll.addWidget(logo); ll.addLayout(brand, 1); ll.addWidget(toggle, 0, Qt.AlignVCenter)
         sl.addWidget(lw)
+        self._sidebar_logo_row = lw
+        self._sidebar_logo = logo
+        self._sidebar_brand = (t1, t2)
+        self._sidebar_toggle = toggle
 
         sl.addSpacing(8)
 
@@ -1659,9 +1845,14 @@ class MainWindow(QMainWindow):
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
+            # Plain label survives collapse (text is cleared) and elision, so
+            # tooltips / screen readers always name the section.
+            btn.setProperty('navLabel', lbl)
+            btn.setToolTip(lbl)
+            btn.setAccessibleName(lbl)
             try:
-                btn.setIcon(nav_icon(tid, 18))
-                btn.setIconSize(QSize(18, 18))
+                from desktop.utils.nav_icons import apply_nav_icon
+                apply_nav_icon(btn, tid, 18)
             except Exception:
                 pass
             btn.clicked.connect(lambda _, t=tid: self._goto(t))
@@ -1681,9 +1872,300 @@ class MainWindow(QMainWindow):
         ur.setObjectName("sidebarUserRole")
         lo = QPushButton("Sign Out"); lo.setObjectName("logoutBtn")
         lo.setCursor(Qt.PointingHandCursor); lo.clicked.connect(self._logout)
+        lo.setToolTip('Sign out')
+        lo.setAccessibleName('Sign out')
         ul.addWidget(un); ul.addWidget(ur); ul.addWidget(lo)
         sl.addWidget(uw)
+        self._sidebar_user = uw
+        self._sidebar_user_labels = (un, ur)
+        self._sidebar_logout = lo
         return sb
+
+    def _sidebar_screen_width(self) -> int:
+        """Logical width of the work area this window sits on (0 if unknown)."""
+        try:
+            screen = _screen_for_widget(self)
+            if screen is not None:
+                available = screen.availableGeometry()
+                if available.width() > 0:
+                    return int(available.width())
+        except Exception:
+            pass
+        return 0
+
+    def _sidebar_window_width(self) -> int:
+        try:
+            return max(int(self.width()), int(self.minimumWidth()))
+        except Exception:
+            return 0
+
+    def _restore_sidebar_prefs(self):
+        """Load the saved collapse flag + width, clamped to this monitor."""
+        from desktop.utils.sidebar_prefs import load_sidebar_prefs
+        prefs = load_sidebar_prefs(
+            available_width=self._sidebar_screen_width(),
+            window_width=self._sidebar_window_width())
+        self._sidebar_collapsed = bool(prefs['collapsed'])
+        self._sidebar_width = int(prefs['width'])
+
+    def _connect_sidebar(self):
+        """Wire the collapse control + splitter exactly once per window.
+
+        Guarded rather than disconnect/reconnect so a replayed boot step can
+        never leave two handlers on ``splitterMoved`` (double settings writes).
+        """
+        if getattr(self, '_sidebar_connected', False):
+            return
+        toggle = getattr(self, '_sidebar_toggle', None)
+        if toggle is not None:
+            toggle.clicked.connect(self._toggle_sidebar)
+        split = getattr(self, '_shell_splitter', None)
+        if split is not None:
+            split.splitterMoved.connect(self._on_sidebar_splitter_moved)
+        # Parented, single-shot: debounces drags so we write once per gesture.
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(450)
+        timer.timeout.connect(self._persist_sidebar_prefs)
+        self._sidebar_save_timer = timer
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is not None:
+            # Re-elide labels whenever Qt settles on a width (drag, or the POS
+            # pane pushing back at 1024x768). Cheaper than a polling timer.
+            sidebar.installEventFilter(self)
+        try:
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            shortcut = QShortcut(QKeySequence('Ctrl+B'), self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(self._toggle_sidebar)
+            self._sidebar_shortcut = shortcut
+        except Exception as e:
+            log.debug('sidebar shortcut: %s', e)
+        self._sidebar_connected = True
+
+    def _toggle_sidebar(self, *_args):
+        """Collapse <-> expand. Never rebuilds widgets, so tab state survives."""
+        self._sidebar_collapsed = not bool(getattr(self, '_sidebar_collapsed', False))
+        self._apply_sidebar_state(persist=True)
+
+    def _reset_sidebar_width(self, *_args):
+        """Double-click on the gutter: back to this screen's shipped width.
+
+        Collapse state is left alone — the toggle control owns that, and a
+        double-click while collapsed cannot reach here (the handle is disabled).
+        """
+        from desktop.utils.sidebar_prefs import default_sidebar_state
+        _collapsed, width = default_sidebar_state(self._sidebar_screen_width())
+        self._sidebar_width = int(width)
+        self._apply_sidebar_state(persist=True)
+
+    @staticmethod
+    def _repolish(widget):
+        """Re-evaluate property selectors (#navBtn[navCollapsed="true"])."""
+        try:
+            style = widget.style()
+            style.unpolish(widget)
+            style.polish(widget)
+        except Exception:
+            pass
+
+    # navBtn chrome that is not available to the label: 2x10 margin, 12+13
+    # padding, 3px active rail, 18px icon + gap. Matches the QSS in theme.py.
+    _NAV_LABEL_CHROME = 72
+
+    def _elide_nav_label(self, btn, label: str, width: int) -> str:
+        """Keep a user-shrunk sidebar readable instead of clipping mid-word."""
+        try:
+            from PyQt5.QtGui import QFontMetrics
+            available = max(36, int(width) - self._NAV_LABEL_CHROME)
+            return QFontMetrics(btn.font()).elidedText(
+                str(label), Qt.ElideRight, available)
+        except Exception:
+            return str(label)
+
+    def _on_sidebar_resized(self):
+        """Re-elide against the width Qt actually gave us.
+
+        The splitter can hand the sidebar less than we asked for when the POS
+        pane hits its own minimum (1024x768), so labels must be measured against
+        the real width or they clip instead of eliding.
+        """
+        if getattr(self, '_sidebar_collapsed', False):
+            return
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        width = int(sidebar.width())
+        if width == int(getattr(self, '_nav_label_width', -1) or -1):
+            return
+        self._nav_label_width = width
+        self._relabel_nav(width)
+
+    def _relabel_nav(self, width: int, collapsed: bool = None):
+        if collapsed is None:
+            collapsed = bool(getattr(self, '_sidebar_collapsed', False))
+        for tid, btn in (getattr(self, '_nav', {}) or {}).items():
+            raw = btn.property('navLabel') or self._TAB_LABELS.get(tid, tid.title())
+            title = str(raw).replace('&&', '&')
+            btn.setToolTip(title)
+            btn.setAccessibleName(title)
+            btn.setText('' if collapsed else '  ' + self._elide_nav_label(btn, raw, width))
+
+    def _apply_sidebar_chrome(self, collapsed: bool, width: int):
+        """Swap the sidebar between icon-only rail and full nav (no rebuild)."""
+        toggle = getattr(self, '_sidebar_toggle', None)
+        if toggle is not None:
+            tip = 'Expand navigation' if collapsed else 'Collapse navigation'
+            toggle.setToolTip(tip)
+            toggle.setAccessibleName(tip)
+            toggle.setStatusTip(tip)
+            try:
+                from desktop.utils.nav_icons import apply_button_icon
+                apply_button_icon(
+                    toggle, 'sidebar_expand' if collapsed else 'sidebar_collapse', 16)
+            except Exception:
+                pass
+        row = getattr(self, '_sidebar_logo_row', None)
+        if row is not None and row.layout() is not None:
+            # Collapsed rail is 64px wide: trim the header gutter so the 32px
+            # control still clears the 1px right border.
+            row.layout().setContentsMargins(
+                *((12, 12, 12, 12) if collapsed else (16, 12, 16, 12)))
+        logo = getattr(self, '_sidebar_logo', None)
+        if logo is not None:
+            logo.setVisible(not collapsed)
+        for label in (getattr(self, '_sidebar_brand', None) or ()):
+            label.setVisible(not collapsed)
+
+        self._relabel_nav(width, collapsed=collapsed)
+        for btn in (getattr(self, '_nav', {}) or {}).values():
+            btn.setProperty('navCollapsed', bool(collapsed))
+            self._repolish(btn)
+
+        for label in (getattr(self, '_sidebar_user_labels', None) or ()):
+            label.setVisible(not collapsed)
+        logout = getattr(self, '_sidebar_logout', None)
+        if logout is not None:
+            logout.setText('' if collapsed else 'Sign Out')
+            logout.setProperty('navCollapsed', bool(collapsed))
+            try:
+                from desktop.utils.nav_icons import apply_button_icon
+                if collapsed:
+                    apply_button_icon(logout, 'signout', 16)
+                else:
+                    logout.setIcon(QIcon())
+                    logout.setProperty('mbtIconName', None)
+            except Exception:
+                pass
+            self._repolish(logout)
+        user = getattr(self, '_sidebar_user', None)
+        if user is not None:
+            user.setProperty('navCollapsed', bool(collapsed))
+            if user.layout() is not None:
+                user.layout().setContentsMargins(
+                    *( (10, 10, 10, 10) if collapsed else (16, 14, 16, 14) ))
+            self._repolish(user)
+
+    def _apply_sidebar_state(self, persist: bool = True):
+        """Single place that turns (_sidebar_collapsed, _sidebar_width) into geometry."""
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        from desktop.utils.sidebar_prefs import (
+            COLLAPSED_WIDTH, EXPANDED_MIN, clamp_sidebar_width, max_width_for_window,
+        )
+        collapsed = bool(getattr(self, '_sidebar_collapsed', False))
+        window_width = self._sidebar_window_width()
+        width = clamp_sidebar_width(
+            getattr(self, '_sidebar_width', None), window_width)
+        self._sidebar_width = width
+        target = COLLAPSED_WIDTH if collapsed else width
+        self._nav_label_width = -1
+
+        self._sidebar_applying = True
+        # Chrome swap + splitter resize in one repaint: no white frame, no flash.
+        sidebar.setUpdatesEnabled(False)
+        try:
+            self._apply_sidebar_chrome(collapsed, target)
+            if collapsed:
+                sidebar.setMinimumWidth(COLLAPSED_WIDTH)
+                sidebar.setMaximumWidth(COLLAPSED_WIDTH)
+            else:
+                sidebar.setMinimumWidth(EXPANDED_MIN)
+                sidebar.setMaximumWidth(max_width_for_window(window_width))
+            split = getattr(self, '_shell_splitter', None)
+            if split is not None:
+                total = max(int(split.width()), window_width, target + 1)
+                split.setSizes([target, max(1, total - target)])
+                handle = split.handle(1)
+                if handle is not None:
+                    # ShellSplitterHandle.setEnabled also swaps cursor/tooltip
+                    # and repaints; the explicit cursor keeps a plain
+                    # QSplitterHandle correct if the custom class is ever gone.
+                    handle.setEnabled(not collapsed)
+                    handle.setCursor(Qt.ArrowCursor if collapsed else Qt.SplitHCursor)
+                    handle.update()
+        finally:
+            sidebar.setUpdatesEnabled(True)
+            self._sidebar_applying = False
+        if persist:
+            self._queue_sidebar_save()
+
+    def _on_sidebar_splitter_moved(self, _pos: int = 0, _index: int = 0):
+        """User drag. Never calls setSizes ? min/max already clamp the handle."""
+        if getattr(self, '_sidebar_applying', False):
+            return
+        if getattr(self, '_sidebar_collapsed', False):
+            return
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        from desktop.utils.sidebar_prefs import clamp_sidebar_width
+        width = clamp_sidebar_width(sidebar.width(), self._sidebar_window_width())
+        if width != int(getattr(self, '_sidebar_width', 0) or 0):
+            self._sidebar_width = width
+            self._relabel_nav(width)
+        self._queue_sidebar_save()
+
+    def _reclamp_sidebar_for_window(self):
+        """Window shrank ? make sure the nav still cannot eat the POS pane."""
+        sidebar = getattr(self, '_sidebar', None)
+        split = getattr(self, '_shell_splitter', None)
+        if sidebar is None or split is None:
+            return
+        if getattr(self, '_sidebar_applying', False):
+            return
+        if getattr(self, '_sidebar_collapsed', False):
+            return
+        from desktop.utils.sidebar_prefs import EXPANDED_MIN, max_width_for_window
+        allowed = max_width_for_window(self._sidebar_window_width())
+        sidebar.setMinimumWidth(EXPANDED_MIN)
+        sidebar.setMaximumWidth(allowed)
+        if sidebar.width() > allowed:
+            self._sidebar_applying = True
+            try:
+                total = max(int(split.width()), self._sidebar_window_width())
+                split.setSizes([allowed, max(1, total - allowed)])
+            finally:
+                self._sidebar_applying = False
+            self._relabel_nav(allowed)
+
+    def _queue_sidebar_save(self):
+        timer = getattr(self, '_sidebar_save_timer', None)
+        if timer is None:
+            self._persist_sidebar_prefs()
+            return
+        timer.start()
+
+    def _persist_sidebar_prefs(self):
+        """QSettings write ? works for cashier/viewer, no settings.edit needed."""
+        from desktop.utils.sidebar_prefs import save_sidebar_prefs
+        if not save_sidebar_prefs(
+            bool(getattr(self, '_sidebar_collapsed', False)),
+            getattr(self, '_sidebar_width', None),
+        ):
+            log.debug('sidebar preference not saved')
 
     def _build_topbar(self):
         bar = QWidget(); bar.setObjectName("topbar"); bar.setFixedHeight(56)
@@ -1926,6 +2408,13 @@ class MainWindow(QMainWindow):
         top = getattr(self, '_topbar', None)
         if side is not None:
             side.setVisible(not enabled)
+            if not enabled:
+                # Splitter forgets sizes for a hidden child ? restore the user's
+                # collapse state instead of letting Qt pick an even split.
+                try:
+                    self._apply_sidebar_state(persist=False)
+                except Exception as e:
+                    log.debug('sidebar restore after focus mode: %s', e)
         if top is not None:
             top.setVisible(not enabled)
         # Esc exits focus mode (ApplicationShortcut so it works while typing in search)
@@ -2140,6 +2629,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         try:
+            self._reclamp_sidebar_for_window()
+        except Exception:
+            pass
+        try:
             self._position_ai_chrome()
         except Exception:
             pass
@@ -2158,6 +2651,16 @@ class MainWindow(QMainWindow):
         self._theme_gen = getattr(self, '_theme_gen', 0) + 1
         gen = self._theme_gen
         t0 = time.perf_counter()
+        # QApplication.setStyleSheet re-polishes every live widget, and once all
+        # tabs are warmed that is measured at ~4.7s on this machine regardless
+        # of what the sheet contains.  Paint the "Switching theme..." cover
+        # first so the wait reads as progress instead of a frozen window.
+        try:
+            overlay = self._theme_overlay_show()
+            if overlay is not None:
+                QApplication.processEvents()
+        except Exception:
+            pass
         # Freeze paints while QApp stylesheet re-polishes ? cuts Not Responding time
         self.setUpdatesEnabled(False)
         try:
@@ -2230,9 +2733,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             log.warning(f'theme sync: {e}')
             self._theme_switching = False
-            self._theme_overlay_hide()
         finally:
             self.setUpdatesEnabled(True)
+            self._theme_overlay_hide()
 
     def _theme_apply_pending_tabs(self):
         gen = getattr(self, '_theme_pending_gen', 0)
@@ -2382,7 +2885,8 @@ class MainWindow(QMainWindow):
                     self._tabs['settings']._refresh_cf_status()
                 except Exception:
                     pass
-        QTimer.singleShot(0, _ui)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui)
 
     def _on_auto_cloudflare_failed(self, result: dict):
         role = self.user_data.get('user', {}).get('role', '')
@@ -2405,7 +2909,8 @@ class MainWindow(QMainWindow):
                     self._set_status(f'Remote dashboard: {err[:120]}')
             except Exception:
                 pass
-        QTimer.singleShot(0, _ui)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui)
 
     def _on_sync(self, s: str):
         self._sync_lbl.setText(
@@ -2551,20 +3056,165 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
             ) != QMessageBox.Yes:
                 return
+        global _main_window
+        self._closing = True
         try:
             t = getattr(self, '_idle_timer', None)
             if t is not None:
                 t.stop()
         except Exception:
             pass
+        # The Copilot workspace overlay keeps its own refresh timers running
+        # even while hidden behind the shell.
+        workspace = getattr(self, '_ai_workspace', None)
+        if workspace is not None:
+            try:
+                stop_timers(workspace)
+                workspace.close()
+                workspace.deleteLater()
+            except Exception:
+                pass
+            self._ai_workspace = None
+            self._ai_ws_active = False
         self._stop_services()
+        api = self.api
+        # Closing the only window would otherwise quit the app before the login
+        # dialog exists; _show_login restores the normal behaviour.
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
+        # Retire the window completely: a merely hidden MainWindow kept its
+        # 1s/30s/60s timers and services alive under the old session.
         self.hide()
-        _show_login(self.api)
+        if _main_window is self:
+            _main_window = None
+        self.close()
+        self.deleteLater()
+        # The replacement window is only built after the next login succeeds.
+        QTimer.singleShot(0, lambda: _show_login(api))
 
     def _logout(self):
         self._perform_logout(confirm=True)
 
+    def _install_windows_session_events(self):
+        """Register this native window for lock/unlock and session-switch events."""
+        if sys.platform != 'win32':
+            return
+        try:
+            from desktop.utils.windows_session import register_session_notifications
+            hwnd = int(self.winId())
+            if register_session_notifications(hwnd):
+                self._windows_session_hwnd = hwnd
+                log.info('Windows power/session event handling enabled')
+            else:
+                log.warning('Windows session notifications unavailable; power events remain enabled')
+        except Exception as e:
+            log.warning('Windows session event setup: %s', e)
+
+    def nativeEvent(self, event_type, message):
+        """Handle Windows sleep/hibernate and interactive-session transitions."""
+        try:
+            from desktop.utils.windows_session import (
+                classify_message, decode_native_message,
+            )
+            message_id, event_code = decode_native_message(message)
+            action = classify_message(message_id, event_code)
+            if action in ('suspend', 'session-pause'):
+                log.info('Windows runtime paused: %s (event=%s)', action, event_code)
+            elif action in ('resume', 'session-resume'):
+                log.info('Windows runtime resumed: %s (event=%s)', action, event_code)
+                self._schedule_resume_recovery(action)
+        except Exception as e:
+            log.debug('Windows native event decode skipped: %s', e)
+        return False, 0
+
+    def _schedule_resume_recovery(self, reason: str):
+        """Coalesce the duplicate power/session messages Windows commonly emits."""
+        if self._closing or self._resume_recovery_pending:
+            return
+        self._resume_recovery_pending = True
+        QTimer.singleShot(250, lambda: self._recover_after_windows_resume(reason))
+
+    def _recover_after_windows_resume(self, reason: str):
+        """Revalidate local runtime state without focus or cloud-restore side effects."""
+        self._resume_recovery_pending = False
+        if self._closing:
+            return
+
+        # nativeEvent and this single-shot both execute on Qt's UI thread.
+        try:
+            service = self._svc_lic
+            if service is not None:
+                previous = service._last_state
+                state = service.engine.revalidate()
+                service._last_state = state
+                status = service.engine.get_status_dict()
+                if state != previous:
+                    self._on_license_state(state, status)
+                elif 'license' in self._tabs:
+                    self._tabs['license'].refresh()
+        except Exception as e:
+            log.warning('Post-resume license revalidation: %s', e)
+
+        self._probe_database_after_resume(0)
+
+        # Refresh shell connectivity and the visible non-POS view. Never
+        # navigate, activate, raise, or mutate an in-progress sale.
+        try:
+            if self._svc_net is not None:
+                self._on_conn(bool(self._svc_net.is_connected))
+            current = self._stack.currentWidget()
+            sales = self._tabs.get('sales')
+            if current is not None and current is not sales and hasattr(current, 'refresh'):
+                try:
+                    current.refresh(force=True)
+                except TypeError:
+                    current.refresh()
+            self._set_status('Session resumed - runtime state refreshed')
+        except Exception as e:
+            log.warning('Post-resume status refresh: %s', e)
+
+    def _probe_database_after_resume(self, attempt: int):
+        """Verify a fresh SQLite connection; retry briefly while storage wakes."""
+        if self._closing:
+            return
+        try:
+            from desktop.utils.api_client import _db_light
+            db = _db_light()
+            try:
+                db.execute('SELECT 1').fetchone()
+            finally:
+                db.close()
+            log.info('Post-resume database connection ready')
+        except Exception as e:
+            if attempt < 3:
+                log.warning('Post-resume database probe %d failed: %s', attempt + 1, e)
+                QTimer.singleShot(
+                    1500 * (attempt + 1),
+                    lambda n=attempt + 1: self._probe_database_after_resume(n),
+                )
+            else:
+                log.error('Post-resume database reconnect failed: %s', e)
+                self._set_status('Database reconnect pending', transient=False)
+
     def closeEvent(self, event):
+        self._closing = True
+        hwnd = self._windows_session_hwnd
+        if hwnd:
+            try:
+                from desktop.utils.windows_session import unregister_session_notifications
+                unregister_session_notifications(hwnd)
+            except Exception:
+                pass
+            self._windows_session_hwnd = None
+        workspace = getattr(self, '_ai_workspace', None)
+        if workspace is not None:
+            try:
+                stop_timers(workspace)
+                workspace.close()
+            except Exception:
+                pass
+            self._ai_workspace = None
         self._stop_services(); event.accept()
 
 
@@ -2616,6 +3266,40 @@ def _stop_web_dashboard():
         _web_svc = None
 
 
+def _shutdown_and_exit(code):
+    """Release owned services, flush logs, and end the process immediately.
+
+    CPython finalization runs PyQt5's exit hook, which walks sip's
+    Python/C++ wrapper map after that map has already been released. On this
+    build it is a reliable 0xC0000005 read fault on the main thread inside
+    sip.cp311-win_amd64.pyd (evidence:
+    _qa_cloud_evidence/remediation/origin_process_crash.md), and Windows Error
+    Reporting then holds the process long enough for Cloudflare to serve 502s
+    from a dead origin. Nothing the app owns runs after the event loop
+    returns, so everything is stopped and flushed here and the process leaves
+    without finalization instead of faulting on the way out.
+    """
+    try:
+        _stop_web_dashboard()
+    except Exception:
+        pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
+    try:
+        exit_code = int(code)
+    except Exception:
+        exit_code = 0
+    os._exit(exit_code)
+
+
 def _show_login(api: APIClient = None):
     """Show login; store MainWindow in global to prevent GC."""
     global _main_window
@@ -2625,9 +3309,13 @@ def _show_login(api: APIClient = None):
 
     dlg = LoginDialog(api, icon)
     # Centre it
-    s = QApplication.primaryScreen().geometry()
+    screen = _screen_for_widget(dlg)
+    s = screen.availableGeometry() if screen else QRect(0, 0, dlg.width(), dlg.height())
     dlg.move(s.center().x() - dlg.width()//2, s.center().y() - dlg.height()//2)
 
+    app = QApplication.instance()
+    if app is not None:
+        app.setQuitOnLastWindowClosed(True)
     if dlg.exec_() != QDialog.Accepted:
         QApplication.instance().quit(); return
 
@@ -2641,6 +3329,27 @@ def _show_login(api: APIClient = None):
             install(_main_window)
     except Exception:
         pass
+
+
+def _read_boot_theme_is_light():
+    """Read theme from SQLite without constructing APIClient (no pre-splash LocalAPI)."""
+    try:
+        import sqlite3
+        p = get_db_path()
+        if not p or not os.path.isfile(p):
+            return False
+        db = sqlite3.connect(p)
+        try:
+            rows = db.execute(
+                "SELECT key, value FROM system_settings WHERE key IN ('theme','ui_theme')"
+            ).fetchall()
+        finally:
+            db.close()
+        vals = {k: v for k, v in rows}
+        raw = vals.get('theme') or vals.get('ui_theme') or 'dark'
+        return str(raw).lower() == 'light'
+    except Exception:
+        return False
 
 
 def main():
@@ -2666,8 +3375,15 @@ def main():
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
 
     app = QApplication(sys.argv)
+    from desktop.utils.qt_dispatch import install_ui_dispatcher
+    install_ui_dispatcher(app)
     # Fusion makes QSS colors/borders reliable on Windows (native style ignores many rules)
     try:
         app.setStyle('Fusion')
@@ -2710,17 +3426,9 @@ def main():
         app.setFont(QFont(primary, 13))
     except Exception:
         app.setFont(QFont('Segoe UI', 13))
-    # Rebuild QSS now that fonts (and QApp) are ready ? use saved light/dark so
-    # login + MainWindow are not built dark then re-polished to light (80s freeze).
-    _boot_light = False
-    try:
-        _cfg0 = APIClient(BACKEND_URL).get_settings() or {}
-        _boot_light = str(
-            _cfg0.get('theme') or _cfg0.get('ui_theme') or 'dark'
-        ).lower() == 'light'
-    except Exception:
-        pass
-    app.setStyleSheet(ThemeManager.apply(_boot_light, force=True))
+    # Dark QSS first so splash paints immediately. Theme is applied after init_db
+    # from SQLite — never construct APIClient before the splash is visible.
+    app.setStyleSheet(ThemeManager.apply(False, force=True))
 
     icon = _load_icon()
     if not icon.isNull():
@@ -2730,16 +3438,21 @@ def main():
     splash = SplashScreen()
     splash.show()
     splash.set_status("Starting MBT POS...", 5)
-    QApplication.processEvents()
 
     splash.set_status("Initialising database...", 30)
-    QApplication.processEvents()
     # Init DB directly ? no HTTP server needed
     try:
         from backend.app import init_db
         init_db()
     except Exception as e:
         log.error(f"DB init: {e}")
+
+    _boot_light = _read_boot_theme_is_light()
+    if _boot_light:
+        try:
+            app.setStyleSheet(ThemeManager.apply(True, force=True))
+        except Exception:
+            pass
 
     try:
         from backend.cloud.device_service import get_device_service
@@ -2753,14 +3466,11 @@ def main():
         log.warning(f"Cloud services: {e}")
 
     splash.set_status("Starting web dashboard...", 55)
-    QApplication.processEvents()
     _start_web_dashboard()
 
     splash.set_status("Loading interface...", 80)
-    QApplication.processEvents()
 
     splash.set_status("Ready", 100)
-    QApplication.processEvents()
 
     def _launch():
         global _main_window
@@ -2770,18 +3480,19 @@ def main():
             wiz = SetupWizard()
             wiz.completed.connect(lambda data: log.info(f"Wizard complete: shop={data.get('shop_name')}"))
             # Centre
-            s = QApplication.primaryScreen().geometry()
+            screen = _screen_for_widget(wiz)
+            s = screen.availableGeometry() if screen else QRect(0, 0, wiz.width(), wiz.height())
             wiz.move(s.center().x() - wiz.width()//2, s.center().y() - wiz.height()//2)
             if wiz.exec_() != QDialog.Accepted:
                 QApplication.instance().quit(); return
 
         _show_login()
 
+    splash.finished.connect(_launch)
     splash.finish_and_close(300)
-    QTimer.singleShot(700, _launch)
 
     app.aboutToQuit.connect(_stop_web_dashboard)
-    sys.exit(app.exec_())
+    _shutdown_and_exit(app.exec_())
 
 
 if __name__ == '__main__':

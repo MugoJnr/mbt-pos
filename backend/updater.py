@@ -9,14 +9,12 @@ Flow:
   1. 60s after startup → check GitHub API for latest release
   2. If newer → download installer (resumable) to TEMP / updates folder
   3. Verify SHA-256 (release metadata or sidecar asset)
-  4. When idle (no cart/modal/critical UI) → silent install via elevated
-     scheduled task helper, then restart only on success
-  5. Manual Update button remains as fallback (legacy PCs / missing checksum)
+  4. Notify when the verified installer is ready
+  5. Manual Update uses the normal Windows UAC prompt and restarts on success
 
-Elevation: installer registers least-privilege task MBT_POS_UpdateHelper
-(SYSTEM/Highest, on-demand). Unattended path never prompts UAC.
-Legacy installs without the task: one-time UAC on manual install, then
-helper can be staged for future silent updates (see docs/UNATTENDED_UPDATES.md).
+Elevation: unsigned releases must never cross a SYSTEM scheduled-task handoff
+controlled by user-writable files. The retired helper is not used; installation
+requires an explicit UAC approval.
 
 Never blocks the UI. Never interrupts a sale.
 The privileged helper never executes arbitrary commands.
@@ -1009,7 +1007,7 @@ class UpdateChecker:
         return bool(normalize_checksum(self._pending_checksum))
 
     def can_unattended_install(self) -> tuple[bool, str]:
-        """Whether silent auto-install is allowed right now (no UAC path)."""
+        """Automatic elevation is disabled until installers are code-signed."""
         if not self._installer_path or not os.path.isfile(self._installer_path):
             return False, 'no_installer'
         ver = self._pending_version or ''
@@ -1022,9 +1020,7 @@ class UpdateChecker:
             self._installer_path, self._pending_checksum)
         if not ok_hash:
             return False, detail
-        if not is_update_helper_registered():
-            return False, 'helper_not_registered'
-        return True, ''
+        return False, 'requires_uac'
 
     # ── Core loop ──────────────────────────────────────────────────────────────
 
@@ -1036,6 +1032,24 @@ class UpdateChecker:
         Manual USB/setup installs do not write Install OK into the temp log,
         so a stale FAILED entry used to pop forever after upgrading by hand.
         """
+        try:
+            st = load_install_state()
+            attempted = str(st.get('last_attempt_version') or '').lstrip('v').strip()
+            # The launcher runs after this process exits, so power loss or a
+            # forced close can strand "in_progress=True" even when the upgrade
+            # already succeeded. If we're now running that version (or newer),
+            # close the stale marker immediately so future updates are not gated.
+            if st.get('in_progress') and attempted and not _version_gt(
+                attempted, self.current_version
+            ):
+                _log_update(
+                    f"Recovered stale install_in_progress v{attempted} "
+                    f"(running v{self.current_version})"
+                )
+                mark_install_finished(attempted, True)
+        except Exception:
+            pass
+
         if read_last_install_result() != 'FAILED':
             return
         try:
@@ -1586,12 +1600,10 @@ class UpdateChecker:
 
         unattended=True (idle auto-update):
           - Requires SHA-256 checksum
-          - Requires pre-registered MBT_POS_UpdateHelper task (no UAC)
-          - Rejects missing checksum / missing helper
+          - Downloads/verifies only; installation waits for user authorization
 
         unattended=False (manual Update button):
-          - Prefers helper when available
-          - Falls back to one-time UAC RunAs on legacy PCs
+          - Uses one-time UAC RunAs
           - Requires the same published SHA-256 as unattended installs
 
         Restart happens only after successful install.
@@ -1656,14 +1668,15 @@ class UpdateChecker:
                 'Publish SHA-256 with the GitHub release (notes tag or '
                 '.sha256 sidecar), then check for updates again.')
 
-        use_helper = is_update_helper_registered()
-        if unattended and not use_helper:
+        # A SYSTEM scheduled task must not execute an installer selected through
+        # a user-writable job file. Until releases are Authenticode-signed, all
+        # installs require the normal Windows UAC authorization path.
+        use_helper = False
+        if unattended:
             return False, (
-                'Automatic install blocked: elevated update helper is not '
-                'installed on this PC.\n\n'
-                'Click Update once and approve the Windows permission prompt. '
-                'That one-time approval stages the helper so future updates '
-                'can install silently. See docs/UNATTENDED_UPDATES.md.')
+                'Update downloaded and verified. Windows administrator '
+                'authorization is required to install it.\n\n'
+                'Click Update and approve the Windows permission prompt.')
 
         logger.info(
             f"Installing update: {installer_path} "
@@ -1736,10 +1749,11 @@ class UpdateChecker:
                     lines.append(f'start "" /D "{inst_dir}" "{restart_exe}"')
                 lines += [':end', 'del "%~f0"']
             else:
-                # Legacy fallback: one-time UAC via RunAs + optionally stage helper
+                # Secure fallback: one-time UAC via RunAs.
+                launcher_script = os.path.join(
+                    tempfile.gettempdir(), 'mbt_update_launcher.ps1')
                 install_ps1 = os.path.join(tempfile.gettempdir(), 'mbt_run_install.ps1')
                 inst_ps = installer_path.replace("'", "''")
-                helper_ps = find_update_helper_script().replace("'", "''")
                 with open(install_ps1, 'w', encoding='utf-8') as pf:
                     pf.write(
                         '$ErrorActionPreference = "Continue"\n'
@@ -1774,63 +1788,62 @@ class UpdateChecker:
                         '  Write-Host "Silent install failed (exit $code), showing installer UI"\n'
                         '  $code = Invoke-MbtInstaller $null\n'
                         '}\n'
-                        # Stage helper for future unattended updates (same elevated context)
-                        f'$helper = "{helper_ps}"\n'
-                        'if ($code -eq 0 -and $helper -and (Test-Path -LiteralPath $helper)) {\n'
-                        '  try {\n'
-                        f"    $tn = '{HELPER_TASK_NAME}'\n"
-                        '    $action = New-ScheduledTaskAction -Execute "powershell.exe" '
-                        '-Argument "-NoProfile -ExecutionPolicy Bypass -File `"$helper`""\n'
-                        '    $prin = New-ScheduledTaskPrincipal -UserId "SYSTEM" '
-                        '-LogonType ServiceAccount -RunLevel Highest\n'
-                        '    $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries '
-                        '-DontStopIfGoingOnBatteries -StartWhenAvailable '
-                        '-MultipleInstances IgnoreNew\n'
-                        '    Register-ScheduledTask -TaskName $tn -Action $action '
-                        '-Principal $prin -Settings $set -Force | Out-Null\n'
-                        '    Write-Host "Registered update helper task"\n'
-                        '  } catch { Write-Host "Helper register skipped: $_" }\n'
-                        '}\n'
                         'exit $code\n'
                     )
+                log_ps = update_log.replace("'", "''")
+                install_helper_ps = install_ps1.replace("'", "''")
+                restart_ps = restart_exe.replace("'", "''")
+                inst_dir_ps = inst_dir.replace("'", "''")
                 lines = [
-                    '@echo off',
-                    f':: MBT POS update launcher (legacy UAC) — PID {pid}',
-                    f'echo [%date% %time%] Update launcher started v{install_ver} >> "{update_log}"',
-                    ':waitloop',
-                    f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitloop )',
-                    'taskkill /F /IM MBT_POS.exe >nul 2>&1',
-                    'timeout /t 2 /nobreak >nul',
-                    ':waitall',
-                    'tasklist /FI "IMAGENAME eq MBT_POS.exe" 2>nul | find "MBT_POS.exe" >nul',
-                    'if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto waitall )',
-                    f'powershell -NoProfile -ExecutionPolicy Bypass -File "{install_ps1}" '
-                    f'>> "{update_log}" 2>&1',
-                    'set INSTALL_ERR=%ERRORLEVEL%',
-                    'if %INSTALL_ERR% neq 0 (',
-                    f'  echo [%date% %time%] Install FAILED v{install_ver} err=%INSTALL_ERR% >> "{update_log}"',
-                    '  goto end',
-                    ')',
-                    f'echo [%date% %time%] Install OK v{install_ver} >> "{update_log}"',
-                    f'del /f /q "{installer_path}" 2>nul',
-                    'timeout /t 5 /nobreak >nul',
-                    'for /d %%D in ("%TEMP%\\_MEI*") do rd /s /q "%%D" 2>nul',
+                    '$ErrorActionPreference = "SilentlyContinue"',
+                    f'$parentPid = {pid}',
+                    f'Add-Content -LiteralPath \'{log_ps}\' -Value '
+                    f'("[" + (Get-Date) + "] Update launcher started v{install_ver}")',
+                    'while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {',
+                    '  Start-Sleep -Milliseconds 500',
+                    '}',
+                    'Get-Process -Name "MBT_POS" -ErrorAction SilentlyContinue | Stop-Process -Force',
+                    '$deadline = (Get-Date).AddSeconds(5)',
+                    'while ((Get-Process -Name "MBT_POS" -ErrorAction SilentlyContinue) '
+                    '-and (Get-Date) -lt $deadline) {',
+                    '  Start-Sleep -Milliseconds 250',
+                    '}',
+                    f'& powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                    f'-File \'{install_helper_ps}\' *>> \'{log_ps}\'',
+                    '$installErr = $LASTEXITCODE',
+                    'if ($installErr -eq 0) {',
+                    f'  Add-Content -LiteralPath \'{log_ps}\' -Value '
+                    f'("[" + (Get-Date) + "] Install OK v{install_ver}")',
+                    f'  Remove-Item -LiteralPath \'{inst_ps}\' -Force -ErrorAction SilentlyContinue',
+                    '  Start-Sleep -Seconds 5',
+                    '  Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter "_MEI*" | '
+                    'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue',
                 ]
                 if restart_exe:
-                    lines.append(f'start "" /D "{inst_dir}" "{restart_exe}"')
-                lines += [':end', 'del "%~f0"']
+                    lines.append(
+                        f'  Start-Process -FilePath \'{restart_ps}\' '
+                        f'-WorkingDirectory \'{inst_dir_ps}\'')
+                lines += [
+                    '} else {',
+                    f'  Add-Content -LiteralPath \'{log_ps}\' -Value '
+                    f'("[" + (Get-Date) + "] Install FAILED v{install_ver} err=" + $installErr)',
+                    '}',
+                    f'Remove-Item -LiteralPath \'{install_helper_ps}\' -Force '
+                    '-ErrorAction SilentlyContinue',
+                    'Remove-Item -LiteralPath $PSCommandPath -Force '
+                    '-ErrorAction SilentlyContinue',
+                ]
 
             with open(launcher_script, 'w') as f:
                 f.write('\n'.join(lines))
 
             mark_install_started(install_ver)
             flags = 0x08000000 if sys.platform == 'win32' else 0
-            subprocess.Popen(
-                ['cmd', '/c', launcher_script],
-                creationflags=flags,
-                close_fds=True
-            )
+            command = [
+                'powershell.exe', '-NoProfile', '-WindowStyle', 'Hidden',
+                '-ExecutionPolicy', 'Bypass', '-File', launcher_script,
+            ]
+            subprocess.Popen(command, creationflags=flags, close_fds=True)
             logger.info("Update launcher started — exiting for install")
             return True, ''
 
