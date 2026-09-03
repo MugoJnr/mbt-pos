@@ -7,6 +7,7 @@ Used by the setup wizard, SETUP CLOUDFLARE.bat, and the embedded web service.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -641,6 +642,127 @@ def _is_tunnel_run_token(tok: str) -> bool:
     if t.startswith('eyJ') and len(t) >= 40:
         return True
     return False
+
+
+_TUNNEL_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+
+
+def _tunnel_id_from_run_token(tok: str) -> str:
+    """Tunnel UUID carried inside a connector token.
+
+    Cloudflare issues the connector token as base64 JSON
+    ({"a": account, "t": tunnel, "s": secret}); the legacy cfut_ form wraps the
+    same payload. Reading the UUID back lets any PC tell whether a local
+    config.yml is pointing at a different tunnel.
+    """
+    raw = (tok or '').strip()
+    if not raw:
+        return ''
+    if raw.lower().startswith('cfut_'):
+        raw = raw[5:]
+    raw = raw.split('.', 1)[0]
+    try:
+        decoded = base64.urlsafe_b64decode(
+            (raw + '=' * (-len(raw) % 4)).encode('ascii'))
+        payload = json.loads(decoded)
+    except Exception:
+        return ''
+    tid = str((payload or {}).get('t') or '').strip()
+    return tid if _TUNNEL_UUID_RE.match(tid) else ''
+
+
+def _supersede_stale_tunnel_config(reason: str) -> bool:
+    """Rename every config.yml that no longer describes this PC's tunnel."""
+    moved = False
+    stamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    for directory in (get_cloudflared_dir(), get_legacy_cloudflared_dir(),
+                      _project_root() / 'config' / 'cloudflared_backup'):
+        yml = directory / 'config.yml'
+        if not yml.is_file():
+            continue
+        try:
+            yml.replace(yml.with_name(f'config.superseded-{stamp}.yml'))
+            logger.warning('Superseded %s — %s', yml, reason)
+            moved = True
+        except Exception as e:
+            logger.warning('Could not supersede %s: %s', yml, e)
+    return moved
+
+
+def resolve_tunnel_authority() -> dict:
+    """Decide which local artifact owns this PC's tunnel identity, and repair.
+
+    A shop can end up holding both a connector token and an older
+    credentials-file config.yml — after an upgrade, a restored backup, or a
+    re-provisioned tunnel. Cloudflare issues the connector token per tunnel and
+    manages its ingress remotely, so the token wins; a config.yml naming a
+    different tunnel is renamed aside instead of being launched, which is what
+    otherwise serves HTTP 530 from the wrong connector.
+    """
+    run_tok = _get_tunnel_run_token()
+    token_tid = _tunnel_id_from_run_token(run_tok)
+    yml_tid = _config_yml_tunnel_id()
+    cfg_tid = (load_web_config().get('tunnel_id') or '').strip()
+    out = {
+        'mode': 'none',
+        'tunnel_id': '',
+        'repaired': False,
+        'token_tunnel_id': token_tid,
+        'config_tunnel_id': yml_tid,
+    }
+    if run_tok:
+        out['mode'] = 'token'
+        out['tunnel_id'] = token_tid or cfg_tid or yml_tid
+        if token_tid and yml_tid and token_tid != yml_tid:
+            out['repaired'] = _supersede_stale_tunnel_config(
+                'connector token names a different tunnel')
+        if token_tid and cfg_tid != token_tid:
+            save_web_config({'tunnel_id': token_tid})
+            out['repaired'] = True
+        return out
+    if yml_tid:
+        # cloudflared reads config.yml directly, so it outranks web_config.
+        out['mode'] = 'config'
+        out['tunnel_id'] = yml_tid
+        if cfg_tid != yml_tid:
+            save_web_config({'tunnel_id': yml_tid})
+            out['repaired'] = True
+    elif cfg_tid:
+        out['mode'] = 'config'
+        out['tunnel_id'] = cfg_tid
+    return out
+
+
+# Shop networks commonly drop UDP/7844 (QUIC) or have broken IPv6 egress.
+# cloudflared then retries the same transport instead of connecting, so walk
+# progressively more conservative rungs until one registers.
+_TRANSPORT_LADDER = ('auto', 'http2', 'http2-ipv4')
+
+
+def _transport_flags(transport: str) -> list:
+    if transport == 'http2':
+        return ['--protocol', 'http2']
+    if transport == 'http2-ipv4':
+        return ['--protocol', 'http2', '--edge-ip-version', '4']
+    return []
+
+
+def _with_transport_flags(args: list, transport: str) -> list:
+    """Insert transport flags where cloudflared expects them (after `tunnel`)."""
+    flags = _transport_flags(transport)
+    if not flags:
+        return list(args)
+    try:
+        at = args.index('tunnel') + 1
+    except ValueError:
+        return list(args) + flags
+    return list(args[:at]) + flags + list(args[at:])
+
+
+def _preferred_transport() -> str:
+    value = (load_web_config().get('cloudflared_transport') or 'auto').strip()
+    return value if value in _TRANSPORT_LADDER else 'auto'
 
 
 def _looks_like_management_api_token(tok: str) -> bool:
@@ -2534,10 +2656,19 @@ def run_diagnostics(log_callback: Optional[LogCallback] = None) -> dict:
     add('cloudflared config.yml', yml.is_file(), str(yml),
         'Settings → Set Up Cloudflare (one-time)')
     tid = (cfg.get('tunnel_id') or '').strip() or _config_yml_tunnel_id()
+    run_token = bool(_get_tunnel_run_token())
     cred = _credentials_file_for(tid, cfg.get('tunnel_name', '')) if tid else None
-    add('tunnel credentials', cred is not None,
-        str(cred) if cred else 'missing — tunnel cannot start',
-        'Re-run Set Up Cloudflare so tunnel create writes credentials JSON')
+    cred_ok = run_token or (cred is not None)
+    cred_detail = (
+        'token mode (connector token) — local credentials JSON not required'
+        if run_token else (str(cred) if cred else 'missing — tunnel cannot start')
+    )
+    cred_fix = (
+        'Connector token mode active; no local credentials file is needed'
+        if run_token else
+        'Re-run Set Up Cloudflare so tunnel create writes credentials JSON'
+    )
+    add('tunnel credentials', cred_ok, cred_detail, cred_fix)
 
     local_ok, ld = _http_check(f'http://127.0.0.1:{port}/api/health')
     add('Local web dashboard', local_ok, ld,
@@ -2616,37 +2747,63 @@ class CloudflareTunnelService:
         self._stop = False
         self._lock = threading.Lock()
 
-    def _launch_args(self) -> Optional[list]:
-        """Build cloudflared argv — prefer connector token, else durable config.yml."""
+    def _launch_args(self, transport: str = '') -> Optional[list]:
+        """Build cloudflared argv for one rung of the transport ladder."""
         sync_cloudflared_state()
         cf = find_cloudflared_exe()
         if not cf:
             return None
-        cfg = load_web_config()
-        tid = _config_yml_tunnel_id() or (cfg.get('tunnel_id') or '').strip()
-        tname = (cfg.get('tunnel_name') or '').strip()
-        cfg_yml = get_cloudflared_dir() / 'config.yml'
-        if not cfg_yml.is_file():
-            cfg_yml = get_legacy_cloudflared_dir() / 'config.yml'
-        # Local credentials JSON → classic named-tunnel config
-        if cfg_yml.is_file() and tid and _credentials_file_for(tid, tname):
-            return [str(cf), 'tunnel', '--config', str(cfg_yml), 'run']
-        # Remotely-managed / API-provisioned → connector token
-        run_tok = _get_tunnel_run_token()
-        if run_tok:
-            return [str(cf), 'tunnel', 'run', '--token', run_tok]
-        # Do NOT run marker config.yml without credentials (causes HTTP 530)
-        return None
+        authority = resolve_tunnel_authority()
+        args = None
+        if authority['mode'] == 'token':
+            # Remotely-managed connector: ingress comes from Cloudflare, and
+            # resolve_tunnel_authority() has already moved aside any config.yml
+            # that named a different tunnel.
+            args = [str(cf), 'tunnel', 'run', '--token', _get_tunnel_run_token()]
+        else:
+            tid = authority['tunnel_id']
+            tname = (load_web_config().get('tunnel_name') or '').strip()
+            cfg_yml = get_cloudflared_dir() / 'config.yml'
+            if not cfg_yml.is_file():
+                cfg_yml = get_legacy_cloudflared_dir() / 'config.yml'
+            # Do NOT run marker config.yml without credentials (causes HTTP 530)
+            if cfg_yml.is_file() and tid and _credentials_file_for(tid, tname):
+                args = [str(cf), 'tunnel', '--config', str(cfg_yml), 'run']
+        if args is None:
+            return None
+        return _with_transport_flags(args, transport or _preferred_transport())
 
-    def _launch(self) -> bool:
-        cfg = load_web_config()
-        args = self._launch_args()
-        if not args:
-            return False
+    def _tunnel_log_path(self) -> Path:
         log_file = _project_root() / 'logs' / 'cloudflared.log'
         log_file.parent.mkdir(parents=True, exist_ok=True)
+        return log_file
+
+    @staticmethod
+    def _registered_since(log_file: Path, offset: int) -> bool:
+        """True once cloudflared reports a live edge connection."""
+        try:
+            with open(log_file, 'rb') as fh:
+                fh.seek(offset)
+                tail = fh.read().decode('utf-8', 'replace')
+        except Exception:
+            return False
+        return 'Registered tunnel connection' in tail
+
+    def _spawn(self, args: list, log_file: Path, wait_sec: int) -> bool:
+        """Run one attempt; success means the edge accepted a connection."""
+        try:
+            offset = log_file.stat().st_size if log_file.exists() else 0
+        except OSError:
+            offset = 0
+        old_fh = getattr(self, '_log_fh', None)
+        if old_fh:
+            try:
+                old_fh.close()
+            except Exception:
+                pass
         try:
             log_fh = open(log_file, 'a', encoding='utf-8')
+            self._log_fh = log_fh
             self._proc = subprocess.Popen(
                 args,
                 stdout=log_fh,
@@ -2655,21 +2812,70 @@ class CloudflareTunnelService:
                 cwd=str(_exe_dir()),
                 env=_subprocess_env(),
             )
-            for _ in range(12):
-                time.sleep(1)
-                if self._proc.poll() is not None:
-                    break
-            ok = self._proc.poll() is None
-            if ok:
-                logger.info('Cloudflare tunnel started → %s', cfg.get('tunnel_domain'))
-            else:
-                logger.warning(
-                    'cloudflared exited (code %s) — see %s',
-                    self._proc.returncode, log_file)
-            return ok
         except Exception as e:
             logger.error('Tunnel start failed: %s', e)
+            self._proc = None
             return False
+        for _ in range(max(1, wait_sec)):
+            time.sleep(1)
+            if self._proc.poll() is not None:
+                logger.warning('cloudflared exited (code %s) — see %s',
+                               self._proc.returncode, log_file)
+                return False
+            try:
+                log_fh.flush()
+            except Exception:
+                pass
+            if self._registered_since(log_file, offset):
+                return True
+        # Still alive but no edge connection: treat as a blocked transport so
+        # the caller can drop to the next rung.
+        return False
+
+    def _launch(self) -> bool:
+        """Start cloudflared, degrading transport until the edge answers.
+
+        Restrictive shop networks silently drop QUIC (UDP/7844) or route IPv6
+        into a black hole. cloudflared keeps retrying the same transport, so a
+        connector can sit "running" for minutes without ever registering. Each
+        rung that works is remembered per PC so later launches skip the probe.
+        """
+        cfg = load_web_config()
+        log_file = self._tunnel_log_path()
+        try:
+            from desktop.utils.log_config import rotate_plain_log
+            rotate_plain_log(str(log_file))
+        except Exception:
+            pass
+
+        start = _preferred_transport()
+        ladder = list(_TRANSPORT_LADDER[_TRANSPORT_LADDER.index(start):])
+        for index, transport in enumerate(ladder):
+            args = self._launch_args(transport)
+            if not args:
+                return False
+            if self._spawn(args, log_file, wait_sec=20):
+                if transport != start:
+                    logger.warning(
+                        'cloudflared connected on fallback transport %r', transport)
+                    save_web_config({'cloudflared_transport': transport})
+                logger.info('Cloudflare tunnel started → %s (%s)',
+                            cfg.get('tunnel_domain'), transport)
+                return True
+            if self._stop or index == len(ladder) - 1:
+                break
+            logger.warning(
+                'cloudflared did not register on %r — retrying with %r',
+                transport, ladder[index + 1])
+            stop_all_cloudflared()
+            time.sleep(1)
+
+        # Nothing registered. Clear the remembered rung so the next attempt
+        # re-probes from the top rather than inheriting a stale preference.
+        if start != 'auto':
+            save_web_config({'cloudflared_transport': 'auto'})
+        proc = self._proc
+        return bool(proc is not None and proc.poll() is None)
 
     def _monitor_loop(self):
         while not self._stop:
@@ -2695,8 +2901,12 @@ class CloudflareTunnelService:
         bootstrap_cloudflared()
         sync_cloudflared_state()
         expected = (cfg.get('tunnel_domain') or '').strip()
+        # Settle token-vs-config.yml disagreement before anything reads either.
+        identity = resolve_tunnel_authority()
+        if identity['repaired']:
+            stop_all_cloudflared()
         # Token-managed tunnels do not need config.yml / credentials sync
-        if not _get_tunnel_run_token():
+        if identity['mode'] != 'token':
             yml_host = _config_yml_hostname()
             if expected and yml_host and yml_host != expected:
                 logger.warning(
@@ -2718,18 +2928,19 @@ class CloudflareTunnelService:
             return False
 
         with self._lock:
-            yml_tid = _config_yml_tunnel_id()
-            cfg_tid = (cfg.get('tunnel_id') or '').strip()
-            if _cloudflared_running():
-                if (yml_tid and cfg_tid and yml_tid == cfg_tid) or not cfg_tid:
-                    logger.info('cloudflared already running')
-                    ok = True
-                else:
-                    logger.warning(
-                        'cloudflared running with stale tunnel — restarting')
-                    stop_all_cloudflared()
-                    time.sleep(1)
-                    ok = self._launch()
+            resolved_tid = identity['tunnel_id']
+            if identity['repaired']:
+                # The connector that was running belonged to the superseded
+                # identity, so it cannot be reused whatever its state.
+                logger.warning(
+                    'cloudflared identity repaired — restarting on tunnel %s',
+                    resolved_tid or 'unknown')
+                stop_all_cloudflared()
+                time.sleep(1)
+                ok = self._launch()
+            elif _cloudflared_running():
+                logger.info('cloudflared already running')
+                ok = True
             else:
                 if _remote_infra_ready():
                     sync_tunnel_config_from_web()
@@ -2750,9 +2961,9 @@ class CloudflareTunnelService:
                     refresh_remote_setup_status(save=True)
                 except Exception:
                     pass
-                if not cfg.get('tunnel_id') and (cfg_tid or yml_tid):
+                if not cfg.get('tunnel_id') and resolved_tid:
                     save_web_config({
-                        'tunnel_id': cfg_tid or yml_tid,
+                        'tunnel_id': resolved_tid,
                         'remote_setup_pending': not bool(cfg.get('remote_setup_ok')),
                     })
             return ok or _cloudflared_running()

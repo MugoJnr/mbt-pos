@@ -11,11 +11,14 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     DangerBtn, GhostBtn, SearchBar, make_table, tbl_item,
                                     tbl_right, tbl_center, page_layout, PageChrome,
                                     retint_table_items,
-                                    apply_table_row_backgrounds, table_row_bg_hex,
+                                    apply_table_row_backgrounds,
                                     align_header_right)
 from desktop.utils.security import (has_permission, require_permission,
-                                     ask_superadmin_pin, ROLE_SUPERADMIN)
-from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS, PRODUCT_STATUSES
+                                     prompt_superadmin_pin, ROLE_SUPERADMIN)
+from desktop.utils.option_lists import (
+    STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS, PRODUCT_STATUSES,
+)
+from desktop.utils.dialog_keys import wire_dialog_keys
 from desktop.utils.select_controls import (
     SearchableSelect, ReasonSelect, Select, ReasonDialog,
 )
@@ -48,35 +51,20 @@ def _fmt_stock(v, unit=None):
     return f"{f:.1f}".rstrip('0').rstrip('.') if abs(f) >= 0.1 else f"{f:.2f}"
 
 
-def _stock_pill(row_i, label, tone, tooltip=''):
-    """
-    Unified stock badge — color-coded pill, right-aligned in the Stock column.
-    tone: err (OUT) | warn (low) | ok (in stock). Label stays short (OUT / qty).
-    """
+_INV_PID_ROLE = Qt.UserRole
+_INV_FLAGS_ROLE = Qt.UserRole + 1
+
+
+def _stock_item(label, tone, tooltip=''):
+    """Stock cell as a table item — no per-row QWidget (avoids refresh GC)."""
+    item = tbl_right(label, tone=tone)
+    item.setToolTip(tooltip)
+    item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
     if tone == 'err':
-        bg, fg = C['err'], C.get('on_danger', '#FFFFFF')
+        item.setData(Qt.UserRole + 40, 'out_of_stock')
     elif tone == 'warn':
-        bg, fg = C['warn'], C.get('gold_fg', '#0B1220')
-    else:
-        bg, fg = C.get('ok_dim', C['card2']), C['ok']
-    badge = QLabel(label)
-    badge.setAlignment(Qt.AlignCenter)
-    badge.setFixedHeight(22)
-    # Size to contents so "OUT" / "41.5" never clip inside the pill
-    badge.adjustSize()
-    badge.setMinimumWidth(max(44, badge.sizeHint().width() + 16))
-    badge.setToolTip(tooltip)
-    badge.setStyleSheet(
-        f"QLabel {{ background:{bg}; color:{fg}; border:none; border-radius:6px; "
-        f"font-size:11px; font-weight:800; padding:0 8px; }}")
-    wrap = QWidget()
-    wrap.setAutoFillBackground(True)
-    wrap.setStyleSheet(f'background: {table_row_bg_hex(row_i)}; border: none;')
-    wl = QHBoxLayout(wrap)
-    wl.setContentsMargins(6, 4, 10, 4)
-    wl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-    wl.addWidget(badge)
-    return wrap
+        item.setData(Qt.UserRole + 40, 'low_stock')
+    return item
 
 
 class InventoryTab(QWidget):
@@ -185,6 +173,7 @@ class InventoryTab(QWidget):
         self._tbl.setTextElideMode(Qt.ElideRight)
         # Keep Actions header fully painted (avoid right-edge clip into scrollbar)
         self._tbl.horizontalHeader().setStretchLastSection(False)
+        self._tbl.cellClicked.connect(self._on_cell_clicked)
         wl.addWidget(self._tbl)
         lay.addWidget(wrap, 1)
         # Sticky-style footer card — clear gap so last table row never looks overlapped
@@ -385,56 +374,40 @@ class InventoryTab(QWidget):
         self._tbl.setItem(i, 4, cost_item)
 
         stk_s = _fmt_stock(stock, unit)
-        stk_item = QTableWidgetItem('')
-        stk_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        stk_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         if is_zero:
-            stk_item.setData(Qt.UserRole + 40, 'out_of_stock')
             tip = f'Out of stock · {stk_s} {unit}'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, 'OUT', 'err', tip))
+            self._tbl.setItem(i, 5, _stock_item('OUT', 'err', tip))
         elif is_low:
             tip = f'{stk_s} {unit} · low stock'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            # Short label — color carries "low"; full text in tooltip
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'warn', tip))
+            self._tbl.setItem(i, 5, _stock_item(stk_s, 'warn', tip))
         else:
             tip = f'{stk_s} {unit}'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'ok', tip))
+            self._tbl.setItem(i, 5, _stock_item(stk_s, 'ok', tip))
 
         unit_item = tbl_center(unit, tone='text2')
         unit_item.setToolTip(unit)
         self._tbl.setItem(i, 6, unit_item)
 
-        # Neutral zebra for actions cell — OUT signal is the stock-column badge only
-        row_bg = table_row_bg_hex(i)
-        cell = QWidget()
-        cell.setAutoFillBackground(True)
-        cell.setStyleSheet(f'background: {row_bg}; border: none;')
-        cl   = QHBoxLayout(cell)
-        cl.setContentsMargins(8, 4, 10, 4)
-        cl.setSpacing(0)
+        act = tbl_center('⋮', tone='text')
+        act.setToolTip('Product actions')
+        act.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        act.setData(_INV_PID_ROLE, p.get('id'))
+        act.setData(_INV_FLAGS_ROLE, (bool(can_edit), bool(can_delete)))
+        self._tbl.setItem(i, 7, act)
+        apply_table_row_backgrounds(self._tbl, row=i)
+        if is_zero:
+            self._apply_zero_stock_row(i)
 
-        # Single overflow control — avoids Edit/Hist/Del clipping in dense rows
-        more = QToolButton()
-        more.setText('⋮')
-        more.setPopupMode(QToolButton.InstantPopup)
-        more.setCursor(Qt.PointingHandCursor)
-        more.setFixedSize(36, 30)
-        more.setToolTip('Product actions')
-        more.setStyleSheet(
-            f"QToolButton {{ background:{C['input']}; color:{C['text']}; "
-            f"border:1px solid {C['border2']}; border-radius:7px; "
-            f"font-size:16px; font-weight:700; padding:0; }}"
-            f"QToolButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
-            f"background:{C['hover']}; }}"
-            f"QToolButton::menu-indicator {{ image:none; width:0; }}"
-        )
-        menu = QMenu(more)
+    def _on_cell_clicked(self, row, col):
+        if col != 7:
+            return
+        item = self._tbl.item(row, 7)
+        if item is None:
+            return
+        pid = item.data(_INV_PID_ROLE)
+        flags = item.data(_INV_FLAGS_ROLE) or (False, False)
+        can_edit, can_delete = bool(flags[0]), bool(flags[1])
+        menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background:{C['card']}; color:{C['text']}; "
             f"border:1px solid {C['border']}; padding:4px; }}"
@@ -443,20 +416,14 @@ class InventoryTab(QWidget):
         )
         if can_edit:
             act_edit = menu.addAction('Edit product')
-            act_edit.triggered.connect(lambda _=False, pid=p['id']: self._edit(pid))
+            act_edit.triggered.connect(lambda _=False, pid=pid: self._edit(pid))
         act_hist = menu.addAction('History')
-        act_hist.triggered.connect(lambda _=False, pid=p['id']: self._show_history(pid))
+        act_hist.triggered.connect(lambda _=False, pid=pid: self._show_history(pid))
         if can_delete:
             menu.addSeparator()
             act_del = menu.addAction('Delete')
-            act_del.triggered.connect(lambda _=False, pid=p['id']: self._delete(pid))
-        more.setMenu(menu)
-        cl.addStretch()
-        cl.addWidget(more)
-        self._tbl.setCellWidget(i, 7, cell)
-        apply_table_row_backgrounds(self._tbl, row=i)
-        if is_zero:
-            self._apply_zero_stock_row(i)
+            act_del.triggered.connect(lambda _=False, pid=pid: self._delete(pid))
+        menu.exec_(QCursor.pos())
 
     def _apply_zero_stock_row(self, row: int):
         """OUT is badge-only — keep zebra row background (no maroon full-row tint)."""
@@ -511,12 +478,71 @@ class InventoryTab(QWidget):
                 ("%s  (stock: %s)" % (pr['name'], _fmt_stock(pr.get('stock'))), pr['id'])
                 for pr in self.products
             ])
+            direction = Select(
+                items=[
+                    ('Add stock', 'add'),
+                    ('Remove stock', 'remove'),
+                    ('Update current stock', 'set'),
+                ],
+                height=40,
+            )
             qty = QDoubleSpinBox()
-            qty.setRange(0, 999999)
+            qty.setRange(0.0, 999999)
             qty.setDecimals(4)
+            qty.setValue(1)
             qty.setMinimumHeight(40)
             qty.setEnabled(False)
-            selected = {'pid': None, 'stock': None}
+            selected = {'pid': None, 'stock': None, 'reason_bucket': None}
+            preview = QLabel('Select a product to preview the resulting stock.')
+            preview.setWordWrap(True)
+            reason = ReasonSelect(reasons=STOCK_INCREASE_REASONS, height=40)
+
+            def _reason_bucket():
+                stock = selected['stock']
+                action = direction.current_value()
+                if action == 'remove':
+                    return 'decrease'
+                if action == 'set' and stock is not None and qty.value() < stock:
+                    return 'decrease'
+                return 'increase'
+
+            def _sync_reasons():
+                bucket = _reason_bucket()
+                if bucket == selected['reason_bucket']:
+                    return
+                selected['reason_bucket'] = bucket
+                reasons = (
+                    STOCK_DECREASE_REASONS if bucket == 'decrease'
+                    else STOCK_INCREASE_REASONS
+                )
+                reason.set_reasons(reasons)
+                reason.set_value(
+                    'Stock-take Shortage' if bucket == 'decrease'
+                    else 'Stock-take Surplus'
+                )
+
+            def _update_preview(_=None):
+                _sync_reasons()
+                stock = selected['stock']
+                if stock is None:
+                    preview.setText(
+                        'Select a product to preview the resulting stock.')
+                    return
+                amount = round(float(qty.value()), 4)
+                action = direction.current_value()
+                result = (
+                    amount if action == 'set'
+                    else round(stock + (amount if action == 'add' else -amount), 4)
+                )
+                preview.setText(
+                    f'Current: {_fmt_stock(stock)}  →  '
+                    f'Result: {_fmt_stock(result)}'
+                    + ('  ·  No change' if result == stock else '')
+                )
+                preview.setStyleSheet(
+                    f"color:{C['err'] if result < 0 else C['text2']};"
+                    "font-size:13px;background:transparent;"
+                )
 
             def _on_prod(_=None):
                 pid = prod_sel.current_value()
@@ -524,36 +550,52 @@ class InventoryTab(QWidget):
                 if prod:
                     selected['pid'] = pid
                     selected['stock'] = _safe_float(prod.get('stock'), 0)
+                    selected['reason_bucket'] = None
                     qty.setEnabled(True)
                     try:
                         from desktop.utils.auto_fill import AutoFillService
                         fields = AutoFillService.product_stock_fields(prod)
-                        qty.setValue(float(fields.get('stock') or 0))
                         unit = fields.get('unit') or 'pcs'
                         cost = float(fields.get('cost_price') or 0)
                         qty.setToolTip(
                             f"Current stock: {fields.get('stock')} {unit}  ·  "
                             f"Cost: {cost:,.2f}  ·  (reason never auto-filled)")
                     except Exception:
-                        qty.setValue(_safe_float(prod.get('stock'), 0))
+                        pass
                 else:
                     selected['pid'] = None
                     selected['stock'] = None
                     qty.setEnabled(False)
-                    qty.setValue(0)
                     qty.setToolTip('Select a product first')
+                _update_preview()
 
             prod_sel.currentIndexChanged.connect(_on_prod)
             prod_sel.cleared.connect(_on_prod)
+            def _on_direction(_=None):
+                action = direction.current_value()
+                # "Update current stock" must allow an explicit zero count.
+                qty.setMinimum(0.0 if action == 'set' else 0.0001)
+                if action == 'set' and selected['stock'] is not None:
+                    qty.setValue(selected['stock'])
+                selected['reason_bucket'] = None
+                _update_preview()
+
+            direction.currentIndexChanged.connect(_on_direction)
+            qty.valueChanged.connect(_update_preview)
             prod_sel.clear_selection()
             _on_prod()
-            reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=40)
             form.addRow('Product', prod_sel)
-            form.addRow('New quantity', qty)
+            form.addRow('Adjustment type', direction)
+            form.addRow('Quantity / counted on-hand', qty)
+            form.addRow('Result', preview)
             form.addRow('Reason', reason)
             buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.button(QDialogButtonBox.Ok).setText('Apply Adjustment')
+            busy = {'value': False}
 
-            def _validate_and_accept():
+            def _submit():
+                if busy['value']:
+                    return
                 pid = prod_sel.current_value()
                 prod = next((x for x in self.products if x['id'] == pid), None)
                 if not prod:
@@ -563,6 +605,26 @@ class InventoryTab(QWidget):
                 if not reason.is_valid():
                     QMessageBox.warning(self, 'Required', reason.validation_error())
                     reason.setFocus()
+                    return
+                action = direction.current_value()
+                amount = round(float(qty.value()), 4)
+                if action not in ('add', 'remove', 'set'):
+                    QMessageBox.warning(
+                        self, 'Required',
+                        'Choose Add, Remove, or Update current stock.')
+                    return
+                if amount < 0 or (action != 'set' and amount <= 0):
+                    QMessageBox.warning(
+                        self, 'Invalid Quantity',
+                        'Adjustment quantity must be greater than zero.')
+                    qty.setFocus()
+                    return
+                if action == 'remove' and amount > selected['stock']:
+                    QMessageBox.warning(
+                        self, 'Invalid Quantity',
+                        f'Cannot remove {_fmt_stock(amount)}; only '
+                        f'{_fmt_stock(selected["stock"])} is available.')
+                    qty.setFocus()
                     return
                 try:
                     latest_products = self.api.get_products() or []
@@ -576,7 +638,7 @@ class InventoryTab(QWidget):
                     if latest_stock != selected['stock']:
                         self.products = latest_products
                         selected['stock'] = latest_stock
-                        qty.setValue(latest_stock)
+                        _update_preview()
                         QMessageBox.warning(
                             self, 'Stock Changed',
                             'Stock changed while this form was open. The latest '
@@ -587,49 +649,60 @@ class InventoryTab(QWidget):
                         self, 'Adjust Stock',
                         f'Could not verify the latest stock quantity:\n\n{e}')
                     return
-                dlg.accept()
+                # Mirror the API rule: authorise on the projected on-hand, not on
+                # the button label. Only a net reduction needs the owner PIN, so
+                # receiving stock stays a single confirmation for the counter.
+                projected = (
+                    amount if action == 'set'
+                    else round(selected['stock'] + (
+                        amount if action == 'add' else -amount), 4)
+                )
+                pin = ''
+                if projected < selected['stock']:
+                    pin = prompt_superadmin_pin(
+                        self, reason=f"Reduce '{prod['name']}' stock")
+                    if not pin:
+                        return
+                busy['value'] = True
+                buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+                try:
+                    res = self.api.adjust_stock(
+                        prod['id'], action, amount, reason.value(),
+                        pin=pin, expected_stock=selected['stock'],
+                    )
+                    if res and res.get('success'):
+                        old_s = _safe_float(res.get('old_stock'))
+                        new_s = _safe_float(res.get('new_stock'))
+                        if res.get('no_op'):
+                            QMessageBox.information(
+                                self, 'No Stock Change', res.get(
+                                    'message', 'Counted quantity already matches current stock.'))
+                            dlg.accept()
+                            return
+                        QMessageBox.information(
+                            self, 'Stock Adjusted',
+                            f"'{prod['name']}'\n"
+                            f"  {action.title()}: {_fmt_stock(amount)}\n"
+                            f"  Before: {_fmt_stock(old_s)}\n"
+                            f"  After:  {_fmt_stock(new_s)}")
+                        self.refresh()
+                        dlg.accept()
+                    else:
+                        if res and res.get('current_stock') is not None:
+                            selected['stock'] = _safe_float(
+                                res.get('current_stock'), selected['stock'])
+                            _update_preview()
+                        QMessageBox.critical(
+                            self, 'Adjustment Failed',
+                            (res or {}).get('error', 'Adjustment failed.'))
+                finally:
+                    busy['value'] = False
+                    buttons.button(QDialogButtonBox.Ok).setEnabled(True)
 
-            buttons.accepted.connect(_validate_and_accept)
+            buttons.accepted.connect(_submit)
             buttons.rejected.connect(dlg.reject)
             form.addRow(buttons)
-
-            if dlg.exec_() != QDialog.Accepted:
-                return
-            pid = prod_sel.current_value()
-            prod = next((x for x in self.products if x['id'] == pid), None)
-            if not prod or not reason.is_valid():
-                return
-            new_qty = round(float(qty.value()), 4)
-
-            if not ask_superadmin_pin(self.api, self,
-                    reason="Adjust '%s' stock" % prod['name']):
-                return
-
-            res = self.api.adjust_stock(
-                prod['id'], new_qty, reason.value(),
-                expected_stock=selected['stock'],
-            )
-            if res and res.get('success'):
-                old_s = _safe_float(res.get('old_stock'))
-                new_s = _safe_float(res.get('new_stock'))
-                chg   = round(new_s - old_s, 4)
-                try:
-                    from desktop.utils.audio_manager import play as _audio_play
-                    _audio_play('save')
-                except Exception:
-                    pass
-                QMessageBox.information(self, 'Stock Adjusted',
-                    "'%s'\n  Before: %s\n  After:  %s\n  Change: %+g" % (
-                        prod['name'], _fmt_stock(old_s), _fmt_stock(new_s), chg))
-                self.refresh()
-            else:
-                try:
-                    from desktop.utils.audio_manager import play as _audio_play
-                    _audio_play('error')
-                except Exception:
-                    pass
-                QMessageBox.critical(self, 'Error',
-                    (res or {}).get('error', 'Adjustment failed.'))
+            dlg.exec_()
         except Exception as e:
             _log.exception('Adjust stock dialog error')
             QMessageBox.critical(
@@ -788,13 +861,15 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Unit'),              self.unit)
         lay.addRow(lbl('Status'),            self.status)
 
-        # Stock field â€” only when adding a NEW product
+        # Product creation is metadata-only. Opening quantities use the
+        # audited Receive Stock / Adjust Stock workflows after creation.
         if self._is_new:
-            self.stock = QDoubleSpinBox()
-            self.stock.setRange(0, 999999)
-            self.stock.setDecimals(4)
-            self.stock.setMinimumHeight(42)
-            lay.addRow(lbl('Opening Stock'), self.stock)
+            stk_info = QLabel(
+                f"<span style='color:{C['muted']};font-size:12px;'>"
+                "Starts at 0. Use Receive Stock or Adjust Stock after saving.</span>")
+            stk_info.setTextFormat(Qt.RichText)
+            stk_info.setWordWrap(True)
+            lay.addRow(lbl('Opening Stock'), stk_info)
         else:
             stk_val  = _fmt_stock(prod.get('stock'))
             stk_info = QLabel(
@@ -802,6 +877,10 @@ class _ProdDlg(QDialog):
                 f"<span style='color:{C['muted']};font-size:12px;'>"
                 f"(Use the Adjust Stock button to change stock quantity)</span>")
             stk_info.setTextFormat(Qt.RichText)
+            # The hint needs ~390px but the field column is ~320px at 1024 wide,
+            # so it must wrap instead of eliding the Adjust Stock instruction.
+            stk_info.setWordWrap(True)
+            stk_info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
             stk_info.setStyleSheet(f"color:{C['text']}; font-size:14px; background:transparent;")
             lay.addRow(lbl('Current Stock'), stk_info)
 
@@ -822,6 +901,9 @@ class _ProdDlg(QDialog):
         btn_wrap = QWidget()
         btn_wrap.setLayout(btn_row)
         lay.addRow(btn_wrap)
+        # Enter must run _val() (name/price validation), never Cancel.
+        wire_dialog_keys(self, primary=save, cancel=cancel)
+        self.name.setFocus()
 
         from desktop.utils.state_reset import StateResetManager
         if self._is_new:
@@ -875,7 +957,7 @@ class _ProdDlg(QDialog):
             'product_status': status,
         }
         if self._is_new:
-            d['stock'] = self.stock.value()
+            d['stock'] = 0
         return d
 
 # -- Product History Dialog -----------------------------------------------------

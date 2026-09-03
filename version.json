@@ -1,8 +1,8 @@
 {
-    "version": "3.0.74",
-    "build": "RC-2026-08-27-v3.0.74",
-    "released": "2026-08-27",
-    "release_notes": "MBT POS v3.0.74 Stability Follow-up: preserves legitimate rapid taps across different product controls while still blocking a faulty touchscreen repeatedly firing the same control, replays deferred expiry notices once a sale becomes idle, and never silently auto-answers repeated confirmation dialogs. Stock adjustment now locks before confirmation/PIN, handles an empty refreshed catalog correctly, refreshes stale web quantities in-place instead of 409-looping, and hides the web Stock action from non-Super-Admins. Tamper alerts are emitted once, and installer certification now fails immediately and accurately when Windows UAC is cancelled.",
-    "checksum_sha256": "4130d4761acc0e72ec74aa39004c326fc4492706103365ed2986a139dfee8383",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.74/MBT_POS_Setup.exe"
+    "version": "3.0.77",
+    "build": "RC-2026-09-03-v3.0.77",
+    "released": "2026-09-03",
+    "release_notes": "MBT POS v3.0.77 Inventory and remote reliability hardening: Adjust Stock now supports setting counted stock to exactly zero (with PIN gate enforced on net reductions), plus connector-token Cloudflare diagnostics now correctly treat token mode as healthy without requiring local credentials JSON. Preserves v3.0.76 credit checkout and v3.0.75 inventory integrity protections.",
+    "checksum_sha256": "deaaf88d96fac729252f4968b1960375a99306bbd5e25d010b3172ef2d0f993f",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.77/MBT_POS_Setup.exe"
 }

@@ -11,6 +11,7 @@ import io
 import json
 import os
 import sys
+from pathlib import Path
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
@@ -272,6 +273,47 @@ class TestRetryQueue(unittest.TestCase):
         with cf._cf_retry_lock:
             self.assertEqual(len(cf._cf_retry_queue), 1)
             cf._cf_retry_queue.clear()
+
+
+class TestDiagnostics(unittest.TestCase):
+    def test_run_diagnostics_accepts_connector_token_without_credentials_json(self):
+        cfg = {
+            'remote_enabled': True,
+            'tunnel_domain': 'edmus.mugobyte.com',
+            'tunnel_name': 'edmus-tunnel',
+            'tunnel_id': 'tid-123',
+            'flask_port': 5050,
+        }
+        fake_verify = {
+            'dns_ok': True,
+            'dns_detail': 'DNS resolves',
+            'tunnel_ok': True,
+            'remote_https_ok': True,
+            'remote_detail': 'HTTP 200',
+        }
+        with mock.patch.object(cf, 'load_web_config', return_value=cfg):
+            with mock.patch.object(cf, 'is_online', return_value=True):
+                with mock.patch.object(cf, 'find_cloudflared_exe', return_value=Path('C:/cloudflared.exe')):
+                    with mock.patch.object(cf, 'has_cloudflare_login', return_value=False):
+                        with mock.patch.object(cf, '_get_cloudflare_api_token', return_value=''):
+                            with mock.patch.object(cf, '_get_tunnel_run_token', return_value='cfut_mock_token'):
+                                with mock.patch.object(cf, 'verify_tunnel_api', return_value=(True, 'API auth OK')):
+                                    with mock.patch.object(cf, 'get_config_path', return_value=Path('C:/tmp/web_config.json')):
+                                        with mock.patch.object(cf, 'get_log_path', return_value=Path('C:/tmp/cloudflare_setup.log')):
+                                            with mock.patch.object(cf, 'get_cloudflared_dir', return_value=Path('C:/tmp/cloudflared')):
+                                                with mock.patch.object(cf, '_config_yml_tunnel_id', return_value='tid-123'):
+                                                    with mock.patch.object(cf, '_credentials_file_for', return_value=None):
+                                                        with mock.patch.object(cf, '_http_check', return_value=(True, 'HTTP 200')):
+                                                            with mock.patch.object(cf, 'verify_remote_setup', return_value=fake_verify):
+                                                                with mock.patch.object(cf, '_dns_resolves_via', return_value=(True, 'DNS resolves')):
+                                                                    with mock.patch.object(cf, 'apply_shop_pc_dns_fix'):
+                                                                        with mock.patch.object(cf, '_dns_resolves', return_value=(True, 'DNS resolves')):
+                                                                            with mock.patch.object(cf, '_cloudflared_running', return_value=True):
+                                                                                report = cf.run_diagnostics()
+        checks = {c['name']: c for c in report.get('checks', [])}
+        tunnel = checks.get('tunnel credentials') or {}
+        self.assertTrue(tunnel.get('ok'), tunnel)
+        self.assertIn('token mode', tunnel.get('detail', '').lower())
 
 
 if __name__ == '__main__':
