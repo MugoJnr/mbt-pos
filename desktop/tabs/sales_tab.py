@@ -1172,9 +1172,14 @@ class SalesTab(QWidget):
         if not force and self._catalog_is_fresh() and getattr(self, '_grid_painted', False):
             return
         try:
-            self.products = self.api.get_products() or []
+            from desktop.utils.pos_search import index_catalog_for_search
+            self.products = index_catalog_for_search(
+                self.api.get_products() or [])
         except Exception:
-            self.products = []
+            try:
+                self.products = self.api.get_products() or []
+            except Exception:
+                self.products = []
         try:
             self._currency = (self.config_getter() or {}).get('currency_symbol', 'KES') or 'KES'
         except Exception:
@@ -1326,7 +1331,9 @@ class SalesTab(QWidget):
             if t is None:
                 t = QTimer(self)
                 t.setSingleShot(True)
-                t.setInterval(120)
+                # Shop PCs: slightly longer debounce so card rebuilds don't
+                # stack while the cashier is still typing.
+                t.setInterval(160)
                 t.timeout.connect(lambda: self._apply_product_filter(False))
                 self._search_filter_timer = t
             t.start()
@@ -1340,6 +1347,14 @@ class SalesTab(QWidget):
             q = self._search.text()
         except Exception:
             q = ''
+        # Empty in-memory catalog → search can never hit. Force a DB reload
+        # once (shop symptom: type and nothing appears until Restart).
+        if not (self.products or []):
+            try:
+                self.refresh(force=True, defer_grid=bool(defer))
+            except Exception:
+                pass
+            return
         cat = ''
         try:
             cat = self._cat.currentText()
@@ -1351,7 +1366,12 @@ class SalesTab(QWidget):
             def _cat_match(p):
                 if cat in ('All Categories', 'All', ''):
                     return True
-                lab, _ = _dcat(p.get('category') or '', p.get('name') or '')
+                cached = p.get('_dcat')
+                if cached is None:
+                    lab, _ = _dcat(p.get('category') or '', p.get('name') or '')
+                    p['_dcat'] = lab
+                else:
+                    lab = cached
                 raw = (p.get('category') or 'General')
                 return lab == cat or raw == cat
         except Exception:
@@ -1376,8 +1396,10 @@ class SalesTab(QWidget):
             self._prod_grid.set_categories_map(
                 getattr(self, '_categories_by_name', None) or {})
             cols = self._product_columns()
-            # Typing / category change: sync. Tab open: chunked for smoothness.
-            use_chunk = bool(defer) and not str(q or '').strip()
+            # Always chunk when painting more than a handful of cards —
+            # typing used to rebuild 48 ProductCards synchronously and freeze
+            # the shop POS search bar.
+            use_chunk = bool(defer) or len(filtered) > 8
             self._prod_grid.populate(filtered, columns=cols, chunked=use_chunk)
             self._grid_painted = True
 
@@ -1386,6 +1408,17 @@ class SalesTab(QWidget):
         panel = getattr(self, '_product_panel', None)
         if empty is None:
             return
+        # Never cover a non-empty result set — ghost overlays used to sit on top
+        # of the scroll viewport after a successful search.
+        if visible:
+            try:
+                grid = getattr(self, '_prod_grid', None)
+                if grid is not None and (
+                        getattr(grid, '_products', None)
+                        or (hasattr(grid, '_grid') and grid._grid.count() > 0)):
+                    visible = False
+            except Exception:
+                pass
         if visible and panel is not None:
             try:
                 scroll = getattr(self, '_prod_scroll', None)
@@ -1405,6 +1438,7 @@ class SalesTab(QWidget):
         else:
             empty.hide()
             try:
+                empty.setGeometry(0, 0, 0, 0)
                 empty.lower()
             except Exception:
                 pass

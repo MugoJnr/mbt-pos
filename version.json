@@ -1,8 +1,8 @@
 {
-    "version": "3.0.82",
-    "build": "RC-2026-09-04-v3.0.82",
+    "version": "3.0.83",
+    "build": "RC-2026-09-04-v3.0.83",
     "released": "2026-09-04",
-    "release_notes": "MBT POS v3.0.82: Payment method normalization (Credit\u2192Credit Sale), reject unknown methods, Mixed tender server validation, debt invoice repair for Credit orphans, supervised Mixed correction (no invented splits), in-app cloud reauth alert when auth_state=reauth_required.",
-    "checksum_sha256": "63117e4a6152f8dd96351342df5e2a0911c232c2397e096c97ab092d7b752123",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.82/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.83: Fix blank product tile after search (Showing 1 of 1 with no card) \u2014 reset Pro grid row mins and scroll to top. Faster POS search (chunked paint, indexed catalog, auto-reload empty catalog, 160ms debounce). M-Pesa status banner contrast + clearer manual-ref confirm copy. Includes 3.0.82 payment Credit/Mixed gates.",
+    "checksum_sha256": "06aa4f95c1fed37b3a6f01701221de7a537e2eb62f2e0bc7033bf367be1ee66c",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.83/MBT_POS_Setup.exe"
 }

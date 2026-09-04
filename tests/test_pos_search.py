@@ -78,6 +78,14 @@ class PosSearchTests(unittest.TestCase):
         hits = filter_pos_products(CATALOG, 'soap')
         self.assertTrue(any(p['id'] == 4 for p in hits))
 
+    def test_indexed_catalog_matches_unindexed(self):
+        from desktop.utils.pos_search import index_catalog_for_search
+        plain = filter_pos_products(CATALOG, 'zambia', limit=10)
+        indexed = index_catalog_for_search([dict(p) for p in CATALOG])
+        hits = filter_pos_products(indexed, 'zambia', limit=10)
+        self.assertEqual([p['id'] for p in hits], [p['id'] for p in plain])
+        self.assertIn('_sx', indexed[0])
+
 
 if __name__ == '__main__':
     unittest.main()

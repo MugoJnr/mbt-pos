@@ -87,7 +87,7 @@ class MpesaCheckoutDialog(QDialog):
         self.status = QLabel('Create payment to begin. Request accepted ≠ paid.')
         self.status.setWordWrap(True)
         self.status.setStyleSheet(
-            'background:#f5f5f5; padding:10px; border-radius:6px;'
+            'background:#f5f5f5; color:#1a1a1a; padding:10px; border-radius:6px;'
         )
         root.addWidget(self.status)
 
@@ -292,9 +292,10 @@ class MpesaCheckoutDialog(QDialog):
             # Offline/manual: force verify after cashier confirmation
             reply = QMessageBox.question(
                 self, 'Confirm manual M-Pesa',
-                f'Confirm reference {ref.upper()} for '
+                f'Confirm M-Pesa receipt {ref.upper()} for '
                 f'{self.currency} {self.amount:,.2f}?\n\n'
-                'This is audited. Do not enter M-Pesa PIN here.',
+                'Use the receipt/code from the customer SMS only.\n'
+                'This confirmation is audited.',
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:

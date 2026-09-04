@@ -2714,6 +2714,7 @@ class ProductGrid(QWidget):
         self._pro_density = False
         self._total_count = 0
         self._categories_by_name = {}
+        self._grid_row_count = 0
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
@@ -2796,8 +2797,42 @@ class ProductGrid(QWidget):
                         w.deleteLater()
                     except Exception:
                         pass
+        # Pro density calls setRowMinimumHeight per card row. Removing widgets
+        # does NOT clear those mins — filtering 48→1 left ~5k px of empty rows,
+        # so the scroll position stayed at the bottom (footer hint visible) while
+        # the sole ProductCard sat above the viewport ("Showing 1 of 1", blank).
+        prev_rows = int(getattr(self, '_grid_row_count', 0) or 0)
+        for r in range(max(prev_rows + 2, 64)):
+            try:
+                self._grid.setRowMinimumHeight(r, 0)
+            except Exception:
+                pass
+            try:
+                self._grid.setRowStretch(r, 0)
+            except Exception:
+                pass
+        self._grid_row_count = 0
+        if self._pro_density:
+            try:
+                self._grid.setRowStretch(99, 1)
+            except Exception:
+                pass
         self._products = []
         self._hint.hide()
+
+    def _ensure_cards_in_view(self):
+        """After a shrink populate, pin the scroll area back to the first card."""
+        try:
+            p = self.parentWidget()
+            while p is not None:
+                if isinstance(p, QScrollArea):
+                    bar = p.verticalScrollBar()
+                    if bar is not None and bar.value() != 0:
+                        bar.setValue(0)
+                    break
+                p = p.parentWidget()
+        except Exception:
+            pass
 
     def columns_for_width(self, available: int) -> int:
         """Columns that genuinely fit ``available`` px.
@@ -2871,9 +2906,11 @@ class ProductGrid(QWidget):
             except Exception:
                 pass
         if not visible:
+            self._ensure_cards_in_view()
             return
-        if not chunked or len(visible) <= 12:
+        if not chunked or len(visible) <= 8:
             self._add_product_cards(visible, cols, card_size, cmap, start=0)
+            self._ensure_cards_in_view()
             return
         # Chunked: first batch now, rest on subsequent event-loop ticks
         token = int(getattr(self, '_populate_token', 0) or 0)
@@ -2882,9 +2919,10 @@ class ProductGrid(QWidget):
         self._pending_card_size = card_size
         self._pending_cmap = cmap
         self._pending_idx = 0
-        first = 12
+        first = 8
         self._add_product_cards(visible[:first], cols, card_size, cmap, start=0)
         self._pending_idx = first
+        self._ensure_cards_in_view()
         QTimer.singleShot(0, lambda t=token: self._populate_next_chunk(t))
 
     def _add_product_cards(self, batch, cols, card_size, cmap, start: int = 0):
@@ -2897,13 +2935,16 @@ class ProductGrid(QWidget):
                 category_meta=meta, compact=self._pro_density)
             card.clicked.connect(self.productClicked.emit)
             self._grid.addWidget(card, idx // cols, idx % cols)
+            row = idx // cols
+            self._grid_row_count = max(
+                int(getattr(self, '_grid_row_count', 0) or 0), row + 1)
             if self._pro_density:
                 try:
                     card.unlock_width(int(card_size[0] * 0.85))
                 except Exception:
                     pass
                 try:
-                    self._grid.setRowMinimumHeight(idx // cols, int(card_size[1]) + 4)
+                    self._grid.setRowMinimumHeight(row, int(card_size[1]) + 4)
                 except Exception:
                     pass
 

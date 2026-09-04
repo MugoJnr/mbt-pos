@@ -32,15 +32,36 @@ def product_search_fields(product: dict) -> tuple:
     return name, sku, barcode, pid
 
 
+def index_product_for_search(product: dict) -> dict:
+    """Cache normalized search fields on the product row (mutates in place)."""
+    if not isinstance(product, dict):
+        return product
+    name, sku, barcode, pid = product_search_fields(product)
+    product['_sx'] = (name, sku, barcode, pid, _compact(sku), _compact(barcode))
+    return product
+
+
+def index_catalog_for_search(products: Iterable[dict]) -> list:
+    out = []
+    for p in products or []:
+        if isinstance(p, dict):
+            out.append(index_product_for_search(p))
+    return out
+
+
 def match_score(query: str, product: dict, *, in_category: bool = True) -> Optional[int]:
     """Lower is better. None = no match. Category boost is a small rank bump only."""
     q = normalize_query(query)
     if not q:
         return 50
-    name, sku, barcode, pid = product_search_fields(product)
+    cached = product.get('_sx') if isinstance(product, dict) else None
+    if isinstance(cached, tuple) and len(cached) == 6:
+        name, sku, barcode, pid, sku_c, bar_c = cached
+    else:
+        name, sku, barcode, pid = product_search_fields(product)
+        sku_c = _compact(sku)
+        bar_c = _compact(barcode)
     q_c = _compact(q)
-    sku_c = _compact(sku)
-    bar_c = _compact(barcode)
 
     if q == sku or q == barcode or q == pid:
         base = 0
@@ -48,7 +69,8 @@ def match_score(query: str, product: dict, *, in_category: bool = True) -> Optio
         base = 0
     elif name == q:
         base = 1
-    elif sku.startswith(q) or barcode.startswith(q) or (q_c and (sku_c.startswith(q_c) or bar_c.startswith(q_c))):
+    elif sku.startswith(q) or barcode.startswith(q) or (
+            q_c and (sku_c.startswith(q_c) or bar_c.startswith(q_c))):
         base = 2
     elif name.startswith(q) or f' {q}' in f' {name}':
         base = 3
@@ -120,5 +142,5 @@ def _fuzzy_fallback(items, q: str, in_cat) -> list:
     out = []
     for n in close:
         p = names[n]
-        out.append((20 if in_cat(p) else 28, n, p))
+        out.append((5 if in_cat(p) else 13, n, p))
     return out

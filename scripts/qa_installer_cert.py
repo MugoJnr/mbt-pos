@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.82"
+EXPECTED_VERSION = "3.0.83"
 desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
