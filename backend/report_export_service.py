@@ -553,10 +553,46 @@ def new_workbook_sheet(title: str = 'Report') -> tuple:
     return wb, ws
 
 
-def save_workbook(wb: Workbook, output_path: str) -> str:
+def apply_workbook_password_protection(wb: Workbook, password: str) -> None:
+    """
+    Lock workbook structure + each sheet with ``password``.
+
+    Note: this is openpyxl workbook/sheet protection, not MS Office
+    “password to open” (OLE/OOXML encryption). Callers must pass a non-empty
+    password for sensitive exports — never silently skip.
+    """
+    pwd = str(password or '')
+    if not pwd:
+        raise ValueError(
+            'Sensitive workbook export requires a Super-Admin PIN password; '
+            'refusing to save unlocked.'
+        )
+    from openpyxl.workbook.protection import WorkbookProtection
+
+    if wb.security is None:
+        wb.security = WorkbookProtection()
+    wb.security.set_workbook_password(pwd, already_hashed=False)
+    wb.security.lockStructure = True
+    wb.security.lockWindows = True
+    for ws in wb.worksheets:
+        ws.protection.sheet = True
+        ws.protection.enable()
+        ws.protection.set_password(pwd, already_hashed=False)
+
+
+def save_workbook(wb: Workbook, output_path: str, *, password: Optional[str] = None) -> str:
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    if password:
+        apply_workbook_password_protection(wb, password)
     wb.save(output_path)
     return output_path
+
+
+def save_workbook_password_protected(
+    wb: Workbook, output_path: str, password: str,
+) -> str:
+    """Require a password and write a structure/sheet-protected xlsx."""
+    return save_workbook(wb, output_path, password=password)
 
 
 # ── Generic tabular export ────────────────────────────────────────────────────
@@ -577,11 +613,13 @@ def export_tabular_xlsx(
     filename: Optional[str] = None,
     total_cols: Optional[dict] = None,
     sheet_name: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     """
     One-sheet professional export.
     kinds[i]: text|currency|int|qty|date|datetime|pct|center
     total_cols: {1-based col: (sum_value, kind)}
+    password: when set, apply openpyxl workbook/sheet protection before save
     """
     wb, ws = new_workbook_sheet(sheet_name or title)
     ncols = len(headers)
@@ -638,7 +676,7 @@ def export_tabular_xlsx(
     if not output_path:
         fname = filename or f"MBT_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         output_path = os.path.join(get_export_dir(), fname)
-    return save_workbook(wb, output_path)
+    return save_workbook(wb, output_path, password=password)
 
 
 def export_csv(
@@ -680,6 +718,7 @@ def export_consumption_report(
     filters: Optional[str] = None,
     totals: Optional[dict] = None,
     output_path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     headers = [
         'Date', 'Reference', 'Department', 'Taken By', 'Reason', 'Notes',
@@ -726,6 +765,7 @@ def export_consumption_report(
         output_path=path,
         total_cols=total_cols,
         sheet_name='Internal Consumption',
+        password=password,
     )
 
 
@@ -741,6 +781,7 @@ def export_debt_report(
     filters: Optional[str] = None,
     period: Optional[str] = None,
     output_path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     wb = Workbook()
 
@@ -854,7 +895,7 @@ def export_debt_report(
         get_export_dir(),
         f"MBT_Debt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
     )
-    return save_workbook(wb, path)
+    return save_workbook(wb, path, password=password)
 
 
 def export_inventory_movements(
@@ -866,6 +907,7 @@ def export_inventory_movements(
     generated_by: Optional[str] = None,
     filters: Optional[str] = None,
     output_path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     products_by_id = products_by_id or {}
     headers = [
@@ -904,6 +946,7 @@ def export_inventory_movements(
         currency=currency,
         output_path=path,
         sheet_name='Stock Movements',
+        password=password,
     )
 
 
@@ -915,6 +958,7 @@ def export_inventory_full(
     currency: str = 'KES',
     generated_by: Optional[str] = None,
     output_path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     """Snapshot + movements in one workbook."""
     products_by_id = {p.get('id'): p for p in products if p.get('id') is not None}
@@ -968,7 +1012,7 @@ def export_inventory_full(
             dst.merge_cells(str(merged))
         except Exception:
             pass
-    wb.save(path)
+    save_workbook(wb, path, password=password)
     for p in (snap, move_tmp):
         try:
             os.remove(p)
@@ -984,6 +1028,7 @@ def export_inventory_snapshot(
     currency: str = 'KES',
     generated_by: Optional[str] = None,
     output_path: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> str:
     headers = [
         '#', 'Product Name', 'SKU', 'Category', 'Selling Price', 'Cost Price',
@@ -1028,4 +1073,5 @@ def export_inventory_snapshot(
         output_path=path,
         total_cols={9: (total_value, 'currency')},
         sheet_name='Inventory',
+        password=password,
     )

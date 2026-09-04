@@ -159,6 +159,13 @@ class DebtTab(QWidget):
     def _export_debt(self):
         """Export debt invoices, aging, and payments via shared formatter."""
         try:
+            from desktop.utils.export_security import (
+                require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
+            )
+            pin = require_superadmin_pin_for_export(
+                self.api, self, reason='Export debt ledger workbook')
+            if not pin:
+                return
             from backend.report_export_service import export_debt_report
             cfg = self._cfg() or {}
             shop = cfg.get('shop_name', 'My Shop')
@@ -179,11 +186,13 @@ class DebtTab(QWidget):
                 generated_by=who,
                 filters='All open invoices - full payment history',
                 period=f"As at {date.today().isoformat()}",
+                password=pin,
             )
             QMessageBox.information(
                 self, 'Exported',
                 f'Debt report saved:\n{path}\n\n'
-                f'Sheets: Debt Invoices  - Aging  - Payments')
+                f'Sheets: Debt Invoices  - Aging  - Payments\n\n'
+                f'{WORKBOOK_PROTECTION_TOOLTIP}')
             try:
                 import os
                 os.startfile(path)

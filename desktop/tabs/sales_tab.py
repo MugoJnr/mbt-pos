@@ -1812,6 +1812,15 @@ class SalesTab(QWidget):
             if ed is not None:
                 apply_shop_day_edit(ed, today, today=today)
         old = getattr(self, '_business_day', today)
+        if new_day < today and new_day != old:
+            from desktop.utils.export_security import require_superadmin_pin_session
+            if not require_superadmin_pin_session(
+                    self.api, self, reason=f'Backdate sales to {new_day.isoformat()}'):
+                if ed is not None:
+                    apply_shop_day_edit(ed, old, today=today)
+                self._business_day = old
+                self._sync_business_day_warn()
+                return
         self._business_day = new_day
         self._sync_business_day_warn()
         if old != new_day:
@@ -2638,14 +2647,17 @@ class SalesTab(QWidget):
             elec = float(info.get('electronic') or elec_now or 0)
             is_split = elec > 0.009 and self._is_split_method(pay_method)
             if is_part:
-                pay_label = 'part payment'
+                pay_label = 'Part Payment'
             elif is_credit:
-                pay_label = 'credit sale'
+                pay_label = 'Credit Sale'
             else:
-                pay_label = (
-                    'mixed' if is_split
-                    else (pay_method.lower() if pay_method else 'cash')
-                )
+                pay_label = 'Mixed' if is_split else (pay_method or 'Cash')
+            from desktop.utils.payment_methods import normalize_payment_method
+            try:
+                pay_label = normalize_payment_method(pay_label)
+            except ValueError:
+                # Fall back to combo text; create_sale will reject unknowns.
+                pay_label = pay_method or pay_label
             from desktop.utils.payment_tenders import build_tenders, format_tenders
             tenders = []
             if is_split:

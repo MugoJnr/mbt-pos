@@ -6,7 +6,7 @@ import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getAdminOverview, issueCloudCommand, type CloudDevice } from "@/lib/api";
+import { getAdminOverview, issueCloudCommand, isCloudDeviceOnline, type CloudDevice } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin/admin/devices")({
   component: Page,
@@ -21,11 +21,7 @@ function Page() {
     retry: 1,
   });
   const devices: Array<CloudDevice & { org_name?: string }> = devicesQ.data?.devices || [];
-  const onlineCutoff = Date.now() - 5 * 60 * 1000;
-  const isOnline = (device: CloudDevice) => {
-    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
-    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
-  };
+  const isOnline = isCloudDeviceOnline;
   const online = devices.filter(isOnline).length;
 
   const cmdMut = useMutation({

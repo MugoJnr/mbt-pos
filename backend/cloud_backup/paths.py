@@ -39,6 +39,12 @@ _REAUTH_MSG = (
     'Sign in again with your portal.mugobyte.com email and password to '
     'resume cloud backup.'
 )
+_REAUTH_MSG_MISSING = (
+    'Cloud session tokens are missing on this PC. '
+    'Open Settings → Cloud Backup and sign in with your '
+    'portal.mugobyte.com email and password to resume encrypted backups '
+    'and drain the offline queue.'
+)
 
 
 def config_dir() -> str:
@@ -242,11 +248,21 @@ def cloud_auth_status() -> dict[str, Any]:
     """Session health for status surfaces — never exposes token material."""
     ident = load_identity()
     needs_reauth = ident.get('auth_state') == REAUTH_REQUIRED
+    err = str(ident.get('auth_error') or '')
+    if needs_reauth and not ident.get('access_token'):
+        has_sealed = any(
+            ident.get(f'{n}_protected')
+            for n in ('access_token', 'refresh_token', 'activation_token')
+        )
+        msg = _REAUTH_MSG if has_sealed else _REAUTH_MSG_MISSING
+    else:
+        msg = _REAUTH_MSG if needs_reauth else ''
     return {
         'logged_in': bool(ident.get('access_token') and ident.get('business_id')),
         'reauth_required': needs_reauth,
         'email': ident.get('email') or '',
-        'message': _REAUTH_MSG if needs_reauth else '',
+        'auth_error': err if needs_reauth else '',
+        'message': msg,
     }
 
 

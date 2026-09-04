@@ -1248,6 +1248,48 @@ def cloud_devices_list():
     return _inner()
 
 
+@web.route('/api/cloud/backups', methods=['GET'])
+def cloud_backups_list():
+    """Org-scoped cloud backup metadata for Portal Backup Center.
+
+    Portal accounts authenticate with Supabase JWTs and must not hit the
+    shop-local ``/api/backup/status`` role gate (that returns Forbidden).
+    """
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        org_id = request.args.get('org_id') or ''
+        try:
+            from backend.cloud.platform_service import list_backups_for_org
+            org_id = _resolve_request_org_id(org_id)
+            if not org_id:
+                return jsonify({'backups': [], 'org_id': None})
+            limit = request.args.get('limit') or 50
+            try:
+                limit_i = int(limit)
+            except Exception:
+                limit_i = 50
+            rows = list_backups_for_org(org_id, limit=limit_i)
+            total_bytes = sum(int(r.get('size_bytes') or 0) for r in rows)
+            latest = rows[0] if rows else None
+            return jsonify({
+                'backups': rows,
+                'org_id': org_id,
+                'summary': {
+                    'count': len(rows),
+                    'total_bytes': total_bytes,
+                    'last_backup': (latest or {}).get('created_at'),
+                    'last_status': (latest or {}).get('status') or 'ok',
+                    'last_device_id': (latest or {}).get('device_id'),
+                    'last_mbt_version': (latest or {}).get('mbt_version'),
+                },
+            })
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
 @web.route('/api/cloud/devices/register', methods=['POST'])
 def cloud_devices_register():
     """Desktop self-registration: org members auto-approve new/pending devices."""

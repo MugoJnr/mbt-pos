@@ -3,13 +3,19 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 os.environ.setdefault("QT_OPENGL", "software")
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-EVIDENCE = r"c:\Users\mugoj\OneDrive\Desktop\QA_EVIDENCE_REPORTS"
+desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
+EVIDENCE = str(Path(os.environ.get(
+    "MBT_QA_OUT",
+    str((desktop if desktop.is_dir() else Path(tempfile.gettempdir())) / "QA_EVIDENCE_REPORTS"),
+)))
 os.makedirs(EVIDENCE, exist_ok=True)
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTabWidget

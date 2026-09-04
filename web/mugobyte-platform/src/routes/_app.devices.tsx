@@ -13,6 +13,7 @@ import {
   GET,
   approveCloudDevice,
   deactivateCloudDevice,
+  isCloudDeviceOnline,
   listCloudDevices,
   listDeviceEvents,
   rejectCloudDevice,
@@ -267,6 +268,7 @@ function DevicesPage() {
                 ) : devices.map((d) => {
                   const key = d.device_id || d.id || "";
                   const status = (d.approval_status || (d.is_active === false ? "deactivated" : "approved")).toLowerCase();
+                  const online = isCloudDeviceOnline(d);
                   return (
                     <div key={key} className="rounded-xl border border-border/70 p-4">
                       <div className="flex items-start gap-3">
@@ -286,7 +288,12 @@ function DevicesPage() {
                             </div>
                           )}
                         </div>
-                        <Badge variant={approvalVariant(status)}>{status}</Badge>
+                        <div className="flex flex-col items-end gap-1">
+                          <Badge variant={online ? "default" : "secondary"}>
+                            {online ? "Online" : status === "deactivated" ? "Disabled" : "Offline"}
+                          </Badge>
+                          <Badge variant={approvalVariant(status)}>{status}</Badge>
+                        </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         {status === "pending" && (

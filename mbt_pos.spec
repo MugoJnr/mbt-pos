@@ -7,6 +7,12 @@ import json
 import os
 HERE = os.path.abspath(SPECPATH)
 
+try:
+    from PyInstaller.utils.hooks import collect_data_files
+    _tzdata_datas = collect_data_files('tzdata')
+except Exception:
+    _tzdata_datas = []
+
 _cf_bin = os.path.join(HERE, 'tools', 'cloudflared.exe')
 _extra_binaries = [(_cf_bin, '.')] if os.path.isfile(_cf_bin) else []
 
@@ -88,7 +94,7 @@ a = Analysis(
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
         (_runtime_version_manifest(), '.'),
-    ] + _safe_config_datas() + _web_runtime_datas() + (
+    ] + _safe_config_datas() + _web_runtime_datas() + _tzdata_datas + (
         [(os.path.join(HERE, 'web_launcher.py'), '.')]
         if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []
     ),
@@ -137,6 +143,9 @@ a = Analysis(
         'desktop.utils.widgets',
         'desktop.utils.api_client',
         'desktop.utils.log_config',
+        # Lazily imported from reports/inventory/finance/export paths — pin so
+        # Super-Admin PIN spreadsheet gates ship in the frozen tree.
+        'desktop.utils.export_security',
         'desktop.tabs.debt_tab',
         'desktop.payments',
         'desktop.payments.service',
@@ -155,11 +164,15 @@ a = Analysis(
         'desktop.pos.layouts',
         'desktop.pos.layouts.shells',
         'backend.app',
+        'backend.app_version',
         'backend.web_service',
         'backend.cloudflare_setup',
         'backend.updater',
         'config.deploy',
         'backend.db_backup',
+        'tzdata',
+        'zoneinfo',
+        'desktop.utils.shop_time',
         'web', 'web.web_routes',
     ],
     hookspath=[],

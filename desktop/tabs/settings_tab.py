@@ -1907,16 +1907,19 @@ class SecuritySettingsTab(QWidget):
         from desktop.utils.widgets import page_layout, section_card
         lay, _ = page_layout(self, margins=(0, 0, 0, 0), spacing=12)
         from PyQt5.QtWidgets import QFormLayout
-        grp, body = section_card('!', 'Super-Admin PIN', 'Required for stock adjust, voids, and overrides')
+        grp, body = section_card('!', 'Super-Admin PIN', 'Required for stock adjust, voids, exports, and overrides')
         fl  = QFormLayout(); fl_w = QWidget(); fl_w.setLayout(fl)
 
         info = QLabel(
             'The Super-Admin PIN is required to:\n'
             '  • Adjust stock quantities directly\n'
             '  • Void / edit completed sales\n'
+            '  • Export sensitive spreadsheets (sales, inventory, debt, accounting)\n'
+            '  • View finance net-worth / close periods / backdate sales\n'
             '  • Access security overrides\n'
             '  • Clear audit logs\n\n'
-            'Keep this PIN strictly private — do NOT share with cashiers.')
+            'Keep this PIN strictly private — do NOT share with cashiers.\n'
+            'Workbook exports lock sheets with this PIN (not Excel file-open encryption).')
         info.setStyleSheet(f"color:{C['text2']}; font-size:13px; background:transparent;")
         info.setWordWrap(True)
         fl.addRow(info)

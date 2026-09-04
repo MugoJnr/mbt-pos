@@ -481,6 +481,10 @@ class _OverviewPage(QWidget):
                 w.deleteLater()
 
     def refresh(self):
+        from desktop.utils.export_security import require_superadmin_pin_session
+        if not require_superadmin_pin_session(
+                self.p.api, self, reason='View finance overview / net-worth'):
+            return
         self._clear_row(self._kpi1)
         self._clear_row(self._kpi2)
         while self._health_grid.count():
@@ -924,6 +928,10 @@ class _StatementPage(QWidget):
         lay.addWidget(self._out, 1)
 
     def refresh(self):
+        from desktop.utils.export_security import require_superadmin_pin_session
+        if not require_superadmin_pin_session(
+                self.p.api, self, reason=f'View {self.kind}'):
+            return
         cur = self.p._currency
         end = self._as_of.date().toString('yyyy-MM-dd') or date.today().isoformat()
         lines = [self.kind, f'As of {end}', f'Currency: {cur}', '']
@@ -988,6 +996,10 @@ class _CashFlowPage(QWidget):
         lay.addWidget(self._out, 1)
 
     def refresh(self):
+        from desktop.utils.export_security import require_superadmin_pin_session
+        if not require_superadmin_pin_session(
+                self.p.api, self, reason='View cash flow summary'):
+            return
         cur = self.p._currency
         start = self._from.date().toString('yyyy-MM-dd') or (date.today() - timedelta(days=30)).isoformat()
         end = self._to.date().toString('yyyy-MM-dd') or date.today().isoformat()
@@ -1660,6 +1672,10 @@ class _PeriodsPage(QWidget):
     def _close(self):
         if not _require(self.p.user, 'accounting.close_period', self):
             return
+        from desktop.utils.export_security import require_superadmin_pin_session
+        if not require_superadmin_pin_session(
+                self.p.api, self, reason='Close accounting period'):
+            return
         row = self._tbl.currentRow()
         if row < 0 or row >= len(self._ids):
             return
@@ -1728,6 +1744,16 @@ class _ReportsPage(QWidget):
 
     def refresh(self):
         kind = self._kind.currentText()
+        # Net-worth / P&L / balance sheet style reports require Super-Admin PIN (session).
+        _SENSITIVE = {
+            'Profit & Loss', 'Balance Sheet', 'Trial Balance',
+            'Cash Flow Summary', 'AR Aging', 'AP Aging',
+        }
+        if kind in _SENSITIVE:
+            from desktop.utils.export_security import require_superadmin_pin_session
+            if not require_superadmin_pin_session(
+                    self.p.api, self, reason=f'View {kind}'):
+                return
         start, end = self._dates()
         cur = self.p._currency
         lines = [f'{kind}', f'Period: {start} → {end}', f'Currency: {cur}', '']
@@ -1821,6 +1847,13 @@ class _ReportsPage(QWidget):
     def _export(self):
         if not _require(self.p.user, 'accounting.export', self):
             return
+        from desktop.utils.export_security import (
+            require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
+        )
+        pin = require_superadmin_pin_for_export(
+            self.p.api, self, reason='Export accounting / P&L workbook')
+        if not pin:
+            return
         if not self._last:
             self.refresh()
         try:
@@ -1859,15 +1892,18 @@ class _ReportsPage(QWidget):
             # Prefer simple openpyxl via report service helpers if available
             try:
                 from openpyxl import Workbook
+                from backend.report_export_service import save_workbook_password_protected
                 wb = Workbook()
                 ws = wb.active
                 ws.title = kind[:31]
                 ws.append(headers)
                 for r in rows:
                     ws.append(r)
-                wb.save(path)
+                save_workbook_password_protected(wb, path, pin)
             except Exception as e:
                 raise e
-            QMessageBox.information(self, 'Export', f'Saved:\n{path}')
+            QMessageBox.information(
+                self, 'Export',
+                f'Saved:\n{path}\n\n{WORKBOOK_PROTECTION_TOOLTIP}')
         except Exception as e:
             QMessageBox.warning(self, 'Export', str(e))

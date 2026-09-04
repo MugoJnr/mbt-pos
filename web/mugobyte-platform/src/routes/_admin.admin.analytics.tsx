@@ -5,7 +5,7 @@ import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { StatCard } from "@/components/layout/StatCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getAdminOverview, GET, type CloudDevice } from "@/lib/api";
+import { getAdminOverview, GET, isCloudDeviceOnline, type CloudDevice } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/_admin/admin/analytics")({
@@ -40,12 +40,7 @@ function AdminAnalyticsPage() {
   const devices = overviewQ.data?.devices || [];
   const summary = (analyticsQ.data?.summary || analyticsQ.data?.kpis || analyticsQ.data || {}) as Record<string, unknown>;
   const claimed = licenses.filter((l) => (l.claim_status || "").toLowerCase() === "claimed").length;
-  const onlineCutoff = Date.now() - 5 * 60 * 1000;
-  const isOnline = (device: CloudDevice) => {
-    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
-    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
-  };
-  const activeDevices = devices.filter(isOnline).length;
+  const activeDevices = devices.filter((d: CloudDevice) => isCloudDeviceOnline(d)).length;
   const gross = Number(summary.gross_sales ?? summary.sales_total ?? summary.revenue ?? NaN);
   const analyticsOk = !analyticsQ.isError && analyticsQ.data && !analyticsQ.data.error;
 

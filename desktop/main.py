@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-04-v3.0.80"
-APP_VERSION   = "3.0.80"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-04-v3.0.82"
+APP_VERSION   = "3.0.82"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1218,6 +1218,12 @@ class MainWindow(QMainWindow):
             start_cloud_backup_service()
         except Exception as e:
             log.warning(f"Cloud backup service: {e}")
+
+        try:
+            # Surface reauth_required as a one-shot in-app alert (status + dialog).
+            QTimer.singleShot(1500, self._maybe_alert_cloud_reauth)
+        except Exception as e:
+            log.debug('cloud reauth alert schedule: %s', e)
 
         try:
             from backend.local_db_backup import start_local_backup_scheduler
@@ -2936,6 +2942,39 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _maybe_alert_cloud_reauth(self):
+        """Warn when saved cloud identity cannot be used without a fresh sign-in."""
+        if self._closing or getattr(self, '_cloud_reauth_alerted', False):
+            return
+        try:
+            from backend.cloud_backup.paths import cloud_auth_status
+            st = cloud_auth_status() or {}
+        except Exception as e:
+            log.debug('cloud_auth_status: %s', e)
+            return
+        if not st.get('reauth_required'):
+            return
+        self._cloud_reauth_alerted = True
+        msg = (
+            st.get('message')
+            or (
+                'Cloud sign-in must be renewed. Open Settings → Cloud Backup '
+                'and sign in with your portal.mugobyte.com account to resume '
+                'encrypted backups and drain the offline queue.'
+            )
+        )
+        email = (st.get('email') or '').strip()
+        if email:
+            msg = f'{msg}\n\nAccount on file: {email}'
+        try:
+            self._set_status('Cloud re-auth required', transient=False)
+        except Exception:
+            pass
+        try:
+            QMessageBox.warning(self, 'Cloud Sign-In Required', msg)
+        except Exception as e:
+            log.warning('cloud reauth dialog: %s', e)
+
     def _clear_transient_status(self, expected: str):
         try:
             lbl = getattr(self, '_sync_lbl', None)
@@ -3058,6 +3097,11 @@ class MainWindow(QMainWindow):
                 return
         global _main_window
         self._closing = True
+        try:
+            from desktop.utils.export_security import clear_export_pin_session
+            clear_export_pin_session()
+        except Exception:
+            pass
         try:
             t = getattr(self, '_idle_timer', None)
             if t is not None:
@@ -3358,6 +3402,13 @@ def main():
         from backend.updater import acquire_single_instance
         if not acquire_single_instance():
             sys.exit(0)
+    except Exception:
+        pass
+
+    # Keep LocalAppData installed_version.json aligned with this binary.
+    try:
+        from backend.app_version import ensure_installed_version_stamp
+        ensure_installed_version_stamp(APP_VERSION)
     except Exception:
         pass
 

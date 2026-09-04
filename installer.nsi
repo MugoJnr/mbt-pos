@@ -10,8 +10,8 @@
 ;=============================================================================
 ; General Settings
 ;=============================================================================
-!define APP_VERSION "3.0.80"
-!define APP_VERSION_QUAD "3.0.80.0"
+!define APP_VERSION "3.0.82"
+!define APP_VERSION_QUAD "3.0.82.0"
 Unicode True
 Name "MBT POS"
 OutFile "dist\MBT_POS_Setup.exe"
@@ -174,6 +174,11 @@ Section "MBT POS" SecMain
     FileOpen $1 "$LOCALAPPDATA\MugoByte\MBT POS\last_install_mode.txt" w
     FileWrite $1 "$InstallMode$\r$\n"
     FileWrite $1 "version=${APP_VERSION}$\r$\n"
+    FileClose $1
+
+    ; Keep LocalAppData version stamp aligned with the installed binary.
+    FileOpen $1 "$LOCALAPPDATA\MugoByte\MBT POS\installed_version.json" w
+    FileWrite $1 '{"version":"${APP_VERSION}","build":"${APP_VERSION}","path":"$INSTDIR\MBT_POS.exe","released":"2026-09-04"}$\r$\n'
     FileClose $1
 
     ; MBT POS only ever installs into $PROGRAMFILES64, so the native 64-bit

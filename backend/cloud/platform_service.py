@@ -966,6 +966,42 @@ def list_devices_for_org(org_id: str) -> list[dict]:
     return out
 
 
+def list_backups_for_org(org_id: str, limit: int = 50) -> list[dict]:
+    """Cloud backup metadata for a shop org (Portal Backup Center).
+
+    Uses service-role reads (same as admin overview) scoped to the org's
+    businesses — portal JWTs cannot use the local ``/api/backup/status`` gate.
+    """
+    oid = str(org_id or '').strip()
+    if not oid:
+        return []
+    limit = max(1, min(int(limit or 50), 200))
+    businesses = service_select(
+        'businesses',
+        f'org_id=eq.{quote(oid, safe="")}&select=id,name',
+    ) or []
+    biz_ids = [str(b.get('id') or '') for b in businesses if b.get('id')]
+    biz_names = {
+        str(b.get('id') or ''): str(b.get('name') or '')
+        for b in businesses
+        if b.get('id')
+    }
+    if not biz_ids:
+        return []
+    # PostgREST `in.(...)` list for business_id filter
+    in_list = ','.join(quote(bid, safe='') for bid in biz_ids)
+    rows = service_select(
+        'backups',
+        f'business_id=in.({in_list})&select=*&order=created_at.desc&limit={limit}',
+    ) or []
+    for row in rows:
+        bid = str(row.get('business_id') or '')
+        row['org_id'] = oid
+        row['org_name'] = biz_names.get(bid, '')
+        row['business_name'] = biz_names.get(bid, '')
+    return rows
+
+
 def _log_device_event(
     org_id: str,
     device_row_id: str | None,

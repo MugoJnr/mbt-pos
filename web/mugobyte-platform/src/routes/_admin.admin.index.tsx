@@ -9,7 +9,7 @@ import { StatCard } from "@/components/layout/StatCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getAdminOverview, GET } from "@/lib/api";
+import { getAdminOverview, GET, isCloudDeviceOnline } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin/admin/")({
   component: AdminDashboard,
@@ -31,11 +31,7 @@ function AdminDashboard() {
   const data = overviewQ.data;
   const summary = data?.summary;
   const devices = data?.devices || [];
-  const onlineCutoff = Date.now() - 5 * 60 * 1000;
-  const onlineDevices = devices.filter((device) => {
-    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
-    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
-  }).length;
+  const onlineDevices = devices.filter((device) => isCloudDeviceOnline(device)).length;
   const resourceErrors = Object.entries(data?.errors || {});
   const loadError = data?.error || (overviewQ.error as Error | null)?.message ||
     (resourceErrors.length

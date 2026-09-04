@@ -111,9 +111,11 @@ class DeviceService:
 
         cfg = self.config_getter() or {}
         try:
-            from backend.app import APP_VERSION
-            version = APP_VERSION
+            from backend.app_version import resolve_app_version
+            version = resolve_app_version()
         except Exception:
+            version = 'unknown'
+        if not version or str(version).lower() in ('unknown', '0', 'none'):
             version = 'unknown'
 
         return {
@@ -192,18 +194,23 @@ class DeviceService:
                 # Naive local time is stored verbatim into a timestamptz column,
                 # which reported shops as hours ahead of real UTC.
                 'last_seen_at': datetime.now(timezone.utc).isoformat(),
-                'mbt_version': info['mbt_version'],
             }
+            # Never clobber a known cloud version with "unknown" from a bad resolve.
+            ver = str(info.get('mbt_version') or '').strip()
+            if ver and ver.lower() not in ('unknown', '0', 'none'):
+                patch['mbt_version'] = ver
             if business_id:
                 service_update(
                     'devices',
-                    f'business_id=eq.{quote(business_id, safe="")}&device_id=eq.{quote(info["device_id"], safe="")}',
+                    f'business_id=eq.{quote(business_id, safe="")}'
+                    f'&device_id=eq.{quote(info["device_id"], safe="")}',
                     patch,
                 )
             elif org_id:
                 service_update(
                     'devices',
-                    f'org_id=eq.{quote(org_id, safe="")}&device_id=eq.{quote(info["device_id"], safe="")}',
+                    f'org_id=eq.{quote(org_id, safe="")}'
+                    f'&device_id=eq.{quote(info["device_id"], safe="")}',
                     patch,
                 )
         except Exception as e:

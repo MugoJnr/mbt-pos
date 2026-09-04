@@ -136,5 +136,24 @@ Write-Result @{
     version = $version
 }
 
+if ($ok) {
+    try {
+        $stampPath = Join-Path $BrandRoot 'installed_version.json'
+        $exePath = Join-Path ${env:ProgramFiles} 'MugoByte\MBT POS\MBT_POS.exe'
+        $stamp = @{
+            version = $version
+            build = $version
+            released = (Get-Date -Format 'yyyy-MM-dd')
+            path = $exePath
+            checksum_sha256 = $actual
+            stamped_at = (Get-Date).ToUniversalTime().ToString('o')
+        } | ConvertTo-Json
+        Set-Content -LiteralPath $stampPath -Value $stamp -Encoding UTF8
+        Write-MbtLog "wrote installed_version.json v$version"
+    } catch {
+        Write-MbtLog "installed_version stamp failed: $_"
+    }
+}
+
 try { Remove-Item -LiteralPath $JobPath -Force -ErrorAction SilentlyContinue } catch {}
 if ($ok) { exit 0 } else { exit $code }

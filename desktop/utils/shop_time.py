@@ -1,35 +1,40 @@
 """
-Shop calendar helpers — Africa/Nairobi when available, else machine local.
+Shop calendar helpers — Africa/Nairobi when available, else fixed UTC+3.
 
 Business day for sales reporting matches cloud analytics day bounds.
+Windows installs may lack the IANA tz database; Nairobi is permanently UTC+3,
+so we never fall through to a wrong machine-local calendar day.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
+
+
+# Permanent Nairobi offset when zoneinfo/tzdata is unavailable.
+_NAIROBI_FIXED = timezone(timedelta(hours=3), name='Africa/Nairobi')
 
 
 def shop_tzinfo():
-    """Return Africa/Nairobi tzinfo, or None if unavailable."""
+    """Return Africa/Nairobi tzinfo (ZoneInfo, pytz, or fixed UTC+3)."""
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo('Africa/Nairobi')
     except Exception:
-        try:
-            import pytz
-            return pytz.timezone('Africa/Nairobi')
-        except Exception:
-            return None
+        pass
+    try:
+        import pytz
+        return pytz.timezone('Africa/Nairobi')
+    except Exception:
+        return _NAIROBI_FIXED
 
 
 def shop_now() -> datetime:
-    """Current wall clock in shop timezone (naive if tz unavailable)."""
+    """Current wall clock in shop timezone (always Africa/Nairobi or UTC+3)."""
     tz = shop_tzinfo()
-    if tz is None:
-        return datetime.now()
     try:
         return datetime.now(tz)
     except Exception:
-        return datetime.now()
+        return datetime.now(_NAIROBI_FIXED)
 
 
 def shop_today() -> date:

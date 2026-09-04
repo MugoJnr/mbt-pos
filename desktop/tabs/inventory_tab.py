@@ -257,6 +257,13 @@ class InventoryTab(QWidget):
     def _export_inventory(self):
         """Export inventory snapshot + recent stock movements (shared formatter)."""
         try:
+            from desktop.utils.export_security import (
+                require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
+            )
+            pin = require_superadmin_pin_for_export(
+                self.api, self, reason='Export inventory valuation workbook')
+            if not pin:
+                return
             from backend.report_export_service import export_inventory_full
             cfg = self.config_getter() or {}
             shop = cfg.get('shop_name', 'My Shop')
@@ -268,11 +275,13 @@ class InventoryTab(QWidget):
             path = export_inventory_full(
                 products, moves,
                 shop_name=shop, currency=cur, generated_by=who,
+                password=pin,
             )
             QMessageBox.information(
                 self, 'Exported',
                 f'Inventory report saved:\n{path}\n\n'
-                f'Sheets: Inventory · Stock Movements')
+                f'Sheets: Inventory · Stock Movements\n\n'
+                f'{WORKBOOK_PROTECTION_TOOLTIP}')
             try:
                 import os
                 os.startfile(path)

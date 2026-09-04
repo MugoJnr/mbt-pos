@@ -25,6 +25,9 @@ et_xmlfile>=1.1
 # Optional: AES-GCM helper (Windows CNG works without it)
 cryptography>=41.0
 
+# IANA timezones for zoneinfo on Windows (Africa/Nairobi shop calendar)
+tzdata>=2024.1
+
 # Web framework — desktop uses it for DB init; the optional web dashboard
 # (web_launcher.py + backend/app.py) runs a local Flask server for remote access.
 werkzeug>=2.3

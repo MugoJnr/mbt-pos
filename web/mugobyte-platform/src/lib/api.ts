@@ -414,12 +414,14 @@ export type AdminBackup = {
   business_id?: string;
   org_id?: string | null;
   org_name?: string;
+  business_name?: string;
   device_id?: string;
   storage_path?: string;
   size_bytes?: number;
   mbt_version?: string;
   backup_type?: string;
   reason?: string;
+  status?: string;
   created_at?: string;
 };
 
@@ -577,6 +579,34 @@ export function listCloudDevices(orgId?: string) {
     "/cloud/devices",
     { org_id: orgId || getOrgId() || undefined },
   );
+}
+
+export function listCloudBackups(orgId?: string, limit = 50) {
+  return GET<{
+    backups: AdminBackup[];
+    org_id?: string;
+    summary?: {
+      count?: number;
+      total_bytes?: number;
+      last_backup?: string;
+      last_status?: string;
+      last_device_id?: string;
+      last_mbt_version?: string;
+    };
+    error?: string;
+  }>("/cloud/backups", {
+    org_id: orgId || getOrgId() || undefined,
+    limit: String(limit),
+  });
+}
+
+/** Online when approved/enabled and heartbeated within the last 5 minutes. */
+export function isCloudDeviceOnline(device: CloudDevice, nowMs = Date.now()): boolean {
+  if (device.is_active === false) return false;
+  const status = String(device.approval_status || "approved").toLowerCase();
+  if (status === "rejected" || status === "deactivated") return false;
+  const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
+  return Number.isFinite(seen) && seen >= nowMs - 5 * 60 * 1000;
 }
 
 export function approveCloudDevice(deviceId: string, orgId?: string, reason = "") {

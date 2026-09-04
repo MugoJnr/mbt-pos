@@ -885,6 +885,7 @@ class _HistoryPane(QWidget):
         if not require_permission(self.p.user, 'consumption.void', self):
             return
         from desktop.utils.option_lists import VOID_REASONS
+        from desktop.utils.export_security import require_superadmin_pin_for_export
         reason = prompt_reason(
             self,
             title='Void Consumption',
@@ -893,8 +894,13 @@ class _HistoryPane(QWidget):
         )
         if not reason or not reason.strip():
             return
+        pin = require_superadmin_pin_for_export(
+            self.p.api, self, reason=f'Void consumption #{cid}')
+        if not pin:
+            return
         try:
-            res = self.p.api.void_consumption(int(cid), reason.strip()) or {}
+            res = self.p.api.void_consumption(
+                int(cid), reason.strip(), pin=pin) or {}
         except Exception as e:
             QMessageBox.critical(self, 'Void Failed', str(e))
             return
@@ -1116,6 +1122,14 @@ class _ReportPane(QWidget):
             QMessageBox.information(self, 'Export', 'Run the report first.')
             return
 
+        from desktop.utils.export_security import (
+            require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
+        )
+        pin = require_superadmin_pin_for_export(
+            self.p.api, self, reason='Export consumption cost workbook')
+        if not pin:
+            return
+
         cur = _currency(self.p._cfg())
         shop = (self.p._cfg() or {}).get('shop_name', 'My Shop')
         start = self._s.date().toString('yyyy-MM-dd')
@@ -1134,13 +1148,14 @@ class _ReportPane(QWidget):
                 generated_by=who,
                 filters=f'Date range {start} to {end}',
                 totals=self._last_totals or {},
+                password=pin,
             )
         except Exception as e:
             QMessageBox.critical(self, 'Export Failed', str(e))
             return
         QMessageBox.information(
             self, 'Exported',
-            f'Report saved ({cur}):\n{path}')
+            f'Report saved ({cur}):\n{path}\n\n{WORKBOOK_PROTECTION_TOOLTIP}')
         try:
             os.startfile(path)
         except Exception:

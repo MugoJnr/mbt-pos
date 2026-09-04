@@ -149,7 +149,10 @@ def main():
 
     void_ok = False
     if sale_id and journal_ok:
-        void_res = api.void_sale(sale_id, 'Accounting smoke void')
+        void_res = api.void_sale(
+            sale_id, 'Accounting smoke void',
+            pin=os.environ.get('MBT_AUTO_SUPERADMIN_PIN', ''),
+        )
         report['steps'].append({'void_sale': void_res})
         db = _db()
         try:

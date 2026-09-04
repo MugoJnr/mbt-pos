@@ -83,6 +83,12 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         self._exp_btn.clicked.connect(self._export)
+        try:
+            from desktop.utils.export_security import WORKBOOK_PROTECTION_TOOLTIP
+            self._exp_btn.setToolTip(
+                'Export full sales history workbook.\n' + WORKBOOK_PROTECTION_TOOLTIP)
+        except Exception:
+            pass
         self._pdf_btn = SecondaryBtn('Export PDF', 40)
         self._pdf_btn.setToolTip(
             'Save a direct PDF of this period (same totals as the KPIs)')
@@ -615,7 +621,7 @@ class ReportsTab(QWidget):
 
     # ── Export ────────────────────────────────────────────────────────────────
 
-    def _do_export(self):
+    def _do_export(self, password=None):
         sys.path.insert(0, _PR)
         from backend.export_engine import export_sales_report, export_sales_report_html
         from backend.report_export_service import get_export_dir as _shared_export_dir
@@ -690,6 +696,7 @@ class ReportsTab(QWidget):
             variance_summary=variance_summary,
             generated_by=user_name,
             filters=filt,
+            password=password,
         )
         # Companion printable HTML (browser Print → PDF) — R02 printable export
         try:
@@ -707,12 +714,19 @@ class ReportsTab(QWidget):
 
     def _export(self):
         from desktop.utils.security import require_permission
+        from desktop.utils.export_security import (
+            require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
+        )
         if not require_permission(self.user, 'reports.export', self):
+            return
+        pin = require_superadmin_pin_for_export(
+            self.api, self, reason='Export full sales history workbook')
+        if not pin:
             return
         try:
             self._exp_btn.setEnabled(False); self._exp_btn.setText('Exporting…')
             QApplication.processEvents()
-            path = self._do_export()
+            path = self._do_export(password=pin)
             self._last_export_path = path
             self._set_status(f"✓ Saved: {path}", ok=True)
             html_note = ''
@@ -731,7 +745,8 @@ class ReportsTab(QWidget):
                 f'  • Stock & Inventory\n'
                 f'  • Debt Management\n'
                 f'  • Payment Variance'
-                f'{html_note}')
+                f'{html_note}\n\n'
+                f'{WORKBOOK_PROTECTION_TOOLTIP}')
         except Exception as e:
             _log.error(f"Export error: {e}", exc_info=True)
             QMessageBox.critical(self, 'Export Error', str(e))
@@ -764,7 +779,11 @@ class ReportsTab(QWidget):
 
     def _export_pdf(self):
         from desktop.utils.security import require_permission
+        from desktop.utils.export_security import require_superadmin_pin_session
         if not require_permission(self.user, 'reports.export', self):
+            return
+        if not require_superadmin_pin_session(
+                self.api, self, reason='Export sales PDF report'):
             return
         try:
             self._pdf_btn.setEnabled(False); self._pdf_btn.setText('Exporting…')

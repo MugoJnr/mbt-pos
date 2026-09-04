@@ -18,6 +18,7 @@ from backend.report_export_service import (
     apply_data_cell, currency_number_format, find_logo_path,
     finalize_table, get_export_dir, write_footer, write_report_header,
     write_totals_row, style_header_row, app_version,
+    save_workbook,
 )
 
 
@@ -61,6 +62,7 @@ def export_sales_report(
     debt_invoices=None, debt_payments=None,
     variance_rows=None, variance_summary=None,
     generated_by=None, filters=None,
+    password=None,
 ):
     """
     Multi-sheet Excel report.
@@ -71,6 +73,7 @@ def export_sales_report(
     Sheet 5 – Stock / Inventory
     Sheet 6 – Debt Management
     Sheet 7 – Payment Variance (optional)
+    password: optional Super-Admin PIN for openpyxl workbook/sheet protection
     """
     wb = Workbook()
     period = f"{start_date or '—'} to {end_date or str(date.today())}"
@@ -562,9 +565,7 @@ def export_sales_report(
             get_export_dir(),
             f"sales_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         )
-    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    wb.save(output_path)
-    return output_path
+    return save_workbook(wb, output_path, password=password)
 
 
 def export_sales_report_html(

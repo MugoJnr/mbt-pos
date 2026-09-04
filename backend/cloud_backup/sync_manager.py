@@ -290,6 +290,13 @@ def _shop_auto_backup_enabled() -> bool:
 
 def _app_version() -> str:
     try:
+        from backend.app_version import resolve_app_version
+        ver = resolve_app_version()
+        if ver and str(ver).lower() not in ('unknown', 'none'):
+            return ver
+    except Exception:
+        pass
+    try:
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         vpath = os.path.join(root, 'version.json')
         with open(vpath, encoding='utf-8-sig') as f:

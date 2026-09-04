@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   GET,
   getAdminOverview,
+  isCloudDeviceOnline,
   type CloudLicense,
   type CloudDevice,
 } from "@/lib/api";
@@ -72,11 +73,7 @@ function AdminReportsPage() {
   const hwLocked = licenses.filter((l) => Boolean((l.reserved_device_id || "").trim())).length;
   const seatsUsed = licenses.reduce((n, l) => n + Number(l.activated_devices || 0), 0);
   const seatsMax = licenses.reduce((n, l) => n + Number(l.max_devices || 1), 0);
-  const onlineCutoff = Date.now() - 5 * 60 * 1000;
-  const isOnline = (device: CloudDevice) => {
-    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
-    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
-  };
+  const isOnline = isCloudDeviceOnline;
   const devicesActive = devices.filter(isOnline).length;
 
   const summary = (analyticsQ.data?.summary || analyticsQ.data?.kpis || analyticsQ.data || {}) as Record<string, unknown>;

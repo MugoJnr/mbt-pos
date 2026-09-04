@@ -110,10 +110,16 @@ class SecurityTab(QWidget):
             'The Super-Admin PIN is required to:\n'
             '  •  Adjust stock quantities directly\n'
             '  •  Void or edit completed sales\n'
+            '  •  Export sensitive spreadsheets (sales, inventory value, debt, P&L)\n'
+            '  •  View net-worth / finance overview and close periods\n'
+            '  •  Backdate the POS business day\n'
             '  •  Access this security panel\n'
             '  •  Override protected actions\n\n'
-            'Do NOT share this PIN with cashiers or regular admins.')
+            'Do NOT share this PIN with cashiers or regular admins.\n'
+            'Excel exports use this same PIN for workbook/sheet lock '
+            '(not MS “password to open” encryption).')
         desc.setStyleSheet(f"color:{C['text2']}; font-size:13px; background:transparent;")
+        desc.setWordWrap(True)
         lay.addWidget(desc)
 
         form = QFormLayout(); form.setSpacing(12)

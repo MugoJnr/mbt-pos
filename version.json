@@ -1,8 +1,8 @@
 {
-    "version": "3.0.80",
-    "build": "RC-2026-09-04-v3.0.80",
+    "version": "3.0.82",
+    "build": "RC-2026-09-04-v3.0.82",
     "released": "2026-09-04",
-    "release_notes": "MBT POS v3.0.80: Fix offline/Supabase hang (net_gate, gated cloud calls, CloudBoot off splash). Gate payments.mugobyte.com + updater offline. Includes v3.0.79 Adjust Stock Not Responding fix.",
-    "checksum_sha256": "aa0c9326b2b4ca840775807bbaf2453a0220a4432af408ba9cea46730c43f63d",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.80/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.82: Payment method normalization (Credit\u2192Credit Sale), reject unknown methods, Mixed tender server validation, debt invoice repair for Credit orphans, supervised Mixed correction (no invented splits), in-app cloud reauth alert when auth_state=reauth_required.",
+    "checksum_sha256": "63117e4a6152f8dd96351342df5e2a0911c232c2397e096c97ab092d7b752123",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.82/MBT_POS_Setup.exe"
 }

@@ -51,7 +51,7 @@ CHECKSUM_ASSET_NAMES = (
     'checksums.txt',
 )
 # Broken onefile release — never offer or install (Python DLL error on update)
-BLOCKED_VERSIONS = frozenset({'2.3.5'})
+BLOCKED_VERSIONS = frozenset({'2.3.5', '3.0.81'})
 
 # ── Retry / interval settings ─────────────────────────────────────────────────
 FIRST_CHECK_DELAY = 60          # seconds after startup
@@ -638,6 +638,11 @@ def mark_install_finished(version: str, success: bool, error: str = '') -> None:
         fail_count = 0
         st['last_success_version'] = ver
         st['last_result'] = 'ok'
+        try:
+            from backend.app_version import write_installed_version_stamp
+            write_installed_version_stamp(ver)
+        except Exception as e:
+            logger.warning('installed_version stamp skipped: %s', e)
     else:
         if prev_ver == ver:
             fail_count += 1

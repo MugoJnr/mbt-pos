@@ -2420,6 +2420,14 @@ class APIClient:
             variance_handling = (variance.get('handling') or data.get('variance_handling') or '').strip() or None
             electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
 
+            from desktop.utils.payment_methods import (
+                is_debt_payment_method,
+                normalize_payment_method,
+                validate_and_normalize_mixed,
+            )
+            pay_method = normalize_payment_method(
+                data.get('payment_method') or 'Cash')
+
             notes = data.get('notes', '') or ''
             mpesa_ref = (data.get('mpesa_ref') or '').strip()
             if mpesa_ref and 'mpesa ref' not in notes.lower():
@@ -2431,20 +2439,37 @@ class APIClient:
             emethod = (data.get('electronic_method') or '').strip()
             cash_paid_col = round(float(data.get('cash_paid') or 0), 2)
             tenders = data.get('payment_tenders')
-            if isinstance(tenders, (list, dict)):
-                tenders_json = json.dumps(tenders)
-            else:
-                tenders_json = (tenders or '').strip() or None
-            if not tenders_json and electronic_paid > 0.009:
-                from desktop.utils.payment_tenders import build_tenders
-                tenders_json = json.dumps(build_tenders(
-                    cash_paid=cash_paid_col or round(amount_paid - electronic_paid, 2),
+            if pay_method == 'Mixed':
+                mixed = validate_and_normalize_mixed(
+                    payment_tenders=tenders,
+                    sale_total=total,
+                    amount_paid=amount_paid,
+                    cash_paid=cash_paid_col,
                     electronic_paid=electronic_paid,
                     electronic_method=emethod,
-                    store_credit=credit_applied,
-                ))
+                    credit_applied=credit_applied,
+                )
+                tenders_json = mixed['tenders_json']
+                cash_paid_col = mixed['cash_paid']
+                electronic_paid = mixed['electronic_paid']
+                emethod = mixed['electronic_method'] or ''
+            else:
+                if isinstance(tenders, (list, dict)):
+                    tenders_json = json.dumps(tenders) if tenders else None
+                else:
+                    tenders_json = (tenders or '').strip() or None
+                if not tenders_json and electronic_paid > 0.009:
+                    from desktop.utils.payment_tenders import build_tenders
+                    tenders_json = json.dumps(build_tenders(
+                        cash_paid=cash_paid_col or round(
+                            amount_paid - electronic_paid, 2),
+                        electronic_paid=electronic_paid,
+                        electronic_method=emethod,
+                        store_credit=credit_applied,
+                    ))
             if electronic_paid > 0.009 and emethod and 'split:' not in notes.lower():
-                cash_bit = round(float(data.get('cash_paid') or (amount_paid - electronic_paid)), 2)
+                cash_bit = round(
+                    float(cash_paid_col or (amount_paid - electronic_paid)), 2)
                 notes = (
                     notes + f' | Split: {emethod} {electronic_paid:,.2f} + Cash {cash_bit:,.2f}'
                 ).strip(' |')
@@ -2466,7 +2491,7 @@ class APIClient:
                  total_discount,
                  tax,
                  total,
-                 data.get('payment_method', 'cash'),
+                 pay_method,
                  amount_paid,
                  change_amount,
                  notes,
@@ -2549,7 +2574,7 @@ class APIClient:
                     db, sale_id=sale_id, receipt_number=rn,
                     customer_id=customer_id, total=total,
                     amount_received=amount_paid, credit_applied=credit_applied,
-                    payment_method=data.get('payment_method', 'cash'),
+                    payment_method=pay_method,
                     variance=variance)
                 if variance_result.get('wallet_balance') is not None:
                     wallet_balance_after = variance_result['wallet_balance']
@@ -2565,7 +2590,7 @@ class APIClient:
                     "cashier_id,cashier_name,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (sale_id, rn, original_total, total, cash_rounding_adj,
                      electronic_paid, cash_orig, cash_rnd,
-                     data.get('payment_method', 'cash'),
+                     pay_method,
                      self._user_id, self._username or 'staff',
                      'Cash rounding adjustment')
                 )
@@ -2583,10 +2608,7 @@ class APIClient:
                 }))
             )
             debt_result = None
-            pay_method = (data.get('payment_method') or '').strip()
-            is_debt_sale = pay_method.lower() in (
-                'credit sale', 'credit account', 'part payment', 'on account',
-            )
+            is_debt_sale = is_debt_payment_method(pay_method)
             if is_debt_sale:
                 if not customer_id:
                     raise ValueError(
@@ -4414,16 +4436,28 @@ class APIClient:
                     'receipt_number': receipt_number,
                 }
 
-            payment_method = (sale.get('payment_method') or '').strip().lower()
-            if payment_method not in (
-                'credit sale', 'credit account', 'part payment', 'on account',
-            ):
+            payment_method = sale.get('payment_method') or ''
+            try:
+                from desktop.utils.payment_methods import (
+                    is_debt_payment_method,
+                    normalize_payment_method,
+                )
+                payment_method = normalize_payment_method(payment_method)
+            except ValueError:
+                payment_method = str(payment_method or '').strip()
+            if not is_debt_payment_method(payment_method):
                 return {
                     'error': (
                         'Debt invoices can only be created from a Credit Sale '
                         'or Part Payment transaction.'
                     )
                 }
+            # Keep the sale label canonical when creating the receivable.
+            if str(sale.get('payment_method') or '') != payment_method:
+                db.execute(
+                    "UPDATE sales SET payment_method=? WHERE id=?",
+                    (payment_method, int(sale_id)),
+                )
             # Debt value and amount paid are authoritative sale fields. HTTP/UI
             # callers cannot manufacture receivables by supplying new totals.
             total = round(float(sale.get('total') or 0), 2)
@@ -5314,8 +5348,9 @@ class APIClient:
         finally:
             db.close()
 
-    def void_consumption(self, consumption_id: int, reason: str) -> dict:
-        """Soft-void a consumption and restore stock. Admin / superadmin."""
+    def void_consumption(self, consumption_id: int, reason: str,
+                          *, pin: str = '') -> dict:
+        """Soft-void a consumption and restore stock. Admin / superadmin + PIN."""
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Void reason is required.'}
@@ -5329,6 +5364,13 @@ class APIClient:
         now = datetime.now().isoformat()
         try:
             db.execute("BEGIN IMMEDIATE")
+            pin_error = _authorize_superadmin_pin(
+                db, pin, operation=f'void_consumption id={consumption_id}',
+                user_id=self._user_id, username=self._username,
+            )
+            if pin_error:
+                db.commit()
+                return pin_error
             cons = db.execute(
                 "SELECT * FROM stock_consumptions WHERE id=?", (consumption_id,)
             ).fetchone()
