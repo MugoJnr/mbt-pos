@@ -2908,6 +2908,10 @@ class ProductGrid(QWidget):
         if not visible:
             self._ensure_cards_in_view()
             return
+        try:
+            self._host.show()
+        except Exception:
+            pass
         if not chunked or len(visible) <= 8:
             self._add_product_cards(visible, cols, card_size, cmap, start=0)
             self._ensure_cards_in_view()
@@ -2926,6 +2930,10 @@ class ProductGrid(QWidget):
         QTimer.singleShot(0, lambda t=token: self._populate_next_chunk(t))
 
     def _add_product_cards(self, batch, cols, card_size, cmap, start: int = 0):
+        try:
+            self._host.show()
+        except Exception:
+            pass
         for i, p in enumerate(batch):
             idx = start + i
             cat = p.get('category') or 'General'
@@ -2938,11 +2946,24 @@ class ProductGrid(QWidget):
             row = idx // cols
             self._grid_row_count = max(
                 int(getattr(self, '_grid_row_count', 0) or 0), row + 1)
+            try:
+                card.show()
+                h = max(int(card_size[1]), 72)
+                card.setMinimumHeight(h)
+                if not self._pro_density:
+                    card.setFixedHeight(h)
+            except Exception:
+                pass
             if self._pro_density:
                 try:
                     card.unlock_width(int(card_size[0] * 0.85))
                 except Exception:
                     pass
+                try:
+                    self._grid.setRowMinimumHeight(row, int(card_size[1]) + 4)
+                except Exception:
+                    pass
+            else:
                 try:
                     self._grid.setRowMinimumHeight(row, int(card_size[1]) + 4)
                 except Exception:
@@ -2968,6 +2989,7 @@ class ProductGrid(QWidget):
             QTimer.singleShot(0, lambda t=token: self._populate_next_chunk(t))
         else:
             self._pending_products = None
+            self._ensure_cards_in_view()
 
     def retint(self):
         for card in self.findChildren(ProductCard):

@@ -1,4 +1,4 @@
-﻿"""
+"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-04-v3.0.83"
-APP_VERSION   = "3.0.83"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-04-v3.0.84"
+APP_VERSION   = "3.0.84"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():

@@ -1,8 +1,8 @@
 {
-    "version": "3.0.83",
-    "build": "RC-2026-09-04-v3.0.83",
+    "version": "3.0.84",
+    "build": "RC-2026-09-04-v3.0.84",
     "released": "2026-09-04",
-    "release_notes": "MBT POS v3.0.83: Fix blank product tile after search (Showing 1 of 1 with no card) \u2014 reset Pro grid row mins and scroll to top. Faster POS search (chunked paint, indexed catalog, auto-reload empty catalog, 160ms debounce). M-Pesa status banner contrast + clearer manual-ref confirm copy. Includes 3.0.82 payment Credit/Mixed gates.",
-    "checksum_sha256": "06aa4f95c1fed37b3a6f01701221de7a537e2eb62f2e0bc7033bf367be1ee66c",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.83/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.84: Fix blank product tile after search (Showing 1 of 1 with no card) - hide empty overlay on hits, reset Checkout Pro grid row mins and scroll to top. Includes 3.0.83 search-perf and 3.0.82 payment gates.",
+    "checksum_sha256": "6c388e2177ed31c87529bcdf5e86aa651f1e724a60b2d1e36dabb38156d3d231",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.84/MBT_POS_Setup.exe"
 }

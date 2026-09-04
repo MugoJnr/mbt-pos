@@ -1,4 +1,4 @@
-﻿# UTF-8
+# UTF-8
 #
 # PyInstaller Windows version resource for MBT POS
 VSVersionInfo(
@@ -20,12 +20,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'MugoByte Technologies'),
             StringStruct(u'FileDescription', u'Professional Point of Sale System'),
-            StringStruct(u'FileVersion', u'3.0.83.0'),
+            StringStruct(u'FileVersion', u'3.0.84.0'),
             StringStruct(u'InternalName', u'MBT_POS'),
             StringStruct(u'LegalCopyright', u'Copyright \u00a9 2026 MugoByte Technologies'),
             StringStruct(u'OriginalFilename', u'MBT_POS.exe'),
             StringStruct(u'ProductName', u'MBT POS'),
-            StringStruct(u'ProductVersion', u'3.0.83.0'),
+            StringStruct(u'ProductVersion', u'3.0.84.0'),
           ]
         )
       ]

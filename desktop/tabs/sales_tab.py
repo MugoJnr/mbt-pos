@@ -1389,8 +1389,18 @@ class SalesTab(QWidget):
             if callable(show_empty):
                 show_empty(True)
         else:
+            # ALWAYS drop empty overlay before paint — shop bug: "Showing 1 of 1"
+            # with a blank product area because the overlay stayed raised.
             if callable(show_empty):
                 show_empty(False)
+            try:
+                empty = getattr(self, '_empty', None)
+                if empty is not None:
+                    empty.hide()
+                    empty.setGeometry(0, 0, 0, 0)
+                    empty.lower()
+            except Exception:
+                pass
             self._prod_grid.set_currency(self._currency)
             self._prod_grid.set_light(bool(getattr(self, '_is_light', False)))
             self._prod_grid.set_categories_map(
@@ -1402,6 +1412,9 @@ class SalesTab(QWidget):
             use_chunk = bool(defer) or len(filtered) > 8
             self._prod_grid.populate(filtered, columns=cols, chunked=use_chunk)
             self._grid_painted = True
+            # Re-hide after populate in case a paint/raise raced the overlay.
+            if callable(show_empty):
+                show_empty(False)
 
     def _show_empty_overlay(self, visible: bool):
         empty = getattr(self, '_empty', None)
