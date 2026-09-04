@@ -1,0 +1,84 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "\u25b6  Run Check",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Copy Errors",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "\u2b07  Export",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Rotate Logs",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Retry / Repair",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "CF Logs",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    }
+  ],
+  "fields": [],
+  "checks": []
+}

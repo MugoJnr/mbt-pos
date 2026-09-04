@@ -1122,6 +1122,10 @@ class UpdateChecker:
     def _check(self) -> bool:
         """Return True when GitHub was reached (even if already up to date)."""
         try:
+            if not self._is_online():
+                logger.info(
+                    f"Update check skipped — offline (current=v{self.current_version})")
+                return False
             logger.info(f"Update check starting (current=v{self.current_version})")
             info = self._fetch_release_info()
             if not info:

@@ -90,22 +90,12 @@ class SettingsTab(QWidget):
             cue.setVisible(False)
 
     def _paint_jump_nav(self):
-        from desktop.utils.theme import qss_alpha, RADIUS
-        r = RADIUS['md']
-        for k, b in (getattr(self, '_jump_btns', {}) or {}).items():
-            if b.isChecked():
-                b.setStyleSheet(
-                    f"QPushButton{{background:{qss_alpha(C['gold'], 0.22)}; color:{C['gold']}; "
-                    f"border:1px solid {qss_alpha(C['gold'], 0.45)}; border-radius:{r}px; "
-                    f"font-size:12px; font-weight:700; padding:4px 10px;}}"
-                )
-            else:
-                b.setStyleSheet(
-                    f"QPushButton{{background:transparent; color:{C['text2']}; "
-                    f"border:1px solid {C['border']}; border-radius:{r}px; "
-                    f"font-size:12px; font-weight:600; padding:4px 10px;}}"
-                    f"QPushButton:hover{{color:{C['gold']}; border-color:{C['gold']};}}"
-                )
+        """No-op: the Jump pills are styled by the global `sectionPill` rule.
+
+        Checked/hover states come from QSS pseudo-states, so they follow a
+        palette change without any per-state inline stylesheet to refresh.
+        """
+        return
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
@@ -153,6 +143,7 @@ class SettingsTab(QWidget):
             ('cloud', 'Cloud'),
         ):
             b = GhostBtn(label, 28)
+            b.setObjectName('sectionPill')
             b.setCheckable(True)
             b.setAutoExclusive(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -200,7 +191,7 @@ class SettingsTab(QWidget):
         self._fold_cue = QLabel('↓  More settings below — scroll to continue')
         self._fold_cue.setAlignment(Qt.AlignCenter)
         self._fold_cue.setStyleSheet(
-            f"color:{C['gold']}; font-size:11px; font-weight:700; "
+            f"color:{C['gold_ink']}; font-size:11px; font-weight:700; "
             f"background:{qss_alpha(C['gold'], 0.12)}; border:1px solid {qss_alpha(C['gold'], 0.35)}; "
             f"border-radius:8px; padding:8px 12px; margin:0 20px 10px 20px;")
         outer.addWidget(self._fold_cue)
@@ -234,34 +225,84 @@ class SettingsTab(QWidget):
         self.receipt_footer = Field('Thank you for shopping with us!')
         self.auto_print = QCheckBox('Auto-print receipt after each sale')
         self.auto_print.setMinimumHeight(36)
-        self.printer_port = Field('USB, COM3, or /dev/usb/lp0')
-        for lbl, w in [('Receipt Footer', self.receipt_footer),
-                       ('', self.auto_print), ('Printer Port', self.printer_port)]:
+        self.open_drawer_on_cash = QCheckBox('Open cash drawer on cash sales')
+        self.open_drawer_on_cash.setMinimumHeight(36)
+        self.print_logo = QCheckBox('Print shop logo when available')
+        self.print_logo.setMinimumHeight(36)
+        self.printer_connection = QComboBox()
+        self.printer_connection.addItem('Windows printer (USB / installed)', 'windows')
+        self.printer_connection.addItem('LAN / Network ESC/POS', 'lan')
+        self.printer_connection.setMinimumHeight(40)
+        self.printer_name = QComboBox()
+        self.printer_name.setEditable(True)
+        self.printer_name.setMinimumHeight(40)
+        self.printer_name.setToolTip('Installed Windows printer that accepts RAW ESC/POS')
+        self.printer_ip = Field('e.g. 192.168.1.50')
+        self.printer_lan_port = Field('9100')
+        self.printer_timeout = Field('5')
+        self.printer_port = Field('Optional COM/LPT fallback (e.g. COM3)')
+        self.printer_port.setToolTip('Legacy serial/LPT only — prefer Windows printer name or LAN IP')
+        for lbl, w in [
+            ('Receipt Footer', self.receipt_footer),
+            ('', self.auto_print),
+            ('', self.open_drawer_on_cash),
+            ('', self.print_logo),
+            ('Connection', self.printer_connection),
+            ('Windows Printer', self.printer_name),
+            ('LAN IP', self.printer_ip),
+            ('LAN Port', self.printer_lan_port),
+            ('Timeout (sec)', self.printer_timeout),
+            ('Legacy Port', self.printer_port),
+        ]:
             FormRow(lbl, w, pf)
+        btn_row = QHBoxLayout()
         test_btn = SecondaryBtn('Print Test Page', 40)
-        test_btn.setFixedWidth(180); test_btn.clicked.connect(self._test_print)
-        pf.addRow(QLabel(''), test_btn)
+        test_btn.setFixedWidth(160); test_btn.clicked.connect(self._test_print)
+        lan_btn = SecondaryBtn('Test LAN', 40)
+        lan_btn.setFixedWidth(120); lan_btn.clicked.connect(self._test_lan_printer)
+        drawer_btn = SecondaryBtn('Test Drawer', 40)
+        drawer_btn.setFixedWidth(130); drawer_btn.clicked.connect(self._test_cash_drawer)
+        refresh_btn = GhostBtn('Refresh Printers', 40)
+        refresh_btn.clicked.connect(self._refresh_windows_printers)
+        btn_row.addWidget(test_btn)
+        btn_row.addWidget(lan_btn)
+        btn_row.addWidget(drawer_btn)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addStretch(1)
+        pf.addRow(QLabel(''), btn_row)
         pf_body.addWidget(pf_w)
         lay.addWidget(pg)
+        self._refresh_windows_printers()
+        self.printer_connection.currentIndexChanged.connect(self._on_printer_connection_changed)
+        self._on_printer_connection_changed()
 
-        # ── M-Pesa (per shop — no customer accounts) ───────────────────────────
-        mg, mf_body = section_card('$', 'M-Pesa Payments', 'Till / Paybill shown on receipts')
+        # ── M-Pesa (per shop — secrets live in MugoByte Payments cloud) ───────
+        mg, mf_body = section_card('$', 'M-Pesa Payments', 'Till / Paybill + MugoByte Payments cloud')
         self._section_anchors['mpesa'] = mg
         mf = make_form(); mf_w = QWidget(); mf_w.setLayout(mf)
-        # STK Push is not implemented — keep mode fixed to manual (no dead UI control).
         self.mpesa_mode = QComboBox()
-        self.mpesa_mode.addItems(['Manual (Till / Paybill on receipt)'])
-        self.mpesa_mode.hide()
+        self.mpesa_mode.addItems([
+            'Manual (Till / Paybill on receipt)',
+            'Cloud (STK + Till detection via payments.mugobyte.com)',
+        ])
         self.mpesa_till = Field('e.g. 123456')
         self.mpesa_paybill = Field('e.g. 400200')
         self.mpesa_business = Field('Name shown on receipt')
+        self.payments_cloud_url = Field('https://payments.mugobyte.com')
         mpesa_hint = QLabel(
-            'Each shop uses its own Till or Paybill. Cashiers confirm payment on the customer\'s phone — '
-            'no buyer personal details are stored. STK Push is not available yet.')
+            'Each shop uses a portable merchant profile in MugoByte Payments. '
+            'Daraja secrets never live on this PC. Checkout shows Send Prompt only when '
+            'the cloud profile enables STK. Till/Paybill below print on receipts and drive matching.'
+        )
         mpesa_hint.setWordWrap(True)
         mpesa_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
-        for lbl, w in [('Till Number', self.mpesa_till),
-                       ('Paybill (optional)', self.mpesa_paybill), ('Business Name', self.mpesa_business)]:
+        for lbl, w in [
+            ('Collection mode', self.mpesa_mode),
+            ('Payments cloud URL', self.payments_cloud_url),
+            ('Till Number', self.mpesa_till),
+            ('Paybill (optional)', self.mpesa_paybill),
+            ('Business Name', self.mpesa_business),
+        ]:
             FormRow(lbl, w, mf)
         mf.addRow(mpesa_hint)
         mf_body.addWidget(mf_w)
@@ -820,12 +861,34 @@ class SettingsTab(QWidget):
         self.tax_rate.setValue(float(cfg.get('tax_rate', 0) or 0))
         self.receipt_footer.setText(cfg.get('receipt_footer', 'Thank you for shopping with us!'))
         self.auto_print.setChecked(cfg.get('auto_print', '1') == '1')
+        self.open_drawer_on_cash.setChecked(cfg.get('open_drawer_on_cash', '1') == '1')
+        self.print_logo.setChecked(cfg.get('print_logo', '1') == '1')
+        conn = (cfg.get('printer_connection') or 'windows').strip().lower()
+        idx = self.printer_connection.findData(conn)
+        if idx < 0:
+            idx = 0
+        self.printer_connection.setCurrentIndex(idx)
+        self._refresh_windows_printers()
+        pname = (cfg.get('printer_name') or '').strip()
+        if pname:
+            if self.printer_name.findText(pname) < 0:
+                self.printer_name.addItem(pname)
+            self.printer_name.setCurrentText(pname)
+        self.printer_ip.setText(cfg.get('printer_ip') or cfg.get('printer_host') or '')
+        self.printer_lan_port.setText(str(cfg.get('printer_lan_port') or '9100'))
+        self.printer_timeout.setText(str(cfg.get('printer_timeout') or '5'))
         self.printer_port.setText(cfg.get('printer_port', ''))
+        self._on_printer_connection_changed()
         self.sync_interval.setValue(int(cfg.get('sync_interval', 30) or 30))
         self.mpesa_till.setText(cfg.get('mpesa_till', ''))
         self.mpesa_paybill.setText(cfg.get('mpesa_paybill', ''))
         self.mpesa_business.setText(cfg.get('mpesa_business_name', '') or cfg.get('shop_name', ''))
-        self.mpesa_mode.setCurrentIndex(0)  # STK not available — always manual
+        mode = str(cfg.get('mpesa_mode') or 'manual').lower()
+        self.mpesa_mode.setCurrentIndex(1 if mode in ('cloud', 'stk', 'auto') else 0)
+        if hasattr(self, 'payments_cloud_url'):
+            self.payments_cloud_url.setText(
+                cfg.get('payments_cloud_base_url') or 'https://payments.mugobyte.com'
+            )
         self.auto_report_daily.setChecked(cfg.get('auto_report_daily', '1') == '1')
         self.auto_report_weekly.setChecked(cfg.get('auto_report_weekly', '0') == '1')
         self.auto_db_backup.setChecked(cfg.get('auto_db_backup', '1') == '1')
@@ -954,13 +1017,15 @@ class SettingsTab(QWidget):
             self._cf_health.setText(f'Health panel unavailable: {e}')
 
     def _repair_cloudflare(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         if not self._require_cf_admin():
             return
         self._cf_status.setText('⏳ Repairing Cloudflare (DNS/ingress/HTTPS)…')
         self._cf_repair_btn.setEnabled(False)
 
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -971,10 +1036,10 @@ class SettingsTab(QWidget):
                 rep = reconcile_cloudflare_state(
                     force_dns=True, verify_https=True, log=log)
                 process_cf_retry_queue(max_items=3)
-                QTimer.singleShot(0, lambda: self._on_cf_repair_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_repair_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_repair_done(
-                    {'ok': False, 'errors': [str(e)], 'active': False}))
+                run_on_ui_thread(lambda err=str(e): self._on_cf_repair_done(
+                    {'ok': False, 'errors': [err], 'active': False}))
 
         threading.Thread(target=worker, daemon=True, name='CF-Repair').start()
 
@@ -1297,6 +1362,8 @@ class SettingsTab(QWidget):
         return True
 
     def _run_cloudflare_setup(self, force_relogin=False):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         if self._cf_setup_running:
             return
         if force_relogin:
@@ -1372,7 +1439,7 @@ class SettingsTab(QWidget):
         self._cf_log.clear()
 
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -1381,10 +1448,10 @@ class SettingsTab(QWidget):
                     shop, subdomain=sub, log_callback=_cb,
                     force_relogin=force_relogin,
                 ).run()
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done(result))
+                run_on_ui_thread(lambda: self._on_cf_setup_done(result))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done({
-                    'ok': False, 'errors': [str(e)], 'log_path': '',
+                run_on_ui_thread(lambda err=str(e): self._on_cf_setup_done({
+                    'ok': False, 'errors': [err], 'log_path': '',
                 }))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1425,20 +1492,22 @@ class SettingsTab(QWidget):
         self._refresh_cf_status()
 
     def _test_cloudflare(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         self._cf_status.setText('⏳ Running diagnostics…')
         self._cf_test_btn.setEnabled(False)
 
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
                 from backend.cloudflare_setup import run_diagnostics
                 rep = run_diagnostics(_cb)
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_test_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(
-                    {'ok': False, 'checks': [], 'error': str(e)}))
+                run_on_ui_thread(lambda err=str(e): self._on_cf_test_done(
+                    {'ok': False, 'checks': [], 'error': err}))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1468,13 +1537,27 @@ class SettingsTab(QWidget):
             'tax_rate':            str(self.tax_rate.value()),
             'receipt_footer':      self.receipt_footer.text().strip(),
             'auto_print':          '1' if self.auto_print.isChecked() else '0',
+            'open_drawer_on_cash': '1' if self.open_drawer_on_cash.isChecked() else '0',
+            'print_logo':          '1' if self.print_logo.isChecked() else '0',
+            'printer_connection':  self.printer_connection.currentData() or 'windows',
+            'printer_name':        self.printer_name.currentText().strip(),
+            'printer_ip':          self.printer_ip.text().strip(),
+            'printer_lan_port':    self.printer_lan_port.text().strip() or '9100',
+            'printer_timeout':     self.printer_timeout.text().strip() or '5',
             'printer_port':        self.printer_port.text().strip(),
-            # sync_interval / STK / post-finalize refund are not wired — persist safe defaults only.
+            'printer_profile':     'xp_t80a',
+            # sync_interval / post-finalize refund are not wired — persist safe defaults only.
             'sync_interval':       '30',
-            'mpesa_mode':          'manual',
+            'mpesa_mode':          (
+                'cloud' if self.mpesa_mode.currentIndex() == 1 else 'manual'
+            ),
             'mpesa_till':          self.mpesa_till.text().strip(),
             'mpesa_paybill':       self.mpesa_paybill.text().strip(),
             'mpesa_business_name': self.mpesa_business.text().strip(),
+            'payments_cloud_base_url': (
+                self.payments_cloud_url.text().strip()
+                if hasattr(self, 'payments_cloud_url') else 'https://payments.mugobyte.com'
+            ) or 'https://payments.mugobyte.com',
             'auto_report_daily':   '1' if self.auto_report_daily.isChecked() else '0',
             'auto_report_weekly':  '1' if self.auto_report_weekly.isChecked() else '0',
             'auto_db_backup':      '1' if self.auto_db_backup.isChecked() else '0',
@@ -1668,16 +1751,75 @@ class SettingsTab(QWidget):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
+    def _refresh_windows_printers(self):
+        try:
+            from printing.printer_engine import windows_printers
+            current = self.printer_name.currentText().strip()
+            self.printer_name.blockSignals(True)
+            self.printer_name.clear()
+            for name in windows_printers():
+                # Skip virtual PDF/OneNote for default selection clarity; still list them
+                self.printer_name.addItem(name)
+            if current:
+                if self.printer_name.findText(current) < 0:
+                    self.printer_name.addItem(current)
+                self.printer_name.setCurrentText(current)
+            self.printer_name.blockSignals(False)
+        except Exception:
+            pass
+
+    def _on_printer_connection_changed(self, *_):
+        mode = self.printer_connection.currentData() or 'windows'
+        is_lan = mode == 'lan'
+        self.printer_name.setEnabled(not is_lan)
+        self.printer_ip.setEnabled(is_lan)
+        self.printer_lan_port.setEnabled(is_lan)
+        self.printer_timeout.setEnabled(is_lan)
+
+    def _test_lan_printer(self):
+        try:
+            from printing.printer_engine import test_lan_printer
+            host = self.printer_ip.text().strip()
+            port = int(self.printer_lan_port.text().strip() or '9100')
+            timeout = float(self.printer_timeout.text().strip() or '3')
+            ok, detail = test_lan_printer(host, port, timeout)
+            if ok:
+                QMessageBox.information(self, 'LAN Printer', f'Reachable.\n{detail}')
+            else:
+                QMessageBox.warning(self, 'LAN Printer', f'Unreachable.\n{detail}')
+        except Exception as e:
+            QMessageBox.critical(self, 'LAN Printer', str(e))
+
+    def _test_cash_drawer(self):
+        try:
+            from printing.printer_engine import PrinterManager
+            mgr = PrinterManager.shared(lambda: self.api.get_settings() or {})
+            mgr.open_cash_drawer()
+            QMessageBox.information(
+                self, 'Cash Drawer',
+                'Drawer pulse queued.\n'
+                'If nothing happens, check RJ11 cable and printer power.')
+        except Exception as e:
+            QMessageBox.critical(self, 'Cash Drawer', str(e))
+
     def _test_print(self):
         try:
             sys.path.insert(0, _PR)
             from printing.printer_engine import PrinterManager
-            PrinterManager(lambda: self.api.get_settings() or {}).test_print()
+            # Persist current form values so test uses what the cashier sees
+            try:
+                self.api.update_settings(self._common_payload())
+            except Exception:
+                pass
+            mgr = PrinterManager.shared(lambda: self.api.get_settings() or {})
+            mgr.test_print()
             QMessageBox.information(self, 'Test', 'Test page queued.')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
 
     def _send_report_now(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         self._send_report_now_btn.setEnabled(False)
         self._send_report_now_btn.setText('Sending…')
         from backend.cloud.report_engine import ReportEngine
@@ -1693,10 +1835,12 @@ class SettingsTab(QWidget):
                     QMessageBox.information(self, 'Report Sent', msg)
                 else:
                     QMessageBox.warning(self, 'Report', msg)
-            QTimer.singleShot(0, _ui)
+            run_on_ui_thread(_ui)
         threading.Thread(target=_run, daemon=True).start()
 
     def _send_backup_now(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         self._send_backup_now_btn.setEnabled(False)
         self._send_backup_now_btn.setText('Backing up…')
         from backend.db_backup import send_db_backup_now
@@ -1709,7 +1853,7 @@ class SettingsTab(QWidget):
                     QMessageBox.information(self, 'Backup Sent', msg)
                 else:
                     QMessageBox.warning(self, 'Backup', msg)
-            QTimer.singleShot(0, _ui)
+            run_on_ui_thread(_ui)
 
         send_db_backup_now(self.config_getter, api=self.api, on_done=on_done, reason='manual')
 
@@ -1800,7 +1944,14 @@ class SecuritySettingsTab(QWidget):
         new = self._new.text().strip()
         conf = self._confirm.text().strip()
         if len(new) < 6:
-            QMessageBox.warning(self,'Too Short','PIN must be at least 6 characters.'); return
+            QMessageBox.warning(self,'Too Short','PIN must be at least 6 digits.'); return
+        # `isdigit()` alone accepts superscripts and other Unicode digits, which
+        # would not survive a numeric keypad round trip.
+        if not (new.isascii() and new.isdigit()):
+            QMessageBox.warning(
+                self, 'Digits Only',
+                'PIN must contain digits only (0-9) — at least 6 of them.')
+            return
         if new != conf:
             QMessageBox.warning(self,'Mismatch','New PIN and confirmation do not match.'); return
         cfg = self.api.get_settings() or {}

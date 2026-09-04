@@ -1,4 +1,4 @@
-"""
+﻿"""
 MBT POS ? Main Application Entry Point
 MugoByte Technologies | mugobyte.com
 
@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-03-v3.0.76"
-APP_VERSION   = "3.0.77"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-04-v3.0.80"
+APP_VERSION   = "3.0.80"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -672,7 +672,7 @@ class LoginDialog(QDialog):
         self._msg.setStyleSheet(
             f"color:{C['err'] if err else C['ok']}; font-size:13px;")
 
-    # Single-pointer drag only — extra touch points must not jump the window.
+    # Single-pointer drag only â€” extra touch points must not jump the window.
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and getattr(self, '_drag_pos', None) is None:
             self._drag_pos = e.globalPos() - self.frameGeometry().topLeft()
@@ -902,7 +902,7 @@ class MainWindow(QMainWindow):
             'Idle session logout after %.0fs inactivity',
             self._idle_elapsed_sec(),
         )
-        # Non-modal: status only Ã¢â‚¬â€ login screen is the next step (no surprise OK)
+        # Non-modal: status only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â login screen is the next step (no surprise OK)
         try:
             self._set_status('Signed out due to inactivity')
         except Exception:
@@ -1279,10 +1279,10 @@ class MainWindow(QMainWindow):
                         busy = False
 
                 short = {
-                    STATE_TAMPERED: 'License tampered — contact support',
-                    STATE_INACTIVE: 'License revoked — contact support',
-                    STATE_EXPIRED: 'License expired — renew to continue',
-                    STATE_UNACTIVATED: 'License missing — activation required',
+                    STATE_TAMPERED: 'License tampered â€” contact support',
+                    STATE_INACTIVE: 'License revoked â€” contact support',
+                    STATE_EXPIRED: 'License expired â€” renew to continue',
+                    STATE_UNACTIVATED: 'License missing â€” activation required',
                 }.get(state, 'License invalid')
                 try:
                     self._set_status(short)
@@ -1535,7 +1535,7 @@ class MainWindow(QMainWindow):
         self._schedule_unattended_install()
 
     def _ui_force_update(self, version, reason):
-        # Non-modal: same pattern as install-fail Ã¢â‚¬â€ Update button + status (no surprise OK)
+        # Non-modal: same pattern as install-fail ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Update button + status (no surprise OK)
         self._pending_update_version = version
         title = f'Update required: v{version}'
         try:
@@ -1549,7 +1549,7 @@ class MainWindow(QMainWindow):
                 reason or f'Please update to v{version} to continue using MBT POS.')
             btn.show()
             btn.raise_()
-        log.warning('Force update required (non-modal): v%s Ã¢â‚¬â€ %s', version, reason or '')
+        log.warning('Force update required (non-modal): v%s ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â %s', version, reason or '')
 
     def _restore_pending_update(self):
         """If a update was downloaded while UI was not ready, show the button."""
@@ -1733,7 +1733,7 @@ class MainWindow(QMainWindow):
 
         # Sidebar and content live in a splitter so the shop can drag the nav
         # narrower/wider. Stretch 0/1 means every extra pixel goes to the POS.
-        # ShellSplitter paints a grip in the gutter — a plain QSplitter handle
+        # ShellSplitter paints a grip in the gutter â€” a plain QSplitter handle
         # is the same colour as the sidebar border and reads as decoration.
         from desktop.utils.shell_splitter import ShellSplitter
         split = ShellSplitter(Qt.Horizontal)
@@ -1758,7 +1758,7 @@ class MainWindow(QMainWindow):
         self._connect_sidebar()
         self._apply_sidebar_state(persist=False)
 
-    # ── Collapsible / resizable sidebar ─────────────────────────────────────────
+    # â”€â”€ Collapsible / resizable sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _build_sidebar(self):
         # AppShell sidebar: logo + brand + collapse control, gold active rail.
         # Width is applied by _apply_sidebar_state (never fixed here or in QSS).
@@ -1952,7 +1952,7 @@ class MainWindow(QMainWindow):
     def _reset_sidebar_width(self, *_args):
         """Double-click on the gutter: back to this screen's shipped width.
 
-        Collapse state is left alone — the toggle control owns that, and a
+        Collapse state is left alone â€” the toggle control owns that, and a
         double-click while collapsed cannot reach here (the handle is disabled).
         """
         from desktop.utils.sidebar_prefs import default_sidebar_state
@@ -2521,7 +2521,7 @@ class MainWindow(QMainWindow):
             # Point of Sale: the checkout rail fills its own bottom-right corner
             # with the Sale Actions pad + Complete Sale, so a floating chip lands
             # on top of them. AI stays one click away via the sidebar (AI
-            # Operations) — quiet-POS wins over an overlay during checkout.
+            # Operations) â€” quiet-POS wins over an overlay during checkout.
             active = getattr(self, '_active_tab_id', None) or ''
             if active in ('dashboard', 'sales'):
                 fab.hide()
@@ -2917,7 +2917,7 @@ class MainWindow(QMainWindow):
             {'syncing':'Syncing', 'synced':'Synced', 'failed':'Failed', 'idle':'Idle'}.get(s, s))
 
     def _set_status(self, text: str, *, transient: bool = True):
-        """Non-modal status strip Ã¢â‚¬â€ never steal focus with a MessageBox."""
+        """Non-modal status strip ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never steal focus with a MessageBox."""
         msg = (text or '').strip()
         if not msg:
             return
@@ -3411,7 +3411,7 @@ def main():
         install_orphan_flash_guard()
         from desktop.utils.input_guard import install_input_burst_guard
         install_input_burst_guard()
-        # Defer logger until main window exists — hooked after show below
+        # Defer logger until main window exists â€” hooked after show below
         app._mbt_install_tl_logger = install_toplevel_debug_logger
     except Exception:
         log.exception('Failed to install empty message-box guard')
@@ -3427,7 +3427,7 @@ def main():
     except Exception:
         app.setFont(QFont('Segoe UI', 13))
     # Dark QSS first so splash paints immediately. Theme is applied after init_db
-    # from SQLite — never construct APIClient before the splash is visible.
+    # from SQLite â€” never construct APIClient before the splash is visible.
     app.setStyleSheet(ThemeManager.apply(False, force=True))
 
     icon = _load_icon()
@@ -3454,16 +3454,34 @@ def main():
         except Exception:
             pass
 
-    try:
-        from backend.cloud.device_service import get_device_service
-        from backend.cloud.command_center import get_command_center
-        from mbt_paths import get_db_path
-        get_device_service(lambda: APIClient(BACKEND_URL).get_settings() or {}).start_heartbeat()
-        get_command_center(get_db_path(), lambda: APIClient(BACKEND_URL).get_settings() or {}).start_poller(
-            lambda: __import__('backend.cloud_backup.device_manager', fromlist=['get_or_create_device_id']).get_or_create_device_id()
-        )
-    except Exception as e:
-        log.warning(f"Cloud services: {e}")
+    # Cloud heartbeat / command poller / M-Pesa recovery must not run on the
+    # splash thread. Offline Windows DNS to *.supabase.co can stall Winsock and
+    # freeze the UI for 30s+ even with HTTP timeouts.
+    def _boot_cloud_and_payments():
+        try:
+            from backend.cloud.device_service import get_device_service
+            from backend.cloud.command_center import get_command_center
+            from mbt_paths import get_db_path
+            get_device_service(lambda: APIClient(BACKEND_URL).get_settings() or {}).start_heartbeat()
+            get_command_center(get_db_path(), lambda: APIClient(BACKEND_URL).get_settings() or {}).start_poller(
+                lambda: __import__('backend.cloud_backup.device_manager', fromlist=['get_or_create_device_id']).get_or_create_device_id()
+            )
+        except Exception as e:
+            log.warning(f"Cloud services: {e}")
+        try:
+            from desktop.payments.service import build_payment_service
+            from desktop.utils.api_client import _db
+            _pay_svc = build_payment_service(
+                db_conn_factory=_db,
+                settings_getter=lambda: APIClient(BACKEND_URL).get_settings() or {},
+            )
+            recovered = _pay_svc.recover_pending_payments()
+            if recovered:
+                log.info('M-Pesa recovery: %s pending payment(s) re-queried', len(recovered))
+        except Exception as e:
+            log.debug('M-Pesa recovery skipped: %s', e)
+
+    threading.Thread(target=_boot_cloud_and_payments, daemon=True, name='CloudBoot').start()
 
     splash.set_status("Starting web dashboard...", 55)
     _start_web_dashboard()

@@ -739,58 +739,83 @@ def init_db():
     logger.info("Database initialized")
 
 
+def _resolve_local_identity(token: str):
+    """Decode the local Flask JWT. Returns the user row dict or None."""
+    try:
+        data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        db = get_db()
+        user = db.execute("SELECT * FROM users WHERE id=? AND is_active=1",
+                          (data['user_id'],)).fetchone()
+        return dict(user) if user else None
+    except Exception:
+        return None
+
+
+def _resolve_supabase_identity(token: str):
+    """Verify a Supabase JWT (MugoByte Platform cloud auth)."""
+    try:
+        from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config
+        from backend.cloud.net_gate import network_up, mark_network_down
+        if not is_cloud_configured():
+            return None
+        # Never hang Flask auth on offline supabase.co DNS.
+        if not network_up(1.0):
+            return None
+        import requests as _req
+        cfg = load_cloud_config()
+        r = _req.get(
+            f"{(cfg.get('supabase_url') or '').rstrip('/')}/auth/v1/user",
+            headers={
+                'apikey': cfg.get('anon_key') or '',
+                'Authorization': f'Bearer {token}',
+            },
+            timeout=3,
+        )
+        if r.status_code >= 400:
+            return None
+        u = r.json() or {}
+        meta = u.get('user_metadata') or {}
+        app_meta = u.get('app_metadata') or {}
+        return {
+            'id': u.get('id'),
+            'username': (u.get('email') or '').split('@')[0] or 'cloud',
+            'full_name': meta.get('full_name') or meta.get('name') or (u.get('email') or ''),
+            'email': u.get('email') or '',
+            # Platform roles are server-controlled app metadata.
+            # Organization ownership is checked through org_members.
+            'role': app_meta.get('platform_role') or 'member',
+            'tab_permissions': '[]',
+            'is_active': 1,
+        }
+    except Exception as e:
+        try:
+            from backend.cloud.net_gate import mark_network_down
+            mark_network_down()
+        except Exception:
+            pass
+        logger.debug('Supabase token check: %s', e)
+        return None
+
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('Authorization', '').replace('Bearer ', '')
         if not token:
             return jsonify({'error': 'Token required'}), 401
-        # 1) Local Flask JWT (desktop POS / local users)
-        try:
-            data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
-            db = get_db()
-            user = db.execute("SELECT * FROM users WHERE id=? AND is_active=1",
-                              (data['user_id'],)).fetchone()
-            if user:
-                g.current_user = dict(user)
-                g.auth_provider = 'local'
-                return f(*args, **kwargs)
-        except Exception:
-            pass
-        # 2) Supabase JWT (MugoByte Platform cloud auth)
-        try:
-            from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config
-            if is_cloud_configured():
-                import requests as _req
-                cfg = load_cloud_config()
-                r = _req.get(
-                    f"{(cfg.get('supabase_url') or '').rstrip('/')}/auth/v1/user",
-                    headers={
-                        'apikey': cfg.get('anon_key') or '',
-                        'Authorization': f'Bearer {token}',
-                    },
-                    timeout=10,
-                )
-                if r.status_code < 400:
-                    u = r.json() or {}
-                    meta = u.get('user_metadata') or {}
-                    app_meta = u.get('app_metadata') or {}
-                    g.current_user = {
-                        'id': u.get('id'),
-                        'username': (u.get('email') or '').split('@')[0] or 'cloud',
-                        'full_name': meta.get('full_name') or meta.get('name') or (u.get('email') or ''),
-                        'email': u.get('email') or '',
-                        # Platform roles are server-controlled app metadata.
-                        # Organization ownership is checked through org_members.
-                        'role': app_meta.get('platform_role') or 'member',
-                        'tab_permissions': '[]',
-                        'is_active': 1,
-                    }
-                    g.auth_provider = 'supabase'
-                    return f(*args, **kwargs)
-        except Exception as e:
-            logger.debug('Supabase token check: %s', e)
-        return jsonify({'error': 'Invalid token'}), 401
+        # Identity resolution is kept strictly separate from view execution.
+        # Running the view inside the decode try/except turned every view
+        # exception (duplicate username, DB error, …) into "Invalid token".
+        user = _resolve_local_identity(token)
+        provider = 'local'
+        if user is None:
+            user = _resolve_supabase_identity(token)
+            provider = 'supabase'
+        if user is None:
+            return jsonify({'error': 'Invalid token'}), 401
+        g.current_user = user
+        g.auth_provider = provider
+        return f(*args, **kwargs)
     return decorated
 
 
@@ -809,6 +834,41 @@ def _role_is(*roles: str) -> bool:
 
 def _actor_role() -> str:
     return g.current_user.get('role', 'cashier')
+
+
+def _user_tab_allowed(tab: str, user=None) -> bool:
+    """Mirror desktop navigation, including owner/admin lockout protection."""
+    from roles import default_tab_permissions
+    user = user or g.current_user
+    role = str(user.get('role') or 'cashier').strip().lower()
+    if role in ('admin', 'superadmin'):
+        return True
+    raw = user.get('tab_permissions')
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or '[]')
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        raw = []
+    tabs = set(raw if raw else default_tab_permissions(role))
+    return tab in tabs
+
+
+def _public_settings(rows) -> dict:
+    """Return settings safe for browser/HTTP clients."""
+    blocked_fragments = (
+        'pin', 'password', 'token', 'secret', 'private_key',
+        'service_role', 'license_key', 'license_private',
+    )
+    safe = {}
+    for row in rows:
+        key = str(row['key'] or '')
+        normalized = key.strip().lower()
+        if any(fragment in normalized for fragment in blocked_fragments):
+            continue
+        safe[key] = row['value']
+    return safe
 
 
 def _user_role_guard(target_role: str):
@@ -930,11 +990,18 @@ def create_user():
         perms = default_tab_permissions(new_role)
     else:
         perms = sanitize_tab_permissions(new_role, raw_perms)
-    db.execute("""INSERT INTO users (username, password_hash, role, full_name, email, tab_permissions)
-                  VALUES (?, ?, ?, ?, ?, ?)""",
-               (data['username'], pw_hash, new_role,
-                data.get('full_name'), data.get('email'), json.dumps(perms)))
-    db.commit()
+    try:
+        db.execute("""INSERT INTO users (username, password_hash, role, full_name, email, tab_permissions)
+                      VALUES (?, ?, ?, ?, ?, ?)""",
+                   (data['username'], pw_hash, new_role,
+                    data.get('full_name'), data.get('email'), json.dumps(perms)))
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.rollback()
+        return jsonify({
+            'error': f"Username '{data['username']}' already exists.",
+            'code': 'username_taken',
+        }), 409
     log_action('CREATE_USER', 'admin', f"Created user: {data['username']} role={new_role}")
     # Flag suspicious privilege creation
     if new_role in ('superadmin', 'admin'):
@@ -1048,45 +1115,62 @@ def list_products():
 @app.route('/api/products', methods=['POST'])
 @token_required
 def create_product():
+    if not _role_is('manager', 'admin', 'superadmin'):
+        return jsonify({'error': 'Inventory Manager access required'}), 403
     data = request.json or {}
-    db = get_db()
-    db.execute("""INSERT INTO products (name, sku, category, price, cost_price, stock, min_stock, unit, barcode)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-               (data['name'], data.get('sku'), data.get('category'),
-                data.get('price', 0), data.get('cost_price', 0),
-                data.get('stock', 0), data.get('min_stock', 5),
-                data.get('unit', 'pcs'), data.get('barcode')))
-    db.commit()
-    log_action('CREATE_PRODUCT', 'inventory', f"Product: {data['name']}")
-    return jsonify({'success': True})
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._role = g.current_user.get('role')
+    api._user_id = g.current_user.get('id')
+    api._username = (
+        g.current_user.get('full_name') or g.current_user.get('username')
+    )
+    result = api.create_product(data)
+    return jsonify(result), (200 if result.get('success') else 400)
 
 
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 @token_required
 def update_product(pid):
+    if not _role_is('manager', 'admin', 'superadmin'):
+        return jsonify({'error': 'Inventory Manager access required'}), 403
     data = request.json or {}
-    db = get_db()
-    fields = []
-    values = []
-    for field in ('name', 'sku', 'category', 'price', 'cost_price', 'stock', 'min_stock', 'unit', 'barcode'):
-        if field in data:
-            fields.append(f"{field}=?")
-            values.append(data[field])
-    fields.append("updated_at=?")
-    values.append(datetime.now().isoformat())
-    values.append(pid)
-    db.execute(f"UPDATE products SET {', '.join(fields)} WHERE id=?", values)
-    db.commit()
-    return jsonify({'success': True})
+    if 'stock' in data:
+        log_action(
+            'STOCK_ADJUST_BLOCKED', 'inventory',
+            f"Product edit attempted stock change: pid={pid}",
+        )
+        return jsonify({
+            'error': (
+                'Stock cannot be changed from Edit Product. '
+                'Use the protected Adjust Stock action.'
+            )
+        }), 403
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._role = g.current_user.get('role')
+    api._user_id = g.current_user.get('id')
+    api._username = (
+        g.current_user.get('full_name') or g.current_user.get('username')
+    )
+    result = api.update_product(pid, data)
+    return jsonify(result), (200 if result.get('success') else 400)
 
 
 @app.route('/api/products/<int:pid>', methods=['DELETE'])
 @token_required
 def delete_product(pid):
-    db = get_db()
-    db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
-    db.commit()
-    return jsonify({'success': True})
+    if not _role_is('manager', 'admin', 'superadmin'):
+        return jsonify({'error': 'Inventory Manager access required'}), 403
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._role = g.current_user.get('role')
+    api._user_id = g.current_user.get('id')
+    api._username = (
+        g.current_user.get('full_name') or g.current_user.get('username')
+    )
+    result = api.delete_product(pid)
+    return jsonify(result), (200 if result.get('success') else 400)
 
 
 # ── SALES ─────────────────────────────────────────────────────────────────────
@@ -1097,115 +1181,34 @@ def list_sales():
     db = get_db()
     start = request.args.get('start', str(date.today()))
     end = request.args.get('end', str(date.today()))
-    sales = db.execute("""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
-                          FROM sales s LEFT JOIN sale_items si ON s.id = si.sale_id
-                          WHERE date(s.created_at) BETWEEN ? AND ?
-                          GROUP BY s.id ORDER BY s.created_at DESC""",
-                       (start, end)).fetchall()
+    where = "date(s.created_at) BETWEEN ? AND ?"
+    params = [start, end]
+    if _actor_role() == 'cashier':
+        # Cashier HTTP history is limited to receipts created by that account.
+        where += " AND s.cashier_id=?"
+        params.append(g.current_user.get('id'))
+    sales = db.execute(f"""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
+                           FROM sales s LEFT JOIN sale_items si ON s.id = si.sale_id
+                           WHERE {where}
+                           GROUP BY s.id ORDER BY s.created_at DESC""",
+                       params).fetchall()
     return jsonify([dict(s) for s in sales])
 
 
 @app.route('/api/sales', methods=['POST'])
 @token_required
 def create_sale():
+    if not _role_is('cashier', 'manager', 'admin', 'superadmin'):
+        return jsonify({'error': 'Sales access required'}), 403
     data = request.json or {}
-    items = data.get('items') or []
-    if not items:
-        return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
-    db = get_db()
     user = g.current_user
-    try:
-        db.execute("BEGIN IMMEDIATE")
-        db.execute("PRAGMA foreign_keys=OFF")
-
-        today = datetime.now().strftime('%Y%m%d')
-        count = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE date(created_at)=date('now')"
-        ).fetchone()[0]
-        receipt_number = f"RCP-{today}-{count+1:04d}"
-
-        notes = data.get('notes', '') or ''
-        mpesa_ref = (data.get('mpesa_ref') or '').strip()
-        if mpesa_ref and 'mpesa ref' not in notes.lower():
-            notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
-
-        db.execute("""INSERT INTO sales (receipt_number, cashier_id, cashier_name, subtotal, discount,
-                  tax, total, payment_method, amount_paid, change_amount, notes, mpesa_ref)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-               (receipt_number, user['id'], user['full_name'] or user['username'],
-                data.get('subtotal', 0), data.get('discount', 0), data.get('tax', 0),
-                data['total'], data.get('payment_method', 'cash'),
-                data.get('amount_paid', 0), data.get('change_amount', 0),
-                notes, mpesa_ref or None))
-
-        sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-        for item in items:
-            pid = item.get('product_id')
-            db.execute("""INSERT INTO sale_items (sale_id, product_id, product_name, sku, quantity, unit_price, discount, total)
-                          VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (sale_id, pid, item['product_name'],
-                        item.get('sku', ''), item['quantity'], item['unit_price'],
-                        item.get('discount', 0), item['total']))
-
-            if pid:
-                prod_row = db.execute(
-                    "SELECT id, name, stock FROM products WHERE id=?", (pid,)
-                ).fetchone()
-                if prod_row:
-                    qty_requested = float(item.get('quantity') or 1)
-                    current_stock = float(prod_row['stock'])
-                    if current_stock < qty_requested:
-                        db.rollback()
-                        return jsonify({
-                            'error': (
-                                f"Insufficient stock for '{prod_row['name']}': "
-                                f"requested {qty_requested}, available {current_stock}"
-                            )
-                        }), 400
-                    new_stock = current_stock - qty_requested
-                    db.execute(
-                        "UPDATE products SET stock=? WHERE id=?",
-                        (new_stock, pid)
-                    )
-                    db.execute(
-                        """INSERT INTO stock_movements
-                           (product_id, product_name, movement_type, qty_before, qty_change,
-                            qty_after, reference, reason, user_id, username)
-                           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                        (pid, prod_row['name'], 'SALE',
-                         current_stock, -qty_requested, new_stock,
-                         receipt_number, f"Sale: {receipt_number}",
-                         user['id'], user['username'])
-                    )
-
-        db.execute("INSERT INTO sync_queue (action_type, payload) VALUES (?, ?)",
-                   ('sale', json.dumps({
-                       'receipt_number': receipt_number,
-                       'total': data['total'],
-                       'cashier': user['username'],
-                       'created_at': datetime.now().isoformat()
-                   })))
-        db.commit()
-        log_action('CREATE_SALE', 'sales',
-                   f"Receipt: {receipt_number}, Total: {data['total']}")
-        return jsonify({
-            'success': True,
-            'receipt_number': receipt_number,
-            'sale_id': sale_id
-        })
-    except Exception as e:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        logger.error(f"create_sale failed: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-    finally:
-        try:
-            db.execute("PRAGMA foreign_keys=ON")
-        except Exception:
-            pass
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._role = user.get('role')
+    api._user_id = user.get('id')
+    api._username = user.get('full_name') or user.get('username')
+    result = api.create_sale(data)
+    return jsonify(result), (200 if result.get('success') else 400)
 
 
 @app.route('/api/sales/<int:sale_id>', methods=['GET'])
@@ -1215,6 +1218,8 @@ def get_sale(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale:
         return jsonify({'error': 'Not found'}), 404
+    if _actor_role() == 'cashier' and sale['cashier_id'] != g.current_user.get('id'):
+        return jsonify({'error': 'Forbidden'}), 403
     items = db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
     result = dict(sale)
     result['items'] = [dict(i) for i in items]
@@ -1226,41 +1231,65 @@ def get_sale(sale_id):
 @app.route('/api/reports/summary', methods=['GET'])
 @token_required
 def sales_summary():
+    # A cashier has no reports tab, but the web dashboard needs their own
+    # takings or every KPI renders as zero. They get the same aggregate shape
+    # restricted to receipts they created — never shop-wide figures, and never
+    # the richer /api/reports/data feed.
+    full_access = _user_tab_allowed('reports')
+    own_only = False
+    if not full_access:
+        if not _user_tab_allowed('sales'):
+            return jsonify({'error': 'Reports access required'}), 403
+        own_only = True
+
     db = get_db()
     start = request.args.get('start', str(date.today()))
     end = request.args.get('end', str(date.today()))
 
-    summary = db.execute("""
+    scope = ''
+    params = [start, end]
+    if own_only:
+        scope = ' AND {alias}cashier_id=?'
+        params.append(g.current_user.get('id'))
+
+    sales_scope = scope.format(alias='') if scope else ''
+    joined_scope = scope.format(alias='s.') if scope else ''
+
+    summary = db.execute(f"""
         SELECT
             COUNT(*) as total_transactions,
             COALESCE(SUM(total), 0) as total_revenue,
             COALESCE(AVG(total), 0) as avg_transaction,
             COALESCE(SUM(discount), 0) as total_discounts,
             COALESCE(SUM(tax), 0) as total_tax
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
-    """, (start, end)).fetchone()
+        FROM sales
+        WHERE date(created_at) BETWEEN ? AND ? AND status='completed'{sales_scope}
+    """, params).fetchone()
 
-    top_products = db.execute("""
+    top_products = db.execute(f"""
         SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
         FROM sale_items si
         JOIN sales s ON si.sale_id = s.id
-        WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+        WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'{joined_scope}
         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10
-    """, (start, end)).fetchall()
+    """, params).fetchall()
 
-    by_payment = db.execute("""
+    by_payment = db.execute(f"""
         SELECT payment_method, COUNT(*) as count, SUM(total) as total
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        FROM sales
+        WHERE date(created_at) BETWEEN ? AND ? AND status='completed'{sales_scope}
         GROUP BY payment_method
-    """, (start, end)).fetchall()
+    """, params).fetchall()
 
-    hourly = db.execute("""
+    hourly = db.execute(f"""
         SELECT strftime('%H', created_at) as hour, COUNT(*) as count, SUM(total) as total
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        FROM sales
+        WHERE date(created_at) BETWEEN ? AND ? AND status='completed'{sales_scope}
         GROUP BY hour ORDER BY hour
-    """, (start, end)).fetchall()
+    """, params).fetchall()
 
     return jsonify({
+        'scope': 'own' if own_only else 'all',
         'summary': dict(summary),
         'top_products': [dict(p) for p in top_products],
         'by_payment': [dict(p) for p in by_payment],
@@ -1275,7 +1304,7 @@ def sales_summary():
 def get_settings():
     db = get_db()
     rows = db.execute("SELECT key, value FROM system_settings").fetchall()
-    return jsonify({r['key']: r['value'] for r in rows})
+    return jsonify(_public_settings(rows))
 
 
 @app.route('/api/settings', methods=['PUT'])
@@ -1310,6 +1339,8 @@ def get_audit():
 @app.route('/api/sync/pending', methods=['GET'])
 @token_required
 def pending_sync():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Admin access required'}), 403
     db = get_db()
     items = db.execute("SELECT * FROM sync_queue WHERE status='pending' ORDER BY created_at").fetchall()
     return jsonify([dict(i) for i in items])
@@ -1318,8 +1349,16 @@ def pending_sync():
 @app.route('/api/sync/mark-sent', methods=['POST'])
 @token_required
 def mark_synced():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Admin access required'}), 403
     data = request.json or {}
     ids = data.get('ids', [])
+    if not isinstance(ids, list) or len(ids) > 1000:
+        return jsonify({'error': 'Invalid sync id list'}), 400
+    try:
+        ids = [int(value) for value in ids]
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Invalid sync id list'}), 400
     db = get_db()
     for sid in ids:
         db.execute("UPDATE sync_queue SET status='sent', synced_at=? WHERE id=?",
@@ -1330,19 +1369,63 @@ def mark_synced():
 
 # ── NOTES ─────────────────────────────────────────────────────────────────────
 
+def _note_read_scope():
+    """(may_read, see_all) for the current actor, from central permissions."""
+    from desktop.utils.security import has_permission
+    actor = {'role': _actor_role()}
+    see_all = has_permission(actor, 'notes.view_all')
+    return (see_all or has_permission(actor, 'notes.own')), see_all
+
+
+def _note_write_scope():
+    """(allowed, owner_only) for note mutations — mirrors the desktop API.
+
+    `notes.view_all` alone (viewer) is read-only; `notes.own` grants writes on
+    the actor's own notes, and shop admins may mutate every note.
+    """
+    from desktop.utils.security import has_permission
+    from roles import is_shop_admin_role
+    role = _actor_role()
+    if not has_permission({'role': role}, 'notes.own'):
+        return False, True
+    return True, not is_shop_admin_role(role)
+
+
+def _authorize_note(db, nid: int, owner_only: bool):
+    """Load the target note and authorize it. Returns (row, error_response)."""
+    row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    if not row:
+        return None, (jsonify({'error': 'Note not found'}), 404)
+    if owner_only and row['user_id'] != g.current_user.get('id'):
+        return None, (jsonify({'error': 'You can only change your own notes.'}), 403)
+    return row, None
+
+
 @app.route('/api/notes', methods=['GET'])
 @token_required
 def list_notes():
+    may_read, see_all = _note_read_scope()
+    if not may_read:
+        return jsonify({'error': 'Notes access required'}), 403
     db = get_db()
-    notes = db.execute(
-        "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
-    ).fetchall()
+    order = "ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+    if see_all:
+        notes = db.execute(f"SELECT * FROM notes {order}").fetchall()
+    else:
+        notes = db.execute(
+            f"SELECT * FROM notes WHERE user_id IS ? {order}",
+            (g.current_user.get('id'),),
+        ).fetchall()
     return jsonify([dict(n) for n in notes])
 
 
 @app.route('/api/notes', methods=['POST'])
 @token_required
 def create_note():
+    allowed, _ = _note_write_scope()
+    if not allowed:
+        log_action('CREATE_NOTE_DENIED', 'notes', f'role={_actor_role()}')
+        return jsonify({'error': 'Insufficient permissions to create notes.'}), 403
     data = request.json or {}
     db = get_db()
     pinned = 1 if data.get('pinned') else 0
@@ -1356,8 +1439,16 @@ def create_note():
 @app.route('/api/notes/<int:nid>', methods=['PUT'])
 @token_required
 def update_note(nid):
+    allowed, owner_only = _note_write_scope()
+    if not allowed:
+        log_action('UPDATE_NOTE_DENIED', 'notes', f'id={nid} role={_actor_role()}')
+        return jsonify({'error': 'Insufficient permissions to edit notes.'}), 403
     data = request.json or {}
     db = get_db()
+    _row, denied = _authorize_note(db, nid, owner_only)
+    if denied:
+        log_action('UPDATE_NOTE_DENIED', 'notes', f'id={nid} role={_actor_role()}')
+        return denied
     if 'pinned' in data:
         db.execute(
             "UPDATE notes SET title=?, content=?, pinned=?, updated_at=? WHERE id=?",
@@ -1376,7 +1467,15 @@ def update_note(nid):
 @app.route('/api/notes/<int:nid>', methods=['DELETE'])
 @token_required
 def delete_note(nid):
+    allowed, owner_only = _note_write_scope()
+    if not allowed:
+        log_action('DELETE_NOTE_DENIED', 'notes', f'id={nid} role={_actor_role()}')
+        return jsonify({'error': 'Insufficient permissions to delete notes.'}), 403
     db = get_db()
+    _row, denied = _authorize_note(db, nid, owner_only)
+    if denied:
+        log_action('DELETE_NOTE_DENIED', 'notes', f'id={nid} role={_actor_role()}')
+        return denied
     db.execute("DELETE FROM notes WHERE id=?", (nid,))
     db.commit()
     return jsonify({'success': True})

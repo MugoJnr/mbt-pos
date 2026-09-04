@@ -1,0 +1,132 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Email Report",
+      "tip": "Send via cloud notification / email (Telegram permanently removed)",
+      "accessible": "",
+      "icon": true,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Export Excel",
+      "tip": "",
+      "accessible": "",
+      "icon": true,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Run",
+      "tip": "",
+      "accessible": "",
+      "icon": true,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Generate",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Open Exports Folder",
+      "tip": "Open the folder where exported Excel reports are saved",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Daily when online (reconnect + every 4 hrs)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Also weekly on",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save Schedule",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    }
+  ],
+  "checks": [
+    {
+      "text": "Daily when online (reconnect + every 4 hrs)",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Also weekly on",
+      "checked": true,
+      "enabled": true
+    }
+  ]
+}

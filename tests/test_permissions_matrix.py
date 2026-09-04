@@ -81,6 +81,27 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(can_assign_role(ROLE_ADMIN, ROLE_SUPERADMIN))
         self.assertFalse(can_assign_role(ROLE_MANAGER, ROLE_ADMIN))
 
+    def test_web_manager_respects_real_tab_permissions(self):
+        from web.web_routes import _user_can
+        manager = {
+            'role': ROLE_MANAGER,
+            'tab_permissions': [
+                'dashboard', 'sales', 'inventory', 'consumption', 'debt',
+            ],
+        }
+        self.assertTrue(_user_can('inventory', manager))
+        self.assertTrue(_user_can('debt', manager))
+        self.assertFalse(_user_can('reports', manager))
+        self.assertFalse(_user_can('users', manager))
+        self.assertFalse(_user_can('backup', manager))
+
+    def test_web_admin_tabs_cannot_be_unchecked(self):
+        from web.web_routes import _user_can
+        admin = {'role': ROLE_ADMIN, 'tab_permissions': []}
+        self.assertTrue(_user_can('sales', admin))
+        self.assertTrue(_user_can('reports', admin))
+        self.assertTrue(_user_can('users', admin))
+
 
 if __name__ == '__main__':
     unittest.main()

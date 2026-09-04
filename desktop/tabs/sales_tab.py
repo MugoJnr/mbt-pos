@@ -1585,8 +1585,9 @@ class SalesTab(QWidget):
         """High-contrast cart text — never inherit a stale light-mode dark fg on dark bg."""
         from desktop.utils.theme import DARK, LIGHT, ThemeManager
         light = bool(getattr(self, '_is_light', False) or ThemeManager.is_light())
-        # Dark navy text on light cards; near-white on dark cards
-        return '#0C1828' if light else '#F5F7FA'
+        # Dark navy text on light cards; near-white on dark cards.  Read from
+        # the palette so a token change cannot leave a near-miss hex behind.
+        return (LIGHT if light else DARK)['text']
 
     def _refresh_cart(self):
         for item in self.cart:
@@ -2283,6 +2284,106 @@ class SalesTab(QWidget):
             pass
         StateResetManager.reset_pos(self, cfg, force_walk_in=True)
 
+    def _get_payment_service(self):
+        """Lazy PaymentService wired to this shop's API create_sale + settings."""
+        svc = getattr(self, '_payment_service', None)
+        if svc is not None:
+            return svc
+        from desktop.payments.service import build_payment_service
+        from desktop.utils.api_client import _db
+
+        def settings_getter():
+            try:
+                return self.config_getter() or {}
+            except Exception:
+                return {}
+
+        svc = build_payment_service(
+            db_conn_factory=_db,
+            create_sale=lambda data: self.api.create_sale(data),
+            settings_getter=settings_getter,
+        )
+        self._payment_service = svc
+        return svc
+
+    def _run_mpesa_verification(self, amount: float, *, is_part: bool = False):
+        """Open capability-aware M-Pesa dialog. Returns VERIFIED payment or None."""
+        from desktop.dialogs.mpesa_checkout_dialog import run_mpesa_checkout
+        from desktop.payments.models import PaymentStatus
+
+        # Legacy manual-only fast path when cloud STK/C2B unavailable and
+        # cashier already typed a reference + amount: still go through service
+        # so provider_reference UNIQUE + audit apply.
+        svc = self._get_payment_service()
+        caps = svc.get_capabilities()
+        user = self.user.get('user') or self.user
+        cust_name = ''
+        try:
+            if hasattr(self, '_customer') and self._customer is not None:
+                cust_name = self._customer.currentText() or ''
+        except Exception:
+            pass
+        amt = round(float(amount or 0), 2)
+        if amt < 0.01:
+            soft_warn(self, 'M-Pesa amount must be greater than zero.')
+            return None
+        # Prefill manual ref field from panel when cashier already typed one
+        initial_ref = ''
+        try:
+            if hasattr(self, '_mpesa_ref'):
+                initial_ref = (self._mpesa_ref.text() or '').strip()
+        except Exception:
+            pass
+        payment = run_mpesa_checkout(
+            self,
+            payment_service=svc,
+            amount=amt,
+            cart=list(self.cart),
+            currency=getattr(self, '_currency', 'KES'),
+            cashier_id=user.get('id'),
+            cashier_name=user.get('username') or 'staff',
+            customer_name=cust_name,
+            account_reference='',
+            initial_ref=initial_ref,
+        )
+        if payment is None:
+            return None
+        if payment.status != PaymentStatus.VERIFIED.value:
+            soft_warn(
+                self,
+                f'M-Pesa not verified (status={payment.status}). Sale not created.',
+            )
+            return None
+        _ = caps
+        return payment
+
+    def _mark_mpesa_payment_completed(self, payment_id: str, *, sale_id, receipt_number: str):
+        """Link verified payment to the sale created once by create_sale()."""
+        from desktop.payments.models import PaymentStatus
+        import time
+        svc = self._get_payment_service()
+        payment = svc.get_payment(payment_id)
+        if not payment:
+            return
+        if payment.sale_id and payment.status == PaymentStatus.COMPLETED.value:
+            return  # idempotent
+        payment.sale_id = sale_id
+        payment.receipt_number = receipt_number
+        payment.status = PaymentStatus.COMPLETED.value
+        payment.completed_at = time.time()
+        svc.repo.update_payment(
+            payment, 'completed',
+            f'sale_id={sale_id} receipt={receipt_number}',
+        )
+
+    def _open_payment_inbox(self):
+        from desktop.dialogs.payment_inbox_dialog import PaymentInboxDialog
+        PaymentInboxDialog(
+            self,
+            payment_service=self._get_payment_service(),
+            currency=getattr(self, '_currency', 'KES'),
+        ).exec_()
+
     def _process(self):
         if getattr(self, '_processing_sale', False):
             return
@@ -2313,6 +2414,7 @@ class SalesTab(QWidget):
 
     def _process_impl(self):
         pay_method = self._pay.currentText()
+        verified_mpesa = None
         is_part = self._is_part_sale()
         is_credit = self._is_credit_sale()
         is_debt = is_part or is_credit
@@ -2356,16 +2458,60 @@ class SalesTab(QWidget):
             if _paid_chk + 0.009 >= due:
                 soft_warn(self, 'Paid covers the full total — use Paid now instead of Part pay.')
                 return
-        if pay_method == 'M-Pesa':
-            if not cfg.get('mpesa_till', '').strip() and not cfg.get('mpesa_paybill', '').strip():
-                soft_warn(
-                    self,
-                    'M-Pesa till/paybill not set in Settings — recording sale anyway.')
-            if not is_part and self._paid.value() + 0.009 < due:
-                soft_warn(
-                    self,
-                    f'Received Amount is less than Expected ({self._currency} {due:,.2f}).')
-                return
+        # Verified M-Pesa (pure tender OR Split electronic M-Pesa).
+        # Never create_sale on Daraja "request accepted".
+        if not is_credit:
+            mpesa_amount = 0.0
+            if pay_method == 'M-Pesa':
+                mpesa_amount = (
+                    float(self._paid.value() or 0) if is_part else float(due)
+                )
+            elif self._is_split_method(pay_method):
+                elec_preview = float(self._elec_portion() or 0)
+                if self._elec_method_name() == 'M-Pesa' and elec_preview > 0.009:
+                    mpesa_amount = elec_preview
+            if mpesa_amount > 0.009:
+                try:
+                    verified_mpesa = self._run_mpesa_verification(
+                        mpesa_amount, is_part=is_part,
+                    )
+                except Exception as e:
+                    soft_warn(self, f'M-Pesa verification failed: {e}')
+                    return
+                if verified_mpesa is None:
+                    return  # cancelled or not verified
+                try:
+                    recv = float(
+                        verified_mpesa.amount_received
+                        or verified_mpesa.amount_expected
+                        or mpesa_amount
+                    )
+                    exp = float(verified_mpesa.amount_expected or mpesa_amount)
+                    # Accept-as-part from dialog → force debt path for remainder
+                    if recv + 0.009 < exp and pay_method == 'M-Pesa':
+                        is_part = True
+                        is_debt = True
+                    if pay_method == 'M-Pesa' and hasattr(self, '_paid'):
+                        self._paid.setValue(recv)
+                    elif self._is_split_method(pay_method) and hasattr(self, '_elec'):
+                        try:
+                            self._set_elec_value(recv, mark_clean=True)
+                        except Exception:
+                            pass
+                    if hasattr(self, '_mpesa_ref') and verified_mpesa.provider_reference:
+                        self._mpesa_ref.setText(verified_mpesa.provider_reference)
+                except Exception:
+                    pass
+            elif pay_method == 'M-Pesa':
+                if not cfg.get('mpesa_till', '').strip() and not cfg.get('mpesa_paybill', '').strip():
+                    soft_warn(
+                        self,
+                        'M-Pesa till/paybill not set in Settings — recording sale anyway.')
+                if not is_part and self._paid.value() + 0.009 < due:
+                    soft_warn(
+                        self,
+                        f'Received Amount is less than Expected ({self._currency} {due:,.2f}).')
+                    return
 
         if is_credit:
             paid_now = 0.0
@@ -2560,12 +2706,23 @@ class SalesTab(QWidget):
                 sale_payload['customer_id'] = cust_id
             if variance_payload:
                 sale_payload['variance'] = variance_payload
+            if verified_mpesa is not None:
+                sale_payload['payment_id'] = verified_mpesa.id
+                if verified_mpesa.provider_reference:
+                    sale_payload['mpesa_ref'] = verified_mpesa.provider_reference
             res = self.api.create_sale(sale_payload)
             if res and res.get('success'):
                 rn  = res.get('receipt_number', 'N/A')
                 sid = res.get('sale_id')
                 self._last_sale_id = sid
                 self._last_receipt = rn
+                if verified_mpesa is not None:
+                    try:
+                        self._mark_mpesa_payment_completed(
+                            verified_mpesa.id, sale_id=sid, receipt_number=rn
+                        )
+                    except Exception:
+                        pass
                 try:
                     from desktop.utils.audio_manager import get_audio
                     get_audio().play_payment(pay_method)
@@ -2637,7 +2794,7 @@ class SalesTab(QWidget):
     def _get_printer(self):
         if self._printer_mgr is None:
             from printing.printer_engine import PrinterManager
-            self._printer_mgr = PrinterManager(self.config_getter)
+            self._printer_mgr = PrinterManager.shared(self.config_getter)
         return self._printer_mgr
 
     def _build_print_data(self, sale_id, receipt_number=None):
@@ -2694,7 +2851,65 @@ class SalesTab(QWidget):
             'mpesa_paybill':  (self.config_getter() or {}).get('mpesa_paybill', ''),
             'mpesa_ref':      sale.get('mpesa_ref', '') or '',
             'receipt_footer': (self.config_getter() or {}).get('receipt_footer', 'Thank you!'),
+            'debt_invoice_number': sale.get('debt_invoice_number') or sale.get('invoice_number') or '',
+            'due_date': sale.get('due_date') or '',
+            'outstanding_balance': sale.get('outstanding_balance'),
         }
+
+    def _notify_print_result(self, job, *, allow_retry: bool = True):
+        """Cashier-facing print feedback. Never implies the sale failed."""
+        try:
+            if job is None:
+                return
+            if getattr(job, 'success', False):
+                if getattr(job, 'is_reprint', False):
+                    info_toast(self, f"Receipt {job.receipt_number} reprinted.")
+                return
+            # Async failures: show simple message + optional retry
+            rn = getattr(job, 'receipt_number', '') or self._last_receipt or ''
+            msg = getattr(job, 'cashier_message', None) or (
+                'Sale completed successfully. Receipt could not be printed.'
+            )
+            if not allow_retry or not rn or not getattr(job, 'retryable', True):
+                soft_warn(self, msg)
+                return
+            from PyQt5.QtWidgets import QMessageBox
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle('Receipt Print')
+            box.setText(msg)
+            box.setInformativeText('You can retry printing without creating another sale.')
+            retry_btn = box.addButton('Retry Receipt', QMessageBox.AcceptRole)
+            box.addButton('Dismiss', QMessageBox.RejectRole)
+            box.exec_()
+            if box.clickedButton() is retry_btn:
+                self._retry_print_receipt(rn)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning('print result UI: %s', e)
+
+    def _retry_print_receipt(self, receipt_number: str):
+        """Retry/reprint from saved sale only — never create_sale()."""
+        try:
+            from printing.printer_engine import print_saved_receipt
+
+            def _done(res):
+                from desktop.utils.qt_dispatch import run_on_ui_thread
+                run_on_ui_thread(lambda: self._notify_print_result(res, allow_retry=True))
+
+            job = print_saved_receipt(
+                self.api, self.config_getter,
+                receipt_number=receipt_number,
+                is_reprint=True,
+                wait=False,
+                on_complete=_done,
+            )
+            if job and not job.success and job.error_type in (
+                'sale_not_found', 'sale_voided',
+            ):
+                soft_warn(self, job.error_message or 'Could not reprint.')
+        except Exception as e:
+            soft_warn(self, f'Print error: {e}')
 
     def _try_print_receipt(self, sale_id, receipt_number):
         """Print receipt after sale — failures never affect the recorded sale."""
@@ -2703,12 +2918,25 @@ class SalesTab(QWidget):
             return
         try:
             data = self._build_print_data(sale_id, receipt_number)
-            if data:
-                self._get_printer().print_receipt(data)
+            if not data:
+                return
+            mgr = self._get_printer()
+
+            def _done(res):
+                from desktop.utils.qt_dispatch import run_on_ui_thread
+                run_on_ui_thread(lambda: self._notify_print_result(res, allow_retry=True))
+
+            mgr.print_sale_data(data, is_reprint=False, wait=False, on_complete=_done)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
                 'Receipt print failed (sale %s kept): %s', receipt_number, e)
+            try:
+                soft_warn(
+                    self,
+                    'Sale completed successfully. Receipt could not be printed.')
+            except Exception:
+                pass
 
     def _reprint_receipt(self):
         default = self._last_receipt or ''
@@ -2723,7 +2951,8 @@ class SalesTab(QWidget):
             from desktop.utils.api_client import _db
             db = _db()
             row = db.execute(
-                "SELECT id, status FROM sales WHERE receipt_number=?", (receipt,)
+                "SELECT id, status FROM sales WHERE receipt_number=?",
+                (receipt,),
             ).fetchone()
             db.close()
             if not row:
@@ -2732,12 +2961,27 @@ class SalesTab(QWidget):
             if row['status'] == 'voided':
                 soft_warn(self, 'This sale was voided — receipt not reprinted.')
                 return
-            data = self._build_print_data(row['id'], receipt)
-            if not data:
-                soft_warn(self, 'Could not load sale data.')
+
+            from printing.printer_engine import print_saved_receipt
+
+            def _done(res):
+                from desktop.utils.qt_dispatch import run_on_ui_thread
+                run_on_ui_thread(lambda: self._notify_print_result(res, allow_retry=True))
+
+            job = print_saved_receipt(
+                self.api, self.config_getter,
+                receipt_number=receipt,
+                sale_id=row['id'],
+                is_reprint=True,
+                wait=False,
+                on_complete=_done,
+            )
+            if job and not job.success and job.error_type in (
+                'sale_not_found', 'sale_voided',
+            ):
+                soft_warn(self, job.error_message or f'No sale found: {receipt}')
                 return
-            self._get_printer().print_receipt(data)
-            info_toast(self, f'Receipt {receipt} sent to printer.')
+            info_toast(self, f'Receipt {receipt} sent to printer (COPY).')
         except Exception as e:
             soft_warn(self, f'Print error: {e}')
 

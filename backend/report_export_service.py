@@ -107,6 +107,181 @@ def get_export_dir() -> str:
     return folder
 
 
+# ── Direct PDF ────────────────────────────────────────────────────────────────
+# Written by hand as PDF 1.4 so desktop and web produce identical documents with
+# no extra runtime dependency (reportlab / weasyprint stay out of the bundle).
+
+PDF_MAX_LINES_PER_PAGE = 62
+PDF_MAX_LINE_CHARS = 110
+
+
+def _pdf_escape(text) -> str:
+    return (str(text).replace('\\', '\\\\')
+            .replace('(', '\\(').replace(')', '\\)'))
+
+
+def _pdf_page_stream(shop, title, period, lines, page_no, page_count) -> bytes:
+    parts = [
+        'BT',
+        '/F1 16 Tf',
+        '50 780 Td',
+        f'({_pdf_escape(shop)}) Tj',
+        '0 -24 Td',
+        '/F1 12 Tf',
+        f'({_pdf_escape(title)}) Tj',
+        '0 -16 Td',
+        f'({_pdf_escape(period)}) Tj',
+        '0 -28 Td',
+        '/F1 10 Tf',
+    ]
+    for line in lines:
+        parts.append(f'({_pdf_escape(str(line)[:PDF_MAX_LINE_CHARS])}) Tj')
+        parts.append('0 -13 Td')
+    if page_count > 1:
+        parts.append('0 -18 Td')
+        parts.append(f'({_pdf_escape(f"Page {page_no} of {page_count}")}) Tj')
+    parts.append('ET')
+    return '\n'.join(parts).encode('latin-1', 'replace')
+
+
+def build_report_pdf(title, shop, period, lines, currency: str = 'KES') -> bytes:
+    """Return a valid multi-page PDF 1.4 document as bytes."""
+    import io
+
+    rows = [str(x) for x in (lines or [])]
+    pages = [rows[i:i + PDF_MAX_LINES_PER_PAGE]
+             for i in range(0, len(rows), PDF_MAX_LINES_PER_PAGE)] or [[]]
+    page_count = len(pages)
+
+    # Object ids: 1 catalog, 2 pages, then per page (page obj + content obj),
+    # font last.
+    first_page_obj = 3
+    font_obj = first_page_obj + 2 * page_count
+    kids = ' '.join(f'{first_page_obj + 2 * i} 0 R' for i in range(page_count))
+
+    objs = [
+        b'1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n',
+        (f'2 0 obj<< /Type /Pages /Kids [{kids}] /Count {page_count} >>endobj\n'
+         ).encode('latin-1'),
+    ]
+    for i, page_lines in enumerate(pages):
+        page_id = first_page_obj + 2 * i
+        content_id = page_id + 1
+        stream = _pdf_page_stream(
+            shop, title, period, page_lines, i + 1, page_count)
+        objs.append((
+            f'{page_id} 0 obj<< /Type /Page /Parent 2 0 R '
+            f'/MediaBox [0 0 612 792] /Contents {content_id} 0 R '
+            f'/Resources << /Font << /F1 {font_obj} 0 R >> >> >>endobj\n'
+        ).encode('latin-1'))
+        objs.append(
+            f'{content_id} 0 obj<< /Length {len(stream)} >>stream\n'.encode('latin-1')
+            + stream + b'\nendstream\nendobj\n'
+        )
+    objs.append((
+        f'{font_obj} 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+        f'endobj\n'
+    ).encode('latin-1'))
+
+    out = io.BytesIO()
+    out.write(b'%PDF-1.4\n')
+    offsets = [0]
+    for obj in objs:
+        offsets.append(out.tell())
+        out.write(obj)
+    xref = out.tell()
+    out.write(f'xref\n0 {len(offsets)}\n'.encode('latin-1'))
+    out.write(b'0000000000 65535 f \n')
+    for off in offsets[1:]:
+        out.write(f'{off:010d} 00000 n \n'.encode('latin-1'))
+    out.write(
+        (f'trailer<< /Size {len(offsets)} /Root 1 0 R >>\n'
+         f'startxref\n{xref}\n%%EOF\n').encode('latin-1')
+    )
+    return out.getvalue()
+
+
+def sales_pdf_lines(sales, summary: dict, *, currency='KES', top_products=None,
+                    by_payment=None, generated_by='', filters='') -> list:
+    """Report body shared by desktop and web so both reconcile to one total.
+
+    ``sales`` must already be filtered to reportable statuses by the caller.
+    """
+    cur = currency or 'KES'
+    summary = summary or {}
+    total_revenue = float(summary.get('total_revenue') or 0)
+    txns = int(summary.get('total_transactions') or 0)
+    lines = [
+        f"Revenue: {cur} {total_revenue:,.2f}",
+        f"Transactions: {txns}",
+        f"Average: {cur} {float(summary.get('avg_transaction') or 0):,.2f}",
+        f"Discounts: {cur} {float(summary.get('total_discounts') or 0):,.2f}",
+    ]
+    collected = summary.get('collected_revenue')
+    if collected is not None:
+        lines.append(f"Collected: {cur} {float(collected or 0):,.2f}")
+    if filters:
+        lines.append(f"Filters: {filters}")
+    lines.append('')
+
+    if top_products:
+        lines.append('Top products:')
+        for t in list(top_products)[:15]:
+            lines.append(
+                f"  {t.get('product_name')}: qty {float(t.get('qty_sold') or 0):g} - "
+                f"{cur} {float(t.get('revenue') or 0):,.2f}"
+            )
+        lines.append('')
+
+    if by_payment:
+        lines.append('By payment method:')
+        for p in list(by_payment)[:12]:
+            lines.append(
+                f"  {(p.get('payment_method') or 'Other').upper()}: "
+                f"{int(p.get('count') or 0)} - {cur} {float(p.get('total') or 0):,.2f}"
+            )
+        lines.append('')
+
+    rows = list(sales or [])
+    lines.append(f'Receipts ({len(rows)} reportable sales):')
+    listed = rows[:120]
+    for s in listed:
+        lines.append(
+            f"  {s.get('receipt_number') or ''}  {(s.get('created_at') or '')[:16]}  "
+            f"{s.get('cashier_name') or ''}  {cur} {float(s.get('total') or 0):,.2f}"
+        )
+    if len(rows) > len(listed):
+        lines.append(f"  ... {len(rows) - len(listed)} more in the Excel export")
+    listed_total = sum(float(s.get('total') or 0) for s in rows)
+    lines.append('')
+    lines.append(f"Sales list total: {cur} {listed_total:,.2f}")
+    lines.append(f"Summary total:    {cur} {total_revenue:,.2f}")
+    if generated_by:
+        lines.append('')
+        lines.append(f'Generated by {generated_by} - MBT POS v{app_version()}')
+    return lines
+
+
+def export_sales_report_pdf(sales, summary: dict, *, shop_name='My Shop',
+                            start_date='', end_date='', output_path=None,
+                            currency='KES', top_products=None, by_payment=None,
+                            generated_by='', filters='') -> str:
+    """Write a direct PDF sales report and return its path."""
+    period = f"{start_date} to {end_date}".strip(' to')
+    lines = sales_pdf_lines(
+        sales, summary, currency=currency, top_products=top_products,
+        by_payment=by_payment, generated_by=generated_by, filters=filters,
+    )
+    data = build_report_pdf('Sales Report', shop_name, period, lines, currency)
+    if not output_path:
+        output_path = os.path.join(
+            get_export_dir(), f'MBT_Sales_{start_date}_to_{end_date}.pdf')
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, 'wb') as fh:
+        fh.write(data)
+    return output_path
+
+
 def find_logo_path() -> Optional[str]:
     """Locate brand logo for embedding in workbook header."""
     roots = []

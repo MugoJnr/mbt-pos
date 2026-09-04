@@ -151,6 +151,19 @@ class UIStabilityGuardTests(unittest.TestCase):
         self.assertNotEqual(actual, int(Qt.ToolTip))
         self.assertNotEqual(actual, int(Qt.Popup))
 
+    def test_hidden_parked_widgets_are_not_mutated_by_orphan_sweep(self):
+        from desktop.utils import quiet_ui
+
+        parked = QFrame()
+        parked.hide()
+        with patch.object(
+            quiet_ui, '_is_orphan_flash_candidate', return_value=True
+        ) as candidate, patch.object(quiet_ui, '_kill_orphan') as kill:
+            quiet_ui.hide_orphan_pos_flashes()
+        candidate.assert_not_called()
+        kill.assert_not_called()
+        parked.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main()

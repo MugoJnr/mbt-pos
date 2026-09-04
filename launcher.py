@@ -194,9 +194,9 @@ def _shop_already_ready(engine) -> bool:
             return True
     except Exception:
         pass
-    # Raw/decryptable local token is enough — init flag can be missing after
-    # a reinstall, but the shop must not be sent back to the activation wall.
-    return bool(has_local or initialized)
+    # An initialization marker is not a license. A raw token that could not be
+    # decrypted or validated must return to the activation screen.
+    return False
 
 
 def check_license():
@@ -219,11 +219,8 @@ def check_license():
 # ── Main Entry Point ──────────────────────────────────────────────────────────
 if __name__ == '__main__':
     _ensure_shop_cloud_endpoints()
-    # Cloud heartbeats are optional — never block license gate / UI on Portal.
-    try:
-        _start_cloud_services()
-    except Exception:
-        pass
+    # Do NOT start Supabase heartbeat/pollers here — offline DNS to supabase.co
+    # can stall the process before splash/login paints. desktop.main defers them.
     check_license()
     from desktop.main import main
     main()

@@ -1,0 +1,95 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "+ New",
+      "tip": "New note (Ctrl+N)",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesToolbar",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Pin",
+      "tip": "Pin / unpin note",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesHdr",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save",
+      "tip": "Save (Ctrl+S)",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesHdr",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Delete",
+      "tip": "Delete note",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesHdr",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Insert time",
+      "tip": "Insert current date/time",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesToolbar",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Bullet",
+      "tip": "Insert bullet line",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "notesToolbar",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "Search notes\u2026",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Note title\u2026",
+      "enabled": false,
+      "echo": 0
+    }
+  ],
+  "checks": []
+}

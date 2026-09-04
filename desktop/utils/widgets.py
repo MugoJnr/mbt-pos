@@ -9,7 +9,11 @@ no per-widget repaint needed.
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
-from desktop.utils.theme import C, COLORS, MBT_STYLESHEET, RADIUS, PADDING, GAP, TOUCH_MIN, qss_alpha
+from desktop.utils.theme import (
+    C, COLORS, MBT_STYLESHEET, RADIUS, PADDING, GAP, TOUCH_MIN, qss_alpha,
+    accent_ref, accent_value, readable_ink, register_theme_hook,
+    restyle_themed_widgets,
+)
 
 
 # ── TYPOGRAPHY ────────────────────────────────────────────────────────────────
@@ -104,7 +108,10 @@ class KPICard(QFrame):
     """
     def __init__(self, label, value='0', sub='', accent=None, icon=''):
         super().__init__()
-        self._accent = accent or C['gold']
+        # Store the accent as a palette *token*, not a hex: a cached hex would
+        # be replayed on every refresh and keep the other theme's colour.
+        self._accent_ref = accent_ref(accent) or 'gold'
+        self._tone_ref = None
         self._icon_key = icon
         self.setMinimumHeight(100)
 
@@ -135,18 +142,33 @@ class KPICard(QFrame):
         root.addLayout(col, 1)
         self.refresh_theme()
 
+    @property
+    def _accent(self):
+        return accent_value(self._accent_ref, C['gold'])
+
     def refresh_theme(self):
         r = RADIUS['xl']
-        self.setStyleSheet(
-            f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
-            f"border-left:3px solid {self._accent}; border-radius:{r}px; }}")
+        accent = self._accent
+        tone_ref = getattr(self, '_tone_ref', None)
+        if tone_ref:
+            tone = accent_value(tone_ref, accent)
+            dim = accent_value(f'{tone_ref}_dim', C['card'])
+            self.setStyleSheet(
+                f"QFrame {{ background:{dim}; "
+                f"border:1px solid {qss_alpha(tone, 0.55)}; "
+                f"border-left:4px solid {tone}; border-radius:{r}px; }}")
+        else:
+            self.setStyleSheet(
+                f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
+                f"border-left:3px solid {accent}; border-radius:{r}px; }}")
         if self._ic is not None:
             self._ic.setStyleSheet(
-                f"background:{qss_alpha(self._accent, 0.12)}; border-radius:10px; "
+                f"background:{qss_alpha(accent, 0.12)}; border-radius:10px; "
                 f"border:none;")
             try:
-                from desktop.utils.nav_icons import kpi_pixmap
-                self._ic.setPixmap(kpi_pixmap(self._icon_key, 22, accent=self._accent))
+                from desktop.utils.nav_icons import apply_label_icon
+                apply_label_icon(self._ic, 'kpi', self._icon_key, 22,
+                                 accent=accent)
                 self._ic.setText('')
             except Exception:
                 pass
@@ -154,17 +176,24 @@ class KPICard(QFrame):
             f"color:{C['muted']}; font-size:10px; font-weight:700; "
             f"letter-spacing:1.2px; background:transparent; border:none;")
         self._val.setStyleSheet(
-            f"color:{self._accent}; font-size:28px; font-weight:800; "
+            f"color:{self._value_ink()}; font-size:28px; font-weight:800; "
             f"background:transparent; border:none; line-height:1;")
         self._sub.setStyleSheet(
             f"color:{C['text2']}; font-size:12px; background:transparent; border:none;")
 
+    def _value_ink(self):
+        """Readable ink for the big number.
+
+        The accent doubles as a left-border tone, and several tones (bright
+        dark-mode green/amber, light-mode blue) fall under 4.5:1 as text on a
+        card.  Fall back to body text whenever the accent cannot carry it.
+        """
+        bg = accent_value(f'{self._tone_ref}_dim', C['card']) \
+            if getattr(self, '_tone_ref', None) else C['card']
+        return readable_ink(self._accent, bg)
+
     def set_value(self, v, color=None):
         self._val.setText(str(v))
-        c = color or self._accent
-        self._val.setStyleSheet(
-            f"color:{c}; font-size:28px; font-weight:800; "
-            f"background:transparent; border:none; line-height:1;")
         # Tinted tile when value is negative or explicitly critical/warn.
         # warn = P&L / attention; err = cash deficit / overdue only.
         try:
@@ -172,64 +201,95 @@ class KPICard(QFrame):
             neg = '-' in raw and any(ch.isdigit() for ch in raw)
         except Exception:
             neg = False
-        r = RADIUS['xl']
         is_err = bool(color and color == C.get('err'))
         is_warn = bool(color and color == C.get('warn')) or (neg and not is_err)
         if is_err:
-            tone, dim = C['err'], C.get('err_dim', C['card'])
-            tip = 'Critical — overdue or cash deficit'
+            self._tone_ref = 'err'
+            self.setToolTip('Critical — overdue or cash deficit')
         elif is_warn or neg:
-            tone, dim = C['warn'], C.get('warn_dim', C['card'])
-            tip = 'Needs attention — negative result or elevated risk'
+            self._tone_ref = 'warn'
+            self.setToolTip('Needs attention — negative result or elevated risk')
         else:
-            tone = dim = tip = None
-        if tone:
-            self._accent = tone
-            self.setStyleSheet(
-                f"QFrame {{ background:{dim}; "
-                f"border:1px solid {qss_alpha(tone, 0.55)}; "
-                f"border-left:4px solid {tone}; border-radius:{r}px; }}")
-            self.setToolTip(tip)
-        else:
-            if color:
-                self._accent = color
-            self.setStyleSheet(
-                f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
-                f"border-left:3px solid {self._accent}; border-radius:{r}px; }}")
+            self._tone_ref = None
             self.setToolTip('')
-        if self._ic is not None:
-            try:
-                from desktop.utils.nav_icons import kpi_pixmap
-                self._ic.setStyleSheet(
-                    f"background:{qss_alpha(self._accent, 0.12)}; border-radius:10px; "
-                    f"border:none;")
-                self._ic.setPixmap(kpi_pixmap(self._icon_key, 22, accent=self._accent))
-            except Exception:
-                pass
+        if self._tone_ref:
+            self._accent_ref = self._tone_ref
+        elif color:
+            self._accent_ref = accent_ref(color) or self._accent_ref
+        # One code path for painting, so a value update and a theme change can
+        # never disagree about the tile's colours.
+        self.refresh_theme()
 
     def set_sub(self, s):
         self._sub.setText(str(s))
 
 
 def _refresh_section_icon(lbl):
-    gold = C['gold']
+    """Gold glyph on a gold tint — needs the deeper `gold_ink` in light mode."""
     lbl.setStyleSheet(
-        f"QLabel {{ background-color: {qss_alpha(gold, 0.15)}; color: {gold}; "
+        f"QLabel {{ background-color: {qss_alpha(C['gold'], 0.15)}; "
+        f"color: {C.get('gold_ink', C['gold'])}; "
         f"border-radius:8px; font-size:14px; font-weight:800; border:none; }}")
 
 
+# Badge fills are the solid `*_dim` tokens rather than a translucent tone.
+# A translucent fill takes its luminance from whatever sits behind it, so the
+# same badge measured 4.5:1 on a card and 4.1:1 on a nested card; the dim
+# tokens keep every badge identical and above 4.5:1 on any surface.
+_BADGE_TONES = {
+    'ok': ('ok', 'ok_dim'),
+    'warn': ('warn', 'warn_dim'),
+    'err': ('err', 'err_dim'),
+    'info': ('info', 'info_dim'),
+    'gold': ('gold', 'gold_dim'),
+    'muted': ('text2', 'panel'),
+}
+
+
+def badge_qss(tone='ok', font_size=11, weight=600, padding='2px 10px'):
+    """Pill QSS for a status tone.
+
+    The fill is the solid `*_dim` token rather than a translucent wash: a wash
+    takes its contrast from whatever surface happens to be underneath, which is
+    how `warn` on a 12% warn tint measured 4.16:1 on the dashboard.
+    """
+    ref = accent_ref(tone) or 'ok'
+    ref = _TONE_ALIASES.get(ref, ref)
+    ink_token, bg_token = _BADGE_TONES.get(ref, _BADGE_TONES['ok'])
+    bg = C[bg_token]
+    ink = readable_ink(C[ink_token], bg)
+    return (f"QLabel {{ color:{ink}; font-size:{font_size}px; "
+            f"font-weight:{weight}; background:{bg}; "
+            f"border:1px solid {qss_alpha(C[ink_token], 0.35)}; "
+            f"border-radius:{RADIUS['md']}px; padding:{padding}; }}")
+
+
 def _refresh_badge(lbl):
-    tone = lbl.property('mbtBadgeTone') or 'ok'
-    tone_map = {
-        'ok': C['ok'], 'warn': C['warn'], 'err': C['err'],
-        'info': C['info'], 'muted': C['text2'], 'gold': C['gold'],
-    }
-    color = tone_map.get(str(tone), C['ok'])
-    r = RADIUS['md']
-    lbl.setStyleSheet(
-        f"QLabel {{ color:{color}; font-size:11px; font-weight:600; "
-        f"background:{qss_alpha(color, 0.10)}; border:1px solid {qss_alpha(color, 0.28)}; "
-        f"border-radius:{r}px; padding:2px 10px; }}")
+    lbl.setStyleSheet(badge_qss(lbl.property('mbtBadgeTone') or 'ok'))
+
+
+# Tone tokens whose semantic aliases must collapse to the same chip.
+_TONE_ALIASES = {'success': 'ok', 'warning': 'warn', 'danger': 'err',
+                 'primary': 'gold', 'focus': 'gold', 'gold_ink': 'gold',
+                 'text2': 'muted'}
+
+
+def tone_chip_qss(tone='gold', radius=8, font_size=16, weight=800):
+    """Square glyph chip (status icon next to a KPI or banner).
+
+    Uses the solid `*_dim` fill and an ink checked against it, so the glyph
+    cannot end up as bright gold on a pale gold wash (measured 1.4:1).
+    `tone` accepts a palette token or any palette colour value.
+    """
+    ref = accent_ref(tone) or 'gold'
+    ref = _TONE_ALIASES.get(ref, ref)
+    ink_token, bg_token = _BADGE_TONES.get(ref, _BADGE_TONES['gold'])
+    bg = C[bg_token]
+    ink = readable_ink(C[ink_token], bg)
+    return (f"QLabel {{ background:{bg}; color:{ink}; "
+            f"border:1px solid {qss_alpha(C[ink_token], 0.45)}; "
+            f"border-radius:{radius}px; font-size:{font_size}px; "
+            f"font-weight:{weight}; }}")
 
 
 def _refresh_primary_btn(btn):
@@ -342,6 +402,9 @@ def refresh_themed_widgets(root):
         refresh_select_controls(root)
     except Exception:
         pass
+    # Anything styled inline that this function does not know by name is kept in
+    # sync by the palette-token templates captured in theme.install_style_capture.
+    restyle_themed_widgets(root)
 
 
 # ── BUTTONS ───────────────────────────────────────────────────────────────────
@@ -600,6 +663,10 @@ def apply_table_row_backgrounds(table, row=None):
                 prev = (w.styleSheet() or '')
                 if 'QPushButton' not in prev:
                     w.setStyleSheet(f"background:{bg.name()}; border:none;")
+    overlay = getattr(table, '_mbt_empty_overlay', None)
+    if overlay is not None:
+        overlay.refresh_theme()
+        overlay.sync()
 
 
 def _tone_from_color(color):
@@ -638,6 +705,115 @@ def tbl_right(text, color=None, tone=None):
 
 def tbl_center(text, color=None, tone=None):
     return tbl_item(text, Qt.AlignCenter, color, tone)
+
+
+def fit_columns_to_content(table, cols, floors=None, cap=420, padding=30):
+    """Widen ``cols`` so the widest cell/header text fits, then leave them interactive.
+
+    Money columns pinned to a fixed pixel width elide even ordinary values once a
+    currency prefix and thousands separators are present. Sizing from the real
+    font metrics keeps ``KES 250.00`` and ``KES 12,345,678.90`` both readable while
+    the cashier can still drag a column narrower.
+    """
+    if table is None or not hasattr(table, 'columnCount'):
+        return
+    hdr = table.horizontalHeader()
+    if hdr is None:
+        return
+    floors = floors or {}
+    cell_fm = QFontMetrics(table.font())
+    hdr_fm = QFontMetrics(hdr.font())
+    for col in cols:
+        col = int(col)
+        if col < 0 or col >= table.columnCount():
+            continue
+        head = table.horizontalHeaderItem(col)
+        need = (hdr_fm.width(head.text()) if head is not None else 0) + padding
+        for row in range(table.rowCount()):
+            item = table.item(row, col)
+            if item is not None:
+                need = max(need, cell_fm.width(item.text()) + padding)
+        width = max(int(floors.get(col, 0) or 0), min(int(cap), int(need)))
+        try:
+            if hdr.sectionResizeMode(col) != QHeaderView.Interactive:
+                hdr.setSectionResizeMode(col, QHeaderView.Interactive)
+            table.setColumnWidth(col, width)
+        except Exception:
+            continue
+
+
+def apply_cell_tooltips(table, *cols):
+    """Show the full cell text on hover for columns that may still be elided."""
+    if table is None or not hasattr(table, 'rowCount'):
+        return
+    targets = [int(c) for c in cols] if cols else range(table.columnCount())
+    for row in range(table.rowCount()):
+        for col in targets:
+            item = table.item(row, int(col))
+            if item is not None and not item.toolTip():
+                item.setToolTip(item.text())
+
+
+class _TableEmptyOverlay(QObject):
+    """EmptyState painted over a table viewport while it holds no rows."""
+
+    def __init__(self, table, icon, title, subtitle=''):
+        super().__init__(table)
+        from desktop.utils.ui_polish import EmptyState
+        self.table = table
+        self.widget = EmptyState(icon, title, subtitle, table.viewport())
+        self.widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.widget.hide()
+        table.viewport().installEventFilter(self)
+        model = table.model()
+        if model is not None:
+            for sig in ('rowsInserted', 'rowsRemoved', 'modelReset', 'layoutChanged'):
+                try:
+                    getattr(model, sig).connect(self.sync)
+                except Exception:
+                    pass
+        self.sync()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Resize, QEvent.Show):
+            self._place()
+        return False
+
+    def _place(self):
+        try:
+            vp = self.table.viewport()
+            self.widget.setGeometry(0, 0, vp.width(), vp.height())
+        except RuntimeError:
+            pass
+
+    def sync(self, *_args):
+        try:
+            empty = self.table.rowCount() == 0
+        except RuntimeError:
+            return
+        self._place()
+        self.widget.setVisible(empty)
+        if empty:
+            self.widget.raise_()
+
+    def refresh_theme(self):
+        try:
+            self.widget.refresh_theme()
+        except RuntimeError:
+            pass
+
+
+def attach_table_empty_state(table, icon, title, subtitle=''):
+    """Install (once) an empty-state overlay for ``table``; returns the overlay."""
+    if table is None:
+        return None
+    overlay = getattr(table, '_mbt_empty_overlay', None)
+    if overlay is None:
+        overlay = _TableEmptyOverlay(table, icon, title, subtitle)
+        table._mbt_empty_overlay = overlay
+    else:
+        overlay.sync()
+    return overlay
 
 
 def align_header_right(table, *cols):
@@ -821,21 +997,31 @@ def Badge(text, color=None, tone=None):
     """
     Status badge (Lovable Badge).
     tone: 'ok' | 'warn' | 'err' | 'info' | 'muted' | 'gold'
+
+    `color` is accepted for backwards compatibility and mapped to the nearest
+    tone, so no caller can bake a literal hex that survives a theme change.
     """
-    tone_map = {
-        'ok': C['ok'], 'warn': C['warn'], 'err': C['err'],
-        'info': C['info'], 'muted': C['text2'], 'gold': C['gold'],
-    }
-    color = color or tone_map.get(tone, C['ok'])
+    tone = tone or _tone_for_color(color) or 'ok'
     l = QLabel(str(text))
-    l.setProperty('mbtBadgeTone', tone or 'ok')
+    l.setProperty('mbtBadgeTone', tone)
     l.setAlignment(Qt.AlignCenter)
-    r = RADIUS['md']
-    l.setStyleSheet(
-        f"QLabel {{ color:{color}; font-size:11px; font-weight:600; "
-        f"background:{qss_alpha(color, 0.10)}; border:1px solid {qss_alpha(color, 0.28)}; "
-        f"border-radius:{r}px; padding:2px 10px; }}")
+    l.setStyleSheet(badge_qss(tone))
     return l
+
+
+def _tone_for_color(color):
+    """Map a legacy explicit badge colour onto a palette tone."""
+    if not color:
+        return None
+    value = str(color).lower()
+    for tone, (ink_token, _bg) in _BADGE_TONES.items():
+        if str(C.get(ink_token, '')).lower() == value:
+            return tone
+    for tone, token in (('ok', 'success'), ('warn', 'warning'),
+                        ('err', 'danger'), ('gold', 'primary')):
+        if str(C.get(token, '')).lower() == value:
+            return tone
+    return None
 
 
 # ── SEPARATOR ─────────────────────────────────────────────────────────────────
@@ -1029,8 +1215,8 @@ def section_card(icon_text, title, desc=''):
         f"border-radius:8px; border:none; }}")
     ic.setProperty('mbtSectionIcon', True)
     try:
-        from desktop.utils.nav_icons import section_icon_for_title
-        ic.setPixmap(section_icon_for_title(title, 22).pixmap(22, 22))
+        from desktop.utils.nav_icons import apply_label_icon
+        apply_label_icon(ic, 'section', title, 22)
     except Exception:
         ic.setText('◆')
         ic.setStyleSheet(
@@ -1057,6 +1243,34 @@ def section_card(icon_text, title, desc=''):
     body = QVBoxLayout(); body.setSpacing(12); body.setContentsMargins(0, 0, 0, 0)
     root.addLayout(body)
     return card, body
+
+
+def _repaint_non_stylesheet_theme_state():
+    """Theme hook for colour that does not live in a stylesheet.
+
+    Table item roles and painted icon pixmaps are baked at build time, so they
+    survive a QSS swap unchanged.  This walks the whole application, which also
+    covers surfaces the per-tab refresh never reaches: dialogs left open across
+    a toggle, POS panels, and lazily built tabs.
+    """
+    from PyQt5 import sip
+    app = QApplication.instance()
+    if app is None:
+        return
+    for w in app.allWidgets():
+        try:
+            if isinstance(w, QTableWidget) and not sip.isdeleted(w):
+                retint_table_items(w)
+        except (RuntimeError, TypeError):
+            continue
+    try:
+        from desktop.utils.nav_icons import repaint_themed_icons
+        repaint_themed_icons()
+    except Exception:
+        pass
+
+
+register_theme_hook(_repaint_non_stylesheet_theme_state)
 
 
 def wrap_table_card(table, title=None):

@@ -1,0 +1,45 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Export Excel",
+      "tip": "Export invoices, aging bands, and payments to Excel",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "+ Collect Payment",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Credit via POS",
+      "tip": "Create credit / part-payment sales on the POS tab. Debts cannot be created here ",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    }
+  ],
+  "fields": [],
+  "checks": []
+}

@@ -21,6 +21,7 @@ from desktop.utils.widgets import (
     KPICard, Card, H2, H3, Caption, PrimaryBtn, SecondaryBtn, DangerBtn,
     SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
     lovable_tab_qss, GhostBtn, Badge, wrap_table_card, align_header_right,
+    attach_table_empty_state,
 )
 from desktop.utils.ui_polish import EmptyState
 from desktop.utils.option_lists import (
@@ -100,6 +101,15 @@ class DebtTab(QWidget):
 
     def _role(self):
         return (self.user.get('user') or self.user).get('role', 'cashier')
+
+    def can(self, action: str) -> bool:
+        """Central permission check — visible write controls must match it."""
+        from desktop.utils.security import has_permission
+        return has_permission(self.user, action)
+
+    def require(self, action: str, parent=None) -> bool:
+        from desktop.utils.security import require_permission
+        return require_permission(self.user, action, parent or self)
 
     def _cfg(self):
         try:
@@ -207,7 +217,9 @@ class _OverviewTab(QWidget):
         hrow.addWidget(exp_btn)
         col_btn = PrimaryBtn('+ Collect Payment', 40)
         col_btn.clicked.connect(lambda: self.p._invoices_tab._collect_payment_dialog())
+        col_btn.setVisible(self.p.can('debt.collect'))
         hrow.addWidget(col_btn)
+        self._collect_btn = col_btn
         # Debts must originate from a completed POS sale ? no orphan create
         pos_hint = SecondaryBtn('Credit via POS', 40)
         pos_hint.setToolTip(
@@ -471,6 +483,9 @@ class _InvoicesTab(QWidget):
                       (6, 110), (7, 110), (8, 320)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.cellClicked.connect(self._on_row_clicked)
+        attach_table_empty_state(
+            self._tbl, 'debt', 'No invoices in this range',
+            'Credit and part-payment sales from the POS appear here')
         lay.addWidget(self._tbl)
 
         self._stats = Caption('')
@@ -550,7 +565,7 @@ class _InvoicesTab(QWidget):
             cell = QWidget(); cell.setStyleSheet('background:transparent;')
             cl   = QHBoxLayout(cell); cl.setContentsMargins(4, 2, 4, 2); cl.setSpacing(6)
 
-            if status not in ('paid', 'cancelled'):
+            if status not in ('paid', 'cancelled') and self.p.can('debt.collect'):
                 pay_btn = QPushButton('Collect')
                 pay_btn.setMinimumHeight(40)
                 pay_btn.setMinimumWidth(78)
@@ -651,6 +666,8 @@ class _InvoicesTab(QWidget):
 
     def _collect_payment_dialog(self, invoice_id=None, inv_num='',
                                 customer_name='', balance=0.0):
+        if not self.p.require('debt.collect', self):
+            return
         dlg = _CollectPaymentDialog(self.p, self,
                                     invoice_id=invoice_id,
                                     invoice_number=inv_num,
@@ -725,7 +742,11 @@ class _CustomersTab(QWidget):
         tb.addWidget(self._search, 1)
         add_btn = PrimaryBtn('+ New Customer', 42)
         add_btn.clicked.connect(self._add_customer)
+        # Cashiers may still create a customer inline during a credit sale
+        # (debt.create at the API); the Debt tab register is customer_manage.
+        add_btn.setVisible(self.p.can('debt.customer_manage'))
         tb.addWidget(add_btn)
+        self._add_btn = add_btn
         ref_btn = SecondaryBtn('?', 42)
         ref_btn.clicked.connect(self.refresh)
         tb.addWidget(ref_btn)
@@ -784,24 +805,27 @@ class _CustomersTab(QWidget):
                 lambda _, cid=c['id']: self._open_ledger(cid))
             cl.addWidget(ledger_btn)
 
-            edit_btn = QPushButton('Edit')
-            edit_btn.setMinimumHeight(34)
-            edit_btn.setMinimumWidth(64)
-            edit_btn.setCursor(Qt.PointingHandCursor)
-            edit_btn.setToolTip('Edit customer')
-            edit_btn.setStyleSheet(
-                f"QPushButton{{background:{C['card2']};color:{C['text']};"
-                f"border:1px solid {C['border2']};border-radius:6px;"
-                f"font-size:12px;font-weight:700;padding:4px 12px;}}"
-                f"QPushButton:hover{{background:{C['hover']};color:{C['gold']};}}")
-            edit_btn.clicked.connect(
-                lambda _, cid=c['id']: self._edit_customer(cid))
-            cl.addWidget(edit_btn)
+            if self.p.can('debt.customer_manage'):
+                edit_btn = QPushButton('Edit')
+                edit_btn.setMinimumHeight(34)
+                edit_btn.setMinimumWidth(64)
+                edit_btn.setCursor(Qt.PointingHandCursor)
+                edit_btn.setToolTip('Edit customer')
+                edit_btn.setStyleSheet(
+                    f"QPushButton{{background:{C['card2']};color:{C['text']};"
+                    f"border:1px solid {C['border2']};border-radius:6px;"
+                    f"font-size:12px;font-weight:700;padding:4px 12px;}}"
+                    f"QPushButton:hover{{background:{C['hover']};color:{C['gold']};}}")
+                edit_btn.clicked.connect(
+                    lambda _, cid=c['id']: self._edit_customer(cid))
+                cl.addWidget(edit_btn)
 
             cl.addStretch()
             self._tbl.setCellWidget(i, 5, cell)
 
     def _add_customer(self):
+        if not self.p.require('debt.customer_manage', self):
+            return
         dlg = _CustomerDialog(self.p, self)
         if dlg.exec_() == QDialog.Accepted:
             from desktop.utils.state_reset import StateResetManager
@@ -809,6 +833,8 @@ class _CustomersTab(QWidget):
             self.refresh()
 
     def _edit_customer(self, cid):
+        if not self.p.require('debt.customer_manage', self):
+            return
         cust = next((c for c in self._customers if c['id'] == cid), None)
         if not cust:
             return
@@ -864,6 +890,9 @@ class _PaymentsTab(QWidget):
             stretch_col=2, row_height=44)
         for ci, w in [(0, 170), (1, 160), (3, 120), (4, 90), (5, 120), (6, 110), (7, 160)]:
             self._tbl.setColumnWidth(ci, w)
+        attach_table_empty_state(
+            self._tbl, 'collected', 'No payments in this range',
+            'Debt collections appear here once payments are recorded')
         lay.addWidget(self._tbl)
         self._stats = Caption('')
         lay.addWidget(self._stats)

@@ -33,20 +33,24 @@ function Page() {
 
   const listQ = useQuery({
     queryKey: ["admin-updates"],
-    queryFn: () => GET<{ updates?: UpdateRow[] }>("/cloud/updates"),
+    queryFn: () => GET<{ updates?: UpdateRow[]; error?: string }>("/cloud/updates"),
   });
   const updates = listQ.data?.updates || [];
 
   const publishMut = useMutation({
     mutationFn: () =>
-      POST("/cloud/updates", {
+      POST<{ ok?: boolean; update?: UpdateRow; error?: string }>("/cloud/updates", {
         version,
         download_url: url,
         checksum,
         release_notes: notes,
         is_mandatory: false,
       }),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result?.error || (!result?.ok && !result?.update)) {
+        toast.error(result?.error || "Publish failed");
+        return;
+      }
       toast.success("Update published");
       setVersion("");
       setUrl("");
@@ -99,7 +103,9 @@ function Page() {
             <CardDescription>History of active and past releases.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
-            {updates.length === 0 ? (
+            {listQ.data?.error ? (
+              <p className="text-sm text-destructive">{listQ.data.error}</p>
+            ) : updates.length === 0 ? (
               <p className="text-sm text-muted-foreground">No updates in Supabase yet.</p>
             ) : (
               updates.map((u) => (

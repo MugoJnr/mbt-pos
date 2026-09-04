@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 
@@ -35,6 +36,18 @@ class LicenseOfflineGraceTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(msg)
         self.assertIn('invalid', msg.lower())
+
+    def test_concurrent_store_write_probes_do_not_collide(self):
+        store_dir = os.path.join(self._tmpdir.name, 'shared-license-store')
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(
+                lambda _: self.le._store_is_writable(store_dir), range(120)
+            ))
+        self.assertTrue(all(results), results)
+        self.assertEqual(
+            [name for name in os.listdir(store_dir) if name.startswith('.write_probe')],
+            [],
+        )
 
     def test_offline_grace_allows_within_window(self):
         ok, message = self.engine.activate_from_cloud(
@@ -115,6 +128,63 @@ class LicenseOfflineGraceTests(unittest.TestCase):
         eng2 = self.le.LicenseEngine()
         self.assertTrue(eng2.is_valid)
         self.assertTrue(launcher._shop_already_ready(eng2))
+
+    def test_local_license_ignores_stale_cloud_trial_key(self):
+        """A previous cloud trial must not lock a newer local lifetime key."""
+        from licensing.license_service import LicenseService
+
+        ok, message = self.engine._activate_local_signed_key({
+            'device_id': self._device,
+            'plan': 'lifetime',
+            'issued_at': int(time.time()),
+            'duration_days': 36500,
+            'issued_by': 'MugoByte Technologies',
+        })
+        self.assertTrue(ok, message)
+        self.assertFalse(self.engine.store.get('cloud_license_key'))
+
+        self.engine.store.set('cloud_license_key', 'MBT-TRI-STALE-REVOKED')
+        self.engine.store.set('last_cloud_ok_ts', 1)
+        self.engine.store.set('requires_online', True)
+        self.engine.store.set('offline_lock', True)
+        service = LicenseService.__new__(LicenseService)
+        service.engine = self.engine
+
+        with patch(
+            'backend.cloud_backup.paths.is_cloud_configured',
+            return_value=True,
+        ), patch(
+            'backend.cloud.license_server.get_license_server',
+        ) as get_server:
+            service._cloud_validate_license()
+
+        get_server.assert_not_called()
+        self.assertFalse(self.engine.store.get('requires_online'))
+        self.assertFalse(self.engine.store.get('offline_lock'))
+        self.assertTrue(self.engine.is_valid)
+
+    def test_local_license_clears_stale_cloud_lock_during_restart(self):
+        """A fresh process must be ACTIVE before background services run."""
+        ok, message = self.engine._activate_local_signed_key({
+            'device_id': self._device,
+            'plan': 'lifetime',
+            'issued_at': int(time.time()),
+            'duration_days': 36500,
+            'issued_by': 'MugoByte Technologies',
+        })
+        self.assertTrue(ok, message)
+        self.engine.store.set('cloud_license_key', 'MBT-TRI-STALE-REVOKED')
+        self.engine.store.set('last_cloud_ok_ts', 1)
+        self.engine.store.set('requires_online', True)
+        self.engine.store.set('offline_lock', True)
+
+        restarted = self.le.LicenseEngine(project_root=self._tmpdir.name)
+
+        self.assertEqual(restarted.state, self.le.STATE_ACTIVE)
+        self.assertTrue(restarted.is_valid)
+        self.assertFalse(restarted.store.get('cloud_license_key'))
+        self.assertFalse(restarted.store.get('requires_online'))
+        self.assertFalse(restarted.store.get('offline_lock'))
 
 
 class LicenseCloudDeviceIdPersistTests(unittest.TestCase):

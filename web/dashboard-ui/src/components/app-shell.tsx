@@ -13,6 +13,7 @@ import {
   Wrench,
   Moon,
   Sun,
+  MonitorSmartphone,
   RefreshCw,
   LogOut,
   Circle,
@@ -43,37 +44,59 @@ type NavItem = {
   to: string;
   label: string;
   icon: typeof LayoutDashboard;
-  super?: boolean;
+  /** Module gate resolved by GET /api/nav/modules. Undefined = always shown. */
+  module?: string;
   group?: string;
 };
 
 const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, group: "Overview" },
-  { to: "/live", label: "Live", icon: Activity, group: "Overview" },
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, module: "dashboard", group: "Overview" },
+  { to: "/live", label: "Live", icon: Activity, module: "reports", group: "Overview" },
   { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview" },
-  { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations" },
-  { to: "/inventory", label: "Inventory", icon: Package, group: "Operations" },
-  { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations" },
-  { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations" },
+  { to: "/pos", label: "Point of Sale", icon: ShoppingCart, module: "sales", group: "Operations" },
+  { to: "/inventory", label: "Inventory", icon: Package, module: "inventory", group: "Operations" },
+  { to: "/debt", label: "Debt Management", icon: Banknote, module: "debt", group: "Operations" },
+  { to: "/reports", label: "Reports", icon: BarChart3, module: "reports", group: "Operations" },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Command" },
   { to: "/health", label: "System Health", icon: HeartPulse, group: "Command" },
-  { to: "/backup", label: "Backup", icon: HardDrive, group: "Command" },
+  { to: "/backup", label: "Backup", icon: HardDrive, module: "backup", group: "Command" },
   { to: "/branches", label: "Branches", icon: GitBranch, group: "Command" },
-  { to: "/ai", label: "AI Center", icon: Sparkles, group: "Command" },
-  { to: "/notes", label: "Notes", icon: NotebookPen, group: "Admin" },
-  { to: "/users", label: "Users & Access", icon: Users, group: "Admin" },
-  { to: "/settings", label: "Settings", icon: Settings, group: "Admin" },
-  { to: "/security", label: "Security", icon: ShieldCheck, super: true, group: "Admin" },
-  { to: "/license", label: "License", icon: KeyRound, super: true, group: "Admin" },
-  { to: "/diagnostics", label: "Diagnostics", icon: Wrench, group: "Admin" },
+  { to: "/ai", label: "AI Center", icon: Sparkles, module: "ai_ops", group: "Command" },
+  { to: "/notes", label: "Notes", icon: NotebookPen, module: "notes", group: "Admin" },
+  { to: "/users", label: "Users & Access", icon: Users, module: "users", group: "Admin" },
+  { to: "/settings", label: "Settings", icon: Settings, module: "settings", group: "Admin" },
+  { to: "/security", label: "Security", icon: ShieldCheck, module: "security", group: "Admin" },
+  { to: "/license", label: "License", icon: KeyRound, module: "license", group: "Admin" },
+  { to: "/diagnostics", label: "Diagnostics", icon: Wrench, module: "diagnostics", group: "Admin" },
 ];
 
-const MOBILE_NAV = [
-  { to: "/", label: "Home", icon: LayoutDashboard },
-  { to: "/pos", label: "POS", icon: ShoppingCart },
-  { to: "/inventory", label: "Stock", icon: Package },
-  { to: "/reports", label: "Reports", icon: BarChart3 },
-] as const;
+const MOBILE_NAV: NavItem[] = [
+  { to: "/", label: "Home", icon: LayoutDashboard, module: "dashboard" },
+  { to: "/pos", label: "POS", icon: ShoppingCart, module: "sales" },
+  { to: "/inventory", label: "Stock", icon: Package, module: "inventory" },
+  { to: "/reports", label: "Reports", icon: BarChart3, module: "reports" },
+];
+
+/**
+ * Modules this account may use, from the server. The backend keeps enforcing
+ * every route; this only stops the shell offering pages that will 403.
+ */
+function useAllowedModules() {
+  const { isAuthed } = useAuth();
+  const q = useQuery({
+    queryKey: ["nav-modules"],
+    queryFn: () => GET<{ modules?: string[]; role?: string }>("/nav/modules"),
+    enabled: isAuthed,
+    staleTime: 5 * 60_000,
+  });
+  return q.data?.modules ?? null;
+}
+
+function visibleNav(items: NavItem[], modules: string[] | null) {
+  // Until the grant list arrives, show only ungated entries — never a menu
+  // the account cannot open.
+  return items.filter((item) => !item.module || (modules?.includes(item.module) ?? false));
+}
 
 function useClock() {
   const [now, setNow] = useState<Date | null>(null);
@@ -85,15 +108,24 @@ function useClock() {
   return now;
 }
 
+const THEME_MODE_UI = {
+  system: { Icon: MonitorSmartphone, label: "System" },
+  light: { Icon: Sun, label: "Light" },
+  dark: { Icon: Moon, label: "Dark" },
+} as const;
+
 export function ThemeToggle({ compact = false }: { compact?: boolean }) {
-  const { theme, toggle } = useTheme();
-  const Icon = theme === "dark" ? Sun : Moon;
-  const label = theme === "dark" ? "Light" : "Dark";
+  const { mode, theme, cycle } = useTheme();
+  const { Icon, label } = THEME_MODE_UI[mode];
+  const hint =
+    mode === "system" ? `Theme: System (${theme}) — click for Light` : `Theme: ${label}`;
   return (
     <button
-      onClick={toggle}
+      type="button"
+      onClick={cycle}
+      title={hint}
       className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-sm font-medium text-text hover:bg-hover transition-ui min-h-[44px] sm:min-h-0"
-      aria-label="Toggle theme"
+      aria-label={hint}
     >
       <Icon className="h-4 w-4 text-gold" />
       {!compact && <span className="hidden sm:inline">{label}</span>}
@@ -118,6 +150,8 @@ function SidebarContent({
 }) {
   const location = useLocation();
   const { user, logout } = useAuth();
+  const modules = useAllowedModules();
+  const allowed = visibleNav(NAV, modules);
   const displayName = user?.full_name || user?.username || "Staff";
   const role = String(user?.role || "cashier").toUpperCase();
   const groups = ["Overview", "Operations", "Command", "Admin"] as const;
@@ -130,7 +164,7 @@ function SidebarContent({
 
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2.5">
         {groups.map((group) => {
-          const items = NAV.filter((n) => n.group === group);
+          const items = allowed.filter((n) => n.group === group);
           if (!items.length) return null;
           return (
             <div key={group} className="mb-3">
@@ -480,6 +514,7 @@ export function AppShell({
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const isPos = density === "pos";
+  const mobileNav = visibleNav(MOBILE_NAV, useAllowedModules());
 
   const versionQ = useQuery({
     queryKey: ["app-version"],
@@ -706,8 +741,11 @@ export function AppShell({
 
       {/* Mobile bottom navigation */}
       <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border bg-panel/95 backdrop-blur-md safe-bottom shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.4)]">
-        <div className="grid grid-cols-5">
-          {MOBILE_NAV.map((item) => {
+        <div
+          className="grid"
+          style={{ gridTemplateColumns: `repeat(${mobileNav.length + 1}, minmax(0, 1fr))` }}
+        >
+          {mobileNav.map((item) => {
             const active =
               item.to === "/"
                 ? location.pathname === "/"

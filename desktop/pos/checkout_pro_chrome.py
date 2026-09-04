@@ -935,7 +935,8 @@ class CategoryChipBar(QWidget):
             on = k == self._selected
             if on:
                 b.setStyleSheet(
-                    f"QPushButton#posCatChip{{background:{C['gold']};color:#1A1A1A;"
+                    f"QPushButton#posCatChip{{background:{C['gold']};"
+                    f"color:{C['gold_fg']};"
                     f"border:none;border-radius:17px;padding:0 14px;margin:0;"
                     f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:800;}}")
@@ -1140,6 +1141,7 @@ _QUICK_ACTION_TIPS = {
     '_void_sale': 'Void a completed sale (reason + Super-Admin PIN)',
     '_open_return_sale': 'Return items from a completed receipt (restock + refund)',
     '_reprint_receipt': 'Reprint a completed receipt',
+    '_open_payment_inbox': 'Match unmatched Till / M-Pesa payments',
     '_preview': 'Preview / print the current sale',
     '_open_recent_sales': 'Browse recent sales for this business day',
     '_focus_notes': 'Add a note to this sale',
@@ -1199,6 +1201,7 @@ def ensure_pro_widgets(tab) -> None:
             ('Void Sale', C['err'], '_void_sale'),
             ('Return / Exchange', warn, '_open_return_sale'),
             ('Reprint', info, '_reprint_receipt'),
+            ('M-Pesa Inbox', info, '_open_payment_inbox'),
             ('Print Preview', info, '_preview'),
             ('Recent Sales', info, '_open_recent_sales'),
             ('Notes', C['text2'], '_focus_notes'),

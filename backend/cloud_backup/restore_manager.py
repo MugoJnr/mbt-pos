@@ -217,24 +217,31 @@ class RestoreManager:
                 stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 if os.path.isfile(live):
                     pre = os.path.join(data_dir, f'mbt_pos.pre_restore_{stamp}.db')
-                    shutil.copy2(live, pre)
-                    # Also copy WAL/SHM aside if present
-                    for suffix in ('-wal', '-shm'):
-                        side = live + suffix
-                        if os.path.isfile(side):
-                            try:
-                                shutil.copy2(side, pre + suffix)
-                            except Exception:
-                                pass
-                # Remove WAL so we don't mix journals
-                for suffix in ('-wal', '-shm'):
-                    side = live + suffix
-                    if os.path.isfile(side):
-                        try:
-                            os.remove(side)
-                        except OSError:
-                            pass
-                shutil.copy2(snap, live)
+                    live_src = sqlite3.connect(live, timeout=30)
+                    pre_dest = sqlite3.connect(pre, timeout=30)
+                    try:
+                        configure_sqlite_connection(live_src)
+                        live_src.backup(pre_dest)
+                    finally:
+                        pre_dest.close()
+                        live_src.close()
+
+                # Use SQLite's online backup API in the restore direction. A raw
+                # file copy can combine the restored DB with a live process's WAL
+                # and silently lose or replay writes.
+                restore_src = sqlite3.connect(snap, timeout=30)
+                live_dest = sqlite3.connect(live, timeout=30)
+                try:
+                    configure_sqlite_connection(restore_src)
+                    configure_sqlite_connection(live_dest)
+                    restore_src.backup(live_dest)
+                    check = live_dest.execute('PRAGMA integrity_check').fetchone()
+                    if not check or str(check[0]).lower() != 'ok':
+                        raise RestoreError(
+                            f'Restored database integrity check failed: {check}')
+                finally:
+                    live_dest.close()
+                    restore_src.close()
 
             try:
                 client.log_restore({
@@ -248,7 +255,7 @@ class RestoreManager:
             except Exception:
                 pass
 
-            self._emit('Restore complete — restart recommended', 100)
+            self._emit('Restore complete — restart required', 100)
             return {
                 'ok': True,
                 'message': msg,

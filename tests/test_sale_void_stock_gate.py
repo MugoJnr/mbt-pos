@@ -13,6 +13,8 @@ if ROOT not in sys.path:
 
 
 class SaleVoidStockGate(unittest.TestCase):
+    PIN = '246810'
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._db_path = os.path.join(self._tmpdir.name, 'test.db')
@@ -38,6 +40,11 @@ class SaleVoidStockGate(unittest.TestCase):
             "INSERT INTO products (name, sku, price, cost_price, stock, min_stock) "
             "VALUES (?,?,?,?,?,?)",
             ('Gate Widget', 'GW1', 50.0, 20.0, 100, 5),
+        )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash(self.PIN)),
         )
         db.commit()
         db.close()
@@ -87,7 +94,10 @@ class SaleVoidStockGate(unittest.TestCase):
         summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
         self.assertGreaterEqual(float(summary.get('collected_revenue') or 0), 200.0)
 
-        voided = self.api.void_sale(sale_id, 'gate test void')
+        denied_without_pin = self.api.void_sale(sale_id, 'gate test void')
+        self.assertIn('PIN', denied_without_pin.get('error', ''))
+        voided = self.api.void_sale(
+            sale_id, 'gate test void', pin=self.PIN)
         self.assertTrue(voided.get('success'), voided)
 
         db = self.ac._db()
@@ -143,7 +153,8 @@ class SaleVoidStockGate(unittest.TestCase):
         self.assertTrue(created.get('success'), created)
         sale_id = int(created['sale_id'])
 
-        voided = self.api.void_sale(sale_id, 'reinstate gate void')
+        voided = self.api.void_sale(
+            sale_id, 'reinstate gate void', pin=self.PIN)
         self.assertTrue(voided.get('success'), voided)
         mid = float(self.ac._db().execute(
             "SELECT stock FROM products WHERE id=1"

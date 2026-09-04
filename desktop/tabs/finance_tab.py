@@ -19,11 +19,12 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
-from desktop.utils.theme import C, apply_themed_dialog, qss_alpha
+from desktop.utils.theme import C, apply_themed_dialog, qss_alpha, readable_ink
 from desktop.utils.widgets import (
     KPICard, H2, H3, Caption, Body, PrimaryBtn, SecondaryBtn, DangerBtn, GhostBtn,
     SearchBar, make_table, tbl_item, tbl_right, tbl_center, page_layout,
-    lovable_tab_qss, wrap_table_card, Card, page_intro, Badge,
+    lovable_tab_qss, wrap_table_card, Card, page_intro, Badge, tone_chip_qss,
+    attach_table_empty_state,
 )
 from desktop.utils.date_controls import make_date_edit
 from desktop.utils.select_controls import Select
@@ -42,14 +43,29 @@ def _role(user):
     return (user.get('user') or user).get('role', 'cashier')
 
 
+def _can(user, action: str) -> bool:
+    """Single source of truth — never gate a visible control on a role name."""
+    from desktop.utils.security import has_permission
+    return has_permission(user, action)
+
+
+def _require(user, action: str, parent=None) -> bool:
+    from desktop.utils.security import require_permission
+    return require_permission(user, action, parent)
+
+
 def _is_advanced_role(user) -> bool:
-    """Full Advanced Accounting: accountant / admin only (not cashier or manager)."""
-    return _role(user) in ('admin', 'superadmin', 'accountant')
+    """Ledger & Statements: only roles that can actually edit the books."""
+    return _can(user, 'accounting.edit_accounts') or _can(user, 'accounting.close_period')
 
 
 def _can_see_reports(user) -> bool:
-    """Financial Reports: managers and above (cashiers stay on day-to-day money pages)."""
-    return _role(user) in ('admin', 'superadmin', 'manager', 'accountant')
+    """Financial Reports: anyone allowed to read accounting reports.
+
+    The old role tuple locked out ``viewer``, which holds
+    ``accounting.view_reports`` and ``reports.view_all``.
+    """
+    return _can(user, 'accounting.view_reports') or _can(user, 'reports.view_all')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -436,10 +452,12 @@ class _OverviewPage(QWidget):
         actions.setSpacing(10)
         a1 = PrimaryBtn('+ Record Expense', 40)
         a1.clicked.connect(lambda: self.p._goto('expenses'))
+        a1.setVisible(_can(self.p.user, 'accounting.approve_expenses'))
         a2 = SecondaryBtn('Collect Credit', 40)
         a2.clicked.connect(lambda: self.p._goto('credit'))
         a3 = SecondaryBtn('View Reports', 40)
         a3.clicked.connect(lambda: self.p._goto('reports'))
+        a3.setVisible(_can_see_reports(self.p.user))
         a4 = GhostBtn('Refresh', 40)
         try:
             from desktop.utils.nav_icons import apply_button_icon
@@ -590,11 +608,11 @@ class _OverviewPage(QWidget):
                     f"QFrame#mbtHealthBanner {{ background:{dim}; "
                     f"border:1px solid {qss_alpha(tone, 0.55)}; border-radius:10px; }}")
                 self._health_banner_icon.setStyleSheet(
-                    f"color:{tone}; background:{qss_alpha(tone, 0.18)}; "
-                    f"border-radius:11px; font-size:12px; font-weight:800;")
+                    tone_chip_qss(tone, radius=11, font_size=12))
                 self._health_banner_text.setText(msg)
                 self._health_banner_text.setStyleSheet(
-                    f"color:{tone}; font-size:13px; font-weight:700; background:transparent;")
+                    f"color:{readable_ink(tone, dim)}; font-size:13px; "
+                    f"font-weight:700; background:transparent;")
             else:
                 banner.setVisible(False)
 
@@ -613,7 +631,8 @@ class _OverviewPage(QWidget):
             self._health_grid.addWidget(Caption(k), i // 3, (i % 3) * 2)
             vl = QLabel(v)
             vl.setStyleSheet(
-                f"color:{tone}; font-size:13px; font-weight:700; background:transparent;")
+                f"color:{readable_ink(tone, C['card'])}; font-size:13px; "
+                f"font-weight:700; background:transparent;")
             self._health_grid.addWidget(vl, i // 3, (i % 3) * 2 + 1)
 
         self._insight.setText(' · '.join(notes[:4]) if notes else 'No issues flagged from current data.')
@@ -663,6 +682,7 @@ class _MoneyPage(QWidget):
         bar.addWidget(go)
         xfer = SecondaryBtn('Transfer Between Accounts', 36)
         xfer.clicked.connect(self._transfer)
+        xfer.setVisible(_can(self.p.user, 'accounting.create_journal'))
         bar.addWidget(xfer)
         bar.addStretch(1)
         lay.addLayout(bar)
@@ -671,6 +691,9 @@ class _MoneyPage(QWidget):
         lay.addWidget(self._summary)
 
         self._tbl = make_table(['Date', 'Entry', 'Description', 'In', 'Out', 'Balance'])
+        attach_table_empty_state(
+            self._tbl, 'revenue', 'No activity in this range',
+            'Pick a different account or widen the date range')
         lay.addWidget(wrap_table_card(self._tbl), 1)
 
     def refresh(self):
@@ -737,6 +760,8 @@ class _MoneyPage(QWidget):
             self._tbl.setItem(i, 5, tbl_right(''))
 
     def _transfer(self):
+        if not _require(self.p.user, 'accounting.create_journal', self):
+            return
         dlg = QDialog(self)
         dlg.setWindowTitle('Transfer Between Accounts')
         apply_themed_dialog(dlg)
@@ -1050,6 +1075,8 @@ class _FinanceSettingsPage(QWidget):
         self._fy_month.setCurrentIndex(fi if fi >= 0 else 0)
 
     def _save(self):
+        if not _require(self.p.user, 'settings.edit', self):
+            return
         code = self._currency.currentText().strip().upper() or 'KES'
         payload = {
             'currency_code': code,
@@ -1091,6 +1118,7 @@ class _AccountsPage(QWidget):
         lay.setSpacing(10)
         add = PrimaryBtn('+ Account', 36)
         add.clicked.connect(self._add)
+        add.setVisible(_can(parent.user, 'accounting.edit_accounts'))
         intro, _ = page_intro(
             'Chart of Accounts',
             'The list of accounts your books use — assets, liabilities, income, expenses.',
@@ -1138,6 +1166,8 @@ class _AccountsPage(QWidget):
         self._dialog({'code': code, 'name': name, 'account_type': atype})
 
     def _dialog(self, data=None):
+        if not _require(self.p.user, 'accounting.edit_accounts', self):
+            return
         data = data or {}
         dlg = QDialog(self)
         dlg.setWindowTitle('Account')
@@ -1244,6 +1274,7 @@ class _JournalsPage(QWidget):
         lay.setSpacing(10)
         man = PrimaryBtn('+ Manual Journal', 36)
         man.clicked.connect(self._manual)
+        man.setVisible(_can(parent.user, 'accounting.create_journal'))
         intro, _ = page_intro(
             'Journal Entries',
             'Posted journals from sales, expenses, transfers, and manual adjustments.',
@@ -1253,6 +1284,7 @@ class _JournalsPage(QWidget):
         bar = QHBoxLayout()
         rev = SecondaryBtn('Reverse Selected', 36)
         rev.clicked.connect(self._reverse)
+        rev.setVisible(_can(parent.user, 'accounting.reverse_journal'))
         bar.addWidget(rev)
         ref = GhostBtn('Refresh', 36)
         try:
@@ -1303,6 +1335,8 @@ class _JournalsPage(QWidget):
         QMessageBox.information(self, j.get('entry_number') or 'Journal', msg or 'No lines')
 
     def _manual(self):
+        if not _require(self.p.user, 'accounting.create_journal', self):
+            return
         dlg = QDialog(self)
         dlg.setWindowTitle('Manual Journal')
         dlg.resize(560, 360)
@@ -1346,6 +1380,8 @@ class _JournalsPage(QWidget):
         self.refresh()
 
     def _reverse(self):
+        if not _require(self.p.user, 'accounting.reverse_journal', self):
+            return
         row = self._tbl.currentRow()
         if row < 0 or row >= len(self._ids):
             return
@@ -1367,8 +1403,10 @@ class _ExpensesPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
+        can_write = _can(parent.user, 'accounting.approve_expenses')
         add = PrimaryBtn('+ Record Expense', 36)
         add.clicked.connect(self._add)
+        add.setVisible(can_write)
         intro, _ = page_intro(
             'Expenses',
             'Money leaving the business — rent, utilities, transport, and more.',
@@ -1378,9 +1416,11 @@ class _ExpensesPage(QWidget):
         bar = QHBoxLayout()
         edit = SecondaryBtn('Edit', 36)
         edit.clicked.connect(self._edit)
+        edit.setVisible(can_write)
         bar.addWidget(edit)
         dele = DangerBtn('Delete', 36)
         dele.clicked.connect(self._delete)
+        dele.setVisible(can_write)
         bar.addWidget(dele)
         ref = GhostBtn('Refresh', 36)
         try:
@@ -1394,6 +1434,9 @@ class _ExpensesPage(QWidget):
         lay.addLayout(bar)
         self._tbl = make_table(
             ['Number', 'Date', 'Expense Acct', 'Paid From', 'Amount', 'Description', 'Vendor'])
+        attach_table_empty_state(
+            self._tbl, 'debt', 'No expenses recorded',
+            'Rent, utilities, transport and other outgoings appear here')
         lay.addWidget(wrap_table_card(self._tbl), 1)
         self._ids = []
         self._rows_cache = []
@@ -1424,6 +1467,8 @@ class _ExpensesPage(QWidget):
         return row, self._rows_cache[row]
 
     def _add(self):
+        if not _require(self.p.user, 'accounting.approve_expenses', self):
+            return
         dlg = QDialog(self)
         dlg.setWindowTitle('Record Expense')
         apply_themed_dialog(dlg)
@@ -1458,6 +1503,8 @@ class _ExpensesPage(QWidget):
         self.refresh()
 
     def _edit(self):
+        if not _require(self.p.user, 'accounting.approve_expenses', self):
+            return
         row, cur = self._selected_row()
         if cur is None:
             QMessageBox.information(self, 'Expense', 'Select an expense to edit.')
@@ -1498,6 +1545,8 @@ class _ExpensesPage(QWidget):
         self.refresh()
 
     def _delete(self):
+        if not _require(self.p.user, 'accounting.approve_expenses', self):
+            return
         row, cur = self._selected_row()
         if cur is None:
             QMessageBox.information(self, 'Expense', 'Select an expense to delete.')
@@ -1571,6 +1620,7 @@ class _PeriodsPage(QWidget):
         lay.setSpacing(10)
         close_btn = DangerBtn('Close Selected Period', 36)
         close_btn.clicked.connect(self._close)
+        close_btn.setVisible(_can(parent.user, 'accounting.close_period'))
         intro, _ = page_intro(
             'Period Close',
             'Lock a fiscal period so nobody posts into closed dates by mistake.',
@@ -1608,6 +1658,8 @@ class _PeriodsPage(QWidget):
             self._tbl.setItem(i, 5, tbl_item((r.get('closed_at') or '')[:19]))
 
     def _close(self):
+        if not _require(self.p.user, 'accounting.close_period', self):
+            return
         row = self._tbl.currentRow()
         if row < 0 or row >= len(self._ids):
             return
@@ -1654,6 +1706,7 @@ class _ReportsPage(QWidget):
         bar.addWidget(run)
         exp = SecondaryBtn('Export Excel', 36)
         exp.clicked.connect(self._export)
+        exp.setVisible(_can(parent.user, 'accounting.export'))
         bar.addWidget(exp)
         lay.addLayout(bar)
         self._out = QPlainTextEdit()
@@ -1766,6 +1819,8 @@ class _ReportsPage(QWidget):
         self._out.setPlainText('\n'.join(lines))
 
     def _export(self):
+        if not _require(self.p.user, 'accounting.export', self):
+            return
         if not self._last:
             self.refresh()
         try:

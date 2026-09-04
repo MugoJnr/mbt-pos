@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """MBT POS installer production certification.
 
@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.77"
+EXPECTED_VERSION = "3.0.80"
 desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
@@ -334,9 +334,9 @@ def seed_superadmin_pin(api, cert_root: Path) -> bool:
     From v3.0.75 the backend verifies the PIN itself before any protected
     inventory write, so a freshly created database refuses ``receive_stock``
     with "Super-Admin PIN is not configured." until the hash row exists. The
-    harness therefore has to configure the PIN the way the product does — via
+    harness therefore has to configure the PIN the way the product does â€” via
     ``desktop.utils.security.set_superadmin_pin``, which hashes through
-    ``_pin_hash`` and stores ``superadmin_pin_hash`` in ``system_settings`` —
+    ``_pin_hash`` and stores ``superadmin_pin_hash`` in ``system_settings`` â€”
     rather than bypassing or relaxing the gate.
     """
     from desktop.utils.api_client import get_db_path
@@ -580,7 +580,7 @@ def customer_journey_isolated() -> None:
         else:
             rec("journey.restart_integrity", "FAIL", "no db")
 
-        # Wizard marker for fresh root � needs_wizard should be true before first complete
+        # Wizard marker for fresh root ï¿½ needs_wizard should be true before first complete
         from desktop.wizard.setup_wizard import needs_wizard
 
         rec("journey.wizard_gate", "PASS", f"needs_wizard={needs_wizard()}")

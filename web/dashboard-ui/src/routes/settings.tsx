@@ -5,7 +5,7 @@ import { Save, Store, MessageSquare, Palette, SlidersHorizontal } from "lucide-r
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
-import { useTheme, type ThemeVariant } from "@/components/theme";
+import { useTheme, type ThemeMode, type ThemeVariant } from "@/components/theme";
 import { GET, PUT } from "@/lib/api";
 import {
   DEFAULT_PREFS,
@@ -59,7 +59,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Settings() {
   const qc = useQueryClient();
-  const { theme, toggle, variant, setVariant } = useTheme();
+  const { theme, mode, set: setThemeMode, variant, setVariant } = useTheme();
   const settingsQ = useQuery({
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
@@ -98,6 +98,12 @@ function Settings() {
   const setPref = <K extends keyof DashboardPrefs>(k: K, v: DashboardPrefs[K]) =>
     setPrefs((p) => ({ ...p, [k]: v }));
 
+  const themeModes: { id: ThemeMode; label: string }[] = [
+    { id: "system", label: "System" },
+    { id: "light", label: "Light" },
+    { id: "dark", label: "Dark" },
+  ];
+
   const variants: { id: ThemeVariant; label: string }[] = [
     { id: "default", label: "Professional" },
     { id: "mugobyte", label: "MugoByte" },
@@ -130,9 +136,33 @@ function Settings() {
           desc="Theme mode and visual variant (presentation only)"
         >
           <Field label="Mode">
-            <Button variant="secondary" onClick={toggle} className="min-h-11 w-full justify-center">
-              Switch to {theme === "dark" ? "Light" : "Dark"}
-            </Button>
+            <div
+              role="radiogroup"
+              aria-label="Theme mode"
+              className="grid grid-cols-3 gap-1 rounded-xl border border-border bg-card p-1"
+            >
+              {themeModes.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={mode === m.id}
+                  onClick={() => setThemeMode(m.id)}
+                  className={`min-h-11 rounded-lg px-2 text-sm font-semibold transition-colors ${
+                    mode === m.id
+                      ? "bg-gold/15 text-gold shadow-sm"
+                      : "text-text2 hover:bg-hover hover:text-text"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs text-text2">
+              {mode === "system"
+                ? `Following this device — currently ${theme}.`
+                : `Always ${mode}, saved on this device.`}
+            </p>
           </Field>
           <Field label="Variant">
             <div className="flex flex-wrap gap-2">

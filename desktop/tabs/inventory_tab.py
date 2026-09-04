@@ -450,35 +450,53 @@ class InventoryTab(QWidget):
             _log.warning('Ignored duplicate Adjust Stock invocation')
             return
 
+        # Claim the action before any DB/UI work so a second click cannot stack
+        # dialogs while the first load is still on the UI thread.
+        self._adjust_stock_active = True
+        app = QApplication.instance()
         try:
-            fresh_products = self.api.get_products() or []
-            self.products = fresh_products
+            if app is not None:
+                app.setOverrideCursor(Qt.WaitCursor)
+            try:
+                fresh_products = self.api.get_products() or []
+                self.products = fresh_products
+            finally:
+                if app is not None:
+                    app.restoreOverrideCursor()
         except Exception as e:
+            self._adjust_stock_active = False
             QMessageBox.critical(
                 self, 'Adjust Stock', f'Could not refresh inventory:\n\n{e}')
             return
 
         if not self.products:
+            self._adjust_stock_active = False
             QMessageBox.information(self, 'No Products',
                 'Add products first.'); return
 
-        self._adjust_stock_active = True
         try:
             dlg = QDialog(self)
             dlg.setWindowTitle('Adjust Stock')
             dlg.setMinimumWidth(460)
-            from desktop.utils.theme import apply_themed_dialog
             apply_themed_dialog(dlg)
             form = QFormLayout(dlg)
             form.setContentsMargins(24, 20, 24, 20)
             form.setSpacing(12)
 
-            prod_sel = SearchableSelect(placeholder='Search product…')
-            prod_sel.set_items([
-                ("%s  (stock: %s)" % (pr['name'], _fmt_stock(pr.get('stock'))), pr['id'])
-                for pr in self.products
-            ])
+            prod_sel = SearchableSelect(dlg, placeholder='Search product…')
+            if app is not None:
+                app.setOverrideCursor(Qt.WaitCursor)
+            try:
+                prod_sel.set_items([
+                    ("%s  (stock: %s)" % (
+                        pr['name'], _fmt_stock(pr.get('stock'))), pr['id'])
+                    for pr in self.products
+                ])
+            finally:
+                if app is not None:
+                    app.restoreOverrideCursor()
             direction = Select(
+                dlg,
                 items=[
                     ('Add stock', 'add'),
                     ('Remove stock', 'remove'),
@@ -486,16 +504,18 @@ class InventoryTab(QWidget):
                 ],
                 height=40,
             )
-            qty = QDoubleSpinBox()
+            qty = QDoubleSpinBox(dlg)
             qty.setRange(0.0, 999999)
             qty.setDecimals(4)
             qty.setValue(1)
             qty.setMinimumHeight(40)
             qty.setEnabled(False)
             selected = {'pid': None, 'stock': None, 'reason_bucket': None}
-            preview = QLabel('Select a product to preview the resulting stock.')
+            preview = QLabel(
+                'Select a product to preview the resulting stock.', dlg)
             preview.setWordWrap(True)
-            reason = ReasonSelect(reasons=STOCK_INCREASE_REASONS, height=40)
+            reason = ReasonSelect(
+                dlg, reasons=STOCK_INCREASE_REASONS, height=40)
 
             def _reason_bucket():
                 stock = selected['stock']
@@ -589,49 +609,63 @@ class InventoryTab(QWidget):
             form.addRow('Quantity / counted on-hand', qty)
             form.addRow('Result', preview)
             form.addRow('Reason', reason)
-            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
             buttons.button(QDialogButtonBox.Ok).setText('Apply Adjustment')
             busy = {'value': False}
 
             def _submit():
                 if busy['value']:
                     return
+                # Prefer the combobox when it still has a coherent selection;
+                # fall back to the last confirmed product so a mid-filter
+                # keystroke cannot strand Apply with no visible error.
                 pid = prod_sel.current_value()
+                if pid is None:
+                    pid = selected['pid']
                 prod = next((x for x in self.products if x['id'] == pid), None)
                 if not prod:
-                    QMessageBox.warning(self, 'Required', 'Select a product.')
+                    QMessageBox.warning(dlg, 'Required', 'Select a product.')
                     prod_sel.setFocus()
                     return
                 if not reason.is_valid():
-                    QMessageBox.warning(self, 'Required', reason.validation_error())
+                    QMessageBox.warning(
+                        dlg, 'Required', reason.validation_error())
                     reason.setFocus()
                     return
                 action = direction.current_value()
                 amount = round(float(qty.value()), 4)
                 if action not in ('add', 'remove', 'set'):
                     QMessageBox.warning(
-                        self, 'Required',
+                        dlg, 'Required',
                         'Choose Add, Remove, or Update current stock.')
                     return
                 if amount < 0 or (action != 'set' and amount <= 0):
                     QMessageBox.warning(
-                        self, 'Invalid Quantity',
+                        dlg, 'Invalid Quantity',
                         'Adjustment quantity must be greater than zero.')
                     qty.setFocus()
                     return
                 if action == 'remove' and amount > selected['stock']:
                     QMessageBox.warning(
-                        self, 'Invalid Quantity',
+                        dlg, 'Invalid Quantity',
                         f'Cannot remove {_fmt_stock(amount)}; only '
                         f'{_fmt_stock(selected["stock"])} is available.')
                     qty.setFocus()
                     return
                 try:
-                    latest_products = self.api.get_products() or []
-                    latest = next((x for x in latest_products if x['id'] == pid), None)
+                    if app is not None:
+                        app.setOverrideCursor(Qt.WaitCursor)
+                    try:
+                        latest_products = self.api.get_products() or []
+                    finally:
+                        if app is not None:
+                            app.restoreOverrideCursor()
+                    latest = next(
+                        (x for x in latest_products if x['id'] == pid), None)
                     if latest is None:
                         QMessageBox.warning(
-                            self, 'Product Changed',
+                            dlg, 'Product Changed',
                             'This product no longer exists. Refresh and try again.')
                         return
                     latest_stock = _safe_float(latest.get('stock'), 0)
@@ -640,13 +674,13 @@ class InventoryTab(QWidget):
                         selected['stock'] = latest_stock
                         _update_preview()
                         QMessageBox.warning(
-                            self, 'Stock Changed',
+                            dlg, 'Stock Changed',
                             'Stock changed while this form was open. The latest '
                             'quantity is now shown; review it and submit again.')
                         return
                 except Exception as e:
                     QMessageBox.critical(
-                        self, 'Adjust Stock',
+                        dlg, 'Adjust Stock',
                         f'Could not verify the latest stock quantity:\n\n{e}')
                     return
                 # Mirror the API rule: authorise on the projected on-hand, not on
@@ -659,12 +693,16 @@ class InventoryTab(QWidget):
                 )
                 pin = ''
                 if projected < selected['stock']:
+                    # Must parent to dlg — parenting to the tab puts the PIN
+                    # prompt behind this modal and Windows reports Not Responding.
                     pin = prompt_superadmin_pin(
-                        self, reason=f"Reduce '{prod['name']}' stock")
+                        dlg, reason=f"Reduce '{prod['name']}' stock")
                     if not pin:
                         return
                 busy['value'] = True
                 buttons.button(QDialogButtonBox.Ok).setEnabled(False)
+                if app is not None:
+                    app.setOverrideCursor(Qt.WaitCursor)
                 try:
                     res = self.api.adjust_stock(
                         prod['id'], action, amount, reason.value(),
@@ -675,12 +713,13 @@ class InventoryTab(QWidget):
                         new_s = _safe_float(res.get('new_stock'))
                         if res.get('no_op'):
                             QMessageBox.information(
-                                self, 'No Stock Change', res.get(
-                                    'message', 'Counted quantity already matches current stock.'))
+                                dlg, 'No Stock Change', res.get(
+                                    'message',
+                                    'Counted quantity already matches current stock.'))
                             dlg.accept()
                             return
                         QMessageBox.information(
-                            self, 'Stock Adjusted',
+                            dlg, 'Stock Adjusted',
                             f"'{prod['name']}'\n"
                             f"  {action.title()}: {_fmt_stock(amount)}\n"
                             f"  Before: {_fmt_stock(old_s)}\n"
@@ -693,9 +732,11 @@ class InventoryTab(QWidget):
                                 res.get('current_stock'), selected['stock'])
                             _update_preview()
                         QMessageBox.critical(
-                            self, 'Adjustment Failed',
+                            dlg, 'Adjustment Failed',
                             (res or {}).get('error', 'Adjustment failed.'))
                 finally:
+                    if app is not None:
+                        app.restoreOverrideCursor()
                     busy['value'] = False
                     buttons.button(QDialogButtonBox.Ok).setEnabled(True)
 

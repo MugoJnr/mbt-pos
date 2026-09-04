@@ -122,7 +122,12 @@ def require_permission(user: dict, action: str, parent_widget=None) -> bool:
         parent_widget, 'Access Denied',
         f'Your role ({role}) does not have permission for this action.\n'
         f'Contact your system administrator.')
-    logger.warning(f"Permission denied: user={user} action={action}")
+    # Callers pass the whole login response, which carries the session token —
+    # log identity only, never the raw dict.
+    account = (user.get('user') or user) if isinstance(user, dict) else {}
+    logger.warning(
+        "Permission denied: user_id=%s username=%s role=%s action=%s",
+        account.get('id'), account.get('username'), role, action)
     return False
 
 
@@ -187,10 +192,24 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
 
     Automation: set env MBT_AUTO_SUPERADMIN_PIN (e.g. 1110) to skip the dialog.
     """
+    pin = prompt_superadmin_pin(parent_widget, reason=reason)
+    if not pin:
+        return False
+    return verify_superadmin_pin(pin, api, parent_widget, log_attempt=True)
+
+
+def prompt_superadmin_pin(parent_widget=None, reason='') -> str:
+    """Collect a Super-Admin PIN without treating the UI as authorization.
+
+    Protected backend operations must verify the returned PIN themselves.
+    Existing UI-only authorization flows continue to use
+    :func:`ask_superadmin_pin`.
+    """
     from PyQt5.QtWidgets import QInputDialog, QLineEdit
+
     auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
     if auto:
-        return verify_superadmin_pin(auto, api, parent_widget, log_attempt=True)
+        return auto
     prompt = 'Enter Super-Admin PIN'
     if reason:
         prompt += f'\n({reason})'
@@ -198,8 +217,8 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
         parent_widget, 'Super-Admin Authorization', prompt,
         QLineEdit.Password)
     if not ok or not pin:
-        return False
-    return verify_superadmin_pin(pin, api, parent_widget, log_attempt=True)
+        return ''
+    return str(pin)
 
 
 def can_edit_sales(user: dict) -> bool:
@@ -348,10 +367,11 @@ def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
         f'Write off debt {label}' if float(amount_paid or 0) > 0.009
         else f'Delete debt {label}'
     )
-    if not ask_superadmin_pin(api, parent_widget, reason=pin_reason):
+    pin = prompt_superadmin_pin(parent_widget, reason=pin_reason)
+    if not pin:
         return False
 
-    res = api.delete_debt_invoice(int(invoice_id), reason)
+    res = api.delete_debt_invoice(int(invoice_id), reason, pin=pin)
     if res and res.get('success'):
         msg = res.get('message') or 'Debt cleared.'
         if res.get('restocked') and res.get('restock'):
@@ -485,7 +505,8 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
     if not receipt or not reason:
         return False
 
-    if not ask_superadmin_pin(api, parent_widget, reason=f'Void {receipt}'):
+    pin = prompt_superadmin_pin(parent_widget, reason=f'Void {receipt}')
+    if not pin:
         return False
 
     db = _db()
@@ -502,7 +523,7 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
                             f'Sale {receipt} is already voided.')
         return False
 
-    res = api.void_sale(row['id'], reason.strip())
+    res = api.void_sale(row['id'], reason.strip(), pin=pin)
     if res and res.get('error') == 'credit_payments_exist':
         paid = float(res.get('debt_paid_total') or 0)
         msg = res.get('message') or (
@@ -516,7 +537,8 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
             QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return False
-        res = api.void_sale(row['id'], reason.strip(), force_with_payments=True)
+        res = api.void_sale(
+            row['id'], reason.strip(), force_with_payments=True, pin=pin)
 
     if res and res.get('success'):
         extra = res.get('warning') or ''

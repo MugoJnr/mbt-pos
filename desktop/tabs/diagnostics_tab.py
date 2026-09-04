@@ -10,6 +10,24 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     PageChrome)
 
 
+def _platform_label() -> str:
+    """OS name/version without spawning a process.
+
+    `platform.system()` / `platform.release()` fall back to `platform._syscmd_ver`
+    on CPython 3.11 for Windows, which runs `ver` in a subprocess — in a frozen
+    windowed build that flashes a console window.
+    """
+    if os.name == 'nt':
+        try:
+            v = sys.getwindowsversion()
+            build = getattr(v, 'build', 0)
+            name = 'Windows 11' if build >= 22000 else 'Windows'
+            return f'{name} {v.major}.{v.minor}.{build}'
+        except Exception:
+            return 'Windows'
+    return f'{os.uname().sysname} {os.uname().release}'  # POSIX only
+
+
 class DiagnosticsTab(QWidget):
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
@@ -116,9 +134,8 @@ class DiagnosticsTab(QWidget):
         lcl.addWidget(tabs)
         lay.addWidget(log_card, 1)
 
-        import platform
         self._si=Caption(
-            f"Platform: {platform.system()} {platform.release()}  ·  "
+            f"Platform: {_platform_label()}  ·  "
             f"Python: {sys.version.split()[0]}  ·  PID: {os.getpid()}")
         self._si.setAlignment(Qt.AlignCenter); lay.addWidget(self._si)
 
@@ -167,6 +184,8 @@ class DiagnosticsTab(QWidget):
             self._cf_panel.setText(f'Cloudflare panel error: {e}')
 
     def _cf_repair(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         self._log('[CF] Repair started…')
         self._cf_retry_btn.setEnabled(False)
 
@@ -177,10 +196,10 @@ class DiagnosticsTab(QWidget):
                 )
                 rep = reconcile_cloudflare_state(force_dns=True, verify_https=True)
                 process_cf_retry_queue(max_items=3)
-                QTimer.singleShot(0, lambda: self._cf_repair_done(rep))
+                run_on_ui_thread(lambda: self._cf_repair_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._cf_repair_done(
-                    {'ok': False, 'errors': [str(e)]}))
+                run_on_ui_thread(lambda err=str(e): self._cf_repair_done(
+                    {'ok': False, 'errors': [err]}))
 
         import threading
         threading.Thread(target=worker, daemon=True, name='Diag-CF-Repair').start()

@@ -33,6 +33,7 @@ from backend.cloud_backup.encryption import (
     sha256_file,
 )
 from backend.cloud_backup.paths import (
+    REAUTH_REQUIRED,
     backup_state_path,
     is_cloud_configured,
     is_logged_in,
@@ -49,6 +50,7 @@ from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 logger = logging.getLogger('cloud_backup.sync')
 
 DEFAULT_INTERVAL_MIN = 5
+MAX_OFFLINE_BACKUPS = 24
 BACKFILL_BATCH_SIZE = 200
 OUTBOX_FLUSH_LIMIT = 200
 OUTBOX_FLUSH_ROUNDS = 25  # up to ~5k rows per loop when backlog is deep
@@ -185,6 +187,27 @@ SETTING_SECRET_KEYS = {
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _shop_facing_backup_error(error: Exception | str) -> str:
+    """Translate cloud/RLS failures into an actionable shop-facing message."""
+    raw = str(error or '').strip()
+    low = raw.lower()
+    if 'row-level security' in low or 'accessdenied' in low:
+        return (
+            'Cloud backup is not authorized for this shop account. Sign out, '
+            'then sign in with the Portal owner account linked to this shop. '
+            'If it continues, MugoByte support must verify the shop membership '
+            'and backup storage policy.'
+        )
+    if 'organization access' in low or 'not approved' in low:
+        return (
+            'This device is not approved for the selected Portal organization. '
+            'Ask the shop owner to approve it, then retry.'
+        )
+    if 'not signed in' in low or 'no refresh token' in low:
+        return 'Cloud session expired. Sign in again in Settings → Cloud Backup.'
+    return raw or 'Cloud backup failed'
 
 
 def _is_secret_setting_key(key: str) -> bool:
@@ -405,10 +428,21 @@ class SyncManager:
         cfg = load_cloud_config()
         ident = load_identity()
         backfill = state.get('analytics_backfill') or {}
+        queue_items = (
+            load_json(offline_queue_path(), {'items': []}).get('items') or []
+        )
+        try:
+            pending_files = len([
+                name for name in os.listdir(os.path.dirname(backup_state_path()))
+                if name.startswith('pending_') and name.endswith('.mbtenc')
+            ])
+        except OSError:
+            pending_files = len(queue_items)
         return {
             'enabled': bool(cfg.get('enabled')),
             'configured': is_cloud_configured(),
             'logged_in': is_logged_in(),
+            'reauth_required': ident.get('auth_state') == REAUTH_REQUIRED,
             'cloud_skipped': bool(ident.get('cloud_skipped')),
             'device_id': get_or_create_device_id(),
             'business_id': ident.get('business_id') or '',
@@ -421,7 +455,8 @@ class SyncManager:
             'last_backup_id': state.get('last_backup_id') or '',
             'last_error': self._last_error or state.get('last_error') or '',
             'status': self._last_status,
-            'queue_depth': len(load_json(offline_queue_path(), {'items': []}).get('items') or []),
+            'queue_depth': len(queue_items),
+            'pending_file_count': pending_files,
             'mbt_version': _app_version(),
             'schema_version': SCHEMA_VERSION,
             'analytics_backfill_complete': bool(backfill.get('completed_at')),
@@ -462,9 +497,9 @@ class SyncManager:
                 if owned[0].get('org_id'):
                     ident['org_id'] = owned[0]['org_id']
             else:
-                biz = client.ensure_business(
-                    uid,
+                biz = client.upsert_business(
                     (ident.get('email') or 'My Business').split('@')[0],
+                    uid,
                 )
                 bid = str((biz or {}).get('id') or '')
                 if not bid:
@@ -519,7 +554,16 @@ class SyncManager:
                         except Exception:
                             due = True
                     if due:
-                        self.run_backup(reason='scheduled')
+                        pending = (
+                            load_json(offline_queue_path(), {'items': []})
+                            .get('items') or []
+                        )
+                        if pending:
+                            self._last_status = (
+                                f'Waiting to upload {len(pending)} queued backup(s)'
+                            )
+                        else:
+                            self.run_backup(reason='scheduled')
             except Exception as e:
                 logger.warning('Cloud backup loop: %s', e)
                 self._last_error = str(e)
@@ -850,19 +894,24 @@ class SyncManager:
     def enqueue_offline(self, item: dict) -> None:
         q = load_json(offline_queue_path(), {'items': []})
         items = q.get('items') or []
-        items.append({**item, 'enqueued_at': _utc_now()})
-        q['items'] = items[-50:]  # cap
+        object_path = str(item.get('storage_path') or '')
+        # Idempotent enqueue: one durable local file per cloud object.
+        items = [
+            existing for existing in items
+            if str(existing.get('storage_path') or '') != object_path
+        ]
+        items.append({
+            **item,
+            'enqueued_at': item.get('enqueued_at') or _utc_now(),
+            'attempts': int(item.get('attempts') or 0),
+            'last_error': str(item.get('last_error') or ''),
+            'uploaded': bool(item.get('uploaded')),
+        })
+        q['items'] = items
         save_json(offline_queue_path(), q)
 
     def flush_offline_queue(self) -> int:
         if not (is_logged_in() and is_cloud_configured()):
-            return 0
-        # Never stall the backup thread on dead DNS when the shop is offline.
-        try:
-            import socket
-            s = socket.create_connection(('1.1.1.1', 53), timeout=1.5)
-            s.close()
-        except OSError:
             return 0
         q = load_json(offline_queue_path(), {'items': []})
         items = q.get('items') or []
@@ -870,29 +919,102 @@ class SyncManager:
             return 0
         remaining = []
         done = 0
+        lost = 0
+        last_meta = None
+        last_row = None
+        active_business = str(load_identity().get('business_id') or '')
         for item in items:
             try:
                 if item.get('type') == 'backup_meta' and item.get('local_enc_path'):
-                    # Re-attempt upload if file still exists
                     path = item['local_enc_path']
-                    if os.path.isfile(path):
-                        client = SupabaseClient()
-                        obj = item.get('storage_path') or ''
+                    meta = item.get('meta') or {}
+                    queued_business = str(meta.get('business_id') or '')
+                    if queued_business and queued_business != active_business:
+                        raise PermissionError(
+                            'Queued backup belongs to another shop account. '
+                            'Reconnect that Portal account to upload it.'
+                        )
+                    client = SupabaseClient()
+                    obj = item.get('storage_path') or ''
+                    if not item.get('uploaded'):
+                        if not os.path.isfile(path):
+                            raise FileNotFoundError(
+                                'Queued encrypted backup file is missing locally'
+                            )
                         client.upload_file(obj, path)
-                        client.insert_backup_meta(item.get('meta') or {})
-                        done += 1
-                        try:
-                            os.remove(path)
-                        except OSError:
-                            pass
-                    else:
-                        remaining.append(item)
+                        item['uploaded'] = True
+                    last_row = client.insert_backup_meta(meta)
+                    last_meta = meta
+                    done += 1
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
                 else:
                     remaining.append(item)
             except Exception as e:
+                if isinstance(e, FileNotFoundError):
+                    lost += 1
+                    logger.warning('Dropping unrecoverable queue reference: %s', e)
+                    continue
+                item['attempts'] = int(item.get('attempts') or 0) + 1
+                item['last_attempt_at'] = _utc_now()
+                item['last_error'] = _shop_facing_backup_error(e)
                 logger.info('Offline queue item deferred: %s', e)
                 remaining.append(item)
         save_json(offline_queue_path(), {'items': remaining})
+        if remaining:
+            self._last_error = str(remaining[0].get('last_error') or '')
+            state = load_json(backup_state_path(), {})
+            state['last_error'] = self._last_error
+            state['queued_backups'] = len(remaining)
+            save_json(backup_state_path(), state)
+        elif done:
+            self._last_error = ''
+            state = load_json(backup_state_path(), {})
+            state['last_error'] = ''
+            state['queued_backups'] = 0
+            state['last_queue_flush_at'] = _utc_now()
+            if last_meta:
+                state['last_backup_at'] = (
+                    last_meta.get('created_at') or _utc_now()
+                )
+                state['last_backup_size'] = int(
+                    last_meta.get('size_bytes') or 0
+                )
+                state['last_storage_path'] = (
+                    last_meta.get('storage_path') or ''
+                )
+            if isinstance(last_row, dict):
+                state['last_backup_id'] = last_row.get('id') or ''
+            save_json(backup_state_path(), state)
+            # Old releases retained only the newest 50 queue references but
+            # left older encrypted payloads on disk. Once every tracked item
+            # has reached the cloud, those untracked older payloads are
+            # redundant and can be removed safely.
+            try:
+                queue_dir = os.path.dirname(backup_state_path())
+                for name in os.listdir(queue_dir):
+                    if name.startswith('pending_') and name.endswith('.mbtenc'):
+                        try:
+                            os.remove(os.path.join(queue_dir, name))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        elif lost:
+            self._last_error = (
+                f'{lost} queued backup reference(s) were removed because the '
+                'encrypted local files no longer exist. Create Backup Now to '
+                'confirm a current recovery point.'
+            )
+            state = load_json(backup_state_path(), {})
+            state['last_error'] = self._last_error
+            state['queued_backups'] = 0
+            state['lost_queued_backups'] = (
+                int(state.get('lost_queued_backups') or 0) + lost
+            )
+            save_json(backup_state_path(), state)
         return done
 
     def run_backup(self, reason: str = 'manual', password: str = '') -> dict:
@@ -908,6 +1030,17 @@ class SyncManager:
                 return {'ok': False, 'error': 'Cloud not configured (cloud_config.json)'}
             if not is_logged_in():
                 return {'ok': False, 'error': 'Not signed in to MugoByte Platform'}
+            queued = (
+                load_json(offline_queue_path(), {'items': []}).get('items') or []
+            )
+            if len(queued) >= MAX_OFFLINE_BACKUPS:
+                message = (
+                    f'{len(queued)} encrypted backup(s) are already queued. '
+                    'No new snapshot was created to protect disk space. '
+                    f'{queued[0].get("last_error") or "Reconnect the shop Portal account and retry."}'
+                )
+                self._last_error = message
+                return {'ok': False, 'queued': True, 'error': message}
 
             self._emit('Creating database snapshot…', 10)
             zip_path, tmp_dir = create_sqlite_snapshot()
@@ -935,9 +1068,9 @@ class SyncManager:
                             ident['org_id'] = owned[0]['org_id']
                         logger.warning('Repaired cloud identity business_id → %s', bid)
                     elif not bid:
-                        biz = client.ensure_business(
-                            uid,
+                        biz = client.upsert_business(
                             (ident.get('email') or 'My Business').split('@')[0],
+                            uid,
                         )
                         bid = str((biz or {}).get('id') or '')
                         ident['business_id'] = bid
@@ -961,62 +1094,70 @@ class SyncManager:
 
             client = SupabaseClient()
             self._emit('Uploading to MugoByte Platform…', 55)
+            # Persist the encrypted payload before the first network write. This
+            # also protects the metadata phase: a successful object upload
+            # followed by an RLS failure remains retryable instead of becoming
+            # an orphaned cloud object.
+            hold = os.path.join(
+                os.path.dirname(backup_state_path()),
+                f'pending_{stamp}.mbtenc',
+            )
+            shutil.copy2(enc_path, hold)
+            meta = self._build_meta(
+                business_id, device, object_path, enc_size, content_hash, reason)
+            queue_item = {
+                'type': 'backup_meta',
+                'local_enc_path': hold,
+                'storage_path': object_path,
+                'meta': meta,
+            }
+            self.enqueue_offline(queue_item)
             try:
                 client.upload_file(object_path, enc_path, content_type='application/octet-stream')
             except (SupabaseError, OSError, ConnectionError) as e:
-                # Queue for retry when offline / upload fails
-                hold = os.path.join(
-                    os.path.dirname(backup_state_path()),
-                    f'pending_{stamp}.mbtenc',
-                )
-                try:
-                    shutil.copy2(enc_path, hold)
-                except Exception:
-                    hold = enc_path
-                    tmp_dir = None  # don't delete yet
-                meta = self._build_meta(
-                    business_id, device, object_path, enc_size, content_hash, reason)
-                self.enqueue_offline({
-                    'type': 'backup_meta',
-                    'local_enc_path': hold,
-                    'storage_path': object_path,
-                    'meta': meta,
-                })
-                self._last_error = str(e)
+                message = _shop_facing_backup_error(e)
+                queue_item['last_error'] = message
+                self.enqueue_offline(queue_item)
+                self._last_error = message
                 save_json(backup_state_path(), {
                     **load_json(backup_state_path(), {}),
-                    'last_error': str(e),
+                    'last_error': message,
                     'last_attempt_at': _utc_now(),
                 })
-                self._emit(f'Offline — queued ({e})', -1)
-                return {'ok': False, 'queued': True, 'error': str(e)}
+                self._emit(f'Queued safely — {message}', -1)
+                return {'ok': False, 'queued': True, 'error': message}
             except Exception as e:
-                # requests HTTPError / generic network
-                hold = os.path.join(
-                    os.path.dirname(backup_state_path()),
-                    f'pending_{stamp}.mbtenc',
-                )
-                try:
-                    shutil.copy2(enc_path, hold)
-                except Exception:
-                    hold = enc_path
-                    tmp_dir = None
-                meta = self._build_meta(
-                    business_id, device, object_path, enc_size, content_hash, reason)
-                self.enqueue_offline({
-                    'type': 'backup_meta',
-                    'local_enc_path': hold,
-                    'storage_path': object_path,
-                    'meta': meta,
-                })
-                self._last_error = str(e)
-                self._emit(f'Offline — queued ({e})', -1)
-                return {'ok': False, 'queued': True, 'error': str(e)}
+                message = _shop_facing_backup_error(e)
+                queue_item['last_error'] = message
+                self.enqueue_offline(queue_item)
+                self._last_error = message
+                self._emit(f'Queued safely — {message}', -1)
+                return {'ok': False, 'queued': True, 'error': message}
 
-            meta = self._build_meta(
-                business_id, device, object_path, enc_size, content_hash, reason)
+            queue_item['uploaded'] = True
+            self.enqueue_offline(queue_item)
             self._emit('Saving backup metadata…', 85)
-            row = client.insert_backup_meta(meta)
+            try:
+                row = client.insert_backup_meta(meta)
+            except Exception as e:
+                message = _shop_facing_backup_error(e)
+                queue_item['last_error'] = message
+                queue_item['uploaded'] = True
+                self.enqueue_offline(queue_item)
+                self._last_error = message
+                self._emit(f'Uploaded; metadata queued — {message}', -1)
+                return {'ok': False, 'queued': True, 'error': message}
+            # Both phases committed; remove the durable queue item and payload.
+            q = load_json(offline_queue_path(), {'items': []})
+            q['items'] = [
+                item for item in (q.get('items') or [])
+                if str(item.get('storage_path') or '') != object_path
+            ]
+            save_json(offline_queue_path(), q)
+            try:
+                os.remove(hold)
+            except OSError:
+                pass
             client.log_sync({
                 'business_id': business_id,
                 'device_id': device['device_id'],
@@ -1054,6 +1195,24 @@ class SyncManager:
                 'last_reason': reason,
             }
             save_json(backup_state_path(), state)
+            # A confirmed current cloud recovery point makes untracked pending
+            # payloads left by the legacy 50-item queue cap redundant.
+            if not (
+                load_json(offline_queue_path(), {'items': []}).get('items') or []
+            ):
+                try:
+                    queue_dir = os.path.dirname(backup_state_path())
+                    for name in os.listdir(queue_dir):
+                        if (
+                            name.startswith('pending_')
+                            and name.endswith('.mbtenc')
+                        ):
+                            try:
+                                os.remove(os.path.join(queue_dir, name))
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
             self._last_error = ''
             self._emit('Backup complete', 100)
             logger.info('Cloud backup OK: %s (%.1f KB)', object_path, enc_size / 1024)

@@ -33,6 +33,13 @@ _UNCONFIGURED_MSG = (
     'email and password. If this keeps failing, contact MugoByte support.'
 )
 
+REAUTH_REQUIRED = 'reauth_required'
+_REAUTH_MSG = (
+    'Saved cloud sign-in could not be read on this PC. '
+    'Sign in again with your portal.mugobyte.com email and password to '
+    'resume cloud backup.'
+)
+
 
 def config_dir() -> str:
     root = ensure_data_dirs(get_project_root())
@@ -196,14 +203,51 @@ def _protect(value: str) -> str:
     return _identity_cipher().encrypt(value.encode()).decode()
 
 
-def _unprotect(value: str) -> str:
+def _unprotect_checked(value: str) -> tuple[str, bool]:
+    """(plaintext, readable). Unreadable values never raise."""
     if not value:
-        return ''
+        return '', True
     try:
-        return _identity_cipher().decrypt(value.encode()).decode()
+        return _identity_cipher().decrypt(value.encode()).decode(), True
     except (InvalidToken, ValueError):
-        logger.warning('Protected cloud identity token could not be decrypted')
-        return ''
+        return '', False
+
+
+def _unprotect(value: str) -> str:
+    return _unprotect_checked(value)[0]
+
+
+def _unreadable_fingerprint(entries: list[tuple[str, str]]) -> str:
+    """Stable id for one set of undecryptable blobs (no token material).
+
+    Hashing the ciphertext lets ``load_identity`` warn once per distinct
+    failure instead of on every status poll, without deleting anything.
+    """
+    digest = hashlib.sha256()
+    for name, blob in entries:
+        digest.update(name.encode())
+        digest.update(b'\0')
+        digest.update(blob.encode())
+        digest.update(b'\0')
+    return digest.hexdigest()[:16]
+
+
+def identity_needs_reauth(identity: dict[str, Any] | None = None) -> bool:
+    """True when the stored session can never be used without a fresh login."""
+    ident = identity if identity is not None else load_identity()
+    return ident.get('auth_state') == REAUTH_REQUIRED
+
+
+def cloud_auth_status() -> dict[str, Any]:
+    """Session health for status surfaces — never exposes token material."""
+    ident = load_identity()
+    needs_reauth = ident.get('auth_state') == REAUTH_REQUIRED
+    return {
+        'logged_in': bool(ident.get('access_token') and ident.get('business_id')),
+        'reauth_required': needs_reauth,
+        'email': ident.get('email') or '',
+        'message': _REAUTH_MSG if needs_reauth else '',
+    }
 
 
 def load_identity() -> dict[str, Any]:
@@ -220,6 +264,7 @@ def load_identity() -> dict[str, Any]:
         'created_at': '',
     })
     migrated = False
+    unreadable: list[tuple[str, str]] = []
     for name in ('access_token', 'refresh_token', 'activation_token'):
         protected_name = f'{name}_protected'
         plaintext = str(identity.get(name) or '')
@@ -227,7 +272,42 @@ def load_identity() -> dict[str, Any]:
             identity[protected_name] = _protect(plaintext)
             identity[name] = ''
             migrated = True
-        identity[name] = _unprotect(str(identity.get(protected_name) or ''))
+        stored = str(identity.get(protected_name) or '')
+        value, readable = _unprotect_checked(stored)
+        identity[name] = value
+        if stored and not readable:
+            unreadable.append((name, stored))
+    if unreadable:
+        # Tokens sealed on another install, under a different Windows user, or
+        # with a rotated config/.jwt_secret can never be read here. Record a
+        # re-auth state so no caller treats this identity as signed in, and
+        # keep the sealed values: restoring the original secret is the only
+        # route back to the session, and erasing them makes it unrecoverable.
+        fingerprint = _unreadable_fingerprint(unreadable)
+        names = ', '.join(name for name, _ in unreadable)
+        if (identity.get('auth_unreadable_id') != fingerprint
+                or identity.get('auth_state') != REAUTH_REQUIRED
+                or identity.get('auth_error') != 'protected_token_unreadable'):
+            logger.warning(
+                'Cloud identity tokens cannot be decrypted on this PC (%s) — '
+                'they were sealed with a different config/.jwt_secret. Cloud '
+                'backup stays paused until the next portal sign-in; the '
+                'sealed values are left untouched.',
+                names,
+            )
+            migrated = True
+        else:
+            # Already reported for exactly these blobs — do not churn a
+            # warning or a disk write on every status poll.
+            logger.debug('Cloud identity still undecryptable (%s)', names)
+        identity['auth_state'] = REAUTH_REQUIRED
+        identity['auth_error'] = 'protected_token_unreadable'
+        identity['auth_unreadable_id'] = fingerprint
+    elif identity.get('auth_state') == REAUTH_REQUIRED and identity.get('access_token'):
+        identity.pop('auth_state', None)
+        identity.pop('auth_error', None)
+        identity.pop('auth_unreadable_id', None)
+        migrated = True
     if migrated:
         save_identity(identity)
     return identity

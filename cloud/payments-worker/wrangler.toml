@@ -1,0 +1,25 @@
+name = "mbt-payments"
+main = "src/index.ts"
+compatibility_date = "2026-09-03"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+# Production custom domain (enable after DNS CNAME/route):
+# routes = [{ pattern = "payments.mugobyte.com/*", zone_name = "mugobyte.com" }]
+
+[vars]
+APP_ENV = "sandbox"
+DARAJA_BASE_URL = "https://sandbox.safaricom.co.ke"
+PUBLIC_BASE_URL = "https://payments.mugobyte.com"
+# Dev-only mock when Daraja secrets absent (set "0" after secrets are live):
+ALLOW_MOCK_STK = "1"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mbt-payments"
+database_id = "d8a7ad83-6f28-4b19-8ba0-cc494ecf5804"
+migrations_dir = "migrations"
+
+# Secrets (wrangler secret put):
+#   DARAJA_CONSUMER_KEY, DARAJA_CONSUMER_SECRET, DARAJA_PASSKEY, DARAJA_SHORTCODE
+#   SHOP_JWT_SECRET, ADMIN_TOKEN

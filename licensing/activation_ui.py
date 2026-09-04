@@ -47,7 +47,7 @@ def _style_primary(btn: QPushButton):
         f"QPushButton {{"
         f"  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
         f"    stop:0 {C['gold_lt']}, stop:1 {C['gold']});"
-        f"  color: #0A0F18;"
+        f"  color: {C['gold_fg']};"
         f"  border: none;"
         f"  border-radius: 8px;"
         f"  font-size: 15px;"
@@ -70,14 +70,14 @@ def _style_success(btn: QPushButton):
     btn.setStyleSheet(
         f"QPushButton {{"
         f"  background: {C['ok']};"
-        f"  color: #0A0F18;"
+        f"  color: {C['on_success']};"
         f"  border: none;"
         f"  border-radius: 8px;"
         f"  font-size: 14px;"
         f"  font-weight: 700;"
         f"  padding: 0 12px;"
         f"}}"
-        f"QPushButton:hover {{ background: #1DFAA0; }}"
+        f"QPushButton:hover {{ background: {C['ok_lt']}; }}"
         f"QPushButton:disabled {{"
         f"  background: {C['card2']}; color: {C['muted']};"
         f"  border: 1px solid {C['border2']}; }}"
@@ -516,6 +516,11 @@ def show_activation_screen(device_id, engine):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
 
     app = QApplication.instance() or QApplication(sys.argv)
     dlg = ActivationDialog(device_id, engine)

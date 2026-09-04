@@ -3,9 +3,13 @@ MBT POS — Modern Splash Screen
 MugoByte Technologies | mugobyte.com
 """
 from PyQt5.QtWidgets import QWidget, QApplication
-from PyQt5.QtCore    import Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF
+from PyQt5.QtCore    import (
+    Qt, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF,
+    QEventLoop, pyqtSignal,
+)
 from PyQt5.QtGui     import (QPainter, QColor, QFont, QLinearGradient,
-                              QRadialGradient, QPen, QBrush, QPainterPath, QPixmap)
+                              QRadialGradient, QPen, QBrush, QPainterPath, QPixmap,
+                              QCursor)
 import os
 
 
@@ -28,6 +32,8 @@ def _logo_path():
 
 
 class SplashScreen(QWidget):
+    finished = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self._progress = 0
@@ -35,9 +41,15 @@ class SplashScreen(QWidget):
         self._dots     = 0
         self._pulse    = 0
         self._logo = QPixmap(_logo_path()) if _logo_path() else QPixmap()
+        self._processing_events = False
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.SplashScreen)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(520, 340)
+        # Qt dimensions are logical pixels under PerMonitorV2. Keep the splash
+        # compact and allow it to shrink on a 1024x768 display at 200% scaling.
+        self.setMinimumSize(420, 300)
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QRect(0, 0, 520, 340)
+        self.resize(min(520, available.width()), min(340, available.height()))
         self._center()
 
         self._fade = QPropertyAnimation(self, b'windowOpacity')
@@ -52,9 +64,20 @@ class SplashScreen(QWidget):
         self._dot_t.start(80)
 
     def _center(self):
-        s = QApplication.primaryScreen().geometry()
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        s = screen.availableGeometry() if screen else QRect(0, 0, self.width(), self.height())
         self.move(s.center().x() - self.width() // 2,
                   s.center().y() - self.height() // 2)
+
+    def _flush_paint_events(self):
+        """Paint progress without accepting input or nesting event pumps."""
+        if self._processing_events:
+            return
+        self._processing_events = True
+        try:
+            QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+        finally:
+            self._processing_events = False
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -175,12 +198,12 @@ class SplashScreen(QWidget):
         if progress is not None:
             self._progress = progress
         self.update()
-        QApplication.processEvents()
+        self._flush_paint_events()
 
     def set_progress(self, v):
         self._progress = v
         self.update()
-        QApplication.processEvents()
+        self._flush_paint_events()
 
     def _tick(self):
         self._pulse += 1
@@ -190,15 +213,24 @@ class SplashScreen(QWidget):
 
     def finish_and_close(self, delay=400):
         self._dot_t.stop()
+        try:
+            if getattr(self, '_fade', None) is not None:
+                self._fade.stop()
+        except Exception:
+            pass
         self._progress = 100
         self._status = 'Ready'
         self.update()
-        QApplication.processEvents()
+        self._flush_paint_events()
         fade = QPropertyAnimation(self, b'windowOpacity')
         fade.setDuration(420)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
         fade.setEasingCurve(QEasingCurve.InCubic)
-        fade.finished.connect(self.close)
+        fade.finished.connect(self._close_finished)
         QTimer.singleShot(delay, fade.start)
         self._fade_out = fade
+
+    def _close_finished(self):
+        self.close()
+        self.finished.emit()

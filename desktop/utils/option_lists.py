@@ -61,18 +61,58 @@ STOCK_ADJUSTMENT_TYPES = (
     'Stock Count Correction',
 )
 
-STOCK_ADJUSTMENT_REASONS = (
+STOCK_INCREASE_REASONS = (
     'Received from Supplier',
-    'Stock Count Correction',
-    'Damaged / Spoiled',
-    'Theft / Loss',
-    'Return to Supplier',
+    'Customer Return',
+    'Found / Unrecorded',
     'Transfer In',
-    'Transfer Out',
+    'Stock-take Surplus',
     'Opening Balance',
     'System Correction',
+    'Stock Count Correction',
     'Other',
 )
+
+STOCK_DECREASE_REASONS = (
+    'Damaged / Spoiled',
+    'Expired',
+    'Theft / Loss',
+    'Internal Use',
+    'Return to Supplier',
+    'Transfer Out',
+    'Stock-take Shortage',
+    'System Correction',
+    'Stock Count Correction',
+    'Other',
+)
+
+# Compatibility catalog for older screens and stored history. New adjustment
+# screens must use the signed catalogs above.
+STOCK_ADJUSTMENT_REASONS = tuple(dict.fromkeys(
+    STOCK_INCREASE_REASONS + STOCK_DECREASE_REASONS
+))
+
+_INCREASE_ONLY_REASONS = frozenset(
+    set(STOCK_INCREASE_REASONS) - set(STOCK_DECREASE_REASONS))
+_DECREASE_ONLY_REASONS = frozenset(
+    set(STOCK_DECREASE_REASONS) - set(STOCK_INCREASE_REASONS))
+
+
+def stock_reason_matches_delta(reason: str, delta: float) -> bool:
+    """Return whether a reason is allowed for the server-computed movement.
+
+    Only a reason reserved for the opposite direction is refused, so a
+    write-off label can never ride on an increase and a delivery label can
+    never ride on a decrease. Shared labels and free-text notes stay valid in
+    both directions.
+    """
+    raw = str(reason or '').strip()
+    catalog_value = 'Other' if raw.startswith('Other:') else raw
+    if delta > 0:
+        return catalog_value not in _DECREASE_ONLY_REASONS
+    if delta < 0:
+        return catalog_value not in _INCREASE_ONLY_REASONS
+    return True
 
 # ── Payments ──────────────────────────────────────────────────────────────────
 

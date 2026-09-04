@@ -71,7 +71,8 @@ def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        # Busy shops can hold short write transactions during reports/backups.
+        conn.execute("PRAGMA busy_timeout=10000")
     except sqlite3.OperationalError:
         pass
     try:
@@ -132,15 +133,68 @@ def _db_has_shop_data(db_path: str) -> bool:
         return False
 
 
-def _copy_tree_files(src_dir: str, dst_dir: str):
+JWT_SECRET_NAME = '.jwt_secret'
+CLOUD_IDENTITY_NAME = 'cloud_identity.json'
+
+
+def _read_text(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def _config_migration_exclusions(src_dir: str, dst_dir: str) -> tuple:
+    """Names to skip when importing a legacy ``config`` directory.
+
+    ``cloud_identity.json`` holds Fernet ciphertext derived from that root's
+    ``config/.jwt_secret``. Copying the identity into a root that already has
+    a different secret produces an identity nothing can ever decrypt, which
+    then reads as "signed in with an empty token". Leave it behind so the shop
+    simply signs in again.
+    """
+    src_secret = _read_text(os.path.join(src_dir, JWT_SECRET_NAME))
+    dst_secret = _read_text(os.path.join(dst_dir, JWT_SECRET_NAME))
+    if not dst_secret or dst_secret == src_secret:
+        return ()
+    logger.warning(
+        'Skipping %s during data migration: destination %s differs, so the '
+        'sealed cloud tokens could never be decrypted. Sign in to '
+        'portal.mugobyte.com again to resume cloud backup.',
+        CLOUD_IDENTITY_NAME, JWT_SECRET_NAME,
+    )
+    return (CLOUD_IDENTITY_NAME,)
+
+
+def _copy_tree_files(src_dir: str, dst_dir: str, excluded=()):
     if not os.path.isdir(src_dir):
         return
     os.makedirs(dst_dir, exist_ok=True)
     for name in os.listdir(src_dir):
+        if name in excluded:
+            continue
         src = os.path.join(src_dir, name)
         dst = os.path.join(dst_dir, name)
         if os.path.isfile(src) and not os.path.exists(dst):
             shutil.copy2(src, dst)
+
+
+def _copy_sqlite_snapshot(src_path: str, dst_path: str) -> None:
+    """Copy a live WAL database as one consistent SQLite snapshot."""
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    src = sqlite3.connect(src_path, timeout=10)
+    dst = sqlite3.connect(dst_path, timeout=10)
+    try:
+        src.execute("PRAGMA busy_timeout=10000")
+        dst.execute("PRAGMA busy_timeout=10000")
+        src.backup(dst)
+        result = dst.execute("PRAGMA integrity_check").fetchone()
+        if not result or str(result[0]).lower() != 'ok':
+            raise sqlite3.DatabaseError(f'migrated database integrity check failed: {result}')
+    finally:
+        dst.close()
+        src.close()
 
 
 def _migrate_legacy_data(canonical_root: str):
@@ -168,11 +222,24 @@ def _migrate_legacy_data(canonical_root: str):
             continue
         logger.info('Migrating MBT POS data: %s -> %s', leg_root, canonical_root)
         try:
-            for sub in ('data', 'config', 'exports'):
-                _copy_tree_files(
-                    os.path.join(leg_root, sub),
-                    os.path.join(canonical_root, sub),
+            src_data = os.path.join(leg_root, 'data')
+            dst_data = os.path.join(canonical_root, 'data')
+            _copy_sqlite_snapshot(leg_db, canonical_db)
+            # backup() incorporates committed WAL content. Never transplant
+            # live -wal/-shm sidecars into the new data directory.
+            _copy_tree_files(
+                src_data,
+                dst_data,
+                excluded=('mbt_pos.db', 'mbt_pos.db-wal', 'mbt_pos.db-shm'),
+            )
+            for sub in ('config', 'exports'):
+                src_sub = os.path.join(leg_root, sub)
+                dst_sub = os.path.join(canonical_root, sub)
+                excluded = (
+                    _config_migration_exclusions(src_sub, dst_sub)
+                    if sub == 'config' else ()
                 )
+                _copy_tree_files(src_sub, dst_sub, excluded=excluded)
             return
         except Exception as e:
             logger.warning('Data migration failed from %s: %s', leg_root, e)

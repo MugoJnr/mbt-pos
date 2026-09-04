@@ -275,6 +275,54 @@ class TestPaymentVarianceAllocation(unittest.TestCase):
         self.assertGreaterEqual(
             float((report.get('summary') or {}).get('additional_payments') or 0), 100)
 
+    def test_fake_deposit_variance_cannot_mint_store_credit(self):
+        customer = self.api.create_customer({
+            'name': 'Variance Security Customer',
+            'phone': '0700000999',
+        })
+        self.assertTrue(customer.get('success'), customer)
+        cid = int(customer['customer_id'])
+        payload = {
+            'items': [{
+                'product_id': self.product['id'],
+                'product_name': self.product['name'],
+                'sku': self.product['sku'],
+                'quantity': 1,
+                'unit_price': 100,
+                'discount': 0,
+                'total': 100,
+            }],
+            'subtotal': 100,
+            'discount': 0,
+            'total': 100,
+            'payment_method': 'cash',
+            'amount_paid': 100,
+            'customer_id': cid,
+            'variance': {
+                'handling': 'deposit',
+                'excess_amount': 500,
+            },
+        }
+        denied = self.api.create_sale(payload)
+        self.assertIn('error', denied)
+        self.assertIn('actual amount', denied['error'])
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=?",
+                (self.product['id'],),
+            ).fetchone()['stock']),
+            200.0,
+        )
+        self.assertEqual(
+            db.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 0)
+        wallet = db.execute(
+            "SELECT balance FROM customer_wallet WHERE customer_id=?",
+            (cid,),
+        ).fetchone()
+        self.assertTrue(wallet is None or float(wallet['balance']) == 0.0)
+        db.close()
+
     def test_receipt_text_hides_additional_payment(self):
         from printing.printer_engine import generate_receipt_text
         var = {

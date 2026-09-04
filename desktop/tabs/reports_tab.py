@@ -11,7 +11,9 @@ from desktop.utils.widgets import (KPICard, Card, H2, Caption, PrimaryBtn,
                                     tbl_center, page_layout, Badge, lovable_tab_qss,
                                     wrap_table_card, page_intro,
                                     apply_table_row_backgrounds, retint_table_items,
-                                    align_header_right)
+                                    align_header_right, fit_columns_to_content,
+                                    apply_cell_tooltips, attach_table_empty_state)
+from desktop.utils.security import has_permission
 from desktop.utils.charts import GoldBarChart, PaymentBars, ChartCard
 from desktop.utils.select_controls import DatePresetSelect, refresh_select_controls
 from desktop.utils.option_lists import date_range_for_preset
@@ -22,6 +24,21 @@ from desktop.utils.date_controls import (
 
 _log = logging.getLogger(__name__)
 _PR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Statuses counted by ApiClient.get_report_summary / get_sale_items_for_range.
+# The Sales List and the Excel export must use exactly this predicate or the
+# table shows rows (e.g. voided sales) that the KPI totals excluded.
+REPORT_SALE_STATUSES = ('completed', 'return')
+
+
+def is_reportable_sale(sale) -> bool:
+    """True when a sale row belongs in reported revenue."""
+    status = ((sale or {}).get('status') or 'completed')
+    return str(status).strip().lower() in REPORT_SALE_STATUSES
+
+
+def reportable_sales(sales) -> list:
+    return [s for s in (sales or []) if is_reportable_sale(s)]
 
 
 def _get_export_dir():
@@ -66,6 +83,15 @@ class ReportsTab(QWidget):
         except Exception:
             pass
         self._exp_btn.clicked.connect(self._export)
+        self._pdf_btn = SecondaryBtn('Export PDF', 40)
+        self._pdf_btn.setToolTip(
+            'Save a direct PDF of this period (same totals as the KPIs)')
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(self._pdf_btn, 'export', 15)
+        except Exception:
+            pass
+        self._pdf_btn.clicked.connect(self._export_pdf)
         self._email_btn = SecondaryBtn('Email Report', 40)
         try:
             from desktop.utils.nav_icons import apply_button_icon
@@ -74,7 +100,8 @@ class ReportsTab(QWidget):
             pass
         self._email_btn.setToolTip('Send via cloud notification / email (Telegram permanently removed)')
         self._email_btn.clicked.connect(self._send_cloud_report)
-        ar.addWidget(self._email_btn); ar.addWidget(self._exp_btn)
+        ar.addWidget(self._email_btn); ar.addWidget(self._pdf_btn)
+        ar.addWidget(self._exp_btn)
         intro, _ = page_intro('Reports', 'Sales, cash rounding, payment variance, products and payment breakdown.', actions)
         lay.addLayout(intro)
 
@@ -181,6 +208,8 @@ class ReportsTab(QWidget):
         save_sched.clicked.connect(self._save_schedule); sl.addWidget(save_sched)
         sl.addStretch()
         lay.addWidget(sc)
+        self._sched_card = sc
+        self._save_sched_btn = save_sched
 
         # ── Data tabs in card (Lovable) ───────────────────────────────────────
         tabs = QTabWidget(); tabs.setMinimumHeight(320)
@@ -204,17 +233,32 @@ class ReportsTab(QWidget):
              'Handling','Returned','Deposit','Tip','Transport','Mgr','Notes'],
             stretch_col=13, row_height=38)
 
-        for tbl, specs in [
-            (self._stbl,  [(1,140),(2,120),(3,80),(4,90),(5,70),(6,90),(7,80),(8,100),(9,90)]),
-            (self._ptbl,  [(1,90),(2,100),(3,110),(4,90)]),
-            (self._litbl, [(0,130),(1,130),(2,100),(4,70),(5,50),(6,100),(7,100)]),
-            (self._mtbl,  [(1,70),(2,80),(3,110),(4,80)]),
-            (self._vtbl,  [(0,130),(1,120),(2,90),(3,70),(4,90),(5,90),(6,80),
-                           (7,90),(8,80),(9,80),(10,70),(11,80),(12,50)]),
+        # Money columns stay interactive and are re-sized from real font metrics
+        # after every load — fixed 90/100px widths elided even "KES 250.00".
+        for tbl, money, specs in [
+            (self._stbl,  (4, 5, 6, 7, 8),
+             [(1,140),(2,120),(3,80),(4,90),(5,70),(6,110),(7,80),(8,120),(9,90)]),
+            (self._ptbl,  (3,),
+             [(1,90),(2,100),(3,110),(4,90)]),
+            (self._litbl, (6, 7),
+             [(0,130),(1,130),(2,100),(4,70),(5,50),(6,110),(7,110)]),
+            (self._mtbl,  (3,),
+             [(1,70),(2,80),(3,110),(4,80)]),
+            (self._vtbl,  (4, 5, 6, 8, 9, 10, 11),
+             [(0,130),(1,120),(2,90),(3,70),(4,90),(5,90),(6,80),
+              (7,90),(8,80),(9,80),(10,70),(11,80),(12,50)]),
         ]:
+            floors = {}
             for col, w in specs:
-                tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
+                if col in money:
+                    floors[col] = w
+                    tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Interactive)
+                else:
+                    tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
                 tbl.setColumnWidth(col, w)
+            tbl.setProperty('mbtMoneyCols', list(money))
+            tbl._mbt_money_cols = tuple(money)
+            tbl._mbt_col_floors = floors
         # Numeric columns — headers + cells right-aligned for scannability
         align_header_right(self._stbl, 4, 5, 6, 7, 8)
         align_header_right(self._litbl, 5, 6, 7)
@@ -240,6 +284,54 @@ class ReportsTab(QWidget):
         tabs.addTab(self._mtbl,  'By Payment')
         tabs.addTab(self._vtbl,  'Payment Variance')
         lay.addWidget(wrap_table_card(tabs), 1)
+
+        for tbl, icon, title, sub in (
+            (self._stbl, 'reports', 'No sales in this period',
+             'Pick another date range, or record a sale on the POS tab'),
+            (self._litbl, 'reports', 'No line items in this period',
+             'Line detail appears once sales are completed in this range'),
+            (self._ptbl, 'inventory', 'No product sales yet',
+             'Best sellers rank here once items are sold in this range'),
+            (self._mtbl, 'revenue', 'No payments in this period',
+             'Cash, M-Pesa, card and bank splits appear here'),
+            (self._vtbl, 'alert', 'No payment variance recorded',
+             'Overpayments, tips, deposits and change appear here'),
+        ):
+            attach_table_empty_state(tbl, icon, title, sub)
+
+        self._apply_permissions()
+
+    def can_export(self) -> bool:
+        return has_permission(self.user, 'reports.export')
+
+    def _apply_permissions(self):
+        """Viewing reports stays open; anything that emits a file/email needs
+        ``reports.export``."""
+        allowed = self.can_export()
+        for name in ('_exp_btn', '_pdf_btn', '_email_btn', '_save_sched_btn'):
+            btn = getattr(self, name, None)
+            if btn is not None:
+                btn.setVisible(allowed)
+                btn.setEnabled(allowed)
+        for name in ('_sched_daily', '_sched_weekly', '_sched_day'):
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setEnabled(allowed)
+        card = getattr(self, '_sched_card', None)
+        if card is not None:
+            card.setVisible(allowed)
+
+    def _finish_table(self, tbl):
+        """Content-aware money widths + hover tooltips, then zebra + empty state."""
+        try:
+            money = getattr(tbl, '_mbt_money_cols', ()) or ()
+            if money:
+                fit_columns_to_content(
+                    tbl, money, floors=getattr(tbl, '_mbt_col_floors', None))
+            apply_cell_tooltips(tbl)
+        except Exception as e:
+            _log.debug('Reports column fit: %s', e)
+        apply_table_row_backgrounds(tbl)
 
     def _lbl(self, t):
         """Plain schedule/filter caption — no pill border."""
@@ -377,7 +469,7 @@ class ReportsTab(QWidget):
 
         # Sales list tab
         try:
-            sales = self.api.get_sales(start, end) or []
+            sales = reportable_sales(self.api.get_sales(start, end))
             self._stbl.setRowCount(0)
             for i, s2 in enumerate(sales):
                 self._stbl.insertRow(i)
@@ -400,7 +492,7 @@ class ReportsTab(QWidget):
                 ]
                 for j, item in enumerate(cells):
                     self._stbl.setItem(i, j, item)
-            apply_table_row_backgrounds(self._stbl)
+            self._finish_table(self._stbl)
         except Exception as e:
             _log.warning(f"Reports sales list: {e}")
 
@@ -434,7 +526,7 @@ class ReportsTab(QWidget):
                     f"(full detail in Excel export)",
                     ok=None,
                 )
-            apply_table_row_backgrounds(self._litbl)
+            self._finish_table(self._litbl)
         except Exception as e:
             _log.warning(f"Reports line items: {e}")
 
@@ -455,7 +547,7 @@ class ReportsTab(QWidget):
                 ]
                 for j, cell in enumerate(cells):
                     self._ptbl.setItem(i, j, cell)
-            apply_table_row_backgrounds(self._ptbl)
+            self._finish_table(self._ptbl)
         except Exception as e:
             _log.warning(f"Reports top products: {e}")
 
@@ -476,7 +568,7 @@ class ReportsTab(QWidget):
                 ]
                 for j, cell in enumerate(cells):
                     self._mtbl.setItem(i, j, cell)
-            apply_table_row_backgrounds(self._mtbl)
+            self._finish_table(self._mtbl)
         except Exception as e:
             _log.warning(f"Reports by payment: {e}")
 
@@ -517,7 +609,7 @@ class ReportsTab(QWidget):
                 ]
                 for j, cell in enumerate(cells):
                     self._vtbl.setItem(i, j, cell)
-            apply_table_row_backgrounds(self._vtbl)
+            self._finish_table(self._vtbl)
         except Exception as e:
             _log.warning(f"Reports payment variance: {e}")
 
@@ -537,8 +629,7 @@ class ReportsTab(QWidget):
             or (self.user.get('user') or self.user).get('username')
             or 'admin'
         )
-        sales = [s for s in (self.api.get_sales(start, end) or [])
-                 if (s.get('status') or 'completed') != 'voided']
+        sales = reportable_sales(self.api.get_sales(start, end))
         ibs = {}
         # Prefer one batch query over N get_sale round-trips
         try:
@@ -615,6 +706,9 @@ class ReportsTab(QWidget):
         return xlsx_path
 
     def _export(self):
+        from desktop.utils.security import require_permission
+        if not require_permission(self.user, 'reports.export', self):
+            return
         try:
             self._exp_btn.setEnabled(False); self._exp_btn.setText('Exporting…')
             QApplication.processEvents()
@@ -645,9 +739,56 @@ class ReportsTab(QWidget):
         finally:
             self._exp_btn.setEnabled(True); self._exp_btn.setText('Export Excel')
 
+    def _do_export_pdf(self) -> str:
+        """Direct PDF for the selected period — no browser Print step needed."""
+        sys.path.insert(0, _PR)
+        from backend.report_export_service import export_sales_report_pdf
+        start = self._s.date().toString(DATE_API_FMT)
+        end   = self._e.date().toString(DATE_API_FMT)
+        cfg   = self.config_getter() or {}
+        account = self.user.get('user') or self.user
+        data = self.api.get_report_summary(start, end) or {}
+        sales = reportable_sales(self.api.get_sales(start, end))
+        return export_sales_report_pdf(
+            sales,
+            data.get('summary') or {},
+            shop_name=cfg.get('shop_name', 'My Shop'),
+            start_date=start, end_date=end,
+            currency=cfg.get('currency_symbol', 'KES'),
+            top_products=data.get('top_products') or [],
+            by_payment=data.get('by_payment') or [],
+            generated_by=(account.get('full_name')
+                          or account.get('username') or 'admin'),
+            filters=f'Date {start} to {end} · completed and return sales only',
+        )
+
+    def _export_pdf(self):
+        from desktop.utils.security import require_permission
+        if not require_permission(self.user, 'reports.export', self):
+            return
+        try:
+            self._pdf_btn.setEnabled(False); self._pdf_btn.setText('Exporting…')
+            QApplication.processEvents()
+            path = self._do_export_pdf()
+            self._last_pdf_export_path = path
+            self._set_status(f"✓ Saved: {path}", ok=True)
+            QMessageBox.information(
+                self, 'Exported ✓',
+                f'PDF report saved to:\n{path}\n\n'
+                f'Totals match the KPI cards for this period.')
+        except Exception as e:
+            _log.error(f"PDF export error: {e}", exc_info=True)
+            QMessageBox.critical(self, 'Export Error', str(e))
+            self._set_status(f"✗ PDF export failed: {e}", ok=False)
+        finally:
+            self._pdf_btn.setEnabled(True); self._pdf_btn.setText('Export PDF')
+
     # ── Cloud / email report (Telegram permanently removed) ───────────────────
 
     def _send_cloud_report(self):
+        from desktop.utils.security import require_permission
+        if not require_permission(self.user, 'reports.export', self):
+            return
         start = self._s.date().toString(DATE_API_FMT)
         end   = self._e.date().toString(DATE_API_FMT)
         if QMessageBox.question(self, 'Send Report',
@@ -688,11 +829,23 @@ class ReportsTab(QWidget):
     # ── Folder ────────────────────────────────────────────────────────────────
 
     def _open_folder(self):
-        import subprocess, sys
-        folder = _get_export_dir()
-        if sys.platform   == 'win32':  subprocess.Popen(['explorer', folder])
-        elif sys.platform == 'darwin': subprocess.Popen(['open', folder])
-        else:                          subprocess.Popen(['xdg-open', folder])
+        import os, subprocess, sys
+        folder = ''
+        try:
+            folder = _get_export_dir()
+            if sys.platform == 'win32':
+                os.startfile(folder)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', folder])
+            else:
+                subprocess.Popen(['xdg-open', folder])
+        except OSError as e:
+            # No shell association, folder removed, or a denied path — the
+            # click must not take the window down with it.
+            detail = f'\n\nYou can browse to it manually:\n{folder}' if folder else ''
+            QMessageBox.warning(
+                self, 'Open Exports Folder',
+                f'Could not open the exports folder.\n\n{e}{detail}')
 
     # ── Schedule ──────────────────────────────────────────────────────────────
 
@@ -706,15 +859,19 @@ class ReportsTab(QWidget):
             _log.warning(f"Load schedule: {e}")
 
     def _save_schedule(self):
+        from desktop.utils.security import require_permission
+        if not require_permission(self.user, 'reports.export', self):
+            return
         try:
-            settings = self.api.get_settings() or {}
-            settings.update({
+            res = self.api.update_settings({
                 'auto_report_daily':   '1' if self._sched_daily.isChecked() else '0',
                 'auto_report_weekly':  '1' if self._sched_weekly.isChecked() else '0',
                 'auto_report_interval_hours': '4',
                 'auto_report_weekday': str(self._sched_day.currentIndex()),
             })
-            self.api.update_settings(settings)
+            if res and res.get('error'):
+                QMessageBox.warning(self, 'Reports', res['error'])
+                return
             QMessageBox.information(self, 'Saved', 'Report schedule saved.')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))

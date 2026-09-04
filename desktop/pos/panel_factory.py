@@ -866,7 +866,7 @@ def build_shared_panels(tab) -> None:
     tab._mpesa_info.setStyleSheet(
         f"color:{C['gold']};font-size:12px;font-weight:600;background:transparent;")
     tab._mpesa_ref = QLineEdit()
-    tab._mpesa_ref.setPlaceholderText('M-Pesa confirmation code (optional)')
+    tab._mpesa_ref.setPlaceholderText('M-Pesa confirmation code (verified at Charge)')
     tab._mpesa_ref.setMinimumHeight(40)
     mfl.addWidget(tab._mpesa_info)
     mfl.addWidget(tab._mpesa_ref)
@@ -929,11 +929,15 @@ def build_shared_panels(tab) -> None:
     tab._reprint_btn = SecondaryBtn('Reprint', 40)
     tab._reprint_btn.setToolTip('Reprint a completed receipt')
     tab._reprint_btn.clicked.connect(tab._reprint_receipt)
+    tab._mpesa_inbox_btn = SecondaryBtn('M-Pesa Inbox', 40)
+    tab._mpesa_inbox_btn.setToolTip('Match unmatched Till / M-Pesa payments')
+    tab._mpesa_inbox_btn.clicked.connect(tab._open_payment_inbox)
     br.addWidget(tab._clr_btn)
     br.addWidget(tab._hold_btn)
     br.addWidget(tab._resume_btn)
     br.addWidget(tab._prv_btn, 1)
     br.addWidget(tab._reprint_btn)
+    br.addWidget(tab._mpesa_inbox_btn)
     from desktop.utils.security import can_void_sales
     if can_void_sales(tab.user):
         tab._void_btn = DangerBtn('Void Sale', 40)

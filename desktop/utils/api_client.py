@@ -158,18 +158,53 @@ def _check_pw(pw: str, stored: str) -> bool:
 
 
 def _hash_pw(pw: str) -> str:
-    """Always use our custom salt:sha256 format for consistency."""
-    salt = os.urandom(16).hex()
-    return salt + ':' + hashlib.sha256((salt + pw).encode()).hexdigest()
+    """Hash new passwords with bcrypt; legacy salt:sha256 remains readable."""
+    import bcrypt
+    raw = pw.encode() if isinstance(pw, str) else pw
+    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=12)).decode()
+
+
+def _authorize_superadmin_pin(db, pin: str, *, operation: str,
+                              user_id=None, username=None) -> dict | None:
+    """Verify the owner PIN inside the caller's transaction.
+
+    Returns an API error mapping on failure, otherwise records a successful
+    authorization and returns ``None``.
+    """
+    pin_text = str(pin or '')
+    if not pin_text:
+        return {'error': 'Super-Admin PIN is required.', 'status': 403}
+    row = db.execute(
+        "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+    ).fetchone()
+    stored_hash = str(row['value'] if row else '')
+    if not stored_hash:
+        return {'error': 'Super-Admin PIN is not configured.', 'status': 403}
+    import hmac
+    from desktop.utils.security import _pin_hash
+    ok = hmac.compare_digest(_pin_hash(pin_text), stored_hash)
+    db.execute(
+        "INSERT INTO audit_log "
+        "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+        (
+            user_id, username or 'SYSTEM',
+            'SUPERADMIN_PIN_SUCCESS' if ok else 'SUPERADMIN_PIN_FAIL',
+            'security', f'operation={operation}',
+        ),
+    )
+    if not ok:
+        return {'error': 'Incorrect Super-Admin PIN.', 'status': 403}
+    return None
 
 
 # ── Database connection ─────────────────────────────────────────────────────────
 _SCHEMA_READY = False
+_SCHEMA_READY_PATH = None
 
 
 def _db(*, ensure_schema: bool = True) -> sqlite3.Connection:
-    """Open SQLite connection. Schema bootstrap runs once per process (not every call)."""
-    global _SCHEMA_READY
+    """Open SQLite connection. Bootstrap once per database path."""
+    global _SCHEMA_READY, _SCHEMA_READY_PATH
     db_path = get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
@@ -178,9 +213,13 @@ def _db(*, ensure_schema: bool = True) -> sqlite3.Connection:
     # Always ensure schema exists (safe on existing DBs via CREATE IF NOT EXISTS)
     # Running full migrations on every open caused multi-second stalls / lock storms
     # under rapid POS API sequences (sale → debt → payment).
-    if ensure_schema and not _SCHEMA_READY:
+    if ensure_schema and (
+        not _SCHEMA_READY
+        or os.path.normcase(_SCHEMA_READY_PATH or '') != os.path.normcase(db_path)
+    ):
         _ensure_schema(conn)
         _SCHEMA_READY = True
+        _SCHEMA_READY_PATH = db_path
     return conn
 
 
@@ -480,11 +519,16 @@ def _ensure_schema(conn: sqlite3.Connection):
                 'receipt_footer': 'Thank you for shopping with us!',
                 'theme': 'dark', 'sync_interval': '30',
                 'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
+                'printer_connection': 'windows', 'printer_ip': '',
+                'printer_lan_port': '9100', 'printer_timeout': '5',
+                'open_drawer_on_cash': '1', 'print_logo': '1',
+                'printer_profile': 'xp_t80a',
                 'auto_report_daily': '1', 'auto_report_weekly': '0',
                 'auto_report_interval_hours': '4', 'auto_report_weekday': '0',
                 'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
-                'mpesa_mode': 'manual', 'mpesa_till': '', 'mpesa_paybill': '',
+                'mpesa_mode': 'cloud', 'mpesa_till': '', 'mpesa_paybill': '',
                 'mpesa_business_name': '',
+                'payments_cloud_base_url': 'https://payments.mugobyte.com',
                 'variance_enabled': '1',
                 'variance_enable_deposits': '1',
                 'variance_enable_tips': '1',
@@ -714,6 +758,12 @@ def _migrate_columns(conn: sqlite3.Connection):
                 "UPDATE sales SET sale_date=date(created_at) "
                 "WHERE sale_date IS NULL OR sale_date=''"
             )
+    except Exception:
+        pass
+    # M-Pesa payment subsystem tables (additive — never wipe shop DB)
+    try:
+        from desktop.payments.schema import ensure_payment_schema
+        ensure_payment_schema(conn)
     except Exception:
         pass
     # Sale-item returned qty tracking (partial returns)
@@ -975,6 +1025,35 @@ def _audit(user_id, username, action, module='system', details=''):
         db.commit(); db.close()
     except Exception as e:
         logger.warning(f"Audit log: {e}")
+
+
+# ── Settings write scopes ───────────────────────────────────────────────────────
+# `settings.edit` (admin / superadmin) covers shop configuration. These narrow
+# groups stay writable for other signed-in roles so per-device UI state and
+# scheduler bookkeeping keep working without granting configuration rights.
+_UI_PREFERENCE_SETTING_KEYS = frozenset({
+    'theme', 'ui_theme',
+    'pos_checkout_layout', 'pos_splitter_sizes', 'pos_cart_splitter_sizes',
+})
+_SYSTEM_MARKER_SETTING_KEYS = frozenset({
+    'last_db_backup_at', 'last_db_backup_hash',
+    'last_local_backup_at', 'last_local_backup_path',
+    'last_auto_report_at',
+})
+# Report scheduling belongs to the reports module (`reports.export`, manager+).
+_REPORT_SCHEDULE_SETTING_KEYS = frozenset({
+    'auto_report_daily', 'auto_report_weekly',
+    'auto_report_interval_hours', 'auto_report_weekday',
+})
+
+
+def _no_user_admin_message(actor_role: str, what: str) -> str:
+    """Accurate denial for actors with no user-administration rights."""
+    from desktop.utils.security import role_display_name
+    return (
+        f'Your role ({role_display_name(actor_role)}) does not have permission '
+        f'to {what}. Contact your system administrator.'
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1359,7 +1438,34 @@ class APIClient:
         finally:
             db.close()
 
+    def _settings_write_denial(self, keys) -> str:
+        """'' when the actor may persist every key, else the denial message."""
+        from desktop.utils.security import has_permission
+        if self._role is None:
+            # Setup wizard and background schedulers run with no signed-in
+            # actor; they already hold direct database access.
+            return ''
+        actor = {'role': self._role}
+        if has_permission(actor, 'settings.edit'):
+            return ''
+        allowed = set(_UI_PREFERENCE_SETTING_KEYS) | set(_SYSTEM_MARKER_SETTING_KEYS)
+        if has_permission(actor, 'reports.export'):
+            allowed |= set(_REPORT_SCHEDULE_SETTING_KEYS)
+        blocked = sorted(k for k in keys if k not in allowed)
+        if not blocked:
+            return ''
+        return (
+            'Insufficient permissions to change shop settings: '
+            + ', '.join(blocked)
+        )
+
     def update_settings(self, data: dict) -> dict:
+        denial = self._settings_write_denial(list((data or {}).keys()))
+        if denial:
+            _audit(self._user_id, self._username, 'UPDATE_SETTINGS_DENIED',
+                   'settings',
+                   f"role={self._role or 'none'} keys={sorted((data or {}).keys())}")
+            return {'error': denial}
         db = _db()
         try:
             for k, v in data.items():
@@ -1377,6 +1483,11 @@ class APIClient:
     # ── USERS ────────────────────────────────────────────────────────────────────
 
     def get_users(self) -> list:
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'users.view'):
+            _audit(self._user_id, self._username, 'USERS_VIEW_DENIED', 'admin',
+                   f"role={self._role or 'none'}")
+            return []
         db = _db()
         try:
             return _rows(db.execute(
@@ -1388,8 +1499,13 @@ class APIClient:
 
     def create_user(self, data: dict) -> dict:
         from roles import default_tab_permissions, can_assign_role, sanitize_tab_permissions
+        from desktop.utils.security import has_permission
         actor_role = (self._role or 'cashier')
         new_role = data.get('role', 'cashier')
+        if not has_permission({'role': actor_role}, 'users.create'):
+            _audit(self._user_id, self._username, 'CREATE_USER_DENIED', 'admin',
+                   f'role={actor_role} target_role={new_role}')
+            return {'error': _no_user_admin_message(actor_role, 'create user accounts')}
         if not can_assign_role(actor_role, new_role):
             return {'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}
         db = _db()
@@ -1418,6 +1534,12 @@ class APIClient:
 
     def update_user(self, uid: int, data: dict) -> dict:
         from roles import can_assign_role, sanitize_tab_permissions, is_superadmin_role
+        from desktop.utils.security import has_permission
+        actor_role = (self._role or 'cashier')
+        if not has_permission({'role': actor_role}, 'users.edit'):
+            _audit(self._user_id, self._username, 'UPDATE_USER_DENIED', 'admin',
+                   f'role={actor_role} id={uid}')
+            return {'error': _no_user_admin_message(actor_role, 'edit user accounts')}
         db = _db()
         try:
             target = db.execute(
@@ -1425,7 +1547,6 @@ class APIClient:
             ).fetchone()
             if not target:
                 return {'error': 'User not found'}
-            actor_role = (self._role or 'cashier')
             new_role = data.get('role', target['role'])
             if not can_assign_role(actor_role, new_role):
                 return {'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}
@@ -1628,6 +1749,14 @@ class APIClient:
             db.close()
 
     def create_product(self, data: dict) -> dict:
+        if str(self._role or '').strip().lower() not in (
+            'manager', 'admin', 'superadmin',
+        ):
+            _audit(
+                self._user_id, self._username, 'CREATE_PRODUCT_DENIED',
+                'inventory', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to create products.'}
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Product name is required.'}
@@ -1635,7 +1764,11 @@ class APIClient:
         result = None
         db = _db()
         try:
-            initial_stock = round(float(data.get('stock', 0) or 0), 4)
+            requested_stock = round(float(data.get('stock', 0) or 0), 4)
+            # Product creation is metadata-only. Opening quantities must go
+            # through Receive Stock / Adjust Stock, where owner PIN
+            # authorization and movement accounting are enforced.
+            initial_stock = 0.0
             sku = (data.get('sku') or '').strip() or None
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
@@ -1646,22 +1779,15 @@ class APIClient:
                  data.get('unit') or 'pcs', data.get('barcode'))
             )
             pid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            if initial_stock > 0:
-                try:
-                    db.execute(
-                        "INSERT INTO stock_movements "
-                        "(product_id,product_name,movement_type,qty_before,qty_change,"
-                        "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (pid, name, 'INITIAL', 0, initial_stock, initial_stock,
-                         'PRODUCT_CREATE', 'Initial stock on product creation',
-                         self._user_id, self._username or 'system')
-                    )
-                except Exception as e:
-                    logger.warning(f"Stock movement log skipped: {e}")
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
-                   f"name={name} stock={initial_stock}")
-            result = {'success': True, 'id': pid}
+                   f"name={name} stock=0 requested_stock={requested_stock}")
+            result = {'success': True, 'id': pid, 'stock': 0.0}
+            if requested_stock:
+                result['warning'] = (
+                    'Product created with zero stock. Use Receive Stock or '
+                    'Adjust Stock to add an opening quantity.'
+                )
         except sqlite3.IntegrityError as e:
             logger.warning(f"create_product integrity: {e}")
             msg = str(e).lower()
@@ -1682,51 +1808,33 @@ class APIClient:
         return result or {'error': 'Could not save product'}
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
-        """
-        Update a product.
-        SECURITY: Stock changes require either:
-          - pin_verified=True (called after PIN check), OR
-          - caller is admin/superadmin (they use adjust_stock via UI with PIN)
-        Cashiers can never change stock regardless.
-        """
+        """Update product metadata; stock is changed only by inventory workflows."""
+        if str(self._role or '').strip().lower() not in (
+            'manager', 'admin', 'superadmin',
+        ):
+            _audit(
+                self._user_id, self._username, 'UPDATE_PRODUCT_DENIED',
+                'inventory', f'pid={pid} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to edit products.'}
+        if 'stock' in data:
+            _audit(
+                self._user_id, self._username, 'STOCK_ADJUST_BLOCKED',
+                'inventory', f'pid={pid} route=update_product role={self._role}',
+            )
+            return {
+                'error': (
+                    'Stock cannot be changed from Edit Product. '
+                    'Use the protected Adjust Stock action.'
+                )
+            }
         db = _db()
         try:
-            caller_role = getattr(self, '_role', self._role if hasattr(self, '_role') else 'cashier')
-            is_privileged = caller_role in ('admin', 'superadmin')
-
-            # Block direct stock manipulation from cashiers always
-            if 'stock' in data and not pin_verified and not is_privileged:
-                _audit(self._user_id, self._username,
-                       'STOCK_ADJUST_BLOCKED', 'inventory',
-                       f"pid={pid} attempted_stock={data['stock']} role={caller_role}")
-                return {'error': 'Stock adjustment requires Super-Admin PIN.'}
-
-            # Get current values for audit trail
-            old = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
-
             fields, values = [], []
             for field in ('name','sku','category','price','cost_price',
                           'min_stock','unit','barcode','is_active'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
-
-            # Stock adjustment — only reaches here if pin_verified=True
-            if 'stock' in data and pin_verified:
-                old_stock = round(float((old['stock'] if old else 0) or 0), 4)
-                new_stock  = round(float(data['stock']), 4)
-                qty_change = round(new_stock - old_stock, 4)
-                fields.append("stock=?"); values.append(new_stock)
-                # Mandatory movement log
-                db.execute(
-                    "INSERT INTO stock_movements "
-                    "(product_id,product_name,movement_type,qty_before,qty_change,"
-                    "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (pid, old['name'] if old else str(pid), 'MANUAL_ADJUST',
-                     old_stock, qty_change, new_stock,
-                     f"EDIT_pid={pid}",
-                     data.get('adjust_reason', 'Manual stock correction by superadmin'),
-                     self._user_id, self._username or 'system')
-                )
 
             if fields:
                 fields.append("updated_at=?"); values.append(datetime.now().isoformat())
@@ -1735,7 +1843,7 @@ class APIClient:
                 db.commit()
 
             _audit(self._user_id, self._username, 'UPDATE_PRODUCT', 'inventory',
-                   f"pid={pid} fields={list(data.keys())} pin_verified={pin_verified}")
+                   f"pid={pid} fields={list(data.keys())}")
             result_ok = True
         except sqlite3.IntegrityError as e:
             logger.warning(f"update_product integrity: {e}")
@@ -1755,65 +1863,166 @@ class APIClient:
                 pass
         return {'success': True}
 
-    def adjust_stock(self, pid: int, new_qty, reason: str,
-                     expected_stock=None) -> dict:
+    def adjust_stock(self, pid: int, direction: str, quantity, reason: str,
+                     *, pin: str, expected_stock=None) -> dict:
+        """Atomically perform a protected manual stock adjustment.
+
+        Direction is ``add``, ``remove`` or ``set``. For ``set``, quantity is
+        the absolute counted on-hand; direction and PIN policy are derived from
+        the stored stock while the write lock is held.
+        Product update, movement history and audit records commit together.
         """
-        Superadmin-only direct stock adjustment.
-        Caller MUST have verified PIN before calling this.
-        Supports decimal quantities (e.g. 89.75 after quarter sales).
-        """
-        if self._role != 'superadmin':
-            return {'error': 'Only Super-Admin can adjust stock quantities.'}
+        role = str(self._role or '').strip().lower()
+        if role != 'superadmin':
+            _audit(
+                self._user_id, self._username, 'STOCK_ADJUST_DENIED',
+                'inventory', f'pid={pid} role={role or "none"}',
+            )
+            return {
+                'error': 'Only Super-Admin can adjust stock quantities.',
+                'status': 403,
+            }
+        direction = str(direction or '').strip().lower()
+        if direction not in ('add', 'remove', 'set'):
+            return {'error': 'Choose Add, Remove, or Update current stock.', 'status': 400}
         try:
             import math
-            new_qty = round(float(new_qty), 4)
+            quantity = round(float(quantity), 4)
         except (TypeError, ValueError):
-            return {'error': 'Enter a valid stock quantity.'}
-        if not math.isfinite(new_qty) or not 0 <= new_qty <= 999999:
-            return {'error': 'Stock quantity is outside the allowed range.'}
+            return {'error': 'Enter a valid adjustment quantity.', 'status': 400}
+        valid_quantity = (
+            math.isfinite(quantity)
+            and quantity <= 999999
+            and (quantity >= 0 if direction == 'set' else quantity > 0)
+        )
+        if not valid_quantity:
+            return {
+                'error': (
+                    'Counted quantity cannot be negative.'
+                    if direction == 'set'
+                    else 'Adjustment quantity must be greater than zero.'
+                ),
+                'status': 400,
+            }
         reason = str(reason or '').strip()
         if not reason:
-            return {'error': 'A reason is required for stock adjustments.'}
+            return {
+                'error': 'A reason is required for stock adjustments.',
+                'status': 400,
+            }
         db = _db()
         try:
+            db.execute('BEGIN IMMEDIATE')
             row = db.execute(
-                "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+                "SELECT id,name,stock,cost_price FROM products WHERE id=?",
+                (pid,),
             ).fetchone()
             if not row:
-                return {'error': 'Product not found'}
+                db.rollback()
+                return {'error': 'Product not found.', 'status': 404}
             old_stock  = round(float(row['stock'] or 0), 4)
-            if (
-                expected_stock is not None
-                and round(float(expected_stock), 4) != old_stock
-            ):
+            try:
+                expected = (
+                    None if expected_stock is None
+                    else round(float(expected_stock), 4)
+                )
+            except (TypeError, ValueError):
+                db.rollback()
+                return {'error': 'Refresh stock and try again.', 'status': 409}
+            if expected is not None and expected != old_stock:
+                db.rollback()
                 return {
                     'error': 'Stock changed. Refresh and review the latest quantity.',
                     'current_stock': old_stock,
+                    'status': 409,
                 }
-            qty_change = round(new_qty - old_stock, 4)
+            if direction == 'set':
+                new_qty = quantity
+                qty_change = round(new_qty - old_stock, 4)
+            else:
+                qty_change = quantity if direction == 'add' else -quantity
+                new_qty = round(old_stock + qty_change, 4)
+            if new_qty < 0:
+                db.rollback()
+                return {
+                    'error': (
+                        f'Cannot remove {quantity:g}; only '
+                        f'{old_stock:g} is available.'
+                    ),
+                    'current_stock': old_stock,
+                    'status': 400,
+                }
+            if new_qty > 999999:
+                db.rollback()
+                return {
+                    'error': 'Resulting stock exceeds the allowed range.',
+                    'current_stock': old_stock,
+                    'status': 400,
+                }
+            if qty_change == 0:
+                db.rollback()
+                return {
+                    'success': True,
+                    'no_op': True,
+                    'message': 'Counted quantity already matches current stock. No movement recorded.',
+                    'old_stock': old_stock,
+                    'new_stock': old_stock,
+                    'direction': 'none',
+                    'quantity': quantity,
+                }
+            from desktop.utils.option_lists import stock_reason_matches_delta
+            if not stock_reason_matches_delta(reason, qty_change):
+                db.rollback()
+                return {
+                    'error': (
+                        'Choose an increase reason for stock going up.'
+                        if qty_change > 0
+                        else 'Choose a decrease reason for stock going down.'
+                    ),
+                    'current_stock': old_stock,
+                    'status': 400,
+                }
+
+            # Authorisation is decided here, from the delta the server just
+            # computed against the row it holds under BEGIN IMMEDIATE — never
+            # from the caller's ``direction`` flag. The fraud vector is on-hand
+            # falling without a sale, so any net reduction needs the owner PIN
+            # while restocking stays a one-step action.
+            pin_required = new_qty < old_stock
+            if pin_required:
+                pin_error = _authorize_superadmin_pin(
+                    db, pin, operation=f'stock_adjust pid={pid}',
+                    user_id=self._user_id, username=self._username,
+                )
+                if pin_error:
+                    # Commit only the authorisation audit row; stock is untouched.
+                    db.commit()
+                    return pin_error
+
+            now = datetime.now().isoformat()
             changed = db.execute(
                 "UPDATE products SET stock=?, updated_at=? "
                 "WHERE id=? AND COALESCE(stock,0)=?",
-                (new_qty, datetime.now().isoformat(), pid, old_stock),
+                (new_qty, now, pid, old_stock),
             )
             if changed.rowcount != 1:
                 db.rollback()
-                return {'error': 'Stock changed. Refresh and try again.'}
+                return {
+                    'error': 'Stock changed. Refresh and try again.',
+                    'status': 409,
+                }
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
                 "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (pid, row['name'], 'SUPERADMIN_ADJUST',
                  old_stock, qty_change, new_qty,
-                 f"ADJUST_pid={pid}", reason,
+                 f"ADJUST_{direction.upper()}_pid={pid}", reason,
                  self._user_id, self._username or 'superadmin')
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             try:
-                cost_row = db.execute(
-                    "SELECT cost_price FROM products WHERE id=?", (pid,)
-                ).fetchone()
-                unit_cost = float(cost_row['cost_price'] or 0) if cost_row else 0
+                unit_cost = float(row['cost_price'] or 0)
                 from desktop.utils.accounting_hooks import post_stock_adjust_journal
                 post_stock_adjust_journal(
                     db, product_id=pid, product_name=row['name'],
@@ -1822,11 +2031,32 @@ class APIClient:
                     username=self._username or 'superadmin', safe=True)
             except Exception as _je:
                 logger.error('stock adjust accounting: %s', _je, exc_info=True)
+            details = (
+                f'pid={pid} name={row["name"]} direction={direction} '
+                f'quantity={quantity} previous={old_stock} new={new_qty} '
+                f'movement_id={mov_id} reason={reason}'
+            )
+            db.execute(
+                "INSERT INTO audit_log "
+                "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+                (
+                    self._user_id, self._username or 'superadmin',
+                    'STOCK_ADJUSTED', 'inventory', details,
+                ),
+            )
             db.commit()
-            _audit(self._user_id, self._username,
-                   'STOCK_ADJUSTED', 'inventory',
-                   f"pid={pid} name={row['name']} {old_stock}→{new_qty} reason={reason}")
-            return {'success': True, 'old_stock': old_stock, 'new_stock': new_qty}
+            return {
+                'success': True,
+                'old_stock': old_stock,
+                'new_stock': new_qty,
+                'direction': direction,
+                'quantity': quantity,
+                'movement_id': mov_id,
+            }
+        except Exception as e:
+            db.rollback()
+            logger.exception('adjust_stock failed')
+            return {'error': f'Could not adjust stock: {e}', 'status': 500}
         finally:
             db.close()
 
@@ -1884,15 +2114,21 @@ class APIClient:
 
     def receive_stock(self, product_id: int, qty_add: float, *,
                       supplier_id: int = None, notes: str = '',
-                      unit_cost: float = None) -> dict:
-        """Receive stock from a supplier (PURCHASE movement). Superadmin only."""
+                      unit_cost: float = None, pin: str = '') -> dict:
+        """Receive supplier stock under the Super-Admin role gate.
+
+        Receiving can only raise on-hand, so it deliberately carries no PIN
+        step-up; ``pin`` is accepted for call compatibility and ignored. The
+        role check is the control that stops a cashier inflating inventory.
+        """
         if self._role != 'superadmin':
-            return {'error': 'Only Super-Admin can receive stock.'}
+            return {'error': 'Only Super-Admin can receive stock.', 'status': 403}
         qty_add = round(float(qty_add or 0), 4)
         if qty_add <= 0:
             return {'error': 'Quantity to receive must be greater than zero.'}
         db = _db()
         try:
+            db.execute("BEGIN IMMEDIATE")
             row = db.execute(
                 "SELECT id, name, stock, cost_price, supplier_id FROM products WHERE id=?",
                 (product_id,),
@@ -1963,6 +2199,14 @@ class APIClient:
             db.close()
 
     def delete_product(self, pid: int) -> dict:
+        if str(self._role or '').strip().lower() not in (
+            'manager', 'admin', 'superadmin',
+        ):
+            _audit(
+                self._user_id, self._username, 'DELETE_PRODUCT_DENIED',
+                'inventory', f'pid={pid} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to archive products.'}
         db = _db()
         try:
             db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
@@ -2053,6 +2297,14 @@ class APIClient:
         return sale_date_s, is_backdated, created_at
 
     def create_sale(self, data: dict) -> dict:
+        if str(self._role or '').strip().lower() not in (
+            'cashier', 'manager', 'admin', 'superadmin',
+        ):
+            _audit(
+                self._user_id, self._username, 'CREATE_SALE_DENIED',
+                'sales', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to create sales.'}
         items = data.get('items') or []
         if not items:
             return {'error': 'Cart is empty — add at least one product before charging.'}
@@ -2062,28 +2314,111 @@ class APIClient:
             return {'error': str(e)}
         db = _db()
         try:
+            import math
             db.execute("BEGIN IMMEDIATE")
             # Allow sale line items even if a product was later removed from inventory.
             db.execute("PRAGMA foreign_keys=OFF")
 
             rn = _next_receipt(db, business_day=sale_date_s)
-            total = float(data.get('total') or 0)
-            amount_paid = float(data.get('amount_paid') or 0)
-            change_amount = float(data.get('change_amount') or 0)
-            credit_applied = round(float(data.get('credit_applied') or 0), 2)
-            customer_id = data.get('customer_id')
-            variance = data.get('variance') or {}
-            variance_handling = (variance.get('handling') or data.get('variance_handling') or '').strip() or None
-            original_total = round(float(
-                data.get('original_total') if data.get('original_total') is not None
-                else (total - float(data.get('cash_rounding_adj') or 0))
+            normalized_items = []
+            subtotal = 0.0
+            line_discount = 0.0
+            for index, raw in enumerate(items, 1):
+                try:
+                    quantity = round(float(raw.get('quantity')), 4)
+                    unit_price = round(float(raw.get('unit_price')), 4)
+                    discount = round(float(raw.get('discount') or 0), 2)
+                except (TypeError, ValueError):
+                    raise ValueError(f'Invalid numeric value on sale line {index}.')
+                if (
+                    not math.isfinite(quantity) or quantity <= 0
+                    or quantity > 999999
+                ):
+                    raise ValueError(
+                        f'Sale line {index} quantity must be greater than zero.')
+                if (
+                    not math.isfinite(unit_price) or unit_price < 0
+                    or unit_price > 999999999
+                ):
+                    raise ValueError(f'Invalid unit price on sale line {index}.')
+                gross = round(quantity * unit_price, 2)
+                if (
+                    not math.isfinite(discount) or discount < 0
+                    or discount > gross
+                ):
+                    raise ValueError(f'Invalid discount on sale line {index}.')
+                line_total = round(gross - discount, 2)
+                normalized = dict(raw)
+                normalized.update({
+                    'quantity': quantity,
+                    'unit_price': unit_price,
+                    'discount': discount,
+                    'total': line_total,
+                })
+                normalized_items.append(normalized)
+                subtotal = round(subtotal + gross, 2)
+                line_discount = round(line_discount + discount, 2)
+
+            try:
+                total_discount = round(float(
+                    data.get('discount')
+                    if data.get('discount') is not None else line_discount
+                ), 2)
+            except (TypeError, ValueError):
+                raise ValueError('Invalid sale discount.')
+            if (
+                not math.isfinite(total_discount)
+                or total_discount < line_discount
+                or total_discount > subtotal
+            ):
+                raise ValueError('Sale discount is outside the allowed range.')
+            tax_row = db.execute(
+                "SELECT value FROM system_settings WHERE key='tax_rate'"
+            ).fetchone()
+            try:
+                tax_rate = float(tax_row['value'] if tax_row else 0) / 100.0
+            except (TypeError, ValueError):
+                tax_rate = 0.0
+            tax = round(max(0.0, subtotal - total_discount) * tax_rate, 2)
+            original_total = round(
+                max(0.0, subtotal - total_discount) + tax, 2)
+            try:
+                cash_rounding_adj = round(
+                    float(data.get('cash_rounding_adj') or 0), 2)
+                amount_paid = round(float(data.get('amount_paid') or 0), 2)
+                credit_applied = round(
+                    float(data.get('credit_applied') or 0), 2)
+            except (TypeError, ValueError):
+                raise ValueError('Invalid payment amount.')
+            if not all(map(math.isfinite, (
+                cash_rounding_adj, amount_paid, credit_applied,
+            ))):
+                raise ValueError('Payment amounts must be finite numbers.')
+            if abs(cash_rounding_adj) > 2.5:
+                raise ValueError('Cash rounding adjustment is outside the allowed range.')
+            total = round(original_total + cash_rounding_adj, 2)
+            if total < 0 or amount_paid < 0 or credit_applied < 0:
+                raise ValueError('Sale and payment amounts cannot be negative.')
+            variance_payload = data.get('variance') or {}
+            handled_excess = 0.0
+            variance_handling_name = str(
+                variance_payload.get('handling') or '').strip().lower()
+            if variance_handling_name and variance_handling_name != 'return_change':
+                try:
+                    handled_excess = max(
+                        0.0, float(variance_payload.get('excess_amount') or 0))
+                except (TypeError, ValueError):
+                    raise ValueError('Invalid payment variance amount.')
+                if not math.isfinite(handled_excess):
+                    raise ValueError('Invalid payment variance amount.')
+            change_amount = round(max(
+                0.0,
+                amount_paid + credit_applied - total - handled_excess,
             ), 2)
-            cash_rounding_adj = round(float(data.get('cash_rounding_adj') or 0), 2)
+            customer_id = data.get('customer_id')
+            variance = variance_payload
+            variance_handling = (variance.get('handling') or data.get('variance_handling') or '').strip() or None
             electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
-            # Product revenue stays at original_total; payable may include rounding
-            # Persist `total` as final payable (original + rounding) for amount-due compatibility
-            if abs(cash_rounding_adj) > 0.009 and abs(total - original_total) < 0.009:
-                total = round(original_total + cash_rounding_adj, 2)
 
             notes = data.get('notes', '') or ''
             mpesa_ref = (data.get('mpesa_ref') or '').strip()
@@ -2122,14 +2457,14 @@ class APIClient:
                 "credit_applied,customer_id,variance_handling,"
                 "original_total,cash_rounding_adj,electronic_paid,"
                 "electronic_method,cash_paid,payment_tenders,"
-                "sale_date,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sale_date,created_at,payment_id)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
-                 float(data.get('subtotal') or 0),
-                 float(data.get('discount') or 0),
-                 float(data.get('tax') or 0),
+                 subtotal,
+                 total_discount,
+                 tax,
                  total,
                  data.get('payment_method', 'cash'),
                  amount_paid,
@@ -2146,11 +2481,12 @@ class APIClient:
                  cash_paid_col,
                  tenders_json,
                  sale_date_s,
-                 created_at_s)
+                 created_at_s,
+                 (data.get('payment_id') or None))
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            for item in data.get('items', []):
+            for item in normalized_items:
                 pid = item.get('product_id')
                 db.execute(
                     "INSERT INTO sale_items"
@@ -2160,7 +2496,7 @@ class APIClient:
                      pid,
                      item.get('product_name', ''),
                      item.get('sku', '') or '',
-                     float(item.get('quantity') or 1),
+                     float(item['quantity']),
                      float(item.get('unit_price') or 0),
                      float(item.get('discount') or 0),
                      float(item.get('total') or 0))
@@ -2171,7 +2507,7 @@ class APIClient:
                         "SELECT id, name, stock FROM products WHERE id=?", (pid,)
                     ).fetchone()
                     if prod_row:
-                        qty_requested = float(item.get('quantity') or 1)
+                        qty_requested = float(item['quantity'])
                         current_stock = float(prod_row['stock'])
                         if current_stock < qty_requested:
                             db.rollback()
@@ -2246,6 +2582,99 @@ class APIClient:
                     'created_at':     created_at_s,
                 }))
             )
+            debt_result = None
+            pay_method = (data.get('payment_method') or '').strip()
+            is_debt_sale = pay_method.lower() in (
+                'credit sale', 'credit account', 'part payment', 'on account',
+            )
+            if is_debt_sale:
+                if not customer_id:
+                    raise ValueError(
+                        'A customer is required for Credit Sale / Part Payment.')
+                cust = db.execute(
+                    "SELECT id,name,phone FROM customers WHERE id=?",
+                    (int(customer_id),),
+                ).fetchone()
+                if not cust:
+                    raise ValueError('Customer not found for credit sale.')
+                paid_now = round(amount_paid + credit_applied, 2)
+                debt_total = round(total, 2)
+                if paid_now > debt_total + 0.009:
+                    raise ValueError(
+                        'Amount paid exceeds the credit sale total.')
+                balance = round(debt_total - paid_now, 2)
+                inv_num = self._next_invoice_number(db)
+                debt_status = (
+                    'paid' if balance == 0
+                    else ('partial' if paid_now > 0 else 'pending')
+                )
+                db.execute(
+                    "INSERT INTO debt_invoices "
+                    "(invoice_number,sale_id,receipt_number,customer_id,"
+                    "customer_name,customer_phone,total_amount,amount_paid,"
+                    "balance,status,due_date,cashier_id,cashier_name,notes) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        inv_num, sale_id, rn, int(customer_id),
+                        cust['name'], cust['phone'] or '',
+                        debt_total, paid_now, balance, debt_status,
+                        data.get('due_date'), self._user_id,
+                        self._username or 'staff',
+                        f'Auto from sale {pay_method}',
+                    ),
+                )
+                inv_id = db.execute(
+                    "SELECT last_insert_rowid()").fetchone()[0]
+                if paid_now > 0:
+                    pay_receipt = self._next_payment_receipt(db)
+                    dp_cols = {
+                        r[1] for r in db.execute(
+                            "PRAGMA table_info(debt_payments)").fetchall()
+                    }
+                    if 'payment_reference' in dp_cols:
+                        db.execute(
+                            "INSERT INTO debt_payments "
+                            "(payment_receipt,invoice_id,customer_id,amount,"
+                            "payment_method,payment_reference,balance_before,"
+                            "balance_after,cashier_id,cashier_name,notes) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (
+                                pay_receipt, inv_id, int(customer_id), paid_now,
+                                pay_method, rn, debt_total, balance,
+                                self._user_id, self._username or 'staff',
+                                f'Initial payment on invoice {inv_num}',
+                            ),
+                        )
+                    else:
+                        db.execute(
+                            "INSERT INTO debt_payments "
+                            "(payment_receipt,invoice_id,customer_id,amount,"
+                            "payment_method,balance_before,balance_after,"
+                            "cashier_id,cashier_name,notes) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (
+                                pay_receipt, inv_id, int(customer_id), paid_now,
+                                pay_method, debt_total, balance,
+                                self._user_id, self._username or 'staff',
+                                f'Initial payment on invoice {inv_num}',
+                            ),
+                        )
+                db.execute(
+                    "INSERT INTO audit_log "
+                    "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+                    (
+                        self._user_id, self._username or 'staff',
+                        'CREATE_INVOICE', 'debt',
+                        f'inv={inv_num} sale={sale_id} receipt={rn} '
+                        f'customer={cust["name"]} total={debt_total} '
+                        f'paid={paid_now} balance={balance}',
+                    ),
+                )
+                debt_result = {
+                    'debt_invoice_id': inv_id,
+                    'debt_invoice_number': inv_num,
+                    'debt_balance': balance,
+                }
             # Auto-post double-entry journal (never block checkout)
             try:
                 from desktop.utils.accounting_hooks import post_sale_journal
@@ -2299,39 +2728,8 @@ class APIClient:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
                 out['variance'] = variance_result
-
-            # Credit / Part Payment: create debt invoice in the same API path so
-            # web POS / API clients cannot leave orphan credit sales without debt.
-            # Desktop UI still calls create_debt_invoice; duplicate is idempotent.
-            pay_method = (data.get('payment_method') or '').strip()
-            pay_l = pay_method.lower()
-            is_debt_sale = pay_l in (
-                'credit sale', 'credit account', 'part payment', 'on account',
-            )
-            if is_debt_sale and customer_id:
-                try:
-                    # amount already applied at till (cash/electronic) + store credit
-                    paid_now = round(float(amount_paid or 0) + float(credit_applied or 0), 2)
-                    debt_total = round(float(original_total if abs(cash_rounding_adj) < 0.009 else total), 2)
-                    inv = self.create_debt_invoice({
-                        'customer_id': int(customer_id),
-                        'sale_id': int(sale_id),
-                        'receipt_number': rn,
-                        'total_amount': debt_total,
-                        'amount_paid': paid_now,
-                        'payment_method': pay_method,
-                        'notes': f'Auto from sale {pay_method}',
-                    })
-                    if inv.get('success') or inv.get('invoice_id'):
-                        out['debt_invoice_id'] = inv.get('invoice_id')
-                        out['debt_invoice_number'] = inv.get('invoice_number')
-                        out['debt_balance'] = inv.get('balance')
-                    else:
-                        out['debt_warning'] = inv.get('error') or 'Debt invoice not created'
-                        logger.error('create_sale auto-debt failed: %s', inv)
-                except Exception as _de:
-                    out['debt_warning'] = str(_de)
-                    logger.error('create_sale auto-debt exception: %s', _de, exc_info=True)
+            if debt_result:
+                out.update(debt_result)
 
             return out
 
@@ -2386,7 +2784,21 @@ class APIClient:
     def _record_payment_variance(self, db, sale_id, receipt_number, customer_id,
                                  total, amount_received, credit_applied,
                                  payment_method, variance: dict) -> dict:
-        excess = round(float(variance.get('excess_amount') or 0), 2)
+        import math
+        claimed_excess = round(float(variance.get('excess_amount') or 0), 2)
+        actual_excess = round(max(
+            0.0,
+            float(amount_received or 0)
+            + float(credit_applied or 0)
+            - float(total or 0),
+        ), 2)
+        if not math.isfinite(claimed_excess) or claimed_excess < 0:
+            raise ValueError('Invalid payment variance amount.')
+        if claimed_excess > actual_excess + 0.009:
+            raise ValueError(
+                'Payment variance exceeds the actual amount received above '
+                f'the sale total ({actual_excess:.2f}).')
+        excess = claimed_excess
         handling = (variance.get('handling') or '').strip().lower()
         if excess <= 0 or not handling:
             return {}
@@ -2699,7 +3111,8 @@ class APIClient:
                  self._user_id, self._username or 'admin')
             )
 
-    def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False) -> dict:
+    def void_sale(self, sale_id: int, reason: str, *,
+                  force_with_payments: bool = False, pin: str = '') -> dict:
         """
         Void a completed sale. Manager / admin / superadmin.
         Restores stock for all items. Full audit trail.
@@ -2715,6 +3128,13 @@ class APIClient:
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
+            pin_error = _authorize_superadmin_pin(
+                db, pin, operation=f'void_sale sale_id={sale_id}',
+                user_id=self._user_id, username=self._username,
+            )
+            if pin_error:
+                db.commit()
+                return pin_error
             sale = db.execute(
                 "SELECT * FROM sales WHERE id=?", (sale_id,)
             ).fetchone()
@@ -2926,7 +3346,7 @@ class APIClient:
             db.close()
 
     def return_sale(self, sale_id: int, items: list, reason: str,
-                    *, refund_method: str = 'cash') -> dict:
+                    *, refund_method: str = 'cash', pin: str = '') -> dict:
         """
         Partial product return against a completed sale.
         Restocks inventory, records a status='return' sale (negative totals),
@@ -2943,6 +3363,13 @@ class APIClient:
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
+            pin_error = _authorize_superadmin_pin(
+                db, pin, operation=f'return_sale sale_id={sale_id}',
+                user_id=self._user_id, username=self._username,
+            )
+            if pin_error:
+                db.commit()
+                return pin_error
             sale = db.execute(
                 "SELECT * FROM sales WHERE id=?", (sale_id,)
             ).fetchone()
@@ -2971,11 +3398,21 @@ class APIClient:
             created_at_s = sale_created_at_for_day(sale_date_s)
             now = created_at_s
 
+            seen_sale_items = set()
             for spec in items:
                 si_id = int(spec.get('sale_item_id') or 0)
                 qty = round(float(spec.get('quantity') or 0), 4)
                 if si_id <= 0 or qty <= 0:
                     continue
+                if si_id in seen_sale_items:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'Sale line #{si_id} was submitted more than once. '
+                            'Combine it into one return quantity.'
+                        )
+                    }
+                seen_sale_items.add(si_id)
                 line = db.execute(
                     "SELECT * FROM sale_items WHERE id=? AND sale_id=?",
                     (si_id, sale_id),
@@ -3618,16 +4055,39 @@ class APIClient:
 
     # ── NOTES ─────────────────────────────────────────────────────────────────────
 
+    def _note_write_scope(self):
+        """(allowed, owner_only) for note mutations by the current actor."""
+        from desktop.utils.security import has_permission
+        from roles import is_shop_admin_role
+        if not has_permission({'role': self._role}, 'notes.own'):
+            return False, True
+        return True, not is_shop_admin_role(self._role or '')
+
     def get_notes(self) -> list:
+        from desktop.utils.security import has_permission
+        actor = {'role': self._role}
+        see_all = has_permission(actor, 'notes.view_all')
+        if not see_all and not has_permission(actor, 'notes.own'):
+            return []
         db = _db()
         try:
+            order = "ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+            if see_all:
+                return _rows(db.execute(f"SELECT * FROM notes {order}"))
             return _rows(db.execute(
-                "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+                f"SELECT * FROM notes WHERE user_id IS ? {order}", (self._user_id,)
             ))
         finally:
             db.close()
 
     def create_note(self, data: dict) -> dict:
+        allowed, _ = self._note_write_scope()
+        if not allowed:
+            _audit(
+                self._user_id, self._username, 'CREATE_NOTE_DENIED',
+                'notes', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to create notes.'}
         db = _db()
         try:
             pinned = 1 if data.get('pinned') else 0
@@ -3641,31 +4101,58 @@ class APIClient:
             db.close()
 
     def update_note(self, nid: int, data: dict) -> dict:
+        allowed, owner_only = self._note_write_scope()
+        if not allowed:
+            _audit(
+                self._user_id, self._username, 'UPDATE_NOTE_DENIED',
+                'notes', f'id={nid} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to edit notes.'}
         db = _db()
         try:
+            scope = " AND user_id IS ?" if owner_only else ""
+            tail = (nid, self._user_id) if owner_only else (nid,)
             if 'pinned' in data:
-                db.execute(
-                    "UPDATE notes SET title=?,content=?,pinned=?,updated_at=? WHERE id=?",
+                cur = db.execute(
+                    "UPDATE notes SET title=?,content=?,pinned=?,updated_at=? "
+                    f"WHERE id=?{scope}",
                     (data.get('title', ''), data.get('content', ''),
                      1 if data.get('pinned') else 0,
-                     datetime.now().isoformat(), nid)
+                     datetime.now().isoformat()) + tail
                 )
             else:
-                db.execute(
-                    "UPDATE notes SET title=?,content=?,updated_at=? WHERE id=?",
+                cur = db.execute(
+                    "UPDATE notes SET title=?,content=?,updated_at=? "
+                    f"WHERE id=?{scope}",
                     (data.get('title', ''), data.get('content', ''),
-                     datetime.now().isoformat(), nid)
+                     datetime.now().isoformat()) + tail
                 )
             db.commit()
+            if not cur.rowcount:
+                return {'error': 'You can only edit your own notes.'}
             return {'success': True}
         finally:
             db.close()
 
     def delete_note(self, nid: int) -> dict:
+        allowed, owner_only = self._note_write_scope()
+        if not allowed:
+            _audit(
+                self._user_id, self._username, 'DELETE_NOTE_DENIED',
+                'notes', f'id={nid} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to delete notes.'}
         db = _db()
         try:
-            db.execute("DELETE FROM notes WHERE id=?", (nid,))
+            if owner_only:
+                cur = db.execute(
+                    "DELETE FROM notes WHERE id=? AND user_id IS ?",
+                    (nid, self._user_id))
+            else:
+                cur = db.execute("DELETE FROM notes WHERE id=?", (nid,))
             db.commit()
+            if not cur.rowcount:
+                return {'error': 'You can only delete your own notes.'}
             return {'success': True}
         finally:
             db.close()
@@ -3673,6 +4160,11 @@ class APIClient:
     # ── AUDIT LOG ─────────────────────────────────────────────────────────────────
 
     def get_audit_log(self) -> list:
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'audit.view'):
+            _audit(self._user_id, self._username, 'AUDIT_VIEW_DENIED', 'security',
+                   f"role={self._role or 'none'}")
+            return []
         db = _db()
         try:
             return _rows(db.execute(
@@ -3700,6 +4192,17 @@ class APIClient:
             db.close()
 
     def create_customer(self, data: dict) -> dict:
+        # Cashiers register customers during a credit sale (debt.create); editing
+        # existing customer records stays with debt.customer_manage holders.
+        from desktop.utils.security import has_permission
+        _actor = {'role': self._role}
+        if not (has_permission(_actor, 'debt.customer_manage')
+                or has_permission(_actor, 'debt.create')):
+            _audit(
+                self._user_id, self._username, 'CREATE_CUSTOMER_DENIED',
+                'debt', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to add customers.'}
         db = _db()
         try:
             name = (data.get('name') or '').strip()
@@ -3757,6 +4260,13 @@ class APIClient:
             db.close()
 
     def update_customer(self, cid: int, data: dict) -> dict:
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'debt.customer_manage'):
+            _audit(
+                self._user_id, self._username, 'UPDATE_CUSTOMER_DENIED',
+                'debt', f'id={cid} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to edit customers.'}
         db = _db()
         try:
             fields, values = [], []
@@ -3843,8 +4353,16 @@ class APIClient:
         Required: customer_id, sale_id, receipt_number, total_amount.
         Orphan debts (no sale / no invoice) are rejected.
         """
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'debt.create'):
+            _audit(
+                self._user_id, self._username, 'CREATE_INVOICE_DENIED',
+                'debt', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to create debt invoices.'}
         db = _db()
         try:
+            db.execute("BEGIN IMMEDIATE")
             customer_id = data.get('customer_id')
             sale_id = data.get('sale_id')
             receipt_number = (data.get('receipt_number') or '').strip()
@@ -3896,8 +4414,24 @@ class APIClient:
                     'receipt_number': receipt_number,
                 }
 
-            total = float(data['total_amount'])
-            paid = float(data.get('amount_paid', 0) or 0)
+            payment_method = (sale.get('payment_method') or '').strip().lower()
+            if payment_method not in (
+                'credit sale', 'credit account', 'part payment', 'on account',
+            ):
+                return {
+                    'error': (
+                        'Debt invoices can only be created from a Credit Sale '
+                        'or Part Payment transaction.'
+                    )
+                }
+            # Debt value and amount paid are authoritative sale fields. HTTP/UI
+            # callers cannot manufacture receivables by supplying new totals.
+            total = round(float(sale.get('total') or 0), 2)
+            paid = round(
+                float(sale.get('amount_paid') or 0)
+                + float(sale.get('credit_applied') or 0),
+                2,
+            )
             if total <= 0:
                 return {'error': 'Debt amount must be greater than zero.'}
             balance = round(total - paid, 2)
@@ -4041,8 +4575,16 @@ class APIClient:
                             payment_method: str = 'cash', notes: str = '',
                             payment_reference: str = '') -> dict:
         """Collect a payment against an existing invoice. Rejects invalid / orphan debts."""
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'debt.collect'):
+            _audit(
+                self._user_id, self._username, 'DEBT_PAYMENT_DENIED',
+                'debt', f'invoice={invoice_id} role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to collect debt payments.'}
         db = _db()
         try:
+            db.execute("BEGIN IMMEDIATE")
             if not invoice_id:
                 return {'error': 'Invoice is required — cannot record payment without an invoice.'}
 
@@ -4073,8 +4615,9 @@ class APIClient:
             if (sale.get('status') or 'completed') == 'voided':
                 return {'error': 'Linked sale was voided — cannot collect payment on this debt.'}
 
+            import math
             amount = round(float(amount or 0), 2)
-            if amount <= 0:
+            if not math.isfinite(amount) or amount <= 0:
                 return {'error': 'Payment amount must be greater than zero.'}
 
             balance_before = round(float(inv['balance']), 2)
@@ -4271,7 +4814,8 @@ class APIClient:
         finally:
             db.close()
 
-    def delete_debt_invoice(self, invoice_id: int, reason: str) -> dict:
+    def delete_debt_invoice(self, invoice_id: int, reason: str,
+                            *, pin: str = '') -> dict:
         """
         Clear an open debt invoice. Superadmin only.
 
@@ -4298,6 +4842,14 @@ class APIClient:
 
         db = _db()
         try:
+            pin_error = _authorize_superadmin_pin(
+                db, pin, operation=f'delete_debt invoice_id={invoice_id}',
+                user_id=self._user_id, username=self._username,
+            )
+            if pin_error:
+                db.commit()
+                return pin_error
+            db.commit()
             inv = _row(db.execute(
                 "SELECT * FROM debt_invoices WHERE id=?", (invoice_id,)
             ))
@@ -4496,7 +5048,8 @@ class APIClient:
 
         # Linked live unpaid sale — void_sale (transactional restock + cancel debt)
         void_reason = f"DELETE_DEBT inv={inv_num}: {reason}"
-        res = self.void_sale(int(sale_id), void_reason, force_with_payments=False)
+        res = self.void_sale(
+            int(sale_id), void_reason, force_with_payments=False, pin=pin)
         if res.get('error'):
             return res
 
@@ -4591,6 +5144,13 @@ class APIClient:
         ledger rows, and full audit. No customer / payment / receipt.
         data: date, department_id, reason, notes, taken_by, items[{product_id, quantity, unit_cost?}]
         """
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': self._role}, 'consumption.create'):
+            _audit(
+                self._user_id, self._username, 'CREATE_CONSUMPTION_DENIED',
+                'consumption', f'role={self._role or "none"}',
+            )
+            return {'error': 'Insufficient permissions to record consumption.'}
         items = data.get('items') or []
         if not items:
             return {'error': 'Add at least one product line.'}
@@ -4622,12 +5182,23 @@ class APIClient:
 
             line_rows = []
             total_cost = 0.0
+            seen_products = set()
             for item in items:
                 pid = item.get('product_id')
                 qty = round(float(item.get('quantity') or 0), 4)
                 if not pid or qty <= 0:
                     db.rollback()
                     return {'error': 'Each line needs a product and quantity > 0.'}
+                pid = int(pid)
+                if pid in seen_products:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'Product id {pid} appears more than once. '
+                            'Combine it into one consumption line.'
+                        )
+                    }
+                seen_products.add(pid)
                 prod = db.execute(
                     "SELECT id, name, stock, cost_price FROM products WHERE id=? AND is_active=1",
                     (pid,)
@@ -4696,10 +5267,15 @@ class APIClient:
                 audit_lines.append(
                     f"{prod['name']} {old_stock}->{new_stock} qty={qty}"
                 )
-                _audit(
-                    self._user_id, created_name, 'INTERNAL_USE', 'inventory',
-                    f"ref={ref} product={prod['name']} prev={old_stock} new={new_stock} "
-                    f"qty={qty} reason={reason} notes={notes} device={device}"
+                db.execute(
+                    "INSERT INTO audit_log "
+                    "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+                    (
+                        self._user_id, created_name, 'INTERNAL_USE', 'inventory',
+                        f"ref={ref} product={prod['name']} prev={old_stock} "
+                        f"new={new_stock} qty={qty} reason={reason} "
+                        f"notes={notes} device={device}",
+                    ),
                 )
 
             try:
@@ -4710,13 +5286,18 @@ class APIClient:
             except Exception as _je:
                 logger.error('consumption accounting: %s', _je, exc_info=True)
 
-            db.commit()
-            _audit(
-                self._user_id, created_name, 'CREATE_CONSUMPTION', 'consumption',
-                f"ref={ref} dept={dept['name']} total={total_cost:.2f} lines={len(line_rows)} "
-                f"reason={reason} notes={notes} device={device} | "
-                + '; '.join(audit_lines)
+            db.execute(
+                "INSERT INTO audit_log "
+                "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+                (
+                    self._user_id, created_name,
+                    'CREATE_CONSUMPTION', 'consumption',
+                    f"ref={ref} dept={dept['name']} total={total_cost:.2f} "
+                    f"lines={len(line_rows)} reason={reason} notes={notes} "
+                    f"device={device} | " + '; '.join(audit_lines),
+                ),
             )
+            db.commit()
             return {
                 'success': True,
                 'id': cons_id,

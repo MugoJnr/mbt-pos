@@ -30,6 +30,8 @@ class SessionTokenTests(unittest.TestCase):
         self.api = ac.APIClient()
         db = ac._db()
         pw = ac._hash_pw('secret')
+        self.assertTrue(pw.startswith(('$2b$', '$2a$', '$2y$')))
+        self.assertTrue(ac._check_pw('secret', pw))
         db.execute(
             "INSERT INTO users (username, password_hash, role, is_active, full_name) "
             "VALUES (?,?,?,1,?)",
@@ -68,6 +70,13 @@ class SessionTokenTests(unittest.TestCase):
         # decode fails on expired → context stays unset
         self.assertIsNone(api2._user_id)
         self.assertIsNone(api2._username)
+
+    def test_legacy_password_hash_remains_readable(self):
+        import hashlib
+        salt = 'legacy-salt'
+        stored = salt + ':' + hashlib.sha256(
+            (salt + 'old-secret').encode()).hexdigest()
+        self.assertTrue(self.ac._check_pw('old-secret', stored))
 
 
 if __name__ == '__main__':

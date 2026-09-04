@@ -79,3 +79,35 @@ def setup_logging(base_dir: str):
             f"UNCAUGHT EXCEPTION:\n{tb_str}"
         )
     sys.excepthook = _exc_hook
+
+
+def rotate_plain_log(path, max_bytes=5 * 1024 * 1024, backup_count=5):
+    """Rotate a subprocess log that is not a logging.Handler (e.g. cloudflared)."""
+    try:
+        if not path or not os.path.isfile(path):
+            return
+        if os.path.getsize(path) < int(max_bytes):
+            return
+    except OSError:
+        return
+    backup_count = max(1, int(backup_count))
+    oldest = f'{path}.{backup_count}'
+    try:
+        if os.path.isfile(oldest):
+            os.remove(oldest)
+    except OSError:
+        pass
+    for i in range(backup_count - 1, 0, -1):
+        src = f'{path}.{i}'
+        dst = f'{path}.{i + 1}'
+        if os.path.isfile(src):
+            try:
+                if os.path.isfile(dst):
+                    os.remove(dst)
+                os.rename(src, dst)
+            except OSError:
+                pass
+    try:
+        os.rename(path, f'{path}.1')
+    except OSError:
+        pass

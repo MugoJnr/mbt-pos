@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -22,9 +23,10 @@ os.environ.setdefault("MBT_SESSION_IDLE_SEC", "0")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
-    r"C:\Users\mugoj\OneDrive\Desktop\QA_UI_WALKTHROUGH",
+    str((desktop if desktop.is_dir() else Path(tempfile.gettempdir())) / "QA_UI_WALKTHROUGH"),
 ))
 OUT.mkdir(parents=True, exist_ok=True)
 SHOTS = OUT / "shots"

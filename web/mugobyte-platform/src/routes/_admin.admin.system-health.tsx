@@ -14,12 +14,11 @@ export const Route = createFileRoute("/_admin/admin/system-health")({
 });
 
 type HealthCheck = {
-  id: string;
-  name: string;
-  ok: boolean;
+  key: string;
+  label: string;
+  state: "healthy" | "warn" | "err";
   detail: string;
   weight: number;
-  warn?: boolean;
 };
 
 type HealthData = {
@@ -41,9 +40,9 @@ function SystemHealthPage() {
   const overall = data?.overall || "unknown";
   const score = data?.score ?? 0;
 
-  function StatusIcon({ ok, warn }: { ok: boolean; warn?: boolean }) {
-    if (ok && !warn) return <CheckCircle2 className="h-4 w-4 text-success" />;
-    if (ok && warn) return <AlertTriangle className="h-4 w-4 text-warning" />;
+  function StatusIcon({ state }: { state: HealthCheck["state"] }) {
+    if (state === "healthy") return <CheckCircle2 className="h-4 w-4 text-success" />;
+    if (state === "warn") return <AlertTriangle className="h-4 w-4 text-warning" />;
     return <XCircle className="h-4 w-4 text-destructive" />;
   }
 
@@ -85,7 +84,7 @@ function SystemHealthPage() {
               <CardContent className="p-5">
                 <div className="text-xs uppercase tracking-wide text-muted-foreground">Checks passing</div>
                 <div className="mt-4 font-display text-4xl font-bold text-success">
-                  {data.checks.filter((c) => c.ok && !c.warn).length}
+                  {data.checks.filter((c) => c.state === "healthy").length}
                   <span className="ml-1 text-xl text-muted-foreground">/ {data.checks.length}</span>
                 </div>
               </CardContent>
@@ -112,14 +111,14 @@ function SystemHealthPage() {
             </CardHeader>
             <CardContent className="divide-y divide-border/50">
               {data.checks.map((c) => (
-                <div key={c.id} className="flex items-center gap-4 py-4">
-                  <StatusIcon ok={c.ok} warn={c.warn} />
+                <div key={c.key} className="flex items-center gap-4 py-4">
+                  <StatusIcon state={c.state} />
                   <div className="flex-1">
-                    <div className="font-medium">{c.name}</div>
+                    <div className="font-medium">{c.label}</div>
                     <div className="text-sm text-muted-foreground">{c.detail}</div>
                   </div>
-                  <Badge variant={c.ok && !c.warn ? "default" : c.warn ? "secondary" : "destructive"}>
-                    {c.ok && !c.warn ? "OK" : c.warn ? "Warn" : "Error"}
+                  <Badge variant={c.state === "healthy" ? "default" : c.state === "warn" ? "secondary" : "destructive"}>
+                    {c.state === "healthy" ? "OK" : c.state === "warn" ? "Warn" : "Error"}
                   </Badge>
                 </div>
               ))}

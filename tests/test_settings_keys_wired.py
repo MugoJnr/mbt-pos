@@ -32,10 +32,20 @@ WIRED_SETTINGS_MATRIX = {
     'tax_rate': ['desktop/tabs/sales_tab.py'],
     'receipt_footer': ['desktop/tabs/sales_tab.py'],
     'auto_print': ['desktop/tabs/sales_tab.py'],
-    'printer_port': ['printing/printer_engine.py'],
+    'printer_port': ['printing/transports.py'],
+    'printer_connection': ['printing/transports.py'],
+    'printer_ip': ['printing/transports.py'],
+    'printer_lan_port': ['printing/transports.py'],
+    'printer_timeout': ['printing/transports.py'],
+    'printer_name': ['printing/transports.py'],
+    'printer_profile': ['printing/printer_engine.py'],
+    'open_drawer_on_cash': ['printing/printer_engine.py'],
+    'print_logo': ['printing/printer_engine.py'],
     'mpesa_till': ['desktop/tabs/sales_tab.py'],
     'mpesa_paybill': ['desktop/tabs/sales_tab.py'],
     'mpesa_business_name': ['desktop/tabs/sales_tab.py'],
+    'mpesa_mode': ['desktop/payments/service.py'],
+    'payments_cloud_base_url': ['desktop/payments/service.py'],
     'auto_report_daily': [
         'desktop/tabs/reports_tab.py',
         'backend/cloud/report_engine.py',
@@ -90,8 +100,6 @@ WIRED_SETTINGS_MATRIX = {
 INTENTIONALLY_UNUSED = {
     # Hidden sync interval spin; always persist 30 — no scheduler reader yet.
     'sync_interval': 'forced default 30; sync interval UI not wired',
-    # STK Push deferred (V05); mode combo hidden and forced to manual.
-    'mpesa_mode': 'forced manual; STK/Paybill push not implemented',
     # Post-finalize refund checkbox hidden; always persist 0 (P11 returns).
     'variance_allow_refund_after_finalize': (
         'forced 0; post-finalize refund deferred with P11'

@@ -87,6 +87,17 @@ class CommandCenter:
 
     def poll_pending(self, device_id: str) -> list[dict]:
         try:
+            from backend.cloud.net_gate import network_up
+            # Never touch *.supabase.co DNS while offline — stalls splash/login.
+            if not network_up(1.0):
+                return []
+            from backend.cloud_backup.paths import load_identity
+            from backend.cloud.platform_service import has_service_role
+            identity = load_identity() or {}
+            if not str(identity.get('access_token') or '').strip() and not has_service_role():
+                # Bare anon credentials cannot read device commands under RLS.
+                # Avoid a guaranteed-futile TLS handshake every poll interval.
+                return []
             from backend.cloud.platform_service import service_select
             return service_select(
                 'remote_commands',
@@ -253,12 +264,106 @@ class CommandPoller(threading.Thread):
         self.center = center
         self.device_id_getter = device_id_getter
         self._stop = threading.Event()
+        self._license_device_id: str | None = None
+
+    def _get_license_device_id(self) -> str:
+        """Resolve the legacy license alias once, not on every poll.
+
+        LicenseEngine initialization includes legacy hardware compatibility and
+        encrypted-store validation. Repeating it every 30 seconds caused WMIC
+        subprocess launches and expensive PBKDF2 work during otherwise-idle
+        installed sessions.
+        """
+        if self._license_device_id is None:
+            try:
+                from licensing.license_engine import LicenseEngine
+                self._license_device_id = LicenseEngine().device_id or ''
+            except Exception:
+                self._license_device_id = ''
+        return self._license_device_id
 
     def stop(self):
         self._stop.set()
 
+    def _receipt_repo(self):
+        try:
+            from desktop.payments.repository import PaymentRepository
+            import sqlite3
+            db_path = self.center.db_path
+
+            def factory():
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                return conn
+
+            return PaymentRepository(factory)
+        except Exception:
+            return None
+
+    def _already_executed(self, command_id: str, command: str = '') -> bool:
+        repo = self._receipt_repo()
+        if not repo:
+            return False
+        try:
+            # Destructive: any local receipt means never run again
+            if command in ('revoke_license', 'suspend_license'):
+                return repo.has_command_receipt(command_id)
+            # Others: only skip if completed/failed
+            return repo.has_command_receipt(
+                command_id, statuses=['completed', 'failed'],
+            )
+        except Exception:
+            return False
+
+    def _record_receipt(self, command_id: str, command: str, status: str, result=None):
+        repo = self._receipt_repo()
+        if not repo:
+            return
+        try:
+            device_id = ''
+            try:
+                device_id = self.device_id_getter() or ''
+            except Exception:
+                pass
+            repo.record_command_receipt(
+                command_id, command, device_id, status, result if isinstance(result, dict) else {},
+            )
+        except Exception as e:
+            logger.warning('record_command_receipt failed: %s', e)
+
+    def _ack_command_safe(self, command_id: str, success: bool, result=None, error: str = ''):
+        """Ack to cloud; treat HTTP success with 0 updated rows as failure."""
+        if not command_id:
+            return
+        try:
+            from backend.cloud.platform_service import service_update
+            updated = service_update(
+                'remote_commands',
+                f'id=eq.{command_id}',
+                {
+                    'status': 'completed' if success else 'failed',
+                    'result': result or {},
+                    'error': error,
+                    'completed_at': datetime.now().isoformat(),
+                },
+            )
+            if isinstance(updated, list) and len(updated) == 0:
+                logger.error(
+                    'Ack updated 0 rows for command %s — JWT/RLS failure suspected',
+                    command_id,
+                )
+                # Do NOT clear local receipt — prevents re-execution of revoke
+                return False
+            return True
+        except Exception as e:
+            logger.warning('ack_command_safe failed: %s', e)
+            return False
+
     def run(self):
         logger.info('Remote command poller started')
+        # Let splash/login paint before first Supabase attempt.
+        if self._stop.wait(5):
+            return
         while not self._stop.is_set():
             try:
                 device_id = self.device_id_getter()
@@ -266,15 +371,14 @@ class CommandPoller(threading.Thread):
                     pending = self.center.poll_pending(device_id)
                     # Also poll by license engine fingerprint (may differ)
                     try:
-                        from licensing.license_engine import LicenseEngine
-                        fp = LicenseEngine().device_id
+                        fp = self._get_license_device_id()
                         if fp and fp != device_id:
                             pending = pending + [c for c in self.center.poll_pending(fp)
                                                  if c.get('id') not in {x.get('id') for x in pending}]
                     except Exception:
                         pass
                     for cmd in pending:
-                        cmd_id = cmd.get('id', '')
+                        cmd_id = str(cmd.get('id', '') or '')
                         command = cmd.get('command', '')
                         params = cmd.get('params') or {}
                         if isinstance(params, str):
@@ -282,17 +386,63 @@ class CommandPoller(threading.Thread):
                                 params = json.loads(params)
                             except Exception:
                                 params = {}
+                        # Durable local receipt BEFORE destructive effects.
+                        # Prevents DESKTOP-IKE2VDO-style repeated revoke_license
+                        # when JWT expires and cloud ack updates 0 rows.
+                        if cmd_id and self._already_executed(cmd_id, command):
+                            logger.info(
+                                'Skipping already-executed command %s (%s)',
+                                command, cmd_id,
+                            )
+                            self._ack_command_safe(cmd_id, True, {
+                                'idempotent': True,
+                                'note': 'local_receipt_exists',
+                            })
+                            continue
                         logger.info('Executing remote command: %s', command)
+                        claimed = False
                         try:
                             from backend.cloud.platform_service import service_update
-                            service_update(
-                                'remote_commands', f'id=eq.{cmd_id}',
-                                {'status': 'running', 'started_at': datetime.now().isoformat()},
+                            # Atomic claim: only transition pending → running
+                            updated = service_update(
+                                'remote_commands',
+                                f'id=eq.{cmd_id}&status=eq.pending',
+                                {
+                                    'status': 'running',
+                                    'started_at': datetime.now().isoformat(),
+                                    'claimed_by': device_id,
+                                },
                             )
-                        except Exception:
-                            pass
+                            # HTTP success with 0 updated rows = ack/claim failure
+                            if isinstance(updated, list) and len(updated) == 0:
+                                logger.warning(
+                                    'Claim updated 0 rows for %s — not executing',
+                                    cmd_id,
+                                )
+                                continue
+                            if isinstance(updated, dict) and updated.get('count') == 0:
+                                continue
+                            claimed = True
+                        except Exception as e:
+                            logger.warning('claim failed for %s: %s', cmd_id, e)
+                            # Without atomic claim, refuse destructive commands
+                            if command in ('revoke_license', 'suspend_license'):
+                                continue
+                        if not claimed and command in ('revoke_license', 'suspend_license'):
+                            continue
+                        # Receipt BEFORE destructive effects
+                        if cmd_id:
+                            self._record_receipt(
+                                cmd_id, command, 'claimed', {'device_id': device_id},
+                            )
                         ok, msg, result = self.center.execute_local(command, params)
-                        self.center.report_result(cmd_id, ok, result, '' if ok else msg)
+                        if cmd_id:
+                            self._record_receipt(
+                                cmd_id, command,
+                                'completed' if ok else 'failed',
+                                result if isinstance(result, dict) else {'msg': msg},
+                            )
+                        self._ack_command_safe(cmd_id, ok, result, '' if ok else msg)
             except Exception as e:
                 logger.debug('Command poll error: %s', e)
             self._stop.wait(CommandCenter.POLL_INTERVAL)

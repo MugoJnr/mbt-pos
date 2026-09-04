@@ -1,0 +1,2005 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Save Changes",
+      "tip": "",
+      "accessible": "",
+      "icon": true,
+      "parent": "QWidget",
+      "parent_obj": "settingsStickyHead",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Shop",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Receipts",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "M-Pesa",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Sync",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Checkout",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Cloud",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "settingsJumpNav",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Auto-print receipt after each sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Print Test Page",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Enable payment variance handling on Till / M-Pesa",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Allow Customer Deposit / Advance (store credit)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Allow Tip allocation",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Allow Transport / Delivery Fee allocation",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Require customer for deposits and advances",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Enable cash rounding",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Apply to Cash",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Apply to M-Pesa (not recommended)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Apply to Card",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Apply to Bank / Cheque / Transfer",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Show tax line on receipts",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Gross profit uses inventory COGS from sales",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Include tips / transport in net profit reports",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Use cash round-off rules (see Cash Rounding above)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Open Finance Module",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Show labels under tiles",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Show accent color ring",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Compact mode (no labels)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Manage Category Visuals\u2026",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Focus barcode / search after each sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Auto-clear cart after successful sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Reset discounts after sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Reset notes after sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Auto-fill Cash Paid = Amount Due (after discount / tax / rounding)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Product create defaults (unit, min stock alert, Active)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Reports default date range: Today",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Clear module search when leaving a tab",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Show credit customer balance / limit when selected",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Send daily sales report to notification center",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Also send weekly summary (last 7 days)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Automatic database backup to MugoByte Platform (disaster recovery)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Send Today's Report Now",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Send Database Backup Now",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QRadioButton",
+      "text": "LAN only \u2014 no Cloudflare setup needed",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QRadioButton",
+      "text": "Remote access \u2014 https://<shop>.mugobyte.com",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Set Up Cloudflare",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Test Connection",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Repair",
+      "tip": "Reconcile DNS/ingress, re-check HTTPS, drain retry queue. No browser login.",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Vendor recovery",
+      "tip": "Emergency only \u2014 browser login to Cloudflare. Normal shops use the central API t",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save frequency",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Create New Business",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Login Existing",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Backup Now",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Restore Latest",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Manage Devices",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Continue Offline",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Disconnect",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "dangerBtn"
+    },
+    {
+      "type": "QAbstractButton",
+      "text": "",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QTableWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Refresh history",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Restore selected",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Enable software sounds",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute all",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Reduced audio (accessibility)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Focus Mode (mute nav/UI chrome)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Presentation Mode (sale/payment/critical only)",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Quiet Hours",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Scanner",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Printer",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Cash drawer",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Card terminal",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute system",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute pos",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute payments",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute alerts",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute ui",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Mute ai",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": false,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Preview sound",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Replace\u2026",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Clear custom",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "accounting_post",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "ai_ready",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "ai_thinking",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "barcode_scan",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "click",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "delete",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "dialog_close",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "dialog_open",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "error",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "login_fail",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "login_success",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "low_stock",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "nav_switch",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "notification",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "payment_card",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "payment_cash",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "payment_credit",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "payment_mpesa",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "permission_denied",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "product_add",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "product_remove",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "sale_complete",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "save",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "startup",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "success",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "void",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "warning",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Apply Audio Settings",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Restore audio defaults",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QAbstractButton",
+      "text": "",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QTableWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Refresh diagnostics",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Test all events",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Set Super-Admin PIN",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Void Sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "dangerBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save All Settings",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Reset Setup Wizard",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": ""
+    }
+  ],
+  "fields": [
+    {
+      "ph": "Required \u2014 shown on receipts & reports",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Street or area (optional)",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "+254 700 000 000",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Thank you for shopping with us!",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "USB, COM3, or /dev/usb/lp0",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "e.g. 123456",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "e.g. 400200",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Name shown on receipt",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "1000",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "1010",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "1020",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "6000,6100,6900 \u2014 expense account codes",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Optional note for opening balances / capital",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "generic/_placeholder.svg",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Business email",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Password",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "Business name (new)",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Current PIN (leave blank if not set)",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "New PIN (min 6 digits)",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "Confirm new PIN",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "Receipt number  e.g. RCP-20260605-0089",
+      "enabled": true,
+      "echo": 0
+    }
+  ],
+  "checks": [
+    {
+      "text": "Auto-print receipt after each sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Enable payment variance handling on Till / M-Pesa",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Allow Customer Deposit / Advance (store credit)",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Allow Tip allocation",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Allow Transport / Delivery Fee allocation",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Require customer for deposits and advances",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Enable cash rounding",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Apply to Cash",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Apply to M-Pesa (not recommended)",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Apply to Card",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Apply to Bank / Cheque / Transfer",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Show tax line on receipts",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Gross profit uses inventory COGS from sales",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Include tips / transport in net profit reports",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Use cash round-off rules (see Cash Rounding above)",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Show labels under tiles",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Show accent color ring",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Compact mode (no labels)",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Focus barcode / search after each sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Auto-clear cart after successful sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Reset discounts after sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Reset notes after sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Auto-fill Cash Paid = Amount Due (after discount / tax / rou",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Product create defaults (unit, min stock alert, Active)",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Reports default date range: Today",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Clear module search when leaving a tab",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Show credit customer balance / limit when selected",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Send daily sales report to notification center",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Also send weekly summary (last 7 days)",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Automatic database backup to MugoByte Platform (disaster rec",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Enable software sounds",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Mute all",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Reduced audio (accessibility)",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Focus Mode (mute nav/UI chrome)",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Presentation Mode (sale/payment/critical only)",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Quiet Hours",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Scanner",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Printer",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Cash drawer",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Card terminal",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute system",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute pos",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute payments",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute alerts",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute ui",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "Mute ai",
+      "checked": false,
+      "enabled": true
+    },
+    {
+      "text": "accounting_post",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "ai_ready",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "ai_thinking",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "barcode_scan",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "click",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "delete",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "dialog_close",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "dialog_open",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "error",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "login_fail",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "login_success",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "low_stock",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "nav_switch",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "notification",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "payment_card",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "payment_cash",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "payment_credit",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "payment_mpesa",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "permission_denied",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "product_add",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "product_remove",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "sale_complete",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "save",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "startup",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "success",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "void",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "warning",
+      "checked": true,
+      "enabled": true
+    }
+  ]
+}

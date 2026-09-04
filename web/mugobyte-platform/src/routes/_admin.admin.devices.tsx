@@ -6,8 +6,7 @@ import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { issueCloudCommand, listCloudDevices, type CloudDevice } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { getAdminOverview, issueCloudCommand, type CloudDevice } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin/admin/devices")({
   component: Page,
@@ -15,17 +14,22 @@ export const Route = createFileRoute("/_admin/admin/devices")({
 });
 
 function Page() {
-  const { orgId } = useAuth();
   const qc = useQueryClient();
   const devicesQ = useQuery({
-    queryKey: ["cloud-devices-admin", orgId],
-    queryFn: () => listCloudDevices(orgId),
+    queryKey: ["admin-overview"],
+    queryFn: getAdminOverview,
+    retry: 1,
   });
-  const devices: CloudDevice[] = devicesQ.data?.devices || [];
-  const online = devices.filter((d) => d.is_active !== false).length;
+  const devices: Array<CloudDevice & { org_name?: string }> = devicesQ.data?.devices || [];
+  const onlineCutoff = Date.now() - 5 * 60 * 1000;
+  const isOnline = (device: CloudDevice) => {
+    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
+    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
+  };
+  const online = devices.filter(isOnline).length;
 
   const cmdMut = useMutation({
-    mutationFn: ({ deviceId, command }: { deviceId: string; command: string }) =>
+    mutationFn: ({ deviceId, command, orgId }: { deviceId: string; command: string; orgId: string }) =>
       issueCloudCommand(deviceId, command, {}, orgId),
     onSuccess: (res, vars) => {
       if (res?.error) {
@@ -33,7 +37,7 @@ function Page() {
         return;
       }
       toast.success(`${vars.command} queued`, { description: "POS will apply within ~30 seconds." });
-      qc.invalidateQueries({ queryKey: ["cloud-devices-admin"] });
+      qc.invalidateQueries({ queryKey: ["admin-overview"] });
     },
   });
 
@@ -50,10 +54,16 @@ function Page() {
         }
       />
 
+      {devicesQ.data?.errors?.devices ? (
+        <Card className="border-destructive/40">
+          <CardContent className="p-4 text-sm text-destructive">{devicesQ.data.errors.devices}</CardContent>
+        </Card>
+      ) : null}
+
       <div className="mb-4 grid gap-4 sm:grid-cols-3">
         <Card><CardContent className="p-5"><div className="text-xs uppercase text-muted-foreground">Total</div><div className="mt-1 font-display text-2xl font-semibold">{devices.length}</div></CardContent></Card>
-        <Card><CardContent className="p-5"><div className="text-xs uppercase text-muted-foreground">Active</div><div className="mt-1 font-display text-2xl font-semibold">{online}</div></CardContent></Card>
-        <Card><CardContent className="p-5"><div className="text-xs uppercase text-muted-foreground">Inactive</div><div className="mt-1 font-display text-2xl font-semibold">{devices.length - online}</div></CardContent></Card>
+        <Card><CardContent className="p-5"><div className="text-xs uppercase text-muted-foreground">Online</div><div className="mt-1 font-display text-2xl font-semibold">{online}</div><div className="text-xs text-muted-foreground">Seen within 5 minutes</div></CardContent></Card>
+        <Card><CardContent className="p-5"><div className="text-xs uppercase text-muted-foreground">Offline</div><div className="mt-1 font-display text-2xl font-semibold">{devices.length - online}</div></CardContent></Card>
       </div>
 
       <Card>
@@ -77,32 +87,33 @@ function Page() {
                 <div className="mt-1 text-xs text-muted-foreground">
                   {d.os_info || d.platform || "—"} · v{d.mbt_version || "—"} · last seen {d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "never"}
                 </div>
+                <div className="mt-1 text-xs text-muted-foreground">{d.org_name || d.org_id || "Unlinked organization"}</div>
               </div>
-              <Badge variant={d.is_active === false ? "secondary" : "default"}>
-                {d.is_active === false ? "Offline" : "Online"}
+              <Badge variant={isOnline(d) ? "default" : "secondary"}>
+                {isOnline(d) ? "Online" : d.is_active === false ? "Disabled" : "Offline"}
               </Badge>
               <div className="flex w-full flex-wrap gap-1.5 sm:w-auto">
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!d.device_id || cmdMut.isPending}
-                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "force_validate" })}
+                  disabled={!d.device_id || !d.org_id || cmdMut.isPending}
+                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "force_validate", orgId: d.org_id! })}
                 >
                   <Wifi className="mr-1 h-3.5 w-3.5" />Force online
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!d.device_id || cmdMut.isPending}
-                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "refresh_license" })}
+                  disabled={!d.device_id || !d.org_id || cmdMut.isPending}
+                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "refresh_license", orgId: d.org_id! })}
                 >
                   Refresh license
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={!d.device_id || cmdMut.isPending}
-                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "run_backup" })}
+                  disabled={!d.device_id || !d.org_id || cmdMut.isPending}
+                  onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "run_backup", orgId: d.org_id! })}
                 >
                   Backup now
                 </Button>

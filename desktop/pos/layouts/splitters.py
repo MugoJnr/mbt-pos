@@ -221,6 +221,21 @@ def _alive(obj) -> bool:
         return False
 
 
+def _defer(tab, msec, fn) -> None:
+    """Run ``fn`` later, but only while ``tab`` still exists.
+
+    A bare ``QTimer.singleShot`` keeps firing after the tab is destroyed and the
+    closure then touches deleted C++ objects, so the timer is parented to the tab
+    and Qt cancels it during teardown.
+    """
+    if not _alive(tab):
+        return
+    timer = QTimer(tab)
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda: fn() if _alive(tab) else None)
+    timer.start(int(msec))
+
+
 class PosSplitterHandle(QSplitterHandle):
     """Themed grip: a rounded pill that lights up gold under the cursor.
 
@@ -1061,6 +1076,8 @@ def install_cart(tab, lid: str) -> None:
         tab._pos_cart_splitter_user_gen = -1
 
     def _restore():
+        if not _alive(tab) or not _alive(sp):
+            return
         if int(getattr(tab, '_pos_cart_splitter_gen', 0)) != gen:
             return
         if int(getattr(tab, '_pos_cart_splitter_user_gen', -1)) == gen:
@@ -1107,9 +1124,9 @@ def install_cart(tab, lid: str) -> None:
             pass
 
     _restore()
-    QTimer.singleShot(0, _restore)
-    QTimer.singleShot(120, _restore)
-    QTimer.singleShot(280, _restore)
+    _defer(tab, 0, _restore)
+    _defer(tab, 120, _restore)
+    _defer(tab, 280, _restore)
 
 
 # ── build / restore ───────────────────────────────────────────────────────────
@@ -1331,6 +1348,8 @@ def install(tab, lid: str, panes) -> None:
     count = sp.count()
 
     def _restore():
+        if not _alive(tab) or not _alive(sp):
+            return
         # A newer layout apply, or the cashier already dragged — leave it alone.
         if int(getattr(tab, '_pos_splitter_gen', 0)) != gen:
             return
@@ -1355,9 +1374,9 @@ def install(tab, lid: str, panes) -> None:
 
     _restore()
     # Shell width is still stale on the first pass; settle after layout runs.
-    QTimer.singleShot(0, _restore)
-    QTimer.singleShot(120, _restore)
-    QTimer.singleShot(120, lambda: _queue_relayout(tab))
+    _defer(tab, 0, _restore)
+    _defer(tab, 120, _restore)
+    _defer(tab, 120, lambda: _queue_relayout(tab))
 
 
 def restyle(tab) -> None:

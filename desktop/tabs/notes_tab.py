@@ -137,6 +137,15 @@ class NotesTab(QWidget):
         self._nid = None
         self._dirty = False
         self._loading = False
+        from desktop.utils.security import has_permission
+        from roles import is_shop_admin_role
+        account = (user.get('user') or user) if isinstance(user, dict) else {}
+        self._account_id = account.get('id')
+        self._role_name = str(account.get('role') or 'cashier').lower()
+        # notes.own is the write permission; notes.view_all alone is read-only.
+        self._can_write = has_permission(user, 'notes.own')
+        # Non shop-admins may only mutate their own notes (matches ApiClient).
+        self._write_any = self._can_write and is_shop_admin_role(self._role_name)
         self._autosave = QTimer(self)
         self._autosave.setSingleShot(True)
         self._autosave.setInterval(900)
@@ -172,6 +181,7 @@ class NotesTab(QWidget):
         self._add_btn.setMinimumWidth(72)
         self._add_btn.setToolTip('New note (Ctrl+N)')
         self._add_btn.clicked.connect(self._new)
+        self._add_btn.setVisible(self._can_write)
         tl.addWidget(self._add_btn)
         ll.addWidget(self._toolbar)
 
@@ -227,8 +237,13 @@ class NotesTab(QWidget):
             cl.addWidget(b)
             card.clicked.connect(
                 lambda _=False, tt=title, bb=body: self._new_from_template(tt, bb))
+            card.setVisible(self._can_write)
             fl.addWidget(card)
             self._tip_cards.append(card)
+        if not self._can_write:
+            self._filler_title.setText('Read-only access')
+            self._filler_hint.setText(
+                'Your role can read notes but not create or edit them.')
         fl.addStretch(1)
         ll.addWidget(self._list_filler, 1)
 
@@ -241,7 +256,9 @@ class NotesTab(QWidget):
         self._empty_title.setAlignment(Qt.AlignCenter)
         self._empty_title.setObjectName('sectionTitle')
         self._empty_title.setProperty('mbtTitleSize', 15)
-        self._empty_hint = QLabel('Click + to create your first note')
+        self._empty_hint = QLabel(
+            'Click + to create your first note' if self._can_write
+            else 'Notes created by your team appear here')
         self._empty_hint.setAlignment(Qt.AlignCenter)
         self._empty_hint.setObjectName('sectionSubtitle')
         self._empty_hint.setWordWrap(True)
@@ -348,7 +365,8 @@ class NotesTab(QWidget):
         self._ed_empty_title.setObjectName('sectionTitle')
         self._ed_empty_title.setProperty('mbtTitleSize', 16)
         self._ed_empty_hint = QLabel(
-            'Choose a note from the list, or press Ctrl+N to create one.')
+            'Choose a note from the list, or press Ctrl+N to create one.'
+            if self._can_write else 'Choose a note from the list to read it.')
         self._ed_empty_hint.setAlignment(Qt.AlignCenter)
         self._ed_empty_hint.setObjectName('sectionSubtitle')
         self._ed_empty_hint.setWordWrap(True)
@@ -557,14 +575,39 @@ class NotesTab(QWidget):
     def _find_note(self, nid):
         return next((x for x in self.notes if x.get('id') == nid), None)
 
+    def _can_edit_note(self, note=None) -> bool:
+        """Write permission for the loaded (or given) note."""
+        if not self._can_write:
+            return False
+        if self._write_any:
+            return True
+        if note is None:
+            note = self._find_note(self._nid) if self._nid else None
+        if note is None:
+            return True  # unsaved draft — owned by this user on create
+        owner = note.get('user_id')
+        return owner is None or owner == self._account_id
+
     def _set_editor_enabled(self, enabled: bool):
+        writable = enabled and self._can_edit_note()
         self._editor_body.setVisible(enabled)
         self._editor_empty.setVisible(not enabled)
         self._tin.setEnabled(enabled)
         self._body.setEnabled(enabled)
-        self._pin_btn.setEnabled(enabled and self._nid is not None)
-        self._sv.setEnabled(enabled)
-        self._dl.setEnabled(enabled and self._nid is not None)
+        self._tin.setReadOnly(not writable)
+        self._body.setReadOnly(not writable)
+        self._pin_btn.setVisible(self._can_write)
+        self._sv.setVisible(self._can_write)
+        self._dl.setVisible(self._can_write)
+        for btn in (getattr(self, '_tb_stamp', None), getattr(self, '_tb_bullet', None)):
+            if btn is not None:
+                btn.setVisible(self._can_write)
+                btn.setEnabled(writable)
+        self._pin_btn.setEnabled(writable and self._nid is not None)
+        self._sv.setEnabled(writable)
+        self._dl.setEnabled(writable and self._nid is not None)
+        if enabled and not writable:
+            self._status.setText('Read-only')
 
     def _show_editor_empty(self):
         self._nid = None
@@ -654,6 +697,8 @@ class NotesTab(QWidget):
             self._mark_saved_indicator()
 
     def _new(self):
+        if not self._can_write:
+            return
         if self._dirty and self._nid:
             self._autosave.stop()
             self._save(silent=True)
@@ -691,6 +736,8 @@ class NotesTab(QWidget):
         self._body.setFocus()
 
     def _save(self, silent: bool = False):
+        if not self._can_edit_note():
+            return
         if not self._editor_body.isVisible() and self._nid is None:
             # Nothing to save from empty state
             if not (self._tin.text().strip() or self._body.toPlainText().strip()):
@@ -748,7 +795,7 @@ class NotesTab(QWidget):
                     f"color:{C['err']}; font-size:12px; background:transparent; border:none;")
 
     def _toggle_pin(self):
-        if not self._nid:
+        if not self._nid or not self._can_edit_note():
             return
         n = self._find_note(self._nid)
         if not n:
@@ -773,7 +820,7 @@ class NotesTab(QWidget):
             _log.warning('pin note: %s', e)
 
     def _delete(self):
-        if not self._nid:
+        if not self._nid or not self._can_edit_note():
             return
         n = self._find_note(self._nid)
         title = (n.get('title') if n else None) or self._tin.text().strip() or 'Untitled'

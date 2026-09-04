@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt
 
 from desktop.utils.theme import C, ThemeManager
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
-from desktop.utils.security import ask_superadmin_pin
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 class SuppliersDialog(QDialog):
@@ -47,6 +47,7 @@ class SuppliersDialog(QDialog):
         close = SecondaryBtn('Close', 40)
         close.clicked.connect(self.accept)
         lay.addWidget(close)
+        wire_dialog_keys(self, primary=add_btn, cancel=close)
         self._reload()
 
     def _reload(self):
@@ -123,6 +124,7 @@ class ReceiveStockDialog(QDialog):
         row.addWidget(cancel)
         row.addWidget(go)
         lay.addLayout(row)
+        wire_dialog_keys(self, primary=go, cancel=cancel)
 
     def _manage_suppliers(self):
         SuppliersDialog(self.api, self).exec_()
@@ -140,8 +142,8 @@ class ReceiveStockDialog(QDialog):
         if not pid:
             QMessageBox.warning(self, 'Required', 'Select a product.')
             return
-        if not ask_superadmin_pin(self.api, self, reason='Receive stock'):
-            return
+        # Receiving only ever raises on-hand, so it carries no PIN step-up —
+        # the Super-Admin role gate on the API is the control here.
         res = self.api.receive_stock(
             int(pid), float(self._qty.value()),
             supplier_id=self._sup.currentData(),

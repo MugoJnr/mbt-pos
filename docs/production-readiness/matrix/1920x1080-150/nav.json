@@ -1,0 +1,72 @@
+[
+  {
+    "id": "dashboard",
+    "text": "Dashboard",
+    "visible": true
+  },
+  {
+    "id": "sales",
+    "text": "Point of Sale",
+    "visible": true
+  },
+  {
+    "id": "inventory",
+    "text": "Inventory",
+    "visible": true
+  },
+  {
+    "id": "consumption",
+    "text": "Internal Consumption",
+    "visible": true
+  },
+  {
+    "id": "debt",
+    "text": "Debt Management",
+    "visible": true
+  },
+  {
+    "id": "accounting",
+    "text": "Finance",
+    "visible": true
+  },
+  {
+    "id": "reports",
+    "text": "Reports",
+    "visible": true
+  },
+  {
+    "id": "notes",
+    "text": "Notes",
+    "visible": true
+  },
+  {
+    "id": "ai_ops",
+    "text": "AI Operations",
+    "visible": true
+  },
+  {
+    "id": "admin",
+    "text": "Users && Access",
+    "visible": true
+  },
+  {
+    "id": "settings",
+    "text": "Settings",
+    "visible": true
+  },
+  {
+    "id": "security",
+    "text": "Security",
+    "visible": true
+  },
+  {
+    "id": "license",
+    "text": "License",
+    "visible": true
+  },
+  {
+    "id": "diagnostics",
+    "text": "Diagnostics",
+    "visible": true
+  }
+]

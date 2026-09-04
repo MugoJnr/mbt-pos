@@ -25,10 +25,10 @@ import {
   forceValidateCloudLicense,
   transferCloudLicense,
   licenseHistory,
+  getAdminOverview,
   type CloudLicense,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { downloadApi, exportQuery } from "@/lib/download";
 import { LICENSE_PRODUCTS } from "@/lib/platform";
 
 export const Route = createFileRoute("/_admin/admin/licenses")({
@@ -54,6 +54,16 @@ type LicenseStatus = {
   error?: string;
 };
 
+/**
+ * The platform API can still report `status: "active"` for a key whose term
+ * has lapsed, so the expiry date is the source of truth for the badge.
+ */
+function isExpired(expiresAt?: string | null): boolean {
+  if (!expiresAt) return false;
+  const at = Date.parse(expiresAt);
+  return Number.isFinite(at) && at < Date.now();
+}
+
 function AdminLicensesPage() {
   const { orgId } = useAuth();
   const qc = useQueryClient();
@@ -63,6 +73,7 @@ function AdminLicensesPage() {
   const [productId, setProductId] = useState("mbt-pos");
   const [issueEmail, setIssueEmail] = useState("");
   const [issueDeviceId, setIssueDeviceId] = useState("");
+  const [issueOrgId, setIssueOrgId] = useState("");
   const [renewDays, setRenewDays] = useState(30);
   const [historyId, setHistoryId] = useState<string>("");
   const [transferOld, setTransferOld] = useState("");
@@ -77,6 +88,10 @@ function AdminLicensesPage() {
   const cloudQ = useQuery({
     queryKey: ["cloud-licenses", orgId],
     queryFn: () => listCloudLicenses(orgId),
+  });
+  const overviewQ = useQuery({
+    queryKey: ["admin-overview"],
+    queryFn: getAdminOverview,
   });
   const histQ = useQuery({
     queryKey: ["license-history", historyId],
@@ -104,10 +119,11 @@ function AdminLicensesPage() {
     const cur = draftFor(id, row);
     setAssignDrafts((prev) => ({ ...prev, [id]: { ...cur, ...patch } }));
   };
+  const targetOrgId = issueOrgId || orgId || overviewQ.data?.organizations?.[0]?.id || "";
 
   const createMut = useMutation({
     mutationFn: () =>
-      createCloudLicense(plan, `Issued from admin (${productId}/${plan})`, orgId, {
+      createCloudLicense(plan, `Issued from admin (${productId}/${plan})`, targetOrgId, {
         assigned_email: issueEmail.trim() || undefined,
         reserved_device_id: issueDeviceId.trim() || undefined,
         product_id: productId,
@@ -217,8 +233,28 @@ function AdminLicensesPage() {
   async function doExport() {
     try {
       setExporting(true);
-      const qs = exportQuery({ type: "license", format: "xlsx" });
-      await downloadApi(`/reports/export?${qs}`, "MBT_Licenses.xlsx");
+      const columns: Array<keyof CloudLicense> = [
+        "license_key", "product_id", "org_id", "plan", "status", "claim_status",
+        "assigned_email", "reserved_device_id", "activated_devices", "max_devices",
+        "expires_at", "created_at",
+      ];
+      const csv = [
+        columns.join(","),
+        ...cloudLicenses.map((row) =>
+          columns.map((column) => {
+            const value = String(row[column] ?? "");
+            return `"${value.replace(/"/g, '""')}"`;
+          }).join(","),
+        ),
+      ].join("\r\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `MugoByte_Licenses_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
       toast.success("License report exported");
     } catch (e: unknown) {
       toast.error((e as Error).message || "Export failed");
@@ -299,6 +335,16 @@ function AdminLicensesPage() {
           <CardContent className="space-y-4">
             <div className="flex flex-wrap gap-2">
               <select
+                className="h-9 min-w-[190px] rounded-md border border-border bg-background px-3 text-sm"
+                value={targetOrgId}
+                onChange={(e) => setIssueOrgId(e.target.value)}
+                title="Organization"
+              >
+                {(overviewQ.data?.organizations || []).map((org) => (
+                  <option key={org.id} value={org.id}>{org.name}</option>
+                ))}
+              </select>
+              <select
                 className="h-9 rounded-md border border-border bg-background px-3 text-sm"
                 value={productId}
                 onChange={(e) => setProductId(e.target.value)}
@@ -327,7 +373,7 @@ function AdminLicensesPage() {
                 value={issueDeviceId}
                 onChange={(e) => setIssueDeviceId(e.target.value)}
               />
-              <Button onClick={() => createMut.mutate()} disabled={createMut.isPending}>
+              <Button onClick={() => createMut.mutate()} disabled={createMut.isPending || !targetOrgId}>
                 <Plus className="mr-1.5 h-4 w-4" />{createMut.isPending ? "Creating…" : "Issue license"}
               </Button>
               <Input type="number" className="w-24" value={renewDays} onChange={(e) => setRenewDays(Number(e.target.value) || 30)} title="Renew days" />
@@ -341,6 +387,7 @@ function AdminLicensesPage() {
                 {cloudLicenses.map((row) => {
                   const id = row.id || row.license_key || "";
                   const draft = draftFor(id, row);
+                  const expired = isExpired(row.expires_at);
                   return (
                     <div key={id} className="rounded-xl border border-border/70 p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -348,12 +395,16 @@ function AdminLicensesPage() {
                           <div className="flex flex-wrap items-center gap-2">
                             <div className="font-mono text-sm font-semibold">{row.license_key}</div>
                             <Badge variant={
-                              row.status === "active" || row.status === "trial" ? "default"
-                                : row.status === "suspended" ? "secondary"
-                                  : "destructive"
+                              expired ? "destructive"
+                                : row.status === "active" || row.status === "trial" ? "default"
+                                  : row.status === "suspended" ? "secondary"
+                                    : "destructive"
                             }>
-                              {row.status || "unknown"}
+                              {expired ? "expired" : row.status || "unknown"}
                             </Badge>
+                            {expired && row.status && row.status !== "expired" ? (
+                              <Badge variant="outline">server says {row.status}</Badge>
+                            ) : null}
                             {row.claim_status ? (
                               <Badge variant="outline">{row.claim_status}</Badge>
                             ) : null}

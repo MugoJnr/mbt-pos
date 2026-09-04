@@ -115,6 +115,49 @@ class CategoriesConsumptionGate(unittest.TestCase):
         self.assertIsNotNone(mov)
         self.assertAlmostEqual(float(mov['qty_change']), -3.0, places=3)
 
+    def test_duplicate_consumption_product_is_rejected_atomically(self):
+        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
+        denied = self.api.create_consumption({
+            'date': str(date.today()),
+            'department_id': dept_id,
+            'reason': 'duplicate payload',
+            'items': [
+                {'product_id': 1, 'quantity': 3},
+                {'product_id': 1, 'quantity': 4},
+            ],
+        })
+        self.assertIn('error', denied)
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=1").fetchone()['stock']),
+            30.0,
+        )
+        self.assertEqual(
+            db.execute(
+                "SELECT COUNT(*) FROM stock_consumptions").fetchone()[0],
+            0,
+        )
+        db.close()
+
+    def test_cashier_cannot_record_internal_consumption_directly(self):
+        self.api._role = 'cashier'
+        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
+        denied = self.api.create_consumption({
+            'date': str(date.today()),
+            'department_id': dept_id,
+            'reason': 'unauthorized',
+            'items': [{'product_id': 1, 'quantity': 1}],
+        })
+        self.assertIn('error', denied)
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=1").fetchone()['stock']),
+            30.0,
+        )
+        db.close()
+
 
 if __name__ == '__main__':
     unittest.main()

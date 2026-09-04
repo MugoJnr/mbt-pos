@@ -13,6 +13,8 @@ if ROOT not in sys.path:
 
 
 class CreditDebtCollectGate(unittest.TestCase):
+    PIN = '975310'
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._db_path = os.path.join(self._tmpdir.name, 'test.db')
@@ -55,6 +57,11 @@ class CreditDebtCollectGate(unittest.TestCase):
             "INSERT INTO products (name, sku, price, cost_price, stock, min_stock) "
             "VALUES (?,?,?,?,?,?)",
             ('Credit Widget', 'CW1', 100.0, 40.0, 50, 5),
+        )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash(self.PIN)),
         )
         db.commit()
         db.close()
@@ -140,7 +147,8 @@ class CreditDebtCollectGate(unittest.TestCase):
         self.assertEqual(row['status'], 'partial')
         self.assertEqual(int(pay_count), 1)
 
-        wiped = self.api.delete_debt_invoice(invoice_id, 'gate write-off remaining')
+        wiped = self.api.delete_debt_invoice(
+            invoice_id, 'gate write-off remaining', pin=self.PIN)
         self.assertTrue(wiped.get('success'), wiped)
 
         db = self.ac._db()

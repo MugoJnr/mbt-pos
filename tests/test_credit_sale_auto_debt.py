@@ -139,6 +139,94 @@ class CreditSaleAutoDebtGate(unittest.TestCase):
         self.assertTrue(created.get('debt_invoice_id'), created)
         self.assertAlmostEqual(float(created.get('debt_balance') or -1), 60.0, places=2)
 
+    def test_debt_invoice_failure_rolls_back_sale_and_stock(self):
+        cust = self.api.create_customer({
+            'name': 'Rollback Cust',
+            'phone': '0733333333',
+            'credit_limit': 5000,
+        })
+        cid = int(cust['customer_id'])
+        db = self.ac._db()
+        db.execute(
+            "CREATE TRIGGER fail_debt_insert BEFORE INSERT ON debt_invoices "
+            "BEGIN SELECT RAISE(ABORT, 'forced debt failure'); END"
+        )
+        db.commit()
+        db.close()
+
+        denied = self.api.create_sale({
+            'items': [{
+                'product_id': 1,
+                'product_name': 'Auto Debt Widget',
+                'sku': 'AD1',
+                'quantity': 1,
+                'unit_price': 100.0,
+                'discount': 0,
+                'total': 100.0,
+            }],
+            'subtotal': 100.0,
+            'discount': 0,
+            'total': 100.0,
+            'payment_method': 'Credit Sale',
+            'amount_paid': 0.0,
+            'customer_id': cid,
+        })
+        self.assertIn('error', denied)
+        db = self.ac._db()
+        self.assertEqual(
+            db.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 0)
+        self.assertEqual(
+            db.execute("SELECT COUNT(*) FROM debt_invoices").fetchone()[0], 0)
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=1").fetchone()['stock']),
+            50.0,
+        )
+        db.close()
+
+    def test_manual_invoice_uses_linked_sale_amounts_not_client_values(self):
+        cust = self.api.create_customer({
+            'name': 'Canonical Debt Cust',
+            'phone': '0744444444',
+            'credit_limit': 5000,
+        })
+        cid = int(cust['customer_id'])
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO sales "
+            "(receipt_number,cashier_id,cashier_name,subtotal,discount,tax,"
+            "total,payment_method,amount_paid,change_amount,customer_id,status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                'RCP-CANONICAL', self.api._user_id, 'admin',
+                100, 0, 0, 100, 'Credit Sale', 0, 0, cid, 'completed',
+            ),
+        )
+        sale_id = int(
+            db.execute("SELECT last_insert_rowid()").fetchone()[0])
+        db.commit()
+        db.close()
+
+        created = self.api.create_debt_invoice({
+            'customer_id': cid,
+            'sale_id': sale_id,
+            'receipt_number': 'RCP-CANONICAL',
+            'total_amount': 99999,
+            'amount_paid': 99998,
+        })
+        self.assertTrue(created.get('success'), created)
+        self.assertEqual(float(created['balance']), 100.0)
+        db = self.ac._db()
+        invoice = db.execute(
+            "SELECT total_amount,amount_paid,balance FROM debt_invoices "
+            "WHERE id=?",
+            (created['invoice_id'],),
+        ).fetchone()
+        db.close()
+        self.assertEqual(float(invoice['total_amount']), 100.0)
+        self.assertEqual(float(invoice['amount_paid']), 0.0)
+        self.assertEqual(float(invoice['balance']), 100.0)
+
 
 if __name__ == '__main__':
     unittest.main()

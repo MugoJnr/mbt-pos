@@ -7,12 +7,14 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
 from typing import Any, Optional
 from urllib.parse import quote
 
 import requests
 
 from backend.cloud_backup.paths import (
+    REAUTH_REQUIRED,
     is_cloud_configured,
     load_cloud_config,
     load_identity,
@@ -21,16 +23,66 @@ from backend.cloud_backup.paths import (
 
 logger = logging.getLogger('cloud_backup.supabase')
 
-DEFAULT_TIMEOUT = 12  # Fail open quickly when Portal/Supabase unreachable
+DEFAULT_TIMEOUT = 5  # Fail open quickly when Portal/Supabase unreachable
 UPLOAD_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 300
 
 
+def _require_network() -> None:
+    """Refuse hostname DNS/TLS when the shop has no IP route."""
+    from backend.cloud.net_gate import network_up, mark_network_down
+    if not network_up(1.0):
+        mark_network_down()
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
+
+
+# Any JWT-shaped substring is scrubbed before an error reaches a log file.
+_JWT_PATTERN = re.compile(
+    r'\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+'
+)
+
+# GoTrue/Storage report an expired access token as HTTP 400 with one of these
+# phrasings instead of 401. Matching is deliberately narrow so ordinary 400
+# validation failures are never retried.
+_EXPIRED_SESSION_MARKERS = (
+    'exp" claim',
+    "exp' claim",
+    'exp claim',
+    'jwt expired',
+    'jwt is expired',
+    'token is expired',
+    'token has expired',
+    'token expired',
+    'session expired',
+    'session has expired',
+    'expired token',
+)
+
+
+def redact_tokens(text: str) -> str:
+    """Strip bearer/JWT material from anything that may be logged."""
+    return _JWT_PATTERN.sub('<redacted-token>', str(text or ''))
+
+
+def _looks_like_expired_session(error: 'SupabaseError') -> bool:
+    text = f'{error} {error.payload}'.lower()
+    return any(marker in text for marker in _EXPIRED_SESSION_MARKERS)
+
+
 class SupabaseError(Exception):
     def __init__(self, message: str, status: int = 0, payload: Any = None):
-        super().__init__(message)
+        super().__init__(redact_tokens(message))
         self.status = status
         self.payload = payload
+
+
+class SupabaseAuthError(SupabaseError):
+    """The stored session is unusable and cannot be refreshed here.
+
+    Raised instead of attempting a request that is guaranteed to fail, so an
+    identity that this PC can never decrypt does not turn every backup tick
+    into a pair of doomed HTTP calls.
+    """
 
 
 class SupabaseClient:
@@ -149,6 +201,7 @@ class SupabaseClient:
         return data
 
     def sign_in(self, email: str, password: str, *, persist: bool = True) -> dict:
+        _require_network()
         r = self._session.post(
             self._url('/auth/v1/token?grant_type=password'),
             headers=self._headers(),
@@ -170,15 +223,25 @@ class SupabaseClient:
 
     def refresh_session(self) -> dict:
         ident = load_identity()
+        if ident.get('auth_state') == REAUTH_REQUIRED:
+            raise SupabaseAuthError(
+                'Saved cloud sign-in cannot be read on this PC — sign in again '
+                'from Settings to resume cloud backup')
         refresh = ident.get('refresh_token') or ''
         if not refresh:
-            raise SupabaseError('No refresh token')
-        r = self._session.post(
-            self._url('/auth/v1/token?grant_type=refresh_token'),
-            headers=self._headers(),
-            json={'refresh_token': refresh},
-            timeout=DEFAULT_TIMEOUT,
-        )
+            raise SupabaseAuthError('No refresh token')
+        _require_network()
+        try:
+            r = self._session.post(
+                self._url('/auth/v1/token?grant_type=refresh_token'),
+                headers=self._headers(),
+                json={'refresh_token': refresh},
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except requests.RequestException as e:
+            from backend.cloud.net_gate import mark_network_down
+            mark_network_down()
+            raise SupabaseError(f'Refresh token network error: {e}', 503) from e
         if r.status_code >= 400:
             self._raise(r, 'Refresh token')
         data = r.json()
@@ -190,23 +253,41 @@ class SupabaseClient:
     def access_token(self) -> str:
         return (load_identity().get('access_token') or '').strip()
 
-    def _authed_headers(self, prefer: str | None = None) -> dict:
+    def _user_token(self) -> str:
         token = self.access_token()
         if not token:
-            raise SupabaseError('Not signed in')
+            raise SupabaseAuthError('Not signed in')
+        return token
+
+    def _authed_headers(self, prefer: str | None = None) -> dict:
+        token = self._user_token()
         h = self._headers(token=token)
         if prefer:
             h['Prefer'] = prefer
         return h
 
     def with_auth_retry(self, fn):
+        """Run `fn`, refreshing the session at most once on an auth failure.
+
+        Storage rejects an expired access token with HTTP 400 (`"exp" claim
+        timestamp check failed`) rather than 401, which used to strand every
+        upload. Refresh failures and the retry's own failure both propagate,
+        so there is exactly one extra attempt and never a loop. An identity
+        this PC cannot decrypt makes ``refresh_session`` fail locally without
+        touching the network, so there is no doomed-request storm either.
+        """
         try:
             return fn()
         except SupabaseError as e:
-            if e.status in (401, 403):
-                self.refresh_session()
-                return fn()
-            raise
+            expired_400 = e.status == 400 and _looks_like_expired_session(e)
+            if e.status not in (401, 403) and not expired_400:
+                raise
+            logger.info(
+                'Supabase rejected the session (%s: %s); refreshing once',
+                e.status, redact_tokens(str(e)),
+            )
+            self.refresh_session()
+            return fn()
 
     # ── REST helpers ──────────────────────────────────────────────────────────
 
@@ -217,13 +298,19 @@ class SupabaseClient:
         single: bool = False,
     ) -> Any:
         def _do():
+            _require_network()
             url = self._url(f'/rest/v1/{table}')
             if query:
                 url = f'{url}?{query}'
             h = self._authed_headers()
             if single:
                 h['Accept'] = 'application/vnd.pgrst.object+json'
-            r = self._session.get(url, headers=h, timeout=DEFAULT_TIMEOUT)
+            try:
+                r = self._session.get(url, headers=h, timeout=DEFAULT_TIMEOUT)
+            except requests.RequestException as e:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+                raise SupabaseError(f'Select {table} network error: {e}', 503) from e
             if r.status_code >= 400:
                 self._raise(r, f'Select {table}')
             if not r.content:
@@ -235,6 +322,7 @@ class SupabaseClient:
     def rest_insert(self, table: str, rows: dict | list, upsert: bool = False,
                     on_conflict: str = '') -> Any:
         def _do():
+            _require_network()
             prefer = 'return=representation'
             if upsert:
                 prefer += ',resolution=merge-duplicates'
@@ -242,12 +330,17 @@ class SupabaseClient:
             url = self._url(f'/rest/v1/{table}')
             if upsert and on_conflict:
                 url = f'{url}?on_conflict={on_conflict}'
-            r = self._session.post(
-                url,
-                headers=h,
-                json=rows,
-                timeout=DEFAULT_TIMEOUT,
-            )
+            try:
+                r = self._session.post(
+                    url,
+                    headers=h,
+                    json=rows,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            except requests.RequestException as e:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+                raise SupabaseError(f'Insert {table} network error: {e}', 503) from e
             if r.status_code >= 400:
                 self._raise(r, f'Insert {table}')
             return r.json() if r.content else None
@@ -256,13 +349,19 @@ class SupabaseClient:
 
     def rest_update(self, table: str, query: str, patch: dict) -> Any:
         def _do():
+            _require_network()
             h = self._authed_headers()
-            r = self._session.patch(
-                self._url(f'/rest/v1/{table}?{query}'),
-                headers=h,
-                json=patch,
-                timeout=DEFAULT_TIMEOUT,
-            )
+            try:
+                r = self._session.patch(
+                    self._url(f'/rest/v1/{table}?{query}'),
+                    headers=h,
+                    json=patch,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            except requests.RequestException as e:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+                raise SupabaseError(f'Update {table} network error: {e}', 503) from e
             if r.status_code >= 400:
                 self._raise(r, f'Update {table}')
             return r.json() if r.content else None
@@ -314,7 +413,12 @@ class SupabaseClient:
 
     def insert_backup_meta(self, meta: dict) -> dict:
         try:
-            result = self.rest_insert('backups', meta)
+            result = self.rest_insert(
+                'backups',
+                meta,
+                upsert=True,
+                on_conflict='storage_path',
+            )
             return result[0] if isinstance(result, list) else result
         except SupabaseError as e:
             # Fallback for stale identity / RLS edge cases when service role is available.
@@ -358,8 +462,9 @@ class SupabaseClient:
             content_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
 
         def _do(use_service: bool = False):
-            token = self.service if use_service and self.service else self.access_token()
-            key = self.service if use_service and self.service else self.anon
+            as_service = bool(use_service and self.service)
+            token = self.service if as_service else self._user_token()
+            key = self.service if as_service else self.anon
             url = self._url(
                 f'/storage/v1/object/{self.bucket}/{object_path}'
             )
@@ -378,14 +483,25 @@ class SupabaseClient:
         try:
             return self.with_auth_retry(lambda: _do(False))
         except SupabaseError as e:
-            if self.service and e.status in (400, 401, 403):
-                logger.warning('Storage user upload failed (%s); retrying with service role', e)
+            # Only fall back to the service role for authorization problems —
+            # never for ordinary 400 validation errors from Storage.
+            authz_failure = (
+                e.status in (401, 403)
+                or (e.status == 400 and _looks_like_expired_session(e))
+                or 'row-level security' in str(e).lower()
+                or 'not signed in' in str(e).lower()
+            )
+            if self.service and authz_failure:
+                logger.warning(
+                    'Storage user upload failed (%s); retrying with service role',
+                    redact_tokens(str(e)),
+                )
                 return _do(True)
             raise
 
     def download_file(self, object_path: str, dest_path: str) -> int:
         def _do():
-            token = self.access_token()
+            token = self._user_token()
             url = self._url(
                 f'/storage/v1/object/{self.bucket}/{object_path}'
             )

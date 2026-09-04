@@ -6,12 +6,14 @@ import { ensureAuthSession, isPlatformAdmin } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin")({
   beforeLoad: async ({ location }) => {
-    const ok = await ensureAuthSession();
+    // A rejected bootstrap (offline, 5xx) must land on sign-in, not the error
+    // boundary. `location.search` is a parsed object, so build the return
+    // target from `href`.
+    const ok = await ensureAuthSession().catch(() => false);
     if (!ok) {
-      const next = `${location.pathname}${location.search || ""}`;
       throw redirect({
         to: "/login",
-        search: { redirect: next },
+        search: { redirect: location.href || "/admin" },
       });
     }
     if (!isPlatformAdmin()) throw redirect({ to: "/dashboard" });

@@ -428,6 +428,78 @@ def platform_organizations():
     return _inner()
 
 
+@web.route('/api/cloud/admin/overview', methods=['GET'])
+def cloud_admin_overview():
+    """Platform-wide organizations, shops, devices, licenses and backups."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _is_platform_admin():
+            return jsonify({'error': 'Platform administrator access required'}), 403
+        try:
+            from backend.cloud.platform_service import list_platform_admin_overview
+            return jsonify(list_platform_admin_overview())
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/admin/users', methods=['GET', 'POST'])
+def cloud_admin_users():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _is_platform_admin():
+            return jsonify({'error': 'Platform administrator access required'}), 403
+        try:
+            from backend.cloud.platform_service import (
+                create_platform_user,
+                list_platform_users,
+            )
+            if request.method == 'POST':
+                data = request.json or {}
+                user = create_platform_user(
+                    data.get('email') or '',
+                    data.get('password') or '',
+                    data.get('full_name') or '',
+                    data.get('role') or 'member',
+                )
+                return jsonify({'ok': True, 'user': user}), 201
+            return jsonify({'users': list_platform_users()})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/admin/users/<user_id>', methods=['PUT'])
+def cloud_admin_user_update(user_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _is_platform_admin():
+            return jsonify({'error': 'Platform administrator access required'}), 403
+        try:
+            from backend.cloud.platform_service import set_platform_user_active
+            data = request.json or {}
+            active = data.get('is_active')
+            if not isinstance(active, bool):
+                return jsonify({'error': 'is_active must be a boolean'}), 400
+            actor_id = str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+            if not active and actor_id == str(user_id):
+                return jsonify({'error': 'You cannot disable your own administrator account'}), 400
+            user = set_platform_user_active(user_id, active)
+            return jsonify({'ok': True, 'user': user})
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
 @web.route('/api/platform/applications', methods=['GET'])
 def platform_applications():
     from backend.app import token_required
@@ -463,11 +535,26 @@ def _secure_cookie() -> bool:
     )
 
 
+def _optional_identity():
+    """Resolve the caller when a token is present, without rejecting guests."""
+    token = (request.headers.get('Authorization') or '').replace('Bearer ', '').strip()
+    if not token:
+        return None
+    try:
+        from backend.app import _resolve_local_identity, _resolve_supabase_identity
+        return _resolve_local_identity(token) or _resolve_supabase_identity(token)
+    except Exception:
+        return None
+
+
 @web.route('/api/cloud/config', methods=['GET'])
 def cloud_config_public():
+    """Availability probe. Project identifiers require a valid session."""
     try:
         from backend.cloud.platform_service import cloud_public_config
-        return jsonify(cloud_public_config())
+        return jsonify(cloud_public_config(
+            include_project_details=_optional_identity() is not None,
+        ))
     except Exception as e:
         return jsonify({'configured': False, 'error': str(e)})
 
@@ -2109,12 +2196,13 @@ def _user_tabs(user=None):
     if not isinstance(raw, list):
         raw = []
     role = (user.get('role') or 'cashier').lower()
-    if role in ('admin', 'superadmin', 'manager'):
-        return set(raw) | {
-            'dashboard', 'sales', 'inventory', 'reports', 'debt', 'users',
-            'settings', 'security', 'accounting', 'backup',
-        }
-    return set(raw or ['dashboard', 'sales'])
+    if role in ('admin', 'superadmin'):
+        from roles import ALL_DESKTOP_TABS
+        return set(ALL_DESKTOP_TABS)
+    if raw:
+        return set(raw)
+    from roles import default_tab_permissions
+    return set(default_tab_permissions(role))
 
 
 def _user_can(module, user=None):
@@ -2132,14 +2220,95 @@ def _user_can(module, user=None):
         'inventory_value': {'inventory', 'accounting', 'reports'},
         'debt': {'debt', 'customers'},
         'reports': {'reports'},
-        'users': {'users'},
-        'audit': {'security', 'users'},
-        'backup': {'backup', 'settings', 'diagnostics'},
+        'users': {'admin', 'users'},
+        'audit': {'security', 'admin', 'users'},
+        'backup': {'backup', 'diagnostics'},
         'customers': {'debt', 'customers'},
         'payments': {'sales', 'reports', 'debt'},
     }
     need = aliases.get(module, {module})
-    return bool(tabs & need) or role == 'manager'
+    return bool(tabs & need)
+
+
+def _has_perm(action, user=None):
+    """Central granular permission check for the signed-in web actor."""
+    from desktop.utils.security import has_permission
+    user = user or getattr(g, 'current_user', None) or {}
+    return has_permission({'role': (user.get('role') or 'cashier')}, action)
+
+
+def _is_read_only_actor(user=None):
+    """True for reporting-only accounts (viewer) with no shop-write authority.
+
+    Central policy has no `notifications.*` action, so read-only status is
+    derived from the write permissions that do exist. Read-only accounts must
+    not mutate shared records — including the shop-wide notification read flag,
+    which is a single shared column rather than per-user state.
+    """
+    return not (
+        _has_perm('sales.create', user)
+        or _has_perm('inventory.create', user)
+        or _has_perm('settings.edit', user)
+    )
+
+
+_READ_ONLY_NOTIFICATION_MSG = (
+    'Read-only accounts cannot change the shop-wide notification read state.'
+)
+
+
+def _can_manage_backup(user=None):
+    """Single gate shared by `GET /api/backup/status` and `POST /api/backup/run`.
+
+    Central policy has no `backup.*` action. Running a backup and reading its
+    status carry the same trust, so both follow the Command Center backup tab
+    grant plus `reports.export` (manager and above), which already covers
+    shop-wide data extraction.     Restore and delete are not exposed here and are
+    deliberately not broadened.
+    """
+    return _user_can('backup', user) or _has_perm('reports.export', user)
+
+
+# Desktop tabs that map straight onto a dashboard navigation module.
+_TAB_NAV_MODULES = (
+    'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
+    'reports', 'notes', 'diagnostics', 'ai_ops',
+)
+
+
+def _allowed_modules(user=None):
+    """Navigation modules the signed-in account may actually use.
+
+    Server-side single source of truth for dashboard navigation, so the SPA
+    never has to duplicate the role tables. Route gates remain authoritative;
+    this only decides which entries are worth rendering.
+    """
+    from roles import is_superadmin_role
+    user = user or getattr(g, 'current_user', None) or {}
+    role = (user.get('role') or 'cashier').strip().lower()
+    tabs = _user_tabs(user)
+    mods = {module for module in _TAB_NAV_MODULES if module in tabs}
+    if _user_can('inventory', user):
+        mods.add('inventory')
+    if _user_can('inventory_value', user):
+        mods.update(('inventory', 'inventory_value'))
+    if _user_can('debt', user) or _user_can('customers', user):
+        mods.add('debt')
+    if _has_perm('users.view', user):
+        mods.add('users')
+    if _has_perm('audit.view', user):
+        mods.add('audit')
+    if _has_perm('settings.view', user) or _has_perm('settings.edit', user):
+        mods.add('settings')
+    if _can_manage_backup(user):
+        mods.add('backup')
+    # Owner-only surfaces stay owner-only even though admins get a full tab
+    # set for lockout protection.
+    mods.discard('security')
+    mods.discard('license')
+    if is_superadmin_role(role):
+        mods.update(('security', 'license'))
+    return sorted(mods)
 
 
 class _WebPosApi:
@@ -2411,6 +2580,11 @@ def create_customer():
     from backend.app import token_required
     @token_required
     def _inner():
+        # Cashiers register a customer during a credit sale (debt.create);
+        # everyone else needs debt.customer_manage. Viewer has neither.
+        if not (_has_perm('debt.create') or _has_perm('debt.customer_manage')):
+            return jsonify(
+                {'error': 'Insufficient permissions to add customers.'}), 403
         data = request.json or {}
         if not data.get('name', '').strip():
             return jsonify({'error': 'Name is required'}), 400
@@ -2436,6 +2610,10 @@ def update_customer(cid):
     from backend.app import token_required
     @token_required
     def _inner():
+        # Editing an existing customer record is a shared-data write.
+        if not _has_perm('debt.customer_manage'):
+            return jsonify(
+                {'error': 'Insufficient permissions to edit customers.'}), 403
         data = request.json or {}
         db   = _get_db()
         fields, values = [], []
@@ -2493,6 +2671,8 @@ def list_debt_invoices():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('debt'):
+            return jsonify({'error': 'Forbidden'}), 403
         db     = _get_db()
         status = request.args.get('status','')
         start  = request.args.get('start','')
@@ -2520,49 +2700,19 @@ def create_debt_invoice():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('debt'):
+            return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
-        if not data.get('customer_id'):
-            return jsonify({'error': 'customer_id required'}), 400
-        db     = _get_db()
-        cust   = _tr(db.execute("SELECT * FROM customers WHERE id=?", (data['customer_id'],)).fetchone())
-        if not cust:
-            return jsonify({'error': 'Customer not found'}), 404
-        total   = round(float(data.get('total_amount') or 0), 2)
-        paid    = round(float(data.get('amount_paid')  or 0), 2)
-        balance = round(total - paid, 2)
-        if total <= 0:
-            return jsonify({'error': 'Total amount must be greater than zero'}), 400
-        if balance < 0:
-            return jsonify({'error': 'Amount paid exceeds total'}), 400
-        inv_num = _next_inv_num(db)
-        status  = 'paid' if balance == 0 else ('partial' if paid > 0 else 'pending')
-        user    = g.current_user
-        db.execute(
-            "INSERT INTO debt_invoices (invoice_number,sale_id,receipt_number,"
-            "customer_id,customer_name,customer_phone,total_amount,amount_paid,"
-            "balance,status,due_date,cashier_id,cashier_name,notes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (inv_num, data.get('sale_id'), data.get('receipt_number'),
-             data['customer_id'], cust['name'], cust.get('phone',''),
-             total, paid, balance, status,
-             data.get('due_date') or None,
-             user['id'], user.get('full_name') or user['username'],
-             data.get('notes',''))
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'staff'
         )
-        inv_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        if paid > 0:
-            pay_r = _next_pay_receipt(db)
-            db.execute(
-                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (pay_r, inv_id, data['customer_id'], paid,
-                 data.get('payment_method','cash'), total, balance,
-                 user['id'], user.get('full_name') or user['username'],
-                 f"Initial payment on {inv_num}")
-            )
-        db.commit()
-        return jsonify({'success': True, 'invoice_number': inv_num, 'invoice_id': inv_id, 'balance': balance})
+        result = api.create_debt_invoice(data)
+        return jsonify(result), (200 if result.get('success') else 400)
     return _inner()
 
 
@@ -2571,46 +2721,25 @@ def pay_debt_invoice(inv_id):
     from backend.app import token_required
     @token_required
     def _inner():
-        data   = request.json or {}
-        amount = round(float(data.get('amount') or 0), 2)
-        if amount <= 0:
-            return jsonify({'error': 'Amount must be greater than zero'}), 400
-        db  = _get_db()
-        inv = _tr(db.execute("SELECT * FROM debt_invoices WHERE id=?", (inv_id,)).fetchone())
-        if not inv:
-            return jsonify({'error': 'Invoice not found'}), 404
-        if inv['status'] in ('paid', 'cancelled'):
-            return jsonify({'error': f"Invoice is already {inv['status']}"}), 400
-        bal_before = round(float(inv['balance']), 2)
-        if amount > bal_before:
-            return jsonify({'error': f"Payment ({amount:,.2f}) exceeds balance ({bal_before:,.2f})"}), 400
-        bal_after  = round(bal_before - amount, 2)
-        new_paid   = round(float(inv['amount_paid']) + amount, 2)
-        new_status = 'paid' if bal_after == 0 else 'partial'
-        pay_r      = _next_pay_receipt(db)
-        user       = g.current_user
-        db.execute(
-            "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-            "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (pay_r, inv_id, inv['customer_id'], amount,
-             data.get('payment_method','cash'), bal_before, bal_after,
-             user['id'], user.get('full_name') or user['username'],
-             data.get('notes',''))
+        if not _user_can('debt'):
+            return jsonify({'error': 'Forbidden'}), 403
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'staff'
         )
-        db.execute(
-            "UPDATE debt_invoices SET amount_paid=?,balance=?,status=?,updated_at=? WHERE id=?",
-            (new_paid, bal_after, new_status, datetime.now().isoformat(), inv_id)
+        result = api.record_debt_payment(
+            inv_id,
+            data.get('amount'),
+            data.get('payment_method') or 'cash',
+            data.get('notes') or '',
+            data.get('payment_reference') or '',
         )
-        db.commit()
-        return jsonify({
-            'success': True,
-            'payment_receipt': pay_r,
-            'balance_before': bal_before,
-            'balance_after':  bal_after,
-            'status': new_status,
-            'invoice_number': inv['invoice_number'],
-        })
+        return jsonify(result), (200 if result.get('success') else 400)
     return _inner()
 
 
@@ -2619,6 +2748,8 @@ def list_debt_payments():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _user_can('debt'):
+            return jsonify({'error': 'Forbidden'}), 403
         db    = _get_db()
         start = request.args.get('start','')
         end   = request.args.get('end','')
@@ -2649,80 +2780,26 @@ def adjust_stock(pid):
     def _inner():
         if g.current_user.get('role') != 'superadmin':
             return jsonify({'error': 'Super-Admin access required'}), 403
-        data    = request.json or {}
-        try:
-            new_qty = float(data.get('new_qty', 0))
-            expected_stock = float(data['expected_stock'])
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Invalid quantity'}), 400
-        except KeyError:
-            return jsonify({'error': 'Refresh stock and try again'}), 409
-        if new_qty < 0 or new_qty > 999999:
-            return jsonify({'error': 'Quantity is outside the allowed range'}), 400
-        reason  = (data.get('reason') or '').strip()
-        if not reason:
-            return jsonify({'error': 'Reason is required for stock adjustments'}), 400
-        db  = _get_db()
-        pin = str(data.get('pin') or '')
-        pin_row = db.execute(
-            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-        ).fetchone()
-        stored_hash = str(pin_row[0] if pin_row else '')
-        if not stored_hash:
-            return jsonify({'error': 'Super-Admin PIN is not configured'}), 403
-        import hashlib
-        import hmac
-        supplied_hash = hashlib.pbkdf2_hmac(
-            'sha256', pin.encode(), b'MBT_POS_SUPERADMIN_SALT_2024', 200_000
-        ).hex()
-        if not hmac.compare_digest(supplied_hash, stored_hash):
-            return jsonify({'error': 'Incorrect Super-Admin PIN'}), 403
-        row = _tr(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
-        if not row:
-            return jsonify({'error': 'Product not found'}), 404
-        old_qty    = float(row['stock'] or 0)
-        if abs(old_qty - expected_stock) > 0.00001:
-            return jsonify({
-                'error': 'Stock changed. Refresh and review the latest quantity.',
-                'current_stock': old_qty,
-            }), 409
-        qty_change = new_qty - old_qty
-        user       = g.current_user
-        changed = db.execute(
-            "UPDATE products SET stock=?, updated_at=? "
-            "WHERE id=? AND COALESCE(stock,0)=?",
-            (new_qty, datetime.now().isoformat(), pid, old_qty),
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'superadmin'
         )
-        if changed.rowcount != 1:
-            db.rollback()
-            latest = db.execute(
-                "SELECT COALESCE(stock,0) FROM products WHERE id=?", (pid,)
-            ).fetchone()
-            return jsonify({
-                'error': 'Stock changed. Refresh and try again.',
-                'current_stock': float(latest[0] if latest else 0),
-            }), 409
-        db.execute(
-            "INSERT INTO stock_movements "
-            "(product_id,product_name,movement_type,qty_before,qty_change,"
-            "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (pid, row['name'], 'SUPERADMIN_ADJUST', old_qty, qty_change, new_qty,
-             f"WEB_pid={pid}", reason, user['id'],
-             user.get('full_name') or user['username'])
+        result = api.adjust_stock(
+            pid,
+            data.get('direction'),
+            data.get('quantity'),
+            data.get('reason'),
+            pin=str(data.get('pin') or ''),
+            expected_stock=data.get('expected_stock'),
         )
-        movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        try:
-            from desktop.utils.accounting_hooks import post_stock_adjust_journal
-            post_stock_adjust_journal(
-                db, product_id=pid, product_name=row['name'],
-                qty_change=qty_change, unit_cost=float(row['cost_price'] or 0),
-                reason=reason, movement_id=movement_id, user_id=user['id'],
-                username=user.get('full_name') or user['username'], safe=True,
-            )
-        except Exception:
-            current_app.logger.exception('web stock adjust accounting')
-        db.commit()
-        return jsonify({'success': True, 'old_stock': old_qty, 'new_stock': new_qty})
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
     return _inner()
 
 
@@ -2737,6 +2814,8 @@ def html_report():
     def _inner():
         from flask import Response
         import json as _json
+        if not _user_can('reports'):
+            return jsonify({'error': 'Reports access required'}), 403
 
         rdate = request.args.get('date', str(date.today()))
         db    = _get_db()
@@ -3488,6 +3567,8 @@ def mark_notification_read(nid):
     from backend.app import token_required
     @token_required
     def _inner():
+        if _is_read_only_actor():
+            return jsonify({'error': _READ_ONLY_NOTIFICATION_MSG}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         db.execute("UPDATE cc_notifications SET is_read=1 WHERE id=?", (nid,))
@@ -3501,6 +3582,8 @@ def mark_all_notifications_read():
     from backend.app import token_required
     @token_required
     def _inner():
+        if _is_read_only_actor():
+            return jsonify({'error': _READ_ONLY_NOTIFICATION_MSG}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         db.execute("UPDATE cc_notifications SET is_read=1 WHERE is_read=0")
@@ -3783,11 +3866,28 @@ def health_detail():
     return _inner()
 
 
+@web.route('/api/nav/modules', methods=['GET'])
+def nav_modules():
+    """Modules the dashboard shell may render for this account."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        return jsonify({
+            'role': (user.get('role') or 'cashier').strip().lower(),
+            'modules': _allowed_modules(user),
+        })
+    return _inner()
+
+
 @web.route('/api/live', methods=['GET'])
 def live_monitor():
     from backend.app import token_required
     @token_required
     def _inner():
+        # Shop-wide takings by cashier and the staff roster are reporting data.
+        if not _user_can('reports'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         today = str(date.today())
@@ -3870,7 +3970,7 @@ def backup_status():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('backup'):
+        if not _can_manage_backup():
             return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
@@ -3904,7 +4004,7 @@ def backup_run():
     from backend.app import token_required, DB_PATH
     @token_required
     def _inner():
-        if g.current_user.get('role') not in ('admin', 'superadmin', 'manager'):
+        if not _can_manage_backup():
             return jsonify({'error': 'Manager or admin access required'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
@@ -4381,62 +4481,9 @@ def _query_report_bundle(db, filt):
 
 
 def _build_simple_pdf(title, shop, period, lines, currency='KES'):
-    """Minimal branded PDF (no extra deps) — valid PDF 1.4 text document."""
-    import io
-
-    def esc(s):
-        return str(s).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
-
-    content_lines = [
-        'BT',
-        '/F1 16 Tf',
-        '50 780 Td',
-        f'({esc(shop)}) Tj',
-        '0 -24 Td',
-        '/F1 12 Tf',
-        f'({esc(title)}) Tj',
-        '0 -16 Td',
-        f'({esc(period)}) Tj',
-        '0 -28 Td',
-        '/F1 10 Tf',
-    ]
-    y_steps = 0
-    for line in lines[:70]:
-        content_lines.append(f'({esc(line[:110])}) Tj')
-        content_lines.append('0 -13 Td')
-        y_steps += 1
-    content_lines.append('ET')
-    stream = '\n'.join(content_lines).encode('latin-1', 'replace')
-
-    objs = []
-    objs.append(b'1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n')
-    objs.append(b'2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n')
-    objs.append(
-        b'3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
-        b'/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj\n'
-    )
-    objs.append(
-        f'4 0 obj<< /Length {len(stream)} >>stream\n'.encode()
-        + stream + b'\nendstream\nendobj\n'
-    )
-    objs.append(b'5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n')
-
-    out = io.BytesIO()
-    out.write(b'%PDF-1.4\n')
-    offsets = [0]
-    for obj in objs:
-        offsets.append(out.tell())
-        out.write(obj)
-    xref = out.tell()
-    out.write(f'xref\n0 {len(offsets)}\n'.encode())
-    out.write(b'0000000000 65535 f \n')
-    for off in offsets[1:]:
-        out.write(f'{off:010d} 00000 n \n'.encode())
-    out.write(
-        f'trailer<< /Size {len(offsets)} /Root 1 0 R >>\n'
-        f'startxref\n{xref}\n%%EOF\n'.encode()
-    )
-    return out.getvalue()
+    """Branded PDF (no extra deps) — shared with the desktop Reports tab."""
+    from backend.report_export_service import build_report_pdf
+    return build_report_pdf(title, shop, period, lines, currency)
 
 
 @web.route('/api/reports/data', methods=['GET'])
@@ -4444,7 +4491,9 @@ def reports_data():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('reports') and not _user_can('sales'):
+        # Reports access only — the sales alias let a cashier pull the whole
+        # report bundle (revenue, margins, every sale) from the POS role.
+        if not _user_can('reports'):
             return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         filt = _report_filters_from_request()
@@ -4477,7 +4526,9 @@ def reports_export():
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
         if (request.args.get('inventory') or '') in ('1', 'true', 'yes'):
-            if not _user_can('inventory'):
+            # The inventory snapshot carries Cost and margin columns, so it
+            # needs the valuation grant — not the POS product-lookup alias.
+            if not _user_can('inventory_value'):
                 return jsonify({'error': 'Forbidden'}), 403
             products = _WebPosApi().get_products()
             shop = 'MBT POS'

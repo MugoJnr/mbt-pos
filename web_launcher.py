@@ -129,14 +129,26 @@ def ensure_port_free(port, retries=3):
 
 
 def find_python():
-    for c in [
-        r'C:\MBT_Build\_python311\python.exe',   # installed by INSTALL.bat
-        sys.executable,
-        'python', 'python3',
-        r'C:\Python311\python.exe',
-        r'C:\Python312\python.exe',
-        r'C:\Python310\python.exe',
-    ]:
+    """Locate a CPython 3 interpreter for the source-tree Flask child process.
+
+    Never probe sys.executable when frozen: there it is MBT_POS.exe, and
+    "--version" would start a second copy of the POS instead of printing a
+    version. Shops can point MBT_PYTHON at a non-standard interpreter.
+    """
+    candidates = [os.environ.get('MBT_PYTHON', '').strip()]
+    if not getattr(sys, 'frozen', False):
+        candidates.append(sys.executable)
+    candidates += ['python', 'python3']
+    if sys.platform == 'win32':
+        local = os.environ.get('LOCALAPPDATA', '')
+        for tag in ('313', '312', '311', '310'):
+            if local:
+                candidates.append(os.path.join(
+                    local, 'Programs', 'Python', f'Python{tag}', 'python.exe'))
+            candidates.append(rf'C:\Python{tag}\python.exe')
+    for c in candidates:
+        if not c:
+            continue
         try:
             r = _run(c, '--version')
             if b'Python 3' in r.stdout + r.stderr: return c
@@ -256,7 +268,13 @@ def start_tunnel(exe):
         cmd = [exe, 'tunnel', '--url', f'http://localhost:{port}',
                '--hostname', domain]
 
-    cf_log = open(LOG_DIR / 'cloudflared.log', 'a', encoding='utf-8')
+    cf_path = LOG_DIR / 'cloudflared.log'
+    try:
+        from desktop.utils.log_config import rotate_plain_log
+        rotate_plain_log(str(cf_path))
+    except Exception:
+        pass
+    cf_log = open(cf_path, 'a', encoding='utf-8')
     try:
         proc = subprocess.Popen(
             cmd, cwd=str(BASE_DIR),

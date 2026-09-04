@@ -9,6 +9,7 @@ import io
 import logging
 import math
 import re
+import threading
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
@@ -17,8 +18,13 @@ from zoneinfo import ZoneInfo
 from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config, load_identity
 from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 from backend.cloud.license_server import get_license_server
+from backend.cloud.net_gate import mark_network_down, network_up
 
 logger = logging.getLogger('cloud.platform')
+
+# Shop REST defaults — fail open fast; never block splash/login on Supabase DNS.
+_SERVICE_SELECT_TIMEOUT = 3.0
+_SERVICE_WRITE_TIMEOUT = 8.0
 
 try:
     NAIROBI_TZ = ZoneInfo('Africa/Nairobi')
@@ -41,8 +47,24 @@ _COST_KEYS = frozenset({
 })
 
 
+_SVC_CLIENT: SupabaseClient | None = None
+_SVC_CONFIG_KEY: tuple = ()
+_SVC_LOCK = threading.Lock()
+
+
 def _svc() -> SupabaseClient:
-    return SupabaseClient()
+    """Reuse HTTP connections until the effective cloud config changes."""
+    global _SVC_CLIENT, _SVC_CONFIG_KEY
+    cfg = load_cloud_config()
+    key = tuple(
+        str(cfg.get(name) or '')
+        for name in ('supabase_url', 'anon_key', 'service_key', 'bucket')
+    )
+    with _SVC_LOCK:
+        if _SVC_CLIENT is None or key != _SVC_CONFIG_KEY:
+            _SVC_CLIENT = SupabaseClient(config=cfg)
+            _SVC_CONFIG_KEY = key
+        return _SVC_CLIENT
 
 
 def has_service_role() -> bool:
@@ -86,9 +108,12 @@ def _service_headers(client: SupabaseClient) -> dict:
     }
 
 
-def service_select(table: str, query: str = '', *, timeout: float = 8) -> list:
+def service_select(table: str, query: str = '', *, timeout: float = _SERVICE_SELECT_TIMEOUT) -> list:
     client = _svc()
     if not client.configured:
+        return []
+    # Skip hostname DNS entirely when offline — Windows can stall 30s+ on supabase.co.
+    if not network_up(1.0):
         return []
     url = client._url(f'/rest/v1/{table}')
     if query:
@@ -96,6 +121,7 @@ def service_select(table: str, query: str = '', *, timeout: float = 8) -> list:
     try:
         r = client._session.get(url, headers=_service_headers(client), timeout=timeout)
     except Exception as e:
+        mark_network_down()
         logger.warning('service_select %s network error: %s', table, e)
         return []
     if r.status_code >= 400:
@@ -109,13 +135,19 @@ def service_select_strict(table: str, query: str = '', *, prefer: str = '') -> l
     client = _svc()
     if not client.configured:
         raise SupabaseError('MugoByte Cloud is unavailable', 503)
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
     url = client._url(f'/rest/v1/{table}')
     if query:
         url = f'{url}?{query}'
     headers = _service_headers(client)
     if prefer:
         headers['Prefer'] = prefer
-    r = client._session.get(url, headers=headers, timeout=60)
+    try:
+        r = client._session.get(url, headers=headers, timeout=60)
+    except Exception as e:
+        mark_network_down()
+        raise SupabaseError(f'select {table} network error: {e}', 503) from e
     if r.status_code >= 400:
         raise SupabaseError(
             f'select {table} failed ({r.status_code}): {r.text[:300]}',
@@ -135,6 +167,8 @@ def service_select_page(
     client = _svc()
     if not client.configured:
         raise SupabaseError('MugoByte Cloud is unavailable', 503)
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
     base = query.strip('&')
@@ -162,6 +196,8 @@ def service_select_page(
 
 def service_insert(table: str, row: dict, upsert: bool = False, on_conflict: str = '') -> Any:
     client = _svc()
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
     prefer = 'return=representation'
     if upsert:
         prefer += ',resolution=merge-duplicates'
@@ -170,7 +206,11 @@ def service_insert(table: str, row: dict, upsert: bool = False, on_conflict: str
     url = client._url(f'/rest/v1/{table}')
     if upsert and on_conflict:
         url = f'{url}?on_conflict={on_conflict}'
-    r = client._session.post(url, headers=h, json=row, timeout=30)
+    try:
+        r = client._session.post(url, headers=h, json=row, timeout=_SERVICE_WRITE_TIMEOUT)
+    except Exception as e:
+        mark_network_down()
+        raise SupabaseError(f'Insert {table} network error: {e}', 503) from e
     if r.status_code >= 400:
         raise SupabaseError(f'Insert {table} failed ({r.status_code}): {r.text[:300]}', r.status_code)
     data = r.json() if r.content else None
@@ -179,12 +219,18 @@ def service_insert(table: str, row: dict, upsert: bool = False, on_conflict: str
 
 def service_update(table: str, query: str, patch: dict) -> Any:
     client = _svc()
-    r = client._session.patch(
-        client._url(f'/rest/v1/{table}?{query}'),
-        headers=_service_headers(client),
-        json=patch,
-        timeout=30,
-    )
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
+    try:
+        r = client._session.patch(
+            client._url(f'/rest/v1/{table}?{query}'),
+            headers=_service_headers(client),
+            json=patch,
+            timeout=_SERVICE_WRITE_TIMEOUT,
+        )
+    except Exception as e:
+        mark_network_down()
+        raise SupabaseError(f'Update {table} network error: {e}', 503) from e
     if r.status_code >= 400:
         raise SupabaseError(f'Update {table} failed ({r.status_code}): {r.text[:300]}', r.status_code)
     return r.json() if r.content else None
@@ -194,6 +240,8 @@ def service_rpc(function_name: str, payload: dict) -> Any:
     client = _svc()
     if not client.configured or not client.service:
         raise SupabaseError('Cloud service role is not configured', 503)
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
     r = client._session.post(
         client._url(f'/rest/v1/rpc/{function_name}'),
         headers=_service_headers(client),
@@ -283,16 +331,27 @@ def license_key_org_id(license_key: str) -> str:
     return str(rows[0].get('org_id') or '') if rows else ''
 
 
-def cloud_public_config() -> dict:
+def cloud_public_config(include_project_details: bool = False) -> dict:
+    """Cloud availability for clients.
+
+    The anonymous payload is deliberately limited to availability flags: no
+    browser client in this repo consumes the Supabase URL or anon key, so
+    publishing them only advertised the project to unauthenticated callers.
+    Project identifiers are returned to authenticated callers (the Portal
+    admin console) via ``include_project_details``.
+    """
     cfg = load_cloud_config()
-    return {
+    payload = {
         'configured': is_cloud_configured(),
         'enabled': bool(cfg.get('enabled')),
-        'supabase_url': cfg.get('supabase_url') or '',
-        'anon_key': cfg.get('anon_key') or '',
-        'project_ref': cfg.get('project_ref') or '',
-        'bucket': cfg.get('bucket') or 'mbt-backups',
     }
+    if include_project_details:
+        payload.update({
+            'supabase_url': cfg.get('supabase_url') or '',
+            'project_ref': cfg.get('project_ref') or '',
+            'bucket': cfg.get('bucket') or 'mbt-backups',
+        })
+    return payload
 
 
 def slugify(name: str) -> str:
@@ -651,11 +710,13 @@ def cloud_resend_verification(email: str) -> bool:
 
 def cloud_refresh_session(refresh_token: str) -> dict:
     client = _svc()
+    if not network_up(1.0):
+        raise SupabaseError('Offline — MugoByte Cloud unreachable', 503)
     r = client._session.post(
         client._url('/auth/v1/token?grant_type=refresh_token'),
         headers=client._headers(),
         json={'refresh_token': refresh_token},
-        timeout=30,
+        timeout=_SERVICE_WRITE_TIMEOUT,
     )
     if r.status_code >= 400:
         raise SupabaseError('Session refresh failed', r.status_code)
@@ -686,6 +747,210 @@ def list_all_licenses(limit: int = 200) -> list[dict]:
         'licenses',
         f'select=*&order=created_at.desc&limit={lim}',
     ) or []
+
+
+def list_platform_admin_overview() -> dict:
+    """Return the platform-wide control-plane roster without hiding API failures.
+
+    This endpoint deliberately uses strict service-role reads. The previous admin
+    dashboard reused tenant-scoped helpers whose soft-failure behavior converted
+    Supabase/RLS errors into empty widgets.
+    """
+    errors: dict[str, str] = {}
+
+    def read(table: str, query: str) -> list[dict]:
+        try:
+            return service_select_strict(table, query)
+        except Exception as error:
+            logger.warning('admin overview %s failed: %s', table, error)
+            errors[table] = str(error)
+            return []
+
+    organizations = read(
+        'organizations',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+    businesses = read(
+        'businesses',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+    devices = read(
+        'devices',
+        'select=*&order=last_seen_at.desc&limit=1000',
+    )
+    licenses = read(
+        'licenses',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+    members = read(
+        'org_members',
+        'select=org_id,user_id,role,is_active,joined_at,invited_at&limit=5000',
+    )
+    backups = read(
+        'backups',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+    audit_logs = read(
+        'audit_logs',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+    license_history = read(
+        'license_history',
+        'select=*&order=created_at.desc&limit=1000',
+    )
+
+    business_org = {
+        str(row.get('id') or ''): str(row.get('org_id') or '')
+        for row in businesses
+        if row.get('id')
+    }
+    org_names = {
+        str(row.get('id') or ''): str(row.get('name') or 'Organization')
+        for row in organizations
+        if row.get('id')
+    }
+    for row in businesses:
+        row['org_name'] = org_names.get(str(row.get('org_id') or ''), '')
+    for row in devices:
+        org_id = str(
+            row.get('org_id')
+            or business_org.get(str(row.get('business_id') or ''))
+            or ''
+        )
+        row['org_id'] = org_id or None
+        row['org_name'] = org_names.get(org_id, '')
+    for row in licenses:
+        row['org_name'] = org_names.get(str(row.get('org_id') or ''), '')
+    license_lookup = {
+        str(row.get('id') or ''): row
+        for row in licenses
+        if row.get('id')
+    }
+    for row in license_history:
+        license_row = license_lookup.get(str(row.get('license_id') or ''), {})
+        row['license_key'] = license_row.get('license_key')
+        row['org_id'] = license_row.get('org_id')
+        row['org_name'] = license_row.get('org_name')
+    for row in backups:
+        org_id = business_org.get(str(row.get('business_id') or ''), '')
+        row['org_id'] = org_id or None
+        row['org_name'] = org_names.get(org_id, '')
+
+    active_licenses = sum(
+        1 for row in licenses
+        if str(row.get('status') or '').lower() in {'active', 'trial'}
+    )
+    enabled_devices = sum(1 for row in devices if row.get('is_active') is not False)
+    active_members = sum(1 for row in members if row.get('is_active') is not False)
+    return {
+        'organizations': organizations,
+        'businesses': businesses,
+        'devices': devices,
+        'licenses': licenses,
+        'members': members,
+        'backups': backups,
+        'audit_logs': audit_logs,
+        'license_history': license_history,
+        'errors': errors,
+        'summary': {
+            'organizations': len(organizations),
+            'businesses': len(businesses),
+            'licenses': len(licenses),
+            'active_licenses': active_licenses,
+            'devices': len(devices),
+            'enabled_devices': enabled_devices,
+            'members': active_members,
+            'backups': len(backups),
+        },
+    }
+
+
+def _auth_admin_request(method: str, path: str, payload: dict | None = None) -> Any:
+    client = _svc()
+    if not client.configured or not str(client.service or '').strip():
+        raise SupabaseError('Cloud service role is not configured', 503)
+    headers = {
+        'apikey': client.service,
+        'Authorization': f'Bearer {client.service}',
+        'Content-Type': 'application/json',
+    }
+    response = client._session.request(
+        method,
+        client._url(f'/auth/v1/admin/{path.lstrip("/")}'),
+        headers=headers,
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        message = 'Supabase user administration failed'
+        try:
+            body = response.json()
+            message = body.get('msg') or body.get('message') or body.get('error_description') or message
+        except Exception:
+            pass
+        raise SupabaseError(message, response.status_code)
+    return response.json() if response.content else {}
+
+
+def list_platform_users(page: int = 1, per_page: int = 200) -> list[dict]:
+    result = _auth_admin_request(
+        'GET',
+        f'users?page={max(1, int(page))}&per_page={max(1, min(int(per_page), 1000))}',
+    )
+    users = result.get('users', []) if isinstance(result, dict) else []
+    normalized = []
+    now = datetime.now(timezone.utc)
+    for user in users:
+        app_meta = user.get('app_metadata') or {}
+        user_meta = user.get('user_metadata') or {}
+        banned_until = user.get('banned_until')
+        banned = False
+        if banned_until:
+            try:
+                banned = datetime.fromisoformat(str(banned_until).replace('Z', '+00:00')) > now
+            except ValueError:
+                banned = True
+        normalized.append({
+            'id': user.get('id'),
+            'email': user.get('email'),
+            'full_name': user_meta.get('full_name') or user_meta.get('name') or '',
+            'role': app_meta.get('platform_role') or user_meta.get('role') or 'member',
+            'is_active': not banned,
+            'email_confirmed_at': user.get('email_confirmed_at'),
+            'created_at': user.get('created_at'),
+            'last_login': user.get('last_sign_in_at'),
+        })
+    return normalized
+
+
+def create_platform_user(email: str, password: str, full_name: str = '',
+                         role: str = 'member') -> dict:
+    email = (email or '').strip().lower()
+    if '@' not in email:
+        raise ValueError('A valid email address is required')
+    if len(password or '') < 8:
+        raise ValueError('Password must contain at least 8 characters')
+    allowed_roles = {'member', 'cashier', 'manager', 'admin', 'platform_admin'}
+    role = (role or 'member').strip().lower()
+    if role not in allowed_roles:
+        raise ValueError(f'Role must be one of: {", ".join(sorted(allowed_roles))}')
+    return _auth_admin_request('POST', 'users', {
+        'email': email,
+        'password': password,
+        'email_confirm': True,
+        'user_metadata': {'full_name': (full_name or '').strip()},
+        'app_metadata': {'platform_role': role},
+    })
+
+
+def set_platform_user_active(user_id: str, active: bool) -> dict:
+    if not user_id:
+        raise ValueError('user_id is required')
+    return _auth_admin_request(
+        'PUT',
+        f'users/{quote(str(user_id), safe="")}',
+        {'ban_duration': 'none' if active else '876000h'},
+    )
 
 
 def list_devices_for_org(org_id: str) -> list[dict]:
@@ -995,6 +1260,13 @@ def _activate_license_via_portal(
     """Shop PCs without service-role activate through Portal (which holds the key)."""
     import requests
 
+    if not network_up(1.0):
+        raise SupabaseError(
+            'No internet connection. Already-activated shops can open POS offline; '
+            'cloud license activation requires network.',
+            503,
+        )
+
     base = portal_api_base()
     payload = {
         'license_key': license_key,
@@ -1017,13 +1289,14 @@ def _activate_license_via_portal(
                 f'{base}/api/cloud/licenses/activate',
                 headers={**headers, 'Authorization': f'Bearer {token}'},
                 json=payload,
-                timeout=45,
+                timeout=8,
             )
             data = r.json() if r.content else {}
             if r.status_code < 400 and isinstance(data, dict) and data.get('ok'):
                 return data
             errors.append(str((data or {}).get('error') or r.text[:200] or r.status_code))
         except Exception as e:
+            mark_network_down()
             errors.append(str(e))
 
     try:
@@ -1031,7 +1304,7 @@ def _activate_license_via_portal(
             f'{base}/api/public/licenses/activate',
             headers=headers,
             json=payload,
-            timeout=45,
+            timeout=8,
         )
         data = r.json() if r.content else {}
         if r.status_code < 400 and isinstance(data, dict) and data.get('ok'):
@@ -1041,6 +1314,7 @@ def _activate_license_via_portal(
     except SupabaseError:
         raise
     except Exception as e:
+        mark_network_down()
         detail = '; '.join(errors + [str(e)]) if errors else str(e)
         raise SupabaseError(
             f'Could not reach MugoByte Portal to activate license ({detail})',

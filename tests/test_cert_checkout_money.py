@@ -13,6 +13,8 @@ if ROOT not in sys.path:
 
 
 class CertCheckoutMoney(unittest.TestCase):
+    PIN = '112358'
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._db_path = os.path.join(self._tmpdir.name, 'cert.db')
@@ -47,6 +49,11 @@ class CertCheckoutMoney(unittest.TestCase):
         db.execute(
             "INSERT INTO customers (name, phone, credit_limit) VALUES (?,?,?)",
             ('Cert Customer', '0700', 5000),
+        )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash(self.PIN)),
         )
         db.commit()
         db.close()
@@ -209,7 +216,7 @@ class CertCheckoutMoney(unittest.TestCase):
             db = self.ac._db()
             sid = db.execute('SELECT id FROM sales ORDER BY id DESC LIMIT 1').fetchone()[0]
             db.close()
-        out = self.api.void_sale(int(sid), 'cert void')
+        out = self.api.void_sale(int(sid), 'cert void', pin=self.PIN)
         self.assertTrue(
             out.get('ok') or out.get('success') or 'void' in str(out).lower(),
             out,

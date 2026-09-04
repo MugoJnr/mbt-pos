@@ -1,0 +1,84 @@
+{
+  "buttons": [
+    {
+      "type": "QToolButton",
+      "text": "Cal",
+      "tip": "Open calendar",
+      "accessible": "",
+      "icon": false,
+      "parent": "DateField",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "mbtCalBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "+ Add",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "Card",
+      "parent_obj": "mbtCard",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Clear",
+      "tip": "Reset the form without saving",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "mbtConsFooter",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save Consumption",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QFrame",
+      "parent_obj": "mbtConsFooter",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Select department\u2026",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Search staff or type name\u2026",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "Search product by name or SKU\u2026",
+      "enabled": true,
+      "echo": 0
+    },
+    {
+      "ph": "",
+      "enabled": true,
+      "echo": 0
+    }
+  ],
+  "checks": []
+}

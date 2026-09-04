@@ -161,17 +161,42 @@ class AiFullWorkspace(QFrame):
         body.addWidget(center, 1)
         root.addLayout(body, 1)
 
-        # Bottom quick actions
+        # Bottom quick actions. Eight buttons need ~1150px of label width, so at
+        # 1024 they used to squeeze below their text width and elide. They now
+        # keep their natural width inside a horizontally scrollable strip.
         bottom = QFrame(); bottom.setObjectName('wsBottom')
         bl = QHBoxLayout(bottom); bl.setContentsMargins(12, 8, 12, 10); bl.setSpacing(6)
         bl.addWidget(QLabel('Quick Actions'))
+
+        strip = QScrollArea()
+        strip.setObjectName('wsQuickStrip')
+        strip.setWidgetResizable(True)
+        strip.setFrameShape(QFrame.NoFrame)
+        strip.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        strip.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        strip.setStyleSheet('QScrollArea#wsQuickStrip{background:transparent;}')
+        holder = QWidget()
+        holder.setObjectName('wsQuickHolder')
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(6)
+        self._quick_btns = []
         for label, kind, icon in _QUICK_ACTIONS[:8]:
             b = QPushButton(f'{icon} {label}')
             b.setObjectName('wsQuick')
             b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(label)
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            b.setMinimumWidth(b.sizeHint().width())
             b.clicked.connect(lambda _=False, t=label: self._quick(t))
-            bl.addWidget(b)
-        bl.addStretch(1)
+            hl.addWidget(b)
+            self._quick_btns.append(b)
+        hl.addStretch(1)
+        strip.setWidget(holder)
+        strip.setFixedHeight(holder.sizeHint().height()
+                             + strip.horizontalScrollBar().sizeHint().height())
+        bl.addWidget(strip, 1)
+        self._quick_strip = strip
         root.addWidget(bottom)
 
         self._show_main_tab('dashboard')
@@ -608,7 +633,7 @@ class AiFullWorkspace(QFrame):
             }}
             QPushButton#wsQuick:hover {{ border-color:{p['accent']}; color:{p['accent']}; }}
             QPushButton#wsPrimary {{
-                background:{p['accent']}; color:#0B1220; border:none; border-radius:10px; font-weight:800; font-size:13px;
+                background:{p['accent']}; color:{p['accent_fg']}; border:none; border-radius:10px; font-weight:800; font-size:13px;
             }}
             QFrame#wsComposer {{ background:{p['bg2']}; border-top:1px solid {p['border']}; }}
             QTextEdit#wsInput {{

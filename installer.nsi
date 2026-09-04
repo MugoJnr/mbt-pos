@@ -1,4 +1,4 @@
-; MBT POS - NSIS Installer Script
+﻿; MBT POS - NSIS Installer Script
 ; MugoByte Technologies | mugobyte.com
 ; Builds a professional Windows installer from dist\MBT_POS\
 ;
@@ -10,8 +10,8 @@
 ;=============================================================================
 ; General Settings
 ;=============================================================================
-!define APP_VERSION "3.0.77"
-!define APP_VERSION_QUAD "3.0.77.0"
+!define APP_VERSION "3.0.80"
+!define APP_VERSION_QUAD "3.0.80.0"
 Unicode True
 Name "MBT POS"
 OutFile "dist\MBT_POS_Setup.exe"

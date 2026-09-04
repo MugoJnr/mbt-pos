@@ -9,9 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { GET, listSecurityEvents } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
-import { downloadApi, exportQuery } from "@/lib/download";
+import { getAdminOverview } from "@/lib/api";
 
 export const Route = createFileRoute("/_admin/admin/audit-logs")({
   component: AuditLogsPage,
@@ -40,31 +38,24 @@ const MODULE_COLORS: Record<string, string> = {
 };
 
 function AuditLogsPage() {
-  const { orgId } = useAuth();
   const [q, setQ] = useState("");
   const [exporting, setExporting] = useState(false);
 
-  const logsQ = useQuery({
-    queryKey: ["audit-logs"],
-    queryFn: () => GET<AuditLog[]>("/audit"),
-    refetchInterval: 60_000,
-  });
-  const cloudQ = useQuery({
-    queryKey: ["cloud-security", orgId],
-    queryFn: () => listSecurityEvents(orgId),
+  const overviewQ = useQuery({
+    queryKey: ["admin-overview"],
+    queryFn: getAdminOverview,
     refetchInterval: 60_000,
   });
 
-  const posLogs = Array.isArray(logsQ.data) ? logsQ.data : [];
-  const cloudAudit = (cloudQ.data?.audit_logs || []).map((r: any) => ({
+  const cloudAudit = (overviewQ.data?.audit_logs || []).map((r: any) => ({
     id: `cloud-${r.id}`,
-    username: "cloud",
+    username: String(r.user_id || "system"),
     action: String(r.action || "SECURITY"),
     module: String(r.module || "security"),
     details: typeof r.details === "string" ? r.details : JSON.stringify(r.details || r.meta || {}),
     created_at: String(r.created_at || ""),
   }));
-  const licenseHist = (cloudQ.data?.license_history || []).map((r: any) => ({
+  const licenseHist = (overviewQ.data?.license_history || []).map((r: any) => ({
     id: `lic-${r.id}`,
     username: "license",
     action: String(r.action || "license").toUpperCase(),
@@ -73,7 +64,7 @@ function AuditLogsPage() {
     created_at: String(r.created_at || ""),
   }));
 
-  const logs: AuditLog[] = [...cloudAudit, ...licenseHist, ...posLogs].sort((a, b) =>
+  const logs: AuditLog[] = [...cloudAudit, ...licenseHist].sort((a, b) =>
     String(b.created_at).localeCompare(String(a.created_at)),
   );
 
@@ -89,8 +80,22 @@ function AuditLogsPage() {
   async function doExport() {
     try {
       setExporting(true);
-      const qs = exportQuery({ type: "audit", format: "xlsx" });
-      await downloadApi(`/reports/export?${qs}`, "MBT_AuditLog.xlsx");
+      const csv = [
+        "created_at,user,action,module,details,ip_address",
+        ...filtered.map((row) =>
+          [row.created_at, row.username || row.user_id, row.action, row.module, row.details, row.ip_address]
+            .map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`)
+            .join(","),
+        ),
+      ].join("\r\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `MugoByte_Audit_Log_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
       toast.success("Audit log exported");
     } catch (e: unknown) {
       toast.error((e as Error).message || "Export failed");
@@ -104,17 +109,17 @@ function AuditLogsPage() {
       <PageHeader
         eyebrow="Admin"
         title="Audit Logs"
-        description="POS audit trail plus cloud security events and license history (revoke, renew, transfer, privilege changes)."
+        description="Platform-wide cloud audit events and license history (revoke, renew, transfer, privilege changes)."
         actions={
           <>
-            <Button variant="outline" onClick={() => { logsQ.refetch(); cloudQ.refetch(); }}><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
+            <Button variant="outline" onClick={() => overviewQ.refetch()}><RefreshCw className="mr-1.5 h-4 w-4" />Refresh</Button>
             <Button variant="outline" disabled={exporting} onClick={doExport}><Download className="mr-1.5 h-4 w-4" />Export</Button>
           </>
         }
       />
 
       <div className="mb-4 grid gap-4 sm:grid-cols-3">
-        <Card><CardContent className="p-4"><div className="text-xs uppercase text-muted-foreground">POS events</div><div className="mt-1 font-display text-2xl font-semibold">{posLogs.length}</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-xs uppercase text-muted-foreground">Organizations</div><div className="mt-1 font-display text-2xl font-semibold">{overviewQ.data?.organizations.length || 0}</div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="text-xs uppercase text-muted-foreground">Cloud security</div><div className="mt-1 font-display text-2xl font-semibold">{cloudAudit.length}</div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="text-xs uppercase text-muted-foreground">License history</div><div className="mt-1 font-display text-2xl font-semibold">{licenseHist.length}</div></CardContent></Card>
       </div>
@@ -124,13 +129,13 @@ function AuditLogsPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <CardTitle className="font-display flex items-center gap-2"><ShieldAlert className="h-4 w-4" /> Unified timeline</CardTitle>
-              <CardDescription>{logs.length} events loaded (cloud + POS)</CardDescription>
+              <CardDescription>{logs.length} platform events loaded</CardDescription>
             </div>
             <Input className="h-9 w-64" placeholder="Filter action, user, module…" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {logsQ.isLoading && cloudQ.isLoading ? (
+          {overviewQ.isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">Loading audit logs…</div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">

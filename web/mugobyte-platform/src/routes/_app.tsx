@@ -8,9 +8,11 @@ import { useDocumentTitle } from "@/hooks/use-document-title";
 import { pageTitle, PORTAL_PRODUCT } from "@/lib/brand";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: async () => {
-    const ok = await ensureAuthSession();
-    if (!ok) throw redirect({ to: "/login" });
+  beforeLoad: async ({ location }) => {
+    const ok = await ensureAuthSession().catch(() => false);
+    if (!ok) {
+      throw redirect({ to: "/login", search: { redirect: location.href || "/dashboard" } });
+    }
   },
   component: AppLayout,
 });

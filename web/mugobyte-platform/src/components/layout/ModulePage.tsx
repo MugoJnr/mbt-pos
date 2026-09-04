@@ -1,11 +1,10 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
-import { Download, FileText, Filter, Plus, Printer, Search } from "lucide-react";
+import { Download, Plus, Printer } from "lucide-react";
 
 import { PageShell, PageHeader, EmptyState } from "@/components/layout/PageShell";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 /**
@@ -19,7 +18,8 @@ export function ModulePage({
   description,
   icon,
   tabs,
-  primaryAction = "New",
+  primaryAction,
+  onPrimaryAction,
   emptyTitle,
   emptyDescription,
   children,
@@ -30,37 +30,44 @@ export function ModulePage({
   icon: LucideIcon;
   tabs?: string[];
   primaryAction?: string;
+  onPrimaryAction?: () => void;
   emptyTitle?: string;
   emptyDescription?: string;
   children?: ReactNode;
 }) {
+  const exportRef = useRef<HTMLDivElement>(null);
+  const exportPage = () => {
+    const text = exportRef.current?.innerText?.trim() || `${title}\n${description}`;
+    const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "export"}.txt`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <PageShell>
+    <div ref={exportRef}>
+      <PageShell>
       <PageHeader
         eyebrow={eyebrow}
         title={title}
         description={description}
         actions={
           <>
-            <Button variant="outline" size="sm"><Printer className="mr-1.5 h-3.5 w-3.5" />Print</Button>
-            <Button variant="outline" size="sm"><Download className="mr-1.5 h-3.5 w-3.5" />Export</Button>
-            <Button size="sm"><Plus className="mr-1.5 h-3.5 w-3.5" />{primaryAction}</Button>
+            <Button variant="outline" size="sm" onClick={() => window.print()}><Printer className="mr-1.5 h-3.5 w-3.5" />Print</Button>
+            <Button variant="outline" size="sm" onClick={exportPage}><Download className="mr-1.5 h-3.5 w-3.5" />Export</Button>
+            {primaryAction && onPrimaryAction ? (
+              <Button size="sm" onClick={onPrimaryAction}><Plus className="mr-1.5 h-3.5 w-3.5" />{primaryAction}</Button>
+            ) : null}
           </>
         }
       />
 
       <Card>
         <CardHeader className="gap-4 space-y-0">
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="relative w-full max-w-sm">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder={`Search ${title.toLowerCase()}...`} className="h-9 pl-8" />
-            </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm"><Filter className="mr-1.5 h-3.5 w-3.5" />Filter</Button>
-              <Button variant="outline" size="sm"><FileText className="mr-1.5 h-3.5 w-3.5" />Columns</Button>
-            </div>
-          </div>
           {tabs && tabs.length > 0 && (
             <Tabs defaultValue={tabs[0]}>
               <TabsList className="h-9">
@@ -80,12 +87,12 @@ export function ModulePage({
                 emptyDescription ??
                 `Connect your MBT POS or add your first ${title.toLowerCase().replace(/s$/, "")} to see it here.`
               }
-              actionLabel={`Add ${primaryAction.replace(/^New\s*/i, "") || "item"}`}
             />
           )}
         </CardContent>
       </Card>
-    </PageShell>
+      </PageShell>
+    </div>
   );
 }
 

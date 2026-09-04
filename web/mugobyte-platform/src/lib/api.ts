@@ -392,6 +392,64 @@ export type CloudDevice = {
   deactivated_at?: string;
 };
 
+export type AdminOrganization = Organization & {
+  owner_user_id?: string;
+  settings?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AdminBusiness = {
+  id?: string;
+  org_id?: string | null;
+  org_name?: string;
+  name?: string;
+  owner_user_id?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AdminBackup = {
+  id?: string;
+  business_id?: string;
+  org_id?: string | null;
+  org_name?: string;
+  device_id?: string;
+  storage_path?: string;
+  size_bytes?: number;
+  mbt_version?: string;
+  backup_type?: string;
+  reason?: string;
+  created_at?: string;
+};
+
+export type AdminOverview = {
+  organizations: AdminOrganization[];
+  businesses: AdminBusiness[];
+  devices: Array<CloudDevice & { org_name?: string }>;
+  licenses: Array<CloudLicense & { org_name?: string }>;
+  members: Array<Record<string, unknown>>;
+  backups: AdminBackup[];
+  audit_logs: Array<Record<string, unknown>>;
+  license_history: Array<Record<string, unknown>>;
+  summary: {
+    organizations: number;
+    businesses: number;
+    licenses: number;
+    active_licenses: number;
+    devices: number;
+    enabled_devices: number;
+    members: number;
+    backups: number;
+  };
+  errors?: Record<string, string>;
+  error?: string;
+};
+
+export function getAdminOverview() {
+  return GET<AdminOverview>("/cloud/admin/overview");
+}
+
 export function listCloudLicenses(orgId?: string) {
   const q: Record<string, string | undefined> = {
     org_id: orgId || getOrgId() || undefined,

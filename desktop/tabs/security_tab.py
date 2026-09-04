@@ -18,13 +18,14 @@ from desktop.utils.theme   import C, qss_alpha
 from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     make_table, tbl_item, tbl_right,
                                     tbl_center, page_layout, H2, Caption,
-                                    lovable_tab_qss, Badge, section_card)
+                                    lovable_tab_qss, Badge, section_card,
+                                    tone_chip_qss)
 from desktop.utils.security import (
-    ROLE_SUPERADMIN, ask_superadmin_pin, set_superadmin_pin,
+    ROLE_SUPERADMIN, prompt_superadmin_pin, set_superadmin_pin,
     verify_superadmin_pin,
 )
-from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS
-from desktop.utils.select_controls import SearchableSelect, ReasonSelect
+from desktop.utils.option_lists import STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS
+from desktop.utils.select_controls import SearchableSelect, ReasonSelect, Select
 
 
 class SecurityTab(QWidget):
@@ -54,9 +55,7 @@ class SecurityTab(QWidget):
             c = Card(); cl = c.layout_h((16, 14, 16, 14), 12)
             ic = QLabel('!')
             ic.setFixedSize(40, 40); ic.setAlignment(Qt.AlignCenter)
-            ic.setStyleSheet(
-                f"background:{qss_alpha(C['gold'], 0.13)}; color:{C['gold']}; border-radius:8px; "
-                f"font-size:16px; border:none;")
+            ic.setStyleSheet(tone_chip_qss(tone, radius=8, font_size=16))
             cl.addWidget(ic)
             col = QVBoxLayout(); col.setSpacing(2)
             l = QLabel(label.upper())
@@ -148,7 +147,15 @@ class SecurityTab(QWidget):
         new  = self._pin_new.text().strip()
         conf = self._pin_confirm.text().strip()
         if len(new) < 6:
-            QMessageBox.warning(self, 'Too Short', 'PIN must be at least 6 characters.'); return
+            QMessageBox.warning(
+                self, 'Too Short', 'PIN must be at least 6 digits.'); return
+        # `isdigit()` alone accepts superscripts and other Unicode digits, which
+        # would not survive a numeric keypad round trip.
+        if not (new.isascii() and new.isdigit()):
+            QMessageBox.warning(
+                self, 'Digits Only',
+                'PIN must contain digits only (0-9) — at least 6 of them.')
+            return
         if new != conf:
             QMessageBox.warning(self, 'Mismatch', 'PIN and confirmation do not match.'); return
         cfg = self.api.get_settings() or {}
@@ -179,15 +186,32 @@ class SecurityTab(QWidget):
         form = QFormLayout(); form.setSpacing(12)
         self._adj_prod = SearchableSelect(placeholder='Search product…')
         self._adj_prod.setMinimumHeight(42)
-        self._adj_qty  = QDoubleSpinBox(); self._adj_qty.setRange(0, 999999)
+        self._adj_direction = Select(
+            items=[
+                ('Add stock', 'add'),
+                ('Remove stock', 'remove'),
+                ('Update current stock', 'set'),
+            ],
+            height=42,
+        )
+        self._adj_qty  = QDoubleSpinBox(); self._adj_qty.setRange(0.0001, 999999)
         self._adj_qty.setDecimals(4); self._adj_qty.setMinimumHeight(42)
+        self._adj_qty.setValue(1)
         self._adj_qty.setEnabled(False)
         self._adj_prod.currentIndexChanged.connect(self._sync_adjustment_quantity)
         self._adj_prod.cleared.connect(self._sync_adjustment_quantity)
-        self._adj_reason = ReasonSelect(reasons=STOCK_ADJUSTMENT_REASONS, height=42)
+        self._adj_direction.currentIndexChanged.connect(
+            self._update_adjustment_preview)
+        self._adj_qty.valueChanged.connect(self._update_adjustment_preview)
+        self._adj_reason = ReasonSelect(reasons=STOCK_INCREASE_REASONS, height=42)
+        self._adj_reason_bucket = None
+        self._adj_preview = QLabel('Select a product to preview the result.')
+        self._adj_preview.setWordWrap(True)
 
         for lbl, w2 in [('Product:', self._adj_prod),
-                         ('New Stock Qty:', self._adj_qty),
+                         ('Adjustment Type:', self._adj_direction),
+                         ('Quantity:', self._adj_qty),
+                         ('Resulting Stock:', self._adj_preview),
                          ('Reason:', self._adj_reason)]:
             l = QLabel(lbl); l.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
             form.addRow(l, w2)
@@ -230,7 +254,38 @@ class SecurityTab(QWidget):
         pid = self._adj_prod.current_value()
         prod = getattr(self, '_adj_prods', {}).get(pid)
         self._adj_qty.setEnabled(prod is not None)
-        self._adj_qty.setValue(float((prod or {}).get('stock') or 0))
+        self._update_adjustment_preview()
+
+    def _update_adjustment_preview(self, _value=None):
+        pid = self._adj_prod.current_value()
+        prod = getattr(self, '_adj_prods', {}).get(pid)
+        if not prod:
+            self._adj_preview.setText('Select a product to preview the result.')
+            return
+        old = round(float(prod.get('stock') or 0), 4)
+        amount = round(float(self._adj_qty.value()), 4)
+        action = self._adj_direction.current_value()
+        result = (
+            amount if action == 'set'
+            else round(old + (amount if action == 'add' else -amount), 4)
+        )
+        bucket = 'decrease' if (
+            action == 'remove' or (action == 'set' and result < old)
+        ) else 'increase'
+        if bucket != self._adj_reason_bucket:
+            self._adj_reason_bucket = bucket
+            self._adj_reason.set_reasons(
+                STOCK_DECREASE_REASONS if bucket == 'decrease'
+                else STOCK_INCREASE_REASONS)
+            self._adj_reason.set_value(
+                'Stock-take Shortage' if bucket == 'decrease'
+                else 'Stock-take Surplus')
+        self._adj_preview.setText(
+            f'{old:g} → {result:g}' + (' · No change' if old == result else ''))
+        self._adj_preview.setStyleSheet(
+            f"color:{C['err'] if result < 0 else C['text2']};"
+            "font-size:13px;background:transparent;"
+        )
 
     def _apply_adj(self):
         if self._adjustment_busy:
@@ -276,21 +331,53 @@ class SecurityTab(QWidget):
                 'Stock changed since it was loaded. The latest quantity is now '
                 'shown; review it and submit again.')
             return
-        new_qty = self._adj_qty.value()
+        direction = self._adj_direction.current_value()
+        quantity = round(float(self._adj_qty.value()), 4)
+        current = round(float(prod.get('stock') or 0), 4)
+        if direction not in ('add', 'remove', 'set'):
+            QMessageBox.warning(
+                self, 'Required', 'Choose Add, Remove, or Update current stock.')
+            return
+        if quantity < 0 or (direction != 'set' and quantity <= 0):
+            QMessageBox.warning(
+                self, 'Invalid Quantity',
+                'Adjustment quantity must be greater than zero.')
+            return
+        if direction == 'remove' and quantity > current:
+            QMessageBox.warning(
+                self, 'Invalid Quantity',
+                f'Cannot remove {quantity:g}; only {current:g} is available.')
+            return
+        resulting = (
+            quantity if direction == 'set'
+            else round(current + (
+                quantity if direction == 'add' else -quantity), 4)
+        )
         if QMessageBox.question(self, 'Confirm Adjustment',
                 f"Adjust '{prod['name']}' stock:\n"
-                f"  Current: {prod['stock']}\n"
-                f"  New:     {new_qty}\n\n"
+                f"  Action:  {direction.title()} {quantity:g}\n"
+                f"  Current: {current:g}\n"
+                f"  New:     {resulting:g}\n\n"
                 f"Reason: {reason}\n\nContinue?",
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
-        if not ask_superadmin_pin(self.api, self, reason='Stock Adjustment'):
-            return
+        # Same rule as the API: the PIN step-up follows the resulting on-hand,
+        # so only a net reduction is challenged.
+        pin = ''
+        if resulting < current:
+            pin = prompt_superadmin_pin(self, reason='Stock Reduction')
+            if not pin:
+                return
         res = self.api.adjust_stock(
-            prod['id'], new_qty, reason,
+            prod['id'], direction, quantity, reason, pin=pin,
             expected_stock=float(prod.get('stock') or 0),
         )
         if res and res.get('success'):
+            if res.get('no_op'):
+                self._adj_result.setText(
+                    'No change: counted quantity already matches current stock.')
+                self._load_products_for_adj()
+                return
             self._adj_result.setText(
                 f"✓  {prod['name']}: {res['old_stock']} → {res['new_stock']}")
             self._adj_result.setStyleSheet(

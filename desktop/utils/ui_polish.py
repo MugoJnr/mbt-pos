@@ -30,7 +30,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from desktop.utils.theme import C, RADIUS, qss_alpha
+from desktop.utils.theme import (
+    C, RADIUS, accent_ref, accent_value, qss_alpha, readable_ink)
 
 
 def apply_card_shadow(widget: QWidget, blur: int = 18, dy: int = 6, alpha: int = 64) -> None:
@@ -79,13 +80,13 @@ class EmptyState(QFrame):
             f"background:{qss_alpha(gold, 0.12)}; border-radius:26px; border:none;"
         )
         try:
-            from desktop.utils.nav_icons import kpi_pixmap
-            self._icon.setPixmap(kpi_pixmap(self._icon_key, 26, accent=gold))
+            from desktop.utils.nav_icons import apply_label_icon
+            apply_label_icon(self._icon, 'kpi', self._icon_key, 26, accent=gold)
             self._icon.setText("")
         except Exception:
             self._icon.setText("·")
             self._icon.setStyleSheet(
-                f"font-size:22px; font-weight:800; color:{gold}; "
+                f"font-size:22px; font-weight:800; color:{C['gold_ink']}; "
                 f"background:{qss_alpha(gold, 0.12)}; border-radius:26px; border:none;"
             )
         self._title.setStyleSheet(
@@ -349,7 +350,9 @@ class AnimatedKPI(QFrame):
         parent=None,
     ):
         super().__init__(parent)
-        self._accent = accent or C["gold"]
+        # Token, not hex: a cached hex is replayed on every refresh and keeps
+        # the other theme's colour after a switch.
+        self._accent_ref = accent_ref(accent) or "gold"
         self._label = label
         self._icon_key = icon
         self._numeric_target: Optional[float] = None
@@ -420,8 +423,12 @@ class AnimatedKPI(QFrame):
             return
         super().keyPressEvent(e)
 
+    @property
+    def _accent(self):
+        return accent_value(self._accent_ref, C["gold"])
+
     def refresh_theme(self):
-        a = self._accent or C["gold"]
+        a = self._accent
         r = RADIUS["xl"]
         self.setStyleSheet(
             f"QFrame {{ background:{C['card']}; border:1px solid {C['border']}; "
@@ -433,8 +440,8 @@ class AnimatedKPI(QFrame):
             f"border:none;"
         )
         try:
-            from desktop.utils.nav_icons import kpi_pixmap
-            self._icon.setPixmap(kpi_pixmap(self._icon_key, 24, accent=a))
+            from desktop.utils.nav_icons import apply_label_icon
+            apply_label_icon(self._icon, 'kpi', self._icon_key, 24, accent=a)
             self._icon.setText("")
         except Exception:
             pass
@@ -442,8 +449,11 @@ class AnimatedKPI(QFrame):
             f"color:{C['muted']}; font-size:11px; font-weight:700; letter-spacing:0.6px; "
             f"background:transparent; border:none;"
         )
+        # The accent doubles as the left border, where 3:1 is enough; as the
+        # value text it must clear 4.5:1 or fall back to body text.
         self._val.setStyleSheet(
-            f"color:{a}; font-size:32px; font-weight:800; background:transparent; border:none;"
+            f"color:{readable_ink(a, C['card'])}; font-size:32px; font-weight:800; "
+            f"background:transparent; border:none;"
         )
         self._val.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         # Tabular figures so KPI decimals/columns scan consistently across the row
@@ -468,7 +478,7 @@ class AnimatedKPI(QFrame):
     def set_value(self, v, color=None):
         """Set display value; animates when purely numeric or KES money-like."""
         if color:
-            self._accent = color
+            self._accent_ref = accent_ref(color) or self._accent_ref
             self.refresh_theme()
         text = str(v)
         # Try animate integers / money

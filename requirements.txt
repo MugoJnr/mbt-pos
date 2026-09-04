@@ -33,3 +33,10 @@ flask-cors>=4.0
 click>=8.1
 # Optional: enables websocket support for the web dashboard (imported lazily)
 flask-sock>=0.7
+
+# Printing — Windows RAW spooler + optional serial legacy ports
+# (LAN ESC/POS uses stdlib sockets only; no python-escpos / libusb required)
+pywin32>=306
+pyserial>=3.5
+# Optional logo rasterization for thermal receipts (graceful if missing)
+Pillow>=10.0

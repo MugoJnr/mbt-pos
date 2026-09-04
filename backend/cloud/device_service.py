@@ -15,17 +15,28 @@ from urllib.parse import quote
 logger = logging.getLogger('cloud.devices')
 
 
+def _safe_hostname() -> str:
+    """socket.gethostname() can stall on broken DNS/NetBIOS — bound it."""
+    import os
+    env = (os.environ.get('COMPUTERNAME') or os.environ.get('HOSTNAME') or '').strip()
+    if env:
+        return env
+    try:
+        socket.setdefaulttimeout(2.0)
+        return socket.gethostname() or 'unknown'
+    except Exception:
+        return 'unknown'
+    finally:
+        try:
+            socket.setdefaulttimeout(None)
+        except Exception:
+            pass
+
+
 def _quick_online(timeout: float = 1.0) -> bool:
     """Fail-open connectivity probe — never hang shop UI/threads."""
-    import socket
-    for host in (('1.1.1.1', 53), ('8.8.8.8', 53)):
-        try:
-            s = socket.create_connection(host, timeout=timeout)
-            s.close()
-            return True
-        except OSError:
-            pass
-    return False
+    from backend.cloud.net_gate import network_up
+    return network_up(timeout)
 
 
 def _resolve_cloud_ids() -> tuple[str, str]:
@@ -107,7 +118,7 @@ class DeviceService:
 
         return {
             'device_id': device_id,
-            'computer_name': socket.gethostname(),
+            'computer_name': _safe_hostname(),
             'hardware_fingerprint': fingerprint,
             'operating_system': f'{platform.system()} {platform.release()}',
             'platform': platform.system(),

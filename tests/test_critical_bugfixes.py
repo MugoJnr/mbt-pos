@@ -23,6 +23,8 @@ if ROOT not in sys.path:
 
 
 class _ApiFixture(unittest.TestCase):
+    PIN = '864200'
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._db_path = os.path.join(self._tmpdir.name, 'test.db')
@@ -53,6 +55,11 @@ class _ApiFixture(unittest.TestCase):
         db.execute(
             "INSERT INTO customers (name, phone, credit_limit) VALUES (?,?,?)",
             ('Ada Debt', '0700', 5000)
+        )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash(self.PIN)),
         )
         db.commit()
         db.close()
@@ -107,7 +114,8 @@ class TestDebtDeleteRestock(_ApiFixture):
         db.close()
         self.assertEqual(stock_mid, 47.0)
 
-        res = self.api.delete_debt_invoice(inv_id, 'test delete unpaid debt')
+        res = self.api.delete_debt_invoice(
+            inv_id, 'test delete unpaid debt', pin=self.PIN)
         self.assertTrue(res.get('success'), res)
         self.assertTrue(res.get('restocked'), res)
 
@@ -132,7 +140,7 @@ class TestDebtDeleteRestock(_ApiFixture):
     def test_no_double_restock_when_already_voided(self):
         sale_id, inv_id = self._make_credit_sale(qty=2.0, stock_before=40)
         # First void restores stock
-        v = self.api.void_sale(sale_id, 'pre-void')
+        v = self.api.void_sale(sale_id, 'pre-void', pin=self.PIN)
         self.assertTrue(v.get('success'), v)
         db = self.ac._db()
         stock1 = float(db.execute("SELECT stock FROM products WHERE id=1").fetchone()['stock'])
@@ -146,7 +154,8 @@ class TestDebtDeleteRestock(_ApiFixture):
         db.close()
         self.assertEqual(stock1, 40.0)
 
-        res = self.api.delete_debt_invoice(inv_id, 'delete after void')
+        res = self.api.delete_debt_invoice(
+            inv_id, 'delete after void', pin=self.PIN)
         self.assertTrue(res.get('success'), res)
 
         db = self.ac._db()

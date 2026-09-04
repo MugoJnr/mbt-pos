@@ -790,8 +790,10 @@ def trial_balance(conn, as_of=None, start=None) -> dict:
         f" COALESCE(SUM(jl.debit),0) as debit_total,"
         f" COALESCE(SUM(jl.credit),0) as credit_total "
         f"FROM chart_of_accounts coa "
-        f"LEFT JOIN journal_lines jl ON jl.account_code=coa.code "
-        f"LEFT JOIN journal_entries je ON je.id=jl.journal_id AND {where} "
+        f"LEFT JOIN (SELECT jl.account_code, jl.debit, jl.credit "
+        f"           FROM journal_lines jl "
+        f"           JOIN journal_entries je ON je.id=jl.journal_id "
+        f"           WHERE {where}) jl ON jl.account_code=coa.code "
         f"WHERE coa.deleted_at IS NULL AND coa.is_active=1 "
         f"GROUP BY coa.code ORDER BY coa.code",
         params
@@ -851,10 +853,13 @@ def profit_and_loss(conn, start=None, end=None) -> dict:
                COALESCE(SUM(jl.debit),0) as debit_total,
                COALESCE(SUM(jl.credit),0) as credit_total
         FROM chart_of_accounts coa
-        LEFT JOIN journal_lines jl ON jl.account_code=coa.code
-        LEFT JOIN journal_entries je ON je.id=jl.journal_id
-            AND je.status='posted' AND je.deleted_at IS NULL
-            AND date(je.entry_date) BETWEEN date(?) AND date(?)
+        LEFT JOIN (
+            SELECT jl.account_code, jl.debit, jl.credit
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id=jl.journal_id
+            WHERE je.status='posted' AND je.deleted_at IS NULL
+              AND date(je.entry_date) BETWEEN date(?) AND date(?)
+        ) jl ON jl.account_code=coa.code
         WHERE coa.deleted_at IS NULL AND coa.is_active=1
           AND coa.account_type IN ('income','cogs','expense')
         GROUP BY coa.code
@@ -908,10 +913,13 @@ def balance_sheet(conn, as_of=None) -> dict:
                COALESCE(SUM(jl.debit),0) as debit_total,
                COALESCE(SUM(jl.credit),0) as credit_total
         FROM chart_of_accounts coa
-        LEFT JOIN journal_lines jl ON jl.account_code=coa.code
-        LEFT JOIN journal_entries je ON je.id=jl.journal_id
-            AND je.status='posted' AND je.deleted_at IS NULL
-            AND date(je.entry_date)<=date(?)
+        LEFT JOIN (
+            SELECT jl.account_code, jl.debit, jl.credit
+            FROM journal_lines jl
+            JOIN journal_entries je ON je.id=jl.journal_id
+            WHERE je.status='posted' AND je.deleted_at IS NULL
+              AND date(je.entry_date)<=date(?)
+        ) jl ON jl.account_code=coa.code
         WHERE coa.deleted_at IS NULL AND coa.is_active=1
           AND coa.account_type IN ('asset','liability','equity')
         GROUP BY coa.code

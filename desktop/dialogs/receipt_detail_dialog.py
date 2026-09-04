@@ -84,7 +84,7 @@ class ReceiptDetailDialog(QDialog):
                 sale_day = (self.sale.get('created_at') or '')[:10]
             day_bit = (
                 f"<b>Sale date:</b> {sale_day}"
-                + (" <span style='color:#D97706'>(not today)</span>"
+                + (f" <span style='color:{C['warn']}'>(not today)</span>"
                    if not_today else "")
                 + " &nbsp; "
             )

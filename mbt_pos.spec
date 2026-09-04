@@ -24,19 +24,38 @@ def _runtime_version_manifest():
         f.write('\n')
     return target
 
-def _web_datas_without_node_modules():
-    """Ship web/ for Flask routes + dashboard-ui/dist only (skip node_modules/src)."""
+def _web_runtime_datas():
+    """Ship only what Flask actually serves at runtime.
+
+    web_routes serves the built SPA (<app>/dist) plus web/templates. Walking
+    all of web/ additionally swept in the front-end toolchain — lockfiles,
+    tsconfig/eslint/vite configs, READMEs, developer scratch scripts, and a
+    second copy of every icon under public/ — none of which a shop PC can use.
+    """
     web_root = os.path.join(HERE, 'web')
     out = []
-    skip_dirs = {'node_modules', '.git', '__pycache__', 'src'}
-    for root, dirs, files in os.walk(web_root):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
-        rel_root = os.path.relpath(root, HERE)
-        for f in files:
-            if f.endswith(('.map', '.ts', '.tsx')) and 'dashboard-ui' in rel_root and 'dist' not in rel_root:
-                continue
-            src = os.path.join(root, f)
-            out.append((src, rel_root))
+
+    for name in sorted(os.listdir(web_root)):
+        src = os.path.join(web_root, name)
+        if os.path.isfile(src) and name.endswith('.py'):
+            out.append((src, 'web'))
+
+    shipped_trees = [os.path.join(web_root, 'templates')]
+    for entry in sorted(os.listdir(web_root)):
+        dist = os.path.join(web_root, entry, 'dist')
+        if os.path.isdir(dist):
+            shipped_trees.append(dist)
+
+    for tree in shipped_trees:
+        if not os.path.isdir(tree):
+            continue
+        for root, dirs, files in os.walk(tree):
+            dirs[:] = [d for d in dirs if d not in ('__pycache__', '.git')]
+            rel_root = os.path.relpath(root, HERE)
+            for f in files:
+                if f.endswith('.map'):
+                    continue
+                out.append((os.path.join(root, f), rel_root))
     return out
 
 
@@ -69,7 +88,7 @@ a = Analysis(
         (os.path.join(HERE, 'printing'),    'printing'),
         (os.path.join(HERE, 'diagnostics'), 'diagnostics'),
         (_runtime_version_manifest(), '.'),
-    ] + _safe_config_datas() + _web_datas_without_node_modules() + (
+    ] + _safe_config_datas() + _web_runtime_datas() + (
         [(os.path.join(HERE, 'web_launcher.py'), '.')]
         if os.path.exists(os.path.join(HERE, 'web_launcher.py')) else []
     ),
@@ -103,12 +122,33 @@ a = Analysis(
         'backend.internet_monitor',
         'diagnostics.diagnostic_engine',
         'printing.printer_engine',
+        'printing.escpos_commands',
+        'printing.profiles',
+        'printing.transports',
+        'printing.receipt_formatter',
+        'printing.print_job',
+        'win32print', 'win32api', 'pywintypes',
         'desktop.wizard.setup_wizard',
         'desktop.utils.theme',
+        # Imported lazily inside MainWindow._build_ui, so pin them explicitly —
+        # a missed collapsible-sidebar module ships a POS with no left rail.
+        'desktop.utils.sidebar_prefs',
+        'desktop.utils.shell_splitter',
         'desktop.utils.widgets',
         'desktop.utils.api_client',
         'desktop.utils.log_config',
         'desktop.tabs.debt_tab',
+        'desktop.payments',
+        'desktop.payments.service',
+        'desktop.payments.provider',
+        'desktop.payments.cloud_client',
+        'desktop.payments.matching',
+        'desktop.payments.repository',
+        'desktop.payments.schema',
+        'desktop.payments.models',
+        'desktop.payments.security',
+        'desktop.dialogs.mpesa_checkout_dialog',
+        'desktop.dialogs.payment_inbox_dialog',
         'desktop.pos',
         'desktop.pos.layout_ids',
         'desktop.pos.panel_factory',
@@ -147,6 +187,7 @@ exe = EXE(
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
+    manifest=os.path.join(HERE, 'mbt_pos.manifest'),
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

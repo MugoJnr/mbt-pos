@@ -12,7 +12,11 @@ import { getUser, isPlatformAdmin } from "@/lib/api";
 
 export const Route = createFileRoute("/_auth/login")({
   component: LoginPage,
-  validateSearch: (search: Record<string, unknown>) => ({
+  // Both keys stay optional so guards may redirect here with just `redirect`
+  // and plain <Link to="/login"> keeps working.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { redirect?: string; next?: string } => ({
     redirect: typeof search.redirect === "string" ? search.redirect : undefined,
     next: typeof search.next === "string" ? search.next : undefined,
   }),

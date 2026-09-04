@@ -1,8 +1,8 @@
 {
-    "version": "3.0.77",
-    "build": "RC-2026-09-03-v3.0.77",
-    "released": "2026-09-03",
-    "release_notes": "MBT POS v3.0.77 Inventory and remote reliability hardening: Adjust Stock now supports setting counted stock to exactly zero (with PIN gate enforced on net reductions), plus connector-token Cloudflare diagnostics now correctly treat token mode as healthy without requiring local credentials JSON. Preserves v3.0.76 credit checkout and v3.0.75 inventory integrity protections.",
-    "checksum_sha256": "8dcaf30ef2571beeb3305844dfdd24055c12c2475904f6e79a35b3b12f7e7cd6",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.77/MBT_POS_Setup.exe"
+    "version": "3.0.80",
+    "build": "RC-2026-09-04-v3.0.80",
+    "released": "2026-09-04",
+    "release_notes": "MBT POS v3.0.80: Fix offline/Supabase hang (net_gate, gated cloud calls, CloudBoot off splash). Gate payments.mugobyte.com + updater offline. Includes v3.0.79 Adjust Stock Not Responding fix.",
+    "checksum_sha256": "aa0c9326b2b4ca840775807bbaf2453a0220a4432af408ba9cea46730c43f63d",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.80/MBT_POS_Setup.exe"
 }

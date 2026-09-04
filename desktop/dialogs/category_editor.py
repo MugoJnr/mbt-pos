@@ -16,6 +16,7 @@ from desktop.utils.category_visuals import (
     resolve_icon_path, svg_to_pixmap, accessible_fg, find_icon, icon_to_pixmap,
 )
 from desktop.dialogs.icon_picker import IconPickerDialog
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 class CategoryEditorDialog(QDialog):
@@ -81,7 +82,8 @@ class CategoryEditorDialog(QDialog):
         self._img_btn.clicked.connect(self._pick_image)
         ctrl.addWidget(self._img_btn)
         self._icon_hint = QLabel('')
-        self._icon_hint.setStyleSheet(f"color:{C['muted']}; font-size:11px;")
+        # muted at 11px falls under 4.5:1 on the light card; text2 clears it.
+        self._icon_hint.setStyleSheet(f"color:{C['text2']}; font-size:11px;")
         self._icon_hint.setWordWrap(True)
         ctrl.addWidget(self._icon_hint)
         prev_row.addLayout(ctrl, 1)
@@ -124,6 +126,8 @@ class CategoryEditorDialog(QDialog):
         save.clicked.connect(self._save)
         btns.addWidget(save)
         lay.addLayout(btns)
+        # Enter saves through _save() validation instead of Cancel / Pick colour.
+        wire_dialog_keys(self, primary=save, cancel=cancel)
 
         self.setStyleSheet(
             f"QDialog {{ background:{C['app']}; color:{C['text']}; }}"

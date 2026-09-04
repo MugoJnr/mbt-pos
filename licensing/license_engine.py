@@ -12,6 +12,7 @@ Offline-first license validation with:
 import os, sys, json, time, uuid, hashlib, hmac, base64, shutil
 import sqlite3, platform, threading, logging, requests
 import glob
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Tuple
 logger = logging.getLogger('license_engine')
@@ -181,14 +182,21 @@ def _store_is_writable(path: str) -> bool:
         os.makedirs(path, exist_ok=True)
     except OSError:
         return False
-    probe = os.path.join(path, '.write_probe')
+    probe = os.path.join(
+        path,
+        f'.write_probe_{os.getpid()}_{threading.get_ident()}_{uuid.uuid4().hex}',
+    )
     try:
         with open(probe, 'w', encoding='utf-8') as handle:
             handle.write('ok')
-        os.remove(probe)
         return True
     except OSError:
         return False
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
 
 
 def collect_activation_diagnostics() -> dict:
@@ -466,7 +474,12 @@ def _collect_hardware_probe_parts() -> list:
             try:
                 out = subprocess.check_output(cmd, shell=False,
                                                stderr=subprocess.DEVNULL,
-                                               timeout=5).decode(errors='ignore')
+                                               timeout=5,
+                                               creationflags=(
+                                                   0x08000000
+                                                   if sys.platform == 'win32'
+                                                   else 0
+                                               )).decode(errors='ignore')
                 for line in out.splitlines():
                     if prefix in line:
                         val = line.split('=', 1)[-1].strip()
@@ -583,9 +596,7 @@ def _decrypt_payload_with_secrets(
     payload = None
     for secret in secrets or _legacy_secret_candidates():
         try:
-            key = hashlib.pbkdf2_hmac(
-                'sha256', device_id.encode(), secret, iterations=100_000, dklen=32
-            )
+            key = _derive_key_cached(device_id, secret)
             if hmac.compare_digest(_hmac_hex(key, enc), sig) or hmac.compare_digest(
                 _hmac_hex(secret, enc), sig
             ):
@@ -625,13 +636,30 @@ def _resolve_inner_license_token() -> tuple[Optional[str], Optional[str]]:
     raw = _read_raw_license_token()
     if not raw:
         return None, None
-    for did in _fingerprint_device_id_candidates():
+    # Normal installs are bound to one of these inexpensive identifiers. Do
+    # not launch legacy WMIC probes unless none can decrypt the stored token.
+    cheap = []
+    for did in (
+        _read_cached_device_id(),
+        _get_device_fingerprint(),
+        *_cloud_identity_device_ids(),
+    ):
+        if did and did not in cheap:
+            cheap.append(did)
+    for did in cheap:
         inner = _unwrap_license_blob(raw, did)
         if not inner:
             continue
         lic = _decrypt_payload_with_secrets(inner, did)
         if lic and lic.get('expires_at'):
             return inner, did
+    legacy = _get_legacy_wmic_fingerprint()
+    if legacy and legacy not in cheap:
+        inner = _unwrap_license_blob(raw, legacy)
+        if inner:
+            lic = _decrypt_payload_with_secrets(inner, legacy)
+            if lic and lic.get('expires_at'):
+                return inner, legacy
     return None, None
 
 
@@ -721,10 +749,22 @@ def _verify_sig(data: bytes, sig: str, secret: bytes | None = None) -> bool:
         return False
     return hmac.compare_digest(_sign(data, secret), sig)
 
-def _derive_key(device_id: str, secret: bytes | None = None) -> bytes:
+@lru_cache(maxsize=32)
+def _derive_key_cached(device_id: str, secret: bytes) -> bytes:
     return hashlib.pbkdf2_hmac(
-        'sha256', device_id.encode(), _with_secret(secret),
+        'sha256', device_id.encode(), secret,
         iterations=100_000, dklen=32)
+
+
+def _derive_key(device_id: str, secret: bytes | None = None) -> bytes:
+    """Derive once per process for each immutable device/secret pair.
+
+    PBKDF2 deliberately costs CPU. Repeating it for every encrypted setting
+    read made periodic license checks consume visible CPU while the POS was
+    otherwise idle. The resolved secret bytes are part of the cache key, so a
+    migrated or rotated local secret cannot reuse a stale derived key.
+    """
+    return _derive_key_cached(device_id, _with_secret(secret))
 
 def _xor_encrypt(data: bytes, key: bytes) -> bytes:
     out = bytearray(len(data)); kl = len(key)
@@ -1039,6 +1079,7 @@ class LicenseEngine:
         self._license_data = data
         self._maybe_rebind_to_canonical_fingerprint(matched_did)
         self._maybe_clear_stale_tamper()
+        self._maybe_clear_stale_cloud_lock()
         self._evaluate_state()
 
     def _maybe_rebind_to_canonical_fingerprint(self, matched_did: str | None):
@@ -1088,6 +1129,39 @@ class LicenseEngine:
             return
         self.store.set('tampered', False)
         self.store.log('TAMPER_CLEARED', 'Valid license — removed stale tamper flag')
+
+    def _maybe_clear_stale_cloud_lock(self):
+        """Remove obsolete cloud-trial locks from a valid local signed license.
+
+        Older builds could leave ``cloud_license_key`` and offline-grace flags
+        behind after a shop activated a local lifetime key. Waiting for a
+        background cloud cycle to repair that state made every fresh launch
+        report CRITICAL despite the valid local token.
+        """
+        lic = self._license_data or {}
+        is_cloud_license = bool(
+            str(lic.get('license_key') or '').strip()
+            or str(lic.get('source') or '').strip().lower() == 'mbt_cloud'
+        )
+        if not lic or is_cloud_license:
+            return
+        stale = bool(
+            self.store.get('cloud_license_key')
+            or self.store.get('requires_online')
+            or self.store.get('offline_lock')
+        )
+        if not stale:
+            return
+        now = int(time.time())
+        self.store.set('cloud_license_key', '')
+        self.store.set('last_cloud_ok_ts', now)
+        self.store.set('last_cloud_check_ts', now)
+        self.store.set('requires_online', False)
+        self.store.set('offline_lock', False)
+        self.store.log(
+            'LOCAL_LICENSE_CLOUD_STATE_CLEARED',
+            'Removed stale cloud/offline flags from valid local license',
+        )
 
     def _evaluate_state(self):
         if not self._license_data:
@@ -1165,7 +1239,10 @@ class LicenseEngine:
             allow_local = (os.environ.get('MBT_ALLOW_LOCAL_KEYS') or '').strip() in (
                 '1', 'true', 'TRUE', 'yes', 'YES',
             )
-            if not allow_local:
+            # Environment variables are customer-controlled on an installed PC.
+            # Keep legacy key generation available only to source-based developer
+            # and test runs; frozen production builds always require Portal keys.
+            if not allow_local or getattr(sys, 'frozen', False):
                 self.store.log('ACTIVATION_FAIL', 'Local keygen key rejected (online-only policy)')
                 return False, (
                     "Local/offline keys are no longer accepted. "
@@ -1209,6 +1286,11 @@ class LicenseEngine:
             self.store.set('highest_ts_seen', local_now)
             self.store.set('tampered', False)
             self.store.set('revoked', False)
+            self.store.set('cloud_license_key', '')
+            self.store.set('last_cloud_ok_ts', local_now)
+            self.store.set('last_cloud_check_ts', local_now)
+            self.store.set('requires_online', False)
+            self.store.set('offline_lock', False)
             self._license_data = lic
             self._tamper_count = 0
             self._evaluate_state()

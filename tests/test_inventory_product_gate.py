@@ -34,6 +34,11 @@ class InventoryProductGate(unittest.TestCase):
             "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
             ('owner', 'x:y', 'superadmin'),
         )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash('123456')),
+        )
         db.commit()
         db.close()
 
@@ -61,7 +66,8 @@ class InventoryProductGate(unittest.TestCase):
         row = dict(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
         db.close()
         self.assertEqual(row['name'], 'Gate Soap')
-        self.assertEqual(float(row['stock']), 10.0)
+        self.assertEqual(float(row['stock']), 0.0)
+        self.assertIn('zero stock', created.get('warning', '').lower())
         self.assertEqual(int(row.get('is_active', 1) or 1), 1)
 
         upd = self.api.update_product(pid, {
@@ -96,8 +102,15 @@ class InventoryProductGate(unittest.TestCase):
         })
         self.assertTrue(created.get('success'), created)
         pid = int(created['id'])
+        db = self.ac._db()
+        db.execute("UPDATE products SET stock=20 WHERE id=?", (pid,))
+        db.commit()
+        db.close()
 
-        adj = self.api.adjust_stock(pid, 4, 'cycle count correction')
+        adj = self.api.adjust_stock(
+            pid, 'remove', 16, 'cycle count correction',
+            pin='123456', expected_stock=20,
+        )
         self.assertTrue(adj.get('success'), adj)
         self.assertAlmostEqual(float(adj.get('new_stock') or 0), 4.0, places=2)
 
@@ -132,8 +145,22 @@ class InventoryProductGate(unittest.TestCase):
         })
         pid = int(created['id'])
         self.api._role = 'cashier'
-        denied = self.api.adjust_stock(pid, 99, 'should fail')
+        denied = self.api.adjust_stock(
+            pid, 'add', 99, 'should fail', pin='123456',
+        )
         self.assertIn('error', denied)
+
+    def test_cashier_cannot_mutate_product_catalog_directly(self):
+        self.api._role = 'cashier'
+        denied_create = self.api.create_product({
+            'name': 'Unauthorized Product',
+            'price': 10,
+        })
+        denied_update = self.api.update_product(1, {'name': 'Tampered'})
+        denied_delete = self.api.delete_product(1)
+        self.assertIn('error', denied_create)
+        self.assertIn('error', denied_update)
+        self.assertIn('error', denied_delete)
 
     def test_stock_adjust_rejects_stale_snapshot_and_invalid_payload(self):
         created = self.api.create_product({
@@ -142,14 +169,22 @@ class InventoryProductGate(unittest.TestCase):
             'stock': 8,
         })
         pid = int(created['id'])
+        db = self.ac._db()
+        db.execute("UPDATE products SET stock=8 WHERE id=?", (pid,))
+        db.commit()
+        db.close()
 
         stale = self.api.adjust_stock(
-            pid, 5, 'cycle count', expected_stock=7)
+            pid, 'remove', 3, 'cycle count',
+            pin='123456', expected_stock=7)
         self.assertIn('Stock changed', stale.get('error', ''))
-        missing_reason = self.api.adjust_stock(pid, 5, '   ', expected_stock=8)
+        missing_reason = self.api.adjust_stock(
+            pid, 'remove', 3, '   ', pin='123456', expected_stock=8)
         self.assertIn('reason', missing_reason.get('error', '').lower())
-        invalid = self.api.adjust_stock(pid, -1, 'cycle count', expected_stock=8)
-        self.assertIn('range', invalid.get('error', '').lower())
+        invalid = self.api.adjust_stock(
+            pid, 'remove', -1, 'cycle count',
+            pin='123456', expected_stock=8)
+        self.assertIn('greater than zero', invalid.get('error', '').lower())
 
         db = self.ac._db()
         stock = float(db.execute(

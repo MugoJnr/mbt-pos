@@ -7,6 +7,7 @@ primary_region = 'jnb'
 [env]
   MBT_DATA_ROOT = '/data'
   MBT_ENV = 'production'
+  MBT_WEB_APP = 'portal'
   PORT = '8080'
   MBT_CORS_ORIGINS = 'https://portal.mugobyte.com,https://www.portal.mugobyte.com'
 

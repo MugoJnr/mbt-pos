@@ -34,6 +34,49 @@ TAB_LABELS = {
 }
 
 
+class _EditingCaption(QLabel):
+    """Caption that elides long names to the panel width and keeps a tooltip.
+
+    The permissions card is capped at 340px, so "Editing: <full name>" needs up
+    to 377px for real staff names and used to be clipped mid-word.
+    """
+
+    def __init__(self, text=''):
+        super().__init__()
+        self._full = ''
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setStyleSheet(
+            f"color:{C['text2']}; font-size:13px; font-weight:600; "
+            f"background:transparent; border:none;")
+        self.setText(text)
+
+    def setText(self, text):
+        self._full = str(text or '')
+        self.setToolTip(self._full)
+        self._relayout()
+
+    def full_text(self):
+        return self._full
+
+    def set_dimmed(self, dimmed: bool):
+        self.setStyleSheet(
+            f"color:{C['text2'] if dimmed else C['text']}; font-size:13px; "
+            f"font-weight:600; background:transparent; border:none;")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self):
+        width = max(0, self.width() - 2)
+        if width <= 0:
+            super().setText(self._full)
+            return
+        super().setText(
+            self.fontMetrics().elidedText(self._full, Qt.ElideRight, width))
+
+
 def _fmt_last_login(raw):
     if not raw:
         return 'Never'
@@ -96,7 +139,7 @@ class AdminTab(QWidget):
         rl.addWidget(H2('Permissions'))
         pc=Card(); pl=pc.layout_v()
         self._perms_card = pc
-        self._sel_lbl=Caption('Select a user')
+        self._sel_lbl=_EditingCaption('Select a user')
         roles = list(USER_ROLES)
         if not is_superadmin_role(self.user.get('user',{}).get('role','')):
             roles = [r for r in roles if r != 'superadmin']
@@ -106,6 +149,9 @@ class AdminTab(QWidget):
         )
         self._role_cb.setMinimumHeight(40)
         self._role_cb.setEnabled(False)
+        self._binding_user = False
+        self._saved_role = None
+        self._saved_perms = set()
         self._role_cb.currentIndexChanged.connect(lambda *_: self._on_role_preset())
         pl.addWidget(self._sel_lbl); pl.addWidget(QLabel('Role:')); pl.addWidget(self._role_cb)
         self._chks={}
@@ -175,7 +221,17 @@ class AdminTab(QWidget):
     def on_show(self): self.refresh()
     def refresh(self):
         if self.user.get('user',{}).get('role','') not in ('admin', 'superadmin'): return
+        selected_uid = self._uid
         self.users=self.api.get_users() or []; self._populate(self.users); self._load_audit()
+        if selected_uid:
+            row = next(
+                (i for i, u in enumerate(self.users)
+                 if int(u.get('id') or 0) == int(selected_uid)),
+                None,
+            )
+            if row is not None:
+                self._tbl.selectRow(row)
+                self._on_sel(self._tbl.model().index(row, 0))
     def _filter(self):
         q=self._search.text().lower()
         self._populate([u for u in self.users if q in u.get('username','').lower() or q in (u.get('full_name') or '').lower()])
@@ -239,10 +295,17 @@ class AdminTab(QWidget):
         if not uname: return
         u=next((x for x in self.users if x['username']==uname.text()), None)
         if not u: return
-        self._uid=u['id']; self._sel_lbl.setText(f"Editing: {u.get('full_name') or u['username']}")
-        self._role_cb.set_value(u.get('role','cashier')); self._role_cb.setEnabled(True)
         perms=json.loads(u.get('tab_permissions') or '[]')
         sel_role = u.get('role', 'cashier')
+        self._uid=u['id']; self._sel_lbl.setText(f"Editing: {u.get('full_name') or u['username']}")
+        self._saved_role = sel_role
+        self._saved_perms = set(perms)
+        self._binding_user = True
+        try:
+            self._role_cb.set_value(sel_role)
+        finally:
+            self._binding_user = False
+        self._role_cb.setEnabled(True)
         for tid,cb in self._chks.items():
             cb.setChecked(tid in perms)
             if tid in ('security', 'license'):
@@ -272,18 +335,23 @@ class AdminTab(QWidget):
             if hasattr(self, '_role_cb'):
                 self._role_cb.setEnabled(not dimmed and bool(self._uid))
             if hasattr(self, '_sel_lbl'):
-                self._sel_lbl.setStyleSheet(
-                    f"color:{C['text2'] if dimmed else C['text']}; font-size:13px; "
-                    f"background:transparent;")
+                self._sel_lbl.set_dimmed(dimmed)
         except Exception:
             pass
 
     def _on_role_preset(self, role: str = None):
         """When role changes, apply the standard tab set for that role."""
-        if not self._uid:
+        if not self._uid or self._binding_user:
             return
         role = role or self._role_cb.current_value() or 'cashier'
-        preset = set(default_tab_permissions(role))
+        # Reverting the dropdown restores this user's saved custom access.
+        # A genuinely different role receives its standard preset, but nothing
+        # is persisted until Save Permissions is clicked.
+        preset = (
+            set(self._saved_perms)
+            if role == self._saved_role
+            else set(default_tab_permissions(role))
+        )
         for tid, cb in self._chks.items():
             if tid in ('security', 'license'):
                 cb.setEnabled(is_superadmin_role(role))
@@ -305,10 +373,22 @@ class AdminTab(QWidget):
             QMessageBox.information(self,'Saved','Permissions updated.'); self.refresh()
     def _reset_pw(self):
         if not self._uid: return
-        pw,ok=QInputDialog.getText(self,'Reset Password','New password:',QLineEdit.Password)
-        if ok and len(pw)>=6:
-            res=self.api.update_user(self._uid,{'password':pw})
-            if res and res.get('success'): QMessageBox.information(self,'Done','Password reset.')
+        pw,ok=QInputDialog.getText(self,'Reset Password','New password (min 6 characters):',
+                                   QLineEdit.Password)
+        if not ok:
+            return
+        pw = (pw or '').strip()
+        if len(pw) < 6:
+            QMessageBox.warning(self, 'Password Too Short',
+                                'The new password must be at least 6 characters.\n'
+                                'Nothing was changed.')
+            return
+        res = self.api.update_user(self._uid, {'password': pw})
+        if res and res.get('success'):
+            QMessageBox.information(self, 'Done', 'Password reset.')
+        else:
+            err = (res or {}).get('error') or 'Password reset failed. Please try again.'
+            QMessageBox.critical(self, 'Reset Failed', str(err))
     def _toggle(self):
         if not self._uid: return
         u=next((x for x in self.users if x['id']==self._uid),None)

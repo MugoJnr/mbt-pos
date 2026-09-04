@@ -214,6 +214,17 @@ class CloudBackupPanel(QWidget):
                     f"{'Auto-backup ON' if st.get('enabled') else 'Auto-backup OFF'} · "
                     f"every {st.get('interval_minutes')} min"
                 )
+            elif st.get('reauth_required'):
+                # Saved tokens are sealed to the Windows account that created
+                # them. On a new profile, or after the shop is moved to another
+                # PC, they can never be decrypted — say so instead of implying
+                # the business was never connected.
+                title = 'Sign in again'
+                sub = (
+                    'Saved cloud sign-in could not be read on this Windows '
+                    'account. Enter your portal.mugobyte.com email and '
+                    'password below to restore cloud backup.'
+                )
             elif not st.get('configured'):
                 title = 'Cloud unavailable'
                 sub = (
@@ -229,6 +240,13 @@ class CloudBackupPanel(QWidget):
 
             if st.get('last_error'):
                 sub += f"\nLast error: {st['last_error']}"
+            queued = int(st.get('queue_depth') or 0)
+            pending_files = int(st.get('pending_file_count') or 0)
+            if queued or pending_files:
+                sub += (
+                    f"\nEncrypted backups waiting locally: {pending_files} "
+                    f"({queued} tracked for automatic retry)."
+                )
 
             self._status_title.setText(title)
             self._status_sub.setText(sub)

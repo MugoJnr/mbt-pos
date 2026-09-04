@@ -28,6 +28,27 @@
     />
   </head>
   <body class="bg-app text-text">
+    <script>
+      // Paint the stored (or OS) theme before React mounts — no dark flash.
+      (function () {
+        try {
+          var saved = localStorage.getItem("mbt-theme");
+          var mode = saved === "dark" || saved === "light" ? saved : "system";
+          var light =
+            mode === "light" ||
+            (mode === "system" &&
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: light)").matches);
+          var root = document.documentElement;
+          root.classList.remove("dark", "light");
+          root.classList.add(light ? "light" : "dark");
+          root.style.colorScheme = light ? "light" : "dark";
+          root.dataset.themeMode = mode;
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", light ? "#F8FAFC" : "#0B1220");
+        } catch (e) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

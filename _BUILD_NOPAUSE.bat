@@ -291,7 +291,19 @@ echo.
 
 :: Copy versioned Setup to Desktop delivery folders
 if exist "dist\MBT_POS_Setup.exe" (
-    for /f "usebackq delims=" %%V in (`"%PY_EXE%" -c "import json;print(json.load(open('version.json',encoding='utf-8-sig'))['version'])"`) do set "APP_VER=%%V"
+    :: Read the version through a temp file. A for /f backquote block cannot
+    :: carry both the quoted interpreter path and the quoted -c program, so the
+    :: inline form silently produced an empty APP_VER and shipped
+    :: "MBT_POS_Setup_v.exe".
+    set "VER_TMP=%TEMP%\mbt_app_version.txt"
+    "%PY_EXE%" -c "import json;print(json.load(open('version.json',encoding='utf-8-sig'))['version'])" > "!VER_TMP!"
+    set "APP_VER="
+    set /p APP_VER=<"!VER_TMP!"
+    del "!VER_TMP!" >nul 2>&1
+    if "!APP_VER!"=="" (
+        echo  [ERROR] Could not read version from version.json
+        exit /b 1
+    )
     set "SETUP_NAME=MBT_POS_Setup_v!APP_VER!.exe"
     set "DEST1=%USERPROFILE%\OneDrive\Desktop\!SETUP_NAME!"
     set "DEST2=%USERPROFILE%\Desktop\!SETUP_NAME!"

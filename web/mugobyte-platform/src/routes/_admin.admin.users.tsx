@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Users, RefreshCw, UserPlus, Trash2, ToggleLeft, ToggleRight } from "lucide-react";
+import { RefreshCw, UserPlus, ToggleLeft, ToggleRight } from "lucide-react";
 import { toast } from "sonner";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,12 +17,11 @@ export const Route = createFileRoute("/_admin/admin/users")({
 });
 
 type User = {
-  id: number;
-  username: string;
+  id: string;
   full_name?: string;
   email?: string;
   role: string;
-  is_active: number;
+  is_active: boolean;
   created_at?: string;
   last_login?: string;
 };
@@ -38,38 +37,45 @@ function AdminUsersPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [showInvite, setShowInvite] = useState(false);
-  const [invite, setInvite] = useState({ username: "", full_name: "", email: "", role: "cashier", password: "" });
+  const [invite, setInvite] = useState({ full_name: "", email: "", role: "member", password: "" });
 
   const usersQ = useQuery({
     queryKey: ["admin-users"],
-    queryFn: () => GET<User[]>("/users"),
+    queryFn: () => GET<{ users?: User[]; error?: string }>("/cloud/admin/users"),
   });
 
   const createMut = useMutation({
-    mutationFn: () => POST("/users", invite),
-    onSuccess: () => {
-      toast.success(`User @${invite.username} created`);
+    mutationFn: () => POST<{ ok?: boolean; error?: string }>("/cloud/admin/users", invite),
+    onSuccess: (result) => {
+      if (result?.error || !result?.ok) {
+        toast.error(result?.error || "Failed to create user");
+        return;
+      }
+      toast.success(`User ${invite.email} created`);
       qc.invalidateQueries({ queryKey: ["admin-users"] });
       setShowInvite(false);
-      setInvite({ username: "", full_name: "", email: "", role: "cashier", password: "" });
+      setInvite({ full_name: "", email: "", role: "member", password: "" });
     },
     onError: () => toast.error("Failed to create user"),
   });
 
   const toggleMut = useMutation({
-    mutationFn: ({ id, is_active }: { id: number; is_active: number }) =>
-      PUT(`/users/${id}`, { is_active }),
-    onSuccess: () => {
+    mutationFn: ({ id, is_active }: { id: string; is_active: boolean }) =>
+      PUT<{ ok?: boolean; error?: string }>(`/cloud/admin/users/${id}`, { is_active }),
+    onSuccess: (result) => {
+      if (result?.error || !result?.ok) {
+        toast.error(result?.error || "Failed to update user");
+        return;
+      }
       toast.success("User updated");
       qc.invalidateQueries({ queryKey: ["admin-users"] });
     },
     onError: () => toast.error("Failed to update user"),
   });
 
-  const users = Array.isArray(usersQ.data) ? usersQ.data : [];
+  const users = usersQ.data?.users || [];
   const filtered = q
     ? users.filter((u) =>
-        (u.username || "").toLowerCase().includes(q.toLowerCase()) ||
         (u.full_name || "").toLowerCase().includes(q.toLowerCase()) ||
         (u.email || "").toLowerCase().includes(q.toLowerCase()),
       )
@@ -94,20 +100,20 @@ function AdminUsersPage() {
           <CardHeader><CardTitle className="font-display text-base">New user</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {(["username", "full_name", "email", "password", "role"] as const).map((k) => (
+              {(["full_name", "email", "password", "role"] as const).map((k) => (
                 <div key={k} className="space-y-1.5">
                   <label className="text-sm font-medium capitalize">{k.replace(/_/g, " ")}</label>
                   <Input
                     type={k === "password" ? "password" : "text"}
                     value={invite[k]}
                     onChange={(e) => setInvite((f) => ({ ...f, [k]: e.target.value }))}
-                    placeholder={k === "role" ? "cashier / manager / admin" : ""}
+                    placeholder={k === "role" ? "member / manager / admin" : ""}
                   />
                 </div>
               ))}
             </div>
             <div className="flex gap-2">
-              <Button onClick={() => createMut.mutate()} disabled={createMut.isPending || !invite.username || !invite.password}>
+              <Button onClick={() => createMut.mutate()} disabled={createMut.isPending || !invite.email.includes("@") || invite.password.length < 8}>
                 {createMut.isPending ? "Creating…" : "Create user"}
               </Button>
               <Button variant="outline" onClick={() => setShowInvite(false)}>Cancel</Button>
@@ -129,14 +135,14 @@ function AdminUsersPage() {
         <CardContent className="p-0">
           {usersQ.isLoading ? (
             <div className="py-12 text-center text-sm text-muted-foreground">Loading users…</div>
-          ) : usersQ.error ? (
-            <div className="py-8 text-center text-sm text-destructive">Access denied or server error.</div>
+          ) : usersQ.error || usersQ.data?.error ? (
+            <div className="py-8 text-center text-sm text-destructive">{usersQ.data?.error || "Access denied or server error."}</div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>User</TableHead>
-                  <TableHead>Username</TableHead>
+                  <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Last login</TableHead>
@@ -147,10 +153,10 @@ function AdminUsersPage() {
                 {filtered.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell>
-                      <div className="font-medium">{u.full_name || u.username}</div>
+                      <div className="font-medium">{u.full_name || u.email}</div>
                       <div className="text-xs text-muted-foreground">{u.email || "—"}</div>
                     </TableCell>
-                    <TableCell className="font-mono text-sm">@{u.username}</TableCell>
+                    <TableCell className="font-mono text-sm">{u.email}</TableCell>
                     <TableCell>
                       <Badge variant={ROLE_COLORS[u.role] as "default" | "secondary" | "destructive" | "outline" || "secondary"}>
                         {u.role}
@@ -164,7 +170,7 @@ function AdminUsersPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => toggleMut.mutate({ id: u.id, is_active: u.is_active ? 0 : 1 })}
+                        onClick={() => toggleMut.mutate({ id: u.id, is_active: !u.is_active })}
                       >
                         {u.is_active ? <ToggleRight className="h-4 w-4 text-success" /> : <ToggleLeft className="h-4 w-4" />}
                         {u.is_active ? "Disable" : "Enable"}

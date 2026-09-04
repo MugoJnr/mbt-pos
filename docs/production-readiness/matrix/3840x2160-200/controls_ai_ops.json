@@ -1,0 +1,32 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Refresh Health",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "*  Support Report",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    }
+  ],
+  "fields": [],
+  "checks": []
+}

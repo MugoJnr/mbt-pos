@@ -193,7 +193,10 @@ class LicenseTab(QWidget):
             rw = QHBoxLayout()
             l  = QLabel(lbl_txt)
             l.setStyleSheet(f"color:{C['text']}; font-size:12px;")
-            l.setFixedWidth(120)
+            # Minimum (not fixed) width: "Plan details:" needs ~156px and was
+            # being clipped by the old 120px cap.
+            l.setMinimumWidth(120)
+            l.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
             v  = QLabel(val_txt)
             v.setStyleSheet(f"color:{C['text']}; font-size:12px; font-weight:600;")
             v.setWordWrap(True)

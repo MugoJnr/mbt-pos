@@ -508,11 +508,6 @@ def _kill_orphan(w) -> tuple | None:
         try:
             from PyQt5.QtCore import Qt
             w.setAttribute(Qt.WA_DontShowOnScreen, True)
-            # Prevent Windows from painting decorated chrome if HWND already exists
-            try:
-                w.setWindowOpacity(0.0)
-            except Exception:
-                pass
         except Exception:
             pass
         return (cls, name, title)
@@ -523,7 +518,7 @@ def _kill_orphan(w) -> tuple | None:
 
 
 class _OrphanFlashFilter:
-    """Application event filter — blocks Show/WinId on parentless flash panels.
+    """Application event filter — blocks Show on parentless flash panels.
 
     Flashes last milliseconds; 200ms polling misses them. Intercepting Show
     before paint is the only reliable kill.
@@ -551,14 +546,6 @@ class _OrphanFlashFilter:
                     if not isinstance(obj, QWidget):
                         return False
                     et = event.type()
-                    # WinIdChange: HWND born — kill parentless before first paint
-                    if et == QEvent.WinIdChange:
-                        if _is_orphan_flash_candidate(obj):
-                            killed = _kill_orphan(obj)
-                            _record_flash("WinIdChange", obj, killed)
-                            if killed:
-                                _OrphanFlashFilter._blocked.append(killed)
-                            return False  # don't eat WinIdChange
                     if et in (QEvent.Show, QEvent.ShowToParent):
                         # Fast path: any parentless non-intentional widget Show
                         # is a flash — kill before paint (StockBadge etc.).
@@ -590,9 +577,6 @@ class _OrphanFlashFilter:
                             return True
                         if _OrphanFlashFilter._depth > 0:
                             hide_orphan_pos_flashes()
-                    if et == QEvent.Polish and _is_orphan_flash_candidate(obj):
-                        _kill_orphan(obj)
-                        _record_flash("Polish", obj, True)
                 except RuntimeError:
                     pass
                 except Exception as e:
@@ -664,6 +648,12 @@ def hide_orphan_pos_flashes(anchor=None) -> list:
         if w is None:
             continue
         try:
+            # Hidden widgets are harmless and are often intentionally parked
+            # during layout replacement. Mutating them here (especially from
+            # Polish/WinId event handling) can invalidate Qt's native window
+            # lifecycle and caused Windows access violations.
+            if not w.isVisible():
+                continue
             if main is not None and (w is main or w is anchor):
                 continue
             if not _is_orphan_flash_candidate(w):

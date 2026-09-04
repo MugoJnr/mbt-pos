@@ -12,12 +12,14 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
 from desktop.utils.theme   import C, ThemeManager, is_light_mode, qss_alpha
-from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, make_table,
-                                    tbl_item, tbl_right, tbl_center, page_layout)
+from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, badge_qss,
+                                    make_table, tbl_item, tbl_right,
+                                    tbl_center, page_layout)
 from desktop.utils.charts import (
     GoldLineChart, PaymentBars, ChartCard, ChartDetailsDialog,
 )
 from desktop.utils.security import can_void_sales, prompt_void_sale
+from desktop.utils.lifecycle import defer, is_alive
 from desktop.utils.ui_polish import (
     AnimatedKPI, EmptyState, FloatingActionButton, ToastNotification,
     apply_card_shadow, time_greeting,
@@ -231,6 +233,23 @@ class DashboardTab(QWidget):
         self._t.timeout.connect(self._load)
         self._t.start(60_000)
 
+    def _tab_allowed(self, tab_id: str) -> bool:
+        account = self.user.get('user') or self.user
+        role = str(account.get('role') or 'cashier').lower()
+        if role in ('admin', 'superadmin'):
+            return True
+        raw = account.get('tab_permissions')
+        if isinstance(raw, str):
+            try:
+                import json
+                raw = json.loads(raw or '[]')
+            except Exception:
+                raw = []
+        if not raw:
+            from roles import default_tab_permissions
+            raw = default_tab_permissions(role)
+        return tab_id in set(raw)
+
     # -- Build ---
 
     def _build(self):
@@ -315,7 +334,9 @@ class DashboardTab(QWidget):
         ns_btn.setCursor(Qt.PointingHandCursor)
         self._ns_btn = ns_btn
         self._style_new_sale_btn()
-        ns_btn.clicked.connect(lambda: self.navigate.emit('sales'))
+        ns_btn.setVisible(self._tab_allowed('sales'))
+        if self._tab_allowed('sales'):
+            ns_btn.clicked.connect(lambda: self.navigate.emit('sales'))
         right_row.addWidget(ns_btn)
 
         hdr.addLayout(right_row)
@@ -331,14 +352,24 @@ class DashboardTab(QWidget):
         self._k_low   = _KPI("Low Stock",        'low_stock', '0',   'Items to restock', p['warn'], self._is_light)
         for k in (self._k_sales, self._k_rev, self._k_avg, self._k_low):
             kr1.addWidget(k)
-        self._k_sales.set_actionable(True, 'Open Point of Sale', "Today's Sales")
-        self._k_sales.clicked.connect(lambda: self.navigate.emit('sales'))
-        self._k_rev.set_actionable(True, 'Open sales reports', "Today's Revenue")
-        self._k_rev.clicked.connect(lambda: self.navigate.emit('reports'))
-        self._k_avg.set_actionable(True, 'Open sales reports', 'Average Transaction')
-        self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
-        self._k_low.set_actionable(True, 'Open Inventory low-stock items', 'Low Stock')
-        self._k_low.clicked.connect(lambda: self.navigate.emit('inventory'))
+        sales_allowed = self._tab_allowed('sales')
+        self._k_sales.set_actionable(
+            sales_allowed, 'Open Point of Sale', "Today's Sales")
+        if sales_allowed:
+            self._k_sales.clicked.connect(lambda: self.navigate.emit('sales'))
+        reports_allowed = self._tab_allowed('reports')
+        inventory_allowed = self._tab_allowed('inventory')
+        self._k_rev.set_actionable(
+            reports_allowed, 'Open sales reports', "Today's Revenue")
+        self._k_avg.set_actionable(
+            reports_allowed, 'Open sales reports', 'Average Transaction')
+        self._k_low.set_actionable(
+            inventory_allowed, 'Open Inventory low-stock items', 'Low Stock')
+        if reports_allowed:
+            self._k_rev.clicked.connect(lambda: self.navigate.emit('reports'))
+            self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
+        if inventory_allowed:
+            self._k_low.clicked.connect(lambda: self.navigate.emit('inventory'))
         self._sticky_lay.addLayout(kr1)
 
         self._kpi_legend = QLabel(
@@ -381,6 +412,7 @@ class DashboardTab(QWidget):
                   self._k_overdue, self._k_credit_out):
             k.hide()
             kr2.addWidget(k)
+        debt_allowed = self._tab_allowed('debt')
         for k, tip in (
             (self._k_debt_out, 'Open Debt Management'),
             (self._k_debt_col, 'Open Debt collections'),
@@ -388,8 +420,9 @@ class DashboardTab(QWidget):
             (self._k_overdue, 'Open Debt overdue invoices'),
             (self._k_credit_out, 'Open Debt credit sales'),
         ):
-            k.set_actionable(True, tip, k._label)
-            k.clicked.connect(lambda _=False, t='debt': self.navigate.emit(t))
+            k.set_actionable(debt_allowed, tip, k._label)
+            if debt_allowed:
+                k.clicked.connect(lambda _=False, t='debt': self.navigate.emit(t))
         self._root_lay.addLayout(kr2)
 
         # Compact consumption strip (own row — avoids clipping a 6th KPI card)
@@ -441,6 +474,8 @@ class DashboardTab(QWidget):
         ]
         self._qa_btns = []
         for icon, lbl, acc_key, tid in actions:
+            if not self._tab_allowed(tid):
+                continue
             acc = p[acc_key]
             dim = p.get(f'{acc_key}_dim', p['card2'])
             btn = _qa_btn(icon, lbl, acc, dim, self._is_light)
@@ -633,7 +668,9 @@ class DashboardTab(QWidget):
         open_ai.clicked.connect(self._open_floating_ai)
         ail.addWidget(open_ai)
         rcol.addWidget(self._ai_card)
-        QTimer.singleShot(600, lambda: self._load_ai_insights(force=False))
+        # Parent-owned so closing the dashboard inside the delay cancels the
+        # callback instead of writing to deleted QLabels.
+        defer(self, 600, lambda: self._load_ai_insights(force=False))
 
         # -- Operational alerts (live data only — no placeholder checklists) ---
         self._tasks_card = _Card(self._is_light)
@@ -905,7 +942,7 @@ class DashboardTab(QWidget):
             self._shop_lbl.setText(f'{shop} | {sub}')
         except Exception:
             pass
-        QTimer.singleShot(0, self._load)
+        defer(self, 0, self._load)
 
     def _open_consumption_report(self):
         """Dashboard KPI click -> Internal Consumption report."""
@@ -940,6 +977,7 @@ class DashboardTab(QWidget):
                 f'Outstanding debt {currency} {float(outstanding):,.0f}',
                 'debt', p['err'],
             ))
+        alerts = [item for item in alerts if self._tab_allowed(item[1])]
         if not alerts:
             empty = QLabel('No urgent items right now')
             empty.setStyleSheet(
@@ -983,6 +1021,8 @@ class DashboardTab(QWidget):
 
     def _load_ai_insights(self, force: bool = False):
         """Load cached/local/AI dashboard insights into the insights card."""
+        if not is_alive(self) or not is_alive(getattr(self, '_ai_summary', None)):
+            return
         try:
             from desktop.utils.ai.insights import get_dashboard_insights
             data = get_dashboard_insights(self.api, self.user, force=force)
@@ -1021,6 +1061,8 @@ class DashboardTab(QWidget):
         self._load()
 
     def _load(self):
+        if not is_alive(self) or not is_alive(getattr(self, '_k_sales', None)):
+            return
         key = getattr(self, '_period_key', None) or (
             self._period.current_key() if hasattr(self, '_period') else 'today')
         if key == 'custom':
@@ -1074,20 +1116,19 @@ class DashboardTab(QWidget):
                         if w is not None:
                             w.deleteLater()
                     chips = [
-                        ('Collected', today_collected, p.get('ok', C['ok'])),
-                        ('Cash', cash_c, p.get('ok', C['ok'])),
-                        ('Mobile Money', mpesa_c, p.get('info', C['info'])),
-                        ('Card', card_c, p.get('gold', C['gold'])),
-                        ('Bank', bank_c, p.get('text2', C['text2'])),
-                        ('Debt in', debt_c, p.get('ok', C['ok'])),
-                        ('Credit out', credit_out, p.get('warn', C['warn'])),
+                        ('Collected', today_collected, 'ok'),
+                        ('Cash', cash_c, 'ok'),
+                        ('Mobile Money', mpesa_c, 'info'),
+                        ('Card', card_c, 'gold'),
+                        ('Bank', bank_c, 'muted'),
+                        ('Debt in', debt_c, 'ok'),
+                        ('Credit out', credit_out, 'warn'),
                     ]
                     for label, amt, tone in chips:
                         chip = QLabel(f"{label}  {cur} {amt:,.0f}")
-                        chip.setStyleSheet(
-                            f"color:{tone}; font-size:11px; font-weight:700; "
-                            f"background:{qss_alpha(tone, 0.12)}; border:1px solid {qss_alpha(tone, 0.28)}; "
-                            f"border-radius:8px; padding:5px 10px;")
+                        chip.setStyleSheet(badge_qss(tone, font_size=11,
+                                                     weight=700,
+                                                     padding='5px 10px'))
                         self._rev_break_lay.addWidget(chip)
                     self._rev_break_lay.addStretch(1)
                 elif hasattr(self, '_rev_break') and isinstance(self._rev_break, QLabel):

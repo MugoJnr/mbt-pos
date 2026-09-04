@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +18,10 @@ os.environ.setdefault("MBT_QA_ALLOW_DEV_BOOTSTRAP", "1")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
-    r"C:\Users\mugoj\OneDrive\Desktop\QA_PROD_VALIDATION",
+    str((desktop if desktop.is_dir() else Path(tempfile.gettempdir())) / "QA_PROD_VALIDATION"),
 ))
 OUT.mkdir(parents=True, exist_ok=True)
 SHOTS = OUT / "desktop_shots"

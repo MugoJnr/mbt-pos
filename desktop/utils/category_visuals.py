@@ -92,8 +92,13 @@ def relative_luminance(color: str) -> float:
 
 
 def accessible_fg(bg_hex: str, light='#F8FAFC', dark='#0F172A') -> str:
-    """Pick light or dark foreground for WCAG-ish contrast on accent bg."""
-    return dark if relative_luminance(bg_hex) > 0.45 else light
+    """Pick whichever ink actually contrasts more against an accent fill.
+
+    A fixed luminance threshold picked the *worse* option for mid-tone brand
+    accents: the default category blue (#3B82F6) took white at 3.52:1 when the
+    dark ink was available at 4.86:1.
+    """
+    return max((light, dark), key=lambda ink: contrast_ratio(ink, bg_hex))
 
 
 def contrast_ratio(c1: str, c2: str) -> float:

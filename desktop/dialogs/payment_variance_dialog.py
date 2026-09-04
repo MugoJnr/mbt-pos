@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from desktop.utils.theme import apply_themed_dialog, C
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 # Primary cashier choices (shown first)
@@ -42,6 +43,32 @@ MISC_CATEGORIES = (
     'Service Charge', 'Other',
 )
 
+def parse_money(value):
+    """Coerce a money-ish value to float.
+
+    Returns ``(amount, ok)``. Callers upstream sometimes hand over strings
+    straight from a widget ('1,250.00', 'KES 300', '') or ``None``; those must
+    not raise out of a dialog constructor mid-checkout.
+    """
+    if value is None:
+        return 0.0, False
+    if isinstance(value, bool):
+        return 0.0, False
+    if isinstance(value, (int, float)):
+        amount = float(value)
+        if amount != amount or amount in (float('inf'), float('-inf')):
+            return 0.0, False
+        return amount, True
+    text = str(value).strip()
+    if not text:
+        return 0.0, False
+    cleaned = ''.join(ch for ch in text if ch.isdigit() or ch in '.-')
+    try:
+        return float(cleaned), bool(cleaned) and cleaned not in ('-', '.', '-.')
+    except (TypeError, ValueError):
+        return 0.0, False
+
+
 HANDLING_LABELS = {
     'return_change': 'Return Change',
     'additional_payment': 'Additional Customer Payment',
@@ -63,9 +90,16 @@ class PaymentVarianceDialog(QDialog):
         self.setMinimumWidth(480)
         self.setModal(True)
         self._currency = currency or 'KES'
-        self._sale_total = float(sale_total)
-        self._received = float(amount_received)
-        self._excess = round(float(excess), 2)
+        self._sale_total, total_ok = parse_money(sale_total)
+        self._received, recv_ok = parse_money(amount_received)
+        excess_value, excess_ok = parse_money(excess)
+        if not excess_ok and total_ok and recv_ok:
+            excess_value = self._received - self._sale_total
+            excess_ok = True
+        self._excess = round(excess_value, 2)
+        # An unreadable amount must not crash checkout: the dialog opens in a
+        # refusing state so the cashier sees why and can only back out.
+        self.invalid_amounts = not (total_ok and recv_ok and excess_ok)
         self._settings = settings or {}
         self._has_customer = bool(has_customer)
         self.result_data = None
@@ -76,9 +110,12 @@ class PaymentVarianceDialog(QDialog):
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(12)
 
-        title = QLabel(
-            f'Customer paid {self._currency} {self._excess:,.2f} more than the invoice'
-        )
+        if self.invalid_amounts:
+            title = QLabel('Overpayment amounts could not be read')
+        else:
+            title = QLabel(
+                f'Customer paid {self._currency} {self._excess:,.2f} more than the invoice'
+            )
         title.setWordWrap(True)
         title.setStyleSheet(
             f"color:{C['text']};font-size:15px;font-weight:800;background:transparent;")
@@ -199,7 +236,24 @@ class PaymentVarianceDialog(QDialog):
         btns.addStretch()
         btns.addWidget(ok)
         lay.addLayout(btns)
+        self._confirm_btn = ok
+        if self.invalid_amounts:
+            warn = QLabel(
+                'The invoice total or amount received was not a valid number, '
+                'so the excess cannot be allocated. Cancel and re-enter the '
+                'payment amount.')
+            warn.setWordWrap(True)
+            warn.setStyleSheet(
+                f"color:{C['danger'] if 'danger' in C else C['gold']};"
+                f"font-size:12px;font-weight:700;background:transparent;")
+            lay.insertWidget(lay.count() - 1, warn)
+            ok.setEnabled(False)
+            ok.setToolTip('Amounts are invalid — nothing can be allocated.')
+            for rb in self._radios.values():
+                rb.setEnabled(False)
+            self._notes.setEnabled(False)
 
+        wire_dialog_keys(self, primary=ok, cancel=cancel)
         apply_themed_dialog(self)
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.clear_modal_on_close(self)
@@ -217,6 +271,12 @@ class PaymentVarianceDialog(QDialog):
         return None
 
     def _confirm(self):
+        if self.invalid_amounts:
+            QMessageBox.warning(
+                self, 'Invalid Amount',
+                'The payment amounts could not be read as numbers. '
+                'Cancel and re-enter the amount received.')
+            return
         handling = self._selected_handling()
         if not handling:
             QMessageBox.warning(self, 'Required', 'Select how to handle the excess.')

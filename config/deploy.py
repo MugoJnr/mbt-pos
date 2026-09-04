@@ -108,7 +108,8 @@ def shop_settings_defaults() -> dict:
         'auto_db_backup': '1',
         'auto_db_backup_interval_hours': '24',
         # M-Pesa (manual — each shop enters Till/Paybill; no buyer accounts)
-        'mpesa_mode': 'manual',
+        'mpesa_mode': 'cloud',
+        'payments_cloud_base_url': 'https://payments.mugobyte.com',
         'mpesa_till': '',
         'mpesa_paybill': '',
         'mpesa_business_name': '',

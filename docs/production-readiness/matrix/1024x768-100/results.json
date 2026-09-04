@@ -1,0 +1,239 @@
+{
+  "ts": "2026-09-02T19:23:50.888833",
+  "version": "3.0.75",
+  "fails": 0,
+  "partials": 0,
+  "results": [
+    {
+      "area": "auth",
+      "status": "PASS",
+      "note": "v=3.0.75 role=superadmin"
+    },
+    {
+      "area": "ui.login",
+      "status": "PASS",
+      "note": "dialog rendered"
+    },
+    {
+      "area": "ui.main_window",
+      "status": "PASS",
+      "note": "title='MBT POS - MugoByte Technologies'"
+    },
+    {
+      "area": "tab.dashboard",
+      "status": "PASS",
+      "note": "btns=16 fields=0 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.sales",
+      "status": "PASS",
+      "note": "btns=26 fields=4 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.inventory",
+      "status": "PASS",
+      "note": "btns=7 fields=1 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.consumption",
+      "status": "PASS",
+      "note": "btns=4 fields=5 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.debt",
+      "status": "PASS",
+      "note": "btns=3 fields=0 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.accounting",
+      "status": "PASS",
+      "note": "btns=11 fields=0 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.reports",
+      "status": "PASS",
+      "note": "btns=8 fields=2 checks=2 empty_label=0"
+    },
+    {
+      "area": "tab.notes",
+      "status": "PASS",
+      "note": "btns=6 fields=2 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.ai_ops",
+      "status": "PASS",
+      "note": "btns=4 fields=0 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.admin",
+      "status": "PASS",
+      "note": "btns=19 fields=1 checks=14 empty_label=0"
+    },
+    {
+      "area": "tab.settings",
+      "status": "PASS",
+      "note": "btns=114 fields=30 checks=73 empty_label=0"
+    },
+    {
+      "area": "tab.security",
+      "status": "PASS",
+      "note": "btns=1 fields=3 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.license",
+      "status": "PASS",
+      "note": "btns=5 fields=1 checks=0 empty_label=0"
+    },
+    {
+      "area": "tab.diagnostics",
+      "status": "PASS",
+      "note": "btns=6 fields=0 checks=0 empty_label=0"
+    },
+    {
+      "area": "finance.shell",
+      "status": "PASS",
+      "note": "label='Finance' nav='  Finance' pages=['overview', 'money', 'expenses', 'credit', 'reports', 'coa', 'ledger', 'journals', 'trial', 'balance', 'cashflow', 'periods', 'fin_settings'] cls=FinanceTab"
+    },
+    {
+      "area": "finance.page.overview",
+      "status": "PASS",
+      "note": "refreshed ok (_OverviewPage)"
+    },
+    {
+      "area": "finance.page.money",
+      "status": "PASS",
+      "note": "refreshed ok (_MoneyPage)"
+    },
+    {
+      "area": "finance.page.expenses",
+      "status": "PASS",
+      "note": "refreshed ok (_ExpensesPage)"
+    },
+    {
+      "area": "finance.page.credit",
+      "status": "PASS",
+      "note": "refreshed ok (_CreditPage)"
+    },
+    {
+      "area": "finance.page.reports",
+      "status": "PASS",
+      "note": "refreshed ok (_ReportsPage)"
+    },
+    {
+      "area": "finance.adv.coa",
+      "status": "PASS",
+      "note": "_AccountsPage"
+    },
+    {
+      "area": "finance.adv.ledger",
+      "status": "PASS",
+      "note": "_LedgerPage"
+    },
+    {
+      "area": "finance.adv.journals",
+      "status": "PASS",
+      "note": "_JournalsPage"
+    },
+    {
+      "area": "finance.adv.trial",
+      "status": "PASS",
+      "note": "_StatementPage"
+    },
+    {
+      "area": "finance.adv.balance",
+      "status": "PASS",
+      "note": "_StatementPage"
+    },
+    {
+      "area": "finance.adv.cashflow",
+      "status": "PASS",
+      "note": "_CashFlowPage"
+    },
+    {
+      "area": "finance.adv.periods",
+      "status": "PASS",
+      "note": "_PeriodsPage"
+    },
+    {
+      "area": "finance.adv.fin_settings",
+      "status": "PASS",
+      "note": "_FinanceSettingsPage"
+    },
+    {
+      "area": "finance.settings_persist",
+      "status": "PASS",
+      "note": "ok=True method='accrual' note='QA finance note' cash='1000'"
+    },
+    {
+      "area": "ui.theme_toggle",
+      "status": "PASS",
+      "note": "dark+light grabs"
+    },
+    {
+      "area": "settings.persist",
+      "status": "PASS",
+      "note": "saved=True probe='My Shop \u00b7CERT' cfg_keys=['shop_email', 'theme', 'printer_name', 'accounting_fx_enabled', 'accounting_multi_branch', 'auto_report_weekday', 'telegram_bot_token', 'telegram_chat_id']"
+    },
+    {
+      "area": "settings.checkbox_toggle",
+      "status": "PASS",
+      "note": "'Auto-print receipt after each sale' flipped True->False"
+    },
+    {
+      "area": "dialog.return_sale",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "dialog.void_sale",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "dialog.receive_stock",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "dialog.suppliers",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "dialog.add_product",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "dialog.global_search",
+      "status": "PASS",
+      "note": "opened=True"
+    },
+    {
+      "area": "ui.sales_focus",
+      "status": "PASS",
+      "note": "focus+restore"
+    },
+    {
+      "area": "error.invalid_product",
+      "status": "PASS",
+      "note": "{'error': 'Product name is required.'}"
+    },
+    {
+      "area": "error.empty_sale",
+      "status": "PASS",
+      "note": "{'error': 'Cart is empty \u2014 add at least one product before charging.'}"
+    },
+    {
+      "area": "settings.no_telegram_ui",
+      "status": "PASS",
+      "note": "leaked=[]"
+    },
+    {
+      "area": "ui.sidebar_nav",
+      "status": "PASS",
+      "note": "items=14"
+    }
+  ],
+  "verdict": "PASS"
+}

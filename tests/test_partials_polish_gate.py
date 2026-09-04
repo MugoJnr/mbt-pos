@@ -309,8 +309,11 @@ class U05NoDeadPoStkReturnsGate(unittest.TestCase):
         settings = open(
             os.path.join(ROOT, 'desktop', 'tabs', 'settings_tab.py'), encoding='utf-8'
         ).read()
-        self.assertIn('self.mpesa_mode.hide()', settings)
-        self.assertIn('STK Push is not implemented', settings)
+        # Cloud STK/Till path is Settings-visible; secrets stay in payments cloud.
+        self.assertIn('Cloud (STK + Till detection via payments.mugobyte.com)', settings)
+        self.assertIn('payments_cloud_url', settings)
+        self.assertIn('mpesa_mode', settings)
+        self.assertNotIn('STK Push is not implemented', settings)
 
         sales = open(
             os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py'), encoding='utf-8'

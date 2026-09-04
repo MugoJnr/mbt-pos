@@ -420,8 +420,8 @@ function webNavAllowed(page) {
   };
   const tab = tabMap[page];
   if (!tab) return true;
-  if (Array.isArray(perms) && perms.length) return perms.includes(tab);
   if (role === 'superadmin' || role === 'admin') return true;
+  if (Array.isArray(perms) && perms.length) return perms.includes(tab);
   if (role === 'manager') return tab !== 'admin';
   if (role === 'viewer') return tab === 'dashboard' || tab === 'reports';
   return tab === 'dashboard' || tab === 'sales';
@@ -952,6 +952,8 @@ async function saveProduct(pid) {
 }
 
 let stockAdjustmentSaving = false;
+const STOCK_INCREASE_REASONS = ['Received from Supplier','Customer Return','Found / Unrecorded','Transfer In','Stock-take Surplus','Opening Balance','System Correction','Stock Count Correction','Other'];
+const STOCK_DECREASE_REASONS = ['Damaged / Spoiled','Expired','Theft / Loss','Internal Use','Return to Supplier','Transfer Out','Stock-take Shortage','System Correction','Stock Count Correction','Other'];
 function adjustStockModal(pid) {
   const p = PRODUCTS.find(x=>x.id===pid);
   if (!p) return;
@@ -960,36 +962,77 @@ function adjustStockModal(pid) {
       <div style="font-size:12px;color:var(--text2)">Current stock</div>
       <div style="font-size:28px;font-weight:800;color:var(--accent)"><span id="adj-current-stock">${p.stock}</span> <span style="font-size:14px;color:var(--text3)">${esc(p.unit||'pcs')}</span></div>
     </div>
-    <div class="form-group"><label class="form-label">New Quantity</label><input type="number" id="adj-qty" value="${p.stock}" min="0" step="0.25"></div>
-    <div class="form-group"><label class="form-label">Reason *</label><input type="text" id="adj-reason" placeholder="e.g. Stock count correction, Received delivery…"></div>
-    <div class="form-group"><label class="form-label">Super-Admin PIN *</label><input type="password" id="adj-pin" inputmode="numeric" autocomplete="off"></div>`,
+    <div class="form-group"><label class="form-label">Adjustment Type *</label>
+      <select id="adj-direction" onchange="updateStockAdjustmentPreview(${pid})"><option value="add">Add stock</option><option value="remove">Remove stock</option><option value="set">Update current stock</option></select>
+    </div>
+    <div class="form-group"><label class="form-label">Quantity / Counted On-hand *</label><input type="number" id="adj-qty" value="1" min="0" max="999999" step="0.0001" oninput="updateStockAdjustmentPreview(${pid})"></div>
+    <div class="form-group"><label class="form-label">Resulting Stock</label><div id="adj-result-stock" style="font-weight:800;color:var(--text)">—</div></div>
+    <div class="form-group"><label class="form-label">Reason *</label>
+      <select id="adj-reason" onchange="document.getElementById('adj-reason-other').style.display=this.value==='Other'?'block':'none'">
+        <option value="">— Select reason —</option>
+      </select>
+      <input type="text" id="adj-reason-other" style="display:none;margin-top:8px" maxlength="240" placeholder="Enter the adjustment reason">
+    </div>
+    <div class="form-group" id="adj-pin-group"><label class="form-label">Super-Admin PIN (required for decrease)</label><input type="password" id="adj-pin" inputmode="numeric" autocomplete="off"></div>`,
     `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
      <button class="btn btn-primary" id="adj-save-btn" onclick="saveStockAdj(${pid})">Save Adjustment</button>`
   );
+  updateStockAdjustmentPreview(pid);
+}
+function updateStockAdjustmentPreview(pid) {
+  const product = PRODUCTS.find(x=>x.id===pid);
+  const current = Number(product?.stock||0);
+  const quantity = Number(document.getElementById('adj-qty')?.value);
+  const direction = document.getElementById('adj-direction')?.value;
+  const result = direction==='set' ? quantity : current + (direction==='remove' ? -quantity : quantity);
+  const decrease = result < current;
+  const reasons = decrease ? STOCK_DECREASE_REASONS : STOCK_INCREASE_REASONS;
+  const reasonSelect = document.getElementById('adj-reason');
+  const bucket = decrease ? 'decrease' : 'increase';
+  if (reasonSelect && reasonSelect.dataset.bucket !== bucket) {
+    reasonSelect.dataset.bucket = bucket;
+    reasonSelect.innerHTML = '<option value="">— Select reason —</option>' + reasons.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    reasonSelect.value = direction === 'set' ? (decrease ? 'Stock-take Shortage' : 'Stock-take Surplus') : '';
+  }
+  const pinGroup = document.getElementById('adj-pin-group');
+  if (pinGroup) pinGroup.style.display = decrease ? 'block' : 'none';
+  const target = document.getElementById('adj-result-stock');
+  if (target) {
+    target.textContent = Number.isFinite(result) ? result.toFixed(4).replace(/\.?0+$/,'') : '—';
+    target.style.color = result < 0 ? 'var(--danger)' : 'var(--text)';
+  }
 }
 async function saveStockAdj(pid) {
   if (stockAdjustmentSaving) return;
-  const qty = parseFloat(document.getElementById('adj-qty')?.value)||0;
-  const reason = document.getElementById('adj-reason')?.value.trim();
+  const quantity = Number(document.getElementById('adj-qty')?.value);
+  const direction = document.getElementById('adj-direction')?.value;
+  const reasonChoice = document.getElementById('adj-reason')?.value||'';
+  const customReason = document.getElementById('adj-reason-other')?.value.trim()||'';
+  const reason = reasonChoice === 'Other' ? `Other: ${customReason}` : reasonChoice;
   const pin = document.getElementById('adj-pin')?.value||'';
-  if (!reason) { toast('Reason is required.','err'); return; }
-  if (!pin) { toast('Super-Admin PIN is required.','err'); return; }
   const product = PRODUCTS.find(x=>x.id===pid);
+  const current = Number(product?.stock||0);
+  if (!['add','remove','set'].includes(direction)) { toast('Choose Add, Remove, or Update current stock.','err'); return; }
+  if (!Number.isFinite(quantity) || quantity < 0 || quantity > 999999 || (direction !== 'set' && quantity === 0)) { toast('Enter a valid quantity.','err'); return; }
+  if (direction === 'remove' && quantity > current) { toast(`Cannot remove ${quantity}; only ${current} is available.`,'err'); return; }
+  if (!reason) { toast('Reason is required.','err'); return; }
+  if (reasonChoice === 'Other' && !customReason) { toast('Enter the custom reason.','err'); return; }
+  const resulting = direction === 'set' ? quantity : current + (direction === 'remove' ? -quantity : quantity);
+  if (resulting < current && !pin) { toast('Super-Admin PIN is required for a stock decrease.','err'); return; }
   stockAdjustmentSaving = true;
   const saveButton = document.getElementById('adj-save-btn');
   if (saveButton) saveButton.disabled = true;
   try {
     const res = await POST(`/products/${pid}/adjust`, {
-      new_qty:qty, reason, pin, expected_stock:Number(product?.stock||0)
+      direction, quantity, reason, pin, expected_stock:current
     });
-    if (res?.success) { toast(`Stock adjusted: ${res.old_stock} → ${res.new_stock}`,'ok'); closeModal(); PRODUCTS=await GET('/products')||[]; renderInv(); }
+    if (res?.success) { toast(`Stock ${direction === 'add' ? 'added' : 'removed'}: ${res.old_stock} → ${res.new_stock}`,'ok'); closeModal(); PRODUCTS=await GET('/products')||[]; renderInv(); }
     else if (res?.current_stock !== undefined) {
       const latest = Number(res.current_stock);
       product.stock = latest;
       const current = document.getElementById('adj-current-stock');
-      const input = document.getElementById('adj-qty');
       if (current) current.textContent = latest;
-      if (input) input.value = latest;
+      updateStockAdjustmentPreview(pid);
       toast('Stock changed. The latest quantity is shown; review and submit again.','warn');
     } else toast(res?.error||'Failed.','err');
   } finally {

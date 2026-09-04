@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 import traceback
 from datetime import date, datetime, timedelta
@@ -18,7 +19,11 @@ os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 STATE_FILE = ROOT / "logs" / "_e2e_fresh_user_state.json"
-OUT = Path(r"C:\Users\mugoj\OneDrive\Desktop\QA_E2E_FRESH_USER")
+desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
+OUT = Path(os.environ.get(
+    "MBT_QA_OUT",
+    str((desktop if desktop.is_dir() else Path(tempfile.gettempdir())) / "QA_E2E_FRESH_USER"),
+))
 OUT.mkdir(parents=True, exist_ok=True)
 SHOTS = OUT / "shots"
 SHOTS.mkdir(exist_ok=True)
@@ -249,7 +254,10 @@ try:
                 break
     rec("7", "create_product", "PASS" if pid else "FAIL", f"pid={pid} sku={SKU}")
     if pid and hasattr(api, "receive_stock"):
-        recv = api.receive_stock(int(pid), 10, notes="E2E receive", unit_cost=180.0)
+        recv = api.receive_stock(
+            int(pid), 10, notes="E2E receive", unit_cost=180.0,
+            pin=os.environ.get("MBT_AUTO_SUPERADMIN_PIN", ""),
+        )
         rec("7", "receive_stock", "PASS" if recv and recv.get("success") else "FAIL", str(recv)[:120])
     rec("7", "inventory_ui", "PASS" if inv else "FAIL", "tab loaded")
 except Exception as e:

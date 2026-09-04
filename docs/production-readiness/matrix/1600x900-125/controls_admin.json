@@ -1,0 +1,330 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "+ New User",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Refresh",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Dashboard",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Point of Sale",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Inventory",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Internal Consumption",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Debt",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Finance",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Reports",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Notes",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "AI Operations",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Users",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Settings",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "License",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Diagnostics",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QCheckBox",
+      "text": "Security",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "adminChkHost",
+      "enabled": true,
+      "checkable": true,
+      "checked": true,
+      "obj": ""
+    },
+    {
+      "type": "QPushButton",
+      "text": "Save Permissions",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Reset Password",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Deactivate",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "dangerBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "Search users\u2026",
+      "enabled": true,
+      "echo": 0
+    }
+  ],
+  "checks": [
+    {
+      "text": "Dashboard",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Point of Sale",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Inventory",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Internal Consumption",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Debt",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Finance",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Reports",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Notes",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "AI Operations",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Users",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Settings",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "License",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Diagnostics",
+      "checked": true,
+      "enabled": true
+    },
+    {
+      "text": "Security",
+      "checked": true,
+      "enabled": true
+    }
+  ]
+}

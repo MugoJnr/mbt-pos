@@ -175,11 +175,32 @@ class LicenseService(threading.Thread):
                 # No cloud — treat local-only installs as OK for grace clock
                 self.engine.store.set('last_cloud_ok_ts', int(time.time()))
                 return
-            key = self.engine.store.get('cloud_license_key') or (self.engine._license_data or {}).get('license_key')
+            lic = self.engine._license_data or {}
+            embedded_key = str(lic.get('license_key') or '').strip()
+            source = str(lic.get('source') or '').strip().lower()
+            # A legacy locally signed license can coexist with a stale
+            # cloud_license_key left by an older trial. Validating that stale
+            # key makes the paid/lifetime local license enter offline-lock
+            # forever after restart. Only cloud-origin licenses phone home.
+            if lic and not embedded_key and source != 'mbt_cloud':
+                now = int(time.time())
+                self.engine.store.set('last_cloud_ok_ts', now)
+                self.engine.store.set('last_cloud_check_ts', now)
+                self.engine.store.set('requires_online', False)
+                self.engine.store.set('offline_lock', False)
+                logger.info('Local signed license validated offline')
+                return
+            key = (
+                embedded_key
+                or str(self.engine.store.get('cloud_license_key') or '').strip()
+            )
             if not key:
                 # Local signed key only — stamp OK so offline grace doesn't false-lock
-                self.engine.store.set('last_cloud_ok_ts', int(time.time()))
-                self.engine.store.set('last_cloud_check_ts', int(time.time()))
+                now = int(time.time())
+                self.engine.store.set('last_cloud_ok_ts', now)
+                self.engine.store.set('last_cloud_check_ts', now)
+                self.engine.store.set('requires_online', False)
+                self.engine.store.set('offline_lock', False)
                 return
             from backend.cloud.license_server import get_license_server
             from backend.cloud_backup.device_manager import get_or_create_device_id

@@ -11,8 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   GET,
-  listCloudLicenses,
-  listCloudDevices,
+  getAdminOverview,
   type CloudLicense,
   type CloudDevice,
 } from "@/lib/api";
@@ -34,13 +33,10 @@ type HealthData = {
 function AdminReportsPage() {
   const { orgId } = useAuth();
 
-  const licensesQ = useQuery({
-    queryKey: ["admin-reports-licenses", orgId],
-    queryFn: () => listCloudLicenses(orgId),
-  });
-  const devicesQ = useQuery({
-    queryKey: ["admin-reports-devices", orgId],
-    queryFn: () => listCloudDevices(orgId),
+  const overviewQ = useQuery({
+    queryKey: ["admin-overview"],
+    queryFn: getAdminOverview,
+    retry: 1,
   });
   const healthQ = useQuery({
     queryKey: ["admin-reports-health"],
@@ -57,10 +53,10 @@ function AdminReportsPage() {
     retry: 0,
   });
 
-  const licenses: CloudLicense[] = licensesQ.data?.licenses || [];
-  const devices: CloudDevice[] = devicesQ.data?.devices || [];
+  const licenses: CloudLicense[] = overviewQ.data?.licenses || [];
+  const devices: CloudDevice[] = overviewQ.data?.devices || [];
   const health = healthQ.data;
-  const scope = licensesQ.data?.scope || "org";
+  const scope = "all";
 
   const activeLic = licenses.filter((l) => {
     const s = (l.status || "").toLowerCase();
@@ -76,7 +72,12 @@ function AdminReportsPage() {
   const hwLocked = licenses.filter((l) => Boolean((l.reserved_device_id || "").trim())).length;
   const seatsUsed = licenses.reduce((n, l) => n + Number(l.activated_devices || 0), 0);
   const seatsMax = licenses.reduce((n, l) => n + Number(l.max_devices || 1), 0);
-  const devicesActive = devices.filter((d) => d.is_active !== false).length;
+  const onlineCutoff = Date.now() - 5 * 60 * 1000;
+  const isOnline = (device: CloudDevice) => {
+    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
+    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
+  };
+  const devicesActive = devices.filter(isOnline).length;
 
   const summary = (analyticsQ.data?.summary || analyticsQ.data?.kpis || analyticsQ.data || {}) as Record<string, unknown>;
   const gross = Number(summary.gross_sales ?? summary.sales_total ?? summary.revenue ?? NaN);
@@ -84,8 +85,7 @@ function AdminReportsPage() {
   const analyticsOk = !analyticsQ.isError && analyticsQ.data && !analyticsQ.data.error;
 
   const refresh = () => {
-    void licensesQ.refetch();
-    void devicesQ.refetch();
+    void overviewQ.refetch();
     void healthQ.refetch();
     if (orgId) void analyticsQ.refetch();
   };
@@ -97,8 +97,8 @@ function AdminReportsPage() {
         title="Reports Center"
         description="Platform overview across licenses, devices, health, and org sales analytics."
         actions={
-          <Button variant="outline" onClick={refresh} disabled={licensesQ.isFetching || devicesQ.isFetching}>
-            <RefreshCw className={`mr-1.5 h-4 w-4 ${licensesQ.isFetching ? "animate-spin" : ""}`} />
+          <Button variant="outline" onClick={refresh} disabled={overviewQ.isFetching}>
+            <RefreshCw className={`mr-1.5 h-4 w-4 ${overviewQ.isFetching ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         }
@@ -132,7 +132,7 @@ function AdminReportsPage() {
               label="Devices"
               value={String(devices.length)}
               icon={MonitorSmartphone}
-              hint={`${devicesActive} active`}
+              hint={`${devicesActive} online now`}
               accent="info"
             />
             <StatCard
@@ -182,12 +182,12 @@ function AdminReportsPage() {
             <CardHeader>
               <CardTitle className="font-display">License summary</CardTitle>
               <CardDescription>
-                {licensesQ.isLoading ? "Loading…" : `${licenses.length} license(s)`}
+                {overviewQ.isLoading ? "Loading…" : `${licenses.length} license(s)`}
                 {scope === "all" ? " · platform-wide" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
-              {licenses.length === 0 && !licensesQ.isLoading ? (
+              {licenses.length === 0 && !overviewQ.isLoading ? (
                 <p className="text-sm text-muted-foreground">No licenses found.</p>
               ) : (
                 licenses.slice(0, 40).map((row) => (
@@ -219,11 +219,11 @@ function AdminReportsPage() {
             <CardHeader>
               <CardTitle className="font-display">Device summary</CardTitle>
               <CardDescription>
-                {devicesQ.isLoading ? "Loading…" : `${devices.length} device(s) in current org context`}
+                {overviewQ.isLoading ? "Loading…" : `${devices.length} device(s) platform-wide`}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
-              {devices.length === 0 && !devicesQ.isLoading ? (
+              {devices.length === 0 && !overviewQ.isLoading ? (
                 <p className="text-sm text-muted-foreground">No devices registered for this organization yet.</p>
               ) : (
                 devices.slice(0, 40).map((d) => (
@@ -235,8 +235,8 @@ function AdminReportsPage() {
                         v{d.mbt_version || "—"} · last seen {d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : "never"}
                       </div>
                     </div>
-                    <Badge variant={d.is_active === false ? "secondary" : "default"}>
-                      {d.is_active === false ? "Offline" : "Online"}
+                    <Badge variant={isOnline(d) ? "default" : "secondary"}>
+                      {isOnline(d) ? "Online" : d.is_active === false ? "Disabled" : "Offline"}
                     </Badge>
                   </div>
                 ))

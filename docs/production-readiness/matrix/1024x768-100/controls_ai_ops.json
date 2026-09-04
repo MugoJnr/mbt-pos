@@ -1,0 +1,58 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Refresh Health",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "*  Support Report",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QToolButton",
+      "text": "",
+      "tip": "",
+      "accessible": "Scroll Left",
+      "icon": false,
+      "parent": "QTabBar",
+      "parent_obj": "qt_tabwidget_tabbar",
+      "enabled": false,
+      "checkable": false,
+      "checked": null,
+      "obj": ""
+    },
+    {
+      "type": "QToolButton",
+      "text": "",
+      "tip": "",
+      "accessible": "Scroll Right",
+      "icon": false,
+      "parent": "QTabBar",
+      "parent_obj": "qt_tabwidget_tabbar",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": ""
+    }
+  ],
+  "fields": [],
+  "checks": []
+}

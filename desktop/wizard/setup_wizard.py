@@ -97,8 +97,9 @@ class SetupWizard(QDialog):
         super().__init__(parent)
         self.setWindowTitle("MBT POS — Setup Wizard")
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self.setMinimumSize(960, 640)
-        self.resize(980, 660)
+        # Logical-pixel sizing: PerMonitorV2 performs physical DPI scaling.
+        # Long pages scroll, so the wizard remains usable on 1024x768 at 200%.
+        self.setMinimumSize(460, 320)
         apply_themed_dialog(self)
 
         self._step   = 0
@@ -111,6 +112,13 @@ class SetupWizard(QDialog):
         self._seed_from_existing_session()
 
         self._build_ui()
+        preferred = self.sizeHint().expandedTo(QSize(980, 660))
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            preferred.setWidth(min(preferred.width(), available.width()))
+            preferred.setHeight(min(preferred.height(), available.height()))
+        self.resize(preferred)
         self._center()
 
     def _seed_from_existing_session(self):
@@ -180,7 +188,14 @@ class SetupWizard(QDialog):
             return False, ''
 
     def _center(self):
-        s = QApplication.primaryScreen().geometry()
+        screen = None
+        try:
+            if self.windowHandle() is not None:
+                screen = self.windowHandle().screen()
+        except Exception:
+            pass
+        screen = screen or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        s = screen.availableGeometry() if screen else QRect(0, 0, self.width(), self.height())
         self.move(s.center().x() - self.width()//2, s.center().y() - self.height()//2)
 
     # ── Layout ─────────────────────────────────────────────────────────────────
@@ -216,7 +231,8 @@ class SetupWizard(QDialog):
 
     def _build_sidebar(self):
         sb = QWidget()
-        sb.setFixedWidth(240)
+        sb.setMinimumWidth(180)
+        sb.setMaximumWidth(240)
         sb.setStyleSheet(f"background:{C['app']}; border-right:1px solid {C['border']};")
         sl = QVBoxLayout(sb)
         sl.setContentsMargins(0, 0, 0, 0)
@@ -352,11 +368,8 @@ class SetupWizard(QDialog):
             self._page_remote_web(),
             self._page_complete(),
         ]
-        # Scroll long steps so footer nav buttons are never covered by content.
-        self._pages = [
-            self._scroll_page(p) if i in (1, 2, 5, 6) else p
-            for i, p in enumerate(raw_pages)
-        ]
+        # Every step scrolls so enlarged OS text never covers footer navigation.
+        self._pages = [self._scroll_page(page) for page in raw_pages]
         for p in self._pages:
             self._stack.addWidget(p)
 
@@ -478,8 +491,8 @@ class SetupWizard(QDialog):
                 "Sign in to the POS using your existing username and password after setup.")
             box.setWordWrap(True)
             box.setStyleSheet(
-                f"background:{C.get('card', '#1E2A38')}; color:{C['text']};"
-                f"border:1px solid {C.get('accent', '#27AE60')}; border-radius:10px;"
+                f"background:{C['card']}; color:{C['text']};"
+                f"border:1px solid {C['gold']}; border-radius:10px;"
                 "padding:14px; font-size:14px;")
             lay.addWidget(box)
             lay.addStretch()
@@ -532,7 +545,7 @@ class SetupWizard(QDialog):
         if any(c.isdigit() for c in pw): score += 1
         if any(c in '!@#$%^&*' for c in pw): score += 1
         self._pw_strength.setValue(score)
-        colors = ['#E74C3C','#E67E22','#F0A500','#27AE60']
+        colors = [C['err'], C['warn'], C['gold'], C['ok']]
         if score > 0:
             self._pw_strength.setStyleSheet(
                 f"QProgressBar::chunk {{ background:{colors[score-1]}; border-radius:3px; }}")
@@ -897,6 +910,8 @@ class SetupWizard(QDialog):
             self.w_cf_log.verticalScrollBar().maximum())
 
     def _run_cloudflare_setup(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         if self._cf_setup_running:
             return
         if not self._cf_mode_remote.isChecked():
@@ -919,7 +934,7 @@ class SetupWizard(QDialog):
         self._data['cloudflare_setup_ok'] = False
 
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -927,10 +942,10 @@ class SetupWizard(QDialog):
                 result = CloudflareSetup(
                     shop, subdomain=sub, log_callback=_cb,
                 ).run()
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done(result))
+                run_on_ui_thread(lambda: self._on_cf_setup_done(result))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done({
-                    'ok': False, 'errors': [str(e)], 'log_path': '',
+                run_on_ui_thread(lambda err=str(e): self._on_cf_setup_done({
+                    'ok': False, 'errors': [err], 'log_path': '',
                 }))
 
         import threading
@@ -964,19 +979,23 @@ class SetupWizard(QDialog):
                     f'<span style="color:{C["muted"]}">Full log: {log_path}</span>')
 
     def _test_cloudflare(self):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         self.w_cf_status.setText("⏳ Running diagnostics…")
         self._cf_test_btn.setEnabled(False)
 
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
                 from backend.cloudflare_setup import run_diagnostics
                 rep = run_diagnostics(_cb)
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_test_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_test_done({'ok': False, 'checks': []}))
+                run_on_ui_thread(
+                    lambda: self._on_cf_test_done({'ok': False, 'checks': []})
+                )
 
         import threading
         threading.Thread(target=worker, daemon=True).start()
@@ -1506,8 +1525,9 @@ class SetupWizard(QDialog):
                 'auto_db_backup': '1',
                 'auto_local_db_backup': '1',
                 'auto_local_db_backup_interval_hours': '6',
-                'mpesa_mode':           'manual',
+                'mpesa_mode':           'cloud',
                 'mpesa_business_name':  self._data.get('shop_name', 'My Shop'),
+                'payments_cloud_base_url': 'https://payments.mugobyte.com',
             }
             if deploy.get('developer_chat_id'):
                 settings['developer_chat_id'] = str(deploy['developer_chat_id'])

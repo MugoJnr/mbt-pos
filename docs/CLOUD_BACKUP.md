@@ -41,6 +41,22 @@ Shop owners only need to **sign in with their portal.mugobyte.com email/password
 
 The **service-role key is never shipped** in the installer.
 
+The Portal account must own the shop business or be an active member of the
+organization linked by `businesses.org_id`. That organization must also match
+the shop license's `licenses.org_id`. Desktop uploads use the signed-in user's
+JWT plus the public anon key; they never require or receive the service-role key.
+
+If Settings reports that cloud backup is not authorized, disconnect and sign in
+with the real shop Portal account. Test identities (for example, an `E2E Fresh
+Shop` account) must not be reused for a production shop. Support should verify
+the `businesses`, `organizations`, `org_members`, and `licenses` links rather
+than changing the shop's Cloudflare/tunnel hostname.
+
+Encrypted snapshots are kept in the local queue when upload or metadata writes
+fail. Scheduled backups stop creating additional snapshots while the queue is
+blocked, and Settings shows both tracked queue items and pending encrypted files.
+After authorization is repaired, the queue retries automatically.
+
 ### Developer / custom projects
 
 1. Create a project at [supabase.com](https://supabase.com)

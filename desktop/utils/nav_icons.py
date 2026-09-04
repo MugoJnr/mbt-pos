@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath
 from PyQt5.QtWidgets import QApplication
 
-from desktop.utils.theme import C
+from desktop.utils.theme import C, accent_ref, accent_value
 
 
 def _color(hex_color: str, alpha: int = 255) -> QColor:
@@ -520,6 +520,42 @@ def icon_wallet(size=16, accent=None) -> QIcon:
     return _paint_base(size, draw, accent=accent)
 
 
+def icon_sidebar_collapse(size=16, accent=None) -> QIcon:
+    """Nav rail with a left-pointing chevron — collapses the sidebar."""
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(muted, max(1.3, s * 0.09), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60), 2.5, 2.5)
+        p.drawLine(QPointF(s * 0.42, s * 0.20), QPointF(s * 0.42, s * 0.80))
+        p.setPen(QPen(gold, max(1.5, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(s * 0.72, s * 0.38), QPointF(s * 0.58, s * 0.50))
+        p.drawLine(QPointF(s * 0.58, s * 0.50), QPointF(s * 0.72, s * 0.62))
+    return _paint_base(size, draw, accent=accent)
+
+
+def icon_sidebar_expand(size=16, accent=None) -> QIcon:
+    """Nav rail with a right-pointing chevron — expands the sidebar."""
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(muted, max(1.3, s * 0.09), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60), 2.5, 2.5)
+        p.drawLine(QPointF(s * 0.42, s * 0.20), QPointF(s * 0.42, s * 0.80))
+        p.setPen(QPen(gold, max(1.5, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(s * 0.58, s * 0.38), QPointF(s * 0.72, s * 0.50))
+        p.drawLine(QPointF(s * 0.72, s * 0.50), QPointF(s * 0.58, s * 0.62))
+    return _paint_base(size, draw, accent=accent)
+
+
+def icon_power(size=16, accent=None) -> QIcon:
+    """Power symbol — icon-only Sign Out on the collapsed rail."""
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(gold, max(1.4, s * 0.10), Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(s * 0.24, s * 0.26, s * 0.52, s * 0.52), -60 * 16, 300 * 16)
+        p.drawLine(QPointF(s * 0.50, s * 0.18), QPointF(s * 0.50, s * 0.48))
+    return _paint_base(size, draw, accent=accent)
+
+
 def icon_users_kpi(size=16, accent=None) -> QIcon:
     def draw(p, s, gold, muted):
         p.setPen(Qt.NoPen)
@@ -603,6 +639,10 @@ ACTION_ICON_BUILDERS = {
     'warning': icon_warning,
     'ai': icon_ai,
     'sparkle': icon_ai,
+    'sidebar_collapse': icon_sidebar_collapse,
+    'sidebar_expand': icon_sidebar_expand,
+    'power': icon_power,
+    'signout': icon_power,
 }
 
 
@@ -615,9 +655,86 @@ def action_icon(name: str, size: int = 16, accent: str | None = None) -> QIcon:
         return builder(size)
 
 
+# ── Theme-tracked icons ───────────────────────────────────────────────────────
+# Painted icons bake `gold` and `text2` into a pixmap, so an icon drawn in dark
+# mode stays bright gold on a light sidebar (1.7:1).  Widgets record what they
+# asked for and `repaint_themed_icons` redraws them from the live palette.
+
+ICON_KIND_PROP = 'mbtIconKind'
+ICON_NAME_PROP = 'mbtIconName'
+ICON_SIZE_PROP = 'mbtIconSize'
+ICON_ACCENT_PROP = 'mbtIconAccent'
+
+
+def _remember_icon(widget, kind, name, size, accent):
+    try:
+        widget.setProperty(ICON_KIND_PROP, kind)
+        widget.setProperty(ICON_NAME_PROP, name)
+        widget.setProperty(ICON_SIZE_PROP, int(size))
+        widget.setProperty(ICON_ACCENT_PROP, accent_ref(accent))
+    except Exception:
+        pass
+
+
+def _build_icon(kind, name, size, accent):
+    if kind == 'nav':
+        return nav_icon(name, size)
+    if kind == 'section':
+        return section_icon_for_title(name, size)
+    if kind == 'kpi':
+        return kpi_icon(name, size=size, accent=accent)
+    return action_icon(name, size=size, accent=accent)
+
+
 def apply_button_icon(btn, name: str, size: int = 16, accent: str | None = None):
     """Attach a painted action icon — never rely on emoji / tofu glyphs in the label."""
     from PyQt5.QtCore import QSize
     btn.setIcon(action_icon(name, size=size, accent=accent))
     btn.setIconSize(QSize(size, size))
+    _remember_icon(btn, 'action', name, size, accent)
     return btn
+
+
+def apply_nav_icon(btn, tid: str, size: int = 18):
+    """Sidebar nav icon that redraws itself when the palette changes."""
+    from PyQt5.QtCore import QSize
+    btn.setIcon(nav_icon(tid, size))
+    btn.setIconSize(QSize(size, size))
+    _remember_icon(btn, 'nav', tid, size, None)
+    return btn
+
+
+def apply_label_icon(lbl, kind: str, name: str, size: int = 22,
+                     accent: str | None = None):
+    """Painted icon on a QLabel (section headers, KPI tiles)."""
+    lbl.setPixmap(_build_icon(kind, name, size, accent).pixmap(size, size))
+    _remember_icon(lbl, kind, name, size, accent)
+    return lbl
+
+
+def repaint_themed_icons() -> int:
+    """Theme hook: redraw every tracked painted icon from the live palette."""
+    from PyQt5 import sip
+    app = QApplication.instance()
+    if app is None:
+        return 0
+    count = 0
+    for w in app.allWidgets():
+        try:
+            if sip.isdeleted(w):
+                continue
+            name = w.property(ICON_NAME_PROP)
+            if not name:
+                continue
+            kind = w.property(ICON_KIND_PROP) or 'action'
+            size = int(w.property(ICON_SIZE_PROP) or 16)
+            accent = accent_value(w.property(ICON_ACCENT_PROP))
+            icon = _build_icon(kind, name, size, accent)
+            if hasattr(w, 'setIcon'):
+                w.setIcon(icon)
+            elif hasattr(w, 'setPixmap'):
+                w.setPixmap(icon.pixmap(size, size))
+            count += 1
+        except (RuntimeError, TypeError):
+            continue
+    return count

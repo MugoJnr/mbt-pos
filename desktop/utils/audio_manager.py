@@ -557,25 +557,33 @@ class AudioManager:
             self.play(ev, force=True)
 
         # Reset debounce timer
-        old = self._group_timers.get(group)
+        old = self._group_timers.pop(group, None)
         if old is not None:
             try:
                 old.stop()
+                old.deleteLater()
             except Exception:
                 pass
-        try:
-            from PyQt5.QtCore import QTimer
-            t = QTimer()
-            t.setSingleShot(True)
-            t.timeout.connect(_flush)
-            t.start(max(50, wait_ms))
-            self._group_timers[group] = t
-        except Exception:
-            # No Qt yet — flush immediately after wait via thread
-            def _late():
-                time.sleep(wait_ms / 1000.0)
-                _flush()
-            threading.Thread(target=_late, daemon=True, name='AudioGroup').start()
+        owner = self._qt_timer_owner()
+        if owner is not None:
+            try:
+                from PyQt5.QtCore import QTimer
+                t = QTimer(owner)
+                t.setSingleShot(True)
+                t.timeout.connect(_flush)
+                t.start(max(50, wait_ms))
+                self._group_timers[group] = t
+                return
+            except Exception as e:
+                log.debug('group timer via Qt failed: %s', e)
+
+        # No usable GUI thread — debounce on a worker thread instead. A QTimer
+        # built here would belong to a thread with no event loop, and would be
+        # torn down from the wrong thread.
+        def _late():
+            time.sleep(wait_ms / 1000.0)
+            _flush()
+        threading.Thread(target=_late, daemon=True, name='AudioGroup').start()
 
     def _enqueue_unique(self, event: str, pri: int, kwargs: dict):
         # Discard obsolete identical events in queue
@@ -605,6 +613,27 @@ class AudioManager:
         self._effects_parent = parent
         self._qt_ready = True
 
+    def _qt_timer_owner(self):
+        """A parent for new Qt objects, or ``None`` when Qt must not be touched.
+
+        Qt objects belong to the thread that creates them and must live on a
+        thread running an event loop, so anything off the GUI thread gets
+        ``None`` and falls back to plain Python threads.
+        """
+        try:
+            from PyQt5.QtCore import QThread
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is None or QThread.currentThread() != app.thread():
+                return None
+            from desktop.utils.lifecycle import is_alive
+            parent = self._effects_parent
+            if parent is not None and is_alive(parent):
+                return parent
+            return app
+        except Exception:
+            return None
+
     def _play_async(self, event: str, path: str, volume: float, pri: int) -> bool:
         # Prefer QSoundEffect only when a QApplication + event loop exist
         try:
@@ -614,24 +643,38 @@ class AudioManager:
             if app is None:
                 return self._play_winsound_async(path)
             from PyQt5.QtMultimedia import QSoundEffect
+            from desktop.utils.lifecycle import is_alive
+            from desktop.utils.qt_dispatch import run_on_ui_thread
 
             def _do():
                 try:
                     eff = self._cache.get(path)
+                    if eff is not None and not is_alive(eff):
+                        # Parent widget was destroyed and took the effect with
+                        # it; the stale wrapper would fault on first use.
+                        self._cache.pop(path, None)
+                        eff = None
                     if eff is None:
-                        eff = QSoundEffect(self._effects_parent)
+                        eff = QSoundEffect(self._qt_timer_owner())
                         eff.setSource(QUrl.fromLocalFile(path))
                         self._cache[path] = eff
                     eff.setVolume(max(0.0, min(1.0, volume)))
                     dur_ms = 350
                     self._playing.append((_now_ms() + dur_ms, event, pri))
                     eff.play()
-                    QTimer.singleShot(dur_ms + 20, self._drain_queue)
+                    owner = self._qt_timer_owner()
+                    if owner is not None:
+                        drain = QTimer(owner)
+                        drain.setSingleShot(True)
+                        drain.timeout.connect(self._drain_queue)
+                        drain.timeout.connect(drain.deleteLater)
+                        drain.start(dur_ms + 20)
                 except Exception as e:
                     log.debug('QSoundEffect fail, fallback: %s', e)
                     self._play_winsound_async(path)
 
-            QTimer.singleShot(0, _do)
+            if not run_on_ui_thread(_do):
+                return self._play_winsound_async(path)
             return True
         except Exception:
             return self._play_winsound_async(path)

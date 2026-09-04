@@ -19,19 +19,20 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.assertIn("payload['checksum_sha256'] = ''", source)
         self.assertNotIn("'deploy.local.json',", source)
 
-    def test_installer_and_updater_share_helper_layout(self):
+    def test_installer_retires_unsafe_system_update_helper(self):
         installer = (ROOT / "installer.nsi").read_text(encoding="utf-8")
         updater = (ROOT / "backend" / "updater.py").read_text(
             encoding="utf-8")
-        self.assertIn('SetOutPath "$INSTDIR\\deploy"', installer)
         self.assertIn(
-            '-File "$INSTDIR\\deploy\\register_update_helper.ps1"',
+            'schtasks /Delete /TN "MBT_POS_UpdateHelper" /F',
             installer,
         )
+        self.assertIn('RMDir /r "$INSTDIR\\deploy"', installer)
         self.assertIn(
-            "os.path.join(exe_dir, 'deploy', 'MBT_UpdateHelper.ps1')",
+            'use_helper = False',
             updater,
         )
+        self.assertIn("return False, 'requires_uac'", updater)
 
     def test_repair_flag_runs_before_any_profile_directory_is_created(self):
         """Elevated repair must not seed shop folders in the admin profile."""
@@ -60,19 +61,55 @@ class ReleaseIntegrityTests(unittest.TestCase):
         finish_at = installer.index('CreateShortcut  "$SMPROGRAMS', repair_at)
         self.assertLess(repair_at, finish_at)
 
+    def test_upgrade_removes_old_runtime_and_offline_variant_marker(self):
+        installer = (ROOT / 'installer.nsi').read_text(encoding='utf-8')
+        cleanup = installer.index('Delete "$INSTDIR\\EDMUS_OFFLINE_BUILD.flag"')
+        copy_runtime = installer.index('File /r "dist\\MBT_POS\\*.*"')
+        self.assertIn('RMDir /r "$INSTDIR\\_internal"', installer)
+        self.assertLess(cleanup, copy_runtime)
+
+    def test_upgrade_backup_scans_all_windows_user_profiles(self):
+        installer = (ROOT / 'installer.nsi').read_text(encoding='utf-8')
+        backup = (
+            ROOT / 'deploy' / 'Backup-MBTUserData.ps1'
+        ).read_text(encoding='utf-8')
+        self.assertIn('Backup-MBTUserData.ps1', installer)
+        self.assertIn("Join-Path $env:SystemDrive 'Users'", backup)
+        self.assertIn("Get-ChildItem -LiteralPath $profilesRoot", backup)
+        self.assertIn("backups\\pre_upgrade\\$Version", backup)
+
+    def test_cloud_restore_uses_sqlite_backup_not_live_file_replacement(self):
+        restore = (
+            ROOT / 'backend' / 'cloud_backup' / 'restore_manager.py'
+        ).read_text(encoding='utf-8')
+        self.assertIn('restore_src.backup(live_dest)', restore)
+        self.assertIn("PRAGMA integrity_check", restore)
+        self.assertNotIn('shutil.copy2(snap, live)', restore)
+        self.assertNotIn("os.remove(side)", restore)
+
     def test_web_stock_adjust_matches_desktop_security_policy(self):
         routes = (ROOT / 'web' / 'web_routes.py').read_text(encoding='utf-8')
+        local_api = (
+            ROOT / 'desktop' / 'utils' / 'api_client.py'
+        ).read_text(encoding='utf-8')
         dashboard = (
             ROOT / 'web' / 'templates' / 'dashboard.html'
         ).read_text(encoding='utf-8')
         self.assertIn("g.current_user.get('role') != 'superadmin'", routes)
-        self.assertIn("key='superadmin_pin_hash'", routes)
-        self.assertIn('hmac.compare_digest', routes)
-        self.assertIn("'SUPERADMIN_ADJUST'", routes)
-        self.assertIn('post_stock_adjust_journal', routes)
+        self.assertIn('from desktop.utils.api_client import APIClient', routes)
+        self.assertIn("data.get('direction')", routes)
+        self.assertIn("data.get('quantity')", routes)
+        self.assertIn("pin=str(data.get('pin') or '')", routes)
+        self.assertIn("key='superadmin_pin_hash'", local_api)
+        self.assertIn('hmac.compare_digest', local_api)
+        self.assertIn("'SUPERADMIN_ADJUST'", local_api)
+        self.assertIn('post_stock_adjust_journal', local_api)
         self.assertIn('expected_stock', routes)
+        self.assertIn('id="adj-direction"', dashboard)
+        self.assertIn('id="adj-qty"', dashboard)
+        self.assertIn('id="adj-reason-other"', dashboard)
         self.assertIn('id="adj-pin"', dashboard)
-        self.assertIn('expected_stock:Number(product?.stock||0)', dashboard)
+        self.assertIn('direction, quantity, reason, pin, expected_stock:current', dashboard)
         self.assertIn("USER?.role === 'superadmin'", dashboard)
         self.assertIn("res?.current_stock !== undefined", dashboard)
         self.assertIn('id="adj-current-stock"', dashboard)
@@ -106,6 +143,14 @@ class ReleaseIntegrityTests(unittest.TestCase):
         ]
         self.assertIn('self.products = fresh_products', refresh_section)
         self.assertNotIn('if fresh_products:', refresh_section)
+        # Nested prompts must parent to the modal Adjust Stock dialog — parenting
+        # to the Inventory tab leaves them behind it (Windows "Not Responding").
+        self.assertIn("prompt_superadmin_pin(\n                        dlg,", refresh_section)
+        self.assertIn("QMessageBox.warning(dlg,", refresh_section)
+        self.assertLess(
+            refresh_section.index('self._adjust_stock_active = True'),
+            refresh_section.index('fresh_products = self.api.get_products()'),
+        )
 
     def test_main_window_does_not_duplicate_service_tamper_alert(self):
         main = (ROOT / 'desktop' / 'main.py').read_text(encoding='utf-8')

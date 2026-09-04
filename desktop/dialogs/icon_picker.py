@@ -240,7 +240,7 @@ class IconPickerDialog(QDialog):
         self._ok_btn.setCursor(Qt.PointingHandCursor)
         self._ok_btn.setEnabled(bool(self._selected))
         self._ok_btn.setStyleSheet(
-            f"QPushButton {{ background:{C['gold']}; color:#080810; "
+            f"QPushButton {{ background:{C['gold']}; color:{C['gold_fg']}; "
             f"border:none; border-radius:9px; font-size:13px; font-weight:700; }}"
             f"QPushButton:hover {{ background:{C.get('gold_lt', C['gold'])}; }}"
             f"QPushButton:disabled {{ background:{C['panel']}; color:{C['muted']}; }}")

@@ -13,6 +13,8 @@ if ROOT not in sys.path:
 
 
 class _Base(unittest.TestCase):
+    PIN = '135790'
+
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self._db_path = os.path.join(self._tmpdir.name, 'test.db')
@@ -51,6 +53,11 @@ class _Base(unittest.TestCase):
             "VALUES (?,?,?,?,?,?)",
             ('Ret Widget', 'RW1', 100.0, 40.0, 50, 5),
         )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash(self.PIN)),
+        )
         db.commit()
         db.close()
 
@@ -62,6 +69,53 @@ class _Base(unittest.TestCase):
 
 
 class ReturnSaleGate(_Base):
+    def test_negative_quantity_and_client_totals_are_not_trusted(self):
+        denied = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Ret Widget', 'sku': 'RW1',
+                'quantity': -5, 'unit_price': 100.0, 'discount': 0,
+                'total': -500.0,
+            }],
+            'subtotal': -500, 'total': -500,
+            'payment_method': 'Cash', 'amount_paid': 0,
+        })
+        self.assertIn('error', denied)
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=1").fetchone()['stock']),
+            50.0,
+        )
+        self.assertEqual(
+            db.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 0)
+        db.close()
+
+        created = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Ret Widget', 'sku': 'RW1',
+                'quantity': 2, 'unit_price': 100.0, 'discount': 10,
+                'total': 1.0,
+            }],
+            'subtotal': 1, 'discount': 10, 'tax': 999, 'total': 1,
+            'payment_method': 'Cash', 'amount_paid': 190,
+        })
+        self.assertTrue(created.get('success'), created)
+        db = self.ac._db()
+        sale = db.execute(
+            "SELECT subtotal,discount,tax,total FROM sales WHERE id=?",
+            (created['sale_id'],),
+        ).fetchone()
+        line = db.execute(
+            "SELECT total FROM sale_items WHERE sale_id=?",
+            (created['sale_id'],),
+        ).fetchone()
+        db.close()
+        self.assertEqual(float(sale['subtotal']), 200.0)
+        self.assertEqual(float(sale['discount']), 10.0)
+        self.assertEqual(float(sale['tax']), 0.0)
+        self.assertEqual(float(sale['total']), 190.0)
+        self.assertEqual(float(line['total']), 190.0)
+
     def test_partial_return_restocks_and_nets_revenue(self):
         created = self.api.create_sale({
             'items': [{
@@ -87,6 +141,7 @@ class ReturnSaleGate(_Base):
             [{'sale_item_id': line_id, 'quantity': 1}],
             'customer changed mind',
             refund_method='Cash',
+            pin=self.PIN,
         )
         self.assertTrue(ret.get('success'), ret)
         self.assertAlmostEqual(float(ret['refund_total']), 100.0, places=2)
@@ -125,8 +180,46 @@ class ReturnSaleGate(_Base):
             sale_id,
             [{'sale_item_id': line_id, 'quantity': 4}],
             'too much',
+            pin=self.PIN,
         )
         self.assertIn('error', deny)
+
+    def test_duplicate_return_line_is_rejected_atomically(self):
+        created = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Ret Widget', 'sku': 'RW1',
+                'quantity': 5, 'unit_price': 100.0, 'discount': 0,
+                'total': 500.0,
+            }],
+            'subtotal': 500, 'total': 500, 'payment_method': 'Cash',
+            'amount_paid': 500,
+        })
+        lookup = self.api.get_sale_for_return(created['receipt_number'])
+        line_id = int(lookup['items'][0]['id'])
+        denied = self.api.return_sale(
+            created['sale_id'],
+            [
+                {'sale_item_id': line_id, 'quantity': 4},
+                {'sale_item_id': line_id, 'quantity': 4},
+            ],
+            'duplicate payload',
+            pin=self.PIN,
+        )
+        self.assertIn('error', denied)
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                "SELECT stock FROM products WHERE id=1").fetchone()['stock']),
+            45.0,
+        )
+        self.assertEqual(
+            float(db.execute(
+                "SELECT returned_qty FROM sale_items WHERE id=?",
+                (line_id,),
+            ).fetchone()['returned_qty']),
+            0.0,
+        )
+        db.close()
 
     def test_cashier_cannot_return(self):
         created = self.api.create_sale({
@@ -156,6 +249,7 @@ class ReceiveStockGate(_Base):
             "SELECT stock FROM products WHERE id=1").fetchone()['stock'])
         self.ac._db().close()
 
+        # Receiving raises on-hand, so it needs no PIN step-up — only the role.
         res = self.api.receive_stock(
             1, 10, supplier_id=int(sup['id']), notes='delivery #1')
         self.assertTrue(res.get('success'), res)

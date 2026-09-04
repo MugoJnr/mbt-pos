@@ -127,7 +127,18 @@ def update_business_identity(
 
 
 def clear_session_tokens() -> None:
+    """Sign out of MugoByte Cloud on this device.
+
+    The sealed ``*_protected`` copies have to be cleared explicitly:
+    ``save_identity`` deliberately keeps an existing ciphertext when the
+    plaintext is empty, so that an identity which merely failed to decrypt is
+    never destroyed. A real sign-out must leave nothing usable behind.
+    """
     ident = load_identity()
-    ident['access_token'] = ''
-    ident['refresh_token'] = ''
+    for name in ('access_token', 'refresh_token'):
+        ident[name] = ''
+        ident[f'{name}_protected'] = ''
+    ident.pop('auth_state', None)
+    ident.pop('auth_error', None)
+    ident.pop('auth_unreadable_id', None)
     save_identity(ident)

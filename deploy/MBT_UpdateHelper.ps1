@@ -13,10 +13,11 @@
 #>
 $ErrorActionPreference = 'Stop'
 $TaskName = 'MBT_POS_UpdateHelper'
-$BrandRoot = Join-Path $env:LOCALAPPDATA 'MugoByte\MBT POS'
+$BrandRoot = Join-Path $env:ProgramData 'MugoByte\MBT POS'
 $JobPath = Join-Path $BrandRoot 'update_job.json'
 $ResultPath = Join-Path $BrandRoot 'update_job_result.json'
-$LogPath = Join-Path $env:TEMP 'mbt_update.log'
+$LogPath = Join-Path $BrandRoot 'mbt_update.log'
+New-Item -ItemType Directory -Force -Path $BrandRoot | Out-Null
 
 function Write-MbtLog([string]$Message) {
     $line = '{0}  helper: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
@@ -37,7 +38,6 @@ function Test-AllowedInstallerPath([string]$Path) {
 
     $allowedRoots = @(
         [System.IO.Path]::GetFullPath($env:TEMP),
-        [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'MugoByte\MBT POS\updates')),
         [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData 'MugoByte\MBT POS\updates'))
     )
     foreach ($root in $allowedRoots) {

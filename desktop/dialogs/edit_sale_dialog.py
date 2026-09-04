@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from desktop.utils.quiet_ui import info_toast
 from desktop.utils.theme import C, apply_themed_dialog
 from desktop.utils.widgets import DangerBtn, PrimaryBtn, SecondaryBtn
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 PAY_METHODS = (
@@ -126,6 +127,9 @@ class EditSaleDialog(QDialog):
         save.clicked.connect(self._save)
         actions.addWidget(save)
         lay.addLayout(actions)
+        # Enter routes through _save (reason + at least one line required);
+        # the reason QTextEdit keeps Enter for new lines.
+        wire_dialog_keys(self, primary=save, cancel=cancel)
 
     def _load_sale(self):
         method = (self.sale.get('payment_method') or 'Cash').strip()

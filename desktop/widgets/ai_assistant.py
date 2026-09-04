@@ -22,50 +22,42 @@ from PyQt5.QtWidgets import (
     QGraphicsDropShadowEffect, QToolButton, QAbstractItemView,
 )
 
-from desktop.utils.theme import C, ThemeManager, qss_alpha, RADIUS
+from desktop.utils.theme import C, qss_alpha, RADIUS
 from desktop.utils.ai import get_ai_service
 from desktop.utils.ai.connectivity import get_connectivity
 from desktop.utils.ai.actions import format_action_preview, ProposedAction
 from desktop.utils.ai.conversations import get_conversation_store
 from desktop.utils.ai.insights import get_dashboard_insights, _heuristic_insights
 from desktop.utils.ai.copilot_prefs import load_copilot_prefs, save_copilot_prefs
+from desktop.utils.lifecycle import defer, is_alive
+from desktop.utils.qt_dispatch import run_on_ui_thread
 
 log = logging.getLogger('ai.copilot')
 
-# Enterprise Copilot palette (overlays theme; follows light/dark)
+# Copilot palette — an alias layer over the app palette, not a second one.
+# It used to carry its own slate/amber ramp, which rendered the assistant as a
+# visibly different product from the shell it floats over and skipped every
+# contrast guarantee the shared tokens carry.
+_COPILOT_TOKENS = {
+    'bg': 'app',
+    'bg2': 'surface',
+    'card': 'card',
+    'sidebar': 'sidebar',
+    'border': 'border',
+    'accent': 'gold',
+    'accent_fg': 'gold_fg',
+    'ok': 'ok',
+    'warn': 'warn',
+    'danger': 'err',
+    'info': 'info',
+    'text': 'text',
+    'text2': 'text2',
+    'muted': 'muted',
+}
+
+
 def _copilot_colors() -> dict:
-    light = ThemeManager.is_light()
-    if light:
-        return {
-            'bg': '#F8FAFC',
-            'bg2': '#FFFFFF',
-            'card': '#FFFFFF',
-            'sidebar': '#F1F5F9',
-            'border': '#E2E8F0',
-            'accent': '#D97706',
-            'ok': '#059669',
-            'warn': '#D97706',
-            'danger': '#DC2626',
-            'info': '#2563EB',
-            'text': '#0F172A',
-            'text2': '#475569',
-            'muted': '#64748B',
-        }
-    return {
-        'bg': '#0B1220',
-        'bg2': '#111827',
-        'card': '#1A2335',
-        'sidebar': '#0F172A',
-        'border': '#273449',
-        'accent': '#FBBF24',
-        'ok': '#10B981',
-        'warn': '#F59E0B',
-        'danger': '#EF4444',
-        'info': '#3B82F6',
-        'text': '#F8FAFC',
-        'text2': '#CBD5E1',
-        'muted': '#94A3B8',
-    }
+    return {key: C[token] for key, token in _COPILOT_TOKENS.items()}
 
 
 _MODULE_LABELS = {
@@ -227,9 +219,9 @@ class AiAssistantPanel(QFrame):
         self._build()
         self.refresh_theme()
         conn = get_connectivity()
-        conn.subscribe(lambda online: QTimer.singleShot(0, self._on_conn))
+        conn.subscribe(self._on_conn_changed)
         conn.start_watch(45)
-        QTimer.singleShot(100, self._refresh_home)
+        defer(self, 100, self._refresh_home)
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
@@ -704,17 +696,17 @@ class AiAssistantPanel(QFrame):
             }}
             QPushButton#copilotAction:hover {{ border-color:{p['accent']}; color:{p['accent']}; }}
             QPushButton#copilotPrimary {{
-                background:{p['accent']}; color:#0B1220; border:none; border-radius:10px;
+                background:{p['accent']}; color:{p['accent_fg']}; border:none; border-radius:10px;
                 font-size:13px; font-weight:800;
             }}
-            QPushButton#copilotPrimary:hover {{ background:#FCD34D; }}
+            QPushButton#copilotPrimary:hover {{ background:{C['gold_lt']}; }}
             QLineEdit#copilotSearch, QTextEdit#copilotInput {{
                 background:{p['card']}; color:{p['text']}; border:1px solid {p['border']};
                 border-radius:10px; padding:8px 10px; font-size:13px;
             }}
             QTextEdit#copilotInput:focus, QLineEdit#copilotSearch:focus {{ border-color:{p['accent']}; }}
             QPushButton#copilotSend {{
-                background:{p['accent']}; color:#0B1220; border:none; border-radius:10px;
+                background:{p['accent']}; color:{p['accent_fg']}; border:none; border-radius:10px;
                 font-weight:800; font-size:13px;
             }}
             QFrame#copilotComposer, QFrame#copilotSugBar {{
@@ -788,7 +780,13 @@ class AiAssistantPanel(QFrame):
         self.setFixedHeight(parent.height())
         self.move(parent.width() - self.width(), 0)
 
+    def _on_conn_changed(self, online: bool):
+        """Connectivity callback — arrives on the AI watch thread."""
+        run_on_ui_thread(self._on_conn)
+
     def _on_conn(self):
+        if not is_alive(self):
+            return
         st = get_ai_service().status()
         if st.get('banner'):
             self._banner.setText('!  ' + st['banner'])
@@ -804,7 +802,7 @@ class AiAssistantPanel(QFrame):
             self._hint.hide()
         b = _Bubble(role, text, actions=actions or [], panel=self, structured=structured)
         self._chat_lay.insertWidget(self._chat_lay.count() - 1, b)
-        QTimer.singleShot(30, self._scroll_bottom)
+        defer(self, 30, self._scroll_bottom)
         return b
 
     def _scroll_bottom(self):
@@ -1118,10 +1116,10 @@ class AiFabButton(QPushButton):
         p = _copilot_colors()
         self.setStyleSheet(
             f"QPushButton#mbtCopilotFab {{"
-            f" background:{p['accent']}; color:#0B1220; border:none;"
+            f" background:{p['accent']}; color:{p['accent_fg']}; border:none;"
             f" border-radius:26px; font-size:15px; font-weight:900;"
             f" padding:0; letter-spacing:0.5px; }}"
-            f"QPushButton#mbtCopilotFab:hover {{ background:#FCD34D; }}"
+            f"QPushButton#mbtCopilotFab:hover {{ background:{C['gold_lt']}; }}"
         )
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(18)

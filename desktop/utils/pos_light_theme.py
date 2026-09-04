@@ -649,10 +649,10 @@ def apply_dark(sales_tab) -> None:
     if getattr(t, '_ctbl', None) is not None:
         t._ctbl.setStyleSheet(
             f"QTableWidget{{background:{D['card']};border:1px solid {D['border2']};"
-            f"border-radius:10px;color:#F5F7FA;font-size:15px;font-weight:700;"
+            f"border-radius:10px;color:{D['text']};font-size:15px;font-weight:700;"
             f"alternate-background-color:{D['card2']};gridline-color:transparent;}}"
-            f"QTableWidget::item{{color:#F5F7FA;padding:10px 10px;}}"
-            f"QHeaderView::section{{background:{D['panel']};color:#C5D0E0;"
+            f"QTableWidget::item{{color:{D['text']};padding:10px 10px;}}"
+            f"QHeaderView::section{{background:{D['panel']};color:{D['text2']};"
             f"font-size:12px;font-weight:800;letter-spacing:0.6px;padding:10px 8px;"
             f"border:none;border-bottom:1px solid {D['border2']};}}"
         )
@@ -722,7 +722,7 @@ def apply_dark(sales_tab) -> None:
         f"QPushButton{{background:{D['err_dim']};color:{D['err']};"
         f"border:1px solid {D['border2']};border-radius:8px;"
         f"font-size:13px;font-weight:700;padding:9px 14px;min-height:42px;}}"
-        f"QPushButton:hover{{background:{D['err']};color:#fff;}}")
+        f"QPushButton:hover{{background:{D['err']};color:{D['on_danger']};}}")
     if getattr(t, '_reprint_btn', None):
         t._reprint_btn.setStyleSheet(_sec)
 

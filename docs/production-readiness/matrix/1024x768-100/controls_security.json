@@ -1,0 +1,35 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "Set / Update PIN",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "Current PIN  (leave blank if not yet set)",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "New PIN  (min 6 digits)",
+      "enabled": true,
+      "echo": 2
+    },
+    {
+      "ph": "Confirm new PIN",
+      "enabled": true,
+      "echo": 2
+    }
+  ],
+  "checks": []
+}

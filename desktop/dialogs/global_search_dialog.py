@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from desktop.utils.theme import C, ThemeManager
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 class GlobalSearchDialog(QDialog):
@@ -17,9 +18,11 @@ class GlobalSearchDialog(QDialog):
 
     navigate = pyqtSignal(str, object)
 
-    def __init__(self, api, parent=None):
+    def __init__(self, api, parent=None, allowed_modules=None):
         super().__init__(parent)
         self.api = api
+        self.allowed_modules = set(
+            allowed_modules or ('sales', 'inventory', 'debt'))
         self.setWindowTitle('Search')
         self.setModal(True)
         self.setMinimumSize(560, 420)
@@ -29,7 +32,7 @@ class GlobalSearchDialog(QDialog):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
 
-        self._hint = QLabel('Search products, receipts, customers, open debts')
+        self._hint = QLabel(self._hint_text())
         self._hint.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
         lay.addWidget(self._hint)
 
@@ -53,8 +56,23 @@ class GlobalSearchDialog(QDialog):
         row.addWidget(close_btn)
         lay.addLayout(row)
 
+        # Enter belongs to the query field / result list, never to Close.
+        wire_dialog_keys(self, primary=None, cancel=close_btn)
         self._apply_theme()
         self._q.setFocus()
+
+    def _hint_text(self) -> str:
+        """Advertise only what this user can actually open."""
+        kinds = []
+        if 'inventory' in self.allowed_modules:
+            kinds.append('products')
+        if 'sales' in self.allowed_modules:
+            kinds.append('receipts')
+        if 'debt' in self.allowed_modules:
+            kinds.extend(('customers', 'open debts'))
+        if not kinds:
+            return 'No searchable modules are available for your role'
+        return 'Search ' + ', '.join(kinds)
 
     def _apply_theme(self):
         light = ThemeManager.is_light()
@@ -78,91 +96,22 @@ class GlobalSearchDialog(QDialog):
         ql = q.lower()
         results = []
 
-        # Products
-        try:
-            for p in (self.api.get_products() or [])[:800]:
-                if not p.get('is_active', 1):
-                    continue
-                blob = ' '.join([
-                    str(p.get('name') or ''),
-                    str(p.get('sku') or ''),
-                    str(p.get('barcode') or ''),
-                ]).lower()
-                if ql in blob:
-                    results.append((
-                        f"Product  ·  {p.get('name')}  ·  "
-                        f"{p.get('sku') or '—'}  ·  stock {p.get('stock')}",
-                        'inventory',
-                        {'product_id': p.get('id'), 'query': q},
-                    ))
-                    if sum(1 for r in results if r[1] == 'inventory') >= 8:
-                        break
-        except Exception:
-            pass
+        # Only query what this role can open — previously every source was
+        # fetched and the disallowed hits were discarded afterwards.
+        if not self.allowed_modules:
+            item = QListWidgetItem('No searchable modules are available for your role')
+            item.setFlags(Qt.NoItemFlags)
+            self._list.addItem(item)
+            return
 
-        # Customers
-        try:
-            customers = []
-            if hasattr(self.api, 'search_customers'):
-                customers = self.api.search_customers(q) or []
-            if not customers:
-                customers = [
-                    c for c in (self.api.get_customers() or [])
-                    if ql in (c.get('name') or '').lower()
-                    or ql in (c.get('phone') or '').lower()
-                ]
-            for c in customers[:8]:
-                results.append((
-                    f"Customer  ·  {c.get('name')}  ·  {c.get('phone') or '—'}",
-                    'debt',
-                    {'customer_id': c.get('id'), 'query': q},
-                ))
-        except Exception:
-            pass
-
-        # Receipts (last 90 days)
-        try:
-            end = date.today()
-            start = end - timedelta(days=90)
-            sales = self.api.get_sales(str(start), str(end)) or []
-            for s in sales:
-                rn = (s.get('receipt_number') or '').lower()
-                if ql in rn or ql in str(s.get('id') or ''):
-                    results.append((
-                        f"Receipt  ·  {s.get('receipt_number')}  ·  "
-                        f"{s.get('payment_method')}  ·  {s.get('total')}  ·  "
-                        f"{s.get('status')}",
-                        'sales',
-                        {'sale_id': s.get('id'), 'receipt_number': s.get('receipt_number')},
-                    ))
-                    if sum(1 for r in results if r[1] == 'sales') >= 8:
-                        break
-        except Exception:
-            pass
-
-        # Open debts
-        try:
-            debts = self.api.get_debt_invoices() or []
-            for d in debts:
-                status = (d.get('status') or '').lower()
-                if status in ('paid', 'cancelled', 'written_off'):
-                    continue
-                blob = ' '.join([
-                    str(d.get('invoice_number') or ''),
-                    str(d.get('receipt_number') or ''),
-                    str(d.get('customer_name') or ''),
-                ]).lower()
-                if ql in blob:
-                    results.append((
-                        f"Debt  ·  {d.get('invoice_number')}  ·  "
-                        f"{d.get('customer_name')}  ·  bal {d.get('balance')}",
-                        'debt',
-                        {'invoice_id': d.get('id'), 'query': q},
-                    ))
-                    if sum(1 for r in results if r[0].startswith('Debt')) >= 8:
-                        break
-        except Exception:
-            pass
+        if 'inventory' in self.allowed_modules:
+            results.extend(self._search_products(q, ql))
+        if 'debt' in self.allowed_modules:
+            results.extend(self._search_customers(q, ql))
+        if 'sales' in self.allowed_modules:
+            results.extend(self._search_receipts(ql))
+        if 'debt' in self.allowed_modules:
+            results.extend(self._search_debts(q, ql))
 
         if not results:
             item = QListWidgetItem('No matches')
@@ -176,6 +125,103 @@ class GlobalSearchDialog(QDialog):
             self._list.addItem(item)
         if self._list.count():
             self._list.setCurrentRow(0)
+
+    # Products
+    def _search_products(self, q: str, ql: str) -> list:
+        out = []
+        try:
+            for p in (self.api.get_products() or [])[:800]:
+                if not p.get('is_active', 1):
+                    continue
+                blob = ' '.join([
+                    str(p.get('name') or ''),
+                    str(p.get('sku') or ''),
+                    str(p.get('barcode') or ''),
+                ]).lower()
+                if ql in blob:
+                    out.append((
+                        f"Product  ·  {p.get('name')}  ·  "
+                        f"{p.get('sku') or '—'}  ·  stock {p.get('stock')}",
+                        'inventory',
+                        {'product_id': p.get('id'), 'query': q},
+                    ))
+                    if len(out) >= 8:
+                        break
+        except Exception:
+            pass
+        return out
+
+    # Customers
+    def _search_customers(self, q: str, ql: str) -> list:
+        out = []
+        try:
+            customers = []
+            if hasattr(self.api, 'search_customers'):
+                customers = self.api.search_customers(q) or []
+            if not customers:
+                customers = [
+                    c for c in (self.api.get_customers() or [])
+                    if ql in (c.get('name') or '').lower()
+                    or ql in (c.get('phone') or '').lower()
+                ]
+            for c in customers[:8]:
+                out.append((
+                    f"Customer  ·  {c.get('name')}  ·  {c.get('phone') or '—'}",
+                    'debt',
+                    {'customer_id': c.get('id'), 'query': q},
+                ))
+        except Exception:
+            pass
+        return out
+
+    # Receipts (last 90 days)
+    def _search_receipts(self, ql: str) -> list:
+        out = []
+        try:
+            end = date.today()
+            start = end - timedelta(days=90)
+            for s in (self.api.get_sales(str(start), str(end)) or []):
+                rn = (s.get('receipt_number') or '').lower()
+                if ql in rn or ql in str(s.get('id') or ''):
+                    out.append((
+                        f"Receipt  ·  {s.get('receipt_number')}  ·  "
+                        f"{s.get('payment_method')}  ·  {s.get('total')}  ·  "
+                        f"{s.get('status')}",
+                        'sales',
+                        {'sale_id': s.get('id'),
+                         'receipt_number': s.get('receipt_number')},
+                    ))
+                    if len(out) >= 8:
+                        break
+        except Exception:
+            pass
+        return out
+
+    # Open debts
+    def _search_debts(self, q: str, ql: str) -> list:
+        out = []
+        try:
+            for d in (self.api.get_debt_invoices() or []):
+                status = (d.get('status') or '').lower()
+                if status in ('paid', 'cancelled', 'written_off'):
+                    continue
+                blob = ' '.join([
+                    str(d.get('invoice_number') or ''),
+                    str(d.get('receipt_number') or ''),
+                    str(d.get('customer_name') or ''),
+                ]).lower()
+                if ql in blob:
+                    out.append((
+                        f"Debt  ·  {d.get('invoice_number')}  ·  "
+                        f"{d.get('customer_name')}  ·  bal {d.get('balance')}",
+                        'debt',
+                        {'invoice_id': d.get('id'), 'query': q},
+                    ))
+                    if len(out) >= 8:
+                        break
+        except Exception:
+            pass
+        return out
 
     def _activate_current(self):
         item = self._list.currentItem()

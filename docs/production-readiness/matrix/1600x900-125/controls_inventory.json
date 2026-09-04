@@ -1,0 +1,103 @@
+{
+  "buttons": [
+    {
+      "type": "QPushButton",
+      "text": "+ Add Product",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "primaryBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Category Visuals",
+      "tip": "Assign offline icons or images to product categories",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Adjust Stock",
+      "tip": "",
+      "accessible": "",
+      "icon": true,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Receive Stock",
+      "tip": "Receive delivery from a supplier (increases stock)",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Suppliers",
+      "tip": "",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Export Excel",
+      "tip": "Export inventory snapshot and stock movements to Excel",
+      "accessible": "",
+      "icon": false,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "outlineBtn"
+    },
+    {
+      "type": "QPushButton",
+      "text": "Refresh",
+      "tip": "",
+      "accessible": "",
+      "icon": true,
+      "parent": "QWidget",
+      "parent_obj": "mbtPageInner",
+      "enabled": true,
+      "checkable": false,
+      "checked": null,
+      "obj": "ghostBtn"
+    }
+  ],
+  "fields": [
+    {
+      "ph": "Search by name or SKU\u2026",
+      "enabled": true,
+      "echo": 0
+    }
+  ],
+  "checks": []
+}

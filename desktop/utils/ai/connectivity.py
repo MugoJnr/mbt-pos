@@ -1,10 +1,12 @@
 """AI online/offline detection with auto-reconnect polling."""
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
-from typing import Callable, List, Optional
+import weakref
+from typing import Any, Callable, List, Optional
 
 import requests
 
@@ -25,7 +27,8 @@ class AiConnectivity:
         self._online = True
         self._configured = is_ai_configured()
         self._lock = threading.Lock()
-        self._listeners: List[Callable[[bool], None]] = []
+        self._listeners: List[Any] = []
+        self._listeners_lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_check = 0.0
@@ -45,14 +48,48 @@ class AiConnectivity:
             self._configured = is_ai_configured()
 
     def subscribe(self, cb: Callable[[bool], None]):
-        self._listeners.append(cb)
+        """Register a connectivity listener.
+
+        Bound methods are held weakly. This object is a process-wide singleton
+        with a polling thread behind it, so a strong reference would keep a
+        subscribed widget alive past its window and then call back into it
+        after Qt destroyed the underlying C++ object.
+        """
+        ref: Any = weakref.WeakMethod(cb) if inspect.ismethod(cb) else cb
+        with self._listeners_lock:
+            self._listeners.append(ref)
+
+    def unsubscribe(self, cb: Callable[[bool], None]):
+        """Drop a listener registered through :meth:`subscribe`."""
+        with self._listeners_lock:
+            self._listeners = [
+                ref for ref in self._listeners
+                if self._deref(ref) not in (None, cb)
+            ]
+
+    @staticmethod
+    def _deref(ref: Any) -> Optional[Callable[[bool], None]]:
+        return ref() if isinstance(ref, weakref.ref) else ref
+
+    def _live_listeners(self) -> List[Callable[[bool], None]]:
+        live: List[Callable[[bool], None]] = []
+        with self._listeners_lock:
+            kept: List[Any] = []
+            for ref in self._listeners:
+                cb = self._deref(ref)
+                if cb is None:
+                    continue
+                kept.append(ref)
+                live.append(cb)
+            self._listeners = kept
+        return live
 
     def _emit(self, online: bool):
-        for cb in list(self._listeners):
+        for cb in self._live_listeners():
             try:
                 cb(online)
             except Exception:
-                pass
+                log.debug('connectivity listener failed', exc_info=True)
 
     def check_now(self) -> bool:
         self.refresh_configured()

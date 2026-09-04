@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 
 from desktop.utils.theme import C, apply_themed_dialog, qss_alpha
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn, H2, Caption
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 def ensure_credit_customer(parent, api) -> Optional[int]:
@@ -71,6 +72,7 @@ class CreditCustomerChoiceDialog(QDialog):
         cancel = SecondaryBtn('Cancel', 42)
         cancel.clicked.connect(self.reject)
         lay.addWidget(cancel)
+        wire_dialog_keys(self, primary=existing, cancel=cancel)
 
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.clear_modal_on_close(self)
@@ -130,6 +132,9 @@ class QuickCustomerDialog(QDialog):
         br.addWidget(cancel, 1)
         br.addWidget(save, 1)
         lay.addRow(br)
+        # Enter anywhere in the form runs _save(), which enforces name/phone.
+        wire_dialog_keys(self, primary=save, cancel=cancel)
+        self.name.setFocus()
 
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.clear_modal_on_close(
@@ -222,6 +227,8 @@ class CustomerPickerDialog(QDialog):
         br.addWidget(cancel, 1)
         br.addWidget(ok, 1)
         lay.addLayout(br)
+        # Enter goes to _accept(), which refuses an empty selection.
+        wire_dialog_keys(self, primary=ok, cancel=cancel)
 
         self._load()
         self.search.setFocus()
@@ -255,6 +262,9 @@ class CustomerPickerDialog(QDialog):
                 items.append((label, c.get('id')))
         if self._use_select and self.picker is not None:
             self.picker.set_items(items)
+            # One match: pre-select so Select & Continue works without extra clicks.
+            if len(items) == 1 and items[0][1] is not None:
+                self.picker.set_value(items[0][1])
         elif self._list is not None:
             from PyQt5.QtWidgets import QListWidgetItem
             self._list.clear()
@@ -262,6 +272,8 @@ class CustomerPickerDialog(QDialog):
                 it = QListWidgetItem(label)
                 it.setData(Qt.UserRole, cid)
                 self._list.addItem(it)
+            if len(items) == 1 and items[0][1] is not None:
+                self._list.setCurrentRow(0)
 
     def _accept(self):
         cid = None

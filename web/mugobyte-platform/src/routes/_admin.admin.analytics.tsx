@@ -5,7 +5,7 @@ import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { StatCard } from "@/components/layout/StatCard";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { listCloudLicenses, listCloudDevices, GET } from "@/lib/api";
+import { getAdminOverview, GET, type CloudDevice } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/_admin/admin/analytics")({
@@ -15,13 +15,9 @@ export const Route = createFileRoute("/_admin/admin/analytics")({
 
 function AdminAnalyticsPage() {
   const { orgId } = useAuth();
-  const licensesQ = useQuery({
-    queryKey: ["admin-analytics-licenses", orgId],
-    queryFn: () => listCloudLicenses(orgId),
-  });
-  const devicesQ = useQuery({
-    queryKey: ["admin-analytics-devices", orgId],
-    queryFn: () => listCloudDevices(orgId),
+  const overviewQ = useQuery({
+    queryKey: ["admin-overview"],
+    queryFn: getAdminOverview,
   });
   const analyticsQ = useQuery({
     queryKey: ["admin-analytics-overview", orgId],
@@ -40,11 +36,16 @@ function AdminAnalyticsPage() {
     retry: 0,
   });
 
-  const licenses = licensesQ.data?.licenses || [];
-  const devices = devicesQ.data?.devices || [];
+  const licenses = overviewQ.data?.licenses || [];
+  const devices = overviewQ.data?.devices || [];
   const summary = (analyticsQ.data?.summary || analyticsQ.data?.kpis || analyticsQ.data || {}) as Record<string, unknown>;
   const claimed = licenses.filter((l) => (l.claim_status || "").toLowerCase() === "claimed").length;
-  const activeDevices = devices.filter((d) => d.is_active !== false).length;
+  const onlineCutoff = Date.now() - 5 * 60 * 1000;
+  const isOnline = (device: CloudDevice) => {
+    const seen = device.last_seen_at ? new Date(device.last_seen_at).getTime() : 0;
+    return device.is_active !== false && Number.isFinite(seen) && seen >= onlineCutoff;
+  };
+  const activeDevices = devices.filter(isOnline).length;
   const gross = Number(summary.gross_sales ?? summary.sales_total ?? summary.revenue ?? NaN);
   const analyticsOk = !analyticsQ.isError && analyticsQ.data && !analyticsQ.data.error;
 
@@ -58,8 +59,7 @@ function AdminAnalyticsPage() {
           <Button
             variant="outline"
             onClick={() => {
-              void licensesQ.refetch();
-              void devicesQ.refetch();
+              void overviewQ.refetch();
               if (orgId) void analyticsQ.refetch();
             }}
           >
@@ -69,9 +69,9 @@ function AdminAnalyticsPage() {
       />
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Licenses" value={String(licenses.length)} icon={KeyRound} hint={licensesQ.data?.scope === "all" ? "All orgs" : "Current org"} accent="primary" />
+        <StatCard label="Licenses" value={String(licenses.length)} icon={KeyRound} hint="All organizations" accent="primary" />
         <StatCard label="Claimed" value={String(claimed)} icon={TrendingUp} hint="Assignment claimed" accent="success" />
-        <StatCard label="Devices" value={String(devices.length)} icon={MonitorSmartphone} hint={`${activeDevices} active`} accent="info" />
+        <StatCard label="Devices" value={String(devices.length)} icon={MonitorSmartphone} hint={`${activeDevices} online now`} accent="info" />
         <StatCard
           label="Gross sales"
           value={analyticsOk && Number.isFinite(gross) ? gross.toLocaleString() : "—"}

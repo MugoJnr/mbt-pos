@@ -1,0 +1,48 @@
+start 2026-09-02T19:22:25.103411
+[PASS] auth: v=3.0.75 role=superadmin
+[PASS] ui.login: dialog rendered
+[PASS] ui.main_window: title='MBT POS - MugoByte Technologies'
+[PASS] tab.dashboard: btns=16 fields=0 checks=0 empty_label=0
+[PASS] tab.sales: btns=26 fields=4 checks=0 empty_label=0
+[PASS] tab.inventory: btns=7 fields=1 checks=0 empty_label=0
+[PASS] tab.consumption: btns=4 fields=5 checks=0 empty_label=0
+[PASS] tab.debt: btns=3 fields=0 checks=0 empty_label=0
+[PASS] tab.accounting: btns=11 fields=0 checks=0 empty_label=0
+[PASS] tab.reports: btns=8 fields=2 checks=2 empty_label=0
+[PASS] tab.notes: btns=6 fields=2 checks=0 empty_label=0
+[PASS] tab.ai_ops: btns=2 fields=0 checks=0 empty_label=0
+[PASS] tab.admin: btns=19 fields=1 checks=14 empty_label=0
+[PASS] tab.settings: btns=114 fields=30 checks=73 empty_label=0
+[PASS] tab.security: btns=1 fields=3 checks=0 empty_label=0
+[PASS] tab.license: btns=5 fields=1 checks=0 empty_label=0
+[PASS] tab.diagnostics: btns=6 fields=0 checks=0 empty_label=0
+[PASS] finance.shell: label='Finance' nav='  Finance' pages=['overview', 'money', 'expenses', 'credit', 'reports', 'coa', 'ledger', 'journals', 'trial', 'balance', 'cashflow', 'periods', 'fin_settings'] cls=FinanceTab
+[PASS] finance.page.overview: refreshed ok (_OverviewPage)
+[PASS] finance.page.money: refreshed ok (_MoneyPage)
+[PASS] finance.page.expenses: refreshed ok (_ExpensesPage)
+[PASS] finance.page.credit: refreshed ok (_CreditPage)
+[PASS] finance.page.reports: refreshed ok (_ReportsPage)
+[PASS] finance.adv.coa: _AccountsPage
+[PASS] finance.adv.ledger: _LedgerPage
+[PASS] finance.adv.journals: _JournalsPage
+[PASS] finance.adv.trial: _StatementPage
+[PASS] finance.adv.balance: _StatementPage
+[PASS] finance.adv.cashflow: _CashFlowPage
+[PASS] finance.adv.periods: _PeriodsPage
+[PASS] finance.adv.fin_settings: _FinanceSettingsPage
+[PASS] finance.settings_persist: ok=True method='accrual' note='QA finance note' cash='1000'
+[PASS] ui.theme_toggle: dark+light grabs
+[PASS] settings.persist: saved=True probe='My Shop ·CERT' cfg_keys=['shop_email', 'theme', 'printer_name', 'accounting_fx_enabled', 'accounting_multi_branch', 'auto_report_weekday', 'telegram_bot_token', 'telegram_chat_id']
+[PASS] settings.checkbox_toggle: 'Auto-print receipt after each sale' flipped True->False
+[PASS] dialog.return_sale: opened=True
+[PASS] dialog.void_sale: opened=True
+[PASS] dialog.receive_stock: opened=True
+[PASS] dialog.suppliers: opened=True
+[PASS] dialog.add_product: opened=True
+[PASS] dialog.global_search: opened=True
+[PASS] ui.sales_focus: focus+restore
+[PASS] error.invalid_product: {'error': 'Product name is required.'}
+[PASS] error.empty_sale: {'error': 'Cart is empty — add at least one product before charging.'}
+[PASS] settings.no_telegram_ui: leaked=[]
+[PASS] ui.sidebar_nav: items=14
+VERDICT=PASS fails=0 partials=0

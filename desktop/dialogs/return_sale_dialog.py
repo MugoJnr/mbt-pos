@@ -10,7 +10,7 @@ from PyQt5.QtCore import Qt
 
 from desktop.utils.theme import C, ThemeManager
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
-from desktop.utils.security import ask_superadmin_pin
+from desktop.utils.dialog_keys import wire_dialog_keys
 
 
 class ReturnSaleDialog(QDialog):
@@ -82,6 +82,11 @@ class ReturnSaleDialog(QDialog):
         btns.addWidget(self._go)
         lay.addLayout(btns)
 
+        # Enter always runs the validated Process Return path — never Cancel
+        # and never the Lookup button that happens to be first in the chain.
+        wire_dialog_keys(self, primary=self._go, cancel=cancel,
+                         submit_exempt=(self._receipt,))
+
         self._apply_theme()
         if receipt_prefill:
             self._lookup()
@@ -146,12 +151,15 @@ class ReturnSaleDialog(QDialog):
         if not payload:
             QMessageBox.warning(self, 'Empty', 'Set at least one return quantity.')
             return
-        if not ask_superadmin_pin(
-                self.api, self, reason=f"Return {self._sale.get('receipt_number')}"):
+        from desktop.utils.security import prompt_superadmin_pin
+        pin = prompt_superadmin_pin(
+            self, reason=f"Return {self._sale.get('receipt_number')}")
+        if not pin:
             return
         res = self.api.return_sale(
             int(self._sale['id']), payload, reason,
             refund_method=self._method.currentText(),
+            pin=pin,
         )
         if res and res.get('success'):
             info_toast(
