@@ -1,8 +1,8 @@
 {
-    "version": "3.0.86",
-    "build": "RC-2026-09-08-v3.0.86",
+    "version": "3.0.87",
+    "build": "RC-2026-09-08-v3.0.87",
     "released": "2026-09-08",
-    "release_notes": "MBT POS v3.0.86: Shop-floor access + honest UI. Cashiers can Add Product, edit info, and Receive Stock (Inventory tab on upgrade). Cost/margin hidden for cashiers. Category Visuals, product delete, Adjust Stock, and inventory export stay Manager+/Super-Admin with clear locked-button reasons. Manager Settings is view-only without Save. Debt write-off and backdating remain Super-Admin PIN gated even if tabs are granted. Users & Access explains tab vs vault.",
-    "checksum_sha256": "eee8c46044d5b4efc9264af5cb9767e802a41315dbe8bcdf1eb80e75369e000a",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.86/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.87: Web dashboard Super Admin elevated actions. Cashiers cannot inventory-export or see cost/nav valuation; SA gets Adjust, write-off (PIN), Users & Access, and Receive on web. inventory_value alias hardened so POS inventory tab no longer grants valuation/export. API cost redact + write-off/receive web endpoints.",
+    "checksum_sha256": "ffb87b5f1335448d47aa75bb520f23c74a84ac8ff9654a633eb445ee865bcb43",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.87/MBT_POS_Setup.exe"
 }

@@ -2259,7 +2259,9 @@ def _user_can(module, user=None):
     aliases = {
         'sales': {'dashboard', 'sales', 'pos'},
         'inventory': {'inventory', 'sales'},  # product search for POS only; use inventory_value for $
-        'inventory_value': {'inventory', 'accounting', 'reports'},
+        # Valuation / cost / inventory export — NOT the POS inventory tab.
+        # Cashiers get inventory for Receive/Add Product; cost stays Reports/Accounting.
+        'inventory_value': {'accounting', 'reports'},
         'debt': {'debt', 'customers'},
         'reports': {'reports'},
         'users': {'admin', 'users'},
@@ -2742,7 +2744,7 @@ def create_debt_invoice():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('debt'):
+        if not _user_can('debt') or not _has_perm('debt.create'):
             return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
         user = g.current_user
@@ -2763,7 +2765,7 @@ def pay_debt_invoice(inv_id):
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('debt'):
+        if not _user_can('debt') or not _has_perm('debt.collect'):
             return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
         user = g.current_user
@@ -2782,6 +2784,35 @@ def pay_debt_invoice(inv_id):
             data.get('payment_reference') or '',
         )
         return jsonify(result), (200 if result.get('success') else 400)
+    return _inner()
+
+
+@web.route('/api/debt/invoices/<int:inv_id>/write-off', methods=['POST'])
+def write_off_debt_invoice(inv_id):
+    """Super Admin write-off / cancel open debt (requires Super-Admin PIN)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('debt.delete'):
+            return jsonify({
+                'error': 'Write-off is Super Admin only and requires the Super-Admin PIN.',
+            }), 403
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'superadmin'
+        )
+        result = api.delete_debt_invoice(
+            inv_id,
+            data.get('reason') or '',
+            pin=str(data.get('pin') or ''),
+        )
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
     return _inner()
 
 
@@ -2820,7 +2851,7 @@ def adjust_stock(pid):
     from backend.app import token_required
     @token_required
     def _inner():
-        if g.current_user.get('role') != 'superadmin':
+        if not _has_perm('inventory.adjust_stock'):
             return jsonify({'error': 'Super-Admin access required'}), 403
         data = request.json or {}
         user = g.current_user
@@ -2839,6 +2870,36 @@ def adjust_stock(pid):
             data.get('reason'),
             pin=str(data.get('pin') or ''),
             expected_stock=data.get('expected_stock'),
+        )
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/receive', methods=['POST'])
+def receive_stock(pid):
+    """Add-only stock delivery (cashier+ with receive permission)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('inventory.receive_stock'):
+            return jsonify({'error': 'Receive Stock access required'}), 403
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'staff'
+        )
+        result = api.receive_stock(
+            pid,
+            data.get('quantity') if data.get('quantity') is not None else data.get('qty_add'),
+            notes=data.get('notes') or data.get('reason') or '',
+            unit_cost=data.get('unit_cost'),
+            supplier_id=data.get('supplier_id'),
+            pin=str(data.get('pin') or ''),
         )
         status = int(result.pop('status', 200 if result.get('success') else 400))
         return jsonify(result), status

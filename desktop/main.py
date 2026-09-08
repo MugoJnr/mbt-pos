@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-08-v3.0.86"
-APP_VERSION   = "3.0.86"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-08-v3.0.87"
+APP_VERSION   = "3.0.87"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():

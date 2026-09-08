@@ -1104,20 +1104,40 @@ def delete_user(uid):
 
 # ── PRODUCTS ──────────────────────────────────────────────────────────────────
 
+def _actor_has_perm(action: str) -> bool:
+    from desktop.utils.security import has_permission
+    role = (g.current_user or {}).get('role') or 'cashier'
+    return has_permission({'role': role}, action)
+
+
+def _products_for_actor(rows):
+    """Redact cost for roles without inventory.view_cost."""
+    see_cost = _actor_has_perm('inventory.view_cost')
+    out = []
+    for p in rows:
+        d = dict(p)
+        if not see_cost:
+            d.pop('cost_price', None)
+        out.append(d)
+    return out
+
+
 @app.route('/api/products', methods=['GET'])
 @token_required
 def list_products():
     db = get_db()
     products = db.execute("SELECT * FROM products WHERE is_active=1 ORDER BY name").fetchall()
-    return jsonify([dict(p) for p in products])
+    return jsonify(_products_for_actor(products))
 
 
 @app.route('/api/products', methods=['POST'])
 @token_required
 def create_product():
-    if not _role_is('manager', 'admin', 'superadmin'):
-        return jsonify({'error': 'Inventory Manager access required'}), 403
-    data = request.json or {}
+    if not _actor_has_perm('inventory.create'):
+        return jsonify({'error': 'Insufficient permissions to add products.'}), 403
+    data = dict(request.json or {})
+    if not _actor_has_perm('inventory.view_cost'):
+        data.pop('cost_price', None)
     from desktop.utils.api_client import APIClient
     api = APIClient()
     api._role = g.current_user.get('role')
@@ -1132,9 +1152,9 @@ def create_product():
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 @token_required
 def update_product(pid):
-    if not _role_is('manager', 'admin', 'superadmin'):
-        return jsonify({'error': 'Inventory Manager access required'}), 403
-    data = request.json or {}
+    if not _actor_has_perm('inventory.edit_info'):
+        return jsonify({'error': 'Insufficient permissions to edit products.'}), 403
+    data = dict(request.json or {})
     if 'stock' in data:
         log_action(
             'STOCK_ADJUST_BLOCKED', 'inventory',
@@ -1146,6 +1166,8 @@ def update_product(pid):
                 'Use the protected Adjust Stock action.'
             )
         }), 403
+    if not _actor_has_perm('inventory.view_cost'):
+        data.pop('cost_price', None)
     from desktop.utils.api_client import APIClient
     api = APIClient()
     api._role = g.current_user.get('role')
@@ -1160,8 +1182,8 @@ def update_product(pid):
 @app.route('/api/products/<int:pid>', methods=['DELETE'])
 @token_required
 def delete_product(pid):
-    if not _role_is('manager', 'admin', 'superadmin'):
-        return jsonify({'error': 'Inventory Manager access required'}), 403
+    if not _actor_has_perm('inventory.delete'):
+        return jsonify({'error': 'Insufficient permissions to delete products.'}), 403
     from desktop.utils.api_client import APIClient
     api = APIClient()
     api._role = g.current_user.get('role')
@@ -1310,7 +1332,9 @@ def get_settings():
 @app.route('/api/settings', methods=['PUT'])
 @token_required
 def update_settings():
-    if not _role_is('admin', 'superadmin'):
+    from desktop.utils.security import has_permission
+    role = (g.current_user or {}).get('role') or 'cashier'
+    if not has_permission({'role': role}, 'settings.edit'):
         return jsonify({'error': 'Admin only'}), 403
     data = request.json or {}
     db = get_db()
@@ -1327,7 +1351,9 @@ def update_settings():
 @app.route('/api/audit', methods=['GET'])
 @token_required
 def get_audit():
-    if not _role_is('admin', 'superadmin', 'manager'):
+    from desktop.utils.security import has_permission
+    role = (g.current_user or {}).get('role') or 'cashier'
+    if not has_permission({'role': role}, 'audit.view'):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     logs = db.execute("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500").fetchall()

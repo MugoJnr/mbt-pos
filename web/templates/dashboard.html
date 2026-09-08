@@ -887,19 +887,21 @@ function renderInv() {
   const st = document.getElementById('inv-stats');
   if (!el) return;
   if (!filtered.length) { el.innerHTML = '<div class="empty-state"><div class="empty-icon">📦</div><div class="empty-text">No products found</div></div>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>Price</th><th>Cost</th><th>Stock</th><th>Actions</th></tr></thead><tbody>${
+  el.innerHTML = `<table><thead><tr><th>Name</th><th>SKU</th><th>Category</th><th>Price</th>${(USER?.role==='manager'||USER?.role==='admin'||USER?.role==='superadmin'||USER?.role==='viewer')?'<th>Cost</th>':''}<th>Stock</th><th>Actions</th></tr></thead><tbody>${
     filtered.map(p => {
       const low = +p.stock <= +p.min_stock;
+      const seeCost = ['manager','admin','superadmin','viewer'].includes(USER?.role||'');
       return `<tr>
         <td><strong>${esc(p.name)}</strong></td>
         <td style="color:var(--text3)">${esc(p.sku||'')}</td>
         <td>${esc(p.category||'')}</td>
         <td style="font-weight:700">${fmt(p.price)}</td>
-        <td style="color:var(--text2)">${fmt(p.cost_price||0)}</td>
+        ${seeCost?`<td style="color:var(--text2)">${fmt(p.cost_price||0)}</td>`:''}
         <td><span class="badge badge-${+p.stock===0?'err':low?'warn':'ok'}">${p.stock} ${esc(p.unit||'pcs')}</span></td>
         <td><div class="table-actions">
           <button class="btn btn-sm btn-secondary" onclick="prodModal(${p.id})">Edit</button>
           ${USER?.role === 'superadmin' ? `<button class="btn btn-sm btn-secondary" onclick="adjustStockModal(${p.id})">Stock</button>` : ''}
+          ${['cashier','manager','admin','superadmin'].includes(USER?.role||'') ? `<button class="btn btn-sm btn-secondary" onclick="receiveStockModal(${p.id})">Receive</button>` : ''}
         </div></td>
       </tr>`;
     }).join('')
@@ -1044,6 +1046,26 @@ async function saveStockAdj(pid) {
     const button = document.getElementById('adj-save-btn');
     if (button) button.disabled = false;
   }
+}
+
+function receiveStockModal(pid) {
+  const p = PRODUCTS.find(x=>x.id===pid);
+  if (!p) return;
+  openModal('Receive Stock — ' + p.name, `
+    <div style="margin-bottom:12px;color:var(--text2)">Current: <strong>${p.stock}</strong> ${esc(p.unit||'pcs')} (add-only)</div>
+    <div class="form-group"><label class="form-label">Quantity to add *</label><input type="number" id="recv-qty" value="1" min="0.01" step="0.01"></div>
+    <div class="form-group"><label class="form-label">Notes</label><input type="text" id="recv-notes" value="delivery" maxlength="240"></div>`,
+    `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="saveReceiveStock(${pid})">Receive</button>`
+  );
+}
+async function saveReceiveStock(pid) {
+  const quantity = Number(document.getElementById('recv-qty')?.value);
+  const notes = document.getElementById('recv-notes')?.value || 'delivery';
+  if (!Number.isFinite(quantity) || quantity <= 0) { toast('Enter a quantity to receive.','err'); return; }
+  const res = await POST(`/products/${pid}/receive`, { quantity, notes });
+  if (res?.success) { toast(`Received ${quantity}. Stock ${res.old_stock} → ${res.new_stock}`,'ok'); closeModal(); PRODUCTS=await GET('/products')||[]; renderInv(); }
+  else toast(res?.error||'Receive failed.','err');
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1235,6 +1257,7 @@ function filterDebtInv() {
         <td style="font-size:12px;color:var(--text3)">${i.due_date||'—'}</td>
         <td><div class="table-actions">
           ${status!=='paid'&&status!=='cancelled'?`<button class="btn btn-sm btn-success" onclick="collectPaymentModal(${i.id},'${esc(i.invoice_number)}','${esc(i.customer_name)}',${i.balance})">Pay</button>`:''}
+          ${status!=='paid'&&status!=='cancelled'&&USER?.role==='superadmin'?`<button class="btn btn-sm btn-secondary" onclick="writeOffDebtModal(${i.id},'${esc(i.invoice_number)}',${i.balance})">Write off</button>`:''}
         </div></td>
       </tr>`;
     }).join('') || '<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--text3)">No invoices found</td></tr>'
@@ -1418,6 +1441,24 @@ async function submitPaymentFromModal() {
   const inv_id = parseInt(document.getElementById('cp-inv')?.value)||0;
   if (!inv_id) { toast('Select an invoice.','err'); return; }
   await submitPayment(inv_id);
+}
+
+function writeOffDebtModal(inv_id, inv_num, balance) {
+  openModal('Write off debt — ' + inv_num, `
+    <p style="color:var(--text2);margin-bottom:12px">Remaining ${fmt(balance)}. Super Admin PIN required.</p>
+    <div class="form-group"><label class="form-label">Reason *</label><input type="text" id="wo-reason" maxlength="240" placeholder="Why write this off?"></div>
+    <div class="form-group"><label class="form-label">Super-Admin PIN *</label><input type="password" id="wo-pin" inputmode="numeric" autocomplete="off"></div>`,
+    `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+     <button class="btn btn-primary" onclick="submitWriteOff(${inv_id})">Write off</button>`
+  );
+}
+async function submitWriteOff(inv_id) {
+  const reason = document.getElementById('wo-reason')?.value.trim()||'';
+  const pin = document.getElementById('wo-pin')?.value||'';
+  if (!reason) { toast('Reason is required.','err'); return; }
+  const res = await POST(`/debt/invoices/${inv_id}/write-off`, { reason, pin });
+  if (res?.success) { toast(res.message || 'Debt written off.','ok',5000); closeModal(); debtTab('invoices',null); }
+  else toast(res?.error||'Write-off failed.','err');
 }
 
 // ══════════════════════════════════════════════════════════════════════════

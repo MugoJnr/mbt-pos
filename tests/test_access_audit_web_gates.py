@@ -258,6 +258,78 @@ class WebAccessAuditGates(unittest.TestCase):
             headers=self.headers['manager'])
         self.assertIn(b'Cost', allowed.data)
 
+    def test_cashier_product_list_hides_cost(self):
+        cashier = self.client.get(
+            '/api/products', headers=self.headers['cashier'])
+        self.assertEqual(cashier.status_code, 200, cashier.get_json())
+        rows = cashier.get_json()
+        self.assertTrue(rows)
+        self.assertNotIn('cost_price', rows[0])
+        manager = self.client.get(
+            '/api/products', headers=self.headers['manager'])
+        self.assertEqual(manager.status_code, 200)
+        self.assertIn('cost_price', manager.get_json()[0])
+
+    def test_cashier_can_create_and_receive_not_adjust_or_write_off(self):
+        created = self.client.post(
+            '/api/products',
+            json={'name': 'Cashier Widget', 'price': 50, 'cost_price': 999},
+            headers=self.headers['cashier'])
+        self.assertEqual(created.status_code, 200, created.get_json())
+        body = created.get_json() or {}
+        pid = body.get('id')
+        self.assertTrue(pid)
+        db = self.ac._db()
+        try:
+            cost = db.execute(
+                "SELECT cost_price FROM products WHERE id=?", (pid,)
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertNotEqual(float(cost or 0), 999.0)
+        recv = self.client.post(
+            f'/api/products/{pid}/receive',
+            json={'quantity': 3, 'notes': 'gate receive'},
+            headers=self.headers['cashier'])
+        self.assertEqual(recv.status_code, 200, recv.get_json())
+        adj = self.client.post(
+            f'/api/products/{pid}/adjust',
+            json={'direction': 'add', 'quantity': 1, 'reason': 'nope', 'pin': '1111'},
+            headers=self.headers['cashier'])
+        self.assertEqual(adj.status_code, 403, adj.get_json())
+        wo = self.client.post(
+            '/api/debt/invoices/1/write-off',
+            json={'reason': 'nope', 'pin': '1111'},
+            headers=self.headers['cashier'])
+        self.assertEqual(wo.status_code, 403, wo.get_json())
+
+    def test_superadmin_can_adjust_and_open_write_off_gate(self):
+        db = self.ac._db()
+        try:
+            pid = db.execute(
+                "SELECT id FROM products WHERE sku='AUD-1'"
+            ).fetchone()[0]
+        finally:
+            db.close()
+        # Add-direction needs no PIN — proves SA is not role-blocked.
+        adj = self.client.post(
+            f'/api/products/{pid}/adjust',
+            json={
+                'direction': 'add', 'quantity': 1,
+                'reason': 'System Correction', 'pin': '',
+            },
+            headers=self.headers['superadmin'])
+        self.assertEqual(adj.status_code, 200, adj.get_json())
+        self.assertTrue(adj.get_json().get('success'))
+        wo = self.client.post(
+            '/api/debt/invoices/999999/write-off',
+            json={'reason': 'audit', 'pin': ''},
+            headers=self.headers['superadmin'])
+        body = wo.get_json() or {}
+        # Gate is open for SA: failure is PIN/invoice, not role denial.
+        self.assertNotIn('Super Admin only', body.get('error') or '')
+        self.assertIn('PIN', body.get('error') or '')
+
     def test_cashier_keeps_own_sales_export(self):
         response = self.client.get(
             '/api/reports/export?format=csv&start=2000-01-01&end=2999-12-31',

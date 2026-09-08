@@ -1,10 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Phone, Receipt, Banknote, Users, AlertTriangle, TrendingDown } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Phone, Banknote, Users, AlertTriangle, TrendingDown } from "lucide-react";
+import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { Badge, Button, Card, Input, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
+import { GET, POST, getUser } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/debt")({
@@ -14,7 +16,14 @@ export const Route = createFileRoute("/debt")({
 const TABS = ["Overview", "Invoices", "Customers", "Payments"] as const;
 
 function Debt() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  const role = String(user?.role || getUser()?.role || "").toLowerCase();
+  const isSuperAdmin = role === "superadmin";
+  const canCollect = ["cashier", "manager", "admin", "superadmin"].includes(role);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
+  const [payInv, setPayInv] = useState<any | null>(null);
+  const [woInv, setWoInv] = useState<any | null>(null);
 
   const summaryQ = useQuery({
     queryKey: ["debt-summary"],
@@ -56,12 +65,19 @@ function Debt() {
     .filter((c) => Number(c.total_outstanding || 0) > 0)
     .sort((a, b) => Number(b.total_outstanding) - Number(a.total_outstanding));
 
+  function refreshDebt() {
+    qc.invalidateQueries({ queryKey: ["debt-summary"] });
+    qc.invalidateQueries({ queryKey: ["debt-invoices"] });
+    qc.invalidateQueries({ queryKey: ["debt-payments"] });
+    qc.invalidateQueries({ queryKey: ["customers"] });
+  }
+
   return (
     <AppShell title="Debt Management">
       <PageHeader
         eyebrow="Operations"
         title="Debt Management"
-        description="Outstanding credit, overdue accounts, and collections."
+        description="Outstanding credit, collections, and Super Admin write-off."
       />
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-1 bg-panel/60 border border-border rounded-lg p-1">
@@ -151,31 +167,48 @@ function Debt() {
         ) : null}
 
         {tab === "Invoices" ? (
-          <Table head={["Invoice", "Customer", "Total", "Balance", "Status", "Due"]}>
-            {invoices.map((inv: any) => (
-              <tr key={inv.id}>
-                <td className="px-4 py-2.5 font-mono text-sm text-text">{inv.invoice_number}</td>
-                <td className="px-4 py-2.5 text-text">{inv.customer_name}</td>
-                <td className="px-4 py-2.5 tabular-nums">{KES(inv.total_amount, currency)}</td>
-                <td className="px-4 py-2.5 tabular-nums text-err font-semibold">
-                  {KES(inv.balance, currency)}
-                </td>
-                <td className="px-4 py-2.5">
-                  <Badge
-                    tone={
-                      inv.status === "paid"
-                        ? "ok"
-                        : inv.status === "partial"
-                          ? "warn"
-                          : "err"
-                    }
-                  >
-                    {inv.status}
-                  </Badge>
-                </td>
-                <td className="px-4 py-2.5 text-text2">{inv.due_date || "—"}</td>
-              </tr>
-            ))}
+          <Table head={["Invoice", "Customer", "Total", "Balance", "Status", "Due", "Actions"]}>
+            {invoices.map((inv: any) => {
+              const open = inv.status !== "paid" && inv.status !== "cancelled";
+              return (
+                <tr key={inv.id}>
+                  <td className="px-4 py-2.5 font-mono text-sm text-text">{inv.invoice_number}</td>
+                  <td className="px-4 py-2.5 text-text">{inv.customer_name}</td>
+                  <td className="px-4 py-2.5 tabular-nums">{KES(inv.total_amount, currency)}</td>
+                  <td className="px-4 py-2.5 tabular-nums text-err font-semibold">
+                    {KES(inv.balance, currency)}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <Badge
+                      tone={
+                        inv.status === "paid"
+                          ? "ok"
+                          : inv.status === "partial"
+                            ? "warn"
+                            : "err"
+                      }
+                    >
+                      {inv.status}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-2.5 text-text2">{inv.due_date || "—"}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      {open && canCollect ? (
+                        <Button size="sm" variant="secondary" onClick={() => setPayInv(inv)}>
+                          Collect
+                        </Button>
+                      ) : null}
+                      {open && isSuperAdmin ? (
+                        <Button size="sm" variant="ghost" onClick={() => setWoInv(inv)}>
+                          Write off
+                        </Button>
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </Table>
         ) : null}
 
@@ -198,14 +231,177 @@ function Debt() {
           </Table>
         ) : null}
 
-        {((tab === "Overview" || tab === "Customers") && debtCustomers.length === 0 && tab === "Overview") ||
-        (tab === "Invoices" && invoices.length === 0) ||
-        (tab === "Payments" && payments.length === 0) ? (
-          <div className="py-10 text-center text-sm text-text2 flex items-center justify-center gap-2">
-            <Receipt className="h-4 w-4" /> No records yet
-          </div>
+        {!summaryQ.isLoading &&
+        ((tab === "Overview" && !debtCustomers.length) ||
+          (tab === "Invoices" && !invoices.length) ||
+          (tab === "Customers" && !customers.length) ||
+          (tab === "Payments" && !payments.length)) ? (
+          <div className="py-12 text-center text-sm text-text2">No records in this view.</div>
         ) : null}
       </Card>
+
+      {payInv ? (
+        <CollectModal
+          inv={payInv}
+          currency={currency}
+          onClose={() => setPayInv(null)}
+          onDone={() => {
+            setPayInv(null);
+            refreshDebt();
+          }}
+        />
+      ) : null}
+      {woInv ? (
+        <WriteOffModal
+          inv={woInv}
+          currency={currency}
+          onClose={() => setWoInv(null)}
+          onDone={() => {
+            setWoInv(null);
+            refreshDebt();
+          }}
+        />
+      ) : null}
     </AppShell>
+  );
+}
+
+function CollectModal({
+  inv,
+  currency,
+  onClose,
+  onDone,
+}: {
+  inv: any;
+  currency: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [amount, setAmount] = useState(String(inv.balance || ""));
+  const [method, setMethod] = useState("cash");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    const res = await POST<any>(`/debt/invoices/${inv.id}/pay`, {
+      amount: Number(amount),
+      payment_method: method,
+      notes,
+    });
+    setBusy(false);
+    if (res?.success) {
+      toast.success(res.message || "Payment recorded");
+      onDone();
+    } else {
+      toast.error(res?.error || "Collect failed");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
+        <h3 className="text-lg font-semibold text-text mb-1">Collect payment</h3>
+        <p className="text-sm text-text2 mb-4">
+          {inv.invoice_number} · {inv.customer_name} · balance {KES(inv.balance, currency)}
+        </p>
+        <div className="space-y-3">
+          <label className="block text-xs font-medium text-text2">
+            Amount
+            <Input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="0.01" step="0.01" />
+          </label>
+          <label className="block text-xs font-medium text-text2">
+            Method
+            <select
+              className="mt-1 w-full rounded-md border border-border bg-panel px-3 py-2 text-sm text-text"
+              value={method}
+              onChange={(e) => setMethod(e.target.value)}
+            >
+              <option value="cash">Cash</option>
+              <option value="mpesa">M-Pesa</option>
+              <option value="bank">Bank</option>
+              <option value="card">Card</option>
+            </select>
+          </label>
+          <label className="block text-xs font-medium text-text2">
+            Notes
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={busy}>
+            Record payment
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WriteOffModal({
+  inv,
+  currency,
+  onClose,
+  onDone,
+}: {
+  inv: any;
+  currency: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [pin, setPin] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!reason.trim()) {
+      toast.error("Reason required");
+      return;
+    }
+    setBusy(true);
+    const res = await POST<any>(`/debt/invoices/${inv.id}/write-off`, {
+      reason: reason.trim(),
+      pin,
+    });
+    setBusy(false);
+    if (res?.success) {
+      toast.success(res.message || "Debt written off");
+      onDone();
+    } else {
+      toast.error(res?.error || "Write-off failed");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
+        <h3 className="text-lg font-semibold text-text mb-1">Write off debt</h3>
+        <p className="text-sm text-text2 mb-4">
+          Super Admin only. {inv.invoice_number} · remaining {KES(inv.balance, currency)}.
+          Unpaid invoices may void the linked sale and restock.
+        </p>
+        <div className="space-y-3">
+          <label className="block text-xs font-medium text-text2">
+            Reason
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={240} />
+          </label>
+          <label className="block text-xs font-medium text-text2">
+            Super-Admin PIN
+            <Input value={pin} onChange={(e) => setPin(e.target.value)} type="password" autoComplete="off" />
+          </label>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={busy}>
+            Write off
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
