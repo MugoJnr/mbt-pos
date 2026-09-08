@@ -826,8 +826,25 @@ class SettingsTab(QWidget):
             lay.addWidget(vg)
 
         # ── Save ──────────────────────────────────────────────────────────────
+        from desktop.utils.security import has_permission, denial_reason
+        can_edit_settings = has_permission(self.user, 'settings.edit')
+        if not can_edit_settings:
+            view_banner = Caption(
+                'View only — your role cannot change shop settings. '
+                'Ask an Admin or Super Admin to save changes.')
+            view_banner.setWordWrap(True)
+            view_banner.setStyleSheet(
+                f"color:{C['warn']}; font-size:13px; font-weight:600; padding:8px 0;")
+            lay.addWidget(view_banner)
         save = PrimaryBtn('Save All Settings', 50)
-        save.clicked.connect(self._save); lay.addWidget(save)
+        save.setObjectName('btnSaveSettings')
+        if can_edit_settings:
+            save.clicked.connect(self._save)
+        else:
+            save.setEnabled(False)
+            save.setToolTip(
+                denial_reason(self.user, 'settings.edit').replace('\n\n', ' — ').replace('\n', ' '))
+        lay.addWidget(save)
 
         rst = QPushButton('Reset Setup Wizard')
         rst.setStyleSheet(
@@ -1654,6 +1671,9 @@ class SettingsTab(QWidget):
             'Open Finance from the sidebar to view Overview, Money, and reports.')
 
     def _save(self):
+        from desktop.utils.security import require_permission
+        if not require_permission(self.user, 'settings.edit', self):
+            return
         if not self.shop_name.text().strip():
             QMessageBox.warning(self, 'Required', 'Shop name is required.'); return
         res = self.api.update_settings(self._common_payload())

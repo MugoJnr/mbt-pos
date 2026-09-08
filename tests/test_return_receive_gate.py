@@ -269,10 +269,24 @@ class ReceiveStockGate(_Base):
         self.assertIn('Acme', move['reason'] or '')
         self.assertEqual(int(sid), int(sup['id']))
 
-    def test_manager_cannot_receive(self):
-        self.api._role = 'manager'
+    def test_manager_and_cashier_can_receive(self):
+        before = float(self.ac._db().execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()['stock'])
+        self.ac._db().close()
+        for role in ('manager', 'cashier', 'admin'):
+            self.api._role = role
+            res = self.api.receive_stock(1, 2, notes=f'{role} delivery')
+            self.assertTrue(res.get('success'), (role, res))
+        after = float(self.ac._db().execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()['stock'])
+        self.ac._db().close()
+        self.assertEqual(after, before + 6)
+
+    def test_viewer_cannot_receive(self):
+        self.api._role = 'viewer'
         denied = self.api.receive_stock(1, 5)
         self.assertIn('error', denied)
+        self.assertEqual(denied.get('status'), 403)
 
 
 if __name__ == '__main__':

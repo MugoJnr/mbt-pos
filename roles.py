@@ -24,7 +24,8 @@ TAB_PERMISSIONS_BY_ROLE = {
         'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
         'reports', 'notes', 'settings', 'ai_ops',
     ],
-    ROLE_CASHIER: ['dashboard', 'sales'],
+    # Inventory so cashiers can Receive Stock (add-only); Adjust stays superadmin.
+    ROLE_CASHIER: ['dashboard', 'sales', 'inventory'],
     ROLE_VIEWER: ['dashboard', 'reports', 'accounting'],
 }
 

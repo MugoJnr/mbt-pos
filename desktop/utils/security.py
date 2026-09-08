@@ -19,10 +19,14 @@ from roles import (
 )
 
 # What each role can do — granular action flags
+# Tabs (Users & Access) open screens; these flags + Super-Admin PIN guard vault actions.
 _PERMISSIONS = {
     ROLE_CASHIER: {
         'sales.create', 'sales.view_own',
         'inventory.view',
+        'inventory.create',                # Add Product (metadata; stock via Receive)
+        'inventory.edit_info',             # name/price/SKU fixes
+        'inventory.receive_stock',         # add-only deliveries; not Adjust/remove
         'reports.view_basic',
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',
@@ -41,6 +45,8 @@ _PERMISSIONS = {
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
+        'inventory.receive_stock', 'inventory.delete', 'inventory.manage_categories',
+        'inventory.view_cost',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view',
@@ -56,6 +62,8 @@ _PERMISSIONS = {
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
+        'inventory.receive_stock', 'inventory.delete', 'inventory.manage_categories',
+        'inventory.view_cost',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view', 'users.create', 'users.edit',
@@ -75,7 +83,9 @@ _PERMISSIONS = {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
-        'inventory.adjust_stock',          # ONLY superadmin can change stock
+        'inventory.receive_stock', 'inventory.delete', 'inventory.manage_categories',
+        'inventory.view_cost',
+        'inventory.adjust_stock',          # ONLY superadmin: add/remove/set + PIN
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view', 'users.create', 'users.edit', 'users.delete',
@@ -95,6 +105,65 @@ _PERMISSIONS = {
         'ai_ops.developer',
     },
 }
+
+# Human-readable reasons for vault actions (tabs open screens; these explain locks).
+_ACTION_REASONS = {
+    'inventory.create': 'Add Product needs inventory create access.',
+    'inventory.edit_info': 'Edit product needs inventory edit access.',
+    'inventory.delete': 'Archive/delete product needs Manager or higher.',
+    'inventory.receive_stock': 'Receive Stock needs receive access on your role.',
+    'inventory.adjust_stock': (
+        'Adjust Stock (add/remove/set) is Super Admin only and requires '
+        'the Super-Admin PIN.'
+    ),
+    'inventory.manage_categories': 'Category Visuals need Manager or higher.',
+    'inventory.view_cost': 'Cost and margin are hidden for your role.',
+    'reports.export': (
+        'Spreadsheet export needs export permission, then Super-Admin PIN. '
+        'Owner can grant Reports export under role policy.'
+    ),
+    'sales.void': 'Voiding sales needs Manager or higher (plus Super-Admin PIN).',
+    'sales.business_day': (
+        'Backdating the sale date needs Manager or higher, then Super-Admin PIN.'
+    ),
+    'sales.edit': 'Editing completed sales is Super Admin only.',
+    'debt.delete': (
+        'Write-off / delete unpaid debt is Super Admin only and requires '
+        'the Super-Admin PIN. Granting the Debt tab is not enough.'
+    ),
+    'debt.collect': 'Collecting debt payments needs collect access.',
+    'debt.customer_manage': 'Managing customers on the Debt register needs Manager or higher.',
+    'settings.edit': 'Changing shop settings needs Admin or Super Admin.',
+    'users.create': 'Creating users needs Admin or Super Admin.',
+    'users.edit': 'Editing users needs Admin or Super Admin.',
+    'consumption.void': 'Voiding internal consumption needs Admin or higher.',
+}
+
+
+def denial_reason(user: dict, action: str, *, kind: str = 'ROLE') -> str:
+    """Build a clear denial message (role / PIN / tab / policy)."""
+    role = (user.get('user') or user).get('role', ROLE_CASHIER)
+    display = role_display_name(role)
+    detail = _ACTION_REASONS.get(action, f'Action “{action}” is not allowed for your role.')
+    if kind == 'PIN':
+        return (
+            f'{detail}\n\n'
+            f'Super-Admin PIN is required. Ask the shop owner to enter the PIN '
+            f'(set it under Security if it is not configured yet).'
+        )
+    if kind == 'TAB':
+        return (
+            f'This screen is not in your access list.\n\n'
+            f'The shop owner can grant the tab under Users & Access. '
+            f'Sensitive actions still need your role and may require Super-Admin PIN.'
+        )
+    if kind == 'POLICY':
+        return detail
+    return (
+        f'Your role ({display}) cannot do this.\n\n'
+        f'{detail}\n\n'
+        f'Ask a Manager or the shop owner if you need this access.'
+    )
 
 
 def has_permission(user: dict, action: str) -> bool:
@@ -120,8 +189,7 @@ def require_permission(user: dict, action: str, parent_widget=None) -> bool:
         pass
     QMessageBox.warning(
         parent_widget, 'Access Denied',
-        f'Your role ({role}) does not have permission for this action.\n'
-        f'Contact your system administrator.')
+        denial_reason(user, action, kind='ROLE'))
     # Callers pass the whole login response, which carries the session token —
     # log identity only, never the raw dict.
     account = (user.get('user') or user) if isinstance(user, dict) else {}
@@ -129,6 +197,17 @@ def require_permission(user: dict, action: str, parent_widget=None) -> bool:
         "Permission denied: user_id=%s username=%s role=%s action=%s",
         account.get('id'), account.get('username'), role, action)
     return False
+
+
+def apply_locked_button(btn, user: dict, action: str, *, kind: str = 'ROLE') -> None:
+    """Keep a toolbar button visible but disabled with a clear reason tooltip."""
+    try:
+        btn.setEnabled(False)
+        tip = denial_reason(user, action, kind=kind).replace('\n\n', ' — ').replace('\n', ' ')
+        btn.setToolTip(tip)
+        btn.setProperty('accessLocked', True)
+    except Exception:
+        pass
 
 
 # ── Super-admin PIN ────────────────────────────────────────────────────────────

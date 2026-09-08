@@ -14,7 +14,8 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     apply_table_row_backgrounds,
                                     align_header_right)
 from desktop.utils.security import (has_permission, require_permission,
-                                     prompt_superadmin_pin, ROLE_SUPERADMIN)
+                                     prompt_superadmin_pin, ROLE_SUPERADMIN,
+                                     apply_locked_button, denial_reason)
 from desktop.utils.option_lists import (
     STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS, PRODUCT_STATUSES,
 )
@@ -94,34 +95,52 @@ class InventoryTab(QWidget):
 
         if has_permission(self.user, 'inventory.create'):
             add = PrimaryBtn('+ Add Product', 40)
+            add.setObjectName('btnAddProduct')
             add.clicked.connect(self._add)
             tb.addWidget(add)
 
         cats_btn = SecondaryBtn('Category Visuals', 40)
-        cats_btn.setToolTip('Assign offline icons or images to product categories')
-        cats_btn.clicked.connect(self._manage_categories)
+        cats_btn.setObjectName('btnCategoryVisuals')
+        if has_permission(self.user, 'inventory.manage_categories'):
+            cats_btn.setToolTip('Assign offline icons or images to product categories')
+            cats_btn.clicked.connect(self._manage_categories)
+        else:
+            apply_locked_button(
+                cats_btn, self.user, 'inventory.manage_categories')
         tb.addWidget(cats_btn)
 
-        if self._role() == ROLE_SUPERADMIN:
-            adj = SecondaryBtn('Adjust Stock', 40)
-            try:
-                from desktop.utils.nav_icons import apply_button_icon
-                apply_button_icon(adj, 'gear', 15)
-            except Exception:
-                pass
-            adj.clicked.connect(self._adjust_stock_dialog)
-            tb.addWidget(adj)
+        if has_permission(self.user, 'inventory.receive_stock'):
             recv = SecondaryBtn('Receive Stock', 40)
+            recv.setObjectName('btnReceiveStock')
             recv.setToolTip('Receive delivery from a supplier (increases stock)')
             recv.clicked.connect(self._receive_stock_dialog)
             tb.addWidget(recv)
             sups = SecondaryBtn('Suppliers', 40)
+            sups.setObjectName('btnSuppliers')
             sups.clicked.connect(self._suppliers_dialog)
             tb.addWidget(sups)
 
+        adj = SecondaryBtn('Adjust Stock', 40)
+        adj.setObjectName('btnAdjustStock')
+        try:
+            from desktop.utils.nav_icons import apply_button_icon
+            apply_button_icon(adj, 'gear', 15)
+        except Exception:
+            pass
+        if self._role() == ROLE_SUPERADMIN:
+            adj.setToolTip('Add, remove, or set stock (Super-Admin + PIN)')
+            adj.clicked.connect(self._adjust_stock_dialog)
+        else:
+            apply_locked_button(adj, self.user, 'inventory.adjust_stock')
+        tb.addWidget(adj)
+
         exp = SecondaryBtn('Export Excel', 40)
-        exp.setToolTip('Export inventory snapshot and stock movements to Excel')
-        exp.clicked.connect(self._export_inventory)
+        exp.setObjectName('btnInventoryExport')
+        if has_permission(self.user, 'reports.export'):
+            exp.setToolTip('Export inventory snapshot and stock movements to Excel')
+            exp.clicked.connect(self._export_inventory)
+        else:
+            apply_locked_button(exp, self.user, 'reports.export')
         tb.addWidget(exp)
 
         ref = GhostBtn('Refresh', 40)
@@ -245,6 +264,8 @@ class InventoryTab(QWidget):
             self._stats.setText(f"  Could not load inventory: {e}")
 
     def _manage_categories(self):
+        if not require_permission(self.user, 'inventory.manage_categories', self):
+            return
         from desktop.dialogs.category_manager import CategoryManagerDialog
         dlg = CategoryManagerDialog(self.api, self)
         dlg.exec_()
@@ -256,6 +277,8 @@ class InventoryTab(QWidget):
 
     def _export_inventory(self):
         """Export inventory snapshot + recent stock movements (shared formatter)."""
+        if not require_permission(self.user, 'reports.export', self):
+            return
         try:
             from desktop.utils.export_security import (
                 require_superadmin_pin_for_export, WORKBOOK_PROTECTION_TOOLTIP,
@@ -308,11 +331,12 @@ class InventoryTab(QWidget):
         cur  = cfg.get('currency_symbol', 'KES')
         low  = 0
         can_edit   = has_permission(self.user, 'inventory.edit_info')
-        can_delete = has_permission(self.user, 'inventory.create')
+        can_delete = has_permission(self.user, 'inventory.delete')
+        can_cost   = has_permission(self.user, 'inventory.view_cost')
 
         for i, p in enumerate(prods):
             try:
-                self._populate_row(i, p, cur, can_edit, can_delete)
+                self._populate_row(i, p, cur, can_edit, can_delete, can_cost)
                 stock = _safe_float(p.get('stock'), 0)
                 mins = _safe_int(p.get('min_stock'), 5)
                 if stock <= mins:
@@ -334,7 +358,7 @@ class InventoryTab(QWidget):
             if _safe_float(p.get('stock'), 0) <= 0:
                 self._apply_zero_stock_row(i)
 
-    def _populate_row(self, i, p, cur, can_edit, can_delete):
+    def _populate_row(self, i, p, cur, can_edit, can_delete, can_cost=True):
         self._tbl.insertRow(i)
         stock = _safe_float(p.get('stock'), 0)
         mins = _safe_int(p.get('min_stock'), 5)
@@ -348,7 +372,10 @@ class InventoryTab(QWidget):
         cat_label, cat_tip = display_category(p.get('category', '') or '', raw_name)
         unit = p.get('unit', 'pcs') or 'pcs'
         price_s = f"{cur} {_safe_float(p.get('price')):,.2f}"
-        cost_s = f"{cur} {_safe_float(p.get('cost_price')):,.2f}"
+        if can_cost:
+            cost_s = f"{cur} {_safe_float(p.get('cost_price')):,.2f}"
+        else:
+            cost_s = '\u2014'
 
         name_item = tbl_item(name, tone='text')
         name_item.setToolTip(raw_name if raw_name != name else name)
@@ -374,7 +401,10 @@ class InventoryTab(QWidget):
             price_item.setToolTip(price_s)
         self._tbl.setItem(i, 3, price_item)
 
-        if _safe_float(p.get('cost_price')) <= 0.009:
+        if not can_cost:
+            cost_item = tbl_right('\u2014', tone='muted')
+            cost_item.setToolTip('Cost and margin are hidden for your role.')
+        elif _safe_float(p.get('cost_price')) <= 0.009:
             cost_item = tbl_right('—', tone='muted')
             cost_item.setToolTip('No cost set')
         else:
@@ -438,9 +468,8 @@ class InventoryTab(QWidget):
         """OUT is badge-only — keep zebra row background (no maroon full-row tint)."""
         return
     def _receive_stock_dialog(self):
-        if self._role() != ROLE_SUPERADMIN:
-            QMessageBox.warning(self, 'Access Denied',
-                'Only Super-Admin can receive stock.'); return
+        if not require_permission(self.user, 'inventory.receive_stock', self):
+            return
         from desktop.dialogs.receive_stock_dialog import ReceiveStockDialog
         dlg = ReceiveStockDialog(self.api, self, products=self.products)
         if dlg.exec_():
@@ -906,7 +935,13 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Category'),          cat_wrap)
         self._on_cat_preview(self.cat.text())
         lay.addRow(lbl('Selling Price'),     self.price)
-        lay.addRow(lbl('Cost Price'),        self.cost)
+        from desktop.utils.security import has_permission
+        self._can_view_cost = has_permission({'role': self._role}, 'inventory.view_cost')
+        if self._can_view_cost:
+            lay.addRow(lbl('Cost Price'),        self.cost)
+        else:
+            self.cost.setValue(0)
+            self.cost.hide()
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
         lay.addRow(lbl('Unit'),              self.unit)
         lay.addRow(lbl('Status'),            self.status)
@@ -1000,7 +1035,7 @@ class _ProdDlg(QDialog):
             'sku':        self.sku.text().strip() or None,
             'category':   self.cat.text().strip() or None,
             'price':      self.price.value(),
-            'cost_price': self.cost.value(),
+            'cost_price': self.cost.value() if getattr(self, '_can_view_cost', True) else 0.0,
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
             'is_active':  1 if status == 'Active' else 0,

@@ -143,7 +143,7 @@ class ReceiveStockDialog(QDialog):
             QMessageBox.warning(self, 'Required', 'Select a product.')
             return
         # Receiving only ever raises on-hand, so it carries no PIN step-up —
-        # the Super-Admin role gate on the API is the control here.
+        # inventory.receive_stock on the API is the control here.
         res = self.api.receive_stock(
             int(pid), float(self._qty.value()),
             supplier_id=self._sup.currentData(),

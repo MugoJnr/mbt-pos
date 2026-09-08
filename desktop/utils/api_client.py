@@ -673,6 +673,25 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
+    # Grant Inventory tab to existing cashiers so they can Receive Stock
+    for row in conn.execute(
+        "SELECT id, role, tab_permissions FROM users WHERE role='cashier'"
+    ).fetchall():
+        try:
+            import json as _json
+            perms = _json.loads(row['tab_permissions'] or '[]')
+            if 'inventory' not in perms:
+                if 'sales' in perms:
+                    i = perms.index('sales') + 1
+                    perms.insert(i, 'inventory')
+                else:
+                    perms.append('inventory')
+                conn.execute(
+                    "UPDATE users SET tab_permissions=? WHERE id=?",
+                    (_json.dumps(perms), row['id']),
+                )
+        except Exception:
+            pass
     # Payment variance tables (upgrade path)
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS customer_wallet (
@@ -1633,6 +1652,13 @@ class APIClient:
         return out
 
     def create_category(self, data: dict) -> dict:
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.manage_categories'):
+            return {
+                'error': 'Insufficient permissions to manage category visuals.',
+                'status': 403,
+            }
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Category name is required.'}
@@ -1667,6 +1693,13 @@ class APIClient:
             db.close()
 
     def update_category(self, cid: int, data: dict) -> dict:
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.manage_categories'):
+            return {
+                'error': 'Insufficient permissions to manage category visuals.',
+                'status': 403,
+            }
         db = _db()
         try:
             row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
@@ -1712,6 +1745,13 @@ class APIClient:
             db.close()
 
     def delete_category(self, cid: int) -> dict:
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.manage_categories'):
+            return {
+                'error': 'Insufficient permissions to manage category visuals.',
+                'status': 403,
+            }
         db = _db()
         try:
             row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
@@ -1725,14 +1765,45 @@ class APIClient:
             db.close()
 
     def ensure_category_for_product_name(self, name: str) -> dict:
-        """When saving a product with a new category string, ensure a categories row."""
+        """When saving a product with a new category string, ensure a categories row.
+
+        Cashiers may create products (and thus category *names*) without
+        Category Visuals permission; visual edits stay gated on create_category.
+        """
         name = (name or '').strip()
         if not name:
             return {}
         existing = self.get_category_by_name(name)
         if existing:
             return existing
-        return self.create_category({'name': name})
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if has_permission({'role': role or 'viewer'}, 'inventory.manage_categories'):
+            return self.create_category({'name': name})
+        if not has_permission({'role': role or 'viewer'}, 'inventory.create'):
+            return {}
+        from desktop.utils.category_suggest import suggest_visual_for_category_name
+        vis = suggest_visual_for_category_name(name) or {}
+        db = _db()
+        try:
+            db.execute(
+                "INSERT INTO categories "
+                "(name, description, visual_type, icon_name, image_path, "
+                " accent_color, sort_order, is_active, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (name, '',
+                 vis.get('visual_type') or 'icon',
+                 vis.get('icon_name'), None,
+                 vis.get('accent_color') or '#3B82F6',
+                 0, 1, datetime.now().isoformat()),
+            )
+            cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.commit()
+            return _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+        except sqlite3.IntegrityError:
+            return self.get_category_by_name(name) or {}
+        finally:
+            db.close()
 
     # ── PRODUCTS ─────────────────────────────────────────────────────────────────
 
@@ -1749,9 +1820,9 @@ class APIClient:
             db.close()
 
     def create_product(self, data: dict) -> dict:
-        if str(self._role or '').strip().lower() not in (
-            'manager', 'admin', 'superadmin',
-        ):
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.create'):
             _audit(
                 self._user_id, self._username, 'CREATE_PRODUCT_DENIED',
                 'inventory', f'role={self._role or "none"}',
@@ -1769,12 +1840,16 @@ class APIClient:
             # through Receive Stock / Adjust Stock, where owner PIN
             # authorization and movement accounting are enforced.
             initial_stock = 0.0
+            # Cashiers without view_cost must not store cost via this form.
+            cost_price = float(data.get('cost_price') or 0)
+            if not has_permission({'role': role or 'viewer'}, 'inventory.view_cost'):
+                cost_price = 0.0
             sku = (data.get('sku') or '').strip() or None
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
                 " VALUES (?,?,?,?,?,?,?,?,?)",
                 (name, sku, data.get('category'),
-                 float(data.get('price') or 0), float(data.get('cost_price') or 0),
+                 float(data.get('price') or 0), cost_price,
                  initial_stock, int(data.get('min_stock', 5) or 5),
                  data.get('unit') or 'pcs', data.get('barcode'))
             )
@@ -1809,9 +1884,9 @@ class APIClient:
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
         """Update product metadata; stock is changed only by inventory workflows."""
-        if str(self._role or '').strip().lower() not in (
-            'manager', 'admin', 'superadmin',
-        ):
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.edit_info'):
             _audit(
                 self._user_id, self._username, 'UPDATE_PRODUCT_DENIED',
                 'inventory', f'pid={pid} role={self._role or "none"}',
@@ -1828,6 +1903,10 @@ class APIClient:
                     'Use the protected Adjust Stock action.'
                 )
             }
+        if 'cost_price' in data and not has_permission(
+                {'role': role or 'viewer'}, 'inventory.view_cost'):
+            data = dict(data)
+            data.pop('cost_price', None)
         db = _db()
         try:
             fields, values = [], []
@@ -2115,14 +2194,24 @@ class APIClient:
     def receive_stock(self, product_id: int, qty_add: float, *,
                       supplier_id: int = None, notes: str = '',
                       unit_cost: float = None, pin: str = '') -> dict:
-        """Receive supplier stock under the Super-Admin role gate.
+        """Receive supplier stock (add-only) for shop floor roles.
 
         Receiving can only raise on-hand, so it deliberately carries no PIN
-        step-up; ``pin`` is accepted for call compatibility and ignored. The
-        role check is the control that stops a cashier inflating inventory.
+        step-up; ``pin`` is accepted for call compatibility and ignored.
+        Cashiers/managers/admins may receive; viewers may not. Arbitrary
+        remove/set remains Super-Admin-only via ``adjust_stock``.
         """
-        if self._role != 'superadmin':
-            return {'error': 'Only Super-Admin can receive stock.', 'status': 403}
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.receive_stock'):
+            _audit(
+                self._user_id, self._username, 'STOCK_RECEIVE_DENIED',
+                'inventory', f'pid={product_id} role={role or "none"}',
+            )
+            return {
+                'error': 'You do not have permission to receive stock.',
+                'status': 403,
+            }
         qty_add = round(float(qty_add or 0), 4)
         if qty_add <= 0:
             return {'error': 'Quantity to receive must be greater than zero.'}
@@ -2199,9 +2288,9 @@ class APIClient:
             db.close()
 
     def delete_product(self, pid: int) -> dict:
-        if str(self._role or '').strip().lower() not in (
-            'manager', 'admin', 'superadmin',
-        ):
+        role = str(self._role or '').strip().lower()
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': role or 'viewer'}, 'inventory.delete'):
             _audit(
                 self._user_id, self._username, 'DELETE_PRODUCT_DENIED',
                 'inventory', f'pid={pid} role={self._role or "none"}',

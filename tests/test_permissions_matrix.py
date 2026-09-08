@@ -44,7 +44,30 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertTrue(can_void_sales(u))
         self.assertFalse(can_edit_sales(u))
         self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
+        self.assertTrue(has_permission(u, 'inventory.receive_stock'))
         self.assertFalse(can_delete_debt(u))
+
+    def test_cashier_can_receive_create_not_adjust_or_delete(self):
+        u = _user(ROLE_CASHIER)
+        self.assertTrue(has_permission(u, 'inventory.receive_stock'))
+        self.assertTrue(has_permission(u, 'inventory.create'))
+        self.assertTrue(has_permission(u, 'inventory.edit_info'))
+        self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
+        self.assertFalse(has_permission(u, 'inventory.delete'))
+        self.assertFalse(has_permission(u, 'inventory.manage_categories'))
+        self.assertFalse(has_permission(u, 'inventory.view_cost'))
+        self.assertFalse(has_permission(u, 'reports.export'))
+
+    def test_viewer_cannot_receive_stock(self):
+        u = _user(ROLE_VIEWER)
+        self.assertFalse(has_permission(u, 'inventory.receive_stock'))
+        self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
+
+    def test_denial_reason_mentions_write_off_pin(self):
+        from desktop.utils.security import denial_reason
+        msg = denial_reason(_user(ROLE_CASHIER), 'debt.delete')
+        self.assertIn('Super Admin', msg)
+        self.assertIn('PIN', msg)
 
     def test_superadmin_full_sales_and_debt(self):
         u = _user(ROLE_SUPERADMIN)
@@ -61,15 +84,18 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertTrue(has_permission(u, 'reports.view_all'))
 
     def test_tab_defaults(self):
-        self.assertEqual(default_tab_permissions(ROLE_CASHIER), ['dashboard', 'sales'])
+        self.assertEqual(
+            default_tab_permissions(ROLE_CASHIER),
+            ['dashboard', 'sales', 'inventory'],
+        )
         self.assertIn('security', default_tab_permissions(ROLE_SUPERADMIN))
         self.assertNotIn('security', default_tab_permissions(ROLE_ADMIN))
         self.assertNotIn('license', default_tab_permissions(ROLE_ADMIN))
 
     def test_sanitize_strips_owner_tabs(self):
-        dirty = ['dashboard', 'sales', 'security', 'license', 'ai_ops']
+        dirty = ['dashboard', 'sales', 'inventory', 'security', 'license', 'ai_ops']
         cleaned = sanitize_tab_permissions(ROLE_CASHIER, dirty)
-        self.assertEqual(cleaned, ['dashboard', 'sales'])
+        self.assertEqual(cleaned, ['dashboard', 'sales', 'inventory'])
         admin = sanitize_tab_permissions(ROLE_ADMIN, dirty)
         self.assertNotIn('security', admin)
         self.assertNotIn('license', admin)

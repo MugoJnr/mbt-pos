@@ -427,11 +427,16 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         self.assertTrue(received.get('success'), received)
         self.assertEqual(self._stock(), 35)
 
-        for role in ('cashier', 'viewer', 'manager', 'admin'):
+        for role in ('cashier', 'manager', 'admin'):
             self.api._role = role
-            denied = self.api.receive_stock(self.pid, 5)
-            self.assertEqual(denied.get('status'), 403, role)
-        self.assertEqual(self._stock(), 35)
+            ok = self.api.receive_stock(self.pid, 1, notes=f'QA {role}')
+            self.assertTrue(ok.get('success'), (role, ok))
+        self.assertEqual(self._stock(), 38)
+
+        self.api._role = 'viewer'
+        denied = self.api.receive_stock(self.pid, 5)
+        self.assertEqual(denied.get('status'), 403)
+        self.assertEqual(self._stock(), 38)
 
     def test_cashier_cannot_add_stock_without_a_pin_prompt_to_bypass(self):
         for role in ('cashier', 'viewer', 'manager', 'admin', ''):

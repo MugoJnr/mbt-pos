@@ -203,12 +203,25 @@ class AdminTab(QWidget):
         self._save_btn=PrimaryBtn('Save Permissions', 40); self._save_btn.setEnabled(False); self._save_btn.clicked.connect(self._save_perms)
         self._pw_btn=SecondaryBtn('Reset Password', 40); self._pw_btn.setEnabled(False); self._pw_btn.clicked.connect(self._reset_pw)
         self._tog_btn=DangerBtn('Deactivate', 40); self._tog_btn.setEnabled(False); self._tog_btn.clicked.connect(self._toggle)
-        self._perms_hint=Caption('Select a user in the table to edit role and tab access.')
+        self._perms_hint=Caption(
+            'Select a user to edit role and tab access. '
+            'Tabs open screens only — write-off, adjust stock, backdating, and '
+            'sensitive Excel exports still need the matching role and Super-Admin PIN.')
         self._perms_hint.setWordWrap(True)
         self._perms_hint.setStyleSheet(
             f"color:{C['text2']}; font-size:12px; background:transparent; padding:4px 2px;")
+        # Per-tab vault hints (shown under the checklist)
+        vault_hint = Caption(
+            'Debt tab: collect OK for cashiers if granted; write-off = Super Admin + PIN.  '
+            'Inventory: Add/Receive follow role; cost/export/adjust stay restricted.  '
+            'Security/License: Super Admin role only.')
+        vault_hint.setWordWrap(True)
+        vault_hint.setObjectName('adminVaultHint')
+        vault_hint.setStyleSheet(
+            f"color:{C['muted']}; font-size:11px; background:transparent; padding:2px 2px 6px 2px;")
         rl.addWidget(self._save_btn); rl.addWidget(self._pw_btn); rl.addWidget(self._tog_btn)
         rl.addWidget(self._perms_hint)
+        rl.addWidget(vault_hint)
         rl.addSpacing(8)
         split.addWidget(rw); lay.addWidget(split, 1)
         lay.addWidget(H2('Audit Log'))

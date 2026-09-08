@@ -369,9 +369,11 @@ def build_shared_panels(tab) -> None:
     can_biz = can_set_business_day(tab.user)
     tab._biz_date.setEnabled(can_biz)
     tab._biz_date.setToolTip(
-        'Sale / reporting date (Nairobi shop calendar). Manager+ can backdate.'
+        'Sale / reporting date (Nairobi shop calendar). '
+        'Past dates need Manager+ and Super-Admin PIN.'
         if can_biz else
-        'Cashiers record sales for today only. Ask a manager to backdate.'
+        'Cashiers record sales for today only. Backdating needs a Manager '
+        '(and Super-Admin PIN). Ask a manager to change the sale date.'
     )
     biz._picker.setToolTip(tab._biz_date.toolTip())
     biz._picker.set_editable(can_biz)

@@ -136,6 +136,26 @@ class InventoryProductGate(unittest.TestCase):
             float(match.get('min_stock') or 0),
         )
 
+    def test_cashier_can_create_and_edit_not_delete(self):
+        self.api._role = 'cashier'
+        created = self.api.create_product({
+            'name': 'Cashier Product',
+            'sku': 'CP-1',
+            'price': 10,
+            'cost_price': 99,
+        })
+        self.assertTrue(created.get('success'), created)
+        pid = int(created['id'])
+        db = self.ac._db()
+        cost = float(db.execute(
+            "SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()['cost_price'])
+        db.close()
+        self.assertEqual(cost, 0.0)  # view_cost denied → cost forced to 0
+        upd = self.api.update_product(pid, {'name': 'Cashier Product 2'})
+        self.assertTrue(upd.get('success'), upd)
+        denied_delete = self.api.delete_product(pid)
+        self.assertIn('error', denied_delete)
+
     def test_cashier_cannot_adjust_stock(self):
         created = self.api.create_product({
             'name': 'Cashier Block',
@@ -150,8 +170,8 @@ class InventoryProductGate(unittest.TestCase):
         )
         self.assertIn('error', denied)
 
-    def test_cashier_cannot_mutate_product_catalog_directly(self):
-        self.api._role = 'cashier'
+    def test_viewer_cannot_mutate_product_catalog(self):
+        self.api._role = 'viewer'
         denied_create = self.api.create_product({
             'name': 'Unauthorized Product',
             'price': 10,
