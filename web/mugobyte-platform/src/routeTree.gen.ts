@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/_admin'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AuthRouteImport } from './routes/_auth'
+import { Route as FarmRouteImport } from './routes/farm'
 import { Route as AppAccountRouteImport } from './routes/_app.account'
 import { Route as AppAiRouteImport } from './routes/_app.ai'
 import { Route as AppBackupsRouteImport } from './routes/_app.backups'
@@ -71,6 +72,11 @@ const AppRoute = AppRouteImport.update({
 } as any)
 const AuthRoute = AuthRouteImport.update({
   id: '/_auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FarmRoute = FarmRouteImport.update({
+  id: '/farm',
+  path: '/farm',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppAccountRoute = AppAccountRouteImport.update({
@@ -286,6 +292,7 @@ const AuthAuthCallbackRoute = AuthAuthCallbackRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/farm': typeof FarmRoute
   '/account': typeof AppAccountRoute
   '/ai': typeof AppAiRoute
   '/backups': typeof AppBackupsRoute
@@ -331,6 +338,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/farm': typeof FarmRoute
   '/account': typeof AppAccountRoute
   '/ai': typeof AppAiRoute
   '/backups': typeof AppBackupsRoute
@@ -380,6 +388,7 @@ export interface FileRoutesById {
   '/_admin': typeof AdminRouteWithChildren
   '/_app': typeof AppRouteWithChildren
   '/_auth': typeof AuthRouteWithChildren
+  '/farm': typeof FarmRoute
   '/_app/account': typeof AppAccountRoute
   '/_app/ai': typeof AppAiRoute
   '/_app/backups': typeof AppBackupsRoute
@@ -427,6 +436,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/farm'
     | '/account'
     | '/ai'
     | '/backups'
@@ -472,6 +482,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/farm'
     | '/account'
     | '/ai'
     | '/backups'
@@ -520,6 +531,7 @@ export interface FileRouteTypes {
     | '/_admin'
     | '/_app'
     | '/_auth'
+    | '/farm'
     | '/_app/account'
     | '/_app/ai'
     | '/_app/backups'
@@ -569,6 +581,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRouteWithChildren
   AppRoute: typeof AppRouteWithChildren
   AuthRoute: typeof AuthRouteWithChildren
+  FarmRoute: typeof FarmRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -599,6 +612,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/farm': {
+      id: '/farm'
+      path: '/farm'
+      fullPath: '/farm'
+      preLoaderRoute: typeof FarmRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/account': {
@@ -1011,6 +1031,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRouteWithChildren,
   AppRoute: AppRouteWithChildren,
   AuthRoute: AuthRouteWithChildren,
+  FarmRoute: FarmRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -12,6 +12,11 @@ Adds to the existing Flask backend:
 import os
 import json
 import sqlite3
+import base64
+import hashlib
+import hmac
+import time
+import uuid
 from datetime import datetime, date, timedelta
 from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort, redirect
 
@@ -661,6 +666,94 @@ def cloud_auth_me():
                 'role': user.get('role') or 'member',
                 'tab_permissions': [],
             }
+        })
+
+    return _inner()
+
+
+_FARM_HANDOFF_TTL_SECONDS = 120
+_FARM_ALLOWED_REDIRECTS = frozenset({
+    'https://farm.mugobyte.com/auth/portal',
+    'mugobytefarm://auth-callback',
+})
+
+
+def _farm_handoff_segment(value):
+    if isinstance(value, dict):
+        value = json.dumps(value, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    elif isinstance(value, str):
+        value = value.encode('utf-8')
+    return base64.urlsafe_b64encode(value).decode('ascii').rstrip('=')
+
+
+def _mint_farm_handoff(user, redirect_uri, bridge_secret, *, now=None):
+    """Create the narrowly scoped Portal-to-Farm JWT."""
+    if redirect_uri not in _FARM_ALLOWED_REDIRECTS:
+        raise ValueError('invalid redirect')
+    if not isinstance(bridge_secret, str) or len(bridge_secret) < 32:
+        raise ValueError('missing bridge secret')
+
+    subject = str((user or {}).get('id') or '').strip()
+    email = str((user or {}).get('email') or '').strip().lower()
+    try:
+        subject = str(uuid.UUID(subject))
+    except (ValueError, TypeError, AttributeError):
+        raise ValueError('invalid subject') from None
+    if not email or '@' not in email or not (user or {}).get('email_verified'):
+        raise ValueError('unverified email')
+
+    issued_at = int(time.time() if now is None else now)
+    claims = {
+        'sub': subject,
+        'email': email,
+        'email_verified': True,
+        'jti': str(uuid.uuid4()),
+        'aud': 'farm-bridge',
+        'iat': issued_at,
+        'exp': issued_at + _FARM_HANDOFF_TTL_SECONDS,
+        'redirect_uri': redirect_uri,
+        'product': 'farm',
+    }
+    header = _farm_handoff_segment({'alg': 'HS256', 'typ': 'JWT'})
+    payload = _farm_handoff_segment(claims)
+    signing_input = f'{header}.{payload}'.encode('ascii')
+    signature = hmac.new(
+        bridge_secret.encode('utf-8'),
+        signing_input,
+        hashlib.sha256,
+    ).digest()
+    return f'{header}.{payload}.{_farm_handoff_segment(signature)}'
+
+
+@web.route('/api/cloud/farm/handoff', methods=['POST'])
+def cloud_farm_handoff():
+    """Mint a short-lived, one-time Farm bridge token for a Portal account."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        body = request.get_json(silent=True) or {}
+        redirect_uri = str(body.get('redirect_uri') or '').strip()
+        if redirect_uri not in _FARM_ALLOWED_REDIRECTS:
+            return jsonify({'error': 'Farm handoff could not be completed'}), 400
+
+        bridge_secret = os.environ.get('PORTAL_FARM_BRIDGE_SECRET', '')
+        if len(bridge_secret) < 32:
+            current_app.logger.error('PORTAL_FARM_BRIDGE_SECRET is not configured')
+            return jsonify({'error': 'Farm handoff could not be completed'}), 503
+
+        user = getattr(g, 'current_user', None) or {}
+        if getattr(g, 'auth_provider', None) != 'supabase':
+            return jsonify({'error': 'Farm handoff could not be completed'}), 401
+        try:
+            handoff = _mint_farm_handoff(user, redirect_uri, bridge_secret)
+        except ValueError:
+            return jsonify({'error': 'Farm handoff could not be completed'}), 403
+
+        return jsonify({
+            'ok': True,
+            'handoff': handoff,
+            'expires_in': _FARM_HANDOFF_TTL_SECONDS,
         })
 
     return _inner()

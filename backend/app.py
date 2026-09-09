@@ -780,6 +780,7 @@ def token_required(f):
                         'username': (u.get('email') or '').split('@')[0] or 'cloud',
                         'full_name': meta.get('full_name') or meta.get('name') or (u.get('email') or ''),
                         'email': u.get('email') or '',
+                        'email_verified': bool(u.get('email_confirmed_at') or u.get('confirmed_at')),
                         # Platform roles are server-controlled app metadata.
                         # Organization ownership is checked through org_members.
                         'role': app_meta.get('platform_role') or 'member',
