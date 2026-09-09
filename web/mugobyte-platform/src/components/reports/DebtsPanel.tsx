@@ -23,7 +23,12 @@ export function DebtsPanel({ orgId, start, end }: { orgId: string; start: string
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   useEffect(() => setPage(1), [view, search, status, start, end]);
-  const params = { org_id: orgId, start, end, page: String(page), page_size: "25", search, status };
+  // Open invoices are a live ledger snapshot — do not hide them behind the
+  // overview chart date range. Payment history still uses start/end.
+  const params =
+    view === "payments"
+      ? { org_id: orgId, start, end, page: String(page), page_size: "25", q: search, status }
+      : { org_id: orgId, page: String(page), page_size: "25", q: search, status };
   const endpoint = view === "payments" ? "/cloud/analytics/debt-payments" : "/cloud/analytics/debts";
   const query = useQuery({
     queryKey: ["cloud-analytics-debts", endpoint, params],
@@ -35,7 +40,7 @@ export function DebtsPanel({ orgId, start, end }: { orgId: string; start: string
   const runExport = async () => {
     setExporting(true);
     try {
-      await downloadAnalyticsExport({ ...params, page: undefined, page_size: undefined, report: view === "payments" ? "debt-payments" : "debts", format: "csv" });
+      await downloadAnalyticsExport({ ...params, page: undefined, page_size: undefined, report: view === "payments" ? "debt_payments" : "debts", format: "csv" });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Export failed");
     } finally {

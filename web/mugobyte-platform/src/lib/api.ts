@@ -566,6 +566,105 @@ export function issueCloudCommand(deviceId: string, command: string, params?: Re
   });
 }
 
+export type RemoteCommandRow = {
+  id?: string;
+  org_id?: string;
+  device_id?: string;
+  command?: string;
+  params?: Record<string, unknown> | string;
+  status?: string;
+  result?: Record<string, unknown> | string;
+  error?: string;
+  issued_by?: string;
+  issued_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  claimed_by?: string;
+};
+
+export function listCloudCommands(opts?: {
+  orgId?: string;
+  deviceId?: string;
+  status?: string;
+  limit?: number;
+}) {
+  return GET<{
+    commands: RemoteCommandRow[];
+    org_id?: string;
+    count?: number;
+    error?: string;
+  }>("/cloud/commands", {
+    org_id: opts?.orgId || getOrgId() || undefined,
+    device_id: opts?.deviceId || undefined,
+    status: opts?.status || undefined,
+    limit: opts?.limit != null ? String(opts.limit) : "50",
+  });
+}
+
+export function remoteOpsUpdateProduct(body: {
+  product_id: number | string;
+  fields?: Record<string, unknown>;
+  price?: number;
+  cost_price?: number;
+  name?: string;
+  device_id?: string;
+  primary_only?: boolean;
+  org_id?: string;
+}) {
+  return POST<{
+    ok?: boolean;
+    commands_issued?: number;
+    commands?: RemoteCommandRow[];
+    device_ids?: string[];
+    error?: string;
+  }>("/cloud/remote-ops/product", {
+    ...body,
+    org_id: body.org_id || getOrgId() || undefined,
+  });
+}
+
+export function remoteOpsAdjustStock(body: {
+  product_id: number | string;
+  quantity: number;
+  reason: string;
+  notes?: string;
+  direction?: string;
+  device_id?: string;
+  primary_only?: boolean;
+  org_id?: string;
+}) {
+  return POST<{
+    ok?: boolean;
+    commands_issued?: number;
+    commands?: RemoteCommandRow[];
+    device_ids?: string[];
+    error?: string;
+  }>("/cloud/remote-ops/stock", {
+    ...body,
+    org_id: body.org_id || getOrgId() || undefined,
+  });
+}
+
+export function remoteOpsSetUserActive(body: {
+  user_id?: number | string;
+  username?: string;
+  is_active: boolean;
+  device_id?: string;
+  primary_only?: boolean;
+  org_id?: string;
+}) {
+  return POST<{
+    ok?: boolean;
+    commands_issued?: number;
+    commands?: RemoteCommandRow[];
+    device_ids?: string[];
+    error?: string;
+  }>("/cloud/remote-ops/user", {
+    ...body,
+    org_id: body.org_id || getOrgId() || undefined,
+  });
+}
+
 export function listSecurityEvents(orgId?: string) {
   return GET<{
     audit_logs: Array<Record<string, unknown>>;

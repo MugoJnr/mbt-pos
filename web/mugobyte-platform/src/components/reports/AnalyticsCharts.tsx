@@ -45,7 +45,14 @@ const CHART_COLORS = [
   "var(--chart-3)",
 ] as const;
 
-type TrendPoint = { date: string; label: string; gross: number; transactions: number };
+type TrendPoint = {
+  date: string;
+  label: string;
+  gross: number;
+  profit: number | null;
+  transactions: number;
+  costIncomplete: boolean;
+};
 type MixPoint = { method: string; total: number; count: number; fill: string; key: string };
 
 function prefersMotion() {
@@ -60,14 +67,21 @@ function normalizeTrend(rows: AnalyticsRow[]): TrendPoint[] {
       const raw = String(value(row, "date", "day") || "");
       const day = raw.slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+      const incomplete = Boolean(row.cost_data_incomplete);
+      const rawProfit = value(row, "gross_profit", "profit");
+      const profitNum =
+        rawProfit == null || rawProfit === "" ? 0 : Number(rawProfit);
       return {
         date: day,
-        label: new Date(`${day}T12:00:00`).toLocaleDateString(undefined, {
+        label: new Date(`${day}T12:00:00+03:00`).toLocaleDateString("en-KE", {
+          timeZone: "Africa/Nairobi",
           month: "short",
           day: "numeric",
         }),
         gross: Number(value(row, "gross_sales", "revenue", "total") || 0),
+        profit: Number.isFinite(profitNum) ? profitNum : 0,
         transactions: Number(value(row, "transactions", "count", "txns") || 0),
+        costIncomplete: incomplete,
       };
     })
     .filter((row): row is TrendPoint => Boolean(row));
@@ -166,13 +180,18 @@ function SalesTrendChart({
   data,
   currency,
   compact = false,
+  costIncomplete = false,
 }: {
   data: TrendPoint[];
   currency: string;
   compact?: boolean;
+  costIncomplete?: boolean;
 }) {
+  const showProfit =
+    !costIncomplete && data.some((row) => row.profit != null && Number(row.profit) !== 0);
   const config = {
-    gross: { label: "Gross sales", color: "var(--chart-1)" },
+    gross: { label: "Sales", color: "var(--chart-1)" },
+    profit: { label: "Gross profit", color: "var(--chart-2)" },
   } satisfies ChartConfig;
   const step = tickStep(data.length);
   const height = compact ? "h-[240px] sm:h-[280px]" : "h-[280px] sm:h-[360px]";
@@ -231,13 +250,23 @@ function SalesTrendChart({
           accessibilityLayer
         >
           {sharedAxis}
+          <ChartLegend content={<ChartLegendContent />} />
           <Bar
             dataKey="gross"
             fill="var(--color-gross)"
             radius={[10, 10, 4, 4]}
-            maxBarSize={data.length === 1 ? 96 : 64}
+            maxBarSize={data.length === 1 ? 96 : 56}
             isAnimationActive={prefersMotion()}
           />
+          {showProfit ? (
+            <Bar
+              dataKey="profit"
+              fill="var(--color-profit)"
+              radius={[10, 10, 4, 4]}
+              maxBarSize={data.length === 1 ? 96 : 56}
+              isAnimationActive={prefersMotion()}
+            />
+          ) : null}
         </BarChart>
       </ChartContainer>
     );
@@ -251,8 +280,13 @@ function SalesTrendChart({
             <stop offset="0%" stopColor="var(--color-gross)" stopOpacity={0.35} />
             <stop offset="100%" stopColor="var(--color-gross)" stopOpacity={0.02} />
           </linearGradient>
+          <linearGradient id="profitTrendFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--color-profit)" stopOpacity={0.28} />
+            <stop offset="100%" stopColor="var(--color-profit)" stopOpacity={0.02} />
+          </linearGradient>
         </defs>
         {sharedAxis}
+        <ChartLegend content={<ChartLegendContent />} />
         <Area
           type="monotone"
           dataKey="gross"
@@ -263,6 +297,18 @@ function SalesTrendChart({
           activeDot={{ r: 5 }}
           isAnimationActive={prefersMotion()}
         />
+        {showProfit ? (
+          <Area
+            type="monotone"
+            dataKey="profit"
+            stroke="var(--color-profit)"
+            strokeWidth={2}
+            fill="url(#profitTrendFill)"
+            dot={{ r: 2.5, strokeWidth: 2, fill: "var(--background)" }}
+            activeDot={{ r: 4 }}
+            isAnimationActive={prefersMotion()}
+          />
+        ) : null}
       </AreaChart>
     </ChartContainer>
   );
@@ -348,7 +394,8 @@ function TrendTable({ data, currency }: { data: TrendPoint[]; currency: string }
           <TableRow>
             <TableHead className="sticky left-0 bg-background">Date</TableHead>
             <TableHead className="text-right">Transactions</TableHead>
-            <TableHead className="text-right">Gross sales</TableHead>
+            <TableHead className="text-right">Sales</TableHead>
+            <TableHead className="text-right">Gross profit</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -357,6 +404,9 @@ function TrendTable({ data, currency }: { data: TrendPoint[]; currency: string }
               <TableCell className="sticky left-0 bg-background font-medium">{row.date}</TableCell>
               <TableCell className="text-right">{formatNumber(row.transactions)}</TableCell>
               <TableCell className="text-right font-medium">{formatMoney(row.gross, currency)}</TableCell>
+              <TableCell className="text-right font-medium">
+                {row.profit == null ? "—" : formatMoney(row.profit, currency)}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -399,25 +449,36 @@ export function AnalyticsChartSection({
   trendRows,
   mixRows,
   currency = "KES",
+  costIncomplete = false,
 }: {
   trendRows: AnalyticsRow[];
   mixRows: AnalyticsRow[];
   currency?: string;
+  costIncomplete?: boolean;
 }) {
   const trend = useMemo(() => normalizeTrend(trendRows), [trendRows]);
   const mix = useMemo(() => normalizeMix(mixRows), [mixRows]);
   const [open, setOpen] = useState<"trend" | "mix" | null>(null);
+  const trendTitle = costIncomplete ? "Sales" : "Sales vs gross profit";
+  const trendDescription = costIncomplete
+    ? "Daily sales and gross profit for the selected range."
+    : "Daily sales and authoritative gross profit for the selected range.";
 
   return (
     <>
       <div className="grid gap-4 lg:grid-cols-[1.65fr_1fr]">
         <ClickableChartCard
-          title="Sales trend"
-          description="Daily gross sales for the selected range. Tap to open the full chart and table."
-          openLabel="Open sales trend details"
+          title={trendTitle}
+          description={trendDescription}
+          openLabel={costIncomplete ? "Open sales details" : "Open sales vs profit details"}
           onOpen={() => setOpen("trend")}
         >
-          <SalesTrendChart data={trend} currency={currency} compact />
+          <SalesTrendChart
+            data={trend}
+            currency={currency}
+            compact
+            costIncomplete={costIncomplete}
+          />
         </ClickableChartCard>
         <ClickableChartCard
           title="Payment mix"
@@ -432,12 +493,14 @@ export function AnalyticsChartSection({
       <Dialog open={open === "trend"} onOpenChange={(next) => setOpen(next ? "trend" : null)}>
         <DialogContent className="flex max-h-[92vh] w-[min(96vw,56rem)] max-w-none flex-col gap-4 overflow-y-auto sm:rounded-2xl">
           <DialogHeader>
-            <DialogTitle>Sales trend</DialogTitle>
+            <DialogTitle>{trendTitle}</DialogTitle>
             <DialogDescription>
-              Exact daily values for this date range. Cloud analytics only — not live till data.
+              {costIncomplete
+                ? "Exact daily sales and gross profit for this date range."
+                : "Exact daily values for this date range. Gross profit uses sale-time line costs when present, otherwise product cost."}
             </DialogDescription>
           </DialogHeader>
-          <SalesTrendChart data={trend} currency={currency} />
+          <SalesTrendChart data={trend} currency={currency} costIncomplete={costIncomplete} />
           <TrendTable data={trend} currency={currency} />
         </DialogContent>
       </Dialog>

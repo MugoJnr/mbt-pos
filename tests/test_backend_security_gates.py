@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -125,11 +126,21 @@ class BackendSecurityGates(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_cashier_cannot_mutate_catalog_or_sync_queue(self):
-        self.assertEqual(self.client.post(
+        # Shop-floor access: a cashier may add a product, but must never be
+        # able to set cost — the backend strips it without inventory.view_cost.
+        created = self.client.post(
             '/api/products',
-            json={'name': 'Unauthorized', 'price': 1},
+            json={'name': 'Shop Floor Item', 'price': 1, 'cost_price': 999},
             headers=self.headers,
-        ).status_code, 403)
+        )
+        self.assertEqual(created.status_code, 200)
+        db = sqlite3.connect(self.backend.DB_PATH)
+        cost = db.execute(
+            "SELECT cost_price FROM products WHERE name=?",
+            ('Shop Floor Item',),
+        ).fetchone()[0]
+        db.close()
+        self.assertEqual(float(cost or 0), 0.0)
         self.assertEqual(self.client.delete(
             f'/api/products/{self.product_id}',
             headers=self.headers,

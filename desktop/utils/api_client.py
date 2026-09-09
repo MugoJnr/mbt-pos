@@ -295,6 +295,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         sku TEXT,
         quantity REAL NOT NULL,
         unit_price REAL NOT NULL,
+        unit_cost REAL DEFAULT 0,
         discount REAL DEFAULT 0,
         total REAL NOT NULL,
         FOREIGN KEY(sale_id) REFERENCES sales(id),
@@ -791,6 +792,12 @@ def _migrate_columns(conn: sqlite3.Connection):
         if si_cols and 'returned_qty' not in si_cols:
             conn.execute(
                 "ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
+        # Snapshot product cost at sale time so portal COGS does not depend
+        # only on a later product join (inventory cost may exist while lines
+        # historically omitted unit_cost).
+        if si_cols and 'unit_cost' not in si_cols:
+            conn.execute(
+                "ALTER TABLE sale_items ADD COLUMN unit_cost REAL DEFAULT 0")
     except Exception:
         pass
     # Suppliers + optional product link (receiving / V05)
@@ -2600,21 +2607,80 @@ class APIClient:
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
+            # Ensure cost snapshot column exists even if this process marked
+            # schema ready before unit_cost migration shipped.
+            si_cols = {
+                r[1] for r in db.execute("PRAGMA table_info(sale_items)").fetchall()
+            }
+            if 'unit_cost' not in si_cols:
+                try:
+                    db.execute(
+                        "ALTER TABLE sale_items ADD COLUMN unit_cost REAL DEFAULT 0"
+                    )
+                    si_cols.add('unit_cost')
+                except Exception:
+                    pass
             for item in normalized_items:
                 pid = item.get('product_id')
-                db.execute(
-                    "INSERT INTO sale_items"
-                    " (sale_id,product_id,product_name,sku,quantity,unit_price,discount,total)"
-                    " VALUES (?,?,?,?,?,?,?,?)",
-                    (sale_id,
-                     pid,
-                     item.get('product_name', ''),
-                     item.get('sku', '') or '',
-                     float(item['quantity']),
-                     float(item.get('unit_price') or 0),
-                     float(item.get('discount') or 0),
-                     float(item.get('total') or 0))
+                unit_cost = item.get('unit_cost')
+                if unit_cost is None or unit_cost == '':
+                    unit_cost = 0.0
+                    if pid:
+                        crow = db.execute(
+                            "SELECT name, cost_price FROM products WHERE id=?",
+                            (pid,),
+                        ).fetchone()
+                        if crow is not None:
+                            unit_cost = float(crow['cost_price'] or 0)
+                            if not (
+                                item.get('product_name') or item.get('name')
+                            ):
+                                item['product_name'] = crow['name'] or ''
+                else:
+                    unit_cost = float(unit_cost)
+                pname = (
+                    item.get('product_name')
+                    or item.get('name')
+                    or ''
                 )
+                if (not str(pname).strip()) and pid:
+                    prow = db.execute(
+                        "SELECT name FROM products WHERE id=?",
+                        (pid,),
+                    ).fetchone()
+                    if prow is not None:
+                        pname = prow['name'] or ''
+                if 'unit_cost' in si_cols:
+                    db.execute(
+                        "INSERT INTO sale_items"
+                        " (sale_id,product_id,product_name,sku,quantity,"
+                        "unit_price,unit_cost,discount,total)"
+                        " VALUES (?,?,?,?,?,?,?,?,?)",
+                        (sale_id,
+                         pid,
+                         pname,
+                         item.get('sku', '') or '',
+                         float(item['quantity']),
+                         float(item.get('unit_price') or 0),
+                         float(unit_cost or 0),
+                         float(item.get('discount') or 0),
+                         float(item.get('total') or 0))
+                    )
+                else:
+                    db.execute(
+                        "INSERT INTO sale_items"
+                        " (sale_id,product_id,product_name,sku,quantity,"
+                        "unit_price,discount,total)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        (sale_id,
+                         pid,
+                         pname,
+                         item.get('sku', '') or '',
+                         float(item['quantity']),
+                         float(item.get('unit_price') or 0),
+                         float(item.get('discount') or 0),
+                         float(item.get('total') or 0))
+                    )
                 # Stock enforcement — block sale if insufficient stock
                 if pid:
                     prod_row = db.execute(

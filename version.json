@@ -1,8 +1,8 @@
 {
-    "version": "3.0.87",
-    "build": "RC-2026-09-08-v3.0.87",
-    "released": "2026-09-08",
-    "release_notes": "MBT POS v3.0.87: Web dashboard Super Admin elevated actions. Cashiers cannot inventory-export or see cost/nav valuation; SA gets Adjust, write-off (PIN), Users & Access, and Receive on web. inventory_value alias hardened so POS inventory tab no longer grants valuation/export. API cost redact + write-off/receive web endpoints.",
-    "checksum_sha256": "ffb87b5f1335448d47aa75bb520f23c74a84ac8ff9654a633eb445ee865bcb43",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.87/MBT_POS_Setup.exe"
+    "version": "3.0.88",
+    "build": "RC-2026-09-09-v3.0.88",
+    "released": "2026-09-09",
+    "release_notes": "MBT POS v3.0.88: Remote Ops Phase 1 \u2014 shop PC executes portal update_product, adjust_stock, and set_user_active commands with local receipts, audit_log, JWT refresh on poll/ack, and revoke_license safeguards preserved. Pairs with portal /remote-control.",
+    "checksum_sha256": "dc5e9c89f82429733aaa6d79e8da46df08eee947d3de2b13e81e4e68d16d2263",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.88/MBT_POS_Setup.exe"
 }

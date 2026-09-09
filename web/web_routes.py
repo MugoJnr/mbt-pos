@@ -865,6 +865,16 @@ def _analytics_common_args():
     from backend.cloud.platform_service import analytics_parse_page
 
     page, page_size = analytics_parse_page(request.args)
+    # Accept UI aliases: search→q, payment_method→payment, category.
+    q = (request.args.get('q') or request.args.get('search') or '').strip()
+    payment = (
+        request.args.get('payment')
+        or request.args.get('payment_method')
+        or ''
+    ).strip()
+    report = (request.args.get('report') or 'sales').strip().lower()
+    if report in ('debt-payments', 'debt_payment'):
+        report = 'debt_payments'
     return {
         'start': (request.args.get('start') or '').strip()[:10],
         'end': (request.args.get('end') or '').strip()[:10],
@@ -872,18 +882,19 @@ def _analytics_common_args():
         'page_size': page_size,
         'sort': (request.args.get('sort') or '').strip(),
         'order': (request.args.get('order') or 'desc').strip(),
-        'q': (request.args.get('q') or '').strip(),
+        'q': q,
         'status': (request.args.get('status') or '').strip(),
-        'payment': (request.args.get('payment') or '').strip(),
+        'payment': payment,
         'cashier': (request.args.get('cashier') or '').strip(),
         'customer': (request.args.get('customer') or '').strip(),
+        'category': (request.args.get('category') or '').strip(),
         'stock': (
             request.args.get('stock')
             or request.args.get('stock_status')
             or ''
         ).strip(),
         'format': (request.args.get('format') or 'json').strip().lower(),
-        'report': (request.args.get('report') or 'sales').strip().lower(),
+        'report': report,
     }
 
 
@@ -1659,6 +1670,147 @@ def cloud_issue_command():
     return _inner()
 
 
+@web.route('/api/cloud/commands', methods=['GET'])
+def cloud_list_commands():
+    """List remote command history for the caller's organization."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        try:
+            from backend.cloud.platform_service import list_remote_commands
+            org_id = _resolve_request_org_id(request.args.get('org_id') or '', admin=True)
+            if not org_id:
+                return jsonify({'error': 'org_id required'}), 400
+            device_id = (request.args.get('device_id') or '').strip() or None
+            status = (request.args.get('status') or '').strip() or None
+            try:
+                limit = int(request.args.get('limit') or 50)
+            except (TypeError, ValueError):
+                limit = 50
+            rows = list_remote_commands(
+                org_id, device_id=device_id, status=status, limit=limit,
+            )
+            return jsonify({
+                'commands': rows,
+                'org_id': org_id,
+                'count': len(rows),
+            })
+        except Exception as e:
+            return _cloud_exception(e, 502)
+    return _inner()
+
+
+def _remote_ops_actor() -> str:
+    return str((getattr(g, 'current_user', {}) or {}).get('id') or '')
+
+
+@web.route('/api/cloud/remote-ops/product', methods=['POST'])
+def cloud_remote_ops_product():
+    """Enqueue update_product to org devices (owner/admin)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        try:
+            from backend.cloud.platform_service import issue_remote_ops_command
+            org_id = _resolve_request_org_id(data.get('org_id') or '', admin=True)
+            product_id = data.get('product_id')
+            if product_id is None or str(product_id).strip() == '':
+                return jsonify({'error': 'product_id required'}), 400
+            fields = data.get('fields') if isinstance(data.get('fields'), dict) else {}
+            # Also accept flat field keys on the body
+            for key in (
+                'name', 'price', 'cost_price', 'min_stock', 'is_active',
+                'barcode', 'unit', 'category', 'sku',
+            ):
+                if key in data and key not in fields:
+                    fields[key] = data[key]
+            if not fields:
+                return jsonify({'error': 'fields required (e.g. price, cost_price)'}), 400
+            params = {'product_id': product_id, 'fields': fields}
+            primary_only = bool(data.get('primary_only'))
+            device_id = (data.get('device_id') or '').strip() or None
+            result = issue_remote_ops_command(
+                org_id, 'update_product', params, _remote_ops_actor(),
+                device_id=device_id, primary_only=primary_only,
+            )
+            return jsonify(result), 201
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/remote-ops/stock', methods=['POST'])
+def cloud_remote_ops_stock():
+    """Enqueue adjust_stock to org devices (owner/admin)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        try:
+            from backend.cloud.platform_service import issue_remote_ops_command
+            org_id = _resolve_request_org_id(data.get('org_id') or '', admin=True)
+            product_id = data.get('product_id')
+            if product_id is None or str(product_id).strip() == '':
+                return jsonify({'error': 'product_id required'}), 400
+            reason = str(data.get('reason') or '').strip()
+            if not reason:
+                return jsonify({'error': 'reason required'}), 400
+            if data.get('quantity') is None and not data.get('direction'):
+                return jsonify({'error': 'quantity required'}), 400
+            params = {
+                'product_id': product_id,
+                'quantity': data.get('quantity'),
+                'reason': reason,
+                'notes': data.get('notes') or '',
+            }
+            if data.get('direction'):
+                params['direction'] = data.get('direction')
+            primary_only = bool(data.get('primary_only'))
+            device_id = (data.get('device_id') or '').strip() or None
+            result = issue_remote_ops_command(
+                org_id, 'adjust_stock', params, _remote_ops_actor(),
+                device_id=device_id, primary_only=primary_only,
+            )
+            return jsonify(result), 201
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
+@web.route('/api/cloud/remote-ops/user', methods=['POST'])
+def cloud_remote_ops_user():
+    """Enqueue set_user_active to org devices (owner/admin)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        try:
+            from backend.cloud.platform_service import issue_remote_ops_command
+            org_id = _resolve_request_org_id(data.get('org_id') or '', admin=True)
+            if data.get('user_id') is None and not (data.get('username') or '').strip():
+                return jsonify({'error': 'user_id or username required'}), 400
+            if 'is_active' not in data:
+                return jsonify({'error': 'is_active bool required'}), 400
+            params = {
+                'is_active': data.get('is_active'),
+            }
+            if data.get('user_id') is not None:
+                params['user_id'] = data.get('user_id')
+            if data.get('username'):
+                params['username'] = str(data.get('username')).strip()
+            primary_only = bool(data.get('primary_only'))
+            device_id = (data.get('device_id') or '').strip() or None
+            result = issue_remote_ops_command(
+                org_id, 'set_user_active', params, _remote_ops_actor(),
+                device_id=device_id, primary_only=primary_only,
+            )
+            return jsonify(result), 201
+        except Exception as e:
+            return _cloud_exception(e)
+    return _inner()
+
+
 @web.route('/api/cloud/security-events', methods=['GET'])
 def cloud_security_events():
     from backend.app import token_required
@@ -1986,6 +2138,7 @@ def cloud_analytics_debts():
                 status=args['status'],
                 customer=args['customer'],
                 q=args['q'],
+                include_payments=False,
             )
             return jsonify(analytics_redact_payload(
                 payload, can_see_finance=can_see_finance, role=role,
@@ -2053,7 +2206,42 @@ def cloud_analytics_inventory():
                 order=args['order'] or 'asc',
                 q=args['q'],
                 stock=args['stock'] or args['status'],
+                category=args.get('category') or '',
             )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/search', methods=['GET'])
+def cloud_analytics_search():
+    """Tenant-isolated global shop search across sales, products, debts, customers."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            q = args['q']
+            if len(q) < 2:
+                return jsonify({
+                    'org_id': org_id,
+                    'q': q,
+                    'groups': {
+                        'sales': [], 'products': [], 'debts': [], 'customers': [],
+                    },
+                    'total': 0,
+                })
+            from backend.cloud.platform_service import (
+                analytics_redact_payload,
+                analytics_search,
+            )
+            payload = analytics_search(org_id, q=q, limit=8)
             return jsonify(analytics_redact_payload(
                 payload, can_see_finance=can_see_finance, role=role,
             ))

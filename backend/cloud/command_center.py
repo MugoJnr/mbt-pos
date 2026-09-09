@@ -28,7 +28,55 @@ COMMANDS = {
     'update_now': 'Update Now',
     'verify_database': 'Verify Database',
     'test_printer': 'Test Printer',
+    # Phase 1 remote ops (shop SQLite mutations via command bus)
+    'update_product': 'Update Product',
+    'adjust_stock': 'Adjust Stock',
+    'set_user_active': 'Set User Active',
+    'reset_user_pin': 'Reset User PIN',
 }
+
+# Non-destructive ops: skip replay only when local receipt is completed/failed.
+_IDEMPOTENT_SKIP_COMPLETED = frozenset({
+    'update_product',
+    'adjust_stock',
+    'set_user_active',
+    'reset_user_pin',
+    'run_backup',
+    'force_sync',
+    'refresh_license',
+    'extend_license',
+    'force_validate',
+    'collect_logs',
+    'restart_sync',
+    'restart_services',
+    'update_now',
+    'verify_database',
+    'test_printer',
+})
+
+_PRODUCT_UPDATE_FIELDS = (
+    'name', 'price', 'cost_price', 'min_stock', 'is_active',
+    'barcode', 'unit', 'category', 'sku',
+)
+
+_REMOTE_ACTOR = 'remote_owner'
+
+
+def _ensure_command_jwt(*, reason: str = 'command_poll') -> bool:
+    """Refresh identity JWT via the same path SyncManager uses on 401/403."""
+    try:
+        from backend.cloud_backup.paths import load_identity
+        ident = load_identity() or {}
+        if not str(ident.get('refresh_token') or '').strip():
+            logger.debug('JWT refresh skipped (%s): no refresh_token', reason)
+            return False
+        from backend.cloud_backup.supabase_client import SupabaseClient
+        SupabaseClient().refresh_session()
+        logger.info('Command JWT refreshed (%s)', reason)
+        return True
+    except Exception as e:
+        logger.warning('Command JWT refresh failed (%s): %s', reason, e)
+        return False
 
 
 class CommandCenter:
@@ -98,6 +146,8 @@ class CommandCenter:
                 # Bare anon credentials cannot read device commands under RLS.
                 # Avoid a guaranteed-futile TLS handshake every poll interval.
                 return []
+            # Proactively refresh before poll so pending→running claims succeed.
+            _ensure_command_jwt(reason='before_poll_pending')
             from backend.cloud.platform_service import service_select
             return service_select(
                 'remote_commands',
@@ -139,6 +189,18 @@ class CommandCenter:
         if self._poller:
             self._poller.stop()
 
+    def _shop_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _audit(self, conn: sqlite3.Connection, action: str, module: str, details: str):
+        conn.execute(
+            "INSERT INTO audit_log (user_id, username, action, module, details) "
+            "VALUES (?,?,?,?,?)",
+            (None, _REMOTE_ACTOR, action, module, details),
+        )
+
     def _register_default_handlers(self):
         self.register_handler('run_backup', self._cmd_run_backup)
         self.register_handler('force_sync', self._cmd_force_sync)
@@ -149,6 +211,21 @@ class CommandCenter:
         self.register_handler('suspend_license', self._cmd_suspend_license)
         self.register_handler('collect_logs', self._cmd_collect_logs)
         self.register_handler('verify_database', self._cmd_verify_database)
+        self.register_handler('restart_sync', self._cmd_restart_sync)
+        self.register_handler('update_now', self._cmd_update_now)
+        self.register_handler('restart_services', self._cmd_not_implemented)
+        self.register_handler('test_printer', self._cmd_not_implemented)
+        self.register_handler('update_product', self._cmd_update_product)
+        self.register_handler('adjust_stock', self._cmd_adjust_stock)
+        self.register_handler('set_user_active', self._cmd_set_user_active)
+        self.register_handler('reset_user_pin', self._cmd_reset_user_pin)
+
+    def _cmd_not_implemented(self, params: dict) -> tuple[bool, str, dict | None]:
+        # Prefer explicit failure over silent no-handler.
+        cmd = (params or {}).get('_command_name') or 'command'
+        return False, f'Not implemented on this desktop build: {cmd}', {
+            'implemented': False,
+        }
 
     def _cmd_run_backup(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
@@ -161,14 +238,57 @@ class CommandCenter:
 
     def _cmd_force_sync(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
-            from licensing.license_service import LicenseService
-            # Best-effort: trigger cloud validate via engine path
             from licensing.license_engine import LicenseEngine
             eng = LicenseEngine()
             eng.revalidate()
             return True, 'Sync triggered', {'state': eng.state}
         except Exception as e:
             return True, 'Sync triggered', {'note': str(e)}
+
+    def _cmd_restart_sync(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Flush entity outbox / restart sync loop best-effort."""
+        try:
+            from backend.cloud_backup.sync_manager import SyncManager
+            sm = SyncManager.instance()
+            flushed = 0
+            try:
+                flushed = int(sm.flush_entity_outbox() or 0)
+            except Exception as flush_err:
+                logger.warning('restart_sync flush_entity_outbox: %s', flush_err)
+            try:
+                sm.clear_device_approval_backoff()
+            except Exception:
+                pass
+            try:
+                # Ensure background loop is running
+                sm.start()
+            except Exception as start_err:
+                logger.debug('restart_sync start: %s', start_err)
+            return True, f'Sync restarted; flushed {flushed} outbox rows', {
+                'flushed': flushed,
+            }
+        except Exception as e:
+            return False, f'restart_sync failed: {e}', {'implemented': True}
+
+    def _cmd_update_now(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Check for published update metadata; silent auto-install is not Phase 1."""
+        try:
+            from backend.cloud.update_center import get_update_center
+            import mbt_version
+            current = getattr(mbt_version, 'APP_VERSION', '') or ''
+            center = get_update_center()
+            latest = center.check_for_update(current) if current else center.get_latest()
+            if not latest:
+                return True, 'No update available', {'update_available': False, 'current': current}
+            return True, 'Update available — install from Downloads / installer', {
+                'update_available': True,
+                'current': current,
+                'latest': latest,
+                'auto_install': False,
+                'note': 'Phase 1 reports availability only; silent install is not implemented',
+            }
+        except Exception as e:
+            return False, f'update_now not available: {e}', {'implemented': False}
 
     def _cmd_refresh_license(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
@@ -255,6 +375,279 @@ class CommandCenter:
         except Exception as e:
             return False, str(e), None
 
+    def _cmd_update_product(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Remote owner product metadata update — no local SA PIN required."""
+        try:
+            pid = int(params.get('product_id') or 0)
+        except (TypeError, ValueError):
+            return False, 'product_id required', None
+        if pid <= 0:
+            return False, 'product_id required', None
+
+        fields = params.get('fields') if isinstance(params.get('fields'), dict) else None
+        if fields is None:
+            fields = {k: params[k] for k in _PRODUCT_UPDATE_FIELDS if k in params}
+        patch = {k: fields[k] for k in _PRODUCT_UPDATE_FIELDS if k in fields}
+        if 'stock' in (params or {}) or 'stock' in (fields or {}):
+            return False, 'Stock cannot be changed via update_product; use adjust_stock', None
+        if not patch:
+            return False, 'No updatable fields provided', None
+
+        conn = self._shop_db()
+        try:
+            row = conn.execute('SELECT id, name FROM products WHERE id=?', (pid,)).fetchone()
+            if not row:
+                return False, f'Product {pid} not found', None
+            sets, values = [], []
+            for key, val in patch.items():
+                if key == 'is_active':
+                    val = 1 if val in (True, 1, '1', 'true', 'True') else 0
+                sets.append(f'{key}=?')
+                values.append(val)
+            sets.append('updated_at=?')
+            values.append(datetime.now().isoformat())
+            values.append(pid)
+            conn.execute(f"UPDATE products SET {', '.join(sets)} WHERE id=?", values)
+            self._audit(
+                conn, 'REMOTE_UPDATE_PRODUCT', 'inventory',
+                f'pid={pid} fields={sorted(patch.keys())} actor={_REMOTE_ACTOR}',
+            )
+            conn.commit()
+            return True, f'Product {pid} updated', {
+                'product_id': pid,
+                'fields': sorted(patch.keys()),
+            }
+        except sqlite3.IntegrityError as e:
+            conn.rollback()
+            return False, f'Update failed: {e}', None
+        except Exception as e:
+            conn.rollback()
+            return False, str(e), None
+        finally:
+            conn.close()
+
+    def _cmd_adjust_stock(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Remote owner stock adjust — command is auth; reason still required."""
+        try:
+            pid = int(params.get('product_id') or 0)
+        except (TypeError, ValueError):
+            return False, 'product_id required', None
+        if pid <= 0:
+            return False, 'product_id required', None
+
+        reason = str(params.get('reason') or '').strip()
+        if not reason:
+            return False, 'reason is required for stock adjustments', None
+        notes = str(params.get('notes') or '').strip()
+        if notes:
+            reason = f'{reason} | {notes}'
+
+        direction = str(params.get('direction') or '').strip().lower()
+        raw_qty = params.get('quantity')
+        try:
+            import math
+            quantity = float(raw_qty)
+        except (TypeError, ValueError):
+            return False, 'quantity required (number)', None
+        if not math.isfinite(quantity):
+            return False, 'quantity must be finite', None
+
+        if direction in ('add', 'remove', 'set'):
+            qty_abs = abs(quantity)
+        else:
+            # Signed quantity: positive = add, negative = remove
+            if quantity == 0:
+                return True, 'No-op (quantity 0)', {'no_op': True, 'product_id': pid}
+            direction = 'add' if quantity > 0 else 'remove'
+            qty_abs = abs(quantity)
+
+        if direction != 'set' and qty_abs <= 0:
+            return False, 'quantity must be > 0 for add/remove', None
+        if direction == 'set' and quantity < 0:
+            return False, 'set quantity cannot be negative', None
+
+        conn = self._shop_db()
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute(
+                'SELECT id, name, stock, cost_price FROM products WHERE id=?',
+                (pid,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return False, f'Product {pid} not found', None
+            old_stock = round(float(row['stock'] or 0), 4)
+            if direction == 'set':
+                new_qty = round(float(quantity), 4)
+                qty_change = round(new_qty - old_stock, 4)
+            elif direction == 'add':
+                qty_change = round(qty_abs, 4)
+                new_qty = round(old_stock + qty_change, 4)
+            else:
+                qty_change = round(-qty_abs, 4)
+                new_qty = round(old_stock + qty_change, 4)
+
+            if new_qty < 0:
+                conn.rollback()
+                return False, f'Cannot reduce below zero (have {old_stock:g})', {
+                    'current_stock': old_stock,
+                }
+            if qty_change == 0:
+                conn.rollback()
+                return True, 'No-op (stock unchanged)', {
+                    'no_op': True,
+                    'product_id': pid,
+                    'old_stock': old_stock,
+                    'new_stock': old_stock,
+                }
+
+            # Soften catalog direction rules for remote free-text reasons
+            try:
+                from desktop.utils.option_lists import stock_reason_matches_delta
+                if not stock_reason_matches_delta(reason, qty_change):
+                    reason = f'Other: {reason}'
+            except Exception:
+                pass
+
+            now = datetime.now().isoformat()
+            changed = conn.execute(
+                'UPDATE products SET stock=?, updated_at=? '
+                'WHERE id=? AND COALESCE(stock,0)=?',
+                (new_qty, now, pid, old_stock),
+            )
+            if changed.rowcount != 1:
+                conn.rollback()
+                return False, 'Stock changed concurrently; retry', None
+
+            conn.execute(
+                'INSERT INTO stock_movements '
+                '(product_id, product_name, movement_type, qty_before, qty_change, '
+                'qty_after, reference, reason, user_id, username) '
+                'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                (
+                    pid, row['name'], 'REMOTE_ADJUST',
+                    old_stock, qty_change, new_qty,
+                    f'REMOTE_ADJUST_pid={pid}', reason,
+                    None, _REMOTE_ACTOR,
+                ),
+            )
+            mov_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            self._audit(
+                conn, 'REMOTE_STOCK_ADJUSTED', 'inventory',
+                f'pid={pid} name={row["name"]} change={qty_change} '
+                f'previous={old_stock} new={new_qty} reason={reason}',
+            )
+            conn.commit()
+            return True, f'Stock adjusted to {new_qty:g}', {
+                'product_id': pid,
+                'old_stock': old_stock,
+                'new_stock': new_qty,
+                'qty_change': qty_change,
+                'movement_id': mov_id,
+                'direction': direction,
+            }
+        except Exception as e:
+            conn.rollback()
+            return False, str(e), None
+        finally:
+            conn.close()
+
+    def _resolve_user_row(self, conn: sqlite3.Connection, params: dict):
+        uid = params.get('user_id')
+        username = str(params.get('username') or '').strip()
+        if uid is not None and str(uid).strip() != '':
+            try:
+                uid_i = int(uid)
+            except (TypeError, ValueError):
+                return None
+            return conn.execute(
+                'SELECT id, username, role, is_active FROM users WHERE id=?',
+                (uid_i,),
+            ).fetchone()
+        if username:
+            return conn.execute(
+                'SELECT id, username, role, is_active FROM users '
+                'WHERE LOWER(username)=LOWER(?)',
+                (username,),
+            ).fetchone()
+        return None
+
+    def _cmd_set_user_active(self, params: dict) -> tuple[bool, str, dict | None]:
+        if 'is_active' not in params:
+            return False, 'is_active bool required', None
+        active = params.get('is_active')
+        is_active = 1 if active in (True, 1, '1', 'true', 'True') else 0
+
+        conn = self._shop_db()
+        try:
+            row = self._resolve_user_row(conn, params)
+            if not row:
+                return False, 'User not found (user_id or username required)', None
+            conn.execute(
+                'UPDATE users SET is_active=? WHERE id=?',
+                (is_active, row['id']),
+            )
+            self._audit(
+                conn, 'REMOTE_SET_USER_ACTIVE', 'admin',
+                f'user_id={row["id"]} username={row["username"]} '
+                f'is_active={is_active}',
+            )
+            conn.commit()
+            return True, (
+                f'User {row["username"]} '
+                f'{"enabled" if is_active else "disabled"}'
+            ), {
+                'user_id': row['id'],
+                'username': row['username'],
+                'is_active': bool(is_active),
+            }
+        except Exception as e:
+            conn.rollback()
+            return False, str(e), None
+        finally:
+            conn.close()
+
+    def _cmd_reset_user_pin(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Reset shop-user login password (hashed). Prefer set_user_active when unsure."""
+        new_pin = str(params.get('new_pin') or params.get('new_password') or '').strip()
+        if not new_pin:
+            return False, (
+                'new_pin required — or use set_user_active to disable the account instead'
+            ), {'prefer': 'set_user_active'}
+        if len(new_pin) < 4:
+            return False, 'new_pin must be at least 4 characters', None
+
+        conn = self._shop_db()
+        try:
+            row = self._resolve_user_row(conn, params)
+            if not row:
+                return False, 'User not found (user_id or username required)', None
+            try:
+                from desktop.utils.api_client import _hash_pw
+                pw_hash = _hash_pw(new_pin)
+            except Exception:
+                # Fallback: bcrypt if api_client unavailable in minimal test env
+                import bcrypt
+                pw_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt(rounds=12)).decode()
+            conn.execute(
+                'UPDATE users SET password_hash=? WHERE id=?',
+                (pw_hash, row['id']),
+            )
+            self._audit(
+                conn, 'REMOTE_RESET_USER_PIN', 'admin',
+                f'user_id={row["id"]} username={row["username"]}',
+            )
+            conn.commit()
+            return True, f'Password reset for {row["username"]}', {
+                'user_id': row['id'],
+                'username': row['username'],
+            }
+        except Exception as e:
+            conn.rollback()
+            return False, str(e), None
+        finally:
+            conn.close()
+
 
 class CommandPoller(threading.Thread):
     """Polls cloud for pending remote commands and executes them."""
@@ -288,12 +681,12 @@ class CommandPoller(threading.Thread):
     def _receipt_repo(self):
         try:
             from desktop.payments.repository import PaymentRepository
-            import sqlite3
+            import sqlite3 as _sqlite3
             db_path = self.center.db_path
 
             def factory():
-                conn = sqlite3.connect(db_path)
-                conn.row_factory = sqlite3.Row
+                conn = _sqlite3.connect(db_path)
+                conn.row_factory = _sqlite3.Row
                 return conn
 
             return PaymentRepository(factory)
@@ -308,7 +701,11 @@ class CommandPoller(threading.Thread):
             # Destructive: any local receipt means never run again
             if command in ('revoke_license', 'suspend_license'):
                 return repo.has_command_receipt(command_id)
-            # Others: only skip if completed/failed
+            # Phase-1 ops + others: only skip if completed/failed
+            if command in _IDEMPOTENT_SKIP_COMPLETED or command:
+                return repo.has_command_receipt(
+                    command_id, statuses=['completed', 'failed'],
+                )
             return repo.has_command_receipt(
                 command_id, statuses=['completed', 'failed'],
             )
@@ -335,23 +732,37 @@ class CommandPoller(threading.Thread):
         """Ack to cloud; treat HTTP success with 0 updated rows as failure."""
         if not command_id:
             return
+        payload = {
+            'status': 'completed' if success else 'failed',
+            'result': result or {},
+            'error': error,
+            'completed_at': datetime.now().isoformat(),
+        }
         try:
             from backend.cloud.platform_service import service_update
             updated = service_update(
                 'remote_commands',
                 f'id=eq.{command_id}',
-                {
-                    'status': 'completed' if success else 'failed',
-                    'result': result or {},
-                    'error': error,
-                    'completed_at': datetime.now().isoformat(),
-                },
+                payload,
             )
             if isinstance(updated, list) and len(updated) == 0:
                 logger.error(
-                    'Ack updated 0 rows for command %s — JWT/RLS failure suspected',
+                    'Ack updated 0 rows for command %s — JWT/RLS failure suspected; refreshing JWT',
                     command_id,
                 )
+                if _ensure_command_jwt(reason='ack_zero_rows'):
+                    updated = service_update(
+                        'remote_commands',
+                        f'id=eq.{command_id}',
+                        payload,
+                    )
+                    if isinstance(updated, list) and len(updated) == 0:
+                        logger.error(
+                            'Ack still 0 rows after JWT refresh for command %s',
+                            command_id,
+                        )
+                        return False
+                    return True
                 # Do NOT clear local receipt — prevents re-execution of revoke
                 return False
             return True
@@ -416,10 +827,25 @@ class CommandPoller(threading.Thread):
                             # HTTP success with 0 updated rows = ack/claim failure
                             if isinstance(updated, list) and len(updated) == 0:
                                 logger.warning(
-                                    'Claim updated 0 rows for %s — not executing',
+                                    'Claim updated 0 rows for %s — refreshing JWT and retrying claim',
                                     cmd_id,
                                 )
-                                continue
+                                if _ensure_command_jwt(reason='claim_zero_rows'):
+                                    updated = service_update(
+                                        'remote_commands',
+                                        f'id=eq.{cmd_id}&status=eq.pending',
+                                        {
+                                            'status': 'running',
+                                            'started_at': datetime.now().isoformat(),
+                                            'claimed_by': device_id,
+                                        },
+                                    )
+                                if isinstance(updated, list) and len(updated) == 0:
+                                    logger.warning(
+                                        'Claim still 0 rows for %s — not executing',
+                                        cmd_id,
+                                    )
+                                    continue
                             if isinstance(updated, dict) and updated.get('count') == 0:
                                 continue
                             claimed = True
@@ -435,6 +861,10 @@ class CommandPoller(threading.Thread):
                             self._record_receipt(
                                 cmd_id, command, 'claimed', {'device_id': device_id},
                             )
+                        # Tag not-implemented handlers with command name
+                        if command in ('restart_services', 'test_printer'):
+                            params = dict(params or {})
+                            params['_command_name'] = command
                         ok, msg, result = self.center.execute_local(command, params)
                         if cmd_id:
                             self._record_receipt(

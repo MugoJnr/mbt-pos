@@ -28,7 +28,7 @@ export const Route = createFileRoute("/_app/pos")({
 });
 
 const modules = [
-  { title: "Reports", desc: "Daily, weekly, monthly cloud report history", url: "/reports", icon: BarChart3 },
+  { title: "Shop command center", desc: "Sales, profit, debt, inventory and sync health", url: "/reports", icon: BarChart3 },
   { title: "Devices", desc: "Installations, heartbeats, activation history", url: "/devices", icon: MonitorSmartphone },
   { title: "Licenses", desc: "Current seats, renew, transfer, invoices", url: "/license", icon: KeyRound },
   { title: "Backups", desc: "Cloud backup health and restore history", url: "/backups", icon: CloudUpload },

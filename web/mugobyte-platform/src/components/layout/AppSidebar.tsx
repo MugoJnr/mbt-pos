@@ -21,6 +21,7 @@ import {
   HelpCircle,
   Bot,
   LayoutGrid,
+  Radio,
 } from "lucide-react";
 
 import {
@@ -58,7 +59,7 @@ const workspaceNav: NavGroup[] = [
       { title: "My Products", url: "/dashboard", hash: "products", icon: LayoutGrid },
       { title: "Businesses", url: "/businesses", icon: Building2 },
       { title: "Devices", url: "/devices", icon: MonitorSmartphone },
-      { title: "Reports", url: "/reports", icon: BarChart3 },
+      { title: "Shop", url: "/reports", icon: BarChart3 },
       { title: "Licenses", url: "/license", icon: KeyRound },
       { title: "Notifications", url: "/notifications", icon: Bell },
       { title: "Downloads", url: "/downloads", icon: Download },
@@ -73,6 +74,7 @@ const workspaceNav: NavGroup[] = [
     markActive: true,
     items: [
       { title: "Overview", url: "/pos", icon: Package },
+      { title: "Remote control", url: "/remote-control", icon: Radio },
       { title: "Backups", url: "/backups", icon: CloudUpload },
       { title: "Branches", url: "/branches", icon: Store },
       { title: "Users", url: "/users", icon: Users },

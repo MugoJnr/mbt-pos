@@ -1593,6 +1593,106 @@ def push_license_command(license_id: str, command: str, params: dict | None = No
     return {'ok': True, 'license': lic, 'commands_issued': len([x for x in issued if x])}
 
 
+def list_remote_commands(
+    org_id: str,
+    *,
+    device_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List remote_commands history for an org (portal Remote Control)."""
+    oid = str(org_id or '').strip()
+    if not oid:
+        return []
+    lim = max(1, min(int(limit or 50), 200))
+    parts = [
+        f'org_id=eq.{quote(oid, safe="")}',
+        'select=*',
+        'order=issued_at.desc',
+        f'limit={lim}',
+    ]
+    did = str(device_id or '').strip()
+    if did:
+        parts.insert(1, f'device_id=eq.{quote(did, safe="")}')
+    st = str(status or '').strip().lower()
+    if st:
+        parts.insert(1, f'status=eq.{quote(st, safe="")}')
+    return service_select('remote_commands', '&'.join(parts)) or []
+
+
+def _active_org_device_ids(org_id: str, *, primary_only: bool = False) -> list[str]:
+    """Resolve active shop device_ids for remote-ops fan-out (never cross-org)."""
+    devices = list_devices_for_org(org_id) or []
+    active = []
+    for d in devices:
+        if d.get('is_active') is False:
+            continue
+        status = str(d.get('approval_status') or 'approved').lower()
+        if status in ('rejected', 'deactivated'):
+            continue
+        did = str(d.get('device_id') or '').strip()
+        if did:
+            active.append(did)
+    # Deduplicate preserving order
+    seen = set()
+    out = []
+    for did in active:
+        if did in seen:
+            continue
+        seen.add(did)
+        out.append(did)
+    if primary_only and out:
+        return [out[0]]
+    return out
+
+
+def issue_remote_ops_command(
+    org_id: str,
+    command: str,
+    params: dict | None = None,
+    issued_by: str | None = None,
+    *,
+    device_id: str | None = None,
+    primary_only: bool = False,
+) -> dict:
+    """Enqueue a Phase-1 remote-ops command to org device(s)."""
+    from backend.cloud.command_center import COMMANDS, get_command_center
+
+    oid = str(org_id or '').strip()
+    if not oid:
+        raise ValueError('org_id required')
+    if command not in COMMANDS:
+        raise ValueError(f'Unknown command: {command}')
+
+    if device_id:
+        targets = [str(device_id).strip()]
+    else:
+        targets = _active_org_device_ids(oid, primary_only=primary_only)
+    if not targets:
+        raise LookupError('No active devices for this organization')
+
+    # Verify every explicit device belongs to this org (anti cross-org)
+    org_devices = {str(d.get('device_id') or '') for d in (list_devices_for_org(oid) or [])}
+    for did in targets:
+        if org_devices and did not in org_devices:
+            raise PermissionError(f'Device {did} is not in this organization')
+
+    center = get_command_center()
+    issued = []
+    for did in targets:
+        row = center.issue_command(oid, did, command, params or {}, issued_by)
+        if row:
+            issued.append(row)
+    return {
+        'ok': True,
+        'command': command,
+        'org_id': oid,
+        'device_ids': targets,
+        'commands_issued': len(issued),
+        'commands': issued,
+    }
+
+
 def admin_suspend_license(license_id: str, actor: str | None = None) -> dict:
     # Push to currently active devices BEFORE clearing activations.
     pushed = push_license_command(license_id, 'suspend_license', {'reason': 'Admin suspended'}, actor)
@@ -1790,6 +1890,91 @@ def _fnum(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def analytics_positive_cost(value: Any) -> float | None:
+    """Return a usable unit cost, or None when missing/zero/unparseable.
+
+    Zero is treated as incomplete for portal profit: synced sale lines often
+    store 0 when cost was never captured, which would silently invent ~100%
+    margins. Legitimate free goods are indistinguishable without better data.
+    """
+    if value is None or value == '':
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num <= 0:
+        return None
+    return num
+
+
+def analytics_product_cost_lookup(products: list[dict]) -> dict[tuple[str, str], float]:
+    """Map product keys -> positive cost_price.
+
+    Keys (tried in resolve order):
+    - ``(device_id, source_id)`` exact device match
+    - ``('*', source_id)`` org-wide id fallback (device drift / re-register)
+    - ``('name', normalized_name)`` last-resort when sale lines lack product ids
+    """
+    out: dict[tuple[str, str], float] = {}
+    for p in products or []:
+        cost = analytics_positive_cost(p.get('cost_price'))
+        if cost is None:
+            continue
+        source_id = str(p.get('source_id') or '')
+        device = str(p.get('device_id') or '')
+        if source_id:
+            out[(device, source_id)] = cost
+            # Prefer first seen org-wide id; do not overwrite with a later zero.
+            out.setdefault(('*', source_id), cost)
+        name = str(p.get('name') or '').strip().lower()
+        if name:
+            out.setdefault(('name', name), cost)
+    return out
+
+
+def analytics_resolve_line_unit_cost(
+    item: dict,
+    product_costs: dict[tuple[str, str], float] | None = None,
+) -> float | None:
+    """Authoritative line cost for portal COGS.
+
+    Prefer sale-time ``unit_cost`` when present and positive. Else fall back to
+    product ``cost_price`` (same rule as desktop ``report_engine``). Return
+    None when cost is still unknown — callers must not treat that as 0.
+
+    Inventory cost on ``cloud_products`` is used when sale lines were synced
+    without a cost snapshot (common: POS historically omitted ``unit_cost``).
+    """
+    sale_cost = analytics_positive_cost(item.get('unit_cost'))
+    if sale_cost is not None:
+        return sale_cost
+    # Some payloads may carry cost_price on the line itself.
+    line_cost = analytics_positive_cost(item.get('cost_price'))
+    if line_cost is not None:
+        return line_cost
+    if not product_costs:
+        return None
+    device = str(item.get('device_id') or '')
+    # Cloud analytics schema uses product_source_id (local product id as text).
+    product_id = str(
+        item.get('product_source_id')
+        or item.get('product_id')
+        or '',
+    )
+    if product_id:
+        for key in ((device, product_id), ('*', product_id)):
+            found = analytics_positive_cost(product_costs.get(key))
+            if found is not None:
+                return found
+    name = str(
+        item.get('product_name') or item.get('name') or ''
+    ).strip().lower()
+    if name:
+        return analytics_positive_cost(product_costs.get(('name', name)))
+    return None
+
+
 def analytics_is_void(sale: dict) -> bool:
     return str(sale.get('status') or '').lower() in _VOID_STATUSES
 
@@ -1930,6 +2115,284 @@ def analytics_last_sync_at(org_id: str) -> str | None:
     return None
 
 
+_DEVICE_ONLINE_WINDOW_SEC = 5 * 60
+_SYNC_FRESH_WINDOW_SEC = 15 * 60
+_SYNC_STALE_WINDOW_SEC = 60 * 60
+
+
+def _parse_iso_ts(value: Any) -> datetime | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+
+
+def analytics_shop_presence(org_id: str, *, now: datetime | None = None) -> dict:
+    """PC online (heartbeat) vs business-data sync freshness — never conflate the two."""
+    now_utc = now or datetime.now(timezone.utc)
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    devices = list_devices_for_org(org_id) or []
+    online = []
+    offline = []
+    latest_seen: datetime | None = None
+    latest_sync: datetime | None = None
+    for d in devices:
+        if d.get('is_active') is False:
+            continue
+        status = str(d.get('approval_status') or 'approved').lower()
+        if status in ('rejected', 'deactivated'):
+            continue
+        seen_dt = _parse_iso_ts(d.get('last_seen_at'))
+        sync_dt = _parse_iso_ts(d.get('last_sync_at'))
+        if seen_dt and (latest_seen is None or seen_dt > latest_seen):
+            latest_seen = seen_dt
+        if sync_dt and (latest_sync is None or sync_dt > latest_sync):
+            latest_sync = sync_dt
+        is_online = bool(
+            seen_dt and (now_utc - seen_dt.astimezone(timezone.utc)).total_seconds()
+            <= _DEVICE_ONLINE_WINDOW_SEC
+        )
+        entry = {
+            'id': d.get('id'),
+            'device_id': d.get('device_id') or d.get('id'),
+            'computer_name': d.get('computer_name') or d.get('name') or 'Shop PC',
+            'last_seen_at': d.get('last_seen_at'),
+            'last_sync_at': d.get('last_sync_at'),
+            'online': is_online,
+        }
+        (online if is_online else offline).append(entry)
+
+    last_sync_at = (
+        latest_sync.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+        if latest_sync else analytics_last_sync_at(org_id)
+    )
+    sync_dt = _parse_iso_ts(last_sync_at)
+    if not sync_dt:
+        sync_freshness = 'never'
+        sync_age_seconds = None
+    else:
+        sync_age_seconds = max(
+            0, int((now_utc - sync_dt.astimezone(timezone.utc)).total_seconds()),
+        )
+        if sync_age_seconds <= _SYNC_FRESH_WINDOW_SEC:
+            sync_freshness = 'fresh'
+        elif sync_age_seconds <= _SYNC_STALE_WINDOW_SEC:
+            sync_freshness = 'aging'
+        else:
+            sync_freshness = 'stale'
+
+    pc_online = len(online) > 0
+    # Never call stale sync "live" — only fresh synced data may be labeled current.
+    data_label = {
+        'fresh': 'Synced',
+        'aging': 'Sync aging',
+        'stale': 'Stale sync',
+        'never': 'Never synced',
+    }.get(sync_freshness, 'Unknown')
+
+    return {
+        'pc_online': pc_online,
+        'pc_status': 'online' if pc_online else 'offline',
+        'online_device_count': len(online),
+        'device_count': len(online) + len(offline),
+        'online_devices': online,
+        'offline_devices': offline,
+        'last_seen_at': (
+            latest_seen.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+            if latest_seen else None
+        ),
+        'last_sync_at': last_sync_at,
+        'sync_freshness': sync_freshness,
+        'sync_age_seconds': sync_age_seconds,
+        'data_label': data_label,
+        'is_live_data': sync_freshness == 'fresh',
+    }
+
+
+def analytics_build_attention(
+    *,
+    summary: dict,
+    low_stock: list[dict],
+    presence: dict,
+) -> list[dict]:
+    """Rule-based attention items only — no fake AI."""
+    items: list[dict] = []
+    freshness = str(presence.get('sync_freshness') or '')
+    if freshness == 'never':
+        items.append({
+            'id': 'sync-never',
+            'severity': 'critical',
+            'category': 'sync',
+            'title': 'Shop has never synced',
+            'detail': 'Approve the shop PC and keep Cloud Backup signed in so sales appear here.',
+            'action': 'devices',
+        })
+    elif freshness == 'stale':
+        age = presence.get('sync_age_seconds')
+        hours = int(age / 3600) if isinstance(age, int) else None
+        items.append({
+            'id': 'sync-stale',
+            'severity': 'warning',
+            'category': 'sync',
+            'title': 'Business data is stale',
+            'detail': (
+                f'Last sync was about {hours}h ago.'
+                if hours is not None else 'Last sync is older than one hour.'
+            ) + (
+                ' Shop PC is online — check Cloud Backup.'
+                if presence.get('pc_online') else
+                ' Shop PC appears offline.'
+            ),
+            'action': 'devices',
+        })
+    if not presence.get('pc_online') and presence.get('device_count', 0) > 0:
+        items.append({
+            'id': 'pc-offline',
+            'severity': 'info',
+            'category': 'presence',
+            'title': 'Shop PC offline',
+            'detail': 'No approved device heartbeated in the last 5 minutes. Historical synced data remains usable.',
+            'action': 'devices',
+        })
+    overdue_count = int(summary.get('overdue_count') or 0)
+    overdue_amt = _fnum(summary.get('debt_overdue'))
+    if overdue_count > 0:
+        items.append({
+            'id': 'debt-overdue',
+            'severity': 'warning',
+            'category': 'debt',
+            'title': f'{overdue_count} overdue debt{"s" if overdue_count != 1 else ""}',
+            'detail': f'KES {overdue_amt:,.2f} past due date.',
+            'action': 'debts',
+        })
+    out_count = int(summary.get('out_of_stock_count') or 0)
+    low_only = int(summary.get('low_only_count') or 0)
+    if out_count > 0:
+        items.append({
+            'id': 'stock-out',
+            'severity': 'critical',
+            'category': 'inventory',
+            'title': f'{out_count} product{"s" if out_count != 1 else ""} out of stock',
+            'detail': 'Restock before customers miss items.',
+            'action': 'inventory',
+        })
+    if low_only > 0:
+        sample = ', '.join(
+            str(p.get('name') or '') for p in low_stock[:3] if _fnum(p.get('stock')) > 0
+        )
+        items.append({
+            'id': 'stock-low',
+            'severity': 'warning',
+            'category': 'inventory',
+            'title': f'{low_only} product{"s" if low_only != 1 else ""} low on stock',
+            'detail': sample or 'Below minimum stock levels.',
+            'action': 'inventory',
+        })
+    if summary.get('cost_data_incomplete'):
+        missing = int(summary.get('lines_missing_cost') or 0)
+        items.append({
+            'id': 'cost-incomplete',
+            'severity': 'info',
+            'category': 'finance',
+            'title': 'Some products missing cost price',
+            'detail': (
+                f'{missing} sold line{"s" if missing != 1 else ""} used KSh 0 cost '
+                '(no product cost found). Gross profit still shown for the selected range.'
+                if missing else
+                'Set product cost prices on the POS for more accurate profit.'
+            ),
+            'action': 'inventory',
+        })
+    crush_count = int(summary.get('cost_crushing_product_count') or 0)
+    if crush_count > 0:
+        drag = _fnum(summary.get('cost_crushing_profit_drag'))
+        sample = str(summary.get('cost_crushing_sample') or '').strip()
+        drag_txt = f'KES {abs(drag):,.2f} of profit drag' if drag < -0.009 else 'cost ≥ sell'
+        sample_txt = f' Example: {sample}.' if sample else ''
+        items.append({
+            'id': 'cost-crushing',
+            'severity': 'warning',
+            'category': 'finance',
+            'title': (
+                f'{crush_count} product{"s" if crush_count != 1 else ""} with cost ≥ sell '
+                'price crushing profit'
+            ),
+            'detail': (
+                f'{drag_txt} in this range — check cost prices on the POS.'
+                f'{sample_txt} Gross profit above is still the real number.'
+            ),
+            'action': 'inventory',
+        })
+    return items[:8]
+
+
+def analytics_search(org_id: str, *, q: str, limit: int = 8) -> dict:
+    """Categorized, org-scoped global search for the shop command center."""
+    term = str(q or '').strip()
+    limit = max(1, min(int(limit or 8), 25))
+    if len(term) < 2:
+        return {
+            'org_id': org_id,
+            'q': term,
+            'groups': {'sales': [], 'products': [], 'debts': [], 'customers': []},
+            'total': 0,
+        }
+    like = _ilike_or
+    oid = _org_eq(org_id)
+    sales = service_select(
+        'cloud_sales',
+        f'{oid}&{like(["receipt_number", "customer_name", "customer_phone", "cashier_name"], term)}'
+        f'&select=device_id,source_id,receipt_number,customer_name,total,source_created_at,payment_method,status'
+        f'&order=source_created_at.desc&limit={limit}',
+    ) or []
+    products = service_select(
+        'cloud_products',
+        f'{oid}&{like(["name", "sku", "barcode", "category"], term)}'
+        f'&select=device_id,source_id,name,sku,category,stock,price,cost_price'
+        f'&order=name.asc&limit={limit}',
+    ) or []
+    debts = service_select(
+        'cloud_debt_invoices',
+        f'{oid}&{like(["invoice_number", "receipt_number", "customer_name", "customer_phone"], term)}'
+        f'&select=device_id,source_id,invoice_number,receipt_number,customer_name,balance,status,due_date'
+        f'&order=source_created_at.desc&limit={limit}',
+    ) or []
+    customers = service_select(
+        'cloud_customers',
+        f'{oid}&{like(["name", "phone", "email"], term)}'
+        f'&select=device_id,source_id,name,phone,email'
+        f'&order=name.asc&limit={limit}',
+    ) or []
+    # Fallback: distinct customers from sales when cloud_customers empty
+    if not customers:
+        seen: set[str] = set()
+        for s in sales:
+            name = str(s.get('customer_name') or '').strip()
+            key = name.lower()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            customers.append({
+                'name': name,
+                'phone': s.get('customer_phone'),
+                'source': 'sales',
+            })
+            if len(customers) >= limit:
+                break
+    groups = {
+        'sales': [analytics_normalize_row(r) for r in sales],
+        'products': [analytics_normalize_row(r) for r in products],
+        'debts': [analytics_normalize_row(r) for r in debts],
+        'customers': [analytics_normalize_row(r) for r in customers],
+    }
+    total = sum(len(v) for v in groups.values())
+    return {'org_id': org_id, 'q': term, 'groups': groups, 'total': total}
+
+
 def _sales_base_query(
     org_id: str,
     start_iso: str,
@@ -2034,10 +2497,13 @@ def analytics_sale_detail(org_id: str, device_id: str, source_id: str) -> dict:
         raise LookupError('Sale not found')
     sale = analytics_normalize_row(sales[0])
     sale_device = quote(str(sale.get('device_id') or device_id), safe='')
+    # cloud_sale_items links via sale_source_id only (no sale_id column).
+    # Including sale_id.eq in PostgREST or=() returns HTTP 400 and blanks
+    # the portal receipt line-item table.
     items = service_select_strict(
         'cloud_sale_items',
         f'{oid}&device_id=eq.{sale_device}'
-        f'&or=(sale_source_id.eq.{sid},sale_id.eq.{sid})'
+        f'&sale_source_id=eq.{sid}'
         f'&select=*&order=source_id.asc',
     )
     sale['items'] = [analytics_normalize_row(i) for i in (items or [])]
@@ -2205,6 +2671,7 @@ def analytics_list_inventory(
     q: str = '',
     stock: str = '',
     status: str = '',
+    category: str = '',
 ) -> dict:
     parts = [
         _org_eq(org_id),
@@ -2226,6 +2693,8 @@ def analytics_list_inventory(
         parts.append('stock=lte.0')
     elif stock_filter in ('in', 'in_stock', 'ok'):
         parts.append('stock=gt.0')
+    if category:
+        parts.append(f'category=ilike.{quote(category, safe="")}')
     if q:
         parts.append(_ilike_or(['name', 'sku', 'category', 'barcode'], q))
     query = '&'.join(parts)
@@ -2307,6 +2776,8 @@ def analytics_filter_options(org_id: str) -> dict:
         'cashiers': _uniq([s.get('cashier_name') for s in sales]),
         'payment_methods': _uniq([s.get('payment_method') for s in sales]),
         'sale_statuses': _uniq([s.get('status') for s in sales]),
+        # UI alias used by SalesPanel FilterSelect
+        'statuses': _uniq([s.get('status') for s in sales]),
         'debt_statuses': _uniq([d.get('status') for d in debts]),
         'categories': _uniq([p.get('category') for p in products]),
         'stock_filters': [
@@ -2397,14 +2868,47 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
 
     items_sold = round(sum(_fnum(i.get('quantity')) for i in item_rows), 3)
     line_items = len(item_rows)
-    cost_of_goods = round(sum(
-        _fnum(i.get('quantity')) * _fnum(i.get('unit_cost', i.get('cost_price')))
-        for i in item_rows
-    ), 2)
-    # Prefer sale-time cost snapshot; fall back is already unit_cost/cost_price.
+    product_costs = analytics_product_cost_lookup(products)
+    lines_with_cost = 0
+    lines_missing_cost = 0
+    cost_of_goods = 0.0
+    # Same rule as desktop report_engine: qty * COALESCE(product/sale cost, 0).
+    # Always compute a profit number for the selected range — never blank the KPI.
+    for i in item_rows:
+        unit_cost = analytics_resolve_line_unit_cost(i, product_costs)
+        if unit_cost is None:
+            lines_missing_cost += 1
+            unit_cost = 0.0
+        else:
+            lines_with_cost += 1
+        cost_of_goods = round(
+            cost_of_goods + (_fnum(i.get('quantity')) * unit_cost), 2,
+        )
     item_revenue = round(sum(_fnum(i.get('total')) for i in item_rows), 2)
-    gross_profit = round(item_revenue - cost_of_goods, 2)
-    gross_margin_pct = round((gross_profit / item_revenue) * 100, 2) if item_revenue else 0.0
+    if not item_rows:
+        # No synced lines: cannot attribute COGS; still show 0 profit not "—".
+        cost_data_status = 'no_items'
+        cost_data_incomplete = bool(txns > 0)
+        cost_of_goods_out = 0.0
+        gross_profit = 0.0
+        gross_margin_pct = 0.0
+        cost_data_message = (
+            'Sale lines not synced for this range — profit shown as KSh 0 until items sync.'
+            if cost_data_incomplete else None
+        )
+    else:
+        cost_of_goods_out = cost_of_goods
+        gross_profit = round(item_revenue - cost_of_goods, 2)
+        gross_margin_pct = (
+            round((gross_profit / item_revenue) * 100, 2) if item_revenue else 0.0
+        )
+        cost_data_incomplete = lines_missing_cost > 0
+        cost_data_status = 'incomplete' if cost_data_incomplete else 'complete'
+        cost_data_message = (
+            f'{lines_missing_cost} of {line_items} lines had no cost — '
+            'treated as KSh 0 cost (same as POS reports).'
+            if cost_data_incomplete else None
+        )
 
     # Payment mix uses collected tender (not unpaid credit totals)
     pay_map: dict[str, dict] = {}
@@ -2426,7 +2930,11 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         except ValueError:
             day = created[:10] or 'unknown'
             hour = (created[11:13] if len(created) >= 13 else '00') or '00'
-        day_row = by_day.setdefault(day, {'date': day, 'day': day, 'transactions': 0, 'gross_sales': 0.0, 'txns': 0, 'revenue': 0.0})
+        day_row = by_day.setdefault(day, {
+            'date': day, 'day': day, 'transactions': 0, 'gross_sales': 0.0,
+            'txns': 0, 'revenue': 0.0, 'gross_profit': None, 'cost_of_goods': None,
+            'cost_data_incomplete': False, 'lines_missing_cost': 0, 'lines_with_cost': 0,
+        })
         day_row['transactions'] += 1
         day_row['txns'] += 1
         day_row['gross_sales'] = round(day_row['gross_sales'] + _fnum(s.get('total')), 2)
@@ -2436,6 +2944,44 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         hour_row['txns'] += 1
         hour_row['revenue'] = round(hour_row['revenue'] + _fnum(s.get('total')), 2)
 
+    # Attach line-level profit to by_day (authoritative COGS path)
+    day_cost_acc: dict[str, float] = {d: 0.0 for d in by_day}
+    day_rev_acc: dict[str, float] = {d: 0.0 for d in by_day}
+    for i in item_rows:
+        sale_key = (
+            str(i.get('device_id') or ''),
+            str(i.get('sale_source_id') or i.get('sale_id') or ''),
+        )
+        sale = next(
+            (s for s in active_sales
+             if (str(s.get('device_id') or ''), str(s.get('source_id') or '')) == sale_key),
+            None,
+        )
+        if not sale:
+            continue
+        created = str(sale.get('source_created_at') or sale.get('created_at') or '')
+        try:
+            day = datetime.fromisoformat(created.replace('Z', '+00:00')).astimezone(NAIROBI_TZ).date().isoformat()
+        except ValueError:
+            day = created[:10] or 'unknown'
+        if day not in by_day:
+            continue
+        rev = _fnum(i.get('total'))
+        day_rev_acc[day] = round(day_rev_acc[day] + rev, 2)
+        unit_cost = analytics_resolve_line_unit_cost(i, product_costs)
+        if unit_cost is None:
+            by_day[day]['cost_data_incomplete'] = True
+            by_day[day]['lines_missing_cost'] += 1
+            unit_cost = 0.0
+        else:
+            by_day[day]['lines_with_cost'] += 1
+        cost = _fnum(i.get('quantity')) * unit_cost
+        day_cost_acc[day] = round(day_cost_acc[day] + cost, 2)
+
+    for day, day_row in by_day.items():
+        day_row['cost_of_goods'] = day_cost_acc[day]
+        day_row['gross_profit'] = round(day_rev_acc[day] - day_cost_acc[day], 2)
+
     prod_map: dict[str, dict] = {}
     cat_map: dict[str, dict] = {}
     for i in item_rows:
@@ -2443,20 +2989,46 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         cat = str(i.get('category') or '').strip() or 'Uncategorized'
         rev = _fnum(i.get('total'))
         qty = _fnum(i.get('quantity'))
-        cost = qty * _fnum(i.get('unit_cost', i.get('cost_price')))
+        unit_cost = analytics_resolve_line_unit_cost(i, product_costs)
         p = prod_map.setdefault(name, {
-            'name': name, 'category': cat, 'qty': 0.0, 'revenue': 0.0, 'cost': 0.0, 'profit': 0.0,
+            'name': name, 'category': cat, 'qty': 0.0, 'revenue': 0.0,
+            'cost': None, 'profit': None, 'cost_data_incomplete': False,
+            '_cost_acc': 0.0,
         })
         p['qty'] = round(p['qty'] + qty, 3)
         p['revenue'] = round(p['revenue'] + rev, 2)
-        p['cost'] = round(p['cost'] + cost, 2)
-        p['profit'] = round(p['revenue'] - p['cost'], 2)
+        if unit_cost is None:
+            p['cost_data_incomplete'] = True
+            unit_cost = 0.0
+        p['_cost_acc'] = round(p['_cost_acc'] + (qty * unit_cost), 2)
         c = cat_map.setdefault(cat, {'category': cat, 'qty': 0.0, 'revenue': 0.0})
         c['qty'] = round(c['qty'] + qty, 3)
         c['revenue'] = round(c['revenue'] + rev, 2)
 
+    for p in prod_map.values():
+        p['cost'] = p['_cost_acc']
+        p['profit'] = round(p['revenue'] - p['_cost_acc'], 2)
+        p.pop('_cost_acc', None)
+
     top_products = sorted(prod_map.values(), key=lambda r: -r['revenue'])[:25]
     top_categories = sorted(cat_map.values(), key=lambda r: -r['revenue'])[:20]
+    # Sold products where COGS ≥ revenue (cost ≥ sell / loss-makers crushing margin).
+    cost_crushers = [
+        p for p in prod_map.values()
+        if _fnum(p.get('revenue')) > 0.009
+        and _fnum(p.get('cost')) + 0.009 >= _fnum(p.get('revenue'))
+    ]
+    cost_crushers_sorted = sorted(cost_crushers, key=lambda r: _fnum(r.get('profit')))
+    cost_crushing_product_count = len(cost_crushers_sorted)
+    cost_crushing_profit_drag = round(
+        sum(_fnum(p.get('profit')) for p in cost_crushers_sorted), 2,
+    )
+    cost_crushing_sample = (
+        str(cost_crushers_sorted[0].get('name') or '') if cost_crushers_sorted else ''
+    )
+    worst_profit_products = sorted(
+        prod_map.values(), key=lambda r: _fnum(r.get('profit')),
+    )[:10]
 
     active_products = [
         p for p in products
@@ -2498,15 +3070,82 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         'debt_overdue': debt_overdue,
         'overdue_count': len(overdue),
         'outstanding_count': len(outstanding_invoices),
-        'cost_of_goods': cost_of_goods,
+        'cost_of_goods': cost_of_goods_out,
         'gross_profit': gross_profit,
         'gross_margin_pct': gross_margin_pct,
+        'cost_data_status': cost_data_status,
+        'cost_data_incomplete': cost_data_incomplete,
+        'cost_data_message': cost_data_message,
+        'lines_with_cost': lines_with_cost,
+        'lines_missing_cost': lines_missing_cost,
+        'cost_crushing_product_count': cost_crushing_product_count,
+        'cost_crushing_profit_drag': cost_crushing_profit_drag,
+        'cost_crushing_sample': cost_crushing_sample or None,
         'inventory_value': inventory_value,
         'low_stock_count': len(low_stock) + len(out_stock),
         'out_of_stock_count': len(out_stock),
         'low_only_count': len(low_stock),
         'last_sync_at': analytics_last_sync_at(org_id),
     }
+    low_stock_rows = [
+        analytics_strip_sensitive({
+            'name': p.get('name'),
+            'sku': p.get('sku'),
+            'category': p.get('category'),
+            'stock': p.get('stock'),
+            'min_stock': p.get('min_stock'),
+            'cost_price': p.get('cost_price'),
+            'price': p.get('price'),
+            'device_id': p.get('device_id'),
+            'source_id': p.get('source_id'),
+        })
+        for p in sorted(
+            low_stock + out_stock,
+            key=lambda r: (_fnum(r.get('stock')), str(r.get('name') or '')),
+        )
+    ]
+    try:
+        presence = analytics_shop_presence(org_id)
+    except Exception as exc:
+        logger.warning('analytics_shop_presence failed for %s: %s', org_id, exc)
+        presence = {
+            'pc_online': False,
+            'pc_status': 'unknown',
+            'online_device_count': 0,
+            'device_count': 0,
+            'online_devices': [],
+            'offline_devices': [],
+            'last_seen_at': None,
+            'last_sync_at': summary.get('last_sync_at'),
+            'sync_freshness': 'never' if not summary.get('last_sync_at') else 'aging',
+            'sync_age_seconds': None,
+            'data_label': 'Sync unknown',
+            'is_live_data': False,
+        }
+    # Prefer presence.last_sync_at (device-aware) when available
+    if presence.get('last_sync_at'):
+        summary['last_sync_at'] = presence['last_sync_at']
+    attention = analytics_build_attention(
+        summary=summary, low_stock=low_stock_rows, presence=presence,
+    )
+    recent_sales = sorted(
+        active_sales,
+        key=lambda s: str(s.get('source_created_at') or ''),
+        reverse=True,
+    )[:12]
+    top_debtors_map: dict[str, dict] = {}
+    for inv in outstanding_invoices:
+        name = str(inv.get('customer_name') or 'Unknown').strip() or 'Unknown'
+        bucket = top_debtors_map.setdefault(name, {
+            'name': name,
+            'phone': inv.get('customer_phone'),
+            'balance': 0.0,
+            'invoices': 0,
+        })
+        bucket['balance'] = round(bucket['balance'] + _fnum(inv.get('balance')), 2)
+        bucket['invoices'] += 1
+    top_debtors = sorted(top_debtors_map.values(), key=lambda r: -r['balance'])[:10]
+
     return {
         'org_id': org_id,
         'start': start_s,
@@ -2521,25 +3160,15 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         'sales_trend': [by_day[k] for k in sorted(by_day.keys())],
         'by_hour': [by_hour[k] for k in sorted(by_hour.keys())],
         'top_products': top_products,
+        'worst_profit_products': worst_profit_products,
         'top_categories': top_categories,
         'by_category': top_categories,
-        'low_stock': [
-            analytics_strip_sensitive({
-                'name': p.get('name'),
-                'sku': p.get('sku'),
-                'category': p.get('category'),
-                'stock': p.get('stock'),
-                'min_stock': p.get('min_stock'),
-                'cost_price': p.get('cost_price'),
-                'price': p.get('price'),
-                'device_id': p.get('device_id'),
-                'source_id': p.get('source_id'),
-            })
-            for p in sorted(
-                low_stock + out_stock,
-                key=lambda r: (_fnum(r.get('stock')), str(r.get('name') or '')),
-            )
-        ],
+        'low_stock': low_stock_rows,
+        'recent_sales': [analytics_normalize_row(s) for s in recent_sales],
+        'top_debtors': top_debtors,
+        'attention': attention,
+        'presence': presence,
+        'shop_status': presence,
         'last_sync_at': summary['last_sync_at'],
     }
 
@@ -2616,7 +3245,7 @@ def analytics_export_rows(
             'status', 'due_date',
         ]
         return [analytics_normalize_row(r) for r in rows], fields
-    if kind in ('debt_payments', 'payments'):
+    if kind in ('debt_payments', 'payments', 'debt-payments', 'debt_payment'):
         _start_s, _end_s, start_iso, end_iso = analytics_day_bounds(start, end)
         parts = [
             _org_eq(org_id),

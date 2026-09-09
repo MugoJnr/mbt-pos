@@ -24,7 +24,16 @@ export function InventoryPanel({ orgId, start, end, filters }: { orgId: string; 
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   useEffect(() => setPage(1), [stock, search, category, start, end]);
-  const params = { org_id: orgId, start, end, page: String(page), page_size: "25", search, category, stock_status: stock === "all" ? "" : stock };
+  const params = {
+    org_id: orgId,
+    start,
+    end,
+    page: String(page),
+    page_size: "25",
+    q: search,
+    category,
+    stock: stock === "all" ? "" : stock,
+  };
   const query = useQuery({
     queryKey: ["cloud-analytics-inventory", params],
     queryFn: () => GET<AnalyticsResponse>("/cloud/analytics/inventory", params),

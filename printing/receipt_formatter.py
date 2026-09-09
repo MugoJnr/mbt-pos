@@ -151,7 +151,12 @@ def build_receipt_document(
     T('ITEMS', bold=True)
     lines.append(_sep(W))
     for item in sale.get('items') or []:
-        name = str(item.get('product_name') or '')
+        name = str(
+            item.get('product_name')
+            or item.get('name')
+            or item.get('description')
+            or ''
+        )
         for chunk in wrap_text(name, W, 3):
             T(chunk)
         try:

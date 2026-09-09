@@ -30,7 +30,17 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
   const [selected, setSelected] = useState<AnalyticsRow | null>(null);
   const [exporting, setExporting] = useState(false);
   useEffect(() => setPage(1), [search, status, payment, cashier, start, end]);
-  const params = { org_id: orgId, start, end, page: String(page), page_size: "25", search, status, payment_method: payment, cashier };
+  const params = {
+    org_id: orgId,
+    start,
+    end,
+    page: String(page),
+    page_size: "25",
+    q: search,
+    status,
+    payment,
+    cashier,
+  };
   const query = useQuery({
     queryKey: ["cloud-analytics-sales", params],
     queryFn: () => GET<AnalyticsResponse>("/cloud/analytics/sales", params),
@@ -47,9 +57,14 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
     enabled: Boolean(selected && value(selected, "device_id") && value(selected, "source_id", "id", "sale_id")),
   });
   const detail = ((detailQ.data?.sale || detailQ.data?.data || selected || {}) as AnalyticsRow);
-  const lineItems = rowsOf(detailQ.data, "line_items", "items", "lines").length
-    ? rowsOf(detailQ.data, "line_items", "items", "lines")
-    : (Array.isArray(detail.line_items) ? detail.line_items as AnalyticsRow[] : []);
+  // Prefer nested sale.line_items / sale.items — top-level response is { org_id, sale }.
+  const nestedLines = [
+    detail.line_items,
+    detail.items,
+    detail.lines,
+  ].find((candidate) => Array.isArray(candidate)) as AnalyticsRow[] | undefined;
+  const topLevelLines = rowsOf(detailQ.data, "line_items", "items", "lines");
+  const lineItems = (nestedLines && nestedLines.length ? nestedLines : topLevelLines) || [];
   const runExport = async () => {
     setExporting(true);
     try {
@@ -65,7 +80,7 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
         <SearchBox value={search} onChange={setSearch} placeholder="Receipt, customer or cashier…" />
-        <FilterSelect value={status} onChange={setStatus} label="Statuses" options={optionRows(filters, "statuses")} />
+        <FilterSelect value={status} onChange={setStatus} label="Statuses" options={optionRows(filters, "sale_statuses").length ? optionRows(filters, "sale_statuses") : optionRows(filters, "statuses")} />
         <FilterSelect value={payment} onChange={setPayment} label="Payments" options={optionRows(filters, "payment_methods")} />
         <FilterSelect value={cashier} onChange={setCashier} label="Cashiers" options={optionRows(filters, "cashiers")} />
         <ExportButton loading={exporting} onClick={() => void runExport()} />

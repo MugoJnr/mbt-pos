@@ -27,6 +27,7 @@ import { Route as AppLicenseRouteImport } from './routes/_app.license'
 import { Route as AppLicensesRouteImport } from './routes/_app.licenses'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppPosRouteImport } from './routes/_app.pos'
+import { Route as AppRemoteControlRouteImport } from './routes/_app.remote-control'
 import { Route as AppReportsRouteImport } from './routes/_app.reports'
 import { Route as AppSalesRouteImport } from './routes/_app.sales'
 import { Route as AppSecurityRouteImport } from './routes/_app.security'
@@ -141,6 +142,11 @@ const AppNotificationsRoute = AppNotificationsRouteImport.update({
 const AppPosRoute = AppPosRouteImport.update({
   id: '/pos',
   path: '/pos',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRemoteControlRoute = AppRemoteControlRouteImport.update({
+  id: '/remote-control',
+  path: '/remote-control',
   getParentRoute: () => AppRoute,
 } as any)
 const AppReportsRoute = AppReportsRouteImport.update({
@@ -300,6 +306,7 @@ export interface FileRoutesByFullPath {
   '/licenses': typeof AppLicensesRoute
   '/notifications': typeof AppNotificationsRoute
   '/pos': typeof AppPosRoute
+  '/remote-control': typeof AppRemoteControlRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
   '/security': typeof AppSecurityRoute
@@ -345,6 +352,7 @@ export interface FileRoutesByTo {
   '/licenses': typeof AppLicensesRoute
   '/notifications': typeof AppNotificationsRoute
   '/pos': typeof AppPosRoute
+  '/remote-control': typeof AppRemoteControlRoute
   '/reports': typeof AppReportsRoute
   '/sales': typeof AppSalesRoute
   '/security': typeof AppSecurityRoute
@@ -394,6 +402,7 @@ export interface FileRoutesById {
   '/_app/licenses': typeof AppLicensesRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/pos': typeof AppPosRoute
+  '/_app/remote-control': typeof AppRemoteControlRoute
   '/_app/reports': typeof AppReportsRoute
   '/_app/sales': typeof AppSalesRoute
   '/_app/security': typeof AppSecurityRoute
@@ -441,6 +450,7 @@ export interface FileRouteTypes {
     | '/licenses'
     | '/notifications'
     | '/pos'
+    | '/remote-control'
     | '/reports'
     | '/sales'
     | '/security'
@@ -486,6 +496,7 @@ export interface FileRouteTypes {
     | '/licenses'
     | '/notifications'
     | '/pos'
+    | '/remote-control'
     | '/reports'
     | '/sales'
     | '/security'
@@ -534,6 +545,7 @@ export interface FileRouteTypes {
     | '/_app/licenses'
     | '/_app/notifications'
     | '/_app/pos'
+    | '/_app/remote-control'
     | '/_app/reports'
     | '/_app/sales'
     | '/_app/security'
@@ -697,6 +709,13 @@ declare module '@tanstack/react-router' {
       path: '/pos'
       fullPath: '/pos'
       preLoaderRoute: typeof AppPosRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/remote-control': {
+      id: '/_app/remote-control'
+      path: '/remote-control'
+      fullPath: '/remote-control'
+      preLoaderRoute: typeof AppRemoteControlRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/reports': {
@@ -949,6 +968,7 @@ interface AppRouteChildren {
   AppLicensesRoute: typeof AppLicensesRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppPosRoute: typeof AppPosRoute
+  AppRemoteControlRoute: typeof AppRemoteControlRoute
   AppReportsRoute: typeof AppReportsRoute
   AppSalesRoute: typeof AppSalesRoute
   AppSecurityRoute: typeof AppSecurityRoute
@@ -972,6 +992,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppLicensesRoute: AppLicensesRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppPosRoute: AppPosRoute,
+  AppRemoteControlRoute: AppRemoteControlRoute,
   AppReportsRoute: AppReportsRoute,
   AppSalesRoute: AppSalesRoute,
   AppSecurityRoute: AppSecurityRoute,

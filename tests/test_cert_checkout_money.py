@@ -99,6 +99,29 @@ class CertCheckoutMoney(unittest.TestCase):
         self.assertAlmostEqual(float(sale[0]), 130.50, places=2)
         self.assertEqual(items, 2)
 
+    def test_receipt_from_saved_sale_includes_product_lines(self):
+        """create_sale → get_sale → build_receipt must list products (unit_cost safe)."""
+        r = self._sale()
+        self.assertTrue(r.get('sale_id'), r)
+        sale = self.api.get_sale(int(r['sale_id']))
+        self.assertGreaterEqual(len(sale.get('items') or []), 2)
+        names = [str(i.get('product_name') or '') for i in sale['items']]
+        self.assertTrue(any('Soap' in n for n in names), names)
+        self.assertTrue(any('Oil' in n for n in names), names)
+        # unit_cost snapshot present after migration
+        for line in sale['items']:
+            self.assertIn('unit_cost', line)
+        from printing.receipt_formatter import (
+            build_receipt_document, document_to_plain_text,
+        )
+        text = document_to_plain_text(
+            build_receipt_document(sale, shop_name='Cert Shop', currency='KES')
+        )
+        self.assertIn('ITEMS', text)
+        self.assertIn('Cert Soap', text)
+        self.assertIn('Cert Oil', text)
+        self.assertIn('TOTAL:', text)
+
     def test_overpay_change(self):
         r = self._sale(amount_paid=150.50, change_amount=20.0)
         self.assertTrue(r.get('ok') or r.get('id') or r.get('sale_id'), r)
