@@ -114,6 +114,25 @@ def ensure_production_cloud_config(*, persist: bool = True) -> dict[str, Any]:
     cfg = load_json(path, {})
     changed = False
 
+    # The retired project exhausted its storage quota. Migrate installed shop
+    # configs atomically on first launch; the repo config is not authoritative.
+    retired_refs = {'uynfglgttkaibyeglsrt'}
+    retired_hosts = {'uynfglgttkaibyeglsrt.supabase.co'}
+    current_url = str(cfg.get('supabase_url') or '').strip().rstrip('/')
+    current_ref = str(cfg.get('project_ref') or '').strip()
+    if current_ref in retired_refs or any(
+        host in current_url for host in retired_hosts
+    ):
+        for key in (
+            'supabase_url', 'anon_key', 'project_ref', 'project_name', 'bucket'
+        ):
+            cfg[key] = defaults[key]
+        changed = True
+        logger.info(
+            'Migrated cloud_config from retired Supabase project to %s',
+            defaults['project_ref'],
+        )
+
     if not str(cfg.get('supabase_url') or '').strip():
         cfg['supabase_url'] = defaults['supabase_url']
         changed = True
@@ -129,6 +148,22 @@ def ensure_production_cloud_config(*, persist: bool = True) -> dict[str, Any]:
         changed = True
     if not cfg.get('backup_interval_minutes'):
         cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+        changed = True
+    # Stop legacy 5-minute upload loops even when the endpoint was already
+    # manually changed. One hour is the hard floor; production defaults to 24h.
+    try:
+        if int(cfg.get('backup_interval_minutes') or 0) < 60:
+            cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+            changed = True
+    except (TypeError, ValueError):
+        cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+        changed = True
+    try:
+        keep_count = int(cfg.get('backup_keep_count') or 0)
+    except (TypeError, ValueError):
+        keep_count = 0
+    if keep_count < 1:
+        cfg['backup_keep_count'] = defaults.get('backup_keep_count', 7)
         changed = True
     if 'service_key' not in cfg:
         cfg['service_key'] = ''
@@ -159,7 +194,8 @@ def load_cloud_config() -> dict[str, Any]:
         'anon_key': '',
         'service_key': '',
         'enabled': False,
-        'backup_interval_minutes': 5,
+        'backup_interval_minutes': 1440,
+        'backup_keep_count': 7,
         'bucket': 'mbt-backups',
     })
     defaults = production_cloud_defaults()
@@ -182,7 +218,24 @@ def load_cloud_config() -> dict[str, Any]:
     if env_svc:
         cfg['service_key'] = env_svc
     cfg['supabase_url'] = (cfg.get('supabase_url') or '').rstrip('/')
-    cfg['backup_interval_minutes'] = int(cfg.get('backup_interval_minutes') or 5)
+    try:
+        configured_interval = int(
+            cfg.get('backup_interval_minutes')
+            or defaults.get('backup_interval_minutes')
+            or 1440
+        )
+    except (TypeError, ValueError):
+        configured_interval = 1440
+    cfg['backup_interval_minutes'] = max(60, configured_interval)
+    try:
+        configured_keep = int(
+            cfg.get('backup_keep_count')
+            or defaults.get('backup_keep_count')
+            or 7
+        )
+    except (TypeError, ValueError):
+        configured_keep = 7
+    cfg['backup_keep_count'] = max(1, configured_keep)
     cfg['bucket'] = cfg.get('bucket') or 'mbt-backups'
     return cfg
 

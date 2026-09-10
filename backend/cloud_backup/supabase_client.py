@@ -368,6 +368,41 @@ class SupabaseClient:
 
         return self.with_auth_retry(_do)
 
+    def rest_delete(self, table: str, query: str) -> Any:
+        """Delete REST rows with the same auth-refresh behavior as writes."""
+        def _do(use_service: bool = False):
+            _require_network()
+            if use_service and self.service:
+                h = {
+                    'apikey': self.service,
+                    'Authorization': f'Bearer {self.service}',
+                    'Prefer': 'return=minimal',
+                }
+            else:
+                h = self._authed_headers(prefer='return=minimal')
+            try:
+                r = self._session.delete(
+                    self._url(f'/rest/v1/{table}?{query}'),
+                    headers=h,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+            except requests.RequestException as e:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+                raise SupabaseError(
+                    f'Delete {table} network error: {e}', 503
+                ) from e
+            if r.status_code >= 400:
+                self._raise(r, f'Delete {table}')
+            return r.json() if r.content else None
+
+        try:
+            return self.with_auth_retry(lambda: _do(False))
+        except SupabaseError as e:
+            if self.service and e.status in (401, 403):
+                return _do(True)
+            raise
+
     # ── Domain helpers ────────────────────────────────────────────────────────
 
     def upsert_business(self, name: str, owner_user_id: str) -> dict:
@@ -427,6 +462,10 @@ class SupabaseClient:
                 result = service_insert('backups', meta)
                 return result[0] if isinstance(result, list) else result
             raise
+
+    def upsert_backup_meta(self, meta: dict) -> dict:
+        """Upsert one rolling slot without growing backup metadata forever."""
+        return self.insert_backup_meta(meta)
 
     def list_backups(self, business_id: str, limit: int = 20) -> list:
         return self.rest_select(
@@ -522,6 +561,57 @@ class SupabaseClient:
             return total
 
         return self.with_auth_retry(_do)
+
+    def delete_files(self, object_paths: list) -> int:
+        """Delete storage objects; return the number requested."""
+        paths = [str(path) for path in (object_paths or []) if path]
+        if not paths:
+            return 0
+
+        def _do(use_service: bool = False):
+            _require_network()
+            as_service = bool(use_service and self.service)
+            token = self.service if as_service else self._user_token()
+            key = self.service if as_service else self.anon
+            headers = {
+                'apikey': key,
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+            }
+            url = self._url(f'/storage/v1/object/{self.bucket}')
+            try:
+                r = self._session.request(
+                    'DELETE',
+                    url,
+                    headers=headers,
+                    json={'prefixes': paths},
+                    timeout=120,
+                )
+                # Storage API versions differ on the accepted request shape.
+                if r.status_code >= 400:
+                    r = self._session.request(
+                        'DELETE',
+                        url,
+                        headers=headers,
+                        json=paths,
+                        timeout=120,
+                    )
+            except requests.RequestException as e:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+                raise SupabaseError(
+                    f'Storage delete network error: {e}', 503
+                ) from e
+            if r.status_code >= 400:
+                self._raise(r, 'Storage delete')
+            return len(paths)
+
+        try:
+            return self.with_auth_retry(lambda: _do(False))
+        except SupabaseError as e:
+            if self.service and e.status in (401, 403):
+                return _do(True)
+            raise
 
     def ping(self) -> bool:
         if not self.configured:

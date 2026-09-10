@@ -13,13 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 # MugoByte production Supabase project (portal.mugobyte.com backend).
-PRODUCTION_SUPABASE_URL = 'https://uynfglgttkaibyeglsrt.supabase.co'
-PRODUCTION_PROJECT_REF = 'uynfglgttkaibyeglsrt'
+PRODUCTION_SUPABASE_URL = 'https://mxfvbylmlynotvghnzqg.supabase.co'
+PRODUCTION_PROJECT_REF = 'mxfvbylmlynotvghnzqg'
 PRODUCTION_ANON_KEY = (
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.'
-    'eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5bmZnbGd0dGthaWJ5ZWdsc3J0Iiwicm9sZSI6'
-    'ImFub24iLCJpYXQiOjE3ODQzNzEzODAsImV4cCI6MjA5OTk0NzM4MH0.'
-    'nRuhFyoBFgdN0U2vdw0P9gOBWzNQd7i5DNVpwYLEUK4'
+    'eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im14ZnZieWxtbHlub3R2Z2huenFnIiwicm9sZSI6'
+    'ImFub24iLCJpYXQiOjE3ODg5OTQxNjMsImV4cCI6MjEwNDU3MDE2M30.'
+    '7tmSrhVNL2-Gx_eApwcam1ke-UA2ApJUTF-e_xScuOg'
 )
 
 
@@ -30,8 +30,10 @@ def production_cloud_defaults() -> dict[str, Any]:
         'anon_key': PRODUCTION_ANON_KEY,
         'service_key': '',
         'project_ref': PRODUCTION_PROJECT_REF,
-        'project_name': 'mbt-pos',
+        'project_name': 'mbt-portal',
         'enabled': True,
-        'backup_interval_minutes': 5,
+        # Full snapshots are rolling; once daily is the production default.
+        'backup_interval_minutes': 1440,
+        'backup_keep_count': 7,
         'bucket': 'mbt-backups',
     }

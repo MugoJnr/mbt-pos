@@ -49,7 +49,10 @@ from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 
 logger = logging.getLogger('cloud_backup.sync')
 
-DEFAULT_INTERVAL_MIN = 5
+DEFAULT_INTERVAL_MIN = 1440
+DEFAULT_KEEP_COUNT = 7
+MIN_SCHEDULE_INTERVAL_MIN = 60
+LATEST_NAME = 'latest.mbtenc'
 MAX_OFFLINE_BACKUPS = 24
 BACKFILL_BATCH_SIZE = 200
 OUTBOX_FLUSH_LIMIT = 200
@@ -456,7 +459,14 @@ class SyncManager:
             'business_name': ident.get('business_name') or '',
             'email': ident.get('email') or '',
             'org_id': ident.get('org_id') or '',
-            'interval_minutes': int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            'interval_minutes': max(
+                MIN_SCHEDULE_INTERVAL_MIN,
+                int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            ),
+            'backup_keep_count': max(
+                1, int(cfg.get('backup_keep_count') or DEFAULT_KEEP_COUNT)
+            ),
+            'backup_style': 'rolling',
             'last_backup_at': state.get('last_backup_at') or '',
             'last_backup_size': state.get('last_backup_size') or 0,
             'last_backup_id': state.get('last_backup_id') or '',
@@ -532,7 +542,10 @@ class SyncManager:
         self._stop.wait(20)
         while not self._stop.is_set():
             cfg = load_cloud_config()
-            interval_min = max(1, int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN))
+            interval_min = max(
+                MIN_SCHEDULE_INTERVAL_MIN,
+                int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            )
             try:
                 if self._session_ready_for_backup() and is_cloud_configured():
                     self.ensure_historical_backfill()
@@ -903,6 +916,10 @@ class SyncManager:
         items = q.get('items') or []
         object_path = str(item.get('storage_path') or '')
         # Idempotent enqueue: one durable local file per cloud object.
+        replaced = [
+            existing for existing in items
+            if str(existing.get('storage_path') or '') == object_path
+        ]
         items = [
             existing for existing in items
             if str(existing.get('storage_path') or '') != object_path
@@ -916,8 +933,54 @@ class SyncManager:
         })
         q['items'] = items
         save_json(offline_queue_path(), q)
+        new_local = str(item.get('local_enc_path') or '')
+        for old in replaced:
+            old_local = str(old.get('local_enc_path') or '')
+            if old_local and old_local != new_local:
+                try:
+                    os.remove(old_local)
+                except OSError:
+                    pass
+
+    def _retire_legacy_queue_references(self) -> int:
+        """Stop old timestamped queue entries from uploading after migration.
+
+        Encrypted payload files remain on disk until a fresh rolling backup is
+        confirmed, at which point the existing cleanup removes untracked
+        ``pending_*.mbtenc`` files. This prevents both data loss and renewed
+        growth of unique cloud objects.
+        """
+        queue = load_json(offline_queue_path(), {'items': []})
+        items = queue.get('items') or []
+        kept = []
+        retired = 0
+        for item in items:
+            path = str(item.get('storage_path') or '')
+            is_backup = item.get('type') == 'backup_meta'
+            is_rolling = (
+                path.endswith(f'/{LATEST_NAME}')
+                or '/daily/' in path
+            )
+            if is_backup and path.endswith('.mbtenc') and not is_rolling:
+                retired += 1
+                continue
+            kept.append(item)
+        if retired:
+            save_json(offline_queue_path(), {'items': kept})
+            state = load_json(backup_state_path(), {})
+            state['legacy_queue_refs_retired'] = (
+                int(state.get('legacy_queue_refs_retired') or 0) + retired
+            )
+            state['legacy_queue_retired_at'] = _utc_now()
+            save_json(backup_state_path(), state)
+            logger.info(
+                'Retired %s legacy timestamped backup queue reference(s)',
+                retired,
+            )
+        return retired
 
     def flush_offline_queue(self) -> int:
+        self._retire_legacy_queue_references()
         if not (is_logged_in() and is_cloud_configured()):
             return 0
         q = load_json(offline_queue_path(), {'items': []})
@@ -950,7 +1013,7 @@ class SyncManager:
                             )
                         client.upload_file(obj, path)
                         item['uploaded'] = True
-                    last_row = client.insert_backup_meta(meta)
+                    last_row = client.upsert_backup_meta(meta)
                     last_meta = meta
                     done += 1
                     try:
@@ -1037,6 +1100,7 @@ class SyncManager:
                 return {'ok': False, 'error': 'Cloud not configured (cloud_config.json)'}
             if not is_logged_in():
                 return {'ok': False, 'error': 'Not signed in to MugoByte Platform'}
+            self._retire_legacy_queue_references()
             queued = (
                 load_json(offline_queue_path(), {'items': []}).get('items') or []
             )
@@ -1096,8 +1160,13 @@ class SyncManager:
             business_id = ident.get('business_id') or ''
             if not business_id:
                 return {'ok': False, 'error': 'No business linked to this cloud account'}
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            object_path = f'{business_id}/{device["device_id"]}/{stamp}.mbtenc'
+            now = datetime.now(timezone.utc)
+            stamp = now.strftime('%Y%m%d_%H%M%S')
+            day = now.strftime('%Y%m%d')
+            base = f'{business_id}/{device["device_id"]}'
+            latest_path = f'{base}/{LATEST_NAME}'
+            daily_path = f'{base}/daily/{day}.mbtenc'
+            object_path = latest_path
 
             client = SupabaseClient()
             self._emit('Uploading to MugoByte Platform…', 55)
@@ -1120,7 +1189,25 @@ class SyncManager:
             }
             self.enqueue_offline(queue_item)
             try:
-                client.upload_file(object_path, enc_path, content_type='application/octet-stream')
+                client.upload_file(
+                    latest_path,
+                    enc_path,
+                    content_type='application/octet-stream',
+                )
+                daily_uploaded = False
+                try:
+                    client.upload_file(
+                        daily_path,
+                        enc_path,
+                        content_type='application/octet-stream',
+                    )
+                    daily_uploaded = True
+                except Exception as daily_error:
+                    # Latest is the guaranteed recovery point. A daily slot is
+                    # best-effort and will be retried by the next backup today.
+                    logger.warning(
+                        'Daily backup slot upload skipped: %s', daily_error
+                    )
             except (SupabaseError, OSError, ConnectionError) as e:
                 message = _shop_facing_backup_error(e)
                 queue_item['last_error'] = message
@@ -1145,7 +1232,23 @@ class SyncManager:
             self.enqueue_offline(queue_item)
             self._emit('Saving backup metadata…', 85)
             try:
-                row = client.insert_backup_meta(meta)
+                row = client.upsert_backup_meta(meta)
+                if daily_uploaded:
+                    daily_meta = self._build_meta(
+                        business_id,
+                        device,
+                        daily_path,
+                        enc_size,
+                        content_hash,
+                        reason or 'daily',
+                    )
+                    try:
+                        client.upsert_backup_meta(daily_meta)
+                    except Exception as daily_meta_error:
+                        logger.warning(
+                            'Daily backup metadata skipped: %s',
+                            daily_meta_error,
+                        )
             except Exception as e:
                 message = _shop_facing_backup_error(e)
                 queue_item['last_error'] = message
@@ -1171,7 +1274,13 @@ class SyncManager:
                 'event_type': 'backup',
                 'status': 'ok',
                 'message': reason,
-                'detail': json.dumps({'size': enc_size, 'hash': content_hash}),
+                'detail': json.dumps({
+                    'size': enc_size,
+                    'hash': content_hash,
+                    'latest': latest_path,
+                    'daily': daily_path,
+                    'style': 'rolling',
+                }),
             })
 
             # Touch device last_seen
@@ -1195,13 +1304,27 @@ class SyncManager:
                 'last_backup_at': _utc_now(),
                 'last_backup_size': enc_size,
                 'last_backup_id': backup_id or '',
-                'last_storage_path': object_path,
+                'last_storage_path': latest_path,
+                'last_daily_path': daily_path,
                 'last_content_hash': content_hash,
                 'last_plain_size': size_plain,
                 'last_error': '',
                 'last_reason': reason,
+                'backup_style': 'rolling',
             }
             save_json(backup_state_path(), state)
+            try:
+                pruned = self._prune_old_backups(
+                    client, business_id, device['device_id']
+                )
+                if pruned:
+                    logger.info(
+                        'Pruned %s old cloud backup(s) for %s',
+                        pruned,
+                        device['device_id'],
+                    )
+            except Exception as prune_error:
+                logger.warning('Backup prune skipped: %s', prune_error)
             # A confirmed current cloud recovery point makes untracked pending
             # payloads left by the legacy 50-item queue cap redundant.
             if not (
@@ -1222,7 +1345,11 @@ class SyncManager:
                     pass
             self._last_error = ''
             self._emit('Backup complete', 100)
-            logger.info('Cloud backup OK: %s (%.1f KB)', object_path, enc_size / 1024)
+            logger.info(
+                'Cloud backup OK: %s (%.1f KB)',
+                latest_path,
+                enc_size / 1024,
+            )
             return {'ok': True, 'meta': meta, 'row': row, 'size': enc_size}
         except EncryptionError as e:
             self._last_error = str(e)
@@ -1240,6 +1367,64 @@ class SyncManager:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                 except Exception:
                     pass
+
+    def _prune_old_backups(
+        self,
+        client: SupabaseClient,
+        business_id: str,
+        device_id: str,
+    ) -> int:
+        """Keep latest + newest N daily slots; remove timestamp-era dumps."""
+        cfg = load_cloud_config()
+        keep = max(
+            1, int(cfg.get('backup_keep_count') or DEFAULT_KEEP_COUNT)
+        )
+        rows = client.rest_select(
+            'backups',
+            f'business_id=eq.{quote(business_id, safe="")}'
+            f'&device_id=eq.{quote(device_id, safe="")}'
+            f'&order=created_at.desc&select=id,storage_path,created_at',
+        ) or []
+        daily_rows = []
+        doomed = []
+        for row in rows:
+            path = str(row.get('storage_path') or '')
+            if path.endswith(f'/{LATEST_NAME}'):
+                continue
+            if '/daily/' in path:
+                daily_rows.append(row)
+            else:
+                # Legacy unique timestamp objects become redundant as soon as
+                # a rolling latest recovery point has uploaded successfully.
+                doomed.append(row)
+
+        daily_rows.sort(
+            key=lambda row: str(row.get('created_at') or ''),
+            reverse=True,
+        )
+        doomed.extend(daily_rows[keep:])
+        if not doomed:
+            return 0
+
+        paths = [
+            str(row.get('storage_path') or '')
+            for row in doomed
+            if row.get('storage_path')
+        ]
+        if paths:
+            client.delete_files(paths)
+
+        removed = 0
+        for row in doomed:
+            row_id = row.get('id')
+            if not row_id:
+                continue
+            client.rest_delete(
+                'backups',
+                f'id=eq.{quote(str(row_id), safe="")}',
+            )
+            removed += 1
+        return removed
 
     def _build_meta(self, business_id, device, object_path, enc_size, content_hash, reason):
         return {

@@ -1,8 +1,8 @@
 {
-    "version": "3.0.88",
-    "build": "RC-2026-09-09-v3.0.88",
-    "released": "2026-09-09",
-    "release_notes": "MBT POS v3.0.88: Remote Ops Phase 1 \u2014 shop PC executes portal update_product, adjust_stock, and set_user_active commands with local receipts, audit_log, JWT refresh on poll/ack, and revoke_license safeguards preserved. Pairs with portal /remote-control.",
-    "checksum_sha256": "dc5e9c89f82429733aaa6d79e8da46df08eee947d3de2b13e81e4e68d16d2263",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.88/MBT_POS_Setup.exe"
+    "version": "3.0.89",
+    "build": "RC-2026-09-10-v3.0.89",
+    "released": "2026-09-10",
+    "release_notes": "MBT POS v3.0.89: Rolling cloud backups and new MugoByte Cloud endpoint. Existing retired-project configs migrate automatically, legacy sub-hour schedules move to 24 hours, backups overwrite latest.mbtenc plus keep seven daily slots, and old timestamp dumps are pruned. Includes v3.0.88 Remote Ops Phase 1 and preserves license/device identity during upgrade.",
+    "checksum_sha256": "79903aed2f956ab325fff42200978579a2e195ef45e6e2922dc91a6a9bfaec51",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.89/MBT_POS_Setup.exe"
 }

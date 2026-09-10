@@ -96,12 +96,13 @@ class CloudBackupPanel(QWidget):
 
         # Frequency
         freq = QHBoxLayout()
-        fl = QLabel('Backup every')
+        fl = QLabel('Auto-backup every')
         fl.setStyleSheet(f"color:{C['text']}; font-size:13px; background:transparent;")
         self.interval = QSpinBox()
-        self.interval.setRange(1, 1440)
-        self.interval.setValue(5)
-        self.interval.setSuffix(' min')
+        # Display hours; persist minutes. One hour is the safe minimum.
+        self.interval.setRange(1, 168)
+        self.interval.setValue(24)
+        self.interval.setSuffix(' hours')
         self.interval.setMinimumHeight(36)
         self.interval.setMinimumWidth(110)
         save_freq = SecondaryBtn('Save frequency', 36)
@@ -182,6 +183,8 @@ class CloudBackupPanel(QWidget):
 
         hint = QLabel(
             'Sign in with your <b>portal.mugobyte.com</b> email to enable encrypted backups. '
+            'Cloud backups use rolling storage (latest + one slot per day) '
+            'instead of creating an unlimited timestamped file stream. '
             'Offline POS sales continue if cloud is skipped.')
         hint.setTextFormat(Qt.RichText)
         hint.setWordWrap(True)
@@ -201,7 +204,12 @@ class CloudBackupPanel(QWidget):
             st = SyncManager.instance().status()
             cfg = load_cloud_config()
             ident = load_identity()
-            self.interval.setValue(int(cfg.get('backup_interval_minutes') or 5))
+            minutes = max(
+                60, int(cfg.get('backup_interval_minutes') or 1440)
+            )
+            self.interval.setValue(
+                max(1, min(168, int(round(minutes / 60))))
+            )
             if ident.get('email') and not self.email.text():
                 self.email.setText(ident.get('email') or '')
             if ident.get('business_name') and not self.biz_name.text():
@@ -209,10 +217,15 @@ class CloudBackupPanel(QWidget):
 
             if st.get('logged_in'):
                 title = f"Connected · {st.get('business_name') or 'Business'}"
+                hours = max(
+                    1,
+                    int(round(int(st.get('interval_minutes') or 1440) / 60)),
+                )
                 sub = (
                     f"{st.get('email') or ''} · "
                     f"{'Auto-backup ON' if st.get('enabled') else 'Auto-backup OFF'} · "
-                    f"every {st.get('interval_minutes')} min"
+                    f"every {hours}h · rolling "
+                    f"(latest + {int(st.get('backup_keep_count') or 7)} daily)"
                 )
             elif st.get('reauth_required'):
                 # Saved tokens are sealed to the Windows account that created
@@ -366,9 +379,14 @@ class CloudBackupPanel(QWidget):
     def _save_frequency(self):
         from backend.cloud_backup.paths import load_cloud_config, save_cloud_config
         cfg = load_cloud_config()
-        cfg['backup_interval_minutes'] = int(self.interval.value())
+        hours = max(1, min(168, int(self.interval.value())))
+        cfg['backup_interval_minutes'] = hours * 60
+        cfg['backup_keep_count'] = int(cfg.get('backup_keep_count') or 7)
         save_cloud_config(cfg)
-        self._msg.setText(f'Frequency saved: every {self.interval.value()} min')
+        self._msg.setText(
+            f'Frequency saved: every {hours}h · rolling backup '
+            '(latest + daily slots)'
+        )
         self.refresh()
 
     def _create_business(self):

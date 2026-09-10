@@ -15,7 +15,7 @@ def test_metadata_failure_keeps_uploaded_backup_retryable(tmp_path, monkeypatch)
     item = {
         'type': 'backup_meta',
         'local_enc_path': str(encrypted),
-        'storage_path': 'business/device/20260902_190000.mbtenc',
+        'storage_path': 'business/device/latest.mbtenc',
         'meta': {'business_id': 'business'},
     }
     queue_path.write_text(json.dumps({'items': [item]}), encoding='utf-8')
@@ -34,7 +34,7 @@ def test_metadata_failure_keeps_uploaded_backup_retryable(tmp_path, monkeypatch)
         def upload_file(self, *_args, **_kwargs):
             calls['uploads'] += 1
 
-        def insert_backup_meta(self, _meta):
+        def upsert_backup_meta(self, _meta):
             calls['metadata'] += 1
             raise RuntimeError('new row violates row-level security policy')
 
@@ -50,7 +50,7 @@ def test_metadata_failure_keeps_uploaded_backup_retryable(tmp_path, monkeypatch)
         def upload_file(self, *_args, **_kwargs):
             calls['uploads'] += 1
 
-        def insert_backup_meta(self, _meta):
+        def upsert_backup_meta(self, _meta):
             calls['metadata'] += 1
             return {'id': 'backup-id'}
 
@@ -69,7 +69,7 @@ def test_queue_rejects_cross_shop_identity(tmp_path, monkeypatch):
     queue_path.write_text(json.dumps({'items': [{
         'type': 'backup_meta',
         'local_enc_path': str(encrypted),
-        'storage_path': 'old-business/device/backup.mbtenc',
+        'storage_path': 'old-business/device/latest.mbtenc',
         'meta': {'business_id': 'old-business'},
     }]}), encoding='utf-8')
 

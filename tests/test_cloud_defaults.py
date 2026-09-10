@@ -14,7 +14,9 @@ def test_production_defaults_have_public_endpoints_only():
     assert cfg['anon_key'].startswith('eyJ')
     assert cfg.get('service_key') in ('', None)
     assert cfg.get('enabled') is True
-    assert 'uynfglgttkaibyeglsrt' in cfg['supabase_url']
+    assert 'mxfvbylmlynotvghnzqg' in cfg['supabase_url']
+    assert cfg['backup_interval_minutes'] == 1440
+    assert cfg['backup_keep_count'] == 7
 
 
 def test_shop_fresh_install_is_cloud_configured(tmp_path, monkeypatch):
