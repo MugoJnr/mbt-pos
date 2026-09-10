@@ -1,8 +1,8 @@
 {
-    "version": "3.0.89",
-    "build": "RC-2026-09-10-v3.0.89",
+    "version": "3.0.90",
+    "build": "RC-2026-09-10-v3.0.90",
     "released": "2026-09-10",
-    "release_notes": "MBT POS v3.0.89: Rolling cloud backups and new MugoByte Cloud endpoint. Existing retired-project configs migrate automatically, legacy sub-hour schedules move to 24 hours, backups overwrite latest.mbtenc plus keep seven daily slots, and old timestamp dumps are pruned. Includes v3.0.88 Remote Ops Phase 1 and preserves license/device identity during upgrade.",
-    "checksum_sha256": "79903aed2f956ab325fff42200978579a2e195ef45e6e2922dc91a6a9bfaec51",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.89/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.0.90: Offline stability and update recovery hardening. Payments and cloud synchronization no longer hold the UI or SQLite across network waits; update recovery supersedes stale packages with the actual latest version while preserving shop and license identity.",
+    "checksum_sha256": "fdb5a32b9f7bdefd9ad63e89e1aba5426d858b958b8921a594777210711c1986",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.90/MBT_POS_Setup.exe"
 }

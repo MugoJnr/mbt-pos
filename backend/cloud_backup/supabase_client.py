@@ -130,6 +130,7 @@ class SupabaseClient:
         metadata: dict | None = None,
         redirect_to: str = '',
     ) -> dict:
+        _require_network()
         payload: dict[str, Any] = {'email': email, 'password': password}
         if metadata:
             payload['data'] = metadata
@@ -501,6 +502,7 @@ class SupabaseClient:
             content_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
 
         def _do(use_service: bool = False):
+            _require_network()
             as_service = bool(use_service and self.service)
             token = self.service if as_service else self._user_token()
             key = self.service if as_service else self.anon
@@ -514,7 +516,9 @@ class SupabaseClient:
                 'x-upsert': 'true',
             }
             with open(file_path, 'rb') as f:
-                r = self._session.post(url, headers=headers, data=f, timeout=300)
+                r = self._session.post(
+                    url, headers=headers, data=f, timeout=UPLOAD_TIMEOUT,
+                )
             if r.status_code >= 400:
                 self._raise(r, 'Storage upload')
             return object_path
@@ -540,6 +544,7 @@ class SupabaseClient:
 
     def download_file(self, object_path: str, dest_path: str) -> int:
         def _do():
+            _require_network()
             token = self._user_token()
             url = self._url(
                 f'/storage/v1/object/{self.bucket}/{object_path}'
@@ -548,7 +553,9 @@ class SupabaseClient:
                 'apikey': self.anon,
                 'Authorization': f'Bearer {token}',
             }
-            r = self._session.get(url, headers=headers, timeout=300, stream=True)
+            r = self._session.get(
+                url, headers=headers, timeout=DOWNLOAD_TIMEOUT, stream=True,
+            )
             if r.status_code >= 400:
                 self._raise(r, 'Storage download')
             os.makedirs(os.path.dirname(dest_path) or '.', exist_ok=True)

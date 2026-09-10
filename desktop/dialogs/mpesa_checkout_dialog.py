@@ -3,13 +3,16 @@ M-Pesa checkout dialog — capability-aware STK + Till wait + manual reference.
 
 Checkout UI is independent of Daraja. PaymentService owns verification.
 Sale is NOT created here — caller creates sale once after VERIFIED.
+
+All payments-cloud HTTPS runs on a worker thread; the Qt GUI never blocks
+on DNS/TLS to payments.mugobyte.com.
 """
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Callable, Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTextEdit, QMessageBox, QFrame, QComboBox,
@@ -17,6 +20,23 @@ from PyQt5.QtWidgets import (
 
 from desktop.payments.models import PaymentChannel, PaymentRecord, PaymentStatus
 from desktop.payments.security import mask_phone, normalize_ke_phone
+
+
+class _PaymentNetWorker(QThread):
+    """Run one PaymentService network call off the Qt GUI thread."""
+
+    finished_ok = pyqtSignal(object)
+    finished_err = pyqtSignal(str)
+
+    def __init__(self, fn: Callable, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        try:
+            self.finished_ok.emit(self._fn())
+        except Exception as e:
+            self.finished_err.emit(str(e) or 'Payment network error')
 
 
 class MpesaCheckoutDialog(QDialog):
@@ -52,10 +72,13 @@ class MpesaCheckoutDialog(QDialog):
         self.account_reference = account_reference
         self.allow_underpay_as_part = bool(allow_underpay_as_part)
         self.payment: Optional[PaymentRecord] = None
-        self.caps = self.svc.get_capabilities()
+        # Never block dialog construction on payments cloud.
+        self.caps = self.svc.get_capabilities(local_only=True)
         self._poll = QTimer(self)
         self._poll.setInterval(2500)
         self._poll.timeout.connect(self._on_poll)
+        self._net_busy = False
+        self._worker: Optional[_PaymentNetWorker] = None
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -174,8 +197,82 @@ class MpesaCheckoutDialog(QDialog):
             self.btn_wait.setEnabled(False)
             self.btn_manual.setEnabled(False)
 
+        # Background refresh of capabilities (UI already painted from cache).
+        self._run_net(
+            lambda: self.svc.get_capabilities(force_refresh=True),
+            on_ok=self._on_caps_refreshed,
+            on_err=None,
+            busy_label='',
+        )
+
+    def _on_caps_refreshed(self, caps):
+        if not caps:
+            return
+        self.caps = caps
+        self.btn_stk.setVisible(bool(self.caps.can_send_prompt))
+        self.btn_wait.setVisible(
+            bool(
+                self.caps.can_detect_till
+                or self.caps.till_number
+                or self.caps.paybill_number
+            )
+        )
+
     def _set_status(self, text: str):
         self.status.setText(text)
+
+    def _set_busy(self, busy: bool, label: str = ''):
+        self._net_busy = busy
+        if busy and label:
+            self._set_status(label)
+        # Keep poll from stacking while a request is in flight.
+        if busy:
+            self._poll.stop()
+
+    def _run_net(
+        self,
+        fn: Callable,
+        *,
+        on_ok: Optional[Callable] = None,
+        on_err: Optional[Callable] = None,
+        busy_label: str = 'Contacting payments cloud…',
+        restart_poll: bool = False,
+    ):
+        if self._net_busy:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        self._set_busy(True, busy_label)
+
+        worker = _PaymentNetWorker(fn, self)
+        self._worker = worker
+
+        def _ok(result):
+            self._set_busy(False)
+            if on_ok:
+                on_ok(result)
+            if restart_poll and self.payment:
+                st = getattr(self.payment, 'status', '')
+                if st not in (
+                    PaymentStatus.VERIFIED.value,
+                    PaymentStatus.COMPLETED.value,
+                    PaymentStatus.FAILED.value,
+                    PaymentStatus.EXPIRED.value,
+                    PaymentStatus.CANCELLED.value,
+                ):
+                    self._poll.start()
+
+        def _err(msg: str):
+            self._set_busy(False)
+            if on_err:
+                on_err(msg)
+            elif msg:
+                QMessageBox.warning(self, 'M-Pesa', msg)
+
+        worker.finished_ok.connect(_ok)
+        worker.finished_err.connect(_err)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     def _refresh_from_payment(self):
         if not self.payment:
@@ -258,28 +355,45 @@ class MpesaCheckoutDialog(QDialog):
         if not normalize_ke_phone(phone):
             QMessageBox.warning(self, 'Phone', 'Enter a valid Kenyan mobile number.')
             return
-        try:
-            self.payment = self.svc.send_stk(self.payment.id, phone=phone)
+        payment_id = self.payment.id
+
+        def _work():
+            return self.svc.send_stk(payment_id, phone=phone)
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
-            self._poll.start()
-            # Explicit: accepted ≠ paid
             if self.payment.status == PaymentStatus.AWAITING_CUSTOMER.value:
                 self._set_status(
                     self.status.text()
                     + '\n\nSTK request accepted by network — waiting for customer. NOT paid yet.'
                 )
-        except Exception as e:
-            QMessageBox.warning(self, 'STK', str(e))
+
+        self._run_net(
+            _work,
+            on_ok=_ok,
+            busy_label='Sending STK prompt…',
+            restart_poll=True,
+        )
 
     def _wait_till(self):
         if not self._ensure_payment():
             return
-        try:
-            self.payment = self.svc.sync_incoming_and_match(self.payment.id)
+        payment_id = self.payment.id
+
+        def _work():
+            return self.svc.sync_incoming_and_match(payment_id)
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
-            self._poll.start()
-        except Exception as e:
-            QMessageBox.warning(self, 'Till match', str(e))
+
+        self._run_net(
+            _work,
+            on_ok=_ok,
+            busy_label='Checking Till / Paybill…',
+            restart_poll=True,
+        )
 
     def _manual(self):
         if not self._ensure_payment():
@@ -288,61 +402,74 @@ class MpesaCheckoutDialog(QDialog):
         if len(ref) < 6:
             QMessageBox.warning(self, 'Reference', 'Enter the full M-Pesa receipt number.')
             return
-        try:
-            # Offline/manual: force verify after cashier confirmation
-            reply = QMessageBox.question(
-                self, 'Confirm manual M-Pesa',
-                f'Confirm M-Pesa receipt {ref.upper()} for '
-                f'{self.currency} {self.amount:,.2f}?\n\n'
-                'Use the receipt/code from the customer SMS only.\n'
-                'This confirmation is audited.',
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
-            self.payment = self.svc.register_manual_reference(
-                self.payment.id,
+        reply = QMessageBox.question(
+            self, 'Confirm manual M-Pesa',
+            f'Confirm M-Pesa receipt {ref.upper()} for '
+            f'{self.currency} {self.amount:,.2f}?\n\n'
+            'Use the receipt/code from the customer SMS only.\n'
+            'This confirmation is audited.',
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        payment_id = self.payment.id
+        amount = self.amount
+        cashier = self.cashier_name or 'cashier'
+
+        def _work():
+            return self.svc.register_manual_reference(
+                payment_id,
                 ref,
-                amount=self.amount,
-                confirmed_by=self.cashier_name or 'cashier',
+                amount=amount,
+                confirmed_by=cashier,
                 notes='manual_pos_fallback',
                 force_verify=True,
             )
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
-        except Exception as e:
-            QMessageBox.warning(self, 'Manual', str(e))
+
+        self._run_net(_work, on_ok=_ok, busy_label='Recording manual reference…')
 
     def _query(self):
         if not self._ensure_payment():
             return
-        try:
-            # Query — never double-STK
-            if self.payment.checkout_request_id:
-                self.payment = self.svc.query_payment(self.payment.id)
-            else:
-                self.payment = self.svc.sync_incoming_and_match(self.payment.id)
+        payment_id = self.payment.id
+        has_checkout = bool(self.payment.checkout_request_id)
+
+        def _work():
+            if has_checkout:
+                return self.svc.query_payment(payment_id)
+            return self.svc.sync_incoming_and_match(payment_id)
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
-        except Exception as e:
-            QMessageBox.warning(self, 'Query', str(e))
+
+        self._run_net(_work, on_ok=_ok, busy_label='Querying payment status…')
 
     def _confirm_match(self):
         if not self._ensure_payment():
             return
         ref = self.match_pick.currentData() or ''
         if not ref:
-            # parse from text
             text = self.match_pick.currentText()
             ref = text.split('·')[0].strip() if text else ''
         if not ref:
             QMessageBox.warning(self, 'Confirm', 'Select a match candidate.')
             return
-        try:
-            self.payment = self.svc.confirm_match(
-                self.payment.id, ref, confirmed_by=self.cashier_name or 'cashier'
-            )
+        payment_id = self.payment.id
+        cashier = self.cashier_name or 'cashier'
+
+        def _work():
+            return self.svc.confirm_match(payment_id, ref, confirmed_by=cashier)
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
-        except Exception as e:
-            QMessageBox.warning(self, 'Confirm', str(e))
+
+        self._run_net(_work, on_ok=_ok, busy_label='Confirming match…')
 
     def _accept_underpay(self):
         if not self._ensure_payment():
@@ -371,14 +498,18 @@ class MpesaCheckoutDialog(QDialog):
             QMessageBox.warning(self, 'Underpay', str(e))
 
     def _on_poll(self):
-        if not self.payment:
-            self._poll.stop()
+        if not self.payment or self._net_busy:
             return
-        try:
-            if self.payment.checkout_request_id:
-                self.payment = self.svc.query_payment(self.payment.id)
-            else:
-                self.payment = self.svc.sync_incoming_and_match(self.payment.id)
+        payment_id = self.payment.id
+        has_checkout = bool(self.payment.checkout_request_id)
+
+        def _work():
+            if has_checkout:
+                return self.svc.query_payment(payment_id)
+            return self.svc.sync_incoming_and_match(payment_id)
+
+        def _ok(payment):
+            self.payment = payment
             self._refresh_from_payment()
             if self.payment.status in (
                 PaymentStatus.VERIFIED.value,
@@ -388,8 +519,20 @@ class MpesaCheckoutDialog(QDialog):
                 PaymentStatus.CANCELLED.value,
             ):
                 self._poll.stop()
-        except Exception:
-            pass
+            elif not self._net_busy:
+                self._poll.start()
+
+        def _err(_msg: str):
+            if not self._net_busy and self.payment:
+                self._poll.start()
+
+        self._run_net(
+            _work,
+            on_ok=_ok,
+            on_err=_err,
+            busy_label='',
+            restart_poll=False,
+        )
 
     def _finish(self):
         if not self.payment:

@@ -136,6 +136,7 @@ class NotificationEngine:
         if not self._is_enabled(event_type, 'dashboard'):
             return None
         sev = severity or SEVERITY_MAP.get(event_type, 'info')
+        nid = None
         with self._lock:
             db = self._db()
             try:
@@ -157,10 +158,12 @@ class NotificationEngine:
                 db.commit()
                 nid = cur.lastrowid
                 logger.info('Notification [%s] %s: %s', event_type, title, body[:80])
-                self._sync_to_cloud(event_type, title, body, sev, meta)
-                return nid
             finally:
                 db.close()
+        # Cloud I/O must never occur while the notification mutex or SQLite
+        # connection is held. Callers already run this path on sync workers.
+        self._sync_to_cloud(event_type, title, body, sev, meta)
+        return nid
 
     def publish_sale(self, shop: str, payload: dict) -> int | None:
         total = payload.get('total', 0)

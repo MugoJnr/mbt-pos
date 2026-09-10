@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.89"
+EXPECTED_VERSION = "3.0.90"
 desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
@@ -428,7 +428,7 @@ def customer_journey_isolated() -> None:
     try:
         from desktop.utils.api_client import APIClient
 
-        from _qa_local_auth import qa_login
+        from scripts._qa_local_auth import qa_login
 
         api = APIClient("http://127.0.0.1:5050")
         # Ensure schema

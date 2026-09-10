@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from typing import Any, Callable, Optional
 
 from desktop.payments.models import (
@@ -71,27 +69,33 @@ class PaymentsCloudClient:
         except Exception:
             pass
         url = f'{self.base_url}{path}'
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode('utf-8')
-        req = urllib.request.Request(url, data=data, headers=self._headers(), method=method)
+        timeout = (CONNECT_TIMEOUT, READ_TIMEOUT)
         try:
-            with urllib.request.urlopen(req, timeout=READ_TIMEOUT) as resp:
-                raw = resp.read().decode('utf-8') or '{}'
-                return json.loads(raw)
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = e.read().decode('utf-8')
-                parsed = json.loads(err_body) if err_body else {}
-            except Exception:
-                parsed = {'error': str(e)}
-            logger.warning(
-                'payments cloud HTTP %s %s → %s %s',
-                method, path, e.code, redact_for_log(parsed),
+            import requests
+            resp = requests.request(
+                method.upper(),
+                url,
+                headers=self._headers(),
+                json=body if body is not None else None,
+                timeout=timeout,
             )
-            parsed.setdefault('ok', False)
-            parsed.setdefault('error_code', f'HTTP_{e.code}')
-            parsed.setdefault('error_message', parsed.get('error') or e.reason)
+            try:
+                parsed = resp.json() if resp.content else {}
+            except Exception:
+                parsed = {'error': resp.text[:200] if resp.text else str(resp.status_code)}
+            if not isinstance(parsed, dict):
+                parsed = {'ok': False, 'error_message': 'Invalid payments response'}
+            if resp.status_code >= 400:
+                logger.warning(
+                    'payments cloud HTTP %s %s → %s %s',
+                    method, path, resp.status_code, redact_for_log(parsed),
+                )
+                parsed.setdefault('ok', False)
+                parsed.setdefault('error_code', f'HTTP_{resp.status_code}')
+                parsed.setdefault(
+                    'error_message',
+                    parsed.get('error') or parsed.get('error_message') or resp.reason,
+                )
             return parsed
         except Exception as e:
             logger.warning('payments cloud error %s %s: %s', method, path, e)

@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-10-v3.0.89"
-APP_VERSION   = "3.0.89"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-10-v3.0.90"
+APP_VERSION   = "3.0.90"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -173,6 +173,7 @@ def _qa_output_dir(name: str) -> str:
 class AppSignals(QObject):
     connection_changed = pyqtSignal(bool)
     sync_status        = pyqtSignal(str)
+    manual_refresh_complete = pyqtSignal(bool)
     update_available   = pyqtSignal(str, str)   # version, notes
     update_ready       = pyqtSignal(str, str)   # installer_path, version
     force_update       = pyqtSignal(str, str)   # version, reason
@@ -702,6 +703,7 @@ class MainWindow(QMainWindow):
         self.user_data = user_data
         self.api       = api
         self.signals   = AppSignals()
+        self.signals.manual_refresh_complete.connect(self._finish_manual_refresh)
         self._svc_net  = None
         self._svc_lic  = None
         self._svc_diag = None
@@ -1568,6 +1570,15 @@ class MainWindow(QMainWindow):
             search_roots.append(os.path.join(PROJECT_ROOT, 'updates'))
         except Exception:
             pass
+        try:
+            search_roots.append(
+                os.path.join(
+                    os.environ.get('LOCALAPPDATA', ''),
+                    'MugoByte', 'MBT POS', 'updates',
+                )
+            )
+        except Exception:
+            pass
 
         pending = getattr(self, '_pending_installer_path', None)
         if pending and os.path.isfile(pending):
@@ -1582,7 +1593,8 @@ class MainWindow(QMainWindow):
                         pass
             except Exception:
                 pass
-            return
+            # Continue scanning: a newer installer may supersede this pending
+            # package after an interrupted/failed older update.
 
         best = None
         best_ver = ''
@@ -1606,7 +1618,11 @@ class MainWindow(QMainWindow):
                             best, best_ver = path, ver
                 except Exception:
                     pass
-        if best:
+        if best and (
+            not pending
+            or not os.path.isfile(pending)
+            or _version_gt(best_ver, getattr(self, '_pending_update_version', '') or '0')
+        ):
             # Discard known-bad onefile installers (v2.3.5 broke silent updates)
             if best_ver in BLOCKED_VERSIONS or os.path.getsize(best) > 60_000_000:
                 try:
@@ -2999,14 +3015,24 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(80, self._do_refresh)
 
     def _do_refresh(self):
-        ok = False
-        if self._svc_net:
-            ok = self._svc_net.force_sync()
-        else:
-            import socket
-            try:
-                s = socket.create_connection(("8.8.8.8", 53), timeout=3); s.close(); ok = True
-            except Exception: pass
+        def _work():
+            ok = False
+            if self._svc_net:
+                ok = self._svc_net.force_sync()
+            else:
+                import socket
+                try:
+                    s = socket.create_connection(("8.8.8.8", 53), timeout=1)
+                    s.close()
+                    ok = True
+                except Exception:
+                    pass
+            self.signals.manual_refresh_complete.emit(ok)
+        threading.Thread(
+            target=_work, daemon=True, name='ManualConnectivityRefresh',
+        ).start()
+
+    def _finish_manual_refresh(self, ok):
         self._on_conn(ok)
         cur = self._stack.currentWidget()
         if cur and hasattr(cur, 'refresh'):
@@ -3037,55 +3063,56 @@ class MainWindow(QMainWindow):
         _start_web_dashboard()
 
         local_url = BACKEND_URL
-        local_ok = False
-        # Poll health up to ~10s while keeping the UI responsive
-        deadline = time.time() + 10.0
-        while time.time() < deadline:
+        attempts = {'count': 0}
+
+        def _finish(local_ok=False):
+            timer.stop()
+            remote_url = ''
             try:
-                with urllib.request.urlopen(f'{local_url}/api/health', timeout=1.5) as r:
-                    if getattr(r, 'status', 200) == 200:
-                        local_ok = True
-                        break
+                from backend.cloudflare_setup import load_web_config
+                wcfg = load_web_config() or {}
+                domain = (wcfg.get('tunnel_domain') or '').strip()
+                if domain:
+                    remote_url = f'https://{domain}'
             except Exception:
                 pass
+            if local_ok:
+                webbrowser.open(local_url)
+                log.info('Opened web dashboard: %s', local_url)
+            elif remote_url:
+                webbrowser.open(remote_url)
+                log.info('Opened remote web dashboard (local down): %s', remote_url)
+            else:
+                log.warning('Web dashboard unavailable (local + remote)')
+                QMessageBox.warning(
+                    self,
+                    'Live Dashboard',
+                    'Could not open the web dashboard.\n\n'
+                    f'Local URL ({local_url}) is not responding yet.\n\n'
+                    'Try again in a few seconds. If it still fails:\n'
+                    '• Allow MBT POS through Windows Firewall (port 5050)\n'
+                    '• Wait for Cloudflare remote setup in Settings.',
+                )
+
+        def _probe():
+            attempts['count'] += 1
             try:
-                QApplication.processEvents()
+                with urllib.request.urlopen(
+                    f'{local_url}/api/health', timeout=0.2,
+                ) as response:
+                    if getattr(response, 'status', 200) == 200:
+                        _finish(True)
+                        return
             except Exception:
                 pass
-            time.sleep(0.35)
+            if attempts['count'] >= 25:
+                _finish(False)
 
-        remote_url = ''
-        try:
-            from backend.cloudflare_setup import load_web_config
-            wcfg = load_web_config() or {}
-            domain = (wcfg.get('tunnel_domain') or '').strip()
-            # Open remote if domain known (even when last config write failed)
-            if domain:
-                remote_url = f'https://{domain}'
-        except Exception:
-            pass
-
-        if local_ok:
-            webbrowser.open(local_url)
-            log.info('Opened web dashboard: %s', local_url)
-            return
-        if remote_url:
-            webbrowser.open(remote_url)
-            log.info('Opened remote web dashboard (local down): %s', remote_url)
-            return
-
-        log.warning('Web dashboard unavailable (local + remote)')
-        QMessageBox.warning(
-            self,
-            'Live Dashboard',
-            'Could not open the web dashboard.\n\n'
-            f'Local URL ({local_url}) is not responding yet.\n\n'
-            'Try again in a few seconds. If it still fails:\n'
-            '? Allow MBT POS through Windows Firewall (port 5050)\n'
-            '? Wait for Cloudflare remote setup in Settings, then use your\n'
-            '  shop URL (https://yourshop.mugobyte.com)\n'
-            '? Desktop POS sales still work without the web dashboard',
-        )
+        timer = QTimer(self)
+        timer.setInterval(350)
+        timer.timeout.connect(_probe)
+        timer.start()
+        _probe()
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
     def _perform_logout(self, *, confirm: bool = True):

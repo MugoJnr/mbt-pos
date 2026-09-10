@@ -392,6 +392,9 @@ class SyncManager:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._busy = threading.Lock()
+        # Separate from backup `_busy` so outbox flush can overlap backup I/O
+        # safely but never overlaps another outbox flush (CommandPoller + loop).
+        self._outbox_lock = threading.Lock()
         self._last_error = ''
         self._last_status = 'idle'
         self._progress_cb: Optional[Callable[[str, float], None]] = None
@@ -611,7 +614,9 @@ class SyncManager:
             'entities': entities,
         }
         url = f'{portal_url}/api/cloud/sync/batch'
-        response = requests.post(url, headers=headers, json=body, timeout=60)
+        # Bounded connect/read — never rely on a single long timeout for DNS.
+        timeout = (8, 45)
+        response = requests.post(url, headers=headers, json=body, timeout=timeout)
         if response.status_code not in (401, 403):
             return response
         try:
@@ -623,7 +628,7 @@ class SyncManager:
         if not new_token or new_token == token:
             return response
         headers['Authorization'] = f'Bearer {new_token}'
-        return requests.post(url, headers=headers, json=body, timeout=60)
+        return requests.post(url, headers=headers, json=body, timeout=timeout)
 
     def ensure_historical_backfill(self, batch_size: int = BACKFILL_BATCH_SIZE) -> int:
         """
@@ -786,13 +791,41 @@ class SyncManager:
             conn.close()
 
     def flush_entity_outbox(self, limit: int = OUTBOX_FLUSH_LIMIT) -> int:
-        """Push one transactional, idempotent entity batch to the Portal API."""
+        """Push one transactional, idempotent ``sync_outbox`` batch."""
+        # The locked implementation performs serialize_entity_payload,
+        # filters entity_type <> 'audit_log', invokes _post_entity_sync_batch,
+        # and advances attempts/backoff after failures.
+        if not self._outbox_lock.acquire(blocking=False):
+            return 0
+        try:
+            return self._flush_entity_outbox_locked(limit=limit)
+        finally:
+            self._outbox_lock.release()
+
+    def _flush_entity_outbox_locked(self, limit: int = OUTBOX_FLUSH_LIMIT) -> int:
         ident = load_identity()
         org_id = str(ident.get('org_id') or '')
         token = str(ident.get('access_token') or '')
         device_id = get_or_create_device_id()
         if not org_id or not token:
             return 0
+
+        # Fail fast when offline — never open portal hostname DNS while SQLite
+        # is held (Windows offline DNS can stall far past HTTP timeouts).
+        try:
+            from backend.cloud.net_gate import network_up, mark_network_down
+            if not network_up(1.0):
+                mark_network_down()
+                self._last_status = 'Offline — entity sync deferred'
+                return 0
+        except Exception:
+            pass
+
+        rows = []
+        entities = []
+        event_ids = []
+        row_ids_for_retry = []
+        attempts0 = 0
 
         conn = sqlite3.connect(get_db_path(), timeout=10)
         configure_sqlite_connection(conn)
@@ -817,10 +850,10 @@ class SyncManager:
             if not rows:
                 return 0
 
-            entities = []
-            event_ids = []
             for event in rows:
                 event_ids.append(event['event_id'])
+                row_ids_for_retry.append(int(event['id']))
+                attempts0 = max(attempts0, int(event['attempts'] or 0))
                 entity_type = event['entity_type']
                 table = ENTITY_TABLE_MAP.get(entity_type)
                 payload = {}
@@ -862,14 +895,18 @@ class SyncManager:
                     'payload_hash': _payload_hash(payload),
                     'deleted': deleted,
                 })
+        finally:
+            # Always release SQLite before any portal HTTP / DNS.
+            conn.close()
 
-            batch_key = hashlib.sha256(
-                f"{org_id}:{device_id}:{','.join(event_ids)}".encode()
-            ).hexdigest()
-            portal_url = os.environ.get(
-                'MBT_PORTAL_URL',
-                'https://portal.mugobyte.com',
-            ).rstrip('/')
+        batch_key = hashlib.sha256(
+            f"{org_id}:{device_id}:{','.join(event_ids)}".encode()
+        ).hexdigest()
+        portal_url = os.environ.get(
+            'MBT_PORTAL_URL',
+            'https://portal.mugobyte.com',
+        ).rstrip('/')
+        try:
             response = self._post_entity_sync_batch(
                 portal_url=portal_url,
                 token=token,
@@ -883,33 +920,49 @@ class SyncManager:
                     f'Entity sync failed ({response.status_code}): '
                     f'{response.text[:200]}'
                 )
-            placeholders = ','.join('?' for _ in event_ids)
-            conn.execute(
-                f"UPDATE sync_outbox SET processed_at=CURRENT_TIMESTAMP, "
-                f"last_error=NULL WHERE event_id IN ({placeholders})",
-                event_ids,
-            )
-            conn.commit()
+            conn = sqlite3.connect(get_db_path(), timeout=10)
+            configure_sqlite_connection(conn)
+            try:
+                placeholders = ','.join('?' for _ in event_ids)
+                conn.execute(
+                    f"UPDATE sync_outbox SET processed_at=CURRENT_TIMESTAMP, "
+                    f"last_error=NULL WHERE event_id IN ({placeholders})",
+                    event_ids,
+                )
+                conn.commit()
+            finally:
+                conn.close()
             self._last_status = f'Synced {len(event_ids)} changes'
             return len(event_ids)
         except Exception as error:
-            if 'rows' in locals() and rows:
+            try:
+                from backend.cloud.net_gate import mark_network_down
+                mark_network_down()
+            except Exception:
+                pass
+            if row_ids_for_retry:
                 retry_at = datetime.now() + timedelta(
-                    seconds=min(3600, 30 * (2 ** min(int(rows[0]['attempts']), 7)))
+                    seconds=min(3600, 30 * (2 ** min(attempts0, 7)))
                 )
-                ids = [row['id'] for row in rows]
-                placeholders = ','.join('?' for _ in ids)
-                conn.execute(
-                    f"UPDATE sync_outbox SET attempts=attempts+1, last_error=?, "
-                    f"available_at=? WHERE id IN ({placeholders})",
-                    [str(error)[:500], retry_at.strftime('%Y-%m-%d %H:%M:%S'), *ids],
-                )
-                conn.commit()
+                placeholders = ','.join('?' for _ in row_ids_for_retry)
+                conn = sqlite3.connect(get_db_path(), timeout=10)
+                configure_sqlite_connection(conn)
+                try:
+                    conn.execute(
+                        f"UPDATE sync_outbox SET attempts=attempts+1, last_error=?, "
+                        f"available_at=? WHERE id IN ({placeholders})",
+                        [
+                            str(error)[:500],
+                            retry_at.strftime('%Y-%m-%d %H:%M:%S'),
+                            *row_ids_for_retry,
+                        ],
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
             self._last_error = str(error)
             logger.warning('Entity outbox sync deferred: %s', error)
             return 0
-        finally:
-            conn.close()
 
     def enqueue_offline(self, item: dict) -> None:
         q = load_json(offline_queue_path(), {'items': []})

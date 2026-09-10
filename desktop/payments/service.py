@@ -65,9 +65,29 @@ class PaymentService:
         self._complete_lock = threading.Lock()
 
     # ── capabilities ──────────────────────────────────────────────
-    def get_capabilities(self, *, force_refresh: bool = False) -> MerchantCapabilities:
+    def get_capabilities(
+        self,
+        *,
+        force_refresh: bool = False,
+        local_only: bool = False,
+    ) -> MerchantCapabilities:
         shop_id = self.shop_id_getter() or 'local'
         cached = self.repo.load_merchant_cache(shop_id)
+        if local_only:
+            if cached:
+                return cached
+            cfg = self.settings_getter() or {}
+            return MerchantCapabilities(
+                shop_id=shop_id,
+                stk_enabled=False,
+                c2b_enabled=False,
+                till_number=str(cfg.get('mpesa_till') or ''),
+                paybill_number=str(cfg.get('mpesa_paybill') or ''),
+                business_name=str(
+                    cfg.get('mpesa_business_name') or cfg.get('shop_name') or ''
+                ),
+                environment=str(cfg.get('payments_environment') or 'sandbox'),
+            )
         if cached and not force_refresh and (time.time() - cached.synced_at) < 300:
             return cached
         try:
@@ -117,7 +137,7 @@ class PaymentService:
             return existing  # idempotent create
 
         phone_e164 = normalize_ke_phone(phone) if phone else ''
-        caps = self.get_capabilities()
+        caps = self.get_capabilities(local_only=True)
         payment = PaymentRecord(
             id=new_payment_id(),
             shop_id=self.shop_id_getter() or 'local',

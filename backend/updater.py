@@ -106,6 +106,14 @@ def _version_lt(a: str, b: str) -> bool:
     return _parse_version(a) < _parse_version(b)
 
 
+def installer_version_from_path(path: str) -> str:
+    """Extract semantic version from MBT_POS_Setup_vX.Y.Z.exe basename."""
+    if not path:
+        return ''
+    m = re.search(r'_v([\d.]+)\.exe$', os.path.basename(path), re.I)
+    return m.group(1) if m else ''
+
+
 UPDATE_LOG = os.path.join(tempfile.gettempdir(), 'mbt_update.log')
 
 _MUTEX_HANDLE = None
@@ -974,6 +982,8 @@ class UpdateChecker:
         self._download_warned_version = ''
         self._has_updater_lock = False
         self._install_lock = threading.Lock()
+        self._check_lock = threading.Lock()
+        self._supersede_download = None
 
         # Callbacks — set by caller (MainWindow)
         self.on_update_available = None   # (version, notes, url)
@@ -1126,6 +1136,9 @@ class UpdateChecker:
 
     def _check(self) -> bool:
         """Return True when GitHub was reached (even if already up to date)."""
+        if not self._check_lock.acquire(blocking=False):
+            logger.debug('Update check already in progress')
+            return True
         try:
             if not self._is_online():
                 logger.info(
@@ -1187,6 +1200,8 @@ class UpdateChecker:
                 except Exception:
                     pass
             return False
+        finally:
+            self._check_lock.release()
 
     def _fetch_release_info(self) -> dict:
         """
@@ -1329,7 +1344,8 @@ class UpdateChecker:
         def _retry():
             if self._stop.wait(DOWNLOAD_RETRY_INTERVAL):
                 return
-            if self._installer_path and os.path.isfile(self._installer_path):
+            cached_version = installer_version_from_path(self._installer_path or '')
+            if cached_version == version and os.path.isfile(self._installer_path or ''):
                 if os.path.getsize(self._installer_path) >= MIN_INSTALLER_BYTES:
                     return
             if not self._is_online():
@@ -1458,9 +1474,31 @@ class UpdateChecker:
     def _start_download(self, url: str, version: str):
         """Start background download of the installer."""
         if self._dl_thread and self._dl_thread.is_alive():
-            return   # already downloading
+            pending = self._pending_version or ''
+            if not pending or _version_gt(version, pending):
+                # Do not run two download workers. The current worker is allowed
+                # to finish its bounded request, but its result is never offered;
+                # the newest release starts immediately afterward.
+                self._supersede_download = (
+                    url, version, self._pending_checksum, self._pending_notes,
+                )
+                self._pending_version = version
+                self._pending_asset_url = url
+                logger.info('Queued updater supersede v%s -> v%s', pending, version)
+            return
         if self._installer_path and os.path.exists(self._installer_path):
-            if _version_ge(self.current_version, version):
+            requested_checksum = self._pending_checksum
+            cached_version = installer_version_from_path(self._installer_path)
+            if cached_version != version:
+                logger.info(
+                    'Discarding cached installer v%s; latest is v%s',
+                    cached_version or '?', version,
+                )
+                self.clear_cache()
+                self._pending_version = version
+                self._pending_asset_url = url
+                self._pending_checksum = requested_checksum
+            elif _version_ge(self.current_version, version):
                 logger.info('Cached installer is for current or older version — clearing')
                 self.clear_cache()
             else:
@@ -1480,12 +1518,26 @@ class UpdateChecker:
 
         self._pending_version = version
         self._pending_asset_url = url
+        checksum = self._pending_checksum
         self._dl_thread = threading.Thread(
-            target=self._download, args=(url, version),
+            target=self._download_worker, args=(url, version, checksum),
             daemon=True, name='UpdateDownload')
         self._dl_thread.start()
 
-    def _download(self, url: str, version: str):
+    def _download_worker(self, url: str, version: str, checksum: str):
+        try:
+            self._download(url, version, checksum)
+        finally:
+            supersede = self._supersede_download
+            self._supersede_download = None
+            self._dl_thread = None
+            if supersede and not self._stop.is_set():
+                next_url, next_version, next_checksum, next_notes = supersede
+                self._pending_checksum = next_checksum
+                self._pending_notes = next_notes
+                self._start_download(next_url, next_version)
+
+    def _download(self, url: str, version: str, checksum: str = ''):
         """
         Download installer to TEMP folder silently (resumable + retries).
         Shows no UI. Signals on_download_ready when complete and verified.
@@ -1506,8 +1558,8 @@ class UpdateChecker:
                     pass
                 return
             if self._download_complete_enough(size):
-                if self._pending_checksum:
-                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                if checksum:
+                    ok, detail = verify_installer_checksum(dest, checksum)
                     if not ok:
                         logger.warning(
                             f'Cached installer checksum failed ({detail}) — re-download')
@@ -1516,6 +1568,9 @@ class UpdateChecker:
                         except Exception:
                             pass
                     else:
+                        if self._supersede_download or self._pending_version != version:
+                            logger.info('Ignoring cached stale installer v%s', version)
+                            return
                         logger.info(f"Installer already cached+verified: {dest}")
                         _unblock_windows_file(dest)
                         self._installer_path = dest
@@ -1523,12 +1578,7 @@ class UpdateChecker:
                             self.on_download_ready(dest, version)
                         return
                 else:
-                    logger.info(f"Installer already cached: {dest}")
-                    _unblock_windows_file(dest)
-                    self._installer_path = dest
-                    if self.on_download_ready:
-                        self.on_download_ready(dest, version)
-                    return
+                    logger.warning('Cached installer v%s has no checksum; refreshing', version)
             if size >= MIN_INSTALLER_BYTES:
                 logger.info(
                     f"Partial update download found ({size/1024/1024:.1f} MB) — resuming")
@@ -1542,8 +1592,8 @@ class UpdateChecker:
                 _ensure_ssl_certs()
                 headers = {'User-Agent': f'MBT-POS/{self.current_version}'}
                 # Refresh checksum from sidecar if still missing
-                if not self._pending_checksum:
-                    self._pending_checksum = fetch_sidecar_checksum(url, headers)
+                if not checksum:
+                    checksum = fetch_sidecar_checksum(url, headers)
 
                 self._http_download_file(url, dest, headers)
 
@@ -1556,8 +1606,8 @@ class UpdateChecker:
                     time.sleep(min(attempt * 3, 15))
                     continue
 
-                if self._pending_checksum:
-                    ok, detail = verify_installer_checksum(dest, self._pending_checksum)
+                if checksum:
+                    ok, detail = verify_installer_checksum(dest, checksum)
                     if not ok:
                         logger.error(f'Checksum verification failed: {detail}')
                         try:
@@ -1574,6 +1624,10 @@ class UpdateChecker:
                         self._schedule_download_retry(url, version)
                         return
 
+                if self._supersede_download or self._pending_version != version:
+                    logger.info('Discarding completed stale download v%s', version)
+                    return
+                self._pending_checksum = checksum
                 logger.info(f"Update downloaded: {dest} ({size/1024/1024:.1f} MB)")
                 self._download_warned_version = ''
                 _unblock_windows_file(dest)
