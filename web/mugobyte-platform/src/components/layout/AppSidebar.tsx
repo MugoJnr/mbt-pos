@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
   LayoutDashboard,
@@ -40,6 +41,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/lib/auth";
 import { BrandLogo } from "@/components/brand/BrandLogo";
+import { canManageOrganization, fetchOrganizations } from "@/lib/platform";
 
 type NavItem = {
   title: string;
@@ -113,11 +115,26 @@ export function AppSidebar({ variant = "customer" }: { variant?: "customer" | "a
   const collapsed = state === "collapsed";
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const hash = useRouterState({ select: (r) => r.location.hash.replace(/^#/, "") });
-  const { user } = useAuth();
+  const { user, orgId } = useAuth();
+  const organizationsQ = useQuery({
+    queryKey: ["platform-orgs"],
+    queryFn: fetchOrganizations,
+    enabled: variant === "customer",
+  });
+  const activeOrganization = (organizationsQ.data || []).find(
+    (organization) => organization.id === orgId,
+  );
+  const canOperateRemotely = canManageOrganization(activeOrganization, user?.role);
   const showAdmin = variant === "admin" || isPlatformAdmin(user?.role);
 
-  const groups =
+  const baseGroups =
     variant === "admin" ? adminNav : showAdmin ? [...workspaceNav, ...adminNav] : workspaceNav;
+  const groups = baseGroups.map((group) => ({
+    ...group,
+    items: group.items.filter(
+      (item) => item.url !== "/remote-control" || canOperateRemotely,
+    ),
+  }));
 
   const isActive = (item: NavItem, group: NavGroup) => {
     if (group.markActive === false) return false;

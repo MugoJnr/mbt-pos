@@ -28,6 +28,7 @@ import {
   type RemoteCommandRow,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { canManageOrganization, fetchOrganizations } from "@/lib/platform";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_app/remote-control")({
@@ -46,9 +47,14 @@ function statusVariant(status?: string) {
 function RemoteControlPage() {
   const { orgId, user } = useAuth();
   const qc = useQueryClient();
-  const role = String(user?.role || "").toLowerCase();
-  const canOperate = ["owner", "admin", "superadmin", "platform_admin"].includes(role)
-    || Boolean(orgId);
+  const organizationsQ = useQuery({
+    queryKey: ["platform-orgs"],
+    queryFn: fetchOrganizations,
+  });
+  const activeOrganization = (organizationsQ.data || []).find(
+    (organization) => organization.id === orgId,
+  );
+  const canOperate = canManageOrganization(activeOrganization, user?.role);
 
   const [deviceFilter, setDeviceFilter] = useState<string>("");
   const [productId, setProductId] = useState("");
@@ -187,7 +193,13 @@ function RemoteControlPage() {
         </CardContent>
       </Card>
 
-      {!canOperate ? (
+      {organizationsQ.isLoading ? (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            Verifying organization permissions…
+          </CardContent>
+        </Card>
+      ) : !canOperate ? (
         <Card>
           <CardContent className="flex gap-3 p-6 text-sm text-destructive">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

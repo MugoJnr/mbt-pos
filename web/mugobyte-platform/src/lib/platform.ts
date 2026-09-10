@@ -304,7 +304,26 @@ export function groupAppsBySection(apps: PlatformApp[]): AppSectionGroup[] {
 export async function fetchOrganizations(): Promise<Organization[]> {
   const res = await GET<{ organizations?: Organization[] }>("/platform/organizations");
   if (res?.organizations?.length) return res.organizations;
-  return [{ id: "default", name: "My Business", slug: "default", role: "owner", is_primary: true }];
+  // Authorization must fail closed. A synthetic owner organization made the
+  // remote-control UI appear writable when membership loading failed.
+  return [];
+}
+
+const ORGANIZATION_ADMIN_ROLES = new Set([
+  "owner",
+  "superadmin",
+  "admin",
+  "manager",
+]);
+
+export function canManageOrganization(
+  organization: Pick<Organization, "role"> | null | undefined,
+  platformRole?: string,
+): boolean {
+  if (String(platformRole || "").toLowerCase() === "platform_admin") return true;
+  return ORGANIZATION_ADMIN_ROLES.has(
+    String(organization?.role || "").toLowerCase(),
+  );
 }
 
 export async function fetchApplications(orgId?: string): Promise<PlatformApp[]> {
