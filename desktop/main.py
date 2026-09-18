@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-18-v3.1.4"
-APP_VERSION   = "3.1.4"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-18-v3.1.5"
+APP_VERSION   = "3.1.5"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -3473,9 +3473,25 @@ def _read_boot_theme_is_light():
 def main():
     # Single instance ? prevent duplicate POS during update restart
     try:
-        from backend.updater import acquire_single_instance
-        if not acquire_single_instance():
+        import time as _time
+        from backend.updater import (
+            acquire_single_instance, surface_existing_instance,
+            warn_stuck_instance, read_launch_state, record_launch_stage,
+            resolve_second_launch,
+        )
+        if acquire_single_instance():
+            record_launch_stage('starting')
+        else:
+            outcome = resolve_second_launch(
+                focus_result=surface_existing_instance(),
+                launch_state=read_launch_state(),
+                now_ts=_time.time(),
+            )
+            if outcome == 'warn':
+                warn_stuck_instance()
             sys.exit(0)
+    except SystemExit:
+        raise
     except Exception:
         pass
 
@@ -3563,6 +3579,13 @@ def main():
     splash = SplashScreen()
     splash.show()
     splash.set_status("Starting MBT POS...", 5)
+    # A window now exists, so a duplicate launch can raise it instead of
+    # waiting out the startup grace period.
+    try:
+        from backend.updater import record_launch_stage
+        record_launch_stage('ready')
+    except Exception:
+        pass
 
     splash.set_status("Initialising database...", 30)
     # Init DB directly ? no HTTP server needed

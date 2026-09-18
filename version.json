@@ -1,8 +1,8 @@
 {
-    "version": "3.1.4",
-    "build": "RC-2026-09-18-v3.1.4",
+    "version": "3.1.5",
+    "build": "RC-2026-09-18-v3.1.5",
     "released": "2026-09-18",
-    "release_notes": "MBT POS v3.1.4 fully integrates Internal Consumption on desktop and the web dashboard. Select many products from a large searchable list, record them as one atomic department issue, and click any history record to see every product and quantity. Price snapshots preserve buying cost, weighted average buying cost, retail opportunity value and foregone gross profit. Managers and Admins can add, rename, archive and restore departments without losing history; Admin can void with PIN to restore stock and reverse accounting. Errors are shop-readable. Preserves AppData identity, license state and mbt_pos.db.",
-    "checksum_sha256": "29175f2826c5c34ac8f0fd1606dbff7aa1457ebdb29d2ec7c55d86ba80a92174",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.4/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.1.5 makes clicking the MBT POS icon behave predictably. Only one copy of MBT POS ever runs: if it is already open, the icon brings that window back to the front instead of starting a second copy. Clicking again while MBT POS is still opening does nothing disruptive and never shows a warning. If a copy is running with no window on screen, MBT POS now explains how to close it and start again instead of closing in silence. Also carries everything from v3.1.4: Internal Consumption is fully integrated on desktop and the web dashboard, with multi-product selection, department management, clickable history showing every product used, and buying cost, average buying cost, retail opportunity value and foregone gross profit. Preserves AppData identity, license state and mbt_pos.db.",
+    "checksum_sha256": "7bbc8fd95d3205fa369e1939789520897b2b72ff37b60af144671b45c9aa7d24",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.5/MBT_POS_Setup.exe"
 }

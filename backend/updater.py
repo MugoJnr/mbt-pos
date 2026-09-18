@@ -508,6 +508,191 @@ def acquire_single_instance(mutex_name: str | None = None) -> bool:
         return True
 
 
+# Input-method helper windows belong to every Qt process and never show the POS.
+_HELPER_WINDOW_CLASSES = ('IME', 'MSCTFIME UI')
+
+
+def choose_existing_window(windows):
+    """Pick the window to raise for an MBT POS instance that already runs.
+
+    ``windows`` holds dicts with ``hwnd``, ``title``, ``cls`` and ``visible``.
+    Returns the handle to raise, or None when that instance has no usable
+    window — the state that used to leave shop staff clicking a dead icon.
+    """
+    for window in windows or ():
+        if window.get('cls') in _HELPER_WINDOW_CLASSES:
+            continue
+        if not str(window.get('title') or '').strip():
+            continue
+        if not window.get('visible'):
+            continue
+        return window.get('hwnd')
+    return None
+
+
+def _list_instance_windows(skip_pid: int):
+    """Top-level windows owned by other copies of this executable."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    own_image = os.path.basename(sys.executable or '').lower()
+    found = []
+
+    def _image_name(pid: int) -> str:
+        # PROCESS_QUERY_LIMITED_INFORMATION works without elevation.
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return ''
+        try:
+            buf = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buf))
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return ''
+            return os.path.basename(buf.value).lower()
+        finally:
+            kernel32.CloseHandle(handle)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _collect(hwnd, _lparam):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and pid.value != skip_pid and _image_name(pid.value) == own_image:
+            title = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(hwnd, title, len(title))
+            cls = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cls, len(cls))
+            found.append({
+                'hwnd': hwnd,
+                'title': title.value,
+                'cls': cls.value,
+                'visible': bool(user32.IsWindowVisible(hwnd)),
+            })
+        return True
+
+    user32.EnumWindows(_collect, 0)
+    return found
+
+
+def surface_existing_instance() -> str:
+    """Raise the running instance's window.
+
+    Returns ``'focused'`` when a window was brought forward, otherwise
+    ``'no_window'`` so the caller can explain how to recover.
+    """
+    if sys.platform != 'win32':
+        return 'no_window'
+    try:
+        import ctypes
+
+        hwnd = choose_existing_window(_list_instance_windows(os.getpid()))
+        if not hwnd:
+            return 'no_window'
+        user32 = ctypes.windll.user32
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
+        # A background process cannot always take focus; SwitchToThisWindow is
+        # the documented fallback Explorer itself uses for taskbar activation.
+        try:
+            user32.SwitchToThisWindow(hwnd, True)
+        except Exception:
+            pass
+        return 'focused'
+    except Exception as e:
+        logger.warning(f'surface_existing_instance: {e}')
+        return 'no_window'
+
+
+# A normal cold start reaches the login window in about 2.5s. Until that
+# window exists there is nothing to raise, so an impatient second click must
+# stay silent rather than accuse a healthy instance of being stuck.
+STARTUP_GRACE_SECONDS = 120.0
+
+
+def launch_state_path() -> str:
+    """Per-user marker describing how far this PC's instance has booted."""
+    from mbt_paths import get_data_dir
+
+    return os.path.join(get_data_dir(), 'launch_state.json')
+
+
+def record_launch_stage(stage: str) -> None:
+    """Record 'starting' at boot and 'ready' once a window is on screen."""
+    try:
+        path = launch_state_path()
+        started_at = time.time()
+        if stage != 'starting':
+            existing = read_launch_state() or {}
+            if int(existing.get('pid') or 0) == os.getpid():
+                started_at = float(existing.get('started_at') or started_at)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(
+                {'pid': os.getpid(), 'stage': stage, 'started_at': started_at},
+                fh,
+            )
+    except Exception as e:
+        logger.debug(f'record_launch_stage: {e}')
+
+
+def read_launch_state():
+    try:
+        with open(launch_state_path(), encoding='utf-8-sig') as fh:
+            state = json.load(fh)
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
+
+
+def resolve_second_launch(*, focus_result: str, launch_state, now_ts: float) -> str:
+    """Decide what a duplicate launch should do.
+
+    'focused' — the running window was raised.
+    'quiet'   — that instance is still starting, or belongs to another user;
+                exit without a message, exactly as older builds did.
+    'warn'    — it claims to be ready yet has no window, so guide the user.
+    """
+    if focus_result == 'focused':
+        return 'focused'
+    if not isinstance(launch_state, dict) or not launch_state.get('stage'):
+        return 'quiet'
+    if launch_state.get('stage') == 'starting':
+        try:
+            age = now_ts - float(launch_state.get('started_at') or 0)
+        except (TypeError, ValueError):
+            return 'quiet'
+        if 0 <= age <= STARTUP_GRACE_SECONDS:
+            return 'quiet'
+    return 'warn'
+
+
+STUCK_INSTANCE_TITLE = 'MBT POS Is Already Running'
+STUCK_INSTANCE_MESSAGE = (
+    'MBT POS is already running, but its window is not on screen.\n\n'
+    'Press Ctrl + Shift + Esc to open Task Manager, select MBT POS, '
+    'click End task, then open MBT POS again.\n\n'
+    'Your sales, stock and licence are safe.'
+)
+
+
+def warn_stuck_instance() -> None:
+    """Tell the shopkeeper why clicking the icon appears to do nothing."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import ctypes
+
+        # Native box: the blocked copy owns the Qt application, so this runs
+        # before any QApplication exists in this process.
+        ctypes.windll.user32.MessageBoxW(
+            None, STUCK_INSTANCE_MESSAGE, STUCK_INSTANCE_TITLE, 0x00000030,
+        )
+    except Exception as e:
+        logger.warning(f'warn_stuck_instance: {e}')
+
+
 def _version_ge(a: str, b: str) -> bool:
     return _parse_version(a) >= _parse_version(b)
 

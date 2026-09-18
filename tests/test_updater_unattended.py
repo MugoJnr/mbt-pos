@@ -415,6 +415,132 @@ class SingleInstanceTests(unittest.TestCase):
         self.assertTrue(first)
         self.assertFalse(second)
 
+    def test_visible_titled_window_is_raised_over_helper_windows(self):
+        from backend.updater import choose_existing_window
+
+        self.assertEqual(
+            choose_existing_window([
+                {'hwnd': 11, 'title': 'Default IME', 'cls': 'IME', 'visible': True},
+                {'hwnd': 12, 'title': 'MSCTFIME UI', 'cls': 'MSCTFIME UI',
+                 'visible': True},
+                {'hwnd': 13, 'title': 'MBT POS', 'cls': 'Qt5152QWindowIcon',
+                 'visible': False},
+                {'hwnd': 14, 'title': 'MBT POS', 'cls': 'Qt5152QWindowIcon',
+                 'visible': True},
+            ]),
+            14,
+        )
+
+    def test_windowless_instance_reports_no_window_to_raise(self):
+        """The offscreen/stuck copy must not be reported as focusable."""
+        from backend.updater import choose_existing_window
+
+        for windows in (
+            [],
+            None,
+            [{'hwnd': 21, 'title': 'Default IME', 'cls': 'IME', 'visible': True}],
+            [{'hwnd': 22, 'title': '', 'cls': 'Qt5152QWindowIcon', 'visible': True}],
+            [{'hwnd': 23, 'title': 'MBT POS', 'cls': 'Qt5152QWindowIcon',
+              'visible': False}],
+        ):
+            self.assertIsNone(choose_existing_window(windows), windows)
+
+    def test_second_launch_guides_the_user_when_no_window_can_be_raised(self):
+        """Clicking the icon must never fail in silence (v3.1.5 regression)."""
+        main_src = os.path.join(ROOT, 'desktop', 'main.py')
+        with open(main_src, encoding='utf-8') as fh:
+            src = fh.read()
+        self.assertIn('resolve_second_launch(', src)
+        self.assertIn('warn_stuck_instance()', src)
+        self.assertIn("record_launch_stage('starting')", src)
+        self.assertIn("record_launch_stage('ready')", src)
+        # sys.exit must still end this process, never be swallowed as an error.
+        self.assertIn('except SystemExit:\n        raise', src)
+
+        from backend.updater import STUCK_INSTANCE_MESSAGE
+
+        self.assertIn('already running', STUCK_INSTANCE_MESSAGE)
+        self.assertIn('Task Manager', STUCK_INSTANCE_MESSAGE)
+        for jargon in ('mutex', 'hwnd', 'traceback', 'qt_qpa'):
+            self.assertNotIn(jargon, STUCK_INSTANCE_MESSAGE.lower())
+
+    def test_running_window_is_raised_for_the_second_click(self):
+        from backend.updater import resolve_second_launch
+
+        self.assertEqual('focused', resolve_second_launch(
+            focus_result='focused',
+            launch_state={'stage': 'ready', 'started_at': 0},
+            now_ts=9_999_999,
+        ))
+
+    def test_impatient_click_during_startup_shows_no_scary_message(self):
+        """A shop double-clicking while the POS boots must not be alarmed."""
+        from backend.updater import resolve_second_launch
+
+        now = 1_000_000.0
+        for elapsed in (0.0, 2.5, 30.0, 119.0):
+            self.assertEqual('quiet', resolve_second_launch(
+                focus_result='no-window',
+                launch_state={'stage': 'starting', 'started_at': now - elapsed},
+                now_ts=now,
+            ), f'{elapsed}s into startup must stay silent')
+
+    def test_windowless_ready_instance_earns_the_warning(self):
+        from backend.updater import resolve_second_launch
+
+        now = 1_000_000.0
+        self.assertEqual('warn', resolve_second_launch(
+            focus_result='no-window',
+            launch_state={'stage': 'ready', 'started_at': now - 600},
+            now_ts=now,
+        ))
+        # A start that never reached a window is stuck, not merely slow.
+        self.assertEqual('warn', resolve_second_launch(
+            focus_result='no-window',
+            launch_state={'stage': 'starting', 'started_at': now - 4000},
+            now_ts=now,
+        ))
+
+    def test_unknown_or_other_user_instance_exits_quietly(self):
+        """Never guess about an instance we cannot see; behave like old builds."""
+        from backend.updater import resolve_second_launch
+
+        for state in (None, {}, {'stage': ''}, 'garbage',
+                      {'stage': 'starting', 'started_at': 'not-a-number'}):
+            self.assertEqual('quiet', resolve_second_launch(
+                focus_result='no-window',
+                launch_state=state,
+                now_ts=1_000_000.0,
+            ), f'state {state!r} must not trigger a message')
+
+    def test_launch_stage_round_trips_and_keeps_start_time(self):
+        import time
+        from backend import updater
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = os.path.join(tmp, 'data', 'launch_state.json')
+            with patch.object(updater, 'launch_state_path',
+                                   return_value=marker):
+                updater.record_launch_stage('starting')
+                started = updater.read_launch_state()
+                self.assertEqual('starting', started['stage'])
+                self.assertEqual(os.getpid(), started['pid'])
+
+                time.sleep(0.01)
+                updater.record_launch_stage('ready')
+                ready = updater.read_launch_state()
+                self.assertEqual('ready', ready['stage'])
+                self.assertEqual(started['started_at'], ready['started_at'])
+
+    def test_unwritable_launch_marker_never_blocks_startup(self):
+        """Licensing rule: a marker problem must not stop a shop trading."""
+        from backend import updater
+
+        with patch.object(updater, 'launch_state_path',
+                               side_effect=OSError('read-only volume')):
+            updater.record_launch_stage('starting')  # must not raise
+            self.assertIsNone(updater.read_launch_state())
+
 
 if __name__ == '__main__':
     unittest.main()
