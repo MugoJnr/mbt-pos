@@ -122,6 +122,12 @@ class UpdateCenter:
         try:
             from backend.cloud_backup.supabase_client import SupabaseClient
             client = SupabaseClient()
+            if not client.service:
+                # An anon-key insert is always rejected by app_updates RLS.
+                logger.error(
+                    'publish_update refused: no service-role key configured '
+                    '(set MBT_SUPABASE_SERVICE_KEY or publish from the Portal server)')
+                return None
             row = {
                 'version': version,
                 'download_url': download_url,
@@ -142,6 +148,52 @@ class UpdateCenter:
                 json=row,
                 timeout=30,
             )
+            if r.status_code == 400 and '42P10' in (r.text or ''):
+                # Older production schemas lack UNIQUE(version), so PostgREST
+                # cannot honor on_conflict. Update an existing row or insert
+                # once without pretending the failed upsert succeeded.
+                from urllib.parse import quote
+                lookup = client._session.get(
+                    client._url(
+                        '/rest/v1/app_updates?version=eq.'
+                        f'{quote(str(version), safe="")}&select=id&limit=1'
+                    ),
+                    headers=client._headers(use_service=True),
+                    timeout=30,
+                )
+                lookup_data = (
+                    lookup.json()
+                    if lookup.status_code < 400 and lookup.content
+                    else []
+                )
+                existing = (
+                    lookup_data[0]
+                    if isinstance(lookup_data, list) and lookup_data
+                    else None
+                )
+                if existing and existing.get('id'):
+                    r = client._session.patch(
+                        client._url(
+                            '/rest/v1/app_updates?id=eq.'
+                            f'{quote(str(existing["id"]), safe="")}'
+                        ),
+                        headers={
+                            **client._headers(use_service=True),
+                            'Prefer': 'return=representation',
+                        },
+                        json=row,
+                        timeout=30,
+                    )
+                else:
+                    r = client._session.post(
+                        client._url('/rest/v1/app_updates'),
+                        headers={
+                            **client._headers(use_service=True),
+                            'Prefer': 'return=representation',
+                        },
+                        json=row,
+                        timeout=30,
+                    )
             if r.status_code >= 400:
                 raise RuntimeError(r.text[:400] or f'HTTP {r.status_code}')
             data = r.json() if r.content else None

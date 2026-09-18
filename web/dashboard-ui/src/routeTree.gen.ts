@@ -24,6 +24,7 @@ import { Route as DiagnosticsRouteImport } from './routes/diagnostics'
 import { Route as DebtRouteImport } from './routes/debt'
 import { Route as BranchesRouteImport } from './routes/branches'
 import { Route as BackupRouteImport } from './routes/backup'
+import { Route as AuditRouteImport } from './routes/audit'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AiRouteImport } from './routes/ai'
 import { Route as IndexRouteImport } from './routes/index'
@@ -103,6 +104,11 @@ const BackupRoute = BackupRouteImport.update({
   path: '/backup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuditRoute = AuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApprovalsRoute = ApprovalsRouteImport.update({
   id: '/approvals',
   path: '/approvals',
@@ -123,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
@@ -143,6 +150,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
@@ -164,6 +172,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/debt': typeof DebtRoute
@@ -186,6 +195,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ai'
     | '/approvals'
+    | '/audit'
     | '/backup'
     | '/branches'
     | '/debt'
@@ -206,6 +216,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ai'
     | '/approvals'
+    | '/audit'
     | '/backup'
     | '/branches'
     | '/debt'
@@ -226,6 +237,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ai'
     | '/approvals'
+    | '/audit'
     | '/backup'
     | '/branches'
     | '/debt'
@@ -247,6 +259,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AiRoute: typeof AiRoute
   ApprovalsRoute: typeof ApprovalsRoute
+  AuditRoute: typeof AuditRoute
   BackupRoute: typeof BackupRoute
   BranchesRoute: typeof BranchesRoute
   DebtRoute: typeof DebtRoute
@@ -371,6 +384,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/audit': {
+      id: '/audit'
+      path: '/audit'
+      fullPath: '/audit'
+      preLoaderRoute: typeof AuditRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/approvals': {
       id: '/approvals'
       path: '/approvals'
@@ -399,6 +419,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AiRoute: AiRoute,
   ApprovalsRoute: ApprovalsRoute,
+  AuditRoute: AuditRoute,
   BackupRoute: BackupRoute,
   BranchesRoute: BranchesRoute,
   DebtRoute: DebtRoute,

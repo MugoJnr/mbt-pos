@@ -219,18 +219,41 @@ class SupabaseClient:
             user = data.get('user') or {}
             ident['user_id'] = user.get('id') or ident.get('user_id') or ''
             ident['email'] = email
+            ident.pop('auth_state', None)
+            ident.pop('auth_error', None)
+            ident.pop('auth_unreadable_id', None)
             save_identity(ident)
+            try:
+                from backend.cloud.auth_gate import clear_auth_gate_on_login
+                clear_auth_gate_on_login()
+            except Exception:
+                pass
         return data
 
     def refresh_session(self) -> dict:
+        from backend.cloud import auth_gate
+
         ident = load_identity()
         if ident.get('auth_state') == REAUTH_REQUIRED:
             raise SupabaseAuthError(
-                'Saved cloud sign-in cannot be read on this PC — sign in again '
-                'from Settings to resume cloud backup')
+                'Cloud sign-in required — open Settings → Cloud Backup and '
+                'sign in again (POS sales still work offline)')
         refresh = ident.get('refresh_token') or ''
         if not refresh:
+            # Access-only / empty refresh must invalidate once — never spin
+            # "No refresh token" forever (Edmus hang class).
+            auth_gate.note_refresh_failure(
+                'No refresh token', status=400, terminal=True,
+            )
             raise SupabaseAuthError('No refresh token')
+        if not auth_gate.allow_refresh_attempt():
+            wait = auth_gate.seconds_until_refresh_allowed()
+            raise SupabaseAuthError(
+                f'Cloud session refresh paused '
+                f'(retry in {int(wait) if wait != float("inf") else "∞"}s) — '
+                f'sign in again if backups stay offline'
+            )
+        auth_gate.assert_not_ui_thread('refresh_session')
         _require_network()
         try:
             r = self._session.post(
@@ -242,13 +265,43 @@ class SupabaseClient:
         except requests.RequestException as e:
             from backend.cloud.net_gate import mark_network_down
             mark_network_down()
+            auth_gate.note_refresh_failure(
+                e, status=503, terminal=False,
+            )
             raise SupabaseError(f'Refresh token network error: {e}', 503) from e
         if r.status_code >= 400:
-            self._raise(r, 'Refresh token')
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text[:500]
+            msg = 'Refresh token failed'
+            if isinstance(body, dict):
+                msg = (
+                    body.get('msg')
+                    or body.get('message')
+                    or body.get('error_description')
+                    or msg
+                )
+            terminal = auth_gate.looks_like_terminal_refresh_failure(
+                msg, status=r.status_code, payload=body,
+            )
+            auth_gate.note_refresh_failure(
+                msg, status=r.status_code, payload=body, terminal=terminal,
+            )
+            if terminal:
+                raise SupabaseAuthError(
+                    f'{msg} — cloud paused until re-login',
+                    status=r.status_code,
+                    payload=body,
+                )
+            raise SupabaseError(str(msg), status=r.status_code, payload=body)
         data = r.json()
         ident['access_token'] = data.get('access_token') or ''
         ident['refresh_token'] = data.get('refresh_token') or refresh
+        ident.pop('auth_state', None)
+        ident.pop('auth_error', None)
         save_identity(ident)
+        auth_gate.note_refresh_success()
         return data
 
     def access_token(self) -> str:
@@ -276,18 +329,40 @@ class SupabaseClient:
         so there is exactly one extra attempt and never a loop. An identity
         this PC cannot decrypt makes ``refresh_session`` fail locally without
         touching the network, so there is no doomed-request storm either.
+
+        v3.0.94: terminal Invalid Refresh Token clears tokens, trips the auth
+        gate, and stops further refresh attempts until portal re-login.
         """
+        from backend.cloud import auth_gate
+
+        if auth_gate.is_terminal_auth_dead():
+            raise SupabaseAuthError(
+                'Cloud sign-in required — open Settings → Cloud Backup '
+                '(POS sales still work)'
+            )
         try:
             return fn()
+        except SupabaseAuthError:
+            raise
         except SupabaseError as e:
             expired_400 = e.status == 400 and _looks_like_expired_session(e)
             if e.status not in (401, 403) and not expired_400:
                 raise
+            if auth_gate.is_terminal_auth_dead() or not auth_gate.allow_refresh_attempt():
+                raise SupabaseAuthError(
+                    'Cloud session refresh unavailable — sign in again '
+                    '(POS sales still work)'
+                ) from e
             logger.info(
                 'Supabase rejected the session (%s: %s); refreshing once',
                 e.status, redact_tokens(str(e)),
             )
-            self.refresh_session()
+            try:
+                self.refresh_session()
+            except SupabaseAuthError:
+                raise
+            except SupabaseError:
+                raise
             return fn()
 
     # ── REST helpers ──────────────────────────────────────────────────────────
@@ -457,8 +532,13 @@ class SupabaseClient:
             )
             return result[0] if isinstance(result, list) else result
         except SupabaseError as e:
+            msg = str(e).lower()
+            # Schema may lack UNIQUE(storage_path); fall back to plain insert.
+            if 'on conflict' in msg or 'no unique or exclusion constraint' in msg:
+                result = self.rest_insert('backups', meta, upsert=False)
+                return result[0] if isinstance(result, list) else result
             # Fallback for stale identity / RLS edge cases when service role is available.
-            if self.service and ('row-level security' in str(e).lower() or e.status in (401, 403)):
+            if self.service and ('row-level security' in msg or e.status in (401, 403)):
                 from backend.cloud.platform_service import service_insert
                 result = service_insert('backups', meta)
                 return result[0] if isinstance(result, list) else result

@@ -292,6 +292,262 @@ def ensure_accounting_schema(conn) -> None:
         "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?,?)",
         ('accounting_multi_branch', '0')
     )
+    _migrate_expense_entries_columns(conn)
+    _ensure_expenses_sync_projection(conn)
+
+
+def _migrate_expense_entries_columns(conn) -> None:
+    """Add POS expense columns without rewriting historical rows."""
+    cols = {
+        str(r[1]) for r in conn.execute("PRAGMA table_info(expense_entries)").fetchall()
+    }
+    alters = [
+        ('client_txn_id', 'ALTER TABLE expense_entries ADD COLUMN client_txn_id TEXT'),
+        ('payment_method', 'ALTER TABLE expense_entries ADD COLUMN payment_method TEXT'),
+        ('category_label', 'ALTER TABLE expense_entries ADD COLUMN category_label TEXT'),
+        ('reference_number', 'ALTER TABLE expense_entries ADD COLUMN reference_number TEXT'),
+        ('notes', 'ALTER TABLE expense_entries ADD COLUMN notes TEXT'),
+        ('reversed_by', 'ALTER TABLE expense_entries ADD COLUMN reversed_by INTEGER'),
+        ('reversed_by_name', 'ALTER TABLE expense_entries ADD COLUMN reversed_by_name TEXT'),
+        ('reversal_reason', 'ALTER TABLE expense_entries ADD COLUMN reversal_reason TEXT'),
+        ('reversed_at', 'ALTER TABLE expense_entries ADD COLUMN reversed_at TEXT'),
+    ]
+    for name, sql in alters:
+        if name not in cols:
+            conn.execute(sql)
+    # Unique client transaction id for idempotent POS submits
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_expense_client_txn "
+        "ON expense_entries(client_txn_id) "
+        "WHERE client_txn_id IS NOT NULL AND client_txn_id != ''"
+    )
+
+
+def _ensure_expenses_sync_projection(conn) -> None:
+    """Cloud analytics expects local table ``expenses`` (see sync_manager map)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY,
+            category TEXT,
+            amount REAL NOT NULL,
+            description TEXT,
+            payment_method TEXT,
+            cashier_id INTEGER,
+            cashier_name TEXT,
+            status TEXT DEFAULT 'approved',
+            client_txn_id TEXT,
+            expense_number TEXT,
+            vendor_name TEXT,
+            reference_number TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_txn "
+        "ON expenses(client_txn_id) "
+        "WHERE client_txn_id IS NOT NULL AND client_txn_id != ''"
+    )
+    # Desktop schema must also own sync_outbox (Flask init_db may not have run).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            entity_type TEXT NOT NULL,
+            row_id TEXT NOT NULL,
+            operation TEXT NOT NULL CHECK(operation IN ('upsert','delete')),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            processed_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending "
+        "ON sync_outbox(processed_at, available_at, id)"
+    )
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if 'sync_outbox' not in tables:
+        return
+    existing = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    for suffix, timing, operation, row_key in (
+        ('insert', 'AFTER INSERT', 'upsert', 'NEW.id'),
+        ('update', 'AFTER UPDATE', 'upsert', 'NEW.id'),
+        ('delete', 'AFTER DELETE', 'delete', 'OLD.id'),
+    ):
+        trigger_name = f'sync_expenses_{suffix}'
+        if trigger_name in existing:
+            continue
+        try:
+            conn.execute(
+                f'''
+                CREATE TRIGGER IF NOT EXISTS "{trigger_name}"
+                {timing} ON expenses
+                BEGIN
+                  INSERT INTO sync_outbox(
+                    event_id, entity_type, row_id, operation
+                  ) VALUES (
+                    lower(hex(randomblob(16))),
+                    'expense',
+                    CAST({row_key} AS TEXT),
+                    '{operation}'
+                  );
+                END
+                '''
+            )
+        except Exception:
+            pass
+
+
+def _project_expense_row(conn, expense_id: int) -> None:
+    """Mirror expense_entries → expenses for idempotent cloud outbox sync."""
+    row = conn.execute(
+        "SELECT * FROM expense_entries WHERE id=?", (int(expense_id),)
+    ).fetchone()
+    if not row:
+        return
+    exp = dict(row)
+    if exp.get('deleted_at'):
+        conn.execute("DELETE FROM expenses WHERE id=?", (int(expense_id),))
+        return
+    now = datetime.now().isoformat(timespec='seconds')
+    category = (
+        exp.get('category_label')
+        or exp.get('account_code')
+        or 'Operating Expenses'
+    )
+    conn.execute(
+        """
+        INSERT INTO expenses (
+            id, category, amount, description, payment_method,
+            cashier_id, cashier_name, status, client_txn_id,
+            expense_number, vendor_name, reference_number,
+            created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+            category=excluded.category,
+            amount=excluded.amount,
+            description=excluded.description,
+            payment_method=excluded.payment_method,
+            cashier_id=excluded.cashier_id,
+            cashier_name=excluded.cashier_name,
+            status=excluded.status,
+            client_txn_id=excluded.client_txn_id,
+            expense_number=excluded.expense_number,
+            vendor_name=excluded.vendor_name,
+            reference_number=excluded.reference_number,
+            updated_at=excluded.updated_at
+        """,
+        (
+            int(expense_id),
+            category,
+            float(exp.get('amount') or 0),
+            exp.get('description') or '',
+            exp.get('payment_method') or '',
+            exp.get('created_by'),
+            exp.get('created_by_name') or '',
+            exp.get('status') or 'approved',
+            exp.get('client_txn_id'),
+            exp.get('expense_number'),
+            exp.get('vendor_name') or '',
+            exp.get('reference_number') or '',
+            exp.get('created_at') or now,
+            now,
+        ),
+    )
+
+
+def account_running_balance(conn, account_code: str) -> float:
+    """Current posted balance for an asset/expense account (debit-normal)."""
+    code = (account_code or '').strip()
+    if not code:
+        return 0.0
+    row = conn.execute(
+        """
+        SELECT COALESCE(SUM(jl.debit),0) - COALESCE(SUM(jl.credit),0) AS bal
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id=jl.journal_id
+        WHERE jl.account_code=? AND je.status='posted' AND je.deleted_at IS NULL
+        """,
+        (code,),
+    ).fetchone()
+    return money_float(row[0] if row else 0)
+
+
+# Named shop categories → COA expense code (label stored for reports).
+EXPENSE_CATEGORY_MAP = (
+    ('Transport', '6400'),
+    ('Fuel', '6000'),
+    ('Electricity', '6000'),
+    ('Water', '6000'),
+    ('Rent', '6000'),
+    ('Staff Meals', '6000'),
+    ('Food / Refreshments', '6000'),
+    ('Cleaning', '6000'),
+    ('Packaging', '6000'),
+    ('Repairs & Maintenance', '6000'),
+    ('Equipment', '6000'),
+    ('Shop Supplies', '6000'),
+    ('Office Supplies', '6000'),
+    ('Airtime', '6000'),
+    ('Internet / Data', '6000'),
+    ('Delivery', '6400'),
+    ('Security', '6000'),
+    ('Bank / Transaction Charges', '6000'),
+    ('M-Pesa Charges', '6000'),
+    ('Licenses / Permits', '6000'),
+    ('Wages / Casual Labour', '6000'),
+    ('Stock Transport', '6400'),
+    ('Petty Cash', '6600'),
+    ('Miscellaneous', '6600'),
+    ('Other', '6900'),
+)
+
+
+def resolve_expense_account(category_label: str, account_code: str | None = None) -> tuple[str, str]:
+    """Return (account_code, category_label) for POS/Finance category picks."""
+    label = (category_label or '').strip() or 'Operating Expenses'
+    if account_code and str(account_code).strip():
+        return str(account_code).strip(), label
+    for name, code in EXPENSE_CATEGORY_MAP:
+        if name.lower() == label.lower():
+            return code, name
+    return '6000', label
+
+
+def resolve_pay_from(payment_method: str, pay_from_code: str | None = None) -> tuple[str, str]:
+    """Map tender name → (pay_from_code, normalized method)."""
+    if pay_from_code and str(pay_from_code).strip():
+        method = (payment_method or 'cash').strip().lower() or 'cash'
+        return str(pay_from_code).strip(), method
+    method = (payment_method or 'cash').strip().lower().replace(' ', '')
+    aliases = {
+        'cash': 'cash',
+        'mpesa': 'mpesa',
+        'm-pesa': 'mpesa',
+        'mobilemoney': 'mpesa',
+        'airtelmoney': 'mpesa',
+        'bank': 'bank',
+        'banktransfer': 'bank',
+        'transfer': 'bank',
+        'card': 'card',
+        'other': 'cash',
+    }
+    key = aliases.get(method, 'cash')
+    return PAYMENT_ACCOUNT.get(key, '1000'), key
 
 
 def seed_chart_of_accounts(conn) -> int:
@@ -1025,13 +1281,50 @@ def create_expense(conn, data: dict, *, user_id=None, username='') -> dict:
     amount = D(data.get('amount') or 0)
     if amount <= 0:
         return {'error': 'Amount must be greater than zero'}
-    exp_code = (data.get('account_code') or '6000').strip()
-    pay_code = (data.get('pay_from_code') or '1000').strip()
+    try:
+        if not amount.is_finite():
+            return {'error': 'Amount must be a valid number'}
+    except Exception:
+        return {'error': 'Amount must be a valid number'}
+
+    client_txn = (data.get('client_txn_id') or '').strip() or None
+    if client_txn:
+        existing = conn.execute(
+            "SELECT id, expense_number, journal_id, amount FROM expense_entries "
+            "WHERE client_txn_id=? AND deleted_at IS NULL LIMIT 1",
+            (client_txn,),
+        ).fetchone()
+        if existing:
+            row = dict(existing)
+            return {
+                'success': True,
+                'id': row['id'],
+                'expense_number': row['expense_number'],
+                'journal_id': row.get('journal_id'),
+                'idempotent': True,
+            }
+
+    category_label = (data.get('category_label') or data.get('category') or '').strip()
+    exp_code, category_label = resolve_expense_account(
+        category_label, data.get('account_code'),
+    )
+    pay_code, pay_method = resolve_pay_from(
+        data.get('payment_method') or '', data.get('pay_from_code'),
+    )
     require_account(conn, exp_code)
     require_account(conn, pay_code)
     exp_date = (data.get('expense_date') or date.today().isoformat())[:10]
     num = _next_doc(conn, 'expense_entries', 'expense_number', 'EXP-')
-    desc = (data.get('description') or 'Expense').strip()
+    desc = (data.get('description') or category_label or 'Expense').strip()
+    notes = (data.get('notes') or '').strip()
+    if notes and notes not in desc:
+        # Keep primary description short; notes stored separately when column exists.
+        pass
+    reference = (data.get('reference_number') or data.get('reference') or '').strip()
+    vendor = (data.get('vendor_name') or data.get('payee') or '').strip()
+
+    # Prefer client txn as journal source when provided (idempotent across retries).
+    journal_source_id = client_txn or num
     result = post_journal(
         conn,
         [
@@ -1041,27 +1334,86 @@ def create_expense(conn, data: dict, *, user_id=None, username='') -> dict:
         description=f'Expense {num}: {desc}',
         entry_date=exp_date,
         source_module='expense',
-        source_id=num,
+        source_id=journal_source_id,
         entry_type='expense',
         user_id=user_id,
         username=username,
     )
     if not result.get('success'):
+        # Idempotent journal collision → return matching expense if any
+        err = str(result.get('error') or '')
+        if client_txn and ('unique' in err.lower() or 'duplicate' in err.lower()):
+            existing = conn.execute(
+                "SELECT id, expense_number, journal_id FROM expense_entries "
+                "WHERE client_txn_id=? AND deleted_at IS NULL LIMIT 1",
+                (client_txn,),
+            ).fetchone()
+            if existing:
+                row = dict(existing)
+                return {
+                    'success': True,
+                    'id': row['id'],
+                    'expense_number': row['expense_number'],
+                    'journal_id': row.get('journal_id'),
+                    'idempotent': True,
+                }
         return result
+
+    cols = {
+        str(r[1]) for r in conn.execute("PRAGMA table_info(expense_entries)").fetchall()
+    }
+    base_cols = [
+        'expense_number', 'expense_date', 'account_code', 'pay_from_code', 'amount',
+        'description', 'vendor_name', 'status', 'approved_by', 'approved_by_name',
+        'attachment_path', 'journal_id', 'currency_code', 'created_by', 'created_by_name',
+    ]
+    base_vals = [
+        num, exp_date, exp_code, pay_code, money_float(amount), desc,
+        vendor, 'approved', user_id, username or '',
+        data.get('attachment_path'), result.get('journal_id'),
+        get_currency_code(conn), user_id, username or '',
+    ]
+    if 'client_txn_id' in cols:
+        base_cols.append('client_txn_id')
+        base_vals.append(client_txn)
+    if 'payment_method' in cols:
+        base_cols.append('payment_method')
+        base_vals.append(pay_method)
+    if 'category_label' in cols:
+        base_cols.append('category_label')
+        base_vals.append(category_label)
+    if 'reference_number' in cols:
+        base_cols.append('reference_number')
+        base_vals.append(reference)
+    if 'notes' in cols:
+        base_cols.append('notes')
+        base_vals.append(notes)
+
+    placeholders = ','.join('?' for _ in base_cols)
     conn.execute(
-        "INSERT INTO expense_entries "
-        "(expense_number,expense_date,account_code,pay_from_code,amount,description,"
-        "vendor_name,status,approved_by,approved_by_name,attachment_path,journal_id,"
-        "currency_code,created_by,created_by_name) "
-        "VALUES (?,?,?,?,?,?,?,'approved',?,?,?,?,?,?,?)",
-        (num, exp_date, exp_code, pay_code, money_float(amount), desc,
-         data.get('vendor_name') or '', user_id, username or '',
-         data.get('attachment_path'), result.get('journal_id'),
-         get_currency_code(conn), user_id, username or '')
+        f"INSERT INTO expense_entries ({','.join(base_cols)}) VALUES ({placeholders})",
+        base_vals,
     )
     eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    return {'success': True, 'id': eid, 'expense_number': num,
-            'journal_id': result.get('journal_id')}
+    accounting_audit(
+        conn, user_id, username, 'CREATE_EXPENSE', 'expense', eid,
+        f"{num} {money_float(amount)} {category_label} via {pay_method}",
+    )
+    try:
+        _project_expense_row(conn, int(eid))
+    except Exception:
+        pass
+    return {
+        'success': True,
+        'id': eid,
+        'expense_number': num,
+        'journal_id': result.get('journal_id'),
+        'account_code': exp_code,
+        'pay_from_code': pay_code,
+        'payment_method': pay_method,
+        'category_label': category_label,
+        'amount': money_float(amount),
+    }
 
 
 def create_transfer(conn, data: dict, *, user_id=None, username='') -> dict:
@@ -1201,15 +1553,40 @@ def delete_expense(
         if rev.get('error') and 'already reversed' not in str(rev.get('error') or '').lower():
             return rev
     now = datetime.now().isoformat()
-    conn.execute(
-        "UPDATE expense_entries SET deleted_at=?, status='voided' WHERE id=?",
-        (now, expense_id),
-    )
+    cols = {
+        str(r[1]) for r in conn.execute("PRAGMA table_info(expense_entries)").fetchall()
+    }
+    if 'reversed_at' in cols:
+        conn.execute(
+            "UPDATE expense_entries SET deleted_at=?, status='voided', "
+            "reversed_by=?, reversed_by_name=?, reversal_reason=?, reversed_at=? "
+            "WHERE id=?",
+            (now, user_id, username or '', reason or '', now, expense_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE expense_entries SET deleted_at=?, status='voided' WHERE id=?",
+            (now, expense_id),
+        )
     accounting_audit(
         conn, user_id, username, 'DELETE_EXPENSE', 'expense', expense_id,
         f"{exp.get('expense_number')} reason={reason}",
     )
+    try:
+        _project_expense_row(conn, int(expense_id))
+    except Exception:
+        pass
     return {'success': True, 'id': expense_id, 'expense_number': exp.get('expense_number')}
+
+
+def reverse_expense(
+    conn, expense_id: int, *, reason: str = '', user_id=None, username='',
+) -> dict:
+    """Authorized correction path — same audit-preserving soft delete/reversal."""
+    reason = (reason or '').strip() or 'Authorized expense reversal'
+    return delete_expense(
+        conn, expense_id, reason=reason, user_id=user_id, username=username or '',
+    )
 
 
 def update_expense(
@@ -1296,6 +1673,10 @@ def update_expense(
         conn, user_id, username, 'UPDATE_EXPENSE', 'expense', expense_id,
         f"{exp.get('expense_number')} amt={money_float(amount)}",
     )
+    try:
+        _project_expense_row(conn, int(expense_id))
+    except Exception:
+        pass
     return {
         'success': True,
         'id': expense_id,

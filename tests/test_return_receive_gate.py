@@ -163,6 +163,16 @@ class ReturnSaleGate(_Base):
             "SELECT COUNT(*) AS c FROM stock_movements "
             "WHERE movement_type='RETURN_RESTORE' AND product_id=1"
         ).fetchone()['c']
+        return_journal = db.execute(
+            "SELECT id FROM journal_entries WHERE source_module='sale_return' "
+            "AND source_id=? AND entry_type='return'",
+            (str(ret['return_sale_id']),),
+        ).fetchone()
+        return_lines = db.execute(
+            "SELECT account_code,debit,credit FROM journal_lines "
+            "WHERE journal_id=? ORDER BY id",
+            (return_journal['id'],),
+        ).fetchall()
         db.close()
 
         self.assertEqual(stock, 47.0)
@@ -170,6 +180,14 @@ class ReturnSaleGate(_Base):
         self.assertEqual(ret_status['status'], 'return')
         self.assertAlmostEqual(float(ret_status['total']), -100.0, places=2)
         self.assertGreaterEqual(int(moves), 1)
+        self.assertEqual(
+            sum(float(row['debit']) for row in return_lines),
+            sum(float(row['credit']) for row in return_lines),
+        )
+        self.assertEqual(
+            {row['account_code'] for row in return_lines},
+            {'1000', '1200', '4000', '5000'},
+        )
 
         summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
         # 400 completed - 100 return = 300 net revenue

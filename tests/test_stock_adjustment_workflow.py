@@ -128,14 +128,14 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
         self.assertEqual(audits[-1]['username'], 'owner')
 
     def test_wrong_pin_and_unauthorised_role_cannot_change_stock(self):
-        # The PIN only guards reductions, so the wrong-PIN path is a remove.
+        # Every manual correction is protected; supplier receiving is separate.
         wrong = self._adjust('remove', 2, pin='999999')
         self.assertIn('Incorrect', wrong.get('error', ''))
         self.assertEqual(self._stock(), 10)
 
         self.api._role = 'cashier'
         denied = self._adjust('add', 2)
-        self.assertIn('Only Super-Admin', denied.get('error', ''))
+        self.assertIn('Only Admin or Super Admin', denied.get('error', ''))
         self.assertEqual(self._stock(), 10)
 
         db = self.ac._db()
@@ -219,9 +219,12 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(float(product['stock']), 10.5)
 
-    def test_set_counted_higher_needs_no_pin_lower_needs_pin_and_equal_is_noop(self):
-        higher = self._adjust(
+    def test_set_counted_higher_and_lower_need_pin_equal_is_noop(self):
+        blocked_higher = self._adjust(
             'set', 14, pin='', reason='Stock-take Surplus')
+        self.assertEqual(blocked_higher.get('status'), 403)
+        higher = self._adjust(
+            'set', 14, reason='Stock-take Surplus')
         self.assertTrue(higher.get('success'), higher)
         self.assertEqual(self._stock(), 14)
 
@@ -333,10 +336,10 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
 
 
 class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
-    """The owner PIN guards on-hand going *down*, never restocking.
+    """The owner PIN guards every manual correction.
 
-    Receiving is a fast counter action; a reduction without a sale is the
-    fraud vector, so it takes a step-up PIN even for a signed-in Super-Admin.
+    Supplier receiving remains a fast counter action without PIN; Adjust Stock
+    is reserved for Admin/Super Admin and always takes a step-up PIN.
     """
 
     def _movements(self):
@@ -352,8 +355,10 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         finally:
             db.close()
 
-    def test_add_needs_no_pin_but_reduce_does(self):
-        added = self._adjust('add', 4, pin='')
+    def test_add_and_reduce_need_pin(self):
+        blocked_add = self._adjust('add', 4, pin='')
+        self.assertEqual(blocked_add.get('status'), 403)
+        added = self._adjust('add', 4)
         self.assertTrue(added.get('success'), added)
         self.assertEqual(self._stock(), 14)
 
@@ -438,14 +443,17 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         self.assertEqual(denied.get('status'), 403)
         self.assertEqual(self._stock(), 38)
 
-    def test_cashier_cannot_add_stock_without_a_pin_prompt_to_bypass(self):
-        for role in ('cashier', 'viewer', 'manager', 'admin', ''):
+    def test_non_admin_cannot_use_adjust_stock(self):
+        for role in ('cashier', 'viewer', 'manager', ''):
             self.api._role = role
-            denied = self._adjust('add', 3, pin='')
+            denied = self._adjust('add', 3)
             self.assertEqual(denied.get('status'), 403, role)
-            self.assertIn('Only Super-Admin', denied.get('error', ''), role)
-        self.assertEqual(self._stock(), 10)
-        self.assertEqual(self._movements(), [])
+            self.assertIn('Only Admin or Super Admin', denied.get('error', ''), role)
+        self.api._role = 'admin'
+        admin = self._adjust('add', 3)
+        self.assertTrue(admin.get('success'), admin)
+        self.assertEqual(self._stock(), 13)
+        self.assertEqual(self._movements(), [('SUPERADMIN_ADJUST', 3.0)])
 
 
 if __name__ == '__main__':

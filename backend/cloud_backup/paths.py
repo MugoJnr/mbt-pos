@@ -13,6 +13,7 @@ import logging
 import os
 import base64
 import hashlib
+import threading
 from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -21,6 +22,17 @@ from runtime_security import get_jwt_secret
 from backend.cloud_backup.defaults import production_cloud_defaults
 
 logger = logging.getLogger('cloud_backup.paths')
+
+# sanitize_stale_cloud_state must never re-enter via load_cloud_config.
+_sanitize_lock = threading.Lock()
+_sanitize_ran_once = False
+
+
+def reset_sanitize_guard_for_tests() -> None:
+    """Test helper — allow ensure_production to sanitize again."""
+    global _sanitize_ran_once
+    _sanitize_ran_once = False
+
 
 CLOUD_CONFIG_NAME = 'cloud_config.json'
 CLOUD_IDENTITY_NAME = 'cloud_identity.json'
@@ -34,6 +46,8 @@ _UNCONFIGURED_MSG = (
 )
 
 REAUTH_REQUIRED = 'reauth_required'
+AUTH_ERROR_INVALID_REFRESH = 'invalid_refresh_token'
+AUTH_ERROR_UNREADABLE = 'protected_token_unreadable'
 _REAUTH_MSG = (
     'Saved cloud sign-in could not be read on this PC. '
     'Sign in again with your portal.mugobyte.com email and password to '
@@ -44,6 +58,11 @@ _REAUTH_MSG_MISSING = (
     'Open Settings → Cloud Backup and sign in with your '
     'portal.mugobyte.com email and password to resume encrypted backups '
     'and drain the offline queue.'
+)
+_REAUTH_MSG_INVALID_REFRESH = (
+    'Cloud sign-in expired (invalid refresh token). '
+    'Open Settings → Cloud Backup and sign in once with your '
+    'portal.mugobyte.com email and password. Sales keep working offline.'
 )
 
 
@@ -175,6 +194,28 @@ def ensure_production_cloud_config(*, persist: bool = True) -> dict[str, Any]:
             logger.info('Seeded production cloud_config.json at %s', path)
         except Exception as e:
             logger.warning('Could not persist cloud_config.json: %s', e)
+    # Run stale-host sanitize at most once per process from this path.
+    # Do NOT call load_cloud_config from sanitize (see migrate_stale_state).
+    global _sanitize_ran_once
+    if not _sanitize_ran_once and _sanitize_lock.acquire(blocking=False):
+        try:
+            if not _sanitize_ran_once:
+                from backend.cloud_backup.migrate_stale_state import (
+                    sanitize_stale_cloud_state,
+                )
+                sanitize_stale_cloud_state()
+                _sanitize_ran_once = True
+        except RecursionError:
+            logger.error(
+                'stale state sanitize hit RecursionError — '
+                'active_supabase_host must not call load_cloud_config'
+            )
+            _sanitize_ran_once = True
+        except Exception as e:
+            logger.debug('stale state sanitize: %s', e)
+            _sanitize_ran_once = True
+        finally:
+            _sanitize_lock.release()
     return cfg
 
 
@@ -249,11 +290,21 @@ def cloud_unconfigured_message() -> str:
     return _UNCONFIGURED_MSG
 
 
+_CIPHER_CACHE: dict = {}
+
+
 def _identity_cipher() -> Fernet:
-    material = hashlib.sha256(
-        (get_jwt_secret() + ':cloud-identity:v1').encode()
-    ).digest()
-    return Fernet(base64.urlsafe_b64encode(material))
+    # Keyed on the secret itself, so a rotated secret still builds a new
+    # cipher while repeated field decrypts reuse one instance.
+    secret = get_jwt_secret()
+    cipher = _CIPHER_CACHE.get(secret)
+    if cipher is None:
+        material = hashlib.sha256(
+            (secret + ':cloud-identity:v1').encode()
+        ).digest()
+        cipher = Fernet(base64.urlsafe_b64encode(material))
+        _CIPHER_CACHE[secret] = cipher
+    return cipher
 
 
 def _protect(value: str) -> str:
@@ -303,20 +354,52 @@ def cloud_auth_status() -> dict[str, Any]:
     needs_reauth = ident.get('auth_state') == REAUTH_REQUIRED
     err = str(ident.get('auth_error') or '')
     if needs_reauth and not ident.get('access_token'):
-        has_sealed = any(
-            ident.get(f'{n}_protected')
-            for n in ('access_token', 'refresh_token', 'activation_token')
-        )
-        msg = _REAUTH_MSG if has_sealed else _REAUTH_MSG_MISSING
+        if err == AUTH_ERROR_INVALID_REFRESH:
+            msg = _REAUTH_MSG_INVALID_REFRESH
+        else:
+            has_sealed = any(
+                ident.get(f'{n}_protected')
+                for n in ('access_token', 'refresh_token', 'activation_token')
+            )
+            msg = _REAUTH_MSG if has_sealed else _REAUTH_MSG_MISSING
     else:
         msg = _REAUTH_MSG if needs_reauth else ''
     return {
-        'logged_in': bool(ident.get('access_token') and ident.get('business_id')),
+        'logged_in': has_refreshable_session(ident),
         'reauth_required': needs_reauth,
         'email': ident.get('email') or '',
         'auth_error': err if needs_reauth else '',
         'message': msg,
     }
+
+
+def invalidate_cloud_session(*, reason: str = AUTH_ERROR_INVALID_REFRESH) -> dict:
+    """Clear dead access/refresh tokens; keep shop identity for re-login.
+
+    Does NOT touch license files or ``mbt_pos.db``. Sets ``auth_state`` so
+    SyncManager / command JWT refresh stop until the next portal sign-in.
+    Also disables cloud backup so the sync loop cannot spin on a dead session.
+    """
+    ident = load_identity()
+    for name in ('access_token', 'refresh_token'):
+        ident[name] = ''
+        ident[f'{name}_protected'] = ''
+    ident['auth_state'] = REAUTH_REQUIRED
+    ident['auth_error'] = str(reason or AUTH_ERROR_INVALID_REFRESH)
+    ident.pop('auth_unreadable_id', None)
+    save_identity(ident)
+    try:
+        cfg = load_cloud_config()
+        if cfg.get('enabled'):
+            cfg['enabled'] = False
+            save_cloud_config(cfg)
+    except Exception as e:
+        logger.debug('Could not disable cloud backup after invalidate: %s', e)
+    logger.warning(
+        'Cloud session invalidated (%s) — re-login required; identity kept; backup off',
+        ident['auth_error'],
+    )
+    return ident
 
 
 def load_identity() -> dict[str, Any]:
@@ -399,6 +482,24 @@ def is_cloud_configured() -> bool:
     return bool(cfg.get('supabase_url') and cfg.get('anon_key'))
 
 
+def has_refreshable_session(identity: dict[str, Any] | None = None) -> bool:
+    """True only when cloud sync can renew an expired access token.
+
+    Requires a non-skipped identity with decryptable access_token,
+    refresh_token, and business_id. Access-only sessions (Edmus hang class)
+    are treated as logged out so SyncManager stays quiet.
+    """
+    ident = identity if identity is not None else load_identity()
+    if ident.get('cloud_skipped'):
+        return False
+    if ident.get('auth_state') == REAUTH_REQUIRED:
+        return False
+    return bool(
+        (ident.get('access_token') or '').strip()
+        and (ident.get('refresh_token') or '').strip()
+        and (ident.get('business_id') or '').strip()
+    )
+
+
 def is_logged_in() -> bool:
-    ident = load_identity()
-    return bool(ident.get('access_token') and ident.get('business_id'))
+    return has_refreshable_session()

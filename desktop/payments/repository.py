@@ -85,7 +85,7 @@ class PaymentRepository:
         sql += ' ORDER BY created_at DESC'
         return [PaymentRecord.from_row(r) for r in conn.execute(sql, params).fetchall()]
 
-    def list_inbox(self, shop_id: str, limit: int = 100) -> List[dict]:
+    def list_inbox(self, shop_id: str, limit: int = 100) -> dict:
         """Unmatched incoming + payments needing confirmation."""
         conn = self._conn()
         incoming = conn.execute(

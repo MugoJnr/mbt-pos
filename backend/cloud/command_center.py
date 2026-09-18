@@ -65,6 +65,16 @@ _REMOTE_ACTOR = 'remote_owner'
 def _ensure_command_jwt(*, reason: str = 'command_poll') -> bool:
     """Refresh identity JWT via the same path SyncManager uses on 401/403."""
     try:
+        from backend.cloud.auth_gate import (
+            allow_refresh_attempt,
+            is_terminal_auth_dead,
+        )
+        if is_terminal_auth_dead():
+            logger.debug('JWT refresh skipped (%s): terminal auth dead', reason)
+            return False
+        if not allow_refresh_attempt():
+            logger.debug('JWT refresh skipped (%s): auth gate cooldown', reason)
+            return False
         from backend.cloud_backup.paths import load_identity
         ident = load_identity() or {}
         if not str(ident.get('refresh_token') or '').strip():

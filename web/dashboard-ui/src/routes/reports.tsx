@@ -8,6 +8,7 @@ import {
   Printer,
   FileSpreadsheet,
   FileText,
+  Eye,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -23,6 +24,7 @@ import {
 import { GET } from "@/lib/api";
 import { downloadApi, exportQuery } from "@/lib/download";
 import { addDaysISO, KES, todayISO } from "@/lib/format";
+import { ReceiptAdminModal } from "@/components/receipt-admin-modal";
 
 export const Route = createFileRoute("/reports")({
   component: Reports,
@@ -57,6 +59,7 @@ function Reports() {
   const [customer, setCustomer] = useState("");
   const [q, setQ] = useState("");
   const [exporting, setExporting] = useState<string | null>(null);
+  const [receiptId, setReceiptId] = useState<number | null>(null);
   const [sortKey, setSortKey] = useState<"created_at" | "total" | "receipt_number">(
     "created_at",
   );
@@ -450,6 +453,7 @@ function Reports() {
                   Total {sortKey === "total" ? (sortDir === "asc" ? "↑" : "↓") : ""}
                 </button>,
                 "Status",
+                "Actions",
               ]}
             >
               {pageRows.map((r: any) => (
@@ -464,6 +468,11 @@ function Reports() {
                     {KES(r.total, currency)}
                   </td>
                   <td className="px-4 py-2.5 text-text2">{r.status || "completed"}</td>
+                  <td className="px-4 py-2.5">
+                    <Button size="sm" variant="secondary" onClick={() => setReceiptId(Number(r.id))}>
+                      <Eye className="h-3.5 w-3.5" /> Receipt
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </Table>
@@ -494,6 +503,14 @@ function Reports() {
           </>
         )}
       </Card>
+      {receiptId != null ? (
+        <ReceiptAdminModal
+          saleId={receiptId}
+          currency={currency}
+          onClose={() => setReceiptId(null)}
+          onChanged={() => void dataQ.refetch()}
+        />
+      ) : null}
     </AppShell>
   );
 }

@@ -31,6 +31,8 @@ _PERMISSIONS = {
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',
         'sales.variance_handle',
+        # POS till expenses — create only; edit/delete stay Manager+
+        'accounting.create_expenses',
     },
     ROLE_VIEWER: {
         'sales.view_all',
@@ -55,7 +57,8 @@ _PERMISSIONS = {
         'consumption.create', 'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
-        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.reverse_journal', 'accounting.create_expenses',
+        'accounting.approve_expenses',
         'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
     },
@@ -63,19 +66,20 @@ _PERMISSIONS = {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'inventory.receive_stock', 'inventory.delete', 'inventory.manage_categories',
-        'inventory.view_cost',
+        'inventory.view_cost', 'inventory.adjust_stock',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view', 'users.create', 'users.edit',
         'settings.view', 'settings.edit',
         'audit.view',
         'debt.view', 'debt.create', 'debt.collect',
-        'debt.customer_manage', 'debt.cancel',
+        'debt.customer_manage', 'debt.cancel', 'debt.delete',
         'consumption.create', 'consumption.void',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
-        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.reverse_journal', 'accounting.create_expenses',
+        'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
     },
@@ -85,7 +89,7 @@ _PERMISSIONS = {
         'inventory.view', 'inventory.create', 'inventory.edit_info',
         'inventory.receive_stock', 'inventory.delete', 'inventory.manage_categories',
         'inventory.view_cost',
-        'inventory.adjust_stock',          # ONLY superadmin: add/remove/set + PIN
+        'inventory.adjust_stock',          # Admin/owner: add/remove/set + PIN
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view', 'users.create', 'users.edit', 'users.delete',
@@ -99,7 +103,8 @@ _PERMISSIONS = {
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
-        'accounting.reverse_journal', 'accounting.approve_expenses',
+        'accounting.reverse_journal', 'accounting.create_expenses',
+        'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'ai_ops.developer',
@@ -110,10 +115,10 @@ _PERMISSIONS = {
 _ACTION_REASONS = {
     'inventory.create': 'Add Product needs inventory create access.',
     'inventory.edit_info': 'Edit product needs inventory edit access.',
-    'inventory.delete': 'Archive/delete product needs Manager or higher.',
+        'inventory.delete': 'Remove a product from the catalogue (Admin/Manager).',
     'inventory.receive_stock': 'Receive Stock needs receive access on your role.',
     'inventory.adjust_stock': (
-        'Adjust Stock (add/remove/set) is Super Admin only and requires '
+        'Adjust Stock (add/remove/set) is Admin/Super Admin only and requires '
         'the Super-Admin PIN.'
     ),
     'inventory.manage_categories': 'Category Visuals need Manager or higher.',
@@ -128,8 +133,8 @@ _ACTION_REASONS = {
     ),
     'sales.edit': 'Editing completed sales is Super Admin only.',
     'debt.delete': (
-        'Write-off / delete unpaid debt is Super Admin only and requires '
-        'the Super-Admin PIN. Granting the Debt tab is not enough.'
+        'Write-off / delete unpaid debt needs Admin or Super Admin permission '
+        'and the Super-Admin PIN. Granting the Debt tab is not enough.'
     ),
     'debt.collect': 'Collecting debt payments needs collect access.',
     'debt.customer_manage': 'Managing customers on the Debt register needs Manager or higher.',
@@ -137,6 +142,11 @@ _ACTION_REASONS = {
     'users.create': 'Creating users needs Admin or Super Admin.',
     'users.edit': 'Editing users needs Admin or Super Admin.',
     'consumption.void': 'Voiding internal consumption needs Admin or higher.',
+    'accounting.create_expenses': 'Recording expenses needs Cashier or higher.',
+    'accounting.approve_expenses': (
+        'Editing or voiding expenses needs Manager or higher. '
+        'Cashiers can record new expenses only.'
+    ),
 }
 
 
@@ -316,7 +326,7 @@ def can_set_business_day(user: dict) -> bool:
 
 
 def can_delete_debt(user: dict) -> bool:
-    """True if user may delete/write-off open debts (superadmin only)."""
+    """True for Admin/Super Admin; the operation also requires Super-Admin PIN."""
     return has_permission(user, 'debt.delete')
 
 

@@ -323,6 +323,13 @@ class FinanceTab(QWidget):
             except Exception as e:
                 _log.warning('Finance page refresh %s: %s', key, e)
 
+    def open_record_expense(self):
+        """Jump to Expenses and open the record dialog."""
+        self._goto('expenses')
+        page = self._pages.get('expenses')
+        if page is not None and hasattr(page, '_add'):
+            QTimer.singleShot(0, page._add)
+
     def on_show(self):
         try:
             self._currency = (
@@ -451,8 +458,17 @@ class _OverviewPage(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(10)
         a1 = PrimaryBtn('+ Record Expense', 40)
-        a1.clicked.connect(lambda: self.p._goto('expenses'))
-        a1.setVisible(_can(self.p.user, 'accounting.approve_expenses'))
+        a1.setMinimumWidth(180)
+        a1.setToolTip('Record rent, utilities, transport, and other outgoings')
+        a1.clicked.connect(self.p.open_record_expense)
+        can_expense = _can(self.p.user, 'accounting.create_expenses') or _can(
+            self.p.user, 'accounting.approve_expenses')
+        a1.setEnabled(can_expense)
+        a1.setVisible(True)
+        if not can_expense:
+            a1.setToolTip(
+                'Cashier or higher can record expenses. '
+                'Your role can view Finance but cannot create expenses.')
         a2 = SecondaryBtn('Collect Credit', 40)
         a2.clicked.connect(lambda: self.p._goto('credit'))
         a3 = SecondaryBtn('View Reports', 40)
@@ -1415,22 +1431,33 @@ class _ExpensesPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
+        can_create = (
+            _can(parent.user, 'accounting.create_expenses')
+            or _can(parent.user, 'accounting.approve_expenses')
+        )
         can_write = _can(parent.user, 'accounting.approve_expenses')
-        add = PrimaryBtn('+ Record Expense', 36)
-        add.clicked.connect(self._add)
-        add.setVisible(can_write)
+        # Keep Record Expense in the toolbar (left) so it stays visible on
+        # narrow windows — the intro-row action alone was easy to miss/clip.
         intro, _ = page_intro(
             'Expenses',
             'Money leaving the business — rent, utilities, transport, and more.',
-            add,
         )
         lay.addLayout(intro)
         bar = QHBoxLayout()
+        add = PrimaryBtn('+ Record Expense', 40)
+        add.setMinimumWidth(180)
+        add.setToolTip('Record rent, utilities, transport, and other outgoings')
+        add.clicked.connect(self._add)
+        add.setEnabled(can_create)
+        if not can_create:
+            add.setToolTip(
+                'Cashier or higher can record expenses.')
+        bar.addWidget(add)
         edit = SecondaryBtn('Edit', 36)
         edit.clicked.connect(self._edit)
         edit.setVisible(can_write)
         bar.addWidget(edit)
-        dele = DangerBtn('Delete', 36)
+        dele = DangerBtn('Void / Reverse', 36)
         dele.clicked.connect(self._delete)
         dele.setVisible(can_write)
         bar.addWidget(dele)
@@ -1445,7 +1472,8 @@ class _ExpensesPage(QWidget):
         bar.addStretch(1)
         lay.addLayout(bar)
         self._tbl = make_table(
-            ['Number', 'Date', 'Expense Acct', 'Paid From', 'Amount', 'Description', 'Vendor'])
+            ['Number', 'Date', 'Category', 'Paid From', 'Amount',
+             'Description', 'Payee', 'Cashier', 'Status'])
         attach_table_empty_state(
             self._tbl, 'debt', 'No expenses recorded',
             'Rent, utilities, transport and other outgoings appear here')
@@ -1464,13 +1492,17 @@ class _ExpensesPage(QWidget):
             self._tbl.insertRow(i)
             self._ids.append(r.get('id'))
             self._rows_cache.append(r)
+            cat = r.get('category_label') or r.get('account_code')
+            pay = r.get('payment_method') or r.get('pay_from_code')
             self._tbl.setItem(i, 0, tbl_item(r.get('expense_number')))
             self._tbl.setItem(i, 1, tbl_item((r.get('expense_date') or '')[:10]))
-            self._tbl.setItem(i, 2, tbl_item(r.get('account_code')))
-            self._tbl.setItem(i, 3, tbl_item(r.get('pay_from_code')))
+            self._tbl.setItem(i, 2, tbl_item(cat))
+            self._tbl.setItem(i, 3, tbl_item(pay))
             self._tbl.setItem(i, 4, tbl_right(_fmt(r.get('amount'), cur)))
             self._tbl.setItem(i, 5, tbl_item(r.get('description')))
             self._tbl.setItem(i, 6, tbl_item(r.get('vendor_name')))
+            self._tbl.setItem(i, 7, tbl_item(r.get('created_by_name')))
+            self._tbl.setItem(i, 8, tbl_item(r.get('status') or 'approved'))
 
     def _selected_row(self):
         row = self._tbl.currentRow()
@@ -1479,7 +1511,23 @@ class _ExpensesPage(QWidget):
         return row, self._rows_cache[row]
 
     def _add(self):
-        if not _require(self.p.user, 'accounting.approve_expenses', self):
+        if not (
+            _can(self.p.user, 'accounting.create_expenses')
+            or _can(self.p.user, 'accounting.approve_expenses')
+        ):
+            if not _require(self.p.user, 'accounting.create_expenses', self):
+                return
+        try:
+            from desktop.dialogs.record_expense_dialog import RecordExpenseDialog
+            dlg = RecordExpenseDialog(
+                self, self.p.api, currency=self.p._currency, user=self.p.user)
+            if dlg.exec_() == QDialog.Accepted:
+                self.refresh()
+            return
+        except Exception:
+            pass
+        # Fallback simple form if dialog import fails
+        if not _require(self.p.user, 'accounting.create_expenses', self):
             return
         dlg = QDialog(self)
         dlg.setWindowTitle('Record Expense')
@@ -1561,16 +1609,20 @@ class _ExpensesPage(QWidget):
             return
         row, cur = self._selected_row()
         if cur is None:
-            QMessageBox.information(self, 'Expense', 'Select an expense to delete.')
+            QMessageBox.information(self, 'Expense', 'Select an expense to reverse.')
             return
         reason, ok = QInputDialog.getText(
-            self, 'Delete Expense',
-            f"Reason for deleting {cur.get('expense_number') or 'expense'}:")
+            self, 'Void / Reverse Expense',
+            f"Reason for reversing {cur.get('expense_number') or 'expense'} "
+            '(original record is kept for audit):')
         if not ok:
             return
-        res = self.p.api.accounting_delete_expense(self._ids[row], reason)
+        if not (reason or '').strip():
+            QMessageBox.warning(self, 'Reverse', 'A reversal reason is required.')
+            return
+        res = self.p.api.accounting_reverse_expense(self._ids[row], reason)
         if res.get('error'):
-            QMessageBox.warning(self, 'Delete', res['error'])
+            QMessageBox.warning(self, 'Reverse', res['error'])
         self.refresh()
 
 

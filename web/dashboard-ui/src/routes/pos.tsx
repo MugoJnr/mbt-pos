@@ -69,12 +69,20 @@ type Line = {
 };
 
 const PAGE_SIZE = 12;
+/** Match desktop cart: 0.25 step, up to 4 decimal places. */
+const QTY_STEP = 0.25;
+function roundQty(v: number, min = QTY_STEP): number {
+  if (!Number.isFinite(v)) return min;
+  const stepped = Math.round(v / QTY_STEP) * QTY_STEP;
+  return Math.max(min, Math.round(stepped * 10000) / 10000);
+}
 const PAY_METHODS = [
   { k: "Cash", i: Banknote, accent: "ok" as const, enabled: true },
   { k: "M-Pesa", i: Smartphone, accent: "ok" as const, enabled: true },
   { k: "Card", i: CreditCard, accent: "info" as const, enabled: true },
   { k: "Bank", i: Building2, accent: "info" as const, enabled: true },
   { k: "Split", i: SplitSquareVertical, accent: "gold" as const, enabled: true },
+  { k: "Credit Sale", i: Banknote, accent: "warn" as const, enabled: true },
   /** Future-ready stub — not backed by checkout API yet */
   { k: "Gift Card", i: Gift, accent: "muted" as const, enabled: false },
 ];
@@ -176,7 +184,7 @@ function POS() {
     setCart((c) => {
       const ex = c.find((l) => l.product_id === p.id);
       if (ex) {
-        const quantity = ex.quantity + 1;
+        const quantity = roundQty(ex.quantity + 1);
         if (quantity > Number(p.stock)) {
           toast.error(`Only ${p.stock} in stock`);
           return c;
@@ -207,19 +215,37 @@ function POS() {
   };
 
   const setQty = (product_id: number, quantity: number) =>
-    setCart((c) =>
-      quantity <= 0
-        ? c.filter((l) => l.product_id !== product_id)
-        : c.map((l) =>
-            l.product_id === product_id
-              ? {
-                  ...l,
-                  quantity,
-                  total: Math.round((quantity * l.unit_price - (l.discount || 0)) * 100) / 100,
-                }
-              : l,
-          ),
-    );
+    setCart((c) => {
+      if (quantity <= 0) return c.filter((l) => l.product_id !== product_id);
+      const q = roundQty(quantity);
+      return c.map((l) =>
+        l.product_id === product_id
+          ? {
+              ...l,
+              quantity: q,
+              total: Math.round((q * l.unit_price - (l.discount || 0)) * 100) / 100,
+            }
+          : l,
+      );
+    });
+
+  const bumpQty = (product_id: number, delta: number) => {
+    setCart((c) => {
+      const line = c.find((l) => l.product_id === product_id);
+      if (!line) return c;
+      const next = roundQty(line.quantity + delta, 0);
+      if (next <= 0) return c.filter((l) => l.product_id !== product_id);
+      return c.map((l) =>
+        l.product_id === product_id
+          ? {
+              ...l,
+              quantity: next,
+              total: Math.round((next * l.unit_price - (l.discount || 0)) * 100) / 100,
+            }
+          : l,
+      );
+    });
+  };
 
   const setLineDiscount = (product_id: number, d: number) =>
     setCart((c) =>
@@ -276,6 +302,9 @@ function POS() {
       if (payment === "Gift Card") throw new Error("Gift Card is not available yet");
       const method =
         payment === "Split" ? "Cash" : payment === "Bank" ? "Bank Transfer" : payment;
+      if (method === "Credit Sale" && !customerId) {
+        throw new Error("Select a customer for the credit sale");
+      }
       if (method !== "Credit Sale" && paid < total && showTender) {
         throw new Error("Amount paid is less than total");
       }
@@ -591,18 +620,26 @@ function POS() {
                         </span>
                         <button
                           type="button"
-                          onClick={() => setQty(l.product_id, l.quantity - 1)}
+                          onClick={() => bumpQty(l.product_id, -QTY_STEP)}
                           className="h-11 w-11 grid place-items-center rounded-lg text-text hover:bg-hover active:scale-95 transition-ui"
                           aria-label="Decrease"
                         >
                           <Minus className="h-4 w-4" />
                         </button>
-                        <span className="min-w-[2.25rem] text-center text-[14px] font-bold tabular-nums text-text">
-                          {l.quantity}
-                        </span>
+                        <input
+                          type="number"
+                          min={QTY_STEP}
+                          step={QTY_STEP}
+                          value={l.quantity}
+                          onChange={(e) =>
+                            setQty(l.product_id, parseFloat(e.target.value) || 0)
+                          }
+                          className="min-w-[3rem] w-14 h-11 text-center text-[14px] font-bold tabular-nums text-text rounded-lg border border-border bg-input"
+                          aria-label="Quantity"
+                        />
                         <button
                           type="button"
-                          onClick={() => setQty(l.product_id, l.quantity + 1)}
+                          onClick={() => bumpQty(l.product_id, QTY_STEP)}
                           className="h-11 w-11 grid place-items-center rounded-lg text-text hover:bg-hover active:scale-95 transition-ui"
                           aria-label="Increase"
                         >

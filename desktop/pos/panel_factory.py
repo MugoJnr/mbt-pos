@@ -931,15 +931,40 @@ def build_shared_panels(tab) -> None:
     tab._reprint_btn = SecondaryBtn('Reprint', 40)
     tab._reprint_btn.setToolTip('Reprint a completed receipt')
     tab._reprint_btn.clicked.connect(tab._reprint_receipt)
+    # M-Pesa Inbox + Expense never belong beside Grand Total. Keep hidden proxies
+    # for handlers / Pro permission sync; real access is Settings (Inbox) and
+    # Checkout Pro Sale Actions (Expense only).
     tab._mpesa_inbox_btn = SecondaryBtn('M-Pesa Inbox', 40)
-    tab._mpesa_inbox_btn.setToolTip('Match unmatched Till / M-Pesa payments')
+    tab._mpesa_inbox_btn.setToolTip(
+        'Match unmatched Till / M-Pesa payments (Settings → M-Pesa, or during M-Pesa checkout)')
     tab._mpesa_inbox_btn.clicked.connect(tab._open_payment_inbox)
+    try:
+        tab._mpesa_inbox_btn.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
+    tab._mpesa_inbox_btn.hide()
+    tab._expense_btn = SecondaryBtn('Expense', 40)
+    tab._expense_btn.setToolTip('Record a till expense (cash / M-Pesa / bank)')
+    tab._expense_btn.clicked.connect(tab._record_expense)
+    try:
+        from desktop.utils.security import has_permission
+        can_exp = has_permission(tab.user, 'accounting.create_expenses') or has_permission(
+            tab.user, 'accounting.approve_expenses')
+        tab._expense_btn.setEnabled(bool(can_exp))
+        if not can_exp:
+            tab._expense_btn.setToolTip('Your role cannot record expenses')
+    except Exception:
+        pass
+    try:
+        tab._expense_btn.setAttribute(Qt.WA_DontShowOnScreen, True)
+    except Exception:
+        pass
+    tab._expense_btn.hide()
     br.addWidget(tab._clr_btn)
     br.addWidget(tab._hold_btn)
     br.addWidget(tab._resume_btn)
     br.addWidget(tab._prv_btn, 1)
     br.addWidget(tab._reprint_btn)
-    br.addWidget(tab._mpesa_inbox_btn)
     from desktop.utils.security import can_void_sales
     if can_void_sales(tab.user):
         tab._void_btn = DangerBtn('Void Sale', 40)

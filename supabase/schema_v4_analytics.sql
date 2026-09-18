@@ -70,6 +70,9 @@ create table if not exists public.cloud_sales (
   change_amount numeric(14,2) not null default 0,
   credit_applied numeric(14,2) not null default 0,
   electronic_paid numeric(14,2) not null default 0,
+  electronic_method text,
+  cash_paid numeric(14,2) not null default 0,
+  payment_tenders text,
   original_total numeric(14,2),
   cash_rounding_adj numeric(14,2) not null default 0,
   payment_method text,
@@ -309,6 +312,21 @@ as $$
   select nullif(p ->> p_key, '')::timestamptz;
 $$;
 
+-- POS sales.created_at is a naive Africa/Nairobi wall clock. Postgres
+-- ::timestamptz would otherwise treat that string as UTC (+3h in the Portal).
+create or replace function public._cloud_shop_ts(p jsonb, p_key text)
+returns timestamptz
+language sql
+stable
+as $$
+  select case
+    when nullif(btrim(p ->> p_key), '') is null then null::timestamptz
+    when btrim(p ->> p_key) ~* '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
+      then btrim(p ->> p_key)::timestamptz
+    else (btrim(p ->> p_key)::timestamp at time zone 'Africa/Nairobi')
+  end;
+$$;
+
 create or replace function public._cloud_num(p jsonb, p_key text, p_default numeric default 0)
 returns numeric
 language sql
@@ -367,12 +385,19 @@ begin
     p_source_updated_at,
     v_created
   );
+  if p_entity_type = 'sale' then
+    v_created := coalesce(
+      public._cloud_shop_ts(v_payload, 'created_at'),
+      p_source_updated_at
+    );
+  end if;
 
   if p_entity_type = 'sale' then
     insert into public.cloud_sales(
       org_id, device_id, branch_id, source_id, receipt_number, cashier_id,
       cashier_name, customer_source_id, subtotal, discount, tax, total,
       amount_paid, change_amount, credit_applied, electronic_paid,
+      electronic_method, cash_paid, payment_tenders,
       original_total, cash_rounding_adj, payment_method, status,
       variance_handling, source_created_at, source_updated_at, deleted, synced_at
     ) values (
@@ -389,6 +414,9 @@ begin
       public._cloud_num(v_payload, 'change_amount'),
       public._cloud_num(v_payload, 'credit_applied'),
       public._cloud_num(v_payload, 'electronic_paid'),
+      public._cloud_text(v_payload, 'electronic_method'),
+      public._cloud_num(v_payload, 'cash_paid'),
+      public._cloud_text(v_payload, 'payment_tenders'),
       nullif(v_payload ->> 'original_total', '')::numeric,
       public._cloud_num(v_payload, 'cash_rounding_adj'),
       public._cloud_text(v_payload, 'payment_method'),
@@ -410,6 +438,9 @@ begin
       change_amount = excluded.change_amount,
       credit_applied = excluded.credit_applied,
       electronic_paid = excluded.electronic_paid,
+      electronic_method = excluded.electronic_method,
+      cash_paid = excluded.cash_paid,
+      payment_tenders = excluded.payment_tenders,
       original_total = excluded.original_total,
       cash_rounding_adj = excluded.cash_rounding_adj,
       payment_method = excluded.payment_method,

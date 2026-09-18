@@ -45,7 +45,9 @@ import {
   daysAgoIso,
   formatCompactMoney,
   formatDateTime,
+  formatMoney,
   formatNumber,
+  rowsOf,
   todayIso,
   value,
 } from "@/components/reports/analytics";
@@ -151,6 +153,9 @@ function WorkspaceHome() {
   const transactions = Number(
     value(summary, "transactions", "sales_count", "receipts") ?? 0,
   );
+  const grossProfit = value(summary, "gross_profit", "profit");
+  const margin = value(summary, "gross_margin_pct", "margin_pct");
+  const paymentMethods = rowsOf(overview, "payment_methods", "payment_mix");
   const lastSync =
     value(summary, "last_sync_at", "last_sync") ||
     overview.last_sync_at ||
@@ -208,10 +213,11 @@ function WorkspaceHome() {
           {!orgId ? (
             <p className="text-sm text-muted-foreground">Select a business to load synced KPIs.</p>
           ) : analyticsQ.isLoading ? (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="status" aria-live="polite">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" role="status" aria-live="polite">
               {(
                 [
                   { label: "Gross sales", icon: Receipt },
+                  { label: "Gross profit", icon: BarChart3 },
                   { label: "Collected", icon: Banknote },
                   { label: "Outstanding debt", icon: WalletCards },
                   { label: "Transactions", icon: Activity },
@@ -270,13 +276,27 @@ function WorkspaceHome() {
               </div>
             </div>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               <StatCard
                 label="Gross sales"
                 value={formatCompactMoney(gross, currency)}
                 icon={Receipt}
                 hint="Last 30 days · cloud"
                 accent="primary"
+              />
+              <StatCard
+                label="Gross profit"
+                value={formatCompactMoney(grossProfit, currency)}
+                icon={BarChart3}
+                hint={
+                  Number(grossProfit ?? 0) < 0 && summary.cost_crushing_sample
+                    ? `Check cost: ${String(summary.cost_crushing_sample)}`
+                    : margin == null
+                    ? String(summary.cost_data_message || "Sales − cost")
+                    : `${String(summary.cost_data_status || "") === "incomplete" ? "Estimated · " : ""}${formatNumber(margin, 1)}% margin`
+                }
+                accent="success"
               />
               <StatCard
                 label="Collected"
@@ -299,6 +319,46 @@ function WorkspaceHome() {
                 hint="Active receipts"
                 accent="info"
               />
+              </div>
+
+              {paymentMethods.length ? (
+                <div className="rounded-xl border border-border/60 bg-muted/10 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Payment breakdown</p>
+                      <p className="text-xs text-muted-foreground">
+                        Mixed receipts are split into cash and electronic components.
+                      </p>
+                    </div>
+                    <Button asChild size="sm" variant="ghost">
+                      <Link to="/reports" search={{ tab: "overview", start: rangeStart, end: rangeEnd }}>
+                        Details
+                      </Link>
+                    </Button>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {paymentMethods.map((row, index) => (
+                      <div
+                        key={String(value(row, "payment_method", "method") || index)}
+                        className="rounded-lg border border-border/60 bg-background/70 px-3 py-2"
+                      >
+                        <p className="truncate text-xs font-medium text-muted-foreground">
+                          {String(value(row, "payment_method", "method") || "Unknown")}
+                        </p>
+                        <p className="mt-1 font-semibold tabular-nums">
+                          {formatMoney(value(row, "total", "amount"), currency)}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {formatNumber(row.sale_receipts)} sales
+                          {Number(row.debt_payments || 0) > 0
+                            ? ` + ${formatNumber(row.debt_payments)} debt payments`
+                            : ""}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </CardContent>

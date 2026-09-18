@@ -57,6 +57,11 @@ BLOCKED_VERSIONS = frozenset({'2.3.5', '3.0.81'})
 FIRST_CHECK_DELAY = 60          # seconds after startup
 RECHECK_INTERVAL  = 4 * 3600   # recheck every 4 hours
 RETRY_INTERVAL    = 15 * 60    # retry sooner after a failed check
+# v3.0.99: stop false-reconnect update storms (Edmus ~30s flap class).
+ONLINE_STABLE_SEC = 90          # must stay online this long before reconnect check
+RECONNECT_CHECK_COOLDOWN_SEC = 20 * 60  # at most one reconnect-triggered check
+POLL_SLICE_SEC = 30
+MISSING_ASSET_WARN_COOLDOWN_SEC = 30 * 60
 DOWNLOAD_TIMEOUT  = 3600        # 1 hour — tolerate very slow shop networks (~12 KB/s)
 DOWNLOAD_RETRY_INTERVAL = 30 * 60  # retry failed/partial downloads every 30 min
 REQUEST_TIMEOUT   = 8           # API call timeout (fail-open when GitHub/Portal down)
@@ -70,6 +75,49 @@ MAX_AUTO_FAILS = 3
 HELPER_TASK_NAME = 'MBT_POS_UpdateHelper'
 UPDATER_MUTEX_NAME = 'Global\\MBT_POS_UpdateEngine'
 INSTALLER_NAME_RE = re.compile(r'^MBT_POS_Setup(_v[\d.]+)?\.exe$', re.IGNORECASE)
+
+
+def should_trigger_reconnect_check(
+    *,
+    now_online: bool,
+    pending_reconnect: bool,
+    online_since: float | None,
+    last_reconnect_check_at: float,
+    now: float,
+    stable_sec: float = ONLINE_STABLE_SEC,
+    cooldown_sec: float = RECONNECT_CHECK_COOLDOWN_SEC,
+) -> bool:
+    """True when a pending reconnect has stayed online long enough and is off cooldown.
+
+    Flapping probes (online every other 30s slice) must NOT storm GitHub.
+    """
+    if not now_online or not pending_reconnect:
+        return False
+    if online_since is None:
+        return False
+    if (now - online_since) < float(stable_sec):
+        return False
+    if (now - float(last_reconnect_check_at or 0)) < float(cooldown_sec):
+        return False
+    return True
+
+
+def next_reconnect_watch_state(
+    *,
+    now_online: bool,
+    last_online: bool,
+    pending_reconnect: bool,
+    online_since: float | None,
+    now: float,
+) -> tuple[bool, float | None]:
+    """Update pending_reconnect + online_since for one poll slice."""
+    if now_online and not last_online:
+        return True, now
+    if not now_online:
+        return False, None
+    if pending_reconnect and online_since is None:
+        return True, now
+    return pending_reconnect, online_since
 
 
 def _ensure_ssl_certs():
@@ -984,6 +1032,9 @@ class UpdateChecker:
         self._install_lock = threading.Lock()
         self._check_lock = threading.Lock()
         self._supersede_download = None
+        self._last_reconnect_check_at = 0.0
+        self._online_since: float | None = None
+        self._last_missing_asset_warn_at = 0.0
 
         # Callbacks — set by caller (MainWindow)
         self.on_update_available = None   # (version, notes, url)
@@ -1122,17 +1173,50 @@ class UpdateChecker:
 
     def _run(self):
         self._stop.wait(FIRST_CHECK_DELAY)
-        last_online = self._is_online()
+        last_online = bool(self._is_online())
+        now0 = time.time()
+        self._online_since = now0 if last_online else None
+        pending_reconnect = False
         while not self._stop.is_set():
             ok = self._check()
             deadline = time.time() + (RECHECK_INTERVAL if ok else RETRY_INTERVAL)
             while time.time() < deadline and not self._stop.is_set():
-                self._stop.wait(30)
-                now_online = self._is_online()
-                if now_online and not last_online:
-                    logger.info('Internet reconnected — rechecking for updates')
+                self._stop.wait(POLL_SLICE_SEC)
+                now_online = bool(self._is_online())
+                now = time.time()
+                pending_reconnect, self._online_since = next_reconnect_watch_state(
+                    now_online=now_online,
+                    last_online=last_online,
+                    pending_reconnect=pending_reconnect,
+                    online_since=self._online_since,
+                    now=now,
+                )
+                if should_trigger_reconnect_check(
+                    now_online=now_online,
+                    pending_reconnect=pending_reconnect,
+                    online_since=self._online_since,
+                    last_reconnect_check_at=self._last_reconnect_check_at,
+                    now=now,
+                ):
+                    logger.info(
+                        'Internet reconnected (stable) — rechecking for updates')
+                    self._last_reconnect_check_at = now
+                    pending_reconnect = False
+                    last_online = now_online
                     break
                 last_online = now_online
+
+    def _warn_missing_asset(self, remote_version: str) -> None:
+        now = time.time()
+        if (now - float(self._last_missing_asset_warn_at or 0)) < MISSING_ASSET_WARN_COOLDOWN_SEC:
+            logger.debug(
+                'Release v%s has no %s asset (warning suppressed)',
+                remote_version, ASSET_NAME,
+            )
+            return
+        self._last_missing_asset_warn_at = now
+        logger.warning(
+            f"Release v{remote_version} has no {ASSET_NAME} asset")
 
     def _check(self) -> bool:
         """Return True when GitHub was reached (even if already up to date)."""
@@ -1186,8 +1270,7 @@ class UpdateChecker:
                 if asset_url:
                     self._start_download(asset_url, remote_version)
                 else:
-                    logger.warning(
-                        f"Release v{remote_version} has no {ASSET_NAME} asset")
+                    self._warn_missing_asset(remote_version)
             else:
                 logger.info("No newer release — app is up to date")
             return True

@@ -87,6 +87,19 @@ def sale_complete_feedback(parent, title: str, body: str) -> None:
 
 
 def soft_warn(parent, message: str) -> None:
+    msg = (message or "").strip()
+    if not msg:
+        return
+    try:
+        from backend.cloud.auth_gate import (
+            is_platform_auth_message,
+            should_show_platform_auth_toast,
+        )
+        if is_platform_auth_message(msg) and not should_show_platform_auth_toast():
+            log.debug("platform auth toast silenced: %s", msg[:80])
+            return
+    except Exception:
+        pass
     info_toast(parent, message, tone="warn", ms=3200)
 
 
@@ -423,6 +436,12 @@ def _is_orphan_flash_candidate(w) -> bool:
 FLASH_EVENTS: list = []
 _FLASH_GRAB_DIR = None
 _FLASH_GRAB_CB = None
+# A busy shop trips the same guard hundreds of times per session. Keep the
+# buffer bounded and log each distinct widget once: this runs on the Qt main
+# thread, so an unconditional warning is a synchronous disk write per Show.
+_FLASH_MAX_ROWS = 200
+_FLASH_TOTAL = 0
+_FLASH_SEEN: set = set()
 
 
 def set_flash_grab_dir(path) -> None:
@@ -435,11 +454,15 @@ def set_flash_grab_dir(path) -> None:
 
 
 def flash_event_count() -> int:
-    return len(FLASH_EVENTS)
+    """Total events seen, not just the rows still held in the ring buffer."""
+    return _FLASH_TOTAL
 
 
 def clear_flash_events() -> None:
+    global _FLASH_TOTAL
     FLASH_EVENTS.clear()
+    _FLASH_SEEN.clear()
+    _FLASH_TOTAL = 0
 
 
 def _record_flash(kind: str, w, killed) -> None:
@@ -472,15 +495,26 @@ def _record_flash(kind: str, w, killed) -> None:
             "parent": parent,
             "killed": bool(killed),
         }
+        global _FLASH_TOTAL
+        _FLASH_TOTAL += 1
         FLASH_EVENTS.append(row)
-        log.warning(
+        if len(FLASH_EVENTS) > _FLASH_MAX_ROWS:
+            del FLASH_EVENTS[:-_FLASH_MAX_ROWS]
+        signature = (kind, cls, name)
+        if signature in _FLASH_SEEN:
+            level = logging.DEBUG
+        else:
+            _FLASH_SEEN.add(signature)
+            level = logging.WARNING
+        log.log(
+            level,
             "FLASH %s: %s name=%r title=%r geom=%s parent=%s",
             kind, cls, name, title, geom, parent,
         )
         if _FLASH_GRAB_DIR is not None and killed:
             try:
                 path = _FLASH_GRAB_DIR / (
-                    f"flash_{len(FLASH_EVENTS):04d}_{cls}_{name or 'noname'}.png"
+                    f"flash_{_FLASH_TOTAL:04d}_{cls}_{name or 'noname'}.png"
                 )
                 # May be empty/hidden — still try
                 pix = w.grab()

@@ -516,10 +516,35 @@ class LicenseTab(QWidget):
             self._set_result("Device ID copied to clipboard.", error=False)
 
     def _force_sync(self):
-        if self.license_service:
-            self.license_service.force_sync()
-            self.refresh()
-            self._set_result("Sync complete.", error=False)
+        if not self.license_service:
+            return
+        self._set_result("Syncing license…", error=False)
+        svc = self.license_service
+
+        def _work():
+            err = ''
+            try:
+                svc.force_sync()
+            except Exception as e:
+                err = str(e)
+            from desktop.utils.qt_dispatch import run_on_ui_thread
+
+            def _done():
+                try:
+                    self.refresh()
+                except Exception:
+                    pass
+                if err:
+                    self._set_result(f"Sync failed: {err[:120]}", error=True)
+                else:
+                    self._set_result("Sync complete.", error=False)
+
+            run_on_ui_thread(_done)
+
+        import threading
+        threading.Thread(
+            target=_work, daemon=True, name='LicenseForceSync',
+        ).start()
 
     def _open_renewal(self):
         import webbrowser

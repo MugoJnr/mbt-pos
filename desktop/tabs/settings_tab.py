@@ -305,6 +305,11 @@ class SettingsTab(QWidget):
         ]:
             FormRow(lbl, w, mf)
         mf.addRow(mpesa_hint)
+        self._mpesa_inbox_btn = SecondaryBtn('Open Payment Inbox', 40)
+        self._mpesa_inbox_btn.setToolTip(
+            'Match unmatched Till / M-Pesa credits (not shown on POS checkout foot)')
+        self._mpesa_inbox_btn.clicked.connect(self._open_payment_inbox)
+        mf.addRow(self._mpesa_inbox_btn)
         mf_body.addWidget(mf_w)
         lay.addWidget(mg)
 
@@ -1760,6 +1765,32 @@ class SettingsTab(QWidget):
     def _open_category_manager(self):
         from desktop.dialogs.category_manager import CategoryManagerDialog
         CategoryManagerDialog(self.api, self).exec_()
+
+    def _open_payment_inbox(self):
+        """Match unmatched Till / M-Pesa payments from Settings (not POS foot)."""
+        try:
+            from desktop.dialogs.payment_inbox_dialog import PaymentInboxDialog
+            from desktop.payments.service import build_payment_service
+            from desktop.utils.api_client import _db
+
+            def settings_getter():
+                try:
+                    return self.config_getter() or {}
+                except Exception:
+                    return {}
+
+            svc = build_payment_service(
+                db_conn_factory=_db,
+                settings_getter=settings_getter,
+            )
+            currency = 'KES'
+            try:
+                currency = (settings_getter() or {}).get('currency_symbol') or currency
+            except Exception:
+                pass
+            PaymentInboxDialog(self, payment_service=svc, currency=currency).exec_()
+        except Exception as e:
+            QMessageBox.warning(self, 'Payment Inbox', f'Could not open inbox:\n{e}')
 
     def _save_silent(self):
         """Save without any dialog — used for auto-saves like chat ID linking."""

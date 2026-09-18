@@ -131,45 +131,53 @@ def ensure_payment_schema(conn: sqlite3.Connection) -> None:
     try:
         conn.executescript(PAYMENT_SCHEMA_SQL)
         # Link sales → payment when present (additive column only)
-        sales_cols = {r[1] for r in conn.execute('PRAGMA table_info(sales)').fetchall()}
-        if 'payment_id' not in sales_cols:
-            conn.execute('ALTER TABLE sales ADD COLUMN payment_id TEXT')
-        # Settings keys for cloud payments (seed if missing; keep cloud URL fresh)
-        for key, value in (
-            ('payments_cloud_base_url', 'https://payments.mugobyte.com'),
-            ('payments_environment', 'sandbox'),
-            ('mpesa_stk_timeout_sec', '90'),
-            ('mpesa_match_window_sec', '600'),
-            ('mpesa_amount_tolerance', '0.01'),
-            ('mpesa_auto_complete_exact', '1'),
-            ('mpesa_require_confirm_ambiguous', '1'),
-        ):
-            exists = conn.execute(
-                "SELECT 1 FROM system_settings WHERE key=?", (key,)
-            ).fetchone()
-            if not exists:
-                conn.execute(
-                    "INSERT INTO system_settings (key, value) VALUES (?, ?)",
-                    (key, value),
-                )
-            elif key == 'payments_cloud_base_url':
-                # Always keep canonical payments host (never leave blank/stale).
-                cur = conn.execute(
-                    "SELECT value FROM system_settings WHERE key=?", (key,)
-                ).fetchone()
-                if not (cur and str(cur[0] or '').strip()):
-                    conn.execute(
-                        "UPDATE system_settings SET value=? WHERE key=?",
-                        (value, key),
-                    )
-        # Prefer cloud collection when mode unset; do not clobber an explicit manual choice.
-        mode_row = conn.execute(
-            "SELECT value FROM system_settings WHERE key='mpesa_mode'"
+        sales_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sales'"
         ).fetchone()
-        if not mode_row:
-            conn.execute(
-                "INSERT INTO system_settings (key, value) VALUES ('mpesa_mode', 'cloud')"
-            )
+        if sales_exists:
+            sales_cols = {r[1] for r in conn.execute('PRAGMA table_info(sales)').fetchall()}
+            if 'payment_id' not in sales_cols:
+                conn.execute('ALTER TABLE sales ADD COLUMN payment_id TEXT')
+        # Settings keys for cloud payments (seed if missing; keep cloud URL fresh)
+        settings_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='system_settings'"
+        ).fetchone()
+        if settings_exists:
+            for key, value in (
+                ('payments_cloud_base_url', 'https://payments.mugobyte.com'),
+                ('payments_environment', 'sandbox'),
+                ('mpesa_stk_timeout_sec', '90'),
+                ('mpesa_match_window_sec', '600'),
+                ('mpesa_amount_tolerance', '0.01'),
+                ('mpesa_auto_complete_exact', '1'),
+                ('mpesa_require_confirm_ambiguous', '1'),
+            ):
+                exists = conn.execute(
+                    "SELECT 1 FROM system_settings WHERE key=?", (key,)
+                ).fetchone()
+                if not exists:
+                    conn.execute(
+                        "INSERT INTO system_settings (key, value) VALUES (?, ?)",
+                        (key, value),
+                    )
+                elif key == 'payments_cloud_base_url':
+                    # Always keep canonical payments host (never leave blank/stale).
+                    cur = conn.execute(
+                        "SELECT value FROM system_settings WHERE key=?", (key,)
+                    ).fetchone()
+                    if not (cur and str(cur[0] or '').strip()):
+                        conn.execute(
+                            "UPDATE system_settings SET value=? WHERE key=?",
+                            (value, key),
+                        )
+            # Prefer cloud collection when mode unset; do not clobber an explicit manual choice.
+            mode_row = conn.execute(
+                "SELECT value FROM system_settings WHERE key='mpesa_mode'"
+            ).fetchone()
+            if not mode_row:
+                conn.execute(
+                    "INSERT INTO system_settings (key, value) VALUES ('mpesa_mode', 'cloud')"
+                )
         conn.commit()
     except Exception:
         logger.exception('ensure_payment_schema failed')

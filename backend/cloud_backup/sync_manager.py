@@ -67,6 +67,7 @@ OUTBOX_PRIORITY_SQL = (
     "WHEN 'debt_payment' THEN 3 "
     "WHEN 'customer' THEN 4 "
     "WHEN 'product' THEN 5 "
+    "WHEN 'expense' THEN 5 "
     "WHEN 'stock_movement' THEN 8 "
     "WHEN 'audit_log' THEN 9 "
     "ELSE 6 END"
@@ -114,6 +115,7 @@ ENTITY_FIELD_ALLOWLIST = {
         'discount', 'tax', 'total', 'payment_method', 'amount_paid',
         'change_amount', 'status', 'customer_id', 'credit_applied',
         'electronic_paid', 'original_total', 'cash_rounding_adj',
+        'electronic_method', 'cash_paid', 'payment_tenders',
         'variance_handling', 'created_at', 'updated_at',
     },
     'sale_item': {
@@ -146,20 +148,25 @@ ENTITY_FIELD_ALLOWLIST = {
         'tab_permissions', 'created_at', 'updated_at',
     },
     'supplier': {
-        'id', 'name', 'phone', 'email', 'address', 'is_active',
+        'id', 'name', 'phone', 'email', 'address', 'notes', 'is_active',
         'created_at', 'updated_at',
     },
     'expense': {
         'id', 'category', 'amount', 'description', 'payment_method',
         'cashier_id', 'cashier_name', 'created_at', 'updated_at',
+        'status', 'client_txn_id', 'expense_number', 'vendor_name',
+        'reference_number',
     },
     'purchase': {
-        'id', 'supplier_id', 'reference', 'total', 'status',
+        'id', 'purchase_number', 'client_txn_id', 'supplier_id',
+        'supplier_name', 'reference', 'delivery_date', 'total', 'status',
+        'payment_method', 'notes', 'received_by_id', 'received_by_name',
         'created_at', 'updated_at',
     },
     'purchase_item': {
         'id', 'purchase_id', 'product_id', 'product_name', 'quantity',
-        'unit_cost', 'total', 'created_at', 'updated_at',
+        'unit_cost', 'total', 'qty_before', 'qty_after',
+        'created_at', 'updated_at',
     },
     'employee': {
         'id', 'name', 'phone', 'role', 'is_active', 'created_at', 'updated_at',
@@ -210,6 +217,16 @@ def _shop_facing_backup_error(error: Exception | str) -> str:
         )
     if 'not signed in' in low or 'no refresh token' in low:
         return 'Cloud session expired. Sign in again in Settings → Cloud Backup.'
+    if (
+        'invalid refresh token' in low
+        or 'refresh token not found' in low
+        or 'reauth' in low
+        or 'sign in again' in low
+    ):
+        return (
+            'Cloud sign-in expired. Open Settings → Cloud Backup and sign in '
+            'once. Sales keep working; backups resume after login.'
+        )
     return raw or 'Cloud backup failed'
 
 
@@ -410,6 +427,11 @@ class SyncManager:
     def start(self, progress_callback: Callable | None = None, **_kwargs) -> 'SyncManager':
         if progress_callback:
             self._progress_cb = progress_callback
+        try:
+            from backend.cloud_backup.migrate_stale_state import sanitize_stale_cloud_state
+            sanitize_stale_cloud_state()
+        except Exception as e:
+            logger.warning('Stale cloud state sanitize skipped: %s', e)
         if self._started and self._thread and self._thread.is_alive():
             return self
         self._stop.clear()
@@ -483,9 +505,9 @@ class SyncManager:
         }
 
     def _ensure_cloud_backup_enabled(self) -> None:
-        """When a Portal session is active, keep cloud auto-backup ON unless skipped."""
-        ident = load_identity()
-        if ident.get('cloud_skipped') or not ident.get('access_token'):
+        """When a refreshable Portal session is active, keep auto-backup ON."""
+        from backend.cloud_backup.paths import has_refreshable_session
+        if not has_refreshable_session():
             return
         if not _shop_auto_backup_enabled():
             return
@@ -495,12 +517,16 @@ class SyncManager:
             save_cloud_config(cfg)
 
     def _ensure_logged_in_identity(self) -> bool:
-        """Repair missing business_id when access_token exists (stale AppData)."""
+        """Repair missing business_id when a refreshable session exists."""
+        from backend.cloud_backup.paths import has_refreshable_session
         ident = load_identity()
-        if not ident.get('access_token') or ident.get('cloud_skipped'):
+        if ident.get('cloud_skipped') or not (ident.get('access_token') or '').strip():
+            return False
+        # Never treat access-only as repairable logged-in — needs refresh too.
+        if not (ident.get('refresh_token') or '').strip():
             return False
         if ident.get('business_id'):
-            return True
+            return has_refreshable_session(ident)
         try:
             client = SupabaseClient()
             uid = str(ident.get('user_id') or '')
@@ -529,15 +555,23 @@ class SyncManager:
                     ident['org_id'] = biz['org_id']
             save_identity(ident)
             logger.info('Repaired cloud identity business_id → %s', ident['business_id'])
-            return True
+            return has_refreshable_session()
         except Exception as e:
             logger.debug('Identity repair deferred: %s', e)
             return False
 
     def _session_ready_for_backup(self) -> bool:
-        self._ensure_cloud_backup_enabled()
+        try:
+            from backend.cloud.auth_gate import cloud_sync_should_run
+            if not cloud_sync_should_run():
+                return False
+        except Exception:
+            pass
         if not is_logged_in():
             self._ensure_logged_in_identity()
+        if not is_logged_in():
+            return False
+        self._ensure_cloud_backup_enabled()
         return is_logged_in()
 
     def _loop(self):
@@ -550,6 +584,19 @@ class SyncManager:
                 int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
             )
             try:
+                try:
+                    from backend.cloud.auth_gate import (
+                        cloud_sync_should_run,
+                        is_terminal_auth_dead,
+                    )
+                    if is_terminal_auth_dead() or not cloud_sync_should_run():
+                        self._last_status = (
+                            'Cloud auth required — sign in again (POS still works)'
+                        )
+                        self._stop.wait(min(60, interval_min * 60))
+                        continue
+                except Exception:
+                    pass
                 if self._session_ready_for_backup() and is_cloud_configured():
                     self.ensure_historical_backfill()
                     # Drain multiple prioritized batches per tick so sales are not
@@ -620,6 +667,12 @@ class SyncManager:
         if response.status_code not in (401, 403):
             return response
         try:
+            from backend.cloud.auth_gate import (
+                allow_refresh_attempt,
+                is_terminal_auth_dead,
+            )
+            if is_terminal_auth_dead() or not allow_refresh_attempt():
+                return response
             SupabaseClient().refresh_session()
         except Exception as refresh_error:
             logger.warning('Entity sync token refresh failed: %s', refresh_error)
@@ -637,6 +690,22 @@ class SyncManager:
         """
         ident = load_identity()
         org_id = str(ident.get('org_id') or '')
+        try:
+            from backend.cloud.platform_service import is_uuid
+            if org_id and not is_uuid(org_id):
+                logger.warning(
+                    'Dropping non-UUID org_id=%r from identity (blocks sync until re-login)',
+                    org_id,
+                )
+                ident['org_id'] = ''
+                try:
+                    from backend.cloud_backup.paths import save_identity
+                    save_identity(ident)
+                except Exception:
+                    pass
+                org_id = ''
+        except Exception:
+            pass
         if not org_id or not is_logged_in():
             return 0
         # Device registry identity must exist before cloud ingest will accept batches.
@@ -1034,8 +1103,33 @@ class SyncManager:
 
     def flush_offline_queue(self) -> int:
         self._retire_legacy_queue_references()
+        try:
+            from backend.cloud_backup.migrate_stale_state import sanitize_stale_cloud_state
+            sanitize_stale_cloud_state()
+        except Exception:
+            pass
         if not (is_logged_in() and is_cloud_configured()):
             return 0
+        try:
+            from backend.cloud.auth_gate import cloud_sync_should_run, is_terminal_auth_dead
+            if is_terminal_auth_dead() or not cloud_sync_should_run():
+                self._last_status = (
+                    'Cloud auth required — sign in again (POS still works)'
+                )
+                return 0
+        except Exception:
+            pass
+        # Circuit: skip aggressive flush while cloud breaker is open.
+        try:
+            from backend.cloud.circuit_breaker import get_breaker
+            br = get_breaker('cloud_backup_flush')
+            if not br.allow():
+                self._last_status = (
+                    f'Cloud backoff — retry in {int(br.seconds_until_retry())}s'
+                )
+                return 0
+        except Exception:
+            br = None
         q = load_json(offline_queue_path(), {'items': []})
         items = q.get('items') or []
         if not items:
@@ -1046,6 +1140,7 @@ class SyncManager:
         last_meta = None
         last_row = None
         active_business = str(load_identity().get('business_id') or '')
+        flush_failed = False
         for item in items:
             try:
                 if item.get('type') == 'backup_meta' and item.get('local_enc_path'):
@@ -1076,6 +1171,7 @@ class SyncManager:
                 else:
                     remaining.append(item)
             except Exception as e:
+                flush_failed = True
                 if isinstance(e, FileNotFoundError):
                     lost += 1
                     logger.warning('Dropping unrecoverable queue reference: %s', e)
@@ -1086,6 +1182,15 @@ class SyncManager:
                 logger.info('Offline queue item deferred: %s', e)
                 remaining.append(item)
         save_json(offline_queue_path(), {'items': remaining})
+        try:
+            from backend.cloud.circuit_breaker import get_breaker
+            br = get_breaker('cloud_backup_flush')
+            if flush_failed and done == 0:
+                br.record_failure()
+            elif done:
+                br.record_success()
+        except Exception:
+            pass
         if remaining:
             self._last_error = str(remaining[0].get('last_error') or '')
             state = load_json(backup_state_path(), {})

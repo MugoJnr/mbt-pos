@@ -124,15 +124,22 @@ export function profitKpiFromSummary(
   if (isMissingAmount(profit) && !hasSalesActivity) {
     return { amount: "—", hint: "No sales in range", unavailable: false };
   }
-  // Prefer API profit; if somehow null with sales, show 0 not a blank dash.
+  if (String(summary.cost_data_status || "") === "no_items") {
+    return {
+      amount: "—",
+      hint: message || PROFIT_UNAVAILABLE_HINT,
+      unavailable: true,
+    };
+  }
   const amountValue = isMissingAmount(profit) ? 0 : profit;
+  const partial = String(summary.cost_data_status || "") === "incomplete";
   return {
     amount: formatCompactMoney(amountValue, currency),
     hint:
       margin != null && margin !== ""
-        ? `${formatNumber(margin, 1)}% margin`
+        ? `${partial ? "Estimated · " : ""}${formatNumber(margin, 1)}% margin`
         : message || "Sales − cost for selected range",
-    unavailable: false,
+    unavailable: partial,
   };
 }
 

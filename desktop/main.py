@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-10-v3.0.90"
-APP_VERSION   = "3.0.90"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-18-v3.1.3"
+APP_VERSION   = "3.1.3"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -2871,6 +2871,13 @@ class MainWindow(QMainWindow):
 
     # ?? Status slots ????????????????????????????????????????????????????????????
     def _on_conn(self, ok: bool):
+        # Debounce: ignore identical status flashes within 2s (cloud poll spam).
+        now = time.monotonic()
+        last = getattr(self, '_conn_ui_at', 0.0)
+        prev = getattr(self, '_conn_ok', None)
+        if prev is not None and bool(prev) == bool(ok) and (now - last) < 2.0:
+            return
+        self._conn_ui_at = now
         self._conn_ok = ok
         self._conn_lbl.setText("Online" if ok else "Offline")
         color = C['ok'] if ok else C['err']
@@ -2884,6 +2891,16 @@ class MainWindow(QMainWindow):
             pass
         self._conn_lbl.setStyleSheet(
             f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:700;")
+        # Cloud informational tip — never toast-loop on every offline poll.
+        if not ok:
+            tip = getattr(self, '_cloud_offline_toasted_at', 0.0)
+            if (now - tip) > 3600:
+                self._cloud_offline_toasted_at = now
+                try:
+                    self._set_status(
+                        'Cloud: Offline (POS still works)', transient=True)
+                except Exception:
+                    pass
         if ok:
             try:
                 from backend.cloudflare_setup import (
@@ -2959,7 +2976,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def _maybe_alert_cloud_reauth(self):
-        """Warn when saved cloud identity cannot be used without a fresh sign-in."""
+        """Warn once when saved cloud identity cannot be used without a fresh sign-in."""
         if self._closing or getattr(self, '_cloud_reauth_alerted', False):
             return
         try:
@@ -2986,10 +3003,19 @@ class MainWindow(QMainWindow):
             self._set_status('Cloud re-auth required', transient=False)
         except Exception:
             pass
+        # Toast once — never QMessageBox.warning storm / FLASH Show loop.
         try:
-            QMessageBox.warning(self, 'Cloud Sign-In Required', msg)
+            from backend.cloud.auth_gate import should_show_platform_auth_toast
+            from desktop.utils.quiet_ui import info_toast
+            if should_show_platform_auth_toast():
+                info_toast(
+                    self,
+                    f'MugoByte Platform: {msg.splitlines()[0]}',
+                    tone='warn',
+                    ms=4500,
+                )
         except Exception as e:
-            log.warning('cloud reauth dialog: %s', e)
+            log.debug('cloud reauth toast: %s', e)
 
     def _clear_transient_status(self, expected: str):
         try:
@@ -3011,7 +3037,10 @@ class MainWindow(QMainWindow):
             f"{now.strftime('%a %d %b')}   {now.strftime('%H:%M:%S')}")
 
     def _manual_refresh(self):
-        self._sync_lbl.setText("Checking...")
+        # Terminal "checking" state — worker never blocks the UI thread.
+        self._sync_lbl.setText("Cloud: Checking…")
+        self._sync_lbl.setToolTip(
+            'Checking connectivity in the background. Sales stay available.')
         QTimer.singleShot(80, self._do_refresh)
 
     def _do_refresh(self):
@@ -3033,6 +3062,24 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _finish_manual_refresh(self, ok):
+        try:
+            if ok:
+                self._sync_lbl.setText('Cloud: Online')
+            else:
+                br_sec = 0
+                try:
+                    from backend.cloud.circuit_breaker import get_breaker
+                    br_sec = int(get_breaker('internet_monitor').seconds_until_retry())
+                except Exception:
+                    pass
+                if br_sec > 0:
+                    self._sync_lbl.setText(f'Cloud: Offline (retry {br_sec}s)')
+                else:
+                    self._sync_lbl.setText('Cloud: Offline')
+            self._sync_lbl.setToolTip(
+                'Local POS is independent of cloud reachability.')
+        except Exception:
+            pass
         self._on_conn(ok)
         cur = self._stack.currentWidget()
         if cur and hasattr(cur, 'refresh'):

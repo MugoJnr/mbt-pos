@@ -53,7 +53,16 @@ type TrendPoint = {
   transactions: number;
   costIncomplete: boolean;
 };
-type MixPoint = { method: string; total: number; count: number; fill: string; key: string };
+type MixPoint = {
+  method: string;
+  total: number;
+  count: number;
+  saleReceipts: number;
+  debtPayments: number;
+  fill: string;
+  key: string;
+  hasLegacyUnknown: boolean;
+};
 
 function prefersMotion() {
   return typeof window === "undefined"
@@ -95,6 +104,9 @@ function normalizeMix(rows: AnalyticsRow[]): MixPoint[] {
       method: String(value(row, "payment_method", "method") || "Unknown"),
       total: Number(value(row, "total", "amount") || 0),
       count: Number(value(row, "count", "transactions") || 0),
+      saleReceipts: Number(row.sale_receipts || 0),
+      debtPayments: Number(row.debt_payments || 0),
+      hasLegacyUnknown: Boolean(row.has_legacy_unknown),
     }))
     .filter((row) => row.total > 0.009)
     .sort((a, b) => b.total - a.total)
@@ -333,55 +345,83 @@ function PaymentMixChart({
     return <ChartEmpty label="No collected tender for this period." />;
   }
 
+  const visibleRows = compact ? data.slice(0, 6) : data;
+
   return (
-    <div className="relative">
-      {data.length === 1 ? (
-        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center pb-8 text-center">
+    <div>
+      <div className="relative">
+        {data.length === 1 ? (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center pb-8 text-center">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">{data[0].method}</p>
           <p className="mt-1 font-display text-sm font-semibold tabular-nums sm:text-base">
             {formatMoney(data[0].total, currency)}
           </p>
-        </div>
-      ) : null}
-      <ChartContainer config={config} className={cn("mx-auto aspect-auto w-full", height)}>
-        <PieChart accessibilityLayer>
-          <ChartTooltip
-            content={
-              <ChartTooltipContent
-                nameKey="key"
-                formatter={(val, _name, item) => {
-                  const payload = item?.payload as MixPoint | undefined;
-                  const pct = total ? Math.round((Number(val) / total) * 100) : 0;
-                  return (
-                    <div className="flex w-full items-center justify-between gap-4">
-                      <span>{payload?.method || "Method"}</span>
-                      <span className="font-mono tabular-nums">
-                        {formatMoney(val, currency)} · {pct}%
-                      </span>
-                    </div>
-                  );
-                }}
-              />
-            }
-          />
-          <Pie
-            data={data}
-            dataKey="total"
-            nameKey="key"
-            innerRadius={compact ? 52 : 68}
-            outerRadius={compact ? 84 : 110}
-            strokeWidth={2}
-            stroke="var(--background)"
-            paddingAngle={data.length > 1 ? 2 : 0}
-            isAnimationActive={prefersMotion()}
-          >
-            {data.map((row) => (
-              <Cell key={row.key} fill={row.fill} />
-            ))}
-          </Pie>
-          <ChartLegend content={<ChartLegendContent nameKey="key" />} />
-        </PieChart>
-      </ChartContainer>
+          </div>
+        ) : null}
+        <ChartContainer config={config} className={cn("mx-auto aspect-auto w-full", height)}>
+          <PieChart accessibilityLayer>
+            <ChartTooltip
+              content={
+                <ChartTooltipContent
+                  nameKey="key"
+                  formatter={(val, _name, item) => {
+                    const payload = item?.payload as MixPoint | undefined;
+                    const pct = total ? Math.round((Number(val) / total) * 100) : 0;
+                    return (
+                      <div className="flex w-full items-center justify-between gap-4">
+                        <span>{payload?.method || "Method"}</span>
+                        <span className="font-mono tabular-nums">
+                          {formatMoney(val, currency)} · {pct}%
+                        </span>
+                      </div>
+                    );
+                  }}
+                />
+              }
+            />
+            <Pie
+              data={data}
+              dataKey="total"
+              nameKey="key"
+              innerRadius={compact ? 52 : 68}
+              outerRadius={compact ? 84 : 110}
+              strokeWidth={2}
+              stroke="var(--background)"
+              paddingAngle={data.length > 1 ? 2 : 0}
+              isAnimationActive={prefersMotion()}
+            >
+              {data.map((row) => (
+                <Cell key={row.key} fill={row.fill} />
+              ))}
+            </Pie>
+            <ChartLegend content={<ChartLegendContent nameKey="key" />} />
+          </PieChart>
+        </ChartContainer>
+      </div>
+      <div className="mt-2 divide-y rounded-xl border border-border/70">
+        {visibleRows.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+            <div className="min-w-0">
+              <p className="truncate font-medium">{row.method}</p>
+              <p className="text-xs text-muted-foreground">
+                {row.saleReceipts
+                  ? `${formatNumber(row.saleReceipts)} sale${row.saleReceipts === 1 ? "" : "s"}`
+                  : ""}
+                {row.saleReceipts && row.debtPayments ? " + " : ""}
+                {row.debtPayments
+                  ? `${formatNumber(row.debtPayments)} debt payment${row.debtPayments === 1 ? "" : "s"}`
+                  : ""}
+                {!row.saleReceipts && !row.debtPayments
+                  ? `${formatNumber(row.count)} receipt${row.count === 1 ? "" : "s"}`
+                  : ""}
+              </p>
+            </div>
+            <p className="shrink-0 font-semibold tabular-nums">
+              {formatMoney(row.total, currency)}
+            </p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -393,7 +433,7 @@ function TrendTable({ data, currency }: { data: TrendPoint[]; currency: string }
         <TableHeader>
           <TableRow>
             <TableHead className="sticky left-0 bg-background">Date</TableHead>
-            <TableHead className="text-right">Transactions</TableHead>
+            <TableHead className="text-right">Sales / debt payments</TableHead>
             <TableHead className="text-right">Sales</TableHead>
             <TableHead className="text-right">Gross profit</TableHead>
           </TableRow>
@@ -432,7 +472,9 @@ function MixTable({ data, currency }: { data: MixPoint[]; currency: string }) {
           {data.map((row) => (
             <TableRow key={row.key}>
               <TableCell className="sticky left-0 bg-background font-medium">{row.method}</TableCell>
-              <TableCell className="text-right">{formatNumber(row.count)}</TableCell>
+              <TableCell className="text-right">
+                {formatNumber(row.saleReceipts)} / {formatNumber(row.debtPayments)}
+              </TableCell>
               <TableCell className="text-right font-medium">{formatMoney(row.total, currency)}</TableCell>
               <TableCell className="text-right">
                 {total ? `${Math.round((row.total / total) * 100)}%` : "—"}
@@ -482,7 +524,7 @@ export function AnalyticsChartSection({
         </ClickableChartCard>
         <ClickableChartCard
           title="Payment mix"
-          description="Collected tender by payment method. Tap to open the full chart and table."
+          description="All collected money by tender, including sales and debt repayments. Mixed receipts are split."
           openLabel="Open payment mix details"
           onOpen={() => setOpen("mix")}
         >
@@ -510,7 +552,8 @@ export function AnalyticsChartSection({
           <DialogHeader>
             <DialogTitle>Payment mix</DialogTitle>
             <DialogDescription>
-              Collected amounts by payment method for this date range. Unpaid credit is excluded.
+              Sales and debt repayments by actual tender for this date range. A mixed receipt can
+              appear under more than one method; unpaid credit is excluded.
             </DialogDescription>
           </DialogHeader>
           <PaymentMixChart data={mix} currency={currency} />

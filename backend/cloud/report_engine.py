@@ -320,8 +320,14 @@ class ReportEngine:
 
             resp = _post(token)
             if resp.status_code in (401, 403):
-                # Expired access token — refresh once and retry.
+                # Expired access token — refresh once and retry (gated).
                 try:
+                    from backend.cloud.auth_gate import (
+                        allow_refresh_attempt,
+                        is_terminal_auth_dead,
+                    )
+                    if is_terminal_auth_dead() or not allow_refresh_attempt():
+                        return False, 'cloud auth required — sign in again'
                     from backend.cloud_backup.supabase_client import get_client
                     data = get_client().refresh_session()
                     new_tok = (data.get('access_token') or '').strip()

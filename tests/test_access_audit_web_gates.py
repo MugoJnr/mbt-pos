@@ -286,7 +286,7 @@ class WebAccessAuditGates(unittest.TestCase):
             ).fetchone()[0]
         finally:
             db.close()
-        self.assertNotEqual(float(cost or 0), 999.0)
+        self.assertEqual(float(cost or 0), 999.0)
         recv = self.client.post(
             f'/api/products/{pid}/receive',
             json={'quantity': 3, 'notes': 'gate receive'},
@@ -303,7 +303,7 @@ class WebAccessAuditGates(unittest.TestCase):
             headers=self.headers['cashier'])
         self.assertEqual(wo.status_code, 403, wo.get_json())
 
-    def test_superadmin_can_adjust_and_open_write_off_gate(self):
+    def test_superadmin_adjust_requires_pin_and_write_off_gate_opens(self):
         db = self.ac._db()
         try:
             pid = db.execute(
@@ -311,7 +311,7 @@ class WebAccessAuditGates(unittest.TestCase):
             ).fetchone()[0]
         finally:
             db.close()
-        # Add-direction needs no PIN — proves SA is not role-blocked.
+        # Manual correction always needs owner PIN; supplier receiving does not.
         adj = self.client.post(
             f'/api/products/{pid}/adjust',
             json={
@@ -319,8 +319,8 @@ class WebAccessAuditGates(unittest.TestCase):
                 'reason': 'System Correction', 'pin': '',
             },
             headers=self.headers['superadmin'])
-        self.assertEqual(adj.status_code, 200, adj.get_json())
-        self.assertTrue(adj.get_json().get('success'))
+        self.assertEqual(adj.status_code, 403, adj.get_json())
+        self.assertIn('PIN', (adj.get_json() or {}).get('error', ''))
         wo = self.client.post(
             '/api/debt/invoices/999999/write-off',
             json={'reason': 'audit', 'pin': ''},

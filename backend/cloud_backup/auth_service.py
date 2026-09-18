@@ -15,6 +15,7 @@ from backend.cloud_backup.device_manager import (
 )
 from backend.cloud_backup.encryption import ensure_identity_key_material, generate_salt
 from backend.cloud_backup.paths import (
+    invalidate_cloud_session,
     is_cloud_configured,
     load_cloud_config,
     load_identity,
@@ -25,6 +26,17 @@ from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 from backend.cloud_backup.sync_manager import _app_version
 
 logger = logging.getLogger('cloud_backup.auth')
+
+
+def _require_refresh_token(session: dict) -> None:
+    """Cloud backup needs a refresh token; never enable sync on access-only sessions."""
+    if (session.get('refresh_token') or '').strip():
+        return
+    invalidate_cloud_session(reason='portal_sign_in_no_refresh')
+    raise SupabaseError(
+        'Portal sign-in did not return a refresh token. '
+        'Cloud backup was not enabled — POS works offline. Try again or contact support.'
+    )
 
 
 def _kickoff_backup_after_login() -> None:
@@ -190,6 +202,8 @@ def create_business(
             pass
     save_identity(ident)
 
+    _require_refresh_token(session)
+
     cfg = load_cloud_config()
     cfg['enabled'] = True
     save_cloud_config(cfg)
@@ -256,6 +270,8 @@ def login_existing(email: str, password: str) -> dict[str, Any]:
             logger.warning('ensure org on login: %s', e)
     _, ident = ensure_identity_key_material(ident, password=password)
     save_identity(ident)
+
+    _require_refresh_token(session)
 
     cfg = load_cloud_config()
     cfg['enabled'] = True

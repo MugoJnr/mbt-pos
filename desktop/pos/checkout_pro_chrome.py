@@ -1141,13 +1141,52 @@ _QUICK_ACTION_TIPS = {
     '_void_sale': 'Void a completed sale (reason + Super-Admin PIN)',
     '_open_return_sale': 'Return items from a completed receipt (restock + refund)',
     '_reprint_receipt': 'Reprint a completed receipt',
-    '_open_payment_inbox': 'Match unmatched Till / M-Pesa payments',
+    '_record_expense': 'Record a till expense without leaving Point of Sale',
     '_preview': 'Preview / print the current sale',
     '_open_recent_sales': 'Browse recent sales for this business day',
     '_focus_notes': 'Add a note to this sale',
     '_toggle_cart_maximized': 'Enlarge the cart to review and edit many lines',
     '_toggle_focus_mode': 'Maximize Point of Sale — hide sidebar and top bar (Esc to exit)',
 }
+
+
+def _ensure_expense_sale_action_tile(tab) -> None:
+    """Guarantee Expense appears under Sale Actions (never only in the foot)."""
+    wrap = getattr(tab, '_quick_actions', None)
+    tiles = getattr(tab, '_quick_action_tiles', None)
+    if not _alive(wrap):
+        return
+    if tiles is None:
+        tiles = {}
+        tab._quick_action_tiles = tiles
+    if '_record_expense' in tiles and _alive(tiles.get('_record_expense')):
+        return
+    warn = C.get('warn', C['gold'])
+    t = QuickActionTile('Expense', warn)
+    t.setToolTip(_QUICK_ACTION_TIPS['_record_expense'])
+    t.clicked.connect(lambda _=False: _call_tab(tab, '_record_expense'))
+    gl = wrap.layout()
+    if gl is not None:
+        # Place after Return / Exchange when present, else append.
+        idx = len(tiles)
+        order = list(tiles.keys())
+        if '_open_return_sale' in tiles:
+            idx = order.index('_open_return_sale') + 1
+        gl.addWidget(t, idx // 3, idx % 3)
+    tiles['_record_expense'] = t
+
+
+def _remove_mpesa_inbox_sale_action_tile(tab) -> None:
+    """Drop legacy M-Pesa Inbox Sale Actions tile (payment matching lives elsewhere)."""
+    tiles = getattr(tab, '_quick_action_tiles', None) or {}
+    tile = tiles.pop('_open_payment_inbox', None)
+    if _alive(tile):
+        try:
+            tile.hide()
+            tile.setParent(None)
+            tile.deleteLater()
+        except Exception:
+            pass
 
 
 def ensure_pro_widgets(tab) -> None:
@@ -1200,8 +1239,8 @@ def ensure_pro_widgets(tab) -> None:
             ('Clear Cart', C['err'], '_clear'),
             ('Void Sale', C['err'], '_void_sale'),
             ('Return / Exchange', warn, '_open_return_sale'),
+            ('Expense', warn, '_record_expense'),
             ('Reprint', info, '_reprint_receipt'),
-            ('M-Pesa Inbox', info, '_open_payment_inbox'),
             ('Print Preview', info, '_preview'),
             ('Recent Sales', info, '_open_recent_sales'),
             ('Notes', C['text2'], '_focus_notes'),
@@ -1221,6 +1260,11 @@ def ensure_pro_widgets(tab) -> None:
             gl.setRowStretch(r, 1)
         tab._quick_action_tiles = tiles
         tab._quick_actions = wrap
+
+    # Hotfix / upgrade: inject Expense into Sale Actions if an older tile set
+    # was already built without it; strip legacy M-Pesa Inbox tile from Pro pad.
+    _ensure_expense_sale_action_tile(tab)
+    _remove_mpesa_inbox_sale_action_tile(tab)
 
     if not _alive(getattr(tab, '_quick_actions_cap', None)):
         cap = QLabel('Sale Actions')
@@ -1671,7 +1715,8 @@ def sync_pro_square_layout(tab) -> None:
                 if tiles:
                     order = [
                         '_hold_sale', '_resume_held', '_suspend_sale', '_clear',
-                        '_void_sale', '_open_return_sale', '_reprint_receipt', '_preview',
+                        '_void_sale', '_open_return_sale', '_record_expense',
+                        '_reprint_receipt', '_preview',
                         '_open_recent_sales', '_focus_notes', '_toggle_cart_maximized',
                         '_toggle_focus_mode',
                     ]
@@ -1979,7 +2024,7 @@ def apply_checkout_pro_chrome(tab) -> None:
     # Footer: only Complete Sale — payment/utility stack scrolls in the body above.
     for name in (
         '_clr_btn', '_hold_btn', '_resume_btn', '_prv_btn', '_reprint_btn',
-        '_void_btn', '_returns_help_btn',
+        '_void_btn', '_returns_help_btn', '_mpesa_inbox_btn', '_expense_btn',
     ):
         b = getattr(tab, name, None)
         if _alive(b):
@@ -2060,6 +2105,25 @@ def sync_quick_action_state(tab) -> None:
             tip = btn.toolTip()
             if tip:
                 tile.setToolTip(tip)
+    exp_tile = tiles.get('_record_expense')
+    if _alive(exp_tile):
+        allowed = True
+        try:
+            from desktop.utils.security import has_permission
+            user = getattr(tab, 'user', None) or {}
+            allowed = (
+                has_permission(user, 'accounting.create_expenses')
+                or has_permission(user, 'accounting.approve_expenses')
+            )
+        except Exception:
+            btn = getattr(tab, '_expense_btn', None)
+            if _alive(btn):
+                allowed = btn.isEnabled()
+        exp_tile.setEnabled(bool(allowed))
+        exp_tile.setVisible(True)
+        exp_tile.setToolTip(
+            _QUICK_ACTION_TIPS['_record_expense'] if allowed
+            else 'Your role cannot record expenses')
 
 
 def _style_col_hdr(hdr: QWidget):

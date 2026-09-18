@@ -96,10 +96,10 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
                 <TableCell className="font-medium">{String(value(row, "receipt_number", "receipt", "invoice_number") || "—")}</TableCell>
                 <TableCell>{String(value(row, "cashier_name", "cashier") || "—")}</TableCell>
                 <TableCell>{String(value(row, "customer_name", "customer") || "Walk-in")}</TableCell>
-                <TableCell>{String(value(row, "payment_method", "payment") || "—")}</TableCell>
+                <TableCell>{String(value(row, "payment_display", "payment_method", "payment") || "—")}</TableCell>
                 <TableCell><Badge variant={statusVariant(rowStatus)}>{String(rowStatus)}</Badge></TableCell>
                 <TableCell className="text-right font-semibold">{formatMoney(value(row, "total", "grand_total", "amount"), currency)}</TableCell>
-                <TableCell><Button size="sm" variant="ghost" onClick={() => setSelected(row)}><Eye className="mr-1 h-4 w-4" />View</Button></TableCell>
+                <TableCell><Button size="sm" variant="ghost" onClick={() => setSelected(row)}><Eye className="mr-1 h-4 w-4" />Receipt</Button></TableCell>
               </TableRow>;
             })}</TableBody>
           </Table>
@@ -113,7 +113,7 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
             <DialogDescription>{formatDateTime(value(detail, "sold_at", "created_at", "date"))} · {String(value(detail, "status") || "Completed")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 rounded-lg bg-muted/40 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            {[["Cashier", value(detail, "cashier_name", "cashier")], ["Customer", value(detail, "customer_name", "customer") || "Walk-in"], ["Phone", value(detail, "customer_phone", "phone")], ["Payment", value(detail, "payment_method", "payment")], ["Subtotal", formatMoney(value(detail, "subtotal"), currency)], ["Discount", formatMoney(value(detail, "discount", "discount_total"), currency)], ["Tax", formatMoney(value(detail, "tax", "tax_total"), currency)], ["Total", formatMoney(value(detail, "total", "grand_total", "amount"), currency)]].map(([label, item]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><p className="mt-1 font-medium">{String(item || "—")}</p></div>)}
+            {[["Cashier", value(detail, "cashier_name", "cashier")], ["Customer", value(detail, "customer_name", "customer") || "Walk-in"], ["Phone", value(detail, "customer_phone", "phone")], ["Payment received", value(detail, "payment_display", "payment_method", "payment")], ["Subtotal", formatMoney(value(detail, "subtotal"), currency)], ["Discount", formatMoney(value(detail, "discount", "discount_total"), currency)], ["Tax", formatMoney(value(detail, "tax", "tax_total"), currency)], ["Total", formatMoney(value(detail, "total", "grand_total", "amount"), currency)], ["Amount paid", formatMoney(value(detail, "amount_paid"), currency)], ["Change", formatMoney(value(detail, "change_amount"), currency)]].map(([label, item]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><p className="mt-1 font-medium">{String(item || "—")}</p></div>)}
           </div>
           <div className="overflow-hidden rounded-lg border">
             <Table><TableHeader><TableRow><TableHead>Item</TableHead><TableHead className="text-right">Qty</TableHead><TableHead className="text-right">Price</TableHead><TableHead className="text-right">Discount</TableHead><TableHead className="text-right">Total</TableHead></TableRow></TableHeader>

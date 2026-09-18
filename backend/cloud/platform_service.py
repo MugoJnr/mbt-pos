@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import math
 import re
@@ -21,6 +22,28 @@ from backend.cloud.license_server import get_license_server
 from backend.cloud.net_gate import mark_network_down, network_up
 
 logger = logging.getLogger('cloud.platform')
+
+_UUID_RE = re.compile(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+)
+
+
+def is_uuid(value: Any) -> bool:
+    """True when value looks like a Postgres UUID (rejects org-test placeholders)."""
+    s = str(value or '').strip()
+    return bool(s) and bool(_UUID_RE.match(s))
+
+
+def require_uuid_org_id(org_id: Any, *, label: str = 'org_id') -> str:
+    s = str(org_id or '').strip()
+    if not is_uuid(s):
+        raise SupabaseError(
+            f'Invalid {label} {s!r} — expected a UUID organization id '
+            f'(placeholder values like org-test are not allowed)',
+            400,
+        )
+    return s
+
 
 # Shop REST defaults — fail open fast; never block splash/login on Supabase DNS.
 _SERVICE_SELECT_TIMEOUT = 3.0
@@ -366,13 +389,18 @@ def ensure_org_for_business(business: dict, owner_user_id: str) -> dict:
 
     # Prefer an org already linked on the business row.
     linked_org_id = business.get('org_id')
-    if linked_org_id:
+    if linked_org_id and is_uuid(linked_org_id):
         linked = service_select(
             'organizations',
             f'id=eq.{quote(str(linked_org_id), safe="")}&select=*&limit=1',
         )
         if linked:
             return linked[0]
+    elif linked_org_id and not is_uuid(linked_org_id):
+        logger.warning(
+            'Ignoring non-UUID business.org_id=%r (will create/link a real org)',
+            linked_org_id,
+        )
 
     existing = service_select(
         'organizations',
@@ -1074,6 +1102,7 @@ def register_or_refresh_device(
     """
     if not org_id or not device_id:
         raise SupabaseError('org_id and device_id are required', 400)
+    org_id = require_uuid_org_id(org_id)
     if verify_org_access:
         if not actor_user_id:
             raise PermissionError('Authenticated user required for device registration')
@@ -1145,7 +1174,41 @@ def register_or_refresh_device(
         'approved_by': actor_user_id,
         'is_active': True,
     }
-    inserted = service_insert('devices', row, upsert=True, on_conflict='business_id,device_id')
+    inserted = None
+    try:
+        inserted = service_insert(
+            'devices', row, upsert=True, on_conflict='business_id,device_id',
+        )
+    except SupabaseError as e:
+        msg = str(e).lower()
+        # Missing unique constraint on (business_id, device_id) → plain insert,
+        # then update-by-device_id. Never storm / hang the UI.
+        if 'on conflict' in msg or '42p10' in msg or e.status in (400, 409):
+            logger.warning(
+                'devices upsert conflict target missing/failed — fallback insert/update: %s',
+                e,
+            )
+            try:
+                inserted = service_insert('devices', row, upsert=False)
+            except SupabaseError as e2:
+                existing2 = _find_org_device(org_id, device_id)
+                if existing2 and not _device_is_revoked(existing2):
+                    service_update('devices', f'id=eq.{existing2["id"]}', patch)
+                    inserted = {**existing2, **patch, **row}
+                else:
+                    # Try match by device_id alone
+                    by_dev = service_select(
+                        'devices',
+                        f'device_id=eq.{quote(str(device_id), safe="")}'
+                        f'&select=*&limit=1',
+                    ) or []
+                    if by_dev:
+                        service_update('devices', f'id=eq.{by_dev[0]["id"]}', patch)
+                        inserted = {**by_dev[0], **patch, **row}
+                    else:
+                        raise e2 from e
+        else:
+            raise
     if isinstance(inserted, list):
         inserted = inserted[0] if inserted else row
     if not isinstance(inserted, dict):
@@ -2002,6 +2065,116 @@ def analytics_sale_collected_amount(sale: dict) -> float:
     return max(0.0, round(paid - change, 2))
 
 
+def analytics_payment_method_label(value: Any) -> str:
+    """Canonical customer-facing tender label."""
+    raw = re.sub(r'[\s_]+', ' ', str(value or '').strip())
+    key = raw.lower().replace('-', '').replace(' ', '')
+    aliases = {
+        'cash': 'Cash',
+        'mpesa': 'M-Pesa',
+        'bank': 'Bank Transfer',
+        'banktransfer': 'Bank Transfer',
+        'card': 'Card',
+        'creditcard': 'Card',
+        'storecredit': 'Store Credit',
+        'credit': 'Credit Sale',
+        'creditsale': 'Credit Sale',
+    }
+    return aliases.get(key, raw.title() if raw else 'Unknown')
+
+
+def analytics_sale_tenders(sale: dict) -> list[dict]:
+    """Return the real collected tender components for one sale.
+
+    New clients send ``payment_tenders`` and ``electronic_method``. Older
+    clients still carry ``electronic_paid``; for those rows we split cash and
+    assign the electronic leg to M-Pesa, the legacy checkout default. The
+    returned ``exact`` flag remains false so the UI discloses that assumption.
+    """
+    collected = analytics_sale_collected_amount(sale)
+    if collected <= 0.009:
+        return []
+
+    raw_tenders = sale.get('payment_tenders')
+    if isinstance(raw_tenders, str) and raw_tenders.strip():
+        try:
+            raw_tenders = json.loads(raw_tenders)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_tenders = []
+    if not isinstance(raw_tenders, list):
+        raw_tenders = []
+
+    tenders: list[dict] = []
+    remaining_change = max(0.0, _fnum(sale.get('change_amount')))
+    for tender in raw_tenders:
+        if not isinstance(tender, dict):
+            continue
+        amount = max(0.0, _fnum(tender.get('amount')))
+        method = analytics_payment_method_label(tender.get('method'))
+        if method == 'Cash' and remaining_change > 0:
+            reduction = min(amount, remaining_change)
+            amount = round(amount - reduction, 2)
+            remaining_change = round(remaining_change - reduction, 2)
+        if amount > 0.009 and method != 'Credit Sale':
+            tenders.append({'payment_method': method, 'amount': amount, 'exact': True})
+
+    if tenders:
+        total = round(sum(_fnum(t.get('amount')) for t in tenders), 2)
+        # Store credit can make settlement exceed cash collected; otherwise cap
+        # malformed legacy tender JSON to the authoritative collected amount.
+        if total > collected + 0.01 and not any(
+            t['payment_method'] == 'Store Credit' for t in tenders
+        ):
+            over = round(total - collected, 2)
+            for tender in reversed(tenders):
+                reduction = min(_fnum(tender['amount']), over)
+                tender['amount'] = round(_fnum(tender['amount']) - reduction, 2)
+                over = round(over - reduction, 2)
+                if over <= 0.009:
+                    break
+            tenders = [t for t in tenders if _fnum(t.get('amount')) > 0.009]
+        return tenders
+
+    method_raw = str(sale.get('payment_method') or '').strip()
+    method_key = method_raw.lower()
+    electronic = min(collected, max(0.0, _fnum(sale.get('electronic_paid'))))
+    is_split = method_key in ('mixed', 'split', 'part payment') or electronic > 0.009
+    if is_split and electronic > 0.009:
+        electronic_method = str(sale.get('electronic_method') or '').strip()
+        legacy_mixed_assumption = not electronic_method and method_key in (
+            'mixed', 'split', 'part payment',
+        )
+        electronic_label = analytics_payment_method_label(
+            electronic_method
+            or ('M-Pesa' if legacy_mixed_assumption else method_raw)
+        )
+        cash = max(0.0, round(collected - electronic, 2))
+        rows = [{
+            'payment_method': electronic_label,
+            'amount': electronic,
+            'exact': not legacy_mixed_assumption,
+        }]
+        if cash > 0.009:
+            rows.append({'payment_method': 'Cash', 'amount': cash, 'exact': True})
+        return rows
+
+    return [{
+        'payment_method': analytics_payment_method_label(method_raw),
+        'amount': collected,
+        'exact': True,
+    }]
+
+
+def analytics_sale_payment_display(sale: dict) -> str:
+    tenders = analytics_sale_tenders(sale)
+    if not tenders:
+        return analytics_payment_method_label(sale.get('payment_method'))
+    return ' + '.join(
+        f"{row['payment_method']} {_fnum(row['amount']):,.2f}"
+        for row in tenders
+    )
+
+
 def analytics_strip_sensitive(row: dict | None) -> dict:
     if not isinstance(row, dict):
         return {}
@@ -2186,9 +2359,16 @@ def analytics_shop_presence(org_id: str, *, now: datetime | None = None) -> dict
             sync_freshness = 'stale'
 
     pc_online = len(online) > 0
-    # Never call stale sync "live" — only fresh synced data may be labeled current.
+    business_sync_freshness = sync_freshness
+    business_sync_age_seconds = sync_age_seconds
+    # A heartbeat is an active cloud round-trip. An idle shop may have no new
+    # entities to ingest, so an old last_sync_at alone must not raise a stale
+    # error while the approved POS is connected and polling successfully.
+    if pc_online and sync_freshness in ('aging', 'stale', 'never'):
+        sync_freshness = 'connected'
     data_label = {
         'fresh': 'Synced',
+        'connected': 'Connected',
         'aging': 'Sync aging',
         'stale': 'Stale sync',
         'never': 'Never synced',
@@ -2208,8 +2388,10 @@ def analytics_shop_presence(org_id: str, *, now: datetime | None = None) -> dict
         'last_sync_at': last_sync_at,
         'sync_freshness': sync_freshness,
         'sync_age_seconds': sync_age_seconds,
+        'business_sync_freshness': business_sync_freshness,
+        'business_sync_age_seconds': business_sync_age_seconds,
         'data_label': data_label,
-        'is_live_data': sync_freshness == 'fresh',
+        'is_live_data': sync_freshness in ('fresh', 'connected'),
     }
 
 
@@ -2459,6 +2641,12 @@ def analytics_list_sales(
     offset = (page - 1) * page_size
     rows, total = service_select_page(query=query, table='cloud_sales', limit=page_size, offset=offset)
     pages = max(1, int(math.ceil(total / page_size))) if page_size else 1
+    sale_rows = []
+    for row in rows:
+        clean = analytics_normalize_row(row)
+        clean['payment_display'] = analytics_sale_payment_display(row)
+        clean['payment_breakdown'] = analytics_sale_tenders(row)
+        sale_rows.append(clean)
     return {
         'org_id': org_id,
         'start': start_s,
@@ -2468,8 +2656,8 @@ def analytics_list_sales(
         'total': total,
         'total_count': total,
         'pages': pages,
-        'sales': [analytics_normalize_row(r) for r in rows],
-        'items': [analytics_normalize_row(r) for r in rows],
+        'sales': sale_rows,
+        'items': sale_rows,
     }
 
 
@@ -2496,6 +2684,8 @@ def analytics_sale_detail(org_id: str, device_id: str, source_id: str) -> dict:
     if not sales:
         raise LookupError('Sale not found')
     sale = analytics_normalize_row(sales[0])
+    sale['payment_display'] = analytics_sale_payment_display(sale)
+    sale['payment_breakdown'] = analytics_sale_tenders(sale)
     sale_device = quote(str(sale.get('device_id') or device_id), safe='')
     # cloud_sale_items links via sale_source_id only (no sale_id column).
     # Including sale_id.eq in PostgREST or=() returns HTTP 400 and blanks
@@ -2508,6 +2698,17 @@ def analytics_sale_detail(org_id: str, device_id: str, source_id: str) -> dict:
     )
     sale['items'] = [analytics_normalize_row(i) for i in (items or [])]
     sale['line_items'] = sale['items']
+    customer_source = str(sale.get('customer_source_id') or '').strip()
+    if customer_source:
+        customers = service_select_strict(
+            'cloud_customers',
+            f'{oid}&device_id=eq.{sale_device}'
+            f'&source_id=eq.{quote(customer_source, safe="")}'
+            f'&select=name,phone&limit=1',
+        )
+        if customers:
+            sale['customer_name'] = customers[0].get('name')
+            sale['customer_phone'] = customers[0].get('phone')
     return sale
 
 
@@ -2868,6 +3069,14 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
 
     items_sold = round(sum(_fnum(i.get('quantity')) for i in item_rows), 3)
     line_items = len(item_rows)
+    covered_sale_keys = {
+        (
+            str(i.get('device_id') or ''),
+            str(i.get('sale_source_id') or i.get('sale_id') or ''),
+        )
+        for i in item_rows
+    }
+    sales_without_items = sum(1 for key in sale_keys if key not in covered_sale_keys)
     product_costs = analytics_product_cost_lookup(products)
     lines_with_cost = 0
     lines_missing_cost = 0
@@ -2884,39 +3093,83 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         cost_of_goods = round(
             cost_of_goods + (_fnum(i.get('quantity')) * unit_cost), 2,
         )
-    item_revenue = round(sum(_fnum(i.get('total')) for i in item_rows), 2)
     if not item_rows:
-        # No synced lines: cannot attribute COGS; still show 0 profit not "—".
+        # No synced lines means no defensible COGS or profit.
         cost_data_status = 'no_items'
         cost_data_incomplete = bool(txns > 0)
         cost_of_goods_out = 0.0
-        gross_profit = 0.0
-        gross_margin_pct = 0.0
+        gross_profit = None
+        gross_margin_pct = None
         cost_data_message = (
-            'Sale lines not synced for this range — profit shown as KSh 0 until items sync.'
+            'Sale lines not synced for this range — profit unavailable until items sync.'
             if cost_data_incomplete else None
         )
     else:
         cost_of_goods_out = cost_of_goods
-        gross_profit = round(item_revenue - cost_of_goods, 2)
+        # Accounting source of truth: net receipt sales less COGS. Summed line
+        # totals may be pre-discount and must never inflate reported profit.
+        gross_profit = round(gross_sales - cost_of_goods, 2)
         gross_margin_pct = (
-            round((gross_profit / item_revenue) * 100, 2) if item_revenue else 0.0
+            round((gross_profit / gross_sales) * 100, 2) if gross_sales else 0.0
         )
-        cost_data_incomplete = lines_missing_cost > 0
+        cost_data_incomplete = lines_missing_cost > 0 or sales_without_items > 0
         cost_data_status = 'incomplete' if cost_data_incomplete else 'complete'
-        cost_data_message = (
-            f'{lines_missing_cost} of {line_items} lines had no cost — '
-            'treated as KSh 0 cost (same as POS reports).'
-            if cost_data_incomplete else None
-        )
+        messages = []
+        if lines_missing_cost:
+            messages.append(
+                f'{lines_missing_cost} of {line_items} lines had no cost '
+                '(treated as KSh 0 cost)'
+            )
+        if sales_without_items:
+            messages.append(
+                f'{sales_without_items} of {txns} sales had no synced items'
+            )
+        cost_data_message = '; '.join(messages) + '.' if messages else None
 
-    # Payment mix uses collected tender (not unpaid credit totals)
+    # Payment mix uses real tender components. A mixed receipt contributes to
+    # each component instead of becoming an opaque "Mixed" bucket.
     pay_map: dict[str, dict] = {}
     for s in active_sales:
-        method = str(s.get('payment_method') or 'Unknown').strip() or 'Unknown'
-        bucket = pay_map.setdefault(method, {'payment_method': method, 'count': 0, 'total': 0.0})
+        seen_methods: set[str] = set()
+        for tender in analytics_sale_tenders(s):
+            method = str(tender.get('payment_method') or 'Unknown')
+            bucket = pay_map.setdefault(method, {
+                'payment_method': method,
+                'count': 0,
+                'sale_receipts': 0,
+                'debt_payments': 0,
+                'total': 0.0,
+                'has_legacy_unknown': False,
+            })
+            bucket['total'] = round(
+                bucket['total'] + _fnum(tender.get('amount')), 2,
+            )
+            bucket['has_legacy_unknown'] = bool(
+                bucket['has_legacy_unknown'] or not tender.get('exact', False)
+            )
+            if method not in seen_methods:
+                bucket['count'] += 1
+                bucket['sale_receipts'] += 1
+                seen_methods.add(method)
+
+    # Collected KPI includes debt repayments, so the tender breakdown must too.
+    # Keep source counts explicit so users can distinguish till sales from debt.
+    for payment in payments:
+        amount = max(0.0, _fnum(payment.get('amount')))
+        if amount <= 0.009:
+            continue
+        method = analytics_payment_method_label(payment.get('payment_method'))
+        bucket = pay_map.setdefault(method, {
+            'payment_method': method,
+            'count': 0,
+            'sale_receipts': 0,
+            'debt_payments': 0,
+            'total': 0.0,
+            'has_legacy_unknown': False,
+        })
         bucket['count'] += 1
-        bucket['total'] = round(bucket['total'] + analytics_sale_collected_amount(s), 2)
+        bucket['debt_payments'] += 1
+        bucket['total'] = round(bucket['total'] + amount, 2)
     payment_mix = sorted(pay_map.values(), key=lambda r: -r['total'])
 
     by_day: dict[str, dict] = {}
@@ -2946,7 +3199,6 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
 
     # Attach line-level profit to by_day (authoritative COGS path)
     day_cost_acc: dict[str, float] = {d: 0.0 for d in by_day}
-    day_rev_acc: dict[str, float] = {d: 0.0 for d in by_day}
     for i in item_rows:
         sale_key = (
             str(i.get('device_id') or ''),
@@ -2966,8 +3218,6 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
             day = created[:10] or 'unknown'
         if day not in by_day:
             continue
-        rev = _fnum(i.get('total'))
-        day_rev_acc[day] = round(day_rev_acc[day] + rev, 2)
         unit_cost = analytics_resolve_line_unit_cost(i, product_costs)
         if unit_cost is None:
             by_day[day]['cost_data_incomplete'] = True
@@ -2980,7 +3230,9 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
 
     for day, day_row in by_day.items():
         day_row['cost_of_goods'] = day_cost_acc[day]
-        day_row['gross_profit'] = round(day_rev_acc[day] - day_cost_acc[day], 2)
+        day_row['gross_profit'] = round(
+            _fnum(day_row.get('gross_sales')) - day_cost_acc[day], 2,
+        )
 
     prod_map: dict[str, dict] = {}
     cat_map: dict[str, dict] = {}
@@ -3078,6 +3330,7 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         'cost_data_message': cost_data_message,
         'lines_with_cost': lines_with_cost,
         'lines_missing_cost': lines_missing_cost,
+        'sales_without_items': sales_without_items,
         'cost_crushing_product_count': cost_crushing_product_count,
         'cost_crushing_profit_drag': cost_crushing_profit_drag,
         'cost_crushing_sample': cost_crushing_sample or None,
@@ -3133,6 +3386,12 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         key=lambda s: str(s.get('source_created_at') or ''),
         reverse=True,
     )[:12]
+    recent_sales_out = []
+    for sale in recent_sales:
+        normalized = analytics_normalize_row(sale)
+        normalized['payment_display'] = analytics_sale_payment_display(sale)
+        normalized['payment_breakdown'] = analytics_sale_tenders(sale)
+        recent_sales_out.append(normalized)
     top_debtors_map: dict[str, dict] = {}
     for inv in outstanding_invoices:
         name = str(inv.get('customer_name') or 'Unknown').strip() or 'Unknown'
@@ -3164,7 +3423,7 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         'top_categories': top_categories,
         'by_category': top_categories,
         'low_stock': low_stock_rows,
-        'recent_sales': [analytics_normalize_row(s) for s in recent_sales],
+        'recent_sales': recent_sales_out,
         'top_debtors': top_debtors,
         'attention': attention,
         'presence': presence,

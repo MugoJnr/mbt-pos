@@ -147,6 +147,8 @@ class CreditDebtCollectGate(unittest.TestCase):
         self.assertEqual(row['status'], 'partial')
         self.assertEqual(int(pay_count), 1)
 
+        # Web Admin is permitted to write off with the shop Super-Admin PIN.
+        self.api._role = 'admin'
         wiped = self.api.delete_debt_invoice(
             invoice_id, 'gate write-off remaining', pin=self.PIN)
         self.assertTrue(wiped.get('success'), wiped)

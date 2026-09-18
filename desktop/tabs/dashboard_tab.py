@@ -1124,6 +1124,13 @@ class DashboardTab(QWidget):
                         ('Debt in', debt_c, 'ok'),
                         ('Credit out', credit_out, 'warn'),
                     ]
+                    try:
+                        today_s = str(date.today())
+                        exps = self.api.accounting_expenses(today_s, today_s) or []
+                        exp_tot = sum(float(e.get('amount') or 0) for e in exps)
+                        chips.append(('Expenses', exp_tot, 'warn'))
+                    except Exception:
+                        pass
                     for label, amt, tone in chips:
                         chip = QLabel(f"{label}  {cur} {amt:,.0f}")
                         chip.setStyleSheet(badge_qss(tone, font_size=11,

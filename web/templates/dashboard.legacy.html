@@ -691,16 +691,22 @@ function addToCart(pid) {
   const p = PRODUCTS.find(x => x.id===pid);
   if (!p) return;
   const ex = CART.find(x => x.product_id===pid);
-  if (ex) { ex.quantity++; ex.total = round2(ex.quantity * ex.unit_price); }
-  else CART.push({product_id:pid, product_name:p.name, sku:p.sku||'', quantity:1, unit_price:+p.price, discount:0, total:+p.price});
+  if (ex) {
+    ex.quantity = parseQty(ex.quantity + 1, 0.25);
+    ex.total = round2(ex.quantity * ex.unit_price);
+  } else {
+    CART.push({product_id:pid, product_name:p.name, sku:p.sku||'', quantity:1, unit_price:+p.price, discount:0, total:+p.price});
+  }
   renderCart();
 }
 
 function removeFromCart(pid) { CART = CART.filter(x => x.product_id!==pid); renderCart(); }
+/** Match desktop: 0.25 step, keep up to 4 decimal places. */
 function parseQty(v, min=0.25) {
   const q = parseFloat(v);
   if (isNaN(q)) return min;
-  return Math.max(min, Math.round(q * 4) / 4);
+  const stepped = Math.round(q / 0.25) * 0.25;
+  return Math.max(min, Math.round(stepped * 10000) / 10000);
 }
 function bumpQty(pid, delta) {
   const item = CART.find(x => x.product_id===pid);

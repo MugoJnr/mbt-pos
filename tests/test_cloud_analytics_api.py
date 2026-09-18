@@ -72,6 +72,67 @@ class TestAnalyticsCollectedRevenue(unittest.TestCase):
         self.assertTrue(ps.analytics_is_void(sale))
         self.assertEqual(ps.analytics_sale_collected_amount(sale), 0.0)
 
+    def test_mixed_tender_json_splits_cash_and_mpesa(self):
+        sale = {
+            'status': 'completed',
+            'payment_method': 'Mixed',
+            'amount_paid': 500,
+            'change_amount': 0,
+            'payment_tenders': [
+                {'method': 'mpesa', 'amount': 400},
+                {'method': 'cash', 'amount': 100},
+            ],
+        }
+        self.assertEqual(ps.analytics_sale_tenders(sale), [
+            {'payment_method': 'M-Pesa', 'amount': 400.0, 'exact': True},
+            {'payment_method': 'Cash', 'amount': 100.0, 'exact': True},
+        ])
+
+    def test_legacy_mixed_uses_mpesa_checkout_default(self):
+        sale = {
+            'status': 'completed',
+            'payment_method': 'Mixed',
+            'amount_paid': 500,
+            'change_amount': 0,
+            'electronic_paid': 400,
+        }
+        self.assertEqual(ps.analytics_sale_tenders(sale), [
+            {
+                'payment_method': 'M-Pesa',
+                'amount': 400.0,
+                'exact': False,
+            },
+            {'payment_method': 'Cash', 'amount': 100.0, 'exact': True},
+        ])
+
+    def test_legacy_pure_mpesa_is_specific_not_an_assumed_mixed_method(self):
+        sale = {
+            'status': 'completed',
+            'payment_method': 'M-Pesa',
+            'amount_paid': 500,
+            'change_amount': 0,
+            'electronic_paid': 500,
+        }
+        self.assertEqual(ps.analytics_sale_tenders(sale), [
+            {'payment_method': 'M-Pesa', 'amount': 500.0, 'exact': True},
+        ])
+
+    def test_mixed_cash_change_is_not_counted_as_collected(self):
+        sale = {
+            'status': 'completed',
+            'payment_method': 'Mixed',
+            'amount_paid': 550,
+            'change_amount': 50,
+            'payment_tenders': [
+                {'method': 'M-Pesa', 'amount': 300},
+                {'method': 'Cash', 'amount': 250},
+            ],
+        }
+        self.assertEqual(ps.analytics_sale_tenders(sale), [
+            {'payment_method': 'M-Pesa', 'amount': 300.0, 'exact': True},
+            {'payment_method': 'Cash', 'amount': 200.0, 'exact': True},
+        ])
+
 
 class TestAnalyticsRoleRedaction(unittest.TestCase):
     def test_manager_forbidden_from_cost_and_phone(self):
@@ -164,7 +225,11 @@ class TestAnalyticsOverviewAggregation(unittest.TestCase):
             },
         ]
         payments = [
-            {'amount': 150, 'source_created_at': '2026-07-21T15:00:00+03:00', 'source_id': 'p1'},
+            {
+                'amount': 150, 'payment_method': 'mpesa',
+                'source_created_at': '2026-07-21T15:00:00+03:00',
+                'source_id': 'p1',
+            },
         ]
         debts = [
             {
@@ -218,11 +283,19 @@ class TestAnalyticsOverviewAggregation(unittest.TestCase):
         self.assertEqual(summary['out_of_stock_count'], 1)
         self.assertEqual(summary['low_only_count'], 1)
         self.assertGreaterEqual(summary['low_stock_count'], 2)
-        self.assertEqual(summary['gross_profit'], 920.0)
+        self.assertEqual(summary['gross_profit'], 1420.0)
+        payment_mix = {
+            row['payment_method']: row for row in result['payment_methods']
+        }
+        self.assertEqual(payment_mix['Cash']['total'], 1000.0)
+        self.assertEqual(payment_mix['Cash']['sale_receipts'], 1)
+        self.assertEqual(payment_mix['M-Pesa']['total'], 150.0)
+        self.assertEqual(payment_mix['M-Pesa']['debt_payments'], 1)
         # Voided sale is excluded from gross but counted in void_* fields
         self.assertEqual(summary['void_revenue'], 200.0)
-        self.assertFalse(summary['cost_data_incomplete'])
-        self.assertEqual(summary['cost_data_status'], 'complete')
+        self.assertTrue(summary['cost_data_incomplete'])
+        self.assertEqual(summary['cost_data_status'], 'incomplete')
+        self.assertEqual(summary['sales_without_items'], 1)
 
     def test_overview_flags_cost_crushing_products(self):
         """Sold SKUs with COGS ≥ revenue must surface Needs Attention (all orgs)."""
@@ -388,7 +461,7 @@ class TestAnalyticsOverviewAggregation(unittest.TestCase):
         self.assertTrue(summary['cost_data_incomplete'])
         self.assertEqual(summary['lines_with_cost'], 1)
         self.assertEqual(summary['lines_missing_cost'], 1)
-        # Milk COGS 80 + orphan COGS 0 → profit 1500 - 80 = 1420 for full range
+        # Net receipt sales 1500 - COGS 80 = 1420 for the full range.
         self.assertEqual(summary['gross_profit'], 1420.0)
         self.assertEqual(summary['cost_of_goods'], 80.0)
         self.assertEqual(result['by_day'][0]['gross_profit'], 1420.0)
@@ -435,8 +508,8 @@ class TestAnalyticsOverviewAggregation(unittest.TestCase):
         self.assertEqual(summary['transactions'], 1)
         self.assertTrue(summary['cost_data_incomplete'])
         self.assertEqual(summary['cost_data_status'], 'no_items')
-        self.assertEqual(summary['gross_profit'], 0.0)
-        self.assertEqual(summary['gross_margin_pct'], 0.0)
+        self.assertIsNone(summary['gross_profit'])
+        self.assertIsNone(summary['gross_margin_pct'])
         self.assertIsNotNone(summary['cost_data_message'])
         self.assertTrue(
             any(a.get('id') == 'cost-incomplete' for a in result['attention']),
@@ -658,6 +731,25 @@ class TestShopPresenceAndAttention(unittest.TestCase):
         self.assertTrue(presence['is_live_data'])
         self.assertEqual(presence['data_label'], 'Synced')
 
+    def test_online_heartbeat_does_not_show_stale_when_shop_is_idle(self):
+        now = datetime(2026, 9, 17, 16, 0, tzinfo=NAIROBI)
+        devices = [{
+            'id': 'd1',
+            'device_id': 'PC-1',
+            'computer_name': 'Front till',
+            'approval_status': 'approved',
+            'is_active': True,
+            'last_seen_at': now.astimezone().isoformat(),
+            'last_sync_at': '2026-09-17T11:00:00Z',
+        }]
+        with mock.patch.object(ps, 'list_devices_for_org', return_value=devices):
+            presence = ps.analytics_shop_presence('org-1', now=now.astimezone())
+        self.assertTrue(presence['pc_online'])
+        self.assertEqual(presence['sync_freshness'], 'connected')
+        self.assertEqual(presence['business_sync_freshness'], 'stale')
+        self.assertEqual(presence['data_label'], 'Connected')
+        self.assertTrue(presence['is_live_data'])
+
     def test_attention_rules_include_overdue_and_stock(self):
         presence = {
             'pc_online': False,
@@ -785,6 +877,7 @@ class TestAnalyticsSaleDetailLines(unittest.TestCase):
                     'source_id': '42',
                     'receipt_number': 'RCP-1',
                     'total': 100,
+                    'amount_paid': 100,
                     'cashier_name': 'Amina',
                     'payment_method': 'Cash',
                     'status': 'completed',
@@ -812,6 +905,10 @@ class TestAnalyticsSaleDetailLines(unittest.TestCase):
         self.assertEqual(len(sale['line_items']), 1)
         self.assertEqual(sale['line_items'][0]['product_name'], 'Maize Flour 2kg')
         self.assertEqual(sale['items'], sale['line_items'])
+        self.assertEqual(sale['payment_display'], 'Cash 100.00')
+        self.assertEqual(sale['payment_breakdown'], [
+            {'payment_method': 'Cash', 'amount': 100.0, 'exact': True},
+        ])
 
 
 if __name__ == '__main__':

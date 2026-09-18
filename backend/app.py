@@ -1136,8 +1136,8 @@ def create_product():
     if not _actor_has_perm('inventory.create'):
         return jsonify({'error': 'Insufficient permissions to add products.'}), 403
     data = dict(request.json or {})
-    if not _actor_has_perm('inventory.view_cost'):
-        data.pop('cost_price', None)
+    # First-time registration must capture buying cost even for a cashier;
+    # list/report APIs continue to redact other products' costs for that role.
     from desktop.utils.api_client import APIClient
     api = APIClient()
     api._role = g.current_user.get('role')
@@ -1183,7 +1183,12 @@ def update_product(pid):
 @token_required
 def delete_product(pid):
     if not _actor_has_perm('inventory.delete'):
-        return jsonify({'error': 'Insufficient permissions to delete products.'}), 403
+        return jsonify({
+            'error': (
+                'Your role cannot remove products from the catalogue. Ask an '
+                'Admin or the shop owner.'
+            )
+        }), 403
     from desktop.utils.api_client import APIClient
     api = APIClient()
     api._role = g.current_user.get('role')

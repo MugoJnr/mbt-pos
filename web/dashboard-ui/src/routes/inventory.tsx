@@ -5,10 +5,11 @@ import { Search, RefreshCw, Package, Download, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
-import { GET, POST, getUser } from "@/lib/api";
+import { GET, POST, PUT, DEL, getUser } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadApi, exportQuery } from "@/lib/download";
 import { KES, todayISO } from "@/lib/format";
+import { SupplierDeliveries } from "@/components/supplier-deliveries";
 
 export const Route = createFileRoute("/inventory")({
   component: Inventory,
@@ -32,15 +33,18 @@ function Inventory() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const role = String(user?.role || getUser()?.role || "").toLowerCase();
-  const isSuperAdmin = role === "superadmin";
   const canReceive = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canEdit = ["manager", "admin", "superadmin"].includes(role);
+  const canCreate = canReceive;
+  const canAdjust = ["admin", "superadmin"].includes(role);
+  const canDelete = ["admin", "superadmin"].includes(role);
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [adjPid, setAdjPid] = useState<number | null>(null);
-  const [recvPid, setRecvPid] = useState<number | null>(null);
+  const [editProduct, setEditProduct] = useState<Partial<Product> | null>(null);
   const pageSize = 40;
 
   const modulesQ = useQuery({
@@ -126,6 +130,22 @@ function Inventory() {
     }
   }
 
+  async function removeProduct(product: Product) {
+    if (!canDelete) return;
+    const ok = window.confirm(
+      `Remove “${product.name}” from the catalogue?\n\n` +
+        "It will no longer appear when selling or receiving. Past sales stay on record.",
+    );
+    if (!ok) return;
+    const res = await DEL<any>(`/products/${product.id}`);
+    if (res?.success) {
+      toast.success(res.message || `${product.name} was removed from the catalogue`);
+      qc.invalidateQueries({ queryKey: ["products"] });
+    } else {
+      toast.error(res?.error || "This product was not removed. Nothing was changed.");
+    }
+  }
+
   const sortLabel = (key: SortKey, label: string) => (
     <button type="button" onClick={() => toggleSort(key)} className="hover:text-gold">
       {label} {sortKey === key ? (sortDir === "asc" ? "↑" : "↓") : ""}
@@ -140,7 +160,7 @@ function Inventory() {
     ...(canSeeCost ? ["Cost"] : []),
     sortLabel("stock", "Stock"),
     "Unit",
-    ...(isSuperAdmin || canReceive ? ["Actions"] : []),
+    ...(canAdjust || canEdit || canDelete ? ["Actions"] : []),
   ];
 
   return (
@@ -156,6 +176,11 @@ function Inventory() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            {canCreate ? (
+              <Button onClick={() => setEditProduct({ name: "", price: 0, cost_price: 0, stock: 0, min_stock: 0, unit: "pcs" })}>
+                <Plus className="h-4 w-4" /> Add product
+              </Button>
+            ) : null}
             <div className="relative flex-1 min-w-[200px] max-w-md">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
               <Input
@@ -226,17 +251,26 @@ function Inventory() {
                       <Badge tone={oos ? "err" : low ? "warn" : "muted"}>{stock}</Badge>
                     </td>
                     <td className="px-4 py-2.5 text-text2">{p.unit || "pcs"}</td>
-                    {isSuperAdmin || canReceive ? (
+                    {canAdjust || canEdit || canDelete ? (
                       <td className="px-4 py-2.5">
                         <div className="flex flex-wrap gap-1">
-                          {canReceive ? (
-                            <Button size="sm" variant="secondary" onClick={() => setRecvPid(p.id)}>
-                              <Plus className="h-3.5 w-3.5" /> Receive
+                          {canEdit ? (
+                            <Button size="sm" variant="ghost" onClick={() => setEditProduct(p)}>
+                              Edit
                             </Button>
                           ) : null}
-                          {isSuperAdmin ? (
+                          {canAdjust ? (
                             <Button size="sm" variant="secondary" onClick={() => setAdjPid(p.id)}>
                               Adjust
+                            </Button>
+                          ) : null}
+                          {canDelete ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => void removeProduct(p)}
+                            >
+                              Delete
                             </Button>
                           ) : null}
                         </div>
@@ -273,6 +307,13 @@ function Inventory() {
         )}
       </Card>
 
+      <SupplierDeliveries
+        products={products}
+        currency={currency}
+        canReceive={canReceive}
+        onStockChanged={() => qc.invalidateQueries({ queryKey: ["products"] })}
+      />
+
       <div className="mt-3 flex items-center justify-between text-xs text-text2">
         <div>
           <span className="text-text font-semibold">{products.length}</span> products
@@ -301,12 +342,13 @@ function Inventory() {
           }}
         />
       ) : null}
-      {recvPid != null ? (
-        <ReceiveModal
-          product={products.find((p) => p.id === recvPid)}
-          onClose={() => setRecvPid(null)}
+      {editProduct ? (
+        <ProductModal
+          product={editProduct}
+          canSeeCost={canSeeCost || !editProduct.id}
+          onClose={() => setEditProduct(null)}
           onDone={() => {
-            setRecvPid(null);
+            setEditProduct(null);
             qc.invalidateQueries({ queryKey: ["products"] });
           }}
         />
@@ -345,7 +387,7 @@ function AdjustModal({
       toast.success(res.message || "Stock adjusted");
       onDone();
     } else {
-      toast.error(res?.error || "Adjust failed");
+      toast.error(res?.error || "Stock was not adjusted. Nothing was changed.");
     }
   }
 
@@ -354,7 +396,7 @@ function AdjustModal({
       <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
         <h3 className="text-lg font-semibold text-text mb-1">Adjust stock</h3>
         <p className="text-sm text-text2 mb-4">
-          {product.name} · on hand {product.stock}. Super Admin PIN required for remove/set.
+          {product.name} · on hand {product.stock}. Admin access and Super-Admin PIN required.
         </p>
         <div className="space-y-3">
           <label className="block text-xs font-medium text-text2">
@@ -395,59 +437,88 @@ function AdjustModal({
   );
 }
 
-function ReceiveModal({
+function ProductModal({
   product,
+  canSeeCost,
   onClose,
   onDone,
 }: {
-  product?: Product;
+  product: Partial<Product>;
+  canSeeCost: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [qty, setQty] = useState("1");
-  const [notes, setNotes] = useState("delivery");
+  const [form, setForm] = useState({ ...product });
   const [busy, setBusy] = useState(false);
-  if (!product) return null;
-
+  const isNew = !form.id;
   async function submit() {
+    if (!String(form.name || "").trim() || Number(form.price || 0) <= 0) {
+      toast.error("Product name and a selling price above zero are required");
+      return;
+    }
+    if (canSeeCost && Number(form.cost_price || 0) <= 0) {
+      toast.error("Enter the buying cost so profit reports remain complete");
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      name: String(form.name).trim(),
+      sku: form.sku || "",
+      category: form.category || "",
+      price: Number(form.price || 0),
+      min_stock: Number(form.min_stock || 0),
+      unit: form.unit || "pcs",
+    };
+    if (canSeeCost) payload.cost_price = Number(form.cost_price || 0);
     setBusy(true);
-    const res = await POST<any>(`/products/${product!.id}/receive`, {
-      quantity: Number(qty),
-      notes,
-    });
+    const res = isNew
+      ? await POST<any>("/products", payload)
+      : await PUT<any>(`/products/${form.id}`, payload);
     setBusy(false);
-    if (res?.success) {
-      toast.success(res.message || "Stock received");
+    if (res?.success || res?.id != null) {
+      toast.success(isNew ? "Product added" : "Product updated");
       onDone();
     } else {
-      toast.error(res?.error || "Receive failed");
+      toast.error(res?.error || "This product was not saved. Check the details and try again.");
     }
   }
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
-        <h3 className="text-lg font-semibold text-text mb-1">Receive stock</h3>
-        <p className="text-sm text-text2 mb-4">
-          {product.name} · add-only delivery (no PIN). Current stock {product.stock}.
-        </p>
-        <div className="space-y-3">
-          <label className="block text-xs font-medium text-text2">
-            Quantity to add
-            <Input value={qty} onChange={(e) => setQty(e.target.value)} type="number" min="0.01" step="0.01" />
-          </label>
-          <label className="block text-xs font-medium text-text2">
-            Notes
-            <Input value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={240} />
-          </label>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-2xl rounded-xl border border-border bg-card p-5 shadow-xl">
+        <h3 className="mb-4 text-lg font-semibold text-text">
+          {isNew ? "Add product" : `Edit ${form.name}`}
+        </h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {[
+            ["name", "Name", "text"],
+            ["sku", "SKU / code", "text"],
+            ["category", "Category", "text"],
+            ["unit", "Unit", "text"],
+            ["price", "Selling price", "number"],
+            ["min_stock", "Low-stock level", "number"],
+            ...(canSeeCost
+              ? [["cost_price", isNew ? "Buying cost" : "Buying cost (latest)", "number"]]
+              : []),
+          ].map(([key, label, type]) => (
+            <label key={key} className="text-xs font-medium text-text2">
+              {label}
+              <Input
+                className="mt-1"
+                type={type}
+                min={type === "number" ? "0" : undefined}
+                step={type === "number" ? "0.01" : undefined}
+                value={(form as any)[key] ?? ""}
+                onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+              />
+            </label>
+          ))}
         </div>
+        <p className="mt-3 text-xs text-text2">
+          Stock is not changed here. Use Receive or protected Adjust Stock. Each supplier delivery
+          overwrites the buying cost with what the vendor charged, so it stays the latest cost.
+        </p>
         <div className="mt-5 flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={busy}>
-            Receive
-          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={submit} disabled={busy}>Save product</Button>
         </div>
       </div>
     </div>

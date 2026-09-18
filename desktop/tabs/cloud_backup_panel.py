@@ -276,6 +276,17 @@ class CloudBackupPanel(QWidget):
             self.btn_restore.setEnabled(logged and not self._busy)
             self.btn_devices.setEnabled(logged)
             self.btn_logout.setEnabled(logged)
+            # Make "dead" buttons explain themselves when signed out.
+            tip_in = 'Upload an encrypted backup now'
+            tip_out = 'Sign in to MugoByte Platform (email + password) to enable Backup Now'
+            self.btn_backup.setToolTip(tip_in if logged else tip_out)
+            self.btn_restore.setToolTip(
+                'Restore from cloud' if logged else tip_out)
+            self.btn_login.setEnabled(not self._busy)
+            self.btn_create.setEnabled(not self._busy)
+            if hasattr(self, 'btn_login'):
+                self.btn_login.setToolTip(
+                    'Sign in with portal.mugobyte.com credentials')
 
             if logged:
                 self._load_history_async()
@@ -347,14 +358,36 @@ class CloudBackupPanel(QWidget):
             if payload.get('queued'):
                 self._msg.setText(f'Queued offline: {err}')
             else:
-                QMessageBox.warning(self, 'MugoByte Platform', err)
+                self._platform_warn(err)
         self.refresh()
 
     def _on_worker_err(self, err: str):
         self._set_busy(False)
         self._msg.setText(err)
-        QMessageBox.warning(self, 'MugoByte Platform', err)
+        self._platform_warn(err)
         self.refresh()
+
+    def _platform_warn(self, err: str):
+        """Auth errors toast once; other errors keep a single warning dialog."""
+        try:
+            from backend.cloud.auth_gate import (
+                is_platform_auth_message,
+                should_show_platform_auth_toast,
+            )
+            if is_platform_auth_message(err):
+                if should_show_platform_auth_toast():
+                    from desktop.utils.quiet_ui import info_toast
+                    info_toast(
+                        self,
+                        f'MugoByte Platform: {str(err).splitlines()[0][:120]}',
+                        tone='warn',
+                        ms=4500,
+                    )
+                self._msg.setText(str(err)[:200])
+                return
+        except Exception:
+            pass
+        QMessageBox.warning(self, 'MugoByte Platform', err)
 
     def _run(self, op: str, fn):
         if self._busy:

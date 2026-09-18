@@ -326,6 +326,79 @@ class PublishChecksumGateTests(unittest.TestCase):
                 '3.1.0', 'https://example.test/setup.exe', '')
             self.assertIsNone(result)
 
+    def test_publish_falls_back_when_version_unique_constraint_is_missing(self):
+        from backend.cloud.update_center import UpdateCenter
+
+        class Response:
+            def __init__(self, status, payload, text=''):
+                self.status_code = status
+                self._payload = payload
+                self.text = text
+                self.content = b'x' if payload is not None else b''
+
+            def json(self):
+                return self._payload
+
+        class Session:
+            def __init__(self):
+                self.posts = 0
+
+            def post(self, *_args, **_kwargs):
+                self.posts += 1
+                if self.posts == 1:
+                    return Response(
+                        400, {'code': '42P10'},
+                        '{"code":"42P10","message":"no unique constraint"}',
+                    )
+                return Response(201, [{'id': 'update-1', 'version': '3.1.2'}])
+
+            def get(self, *_args, **_kwargs):
+                return Response(200, [])
+
+        class Client:
+            def __init__(self):
+                self._session = Session()
+                self.service = 'service-role-key'
+
+            def _url(self, path):
+                return 'https://example.test' + path
+
+            def _headers(self, **_kwargs):
+                return {}
+
+        center = UpdateCenter()
+        with patch(
+            'backend.cloud_backup.supabase_client.SupabaseClient',
+            Client,
+        ):
+            result = center.publish_update(
+                '3.1.2', 'https://example.test/setup.exe', 'a' * 64,
+            )
+        self.assertEqual(result['version'], '3.1.2')
+
+    def test_publish_refuses_without_a_service_role_key(self):
+        """Anon-key inserts are always rejected by app_updates RLS."""
+        from backend.cloud.update_center import UpdateCenter
+
+        class Session:
+            def post(self, *_args, **_kwargs):
+                raise AssertionError('publish must not call PostgREST without a service key')
+
+        class Client:
+            def __init__(self):
+                self._session = Session()
+                self.service = ''
+
+        with patch(
+            'backend.cloud_backup.supabase_client.SupabaseClient',
+            Client,
+        ):
+            self.assertIsNone(
+                UpdateCenter().publish_update(
+                    '3.1.2', 'https://example.test/setup.exe', 'a' * 64,
+                )
+            )
+
 
 class SingleInstanceTests(unittest.TestCase):
     def test_acquire_single_instance_mutex(self):

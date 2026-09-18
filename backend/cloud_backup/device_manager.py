@@ -119,6 +119,16 @@ def update_business_identity(
         ident['access_token'] = access_token
     if refresh_token:
         ident['refresh_token'] = refresh_token
+    # Fresh portal tokens revive a previously invalidated session.
+    if (access_token or '').strip() and (refresh_token or '').strip():
+        ident.pop('auth_state', None)
+        ident.pop('auth_error', None)
+        ident.pop('auth_unreadable_id', None)
+        try:
+            from backend.cloud.auth_gate import clear_auth_gate_on_login
+            clear_auth_gate_on_login()
+        except Exception:
+            pass
     ident['cloud_skipped'] = False
     ident['hostname'] = platform.node() or ''
     ident['platform'] = platform.platform()
@@ -142,3 +152,8 @@ def clear_session_tokens() -> None:
     ident.pop('auth_error', None)
     ident.pop('auth_unreadable_id', None)
     save_identity(ident)
+    try:
+        from backend.cloud.auth_gate import clear_auth_gate_on_login
+        clear_auth_gate_on_login()
+    except Exception:
+        pass

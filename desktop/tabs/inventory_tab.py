@@ -20,6 +20,7 @@ from desktop.utils.option_lists import (
     STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS, PRODUCT_STATUSES,
 )
 from desktop.utils.dialog_keys import wire_dialog_keys
+from desktop.utils.quiet_ui import info_toast
 from desktop.utils.select_controls import (
     SearchableSelect, ReasonSelect, Select, ReasonDialog,
 )
@@ -310,9 +311,13 @@ class InventoryTab(QWidget):
                 os.startfile(path)
             except Exception:
                 pass
-        except Exception as e:
+        except Exception:
             _log.exception('Inventory export failed')
-            QMessageBox.critical(self, 'Export Failed', str(e))
+            QMessageBox.critical(
+                self, 'Export Failed',
+                'The inventory report was not saved.\n\n'
+                'Close the file if it is already open in Excel, check there is '
+                'space on the disk, then export again.')
 
     def _filter(self):
         q = self._search.text().lower()
@@ -835,14 +840,28 @@ class InventoryTab(QWidget):
                 f'Could not update product:\n\n{e}')
 
     def _delete(self, pid):
-        if not require_permission(self.user, 'inventory.create', self): return
+        if not require_permission(self.user, 'inventory.delete', self):
+            return
         p = next((x for x in self.products if x['id'] == pid), None)
         name = p.get('name', '') if p else ''
-        if QMessageBox.question(self, 'Confirm Delete',
-                f"Delete '{name}'?\n\nThis cannot be undone.",
-                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
-            if self.api.delete_product(pid):
-                self.refresh()
+        confirm = QMessageBox.question(
+            self, 'Remove from catalogue',
+            f"Remove '{name}' from the catalogue?\n\n"
+            "It will no longer appear when selling or receiving.\n"
+            "Past sales stay on record.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        res = self.api.delete_product(pid) or {}
+        if res.get('success'):
+            info_toast(self, res.get('message') or f"{name} removed")
+            self.refresh()
+            return
+        QMessageBox.critical(
+            self, 'Could Not Remove Product',
+            res.get('error') or 'This product was not removed. Nothing was changed.',
+        )
 
     def _show_history(self, pid):
         p = next((x for x in self.products if x['id'] == pid), None)
@@ -937,8 +956,11 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Selling Price'),     self.price)
         from desktop.utils.security import has_permission
         self._can_view_cost = has_permission({'role': self._role}, 'inventory.view_cost')
-        if self._can_view_cost:
-            lay.addRow(lbl('Cost Price'),        self.cost)
+        self._can_enter_cost = self._can_view_cost or self._is_new
+        if self._can_enter_cost:
+            lay.addRow(
+                lbl('Buying Price *' if self._is_new else 'Buying Price (latest)'),
+                self.cost)
         else:
             self.cost.setValue(0)
             self.cost.hide()
@@ -1026,6 +1048,12 @@ class _ProdDlg(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, 'Required', 'Product name is required.')
             return
+        if self._is_new and self.price.value() <= 0:
+            QMessageBox.warning(self, 'Required', 'Selling price must be greater than zero.')
+            return
+        if self._is_new and self.cost.value() <= 0:
+            QMessageBox.warning(self, 'Required', 'Buying price must be greater than zero.')
+            return
         self.accept()
 
     def data(self):
@@ -1035,7 +1063,7 @@ class _ProdDlg(QDialog):
             'sku':        self.sku.text().strip() or None,
             'category':   self.cat.text().strip() or None,
             'price':      self.price.value(),
-            'cost_price': self.cost.value() if getattr(self, '_can_view_cost', True) else 0.0,
+            'cost_price': self.cost.value() if getattr(self, '_can_enter_cost', True) else 0.0,
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
             'is_active':  1 if status == 'Active' else 0,
@@ -1129,8 +1157,12 @@ class _ProductHistoryDlg(QDialog):
     def _load(self):
         try:
             data = self.api.get_product_history(self._pid) or {}
-        except Exception as e:
-            QMessageBox.critical(self, 'Product History', str(e))
+        except Exception:
+            _log.exception('Product history load failed')
+            QMessageBox.critical(
+                self, 'Product History',
+                'This product\u2019s history could not be opened. Close this window '
+                'and try again.')
             return
 
         prod = data.get('product') or {}

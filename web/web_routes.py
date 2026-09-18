@@ -2809,7 +2809,7 @@ def list_customers():
 
 @web.route('/api/customers', methods=['POST'])
 def create_customer():
-    from backend.app import token_required
+    from backend.app import token_required, log_action
     @token_required
     def _inner():
         # Cashiers register a customer during a credit sale (debt.create);
@@ -2831,6 +2831,10 @@ def create_customer():
             )
             db.commit()
             cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            log_action(
+                'CREATE_CUSTOMER', 'debt',
+                f"customer_id={cid} name={data['name'].strip()} via=web",
+            )
             return jsonify({'success': True, 'customer_id': cid})
         except sqlite3.IntegrityError:
             return jsonify({'error': 'Customer already exists'}), 400
@@ -2839,7 +2843,7 @@ def create_customer():
 
 @web.route('/api/customers/<int:cid>', methods=['PUT'])
 def update_customer(cid):
-    from backend.app import token_required
+    from backend.app import token_required, log_action
     @token_required
     def _inner():
         # Editing an existing customer record is a shared-data write.
@@ -2856,6 +2860,10 @@ def update_customer(cid):
             values.append(cid)
             db.execute(f"UPDATE customers SET {','.join(fields)} WHERE id=?", values)
             db.commit()
+            log_action(
+                'UPDATE_CUSTOMER', 'debt',
+                f"customer_id={cid} fields={','.join(fields)} via=web",
+            )
         return jsonify({'success': True})
     return _inner()
 
@@ -2920,7 +2928,7 @@ def list_debt_invoices():
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = db.execute(
             f"SELECT di.*, c.phone as c_phone FROM debt_invoices di "
-            f"JOIN customers c ON di.customer_id=c.id "
+            f"LEFT JOIN customers c ON di.customer_id=c.id "
             f"{where} ORDER BY di.created_at DESC", params
         ).fetchall()
         return jsonify(_trs(rows))
@@ -2977,13 +2985,13 @@ def pay_debt_invoice(inv_id):
 
 @web.route('/api/debt/invoices/<int:inv_id>/write-off', methods=['POST'])
 def write_off_debt_invoice(inv_id):
-    """Super Admin write-off / cancel open debt (requires Super-Admin PIN)."""
+    """Admin / Super Admin write-off / cancel open debt (PIN required)."""
     from backend.app import token_required
     @token_required
     def _inner():
         if not _has_perm('debt.delete'):
             return jsonify({
-                'error': 'Write-off is Super Admin only and requires the Super-Admin PIN.',
+                'error': 'Write-off requires Admin or Super Admin permission and PIN.',
             }), 403
         data = request.json or {}
         user = g.current_user
@@ -2992,7 +3000,7 @@ def write_off_debt_invoice(inv_id):
         api._role = str(user.get('role') or '')
         api._user_id = user.get('id')
         api._username = (
-            user.get('full_name') or user.get('username') or 'superadmin'
+            user.get('full_name') or user.get('username') or 'admin'
         )
         result = api.delete_debt_invoice(
             inv_id,
@@ -3001,6 +3009,159 @@ def write_off_debt_invoice(inv_id):
         )
         status = int(result.pop('status', 200 if result.get('success') else 400))
         return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/sales/<int:sale_id>/void', methods=['POST'])
+def void_sale_web(sale_id):
+    """Void/revoke a receipt — requires sales.void (Manager+ / Admin)."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('sales.void'):
+            return jsonify({'error': 'Forbidden — void requires Manager or Admin.'}), 403
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'staff'
+        )
+        reason = str(data.get('reason') or 'voided via web dashboard')
+        pin = str(data.get('pin') or '')
+        result = api.void_sale(
+            sale_id,
+            reason=reason,
+            pin=pin,
+            force_with_payments=bool(data.get('force_with_payments')),
+        ) if hasattr(api, 'void_sale') else None
+        if result is None:
+            # Fallback common names
+            for name in ('void_transaction', 'cancel_sale'):
+                fn = getattr(api, name, None)
+                if callable(fn):
+                    result = fn(sale_id, reason, pin=pin) if 'pin' in fn.__code__.co_varnames else fn(sale_id, reason)
+                    break
+        if not isinstance(result, dict):
+            return jsonify({'error': 'Void not available on this build'}), 501
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/sales/<int:sale_id>/return', methods=['POST'])
+def return_sale_web(sale_id):
+    """Partial/full receipt return with stock, audit and accounting safeguards."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('sales.void'):
+            return jsonify({
+                'error': 'Forbidden — returns require Manager or Admin permission.',
+            }), 403
+        data = request.json or {}
+        user = g.current_user
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = str(user.get('role') or '')
+        api._user_id = user.get('id')
+        api._username = (
+            user.get('full_name') or user.get('username') or 'staff'
+        )
+        result = api.return_sale(
+            sale_id,
+            data.get('items') or [],
+            str(data.get('reason') or ''),
+            refund_method=str(data.get('refund_method') or 'cash'),
+            pin=str(data.get('pin') or ''),
+        )
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/sales/<int:sale_id>/receipt', methods=['GET'])
+def sale_receipt_detail(sale_id):
+    """Full receipt view: header, lines, payments, linked debt."""
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not (
+            _has_perm('sales.view_all')
+            or _has_perm('sales.view_own')
+            or _has_perm('sales.create')
+            or _user_can('sales')
+            or _user_can('reports')
+        ):
+            return jsonify({'error': 'Forbidden'}), 403
+        db = _get_db()
+        try:
+            sale = db.execute(
+                'SELECT * FROM sales WHERE id=?', (sale_id,)
+            ).fetchone()
+            if not sale:
+                return jsonify({'error': 'Sale not found'}), 404
+            sale_d = dict(sale)
+            # Cashiers with view_own only see their receipts
+            user = g.current_user or {}
+            if (
+                _has_perm('sales.view_own')
+                and not _has_perm('sales.view_all')
+                and not _has_perm('sales.void')
+            ):
+                uid = user.get('id')
+                if uid and sale_d.get('cashier_id') not in (uid, str(uid)):
+                    return jsonify({'error': 'Forbidden'}), 403
+            lines = [
+                dict(r) for r in db.execute(
+                    'SELECT * FROM sale_items WHERE sale_id=? ORDER BY id',
+                    (sale_id,),
+                ).fetchall()
+            ]
+            payments = []
+            try:
+                payments = [
+                    dict(r) for r in db.execute(
+                        'SELECT * FROM sale_payments WHERE sale_id=? ORDER BY id',
+                        (sale_id,),
+                    ).fetchall()
+                ]
+            except Exception:
+                payments = []
+            debt = None
+            try:
+                row = db.execute(
+                    'SELECT * FROM debt_invoices WHERE sale_id=? '
+                    'ORDER BY id DESC LIMIT 1',
+                    (sale_id,),
+                ).fetchone()
+                debt = dict(row) if row else None
+            except Exception:
+                debt = None
+            can_edit = _has_perm('sales.edit')
+            can_void = _has_perm('sales.void')
+            for line in lines:
+                sold = float(line.get('quantity') or 0)
+                returned = float(line.get('returned_qty') or 0)
+                line['remaining_qty'] = round(max(0.0, sold - returned), 4)
+            can_return = bool(
+                can_void
+                and str(sale_d.get('status') or '').lower() == 'completed'
+                and any(float(line.get('remaining_qty') or 0) > 0 for line in lines)
+            )
+            return jsonify({
+                'sale': sale_d,
+                'lines': lines,
+                'payments': payments,
+                'debt': debt,
+                'can_edit': can_edit,
+                'can_void': can_void,
+                'can_return': can_return,
+            })
+        finally:
+            db.close()
     return _inner()
 
 
@@ -3014,19 +3175,104 @@ def list_debt_payments():
         db    = _get_db()
         start = request.args.get('start','')
         end   = request.args.get('end','')
+        invoice_id = request.args.get('invoice_id','').strip()
         clauses, params = [], []
         if start: clauses.append("date(dp.created_at)>=?"); params.append(start)
         if end:   clauses.append("date(dp.created_at)<=?"); params.append(end)
+        if invoice_id:
+            try:
+                clauses.append("dp.invoice_id=?"); params.append(int(invoice_id))
+            except ValueError:
+                return jsonify({'error': 'invoice_id must be numeric'}), 400
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = db.execute(
             f"SELECT dp.*, di.invoice_number, di.receipt_number, "
             f"c.name as customer_name, c.phone "
             f"FROM debt_payments dp "
-            f"JOIN debt_invoices di ON dp.invoice_id=di.id "
-            f"JOIN customers c ON dp.customer_id=c.id "
+            f"LEFT JOIN debt_invoices di ON dp.invoice_id=di.id "
+            f"LEFT JOIN customers c ON dp.customer_id=c.id "
             f"{where} ORDER BY dp.created_at DESC", params
         ).fetchall()
         return jsonify(_trs(rows))
+    return _inner()
+
+
+def _inventory_api_for_current_user():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = str(user.get('role') or '')
+    api._user_id = user.get('id')
+    api._username = user.get('full_name') or user.get('username') or 'staff'
+    return api
+
+
+@web.route('/api/suppliers', methods=['GET', 'POST'])
+def web_suppliers():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required.'}), 403
+        api = _inventory_api_for_current_user()
+        if request.method == 'GET':
+            return jsonify(api.get_suppliers(active_only=True))
+        if not _has_perm('inventory.receive_stock'):
+            return jsonify({'error': 'Inventory receiving permission required.'}), 403
+        result = api.create_supplier(request.json or {})
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/suppliers/<int:supplier_id>', methods=['PUT'])
+def web_update_supplier(supplier_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('inventory') or not _has_perm('inventory.receive_stock'):
+            return jsonify({'error': 'Inventory receiving permission required.'}), 403
+        result = _inventory_api_for_current_user().update_supplier(
+            supplier_id, request.json or {},
+        )
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/purchases', methods=['GET', 'POST'])
+def web_purchases():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required.'}), 403
+        api = _inventory_api_for_current_user()
+        if request.method == 'GET':
+            return jsonify(api.get_purchases(
+                supplier_id=request.args.get('supplier_id') or None,
+                start=request.args.get('start') or None,
+                end=request.args.get('end') or None,
+                limit=request.args.get('limit') or 200,
+            ))
+        if not _has_perm('inventory.receive_stock'):
+            return jsonify({'error': 'Inventory receiving permission required.'}), 403
+        result = api.receive_purchase(request.json or {})
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/purchases/<int:purchase_id>', methods=['GET'])
+def web_purchase_detail(purchase_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required.'}), 403
+        result = _inventory_api_for_current_user().get_purchase(purchase_id)
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
     return _inner()
 
 
@@ -3040,7 +3286,7 @@ def adjust_stock(pid):
     @token_required
     def _inner():
         if not _has_perm('inventory.adjust_stock'):
-            return jsonify({'error': 'Super-Admin access required'}), 403
+            return jsonify({'error': 'Admin or Super-Admin access required'}), 403
         data = request.json or {}
         user = g.current_user
         from desktop.utils.api_client import APIClient
@@ -3506,24 +3752,43 @@ def _month_expenses_proxy(db):
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         }
+        today = date.today()
+        start = today.replace(day=1).isoformat()
+        end = today.isoformat()
+        # Prefer expense_entries (POS source of truth) when present.
+        if 'expense_entries' in tables:
+            row = db.execute("""
+                SELECT COALESCE(SUM(amount),0) FROM expense_entries
+                WHERE deleted_at IS NULL
+                  AND date(expense_date) BETWEEN date(?) AND date(?)
+            """, (start, end)).fetchone()
+            return float(row[0] if row else 0)
+        if 'expenses' in tables:
+            row = db.execute("""
+                SELECT COALESCE(SUM(amount),0) FROM expenses
+                WHERE COALESCE(status,'approved') != 'voided'
+                  AND date(COALESCE(created_at, updated_at)) BETWEEN date(?) AND date(?)
+            """, (start, end)).fetchone()
+            return float(row[0] if row else 0)
+        if 'journal_lines' in tables and 'chart_of_accounts' in tables:
+            row = db.execute("""
+                SELECT COALESCE(SUM(jl.debit - jl.credit), 0)
+                FROM journal_lines jl
+                JOIN journal_entries je ON je.id = jl.journal_id
+                JOIN chart_of_accounts coa ON coa.code = jl.account_code
+                WHERE coa.account_type='expense'
+                  AND je.status='posted' AND je.deleted_at IS NULL
+                  AND date(je.entry_date) BETWEEN date(?) AND date(?)
+            """, (start, end)).fetchone()
+            return float(row[0] if row else 0)
         if 'acc_journal_lines' in tables and 'acc_accounts' in tables:
-            today = date.today()
-            start = today.replace(day=1).isoformat()
             row = db.execute("""
                 SELECT COALESCE(SUM(jl.debit), 0)
                 FROM acc_journal_lines jl
                 JOIN acc_accounts a ON a.id = jl.account_id
                 JOIN acc_journal_entries je ON je.id = jl.entry_id
                 WHERE a.type='expense' AND date(je.entry_date) BETWEEN ? AND ?
-            """, (start, today.isoformat())).fetchone()
-            return float(row[0] if row else 0)
-        if 'expenses' in tables:
-            today = date.today()
-            start = today.replace(day=1).isoformat()
-            row = db.execute("""
-                SELECT COALESCE(SUM(amount),0) FROM expenses
-                WHERE date(created_at) BETWEEN ? AND ?
-            """, (start, today.isoformat())).fetchone()
+            """, (start, end)).fetchone()
             return float(row[0] if row else 0)
     except Exception:
         pass

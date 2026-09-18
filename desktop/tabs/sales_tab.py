@@ -1765,6 +1765,31 @@ class SalesTab(QWidget):
         else:
             info_toast(self, 'Sale held — use Resume to restore.')
 
+    def _record_expense(self):
+        """Open offline-first expense dialog from the POS screen."""
+        try:
+            from desktop.utils.security import has_permission, require_permission
+            if not (
+                has_permission(self.user, 'accounting.create_expenses')
+                or has_permission(self.user, 'accounting.approve_expenses')
+            ):
+                require_permission(self.user, 'accounting.create_expenses', self)
+                return
+        except Exception:
+            pass
+        try:
+            from desktop.dialogs.record_expense_dialog import RecordExpenseDialog
+            currency = 'KES'
+            try:
+                cfg = self.config_getter() if callable(getattr(self, 'config_getter', None)) else {}
+                currency = (cfg or {}).get('currency_symbol') or currency
+            except Exception:
+                pass
+            dlg = RecordExpenseDialog(self, self.api, currency=currency, user=self.user)
+            dlg.exec_()
+        except Exception as e:
+            soft_warn(self, f'Could not open expense form: {e}')
+
     def _suspend_sale(self):
         """Checkout Pro Suspend — same park backend as Hold (design label)."""
         if not self.cart:
@@ -2433,12 +2458,23 @@ class SalesTab(QWidget):
         )
 
     def _open_payment_inbox(self):
-        from desktop.dialogs.payment_inbox_dialog import PaymentInboxDialog
-        PaymentInboxDialog(
-            self,
-            payment_service=self._get_payment_service(),
-            currency=getattr(self, '_currency', 'KES'),
-        ).exec_()
+        """Open unmatched Till / M-Pesa payment inbox (Settings / M-Pesa checkout)."""
+        try:
+            from desktop.dialogs.payment_inbox_dialog import PaymentInboxDialog
+            currency = getattr(self, '_currency', None) or 'KES'
+            try:
+                cfg = self.config_getter() if callable(getattr(self, 'config_getter', None)) else {}
+                currency = (cfg or {}).get('currency_symbol') or currency
+            except Exception:
+                pass
+            dlg = PaymentInboxDialog(
+                self,
+                payment_service=self._get_payment_service(),
+                currency=currency,
+            )
+            dlg.exec_()
+        except Exception as e:
+            soft_warn(self, f'Could not open M-Pesa Payment Inbox: {e}')
 
     def _process(self):
         if getattr(self, '_processing_sale', False):

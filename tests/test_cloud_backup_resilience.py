@@ -24,6 +24,15 @@ def test_metadata_failure_keeps_uploaded_backup_retryable(tmp_path, monkeypatch)
     monkeypatch.setattr(sm_mod, 'backup_state_path', lambda: str(state_path))
     monkeypatch.setattr(sm_mod, 'is_logged_in', lambda: True)
     monkeypatch.setattr(sm_mod, 'is_cloud_configured', lambda: True)
+    from backend.cloud import auth_gate
+    monkeypatch.setattr(auth_gate, 'is_terminal_auth_dead', lambda: False)
+    monkeypatch.setattr(auth_gate, 'cloud_sync_should_run', lambda: True)
+    from backend.cloud import circuit_breaker
+    class _AlwaysOpenForTest:
+        def allow(self): return True
+        def record_failure(self): pass
+        def record_success(self): pass
+    monkeypatch.setattr(circuit_breaker, 'get_breaker', lambda _name: _AlwaysOpenForTest())
     monkeypatch.setattr(
         sm_mod, 'load_identity', lambda: {'business_id': 'business'}
     )
@@ -77,6 +86,14 @@ def test_queue_rejects_cross_shop_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(sm_mod, 'backup_state_path', lambda: str(state_path))
     monkeypatch.setattr(sm_mod, 'is_logged_in', lambda: True)
     monkeypatch.setattr(sm_mod, 'is_cloud_configured', lambda: True)
+    from backend.cloud import auth_gate, circuit_breaker
+    monkeypatch.setattr(auth_gate, 'is_terminal_auth_dead', lambda: False)
+    monkeypatch.setattr(auth_gate, 'cloud_sync_should_run', lambda: True)
+    class _AlwaysOpenForTest:
+        def allow(self): return True
+        def record_failure(self): pass
+        def record_success(self): pass
+    monkeypatch.setattr(circuit_breaker, 'get_breaker', lambda _name: _AlwaysOpenForTest())
     monkeypatch.setattr(
         sm_mod, 'load_identity', lambda: {'business_id': 'new-business'}
     )

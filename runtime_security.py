@@ -26,6 +26,14 @@ def _secret_file(name: str) -> Path:
     return root / "config" / name
 
 
+_SECRET_CACHE: dict[tuple[str, str], str] = {}
+
+
+def reset_secret_cache() -> None:
+    """Drop memoized on-disk secrets (tests that relocate the data root)."""
+    _SECRET_CACHE.clear()
+
+
 def _read_or_create_secret(env_name: str, filename: str, *, min_length: int = 32) -> str:
     configured = os.environ.get(env_name, "").strip()
     if configured:
@@ -36,10 +44,18 @@ def _read_or_create_secret(env_name: str, filename: str, *, min_length: int = 32
     if _is_production():
         raise RuntimeError(f"{env_name} is required when MBT_ENV=production")
 
+    # Cached: the identity cipher derives from this on every protected field,
+    # so re-reading it kept re-resolving the data root from the UI thread.
+    cache_key = (env_name, filename)
+    cached = _SECRET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     path = _secret_file(filename)
     try:
         value = path.read_text(encoding="utf-8").strip()
         if len(value) >= min_length:
+            _SECRET_CACHE[cache_key] = value
             return value
     except FileNotFoundError:
         pass
@@ -53,6 +69,7 @@ def _read_or_create_secret(env_name: str, filename: str, *, min_length: int = 32
     except OSError:
         pass
     os.replace(tmp, path)
+    _SECRET_CACHE[cache_key] = value
     return value
 
 

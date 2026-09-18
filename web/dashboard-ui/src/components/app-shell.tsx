@@ -28,6 +28,7 @@ import {
   Sparkles,
   MoreHorizontal,
   Search,
+  ScrollText,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -64,6 +65,7 @@ const NAV: NavItem[] = [
   { to: "/ai", label: "AI Center", icon: Sparkles, module: "ai_ops", group: "Command" },
   { to: "/notes", label: "Notes", icon: NotebookPen, module: "notes", group: "Admin" },
   { to: "/users", label: "Users & Access", icon: Users, module: "users", group: "Admin" },
+  { to: "/audit", label: "Audit Log", icon: ScrollText, module: "audit", group: "Admin" },
   { to: "/settings", label: "Settings", icon: Settings, module: "settings", group: "Admin" },
   { to: "/security", label: "Security", icon: ShieldCheck, module: "security", group: "Admin" },
   { to: "/license", label: "License", icon: KeyRound, module: "license", group: "Admin" },

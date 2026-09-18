@@ -813,7 +813,55 @@ def _migrate_columns(conn: sqlite3.Connection):
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_number TEXT NOT NULL UNIQUE,
+        client_txn_id TEXT UNIQUE,
+        supplier_id INTEGER NOT NULL,
+        supplier_name TEXT NOT NULL,
+        reference TEXT,
+        delivery_date TEXT NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'credit',
+        total REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'received',
+        notes TEXT,
+        received_by_id INTEGER,
+        received_by_name TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+    );
+    CREATE TABLE IF NOT EXISTS purchase_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        product_name TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        total REAL NOT NULL,
+        qty_before REAL NOT NULL,
+        qty_after REAL NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+        FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_purchases_supplier_date
+        ON purchases(supplier_id, delivery_date, id);
+    CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase
+        ON purchase_items(purchase_id, id);
     """)
+    try:
+        purchase_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(purchases)").fetchall()
+        }
+        if purchase_cols and 'payment_method' not in purchase_cols:
+            conn.execute(
+                "ALTER TABLE purchases ADD COLUMN payment_method TEXT "
+                "NOT NULL DEFAULT 'credit'"
+            )
+    except Exception:
+        pass
     try:
         prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
         if prod_cols and 'supplier_id' not in prod_cols:
@@ -1834,10 +1882,27 @@ class APIClient:
                 self._user_id, self._username, 'CREATE_PRODUCT_DENIED',
                 'inventory', f'role={self._role or "none"}',
             )
-            return {'error': 'Insufficient permissions to create products.'}
+            return {
+                'error': (
+                    'Your role cannot add products. Ask the shop owner to give you '
+                    'inventory access.'
+                )
+            }
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Product name is required.'}
+        try:
+            selling_price = round(float(data.get('price') or 0), 2)
+            cost_price = round(float(data.get('cost_price') or 0), 2)
+        except (TypeError, ValueError, OverflowError):
+            return {'error': 'Enter valid buying and selling prices.'}
+        if selling_price <= 0 or cost_price <= 0:
+            return {
+                'error': (
+                    'Buying price and selling price must both be greater than zero '
+                    'for a new inventory product.'
+                )
+            }
         cat_name = (data.get('category') or '').strip()
         result = None
         db = _db()
@@ -1847,16 +1912,14 @@ class APIClient:
             # through Receive Stock / Adjust Stock, where owner PIN
             # authorization and movement accounting are enforced.
             initial_stock = 0.0
-            # Cashiers without view_cost must not store cost via this form.
-            cost_price = float(data.get('cost_price') or 0)
-            if not has_permission({'role': role or 'viewer'}, 'inventory.view_cost'):
-                cost_price = 0.0
+            # A cashier creating a first-time product must capture its actual
+            # buy price even though general cost reports remain hidden.
             sku = (data.get('sku') or '').strip() or None
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
                 " VALUES (?,?,?,?,?,?,?,?,?)",
                 (name, sku, data.get('category'),
-                 float(data.get('price') or 0), cost_price,
+                 selling_price, cost_price,
                  initial_stock, int(data.get('min_stock', 5) or 5),
                  data.get('unit') or 'pcs', data.get('barcode'))
             )
@@ -1877,9 +1940,14 @@ class APIClient:
                 return {'error': 'A product with this SKU / code already exists.\n'
                                  'Use a different code or leave SKU blank.'}
             return {'error': 'This product could not be saved because it duplicates existing data.'}
-        except Exception as e:
+        except Exception:
             logger.exception('create_product failed')
-            return {'error': f'Could not save product: {e}'}
+            return {
+                'error': (
+                    'This product could not be saved. Check the name, buying price '
+                    'and selling price, then try again.'
+                )
+            }
         finally:
             db.close()
         if result and cat_name:
@@ -1898,7 +1966,12 @@ class APIClient:
                 self._user_id, self._username, 'UPDATE_PRODUCT_DENIED',
                 'inventory', f'pid={pid} role={self._role or "none"}',
             )
-            return {'error': 'Insufficient permissions to edit products.'}
+            return {
+                'error': (
+                    'Your role cannot change product details. Ask a Manager, Admin '
+                    'or the shop owner.'
+                )
+            }
         if 'stock' in data:
             _audit(
                 self._user_id, self._username, 'STOCK_ADJUST_BLOCKED',
@@ -1936,10 +2009,20 @@ class APIClient:
             msg = str(e).lower()
             if 'sku' in msg or 'unique' in msg:
                 return {'error': 'Another product already uses this SKU / code.'}
-            return {'error': 'Update failed: duplicate value.'}
-        except Exception as e:
+            return {
+                'error': (
+                    'These details clash with another product. Change the name or '
+                    'SKU / code and save again.'
+                )
+            }
+        except Exception:
             logger.exception('update_product failed')
-            return {'error': f'Could not update product: {e}'}
+            return {
+                'error': (
+                    'This product could not be updated. Check the details you '
+                    'changed, then save again.'
+                )
+            }
         finally:
             db.close()
         if result_ok and 'category' in data and (data.get('category') or '').strip():
@@ -1959,13 +2042,13 @@ class APIClient:
         Product update, movement history and audit records commit together.
         """
         role = str(self._role or '').strip().lower()
-        if role != 'superadmin':
+        if role not in ('admin', 'superadmin'):
             _audit(
                 self._user_id, self._username, 'STOCK_ADJUST_DENIED',
                 'inventory', f'pid={pid} role={role or "none"}',
             )
             return {
-                'error': 'Only Super-Admin can adjust stock quantities.',
+                'error': 'Only Admin or Super Admin can adjust stock quantities.',
                 'status': 403,
             }
         direction = str(direction or '').strip().lower()
@@ -2005,7 +2088,13 @@ class APIClient:
             ).fetchone()
             if not row:
                 db.rollback()
-                return {'error': 'Product not found.', 'status': 404}
+                return {
+                    'error': (
+                        'That product is no longer in your inventory. Refresh the '
+                        'list and pick it again.'
+                    ),
+                    'status': 404,
+                }
             old_stock  = round(float(row['stock'] or 0), 4)
             try:
                 expected = (
@@ -2041,7 +2130,10 @@ class APIClient:
             if new_qty > 999999:
                 db.rollback()
                 return {
-                    'error': 'Resulting stock exceeds the allowed range.',
+                    'error': (
+                        'That would take stock above 999,999, which is the highest '
+                        'quantity this system records. Enter a smaller amount.'
+                    ),
                     'current_stock': old_stock,
                     'status': 400,
                 }
@@ -2069,21 +2161,16 @@ class APIClient:
                     'status': 400,
                 }
 
-            # Authorisation is decided here, from the delta the server just
-            # computed against the row it holds under BEGIN IMMEDIATE — never
-            # from the caller's ``direction`` flag. The fraud vector is on-hand
-            # falling without a sale, so any net reduction needs the owner PIN
-            # while restocking stays a one-step action.
-            pin_required = new_qty < old_stock
-            if pin_required:
-                pin_error = _authorize_superadmin_pin(
-                    db, pin, operation=f'stock_adjust pid={pid}',
-                    user_id=self._user_id, username=self._username,
-                )
-                if pin_error:
-                    # Commit only the authorisation audit row; stock is untouched.
-                    db.commit()
-                    return pin_error
+            # Correction is distinct from ordinary supplier receiving. Every
+            # correction direction requires owner step-up authorization.
+            pin_error = _authorize_superadmin_pin(
+                db, pin, operation=f'stock_adjust pid={pid}',
+                user_id=self._user_id, username=self._username,
+            )
+            if pin_error:
+                # Commit only the authorisation audit row; stock is untouched.
+                db.commit()
+                return pin_error
 
             now = datetime.now().isoformat()
             changed = db.execute(
@@ -2139,10 +2226,16 @@ class APIClient:
                 'quantity': quantity,
                 'movement_id': mov_id,
             }
-        except Exception as e:
+        except Exception:
             db.rollback()
             logger.exception('adjust_stock failed')
-            return {'error': f'Could not adjust stock: {e}', 'status': 500}
+            return {
+                'error': (
+                    'Stock was not changed. Nothing was saved — refresh the product '
+                    'and try the adjustment again.'
+                ),
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -2158,11 +2251,27 @@ class APIClient:
             db.close()
 
     def create_supplier(self, data: dict) -> dict:
+        from desktop.utils.security import has_permission
+        if not has_permission(
+            {'role': str(self._role or 'viewer')}, 'inventory.receive_stock'
+        ):
+            return {'error': 'Inventory access is required to add suppliers.', 'status': 403}
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Supplier name is required.'}
         db = _db()
         try:
+            duplicate = db.execute(
+                "SELECT id FROM suppliers WHERE lower(trim(name))=lower(trim(?)) "
+                "AND COALESCE(is_active,1)=1 LIMIT 1",
+                (name,),
+            ).fetchone()
+            if duplicate:
+                return {
+                    'error': 'An active supplier with this name already exists.',
+                    'supplier_id': int(duplicate['id']),
+                    'status': 409,
+                }
             db.execute(
                 "INSERT INTO suppliers (name,phone,email,address,notes) VALUES (?,?,?,?,?)",
                 (name, (data.get('phone') or '').strip(),
@@ -2179,6 +2288,11 @@ class APIClient:
             db.close()
 
     def update_supplier(self, sid: int, data: dict) -> dict:
+        from desktop.utils.security import has_permission
+        if not has_permission(
+            {'role': str(self._role or 'viewer')}, 'inventory.receive_stock'
+        ):
+            return {'error': 'Inventory access is required to edit suppliers.', 'status': 403}
         db = _db()
         try:
             fields, vals = [], []
@@ -2193,8 +2307,304 @@ class APIClient:
             vals.append(sid)
             db.execute(
                 f"UPDATE suppliers SET {', '.join(fields)} WHERE id=?", vals)
+            if db.execute("SELECT changes()").fetchone()[0] != 1:
+                db.rollback()
+                return {'error': 'Supplier not found.', 'status': 404}
             db.commit()
+            _audit(self._user_id, self._username, 'UPDATE_SUPPLIER', 'inventory',
+                   f"id={sid} fields={fields}")
             return {'success': True}
+        finally:
+            db.close()
+
+    def get_purchases(self, *, supplier_id=None, start=None, end=None,
+                      limit: int = 200) -> list:
+        db = _db()
+        try:
+            clauses, params = [], []
+            if supplier_id not in (None, ''):
+                clauses.append('p.supplier_id=?')
+                params.append(int(supplier_id))
+            if start:
+                clauses.append('p.delivery_date>=?')
+                params.append(str(start)[:10])
+            if end:
+                clauses.append('p.delivery_date<=?')
+                params.append(str(end)[:10])
+            where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
+            params.append(max(1, min(int(limit or 200), 1000)))
+            return _rows(db.execute(
+                "SELECT p.*, COUNT(pi.id) AS line_count, "
+                "COALESCE(SUM(pi.quantity),0) AS total_units "
+                "FROM purchases p LEFT JOIN purchase_items pi ON pi.purchase_id=p.id "
+                f"{where} GROUP BY p.id ORDER BY p.delivery_date DESC, p.id DESC LIMIT ?",
+                params,
+            ))
+        finally:
+            db.close()
+
+    def get_purchase(self, purchase_id: int) -> dict:
+        db = _db()
+        try:
+            purchase = _row(db.execute(
+                'SELECT * FROM purchases WHERE id=?', (int(purchase_id),)
+            ))
+            if not purchase:
+                return {'error': 'Supplier delivery not found.', 'status': 404}
+            purchase['items'] = _rows(db.execute(
+                'SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY id',
+                (int(purchase_id),),
+            ))
+            return {'success': True, 'purchase': purchase}
+        finally:
+            db.close()
+
+    def receive_purchase(self, data: dict) -> dict:
+        """Receive a multi-line supplier delivery as one atomic stock document."""
+        from desktop.utils.security import has_permission
+        role = str(self._role or 'viewer').strip().lower()
+        if not has_permission({'role': role}, 'inventory.receive_stock'):
+            _audit(self._user_id, self._username, 'PURCHASE_RECEIVE_DENIED',
+                   'inventory', f'role={role or "none"}')
+            return {'error': 'Inventory access is required to receive stock.', 'status': 403}
+        try:
+            supplier_id = int(data.get('supplier_id') or 0)
+        except (TypeError, ValueError):
+            supplier_id = 0
+        if supplier_id <= 0:
+            return {'error': 'Select or register the supplier.', 'status': 400}
+        raw_items = data.get('items')
+        if not isinstance(raw_items, list) or not raw_items:
+            return {'error': 'Add at least one product to this delivery.', 'status': 400}
+        if len(raw_items) > 200:
+            return {'error': 'A delivery cannot exceed 200 product lines.', 'status': 400}
+
+        items, seen = [], set()
+        try:
+            for spec in raw_items:
+                product_id = int(spec.get('product_id') or 0)
+                quantity = round(float(spec.get('quantity') or 0), 4)
+                unit_cost = round(float(spec.get('unit_cost') or 0), 4)
+                if product_id <= 0 or quantity <= 0 or unit_cost <= 0:
+                    return {
+                        'error': 'Every line needs a product, positive quantity, and buying cost.',
+                        'status': 400,
+                    }
+                if product_id in seen:
+                    return {'error': 'Each product may appear only once per delivery.', 'status': 400}
+                seen.add(product_id)
+                items.append({
+                    'product_id': product_id,
+                    'quantity': quantity,
+                    'unit_cost': unit_cost,
+                    'total': round(quantity * unit_cost, 2),
+                })
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return {'error': 'Invalid product, quantity, or buying cost.', 'status': 400}
+
+        delivery_date = str(data.get('delivery_date') or date.today().isoformat())[:10]
+        try:
+            date.fromisoformat(delivery_date)
+        except ValueError:
+            return {'error': 'Delivery date must be YYYY-MM-DD.', 'status': 400}
+        reference = str(data.get('reference') or '').strip()[:120]
+        notes = str(data.get('notes') or '').strip()[:500]
+        payment_method = str(data.get('payment_method') or 'credit').strip().lower()
+        if payment_method not in ('credit', 'cash', 'mpesa', 'bank', 'card'):
+            return {'error': 'Choose Credit, Cash, M-Pesa, Bank, or Card.', 'status': 400}
+        client_txn_id = str(data.get('client_txn_id') or '').strip()[:100] or None
+        db = _db()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            supplier = db.execute(
+                'SELECT id,name FROM suppliers WHERE id=? AND COALESCE(is_active,1)=1',
+                (supplier_id,),
+            ).fetchone()
+            if not supplier:
+                db.rollback()
+                return {'error': 'Supplier not found or inactive.', 'status': 404}
+            if client_txn_id:
+                existing = db.execute(
+                    'SELECT id,purchase_number,total FROM purchases WHERE client_txn_id=?',
+                    (client_txn_id,),
+                ).fetchone()
+                if existing:
+                    db.rollback()
+                    return {
+                        'success': True,
+                        'idempotent': True,
+                        'purchase_id': int(existing['id']),
+                        'purchase_number': existing['purchase_number'],
+                        'total': float(existing['total'] or 0),
+                    }
+
+            stamp = delivery_date.replace('-', '')
+            sequence = db.execute(
+                'SELECT COUNT(*) FROM purchases WHERE delivery_date=?',
+                (delivery_date,),
+            ).fetchone()[0] + 1
+            while True:
+                purchase_number = f'GRN-{stamp}-{sequence:04d}'
+                exists = db.execute(
+                    'SELECT 1 FROM purchases WHERE purchase_number=?',
+                    (purchase_number,),
+                ).fetchone()
+                if not exists:
+                    break
+                sequence += 1
+            total = round(sum(line['total'] for line in items), 2)
+            now = datetime.now().isoformat()
+            cur = db.execute(
+                "INSERT INTO purchases "
+                "(purchase_number,client_txn_id,supplier_id,supplier_name,reference,"
+                "delivery_date,payment_method,total,status,notes,received_by_id,"
+                "received_by_name,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,'received',?,?,?,?,?)",
+                (
+                    purchase_number, client_txn_id, supplier_id, supplier['name'],
+                    reference, delivery_date, payment_method, total, notes, self._user_id,
+                    self._username or 'staff', now, now,
+                ),
+            )
+            purchase_id = int(cur.lastrowid)
+            received = []
+            for position, line in enumerate(items, start=1):
+                product = db.execute(
+                    'SELECT id,name,stock,cost_price,supplier_id FROM products '
+                    'WHERE id=? AND COALESCE(is_active,1)=1',
+                    (line['product_id'],),
+                ).fetchone()
+                if not product:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'The product on line {position} is no longer in your '
+                            f'inventory. Nothing was received — pick the product '
+                            f'again or register it, then receive the delivery.'
+                        ),
+                        'status': 404,
+                    }
+                before = round(float(product['stock'] or 0), 4)
+                after = round(before + line['quantity'], 4)
+                db.execute(
+                    'UPDATE products SET stock=?,cost_price=?,supplier_id=?,updated_at=? '
+                    'WHERE id=?',
+                    (after, line['unit_cost'], supplier_id, now, line['product_id']),
+                )
+                db.execute(
+                    'INSERT INTO purchase_items '
+                    '(purchase_id,product_id,product_name,quantity,unit_cost,total,'
+                    'qty_before,qty_after,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (
+                        purchase_id, line['product_id'], product['name'],
+                        line['quantity'], line['unit_cost'], line['total'],
+                        before, after, now, now,
+                    ),
+                )
+                reason = f"Supplier delivery {purchase_number}: {supplier['name']}"
+                if reference:
+                    reason += f' · ref {reference}'
+                mov = db.execute(
+                    'INSERT INTO stock_movements '
+                    '(product_id,product_name,movement_type,qty_before,qty_change,'
+                    'qty_after,reference,reason,user_id,username) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    (
+                        line['product_id'], product['name'], 'PURCHASE',
+                        before, line['quantity'], after, purchase_number, reason,
+                        self._user_id, self._username or 'staff',
+                    ),
+                )
+                received.append({
+                    **line, 'product_name': product['name'],
+                    'qty_before': before, 'qty_after': after,
+                })
+            try:
+                from desktop.utils.accounting_engine import post_journal
+                credit_account = {
+                    'credit': '2000', 'cash': '1000', 'mpesa': '1010',
+                    'bank': '1020', 'card': '1030',
+                }[payment_method]
+                post_journal(
+                    db,
+                    [
+                        {'account_code': '1200', 'debit': total,
+                         'memo': f'{purchase_number} inventory received'},
+                        {'account_code': credit_account, 'credit': total,
+                         'memo': f'{supplier["name"]} · {payment_method}'},
+                    ],
+                    description=f'Supplier delivery {purchase_number}',
+                    entry_date=delivery_date,
+                    source_module='purchase',
+                    source_id=str(purchase_id),
+                    entry_type='purchase',
+                    user_id=self._user_id,
+                    username=self._username or 'staff',
+                )
+            except Exception:
+                db.rollback()
+                logger.exception('purchase accounting failed')
+                return {
+                    'error': (
+                        'This delivery was not saved because it could not be posted '
+                        'to the accounts. No stock was changed — try again, and call '
+                        'MugoByte support if it keeps failing.'
+                    ),
+                    'status': 500,
+                }
+            db.execute(
+                'INSERT INTO audit_log '
+                '(user_id,username,action,module,details) VALUES (?,?,?,?,?)',
+                (
+                    self._user_id, self._username or 'staff',
+                    'RECEIVE_PURCHASE', 'inventory',
+                    f'purchase_id={purchase_id} number={purchase_number} '
+                    f'supplier={supplier_id} lines={len(items)} total={total}',
+                ),
+            )
+            db.commit()
+            return {
+                'success': True,
+                'purchase_id': purchase_id,
+                'purchase_number': purchase_number,
+                'supplier_id': supplier_id,
+                'supplier_name': supplier['name'],
+                'total': total,
+                'line_count': len(received),
+                'items': received,
+            }
+        except sqlite3.IntegrityError as exc:
+            db.rollback()
+            if client_txn_id and 'client_txn_id' in str(exc):
+                existing = db.execute(
+                    'SELECT id,purchase_number,total FROM purchases WHERE client_txn_id=?',
+                    (client_txn_id,),
+                ).fetchone()
+                if existing:
+                    return {
+                        'success': True, 'idempotent': True,
+                        'purchase_id': int(existing['id']),
+                        'purchase_number': existing['purchase_number'],
+                        'total': float(existing['total'] or 0),
+                    }
+            logger.exception('receive_purchase integrity failure')
+            return {
+                'error': (
+                    'This delivery was not saved. Check that each product appears '
+                    'only once, then receive it again.'
+                ),
+                'status': 409,
+            }
+        except Exception:
+            db.rollback()
+            logger.exception('receive_purchase failed')
+            return {
+                'error': (
+                    'This delivery was not received and no stock was changed. '
+                    'Try again — if it keeps failing, call MugoByte support.'
+                ),
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -2230,7 +2640,12 @@ class APIClient:
                 (product_id,),
             ).fetchone()
             if not row:
-                return {'error': 'Product not found'}
+                return {
+                    'error': (
+                        'That product is no longer in your inventory. Refresh the '
+                        'list and pick it again.'
+                    )
+                }
             old_stock = round(float(row['stock'] or 0), 4)
             new_stock = round(old_stock + qty_add, 4)
             now = datetime.now().isoformat()
@@ -2240,7 +2655,12 @@ class APIClient:
                     "SELECT name FROM suppliers WHERE id=?", (supplier_id,)
                 ).fetchone()
                 if not sup:
-                    return {'error': 'Supplier not found'}
+                    return {
+                        'error': (
+                            'That supplier is no longer on file. Choose another '
+                            'supplier or register it again.'
+                        )
+                    }
                 supplier_name = sup['name'] or ''
             reason = 'Received from Supplier'
             if supplier_name:
@@ -2302,12 +2722,57 @@ class APIClient:
                 self._user_id, self._username, 'DELETE_PRODUCT_DENIED',
                 'inventory', f'pid={pid} role={self._role or "none"}',
             )
-            return {'error': 'Insufficient permissions to archive products.'}
+            return {
+                'error': (
+                    'Your role cannot remove products from the catalogue. Ask an '
+                    'Admin or the shop owner.'
+                ),
+                'status': 403,
+            }
         db = _db()
         try:
-            db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
+            row = db.execute(
+                "SELECT id, name, is_active FROM products WHERE id=?", (int(pid),)
+            ).fetchone()
+            if not row:
+                return {
+                    'error': (
+                        'That product is no longer in your inventory. Refresh the '
+                        'list and try again.'
+                    ),
+                    'status': 404,
+                }
+            name = row['name'] or f'#{pid}'
+            if int(row['is_active'] or 0) == 0:
+                return {
+                    'success': True,
+                    'already_removed': True,
+                    'message': f'{name} is already off the catalogue.',
+                }
+            db.execute(
+                "UPDATE products SET is_active=0, updated_at=? WHERE id=?",
+                (datetime.now().isoformat(), int(pid)),
+            )
             db.commit()
-            return {'success': True}
+            _audit(
+                self._user_id, self._username, 'DELETE_PRODUCT', 'inventory',
+                f'pid={pid} name={name}',
+            )
+            return {
+                'success': True,
+                'message': (
+                    f'{name} was removed from the catalogue. Past sales stay on record.'
+                ),
+            }
+        except Exception:
+            logger.exception('delete_product failed')
+            return {
+                'error': (
+                    'This product was not removed. Nothing was changed — refresh '
+                    'the list and try again.'
+                ),
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -3621,6 +4086,10 @@ class APIClient:
                     'sku': line['sku'] or '',
                     'quantity': qty,
                     'unit_price': unit,
+                    'unit_cost': (
+                        float(line['unit_cost'] or 0)
+                        if 'unit_cost' in line.keys() else 0.0
+                    ),
                     'discount': disc_share,
                     'total': line_total,
                     'already': already,
@@ -3695,12 +4164,61 @@ class APIClient:
                  'RETURN', 'return', orig_rn, ret_rn, reason),
             )
             try:
-                from desktop.utils.accounting_hooks import reverse_sale_journal
-                # Soft: reverse journal against original is wrong for partial —
-                # log only; full journal optional
-                pass
+                from desktop.utils.accounting_engine import post_journal
+                method_l = method.strip().lower().replace('-', '').replace('_', ' ')
+                refund_account = (
+                    '1010' if method_l in ('mpesa', 'm pesa', 'mobile money')
+                    else '1020' if method_l in ('bank', 'bank transfer', 'transfer')
+                    else '1030' if method_l == 'card'
+                    else '1000'
+                )
+                cost_total = round(sum(
+                    float(rl.get('quantity') or 0)
+                    * float(rl.get('unit_cost') or 0)
+                    for rl in restock_lines
+                ), 2)
+                journal_lines = [
+                    {
+                        'account_code': '4000', 'debit': refund_total,
+                        'memo': f'Return against {orig_rn}',
+                    },
+                    {
+                        'account_code': refund_account, 'credit': refund_total,
+                        'memo': f'{method} refund {ret_rn}',
+                    },
+                ]
+                if cost_total > 0:
+                    journal_lines.extend([
+                        {
+                            'account_code': '1200', 'debit': cost_total,
+                            'memo': f'Returned inventory {orig_rn}',
+                        },
+                        {
+                            'account_code': '5000', 'credit': cost_total,
+                            'memo': f'Reverse COGS {orig_rn}',
+                        },
+                    ])
+                post_journal(
+                    db, journal_lines,
+                    description=f'Sales return {ret_rn}',
+                    entry_date=sale_date_s,
+                    source_module='sale_return',
+                    source_id=str(ret_id),
+                    entry_type='return',
+                    user_id=self._user_id,
+                    username=self._username or 'staff',
+                )
             except Exception:
-                pass
+                db.rollback()
+                logger.exception('return sale accounting failed')
+                return {
+                    'error': (
+                        'This return was not saved because it could not be posted to '
+                        'the accounts. Nothing was refunded or restocked — try again, '
+                        'and call MugoByte support if it keeps failing.'
+                    ),
+                    'status': 500,
+                }
 
             db.commit()
             _audit(self._user_id, self._username, 'RETURN_SALE', 'sales',
@@ -5006,7 +5524,7 @@ class APIClient:
     def delete_debt_invoice(self, invoice_id: int, reason: str,
                             *, pin: str = '') -> dict:
         """
-        Clear an open debt invoice. Superadmin only.
+        Clear an open debt invoice. Admin/Superadmin with Super-Admin PIN.
 
         Paths:
           - Unpaid (amount_paid ≈ 0): void linked POS sale (full restock), or
@@ -5019,11 +5537,11 @@ class APIClient:
         Blocked: fully paid, already cancelled/written_off.
         Entire unpaid void/restock path is transactional (void_sale BEGIN/COMMIT).
         """
-        if self._role != 'superadmin':
+        if self._role not in ('admin', 'superadmin'):
             _audit(self._user_id, self._username,
                    'DELETE_DEBT_DENIED', 'debt',
                    f"invoice_id={invoice_id} role={self._role}")
-            return {'error': 'Only superadmin can delete debts.'}
+            return {'error': 'Only Admin or Super Admin can write off debts.'}
 
         reason = (reason or '').strip()
         if not reason:
@@ -5927,24 +6445,49 @@ class APIClient:
             db.close()
 
     def accounting_expenses(self, start=None, end=None) -> list:
-        if not self._acc_perm('accounting.view'):
+        if not (
+            self._acc_perm('accounting.view')
+            or self._acc_perm('accounting.create_expenses')
+        ):
             return []
         db = _db()
         try:
             from desktop.utils.accounting_engine import list_expenses
-            return list_expenses(db, start, end)
+            rows = list_expenses(db, start, end)
+            # Cashiers without full accounting.view: own rows for the selected period.
+            if (
+                self._acc_perm('accounting.create_expenses')
+                and not self._acc_perm('accounting.view')
+            ):
+                uid = self._user_id
+                rows = [r for r in rows if int(r.get('created_by') or 0) == int(uid or 0)]
+            return rows
         finally:
             db.close()
 
     def accounting_create_expense(self, data: dict) -> dict:
-        if not self._acc_perm('accounting.approve_expenses'):
+        can_create = self._acc_perm('accounting.create_expenses')
+        can_approve = self._acc_perm('accounting.approve_expenses')
+        if not (can_create or can_approve):
             return {'error': 'Insufficient permissions to record expenses'}
+        payload = dict(data or {})
+        # Cashier cannot backdate — force today unless approve role.
+        if not can_approve:
+            from datetime import date as _date
+            payload['expense_date'] = _date.today().isoformat()
+            # Never trust UI-supplied creator identity
+            payload.pop('created_by', None)
+            payload.pop('created_by_name', None)
+            payload.pop('approved_by', None)
         db = _db()
         try:
             from desktop.utils.accounting_engine import create_expense
-            r = create_expense(db, data, user_id=self._user_id,
+            r = create_expense(db, payload, user_id=self._user_id,
                                username=self._username or '')
-            db.commit()
+            if r.get('success'):
+                db.commit()
+            else:
+                db.rollback()
             return r
         except Exception as e:
             db.rollback()
@@ -5962,7 +6505,10 @@ class APIClient:
                 db, int(expense_id), data or {},
                 user_id=self._user_id, username=self._username or '',
             )
-            db.commit()
+            if r.get('success'):
+                db.commit()
+            else:
+                db.rollback()
             return r
         except Exception as e:
             db.rollback()
@@ -5980,13 +6526,54 @@ class APIClient:
                 db, int(expense_id), reason=reason or '',
                 user_id=self._user_id, username=self._username or '',
             )
-            db.commit()
+            if r.get('success'):
+                db.commit()
+            else:
+                db.rollback()
             return r
         except Exception as e:
             db.rollback()
             return {'error': str(e)}
         finally:
             db.close()
+
+    def accounting_reverse_expense(self, expense_id: int, reason: str = '') -> dict:
+        if not self._acc_perm('accounting.approve_expenses'):
+            return {'error': 'Insufficient permissions to reverse expenses'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import reverse_expense
+            r = reverse_expense(
+                db, int(expense_id), reason=reason or '',
+                user_id=self._user_id, username=self._username or '',
+            )
+            if r.get('success'):
+                db.commit()
+            else:
+                db.rollback()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_cash_balance(self, account_code: str = '1000') -> float:
+        """Best-effort till/account balance for POS cash-outflow warnings."""
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import account_running_balance
+            return float(account_running_balance(db, account_code or '1000'))
+        except Exception:
+            return 0.0
+        finally:
+            db.close()
+
+    def accounting_expense_categories(self) -> list:
+        """Named shop categories for POS/Finance expense dialogs."""
+        from desktop.utils.accounting_engine import EXPENSE_CATEGORY_MAP
+        return [{'label': label, 'account_code': code}
+                for label, code in EXPENSE_CATEGORY_MAP]
 
     def accounting_create_transfer(self, data: dict) -> dict:
         if not self._acc_perm('accounting.create_journal'):

@@ -2,6 +2,9 @@
 MBT POS - Internet Monitor & Cloud Sync Service
 Runs as background thread; monitors connectivity and syncs queued data
 via the centralized Notification Engine (replaces Telegram).
+
+v3.0.93: fail-fast sockets, circuit breaker / backoff when offline so the
+monitor cannot burn CPU or stall callers with multi-host 3s timeouts.
 """
 import threading
 import time
@@ -13,8 +16,11 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-CHECK_HOSTS = [("8.8.8.8", 53), ("1.1.1.1", 53), ("8.8.4.4", 53)]
-CHECK_INTERVAL = 10
+# Two IP probes, short connect — never hostname DNS here.
+CHECK_HOSTS = [("1.1.1.1", 53), ("8.8.8.8", 53)]
+CONNECT_TIMEOUT = 1.0
+CHECK_INTERVAL_ONLINE = 30
+CHECK_INTERVAL_OFFLINE_MIN = 15
 
 
 class InternetMonitor(threading.Thread):
@@ -34,18 +40,36 @@ class InternetMonitor(threading.Thread):
         self.sync_status = "idle"
         self._stop_event = threading.Event()
         self._sync_lock = threading.Lock()
+        self._breaker = None
+
+    def _get_breaker(self):
+        if self._breaker is None:
+            try:
+                from backend.cloud.circuit_breaker import get_breaker
+                self._breaker = get_breaker('internet_monitor')
+            except Exception:
+                self._breaker = None
+        return self._breaker
 
     def stop(self):
         self._stop_event.set()
 
-    def check_connection(self):
+    def check_connection(self) -> bool:
+        br = self._get_breaker()
+        if br is not None and not br.allow():
+            return False
         for host, port in CHECK_HOSTS:
             try:
-                s = socket.create_connection((host, port), timeout=3)
+                s = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
                 s.close()
+                if br is not None:
+                    br.record_success()
                 return True
             except OSError:
                 continue
+        if br is not None:
+            wait = br.record_failure()
+            logger.debug('InternetMonitor offline; next probe in %.0fs', wait)
         return False
 
     def run(self):
@@ -55,18 +79,29 @@ class InternetMonitor(threading.Thread):
 
             if connected != self.is_connected:
                 self.is_connected = connected
-                logger.info(f"Connection status changed: {'ONLINE' if connected else 'OFFLINE'}")
+                logger.info(
+                    "Connection status changed: %s",
+                    'ONLINE' if connected else 'OFFLINE',
+                )
                 if self.status_callback:
                     try:
                         self.status_callback(connected)
                     except Exception as e:
-                        logger.error(f"Status callback error: {e}")
+                        logger.error("Status callback error: %s", e)
                 if connected:
                     self._do_sync()
             elif connected:
                 self._do_sync()
 
-            self._stop_event.wait(CHECK_INTERVAL)
+            if connected:
+                wait = CHECK_INTERVAL_ONLINE
+            else:
+                br = self._get_breaker()
+                wait = max(
+                    CHECK_INTERVAL_OFFLINE_MIN,
+                    (br.seconds_until_retry() if br else CHECK_INTERVAL_OFFLINE_MIN),
+                )
+            self._stop_event.wait(wait)
 
     def force_sync(self):
         connected = self.check_connection()
@@ -113,28 +148,39 @@ class InternetMonitor(threading.Thread):
                     if action_type == 'sale':
                         engine.publish_sale(shop, payload)
                     elif action_type == 'error':
-                        engine.publish_error(shop, payload.get('module', 'unknown'), payload.get('message', ''))
+                        engine.publish_error(
+                            shop,
+                            payload.get('module', 'unknown'),
+                            payload.get('message', ''),
+                        )
                     else:
-                        engine.publish(action_type, f'{shop} — {action_type}', json.dumps(payload))
+                        engine.publish(
+                            action_type,
+                            f'{shop} — {action_type}',
+                            json.dumps(payload),
+                        )
 
                     sent_ids.append(row['id'])
                 except Exception as e:
-                    logger.warning(f"Sync item {row['id']} failed: {e}")
+                    logger.warning("Sync item %s failed: %s", row['id'], e)
+                    db.execute(
+                        "UPDATE sync_queue SET status='failed', "
+                        "last_error=?, attempts=attempts+1 WHERE id=?",
+                        (str(e)[:200], row['id']),
+                    )
 
             if sent_ids:
-                placeholders = ','.join('?' * len(sent_ids))
+                placeholders = ','.join('?' for _ in sent_ids)
                 db.execute(
-                    f"UPDATE sync_queue SET status='sent', synced_at=? WHERE id IN ({placeholders})",
-                    [datetime.now().isoformat()] + sent_ids,
+                    f"UPDATE sync_queue SET status='synced', "
+                    f"synced_at=? WHERE id IN ({placeholders})",
+                    [datetime.now().isoformat(), *sent_ids],
                 )
-                db.commit()
-
+            db.commit()
             db.close()
-            self.sync_status = "synced"
-            logger.info(f"Sync complete: {len(sent_ids)} items processed via notification engine")
-
+            self.sync_status = "synced" if sent_ids else "idle"
         except Exception as e:
             self.sync_status = "failed"
-            logger.error(f"Sync error: {e}")
+            logger.error("Sync error: %s", e)
         finally:
             self._sync_lock.release()

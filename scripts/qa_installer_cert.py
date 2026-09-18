@@ -29,7 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
-EXPECTED_VERSION = "3.0.90"
+EXPECTED_VERSION = "3.1.3"
 desktop = Path(os.environ.get("USERPROFILE") or Path.home()) / "Desktop"
 OUT = Path(os.environ.get(
     "MBT_QA_OUT",
@@ -61,6 +61,42 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+PROTECTED_SHOP_TABLES = (
+    "products", "sales", "sale_items", "stock_movements",
+    "customers", "debt_invoices", "debt_payments",
+)
+
+
+def protected_db_state(path: Path) -> dict | None:
+    """Logical digest of shop data; ignores harmless SQLite WAL/checkpoint bytes."""
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    state: dict[str, dict] = {}
+    try:
+        for table in PROTECTED_SHOP_TABLES:
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if not exists:
+                state[table] = {"missing": True}
+                continue
+            h = hashlib.sha256()
+            count = 0
+            for row in con.execute(f'SELECT * FROM "{table}" ORDER BY rowid'):
+                h.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
+                h.update(b"\n")
+                count += 1
+            state[table] = {"rows": count, "sha256": h.hexdigest()}
+        return state
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
 
 
 # The entitlement itself. Everything else in the store is runtime bookkeeping
@@ -114,6 +150,10 @@ def snapshot_live() -> dict:
             snap[key] = {"path": str(p), "sha256": sha256(p), "size": p.stat().st_size}
         else:
             snap[key] = None
+    db_path = local / "data" / "mbt_pos.db"
+    snap["protected_db_state"] = (
+        protected_db_state(db_path) if db_path.is_file() else None
+    )
     snap["license_store"] = license_store_state(lic) if lic.is_file() else None
     cfg = local / "config"
     if cfg.is_dir():
@@ -271,8 +311,17 @@ $ver
     db = local / "data" / "mbt_pos.db"
     if snap.get("db") and db.is_file():
         got = sha256(db)
-        ok = got == snap["db"]["sha256"]
-        rec("upgrade.db_preserved", "PASS" if ok else "FAIL", f"match={ok} size={db.stat().st_size}")
+        bytes_same = got == snap["db"]["sha256"]
+        pre_logical = snap.get("protected_db_state")
+        post_logical = protected_db_state(db)
+        logical_same = bool(pre_logical) and pre_logical == post_logical
+        ok = bytes_same or logical_same
+        rec(
+            "upgrade.db_preserved",
+            "PASS" if ok else "FAIL",
+            f"logical_match={logical_same} file_bytes_identical={bytes_same} "
+            f"size={db.stat().st_size}",
+        )
     else:
         rec("upgrade.db_preserved", "PASS", "no pre-existing DB (new install path)")
 

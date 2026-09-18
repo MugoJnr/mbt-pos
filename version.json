@@ -1,8 +1,8 @@
 {
-    "version": "3.0.90",
-    "build": "RC-2026-09-10-v3.0.90",
-    "released": "2026-09-10",
-    "release_notes": "MBT POS v3.0.90: Offline stability and update recovery hardening. Payments and cloud synchronization no longer hold the UI or SQLite across network waits; update recovery supersedes stale packages with the actual latest version while preserving shop and license identity.",
-    "checksum_sha256": "fdb5a32b9f7bdefd9ad63e89e1aba5426d858b958b8921a594777210711c1986",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.90/MBT_POS_Setup.exe"
+    "version": "3.1.3",
+    "build": "RC-2026-09-18-v3.1.3",
+    "released": "2026-09-18",
+    "release_notes": "MBT POS v3.1.3 captures a new product's buying price once, inside the supplier delivery, so the same figure becomes the product's latest cost and the GRN line. Web and desktop Inventory both register first-time items without leaving the delivery. Admin can remove a product from the catalogue on desktop POS and the web dashboard (past sales stay). Inventory errors now tell the shopkeeper what to do instead of showing programmer text. Preserves AppData identity, license state and mbt_pos.db.",
+    "checksum_sha256": "f6260061568d00dbf2b5e51689cb3f985b46e027fc94f9b564e39b590ee841cf",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.3/MBT_POS_Setup.exe"
 }

@@ -25,7 +25,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
              mock.patch.object(self.ps, '_log_device_event'), \
              mock.patch.dict('sys.modules', {'backend.cloud.notification_engine': mock.Mock()}):
             row = self.ps.register_or_refresh_device(
-                'org-1',
+                '11111111-1111-4111-8111-111111111111',
                 device_id='pc-aaa',
                 business_id='biz-1',
                 computer_name='Front Desk',
@@ -38,7 +38,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
     def test_pending_device_is_auto_approved_on_refresh(self):
         existing = {
             'id': 'dev-uuid-2',
-            'org_id': 'org-1',
+            'org_id': '11111111-1111-4111-8111-111111111111',
             'device_id': 'pc-bbb',
             'approval_status': 'pending',
             'is_active': True,
@@ -53,7 +53,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
              mock.patch.object(self.ps, 'service_update', side_effect=_update), \
              mock.patch.object(self.ps, '_log_device_event') as log_event:
             row = self.ps.register_or_refresh_device(
-                'org-1',
+                '11111111-1111-4111-8111-111111111111',
                 device_id='pc-bbb',
                 actor_user_id='user-1',
             )
@@ -65,7 +65,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
     def test_rejected_device_remains_blocked(self):
         existing = {
             'id': 'dev-uuid-3',
-            'org_id': 'org-1',
+            'org_id': '11111111-1111-4111-8111-111111111111',
             'device_id': 'pc-ccc',
             'approval_status': 'rejected',
             'is_active': False,
@@ -80,7 +80,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
              mock.patch.object(self.ps, 'service_update', side_effect=_update), \
              mock.patch.object(self.ps, '_log_device_event'):
             row = self.ps.register_or_refresh_device(
-                'org-1',
+                '11111111-1111-4111-8111-111111111111',
                 device_id='pc-ccc',
                 computer_name='Stolen Laptop',
                 actor_user_id='user-1',
@@ -94,7 +94,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
     def test_deactivated_device_remains_blocked(self):
         existing = {
             'id': 'dev-uuid-4',
-            'org_id': 'org-1',
+            'org_id': '11111111-1111-4111-8111-111111111111',
             'device_id': 'pc-ddd',
             'approval_status': 'deactivated',
             'is_active': False,
@@ -105,7 +105,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
              mock.patch.object(self.ps, 'service_update', side_effect=lambda *_a, **_k: updates.append(_a[2]) or _a[2]), \
              mock.patch.object(self.ps, '_log_device_event'):
             row = self.ps.register_or_refresh_device(
-                'org-1',
+                '11111111-1111-4111-8111-111111111111',
                 device_id='pc-ddd',
                 actor_user_id='user-1',
             )
@@ -119,7 +119,7 @@ class TestDeviceAutoOnboarding(unittest.TestCase):
         ) as require_access:
             with self.assertRaises(PermissionError):
                 self.ps.register_or_refresh_device(
-                    'org-1',
+                    '11111111-1111-4111-8111-111111111111',
                     device_id='pc-eee',
                     actor_user_id='user-x',
                     verify_org_access=True,

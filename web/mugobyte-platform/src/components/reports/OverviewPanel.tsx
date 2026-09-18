@@ -45,7 +45,7 @@ function PresenceStrip({
   const freshness = String(presence.sync_freshness || "never");
   const pcOnline = Boolean(presence.pc_online);
   const syncTone =
-    freshness === "fresh"
+    freshness === "fresh" || freshness === "connected"
       ? "border-success/30 bg-success/10 text-success"
       : freshness === "aging"
         ? "border-warning/30 bg-warning/10 text-warning"
@@ -70,7 +70,9 @@ function PresenceStrip({
         ) : (
           <CloudUpload className="h-3.5 w-3.5" />
         )}
-        {presence.is_live_data
+        {freshness === "connected"
+          ? `Connected ${formatRelativeSync(presence.last_seen_at)}`
+          : presence.is_live_data
           ? `Synced ${formatRelativeSync(presence.last_sync_at)}`
           : `${presence.data_label || "Sync"} · ${formatRelativeSync(presence.last_sync_at)}`}
       </span>
@@ -173,8 +175,13 @@ export function OverviewPanel({
   const transactions = value(summary, "transactions", "sales_count", "receipts");
   const margin = value(summary, "gross_margin_pct", "margin_pct");
   const profitKpi = profitKpiFromSummary(summary, profit, margin, currency);
-  const costIncomplete = false; // never block the KPI; soft note goes in Needs Attention
-  const costMessage = "";
+  const costStatus = String(summary.cost_data_status || "");
+  const costIncomplete = costStatus === "no_items";
+  const costPartial = costStatus === "incomplete";
+  const costMessage = String(summary.cost_data_message || "");
+  const lossDriver = String(summary.cost_crushing_sample || "");
+  const hasCostCrushingLoss =
+    Number(profit ?? 0) < 0 && Number(summary.cost_crushing_product_count || 0) > 0;
 
   const trend = rowsOf(data, "trend", "sales_trend", "by_day");
   const methods = rowsOf(data, "payment_methods", "payment_mix");
@@ -251,18 +258,34 @@ export function OverviewPanel({
           </div>
         ) : null}
 
-        {costIncomplete ? (
+        {costIncomplete || costPartial ? (
           <div className="flex gap-3 rounded-2xl border border-warning/40 bg-warning/10 px-4 py-3 text-sm">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
             <div>
               <p className="font-medium text-foreground">
-                {String(summary.cost_data_status || "") === "partial"
+                {costPartial
                   ? "Partial profit — some lines missing cost"
                   : "Cost data incomplete — profit unavailable"}
               </p>
               <p className="mt-0.5 text-muted-foreground">
                 {costMessage ||
                   "Some sale lines are missing unit cost (and no usable product cost). Sales KPIs still show; margin is hidden so it is not invented."}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {hasCostCrushingLoss ? (
+          <div className="flex gap-3 rounded-2xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div>
+              <p className="font-medium text-foreground">
+                Why gross profit is negative
+              </p>
+              <p className="mt-0.5 text-muted-foreground">
+                {lossDriver || "A sold product"} has a recorded unit cost at or above its selling
+                price. Check that product’s cost and unit in MBT POS; the Portal will recalculate
+                after the correction syncs.
               </p>
             </div>
           </div>
@@ -554,7 +577,9 @@ export function OverviewPanel({
                           {String(value(row, "receipt_number", "receipt") || "—")}
                         </TableCell>
                         <TableCell>{String(value(row, "customer_name") || "Walk-in")}</TableCell>
-                        <TableCell>{String(value(row, "payment_method") || "—")}</TableCell>
+                        <TableCell>
+                          {String(value(row, "payment_display", "payment_method") || "—")}
+                        </TableCell>
                         <TableCell className="text-right font-semibold tabular-nums">
                           {formatMoney(value(row, "total"), currency)}
                         </TableCell>

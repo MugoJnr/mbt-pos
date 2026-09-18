@@ -107,14 +107,17 @@ class ExpensesCrudGate(unittest.TestCase):
 
     def test_cashier_cannot_create_expense(self):
         self.api._role = 'cashier'
-        denied = self.api.accounting_create_expense({
+        # Cashiers MAY create; may NOT update/delete.
+        created = self.api.accounting_create_expense({
             'amount': 10.0,
-            'description': 'blocked',
+            'description': 'allowed create',
+            'category_label': 'Other',
+            'payment_method': 'cash',
         })
-        self.assertIn('error', denied)
-        denied_u = self.api.accounting_update_expense(1, {'description': 'x'})
+        self.assertTrue(created.get('success'), created)
+        denied_u = self.api.accounting_update_expense(created['id'], {'description': 'x'})
         self.assertIn('error', denied_u)
-        denied_d = self.api.accounting_delete_expense(1, 'x')
+        denied_d = self.api.accounting_delete_expense(created['id'], 'x')
         self.assertIn('error', denied_d)
 
 

@@ -59,6 +59,23 @@ class TestAnalyticsEntitySerialization(unittest.TestCase):
         self.assertNotIn('mpesa_ref', payload)
         self.assertNotIn('notes', payload)
 
+    def test_sale_tender_breakdown_is_allowlisted_without_reference(self):
+        payload = self.mod.serialize_entity_payload('sale', {
+            'id': 4,
+            'payment_method': 'Mixed',
+            'cash_paid': 100,
+            'electronic_paid': 400,
+            'electronic_method': 'M-Pesa',
+            'payment_tenders': '[{"method":"M-Pesa","amount":400},'
+                               '{"method":"Cash","amount":100}]',
+            'mpesa_ref': 'SECRET-REF',
+        })
+        self.assertEqual(payload['cash_paid'], 100)
+        self.assertEqual(payload['electronic_paid'], 400)
+        self.assertEqual(payload['electronic_method'], 'M-Pesa')
+        self.assertIn('"method":"Cash"', payload['payment_tenders'])
+        self.assertNotIn('mpesa_ref', payload)
+
     def test_debt_payment_reference_stripped(self):
         payload = self.mod.serialize_entity_payload('debt_payment', {
             'id': 4,
@@ -213,7 +230,7 @@ class TestHistoricalBackfill(unittest.TestCase):
             self.mod,
             get_db_path=mock.Mock(return_value=self.db_path),
             load_identity=mock.Mock(return_value={
-                'org_id': 'org-1',
+                'org_id': '11111111-1111-4111-8111-111111111111',
                 'access_token': 'tok',
             }),
             is_logged_in=mock.Mock(return_value=True),
@@ -402,7 +419,7 @@ class TestDurableBackfillState(unittest.TestCase):
             self.mod,
             get_db_path=mock.Mock(return_value=self.db_path),
             load_identity=mock.Mock(return_value={
-                'org_id': 'org-1',
+                'org_id': '11111111-1111-4111-8111-111111111111',
                 'access_token': 'tok',
             }),
             is_logged_in=mock.Mock(return_value=True),

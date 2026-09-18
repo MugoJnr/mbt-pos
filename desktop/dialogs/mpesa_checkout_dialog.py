@@ -79,6 +79,7 @@ class MpesaCheckoutDialog(QDialog):
         self._poll.timeout.connect(self._on_poll)
         self._net_busy = False
         self._worker: Optional[_PaymentNetWorker] = None
+        self._net_queue: list = []
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -153,6 +154,11 @@ class MpesaCheckoutDialog(QDialog):
         self.btn_confirm.clicked.connect(self._confirm_match)
         self.btn_confirm.setEnabled(False)
         row2.addWidget(self.btn_confirm)
+
+        self.btn_inbox = QPushButton('Payment Inbox…')
+        self.btn_inbox.setToolTip('Review unmatched Till / M-Pesa credits')
+        self.btn_inbox.clicked.connect(self._open_inbox)
+        row2.addWidget(self.btn_inbox)
         root.addLayout(row2)
 
         self.match_pick = QComboBox()
@@ -237,15 +243,47 @@ class MpesaCheckoutDialog(QDialog):
         on_err: Optional[Callable] = None,
         busy_label: str = 'Contacting payments cloud…',
         restart_poll: bool = False,
+        priority: bool = False,
+        defer_message: str = '',
     ):
-        if self._net_busy:
-            return
-        if self._worker and self._worker.isRunning():
+        """Run network work off the UI thread.
+
+        When busy, non-priority calls are dropped with an optional toast;
+        priority calls (Confirm Manual) are queued so they never silently no-op.
+        """
+        if self._net_busy or (self._worker and self._worker.isRunning()):
+            if priority:
+                self._net_queue.append({
+                    'fn': fn, 'on_ok': on_ok, 'on_err': on_err,
+                    'busy_label': busy_label or 'Confirming…',
+                    'restart_poll': restart_poll, 'priority': True,
+                })
+                if defer_message:
+                    self._set_status(defer_message)
+                return
+            if defer_message:
+                self._set_status(defer_message)
+            elif busy_label:
+                self._set_status(
+                    'Still contacting payments… try again in a moment.')
             return
         self._set_busy(True, busy_label)
 
         worker = _PaymentNetWorker(fn, self)
         self._worker = worker
+
+        def _drain_queue():
+            if not self._net_queue:
+                return
+            nxt = self._net_queue.pop(0)
+            self._run_net(
+                nxt['fn'],
+                on_ok=nxt.get('on_ok'),
+                on_err=nxt.get('on_err'),
+                busy_label=nxt.get('busy_label') or '',
+                restart_poll=bool(nxt.get('restart_poll')),
+                priority=bool(nxt.get('priority')),
+            )
 
         def _ok(result):
             self._set_busy(False)
@@ -261,6 +299,7 @@ class MpesaCheckoutDialog(QDialog):
                     PaymentStatus.CANCELLED.value,
                 ):
                     self._poll.start()
+            _drain_queue()
 
         def _err(msg: str):
             self._set_busy(False)
@@ -268,6 +307,7 @@ class MpesaCheckoutDialog(QDialog):
                 on_err(msg)
             elif msg:
                 QMessageBox.warning(self, 'M-Pesa', msg)
+            _drain_queue()
 
         worker.finished_ok.connect(_ok)
         worker.finished_err.connect(_err)
@@ -430,7 +470,13 @@ class MpesaCheckoutDialog(QDialog):
             self.payment = payment
             self._refresh_from_payment()
 
-        self._run_net(_work, on_ok=_ok, busy_label='Recording manual reference…')
+        self._run_net(
+            _work,
+            on_ok=_ok,
+            busy_label='Recording manual reference…',
+            priority=True,
+            defer_message='Still contacting payments… confirming manual ref next.',
+        )
 
     def _query(self):
         if not self._ensure_payment():
@@ -448,6 +494,27 @@ class MpesaCheckoutDialog(QDialog):
             self._refresh_from_payment()
 
         self._run_net(_work, on_ok=_ok, busy_label='Querying payment status…')
+
+    def _open_inbox(self):
+        """Open unmatched-payment inbox without leaving M-Pesa checkout."""
+        try:
+            from desktop.dialogs.payment_inbox_dialog import PaymentInboxDialog
+            PaymentInboxDialog(
+                self,
+                payment_service=self.svc,
+                currency=self.currency,
+            ).exec_()
+            # Reload current payment state after manager matching.
+            if self.payment is not None:
+                try:
+                    refreshed = self.svc.get_payment(self.payment.id)
+                    if refreshed is not None:
+                        self.payment = refreshed
+                        self._refresh_from_payment()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.warning(self, 'Payment Inbox', f'Could not open inbox:\n{e}')
 
     def _confirm_match(self):
         if not self._ensure_payment():

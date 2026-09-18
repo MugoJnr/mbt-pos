@@ -39,13 +39,14 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(can_delete_debt(u))
         self.assertTrue(can_set_business_day(u))
 
-    def test_admin_can_void_not_edit_stock(self):
+    def test_admin_can_void_write_off_and_adjust_but_not_edit_sale(self):
         u = _user(ROLE_ADMIN)
         self.assertTrue(can_void_sales(u))
         self.assertFalse(can_edit_sales(u))
-        self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
+        self.assertTrue(has_permission(u, 'inventory.adjust_stock'))
         self.assertTrue(has_permission(u, 'inventory.receive_stock'))
-        self.assertFalse(can_delete_debt(u))
+        self.assertTrue(has_permission(u, 'inventory.delete'))
+        self.assertTrue(can_delete_debt(u))
 
     def test_cashier_can_receive_create_not_adjust_or_delete(self):
         u = _user(ROLE_CASHIER)

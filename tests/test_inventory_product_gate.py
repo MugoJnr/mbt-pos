@@ -90,6 +90,33 @@ class InventoryProductGate(unittest.TestCase):
         row3 = dict(db.execute("SELECT is_active FROM products WHERE id=?", (pid,)).fetchone())
         db.close()
         self.assertEqual(int(row3['is_active']), 0)
+        self.assertIn('catalogue', (archived.get('message') or '').lower())
+
+    def test_admin_can_delete_product_cashier_cannot(self):
+        created = self.api.create_product({
+            'name': 'Admin Delete Me',
+            'sku': 'ADM-DEL-1',
+            'price': 20.0,
+            'cost_price': 10.0,
+        })
+        pid = int(created['id'])
+        self.api._role = 'cashier'
+        denied = self.api.delete_product(pid)
+        self.assertIn('error', denied)
+        self.assertNotIn('success', denied)
+        db = self.ac._db()
+        still = int(db.execute(
+            "SELECT is_active FROM products WHERE id=?", (pid,)).fetchone()[0])
+        db.close()
+        self.assertEqual(still, 1)
+        self.api._role = 'admin'
+        allowed = self.api.delete_product(pid)
+        self.assertTrue(allowed.get('success'), allowed)
+        db = self.ac._db()
+        gone = int(db.execute(
+            "SELECT is_active FROM products WHERE id=?", (pid,)).fetchone()[0])
+        db.close()
+        self.assertEqual(gone, 0)
 
     def test_v03_stock_adjust_and_low_stock(self):
         created = self.api.create_product({
@@ -150,7 +177,9 @@ class InventoryProductGate(unittest.TestCase):
         cost = float(db.execute(
             "SELECT cost_price FROM products WHERE id=?", (pid,)).fetchone()['cost_price'])
         db.close()
-        self.assertEqual(cost, 0.0)  # view_cost denied → cost forced to 0
+        # First-time registration captures buying cost even though general
+        # inventory valuation remains hidden from the cashier.
+        self.assertEqual(cost, 99.0)
         upd = self.api.update_product(pid, {'name': 'Cashier Product 2'})
         self.assertTrue(upd.get('success'), upd)
         denied_delete = self.api.delete_product(pid)
@@ -161,6 +190,7 @@ class InventoryProductGate(unittest.TestCase):
             'name': 'Cashier Block',
             'sku': 'CB-1',
             'price': 10.0,
+            'cost_price': 6.0,
             'stock': 8,
         })
         pid = int(created['id'])
@@ -186,6 +216,7 @@ class InventoryProductGate(unittest.TestCase):
         created = self.api.create_product({
             'name': 'Freshness Gate',
             'price': 10.0,
+            'cost_price': 6.0,
             'stock': 8,
         })
         pid = int(created['id'])

@@ -25,6 +25,16 @@ def _user_data_root() -> str:
     return os.path.join(base, *_BRAND_PARTS)
 
 
+_ROOT_CACHE: dict = {}
+_DIRS_READY: dict = {}
+
+
+def reset_path_cache() -> None:
+    """Drop memoized root/data-dir state (tests that relocate the data root)."""
+    _ROOT_CACHE.clear()
+    _DIRS_READY.clear()
+
+
 def get_project_root() -> str:
     """
     Return the folder that contains data/, logs/, config/, exports/.
@@ -32,23 +42,35 @@ def get_project_root() -> str:
     - MBT_DATA_ROOT env: cloud server / container data dir (e.g. /data)
     - Frozen (.exe): ALWAYS %LOCALAPPDATA%\\MugoByte\\MBT POS
     - Development: folder containing this file (extracted/mbt_pos).
+
+    The resolved root is memoized: legacy migration opens and counts the shop
+    database, so re-resolving it on every path lookup froze the UI thread.
     """
     override = os.environ.get('MBT_DATA_ROOT', '').strip()
+    cache_key = override or ('frozen' if getattr(sys, 'frozen', False) else 'dev')
+    cached = _ROOT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     if override:
         _migrate_legacy_data(override)
-        return ensure_data_dirs(override)
-    if getattr(sys, 'frozen', False):
+        root = ensure_data_dirs(override)
+    elif getattr(sys, 'frozen', False):
         root = _user_data_root()
         _migrate_legacy_data(root)
-        return root
-    # Development: use the same AppData store as the installed app when present,
-    # so Cloudflare, notification, and DB paths are not split between the repo
-    # and %LOCALAPPDATA%.
-    appdata = _user_data_root()
-    appdata_db = os.path.join(appdata, 'data', 'mbt_pos.db')
-    if _db_has_shop_data(appdata_db):
-        return ensure_data_dirs(appdata)
-    return os.path.dirname(os.path.abspath(__file__))
+    else:
+        # Development: use the same AppData store as the installed app when
+        # present, so Cloudflare, notification, and DB paths are not split
+        # between the repo and %LOCALAPPDATA%.
+        appdata = _user_data_root()
+        appdata_db = os.path.join(appdata, 'data', 'mbt_pos.db')
+        if _db_has_shop_data(appdata_db):
+            root = ensure_data_dirs(appdata)
+        else:
+            root = os.path.dirname(os.path.abspath(__file__))
+
+    _ROOT_CACHE[cache_key] = root
+    return root
 
 
 def get_data_dir() -> str:
@@ -87,9 +109,15 @@ def get_init_flag_path() -> str:
 
 def ensure_data_dirs(root: str = None) -> str:
     root = root or get_project_root()
+    key = os.path.normcase(os.path.abspath(root))
+    # One cheap stat keeps this self-healing if the folder is removed at
+    # runtime, without re-running mkdir + marker write on every path lookup.
+    if _DIRS_READY.get(key) and os.path.isdir(os.path.join(root, 'data')):
+        return root
     for name in ('logs', 'data', 'config', 'exports', 'backups'):
         os.makedirs(os.path.join(root, name), exist_ok=True)
     _write_path_marker(root)
+    _DIRS_READY[key] = True
     return root
 
 

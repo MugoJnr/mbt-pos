@@ -95,13 +95,14 @@ class ReleaseIntegrityTests(unittest.TestCase):
         dashboard = (
             ROOT / 'web' / 'templates' / 'dashboard.html'
         ).read_text(encoding='utf-8')
-        # The web adjust route defers to central policy rather than a literal
-        # role string; `inventory.adjust_stock` is superadmin-only there.
+        # The web route defers to central policy: Admin/owner only, plus PIN.
         self.assertIn("if not _has_perm('inventory.adjust_stock')", routes)
         from desktop.utils.security import has_permission
-        for role in ('cashier', 'manager', 'admin'):
+        for role in ('cashier', 'manager'):
             self.assertFalse(
                 has_permission({'role': role}, 'inventory.adjust_stock'))
+        self.assertTrue(
+            has_permission({'role': 'admin'}, 'inventory.adjust_stock'))
         self.assertTrue(
             has_permission({'role': 'superadmin'}, 'inventory.adjust_stock'))
         self.assertIn('from desktop.utils.api_client import APIClient', routes)

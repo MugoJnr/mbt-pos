@@ -126,8 +126,8 @@ class BackendSecurityGates(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_cashier_cannot_mutate_catalog_or_sync_queue(self):
-        # Shop-floor access: a cashier may add a product, but must never be
-        # able to set cost — the backend strips it without inventory.view_cost.
+        # First-time shop-floor registration captures the actual buying cost;
+        # general inventory valuation remains hidden from cashiers.
         created = self.client.post(
             '/api/products',
             json={'name': 'Shop Floor Item', 'price': 1, 'cost_price': 999},
@@ -140,7 +140,7 @@ class BackendSecurityGates(unittest.TestCase):
             ('Shop Floor Item',),
         ).fetchone()[0]
         db.close()
-        self.assertEqual(float(cost or 0), 0.0)
+        self.assertEqual(float(cost or 0), 999.0)
         self.assertEqual(self.client.delete(
             f'/api/products/{self.product_id}',
             headers=self.headers,
