@@ -1,8 +1,8 @@
 {
-    "version": "3.1.3",
-    "build": "RC-2026-09-18-v3.1.3",
+    "version": "3.1.4",
+    "build": "RC-2026-09-18-v3.1.4",
     "released": "2026-09-18",
-    "release_notes": "MBT POS v3.1.3 captures a new product's buying price once, inside the supplier delivery, so the same figure becomes the product's latest cost and the GRN line. Web and desktop Inventory both register first-time items without leaving the delivery. Admin can remove a product from the catalogue on desktop POS and the web dashboard (past sales stay). Inventory errors now tell the shopkeeper what to do instead of showing programmer text. Preserves AppData identity, license state and mbt_pos.db.",
-    "checksum_sha256": "f6260061568d00dbf2b5e51689cb3f985b46e027fc94f9b564e39b590ee841cf",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.3/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.1.4 fully integrates Internal Consumption on desktop and the web dashboard. Select many products from a large searchable list, record them as one atomic department issue, and click any history record to see every product and quantity. Price snapshots preserve buying cost, weighted average buying cost, retail opportunity value and foregone gross profit. Managers and Admins can add, rename, archive and restore departments without losing history; Admin can void with PIN to restore stock and reverse accounting. Errors are shop-readable. Preserves AppData identity, license state and mbt_pos.db.",
+    "checksum_sha256": "29175f2826c5c34ac8f0fd1606dbff7aa1457ebdb29d2ec7c55d86ba80a92174",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.4/MBT_POS_Setup.exe"
 }

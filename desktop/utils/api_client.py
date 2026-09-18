@@ -12,6 +12,7 @@ import json
 import sqlite3
 import hashlib
 import logging
+import math
 import jwt
 from datetime import datetime, date
 from runtime_security import get_jwt_secret
@@ -437,6 +438,8 @@ def _ensure_schema(conn: sqlite3.Connection):
         quantity REAL NOT NULL,
         unit_cost REAL NOT NULL,
         total_cost REAL NOT NULL,
+        unit_selling_price REAL,
+        total_selling_value REAL,
         FOREIGN KEY(consumption_id) REFERENCES stock_consumptions(id),
         FOREIGN KEY(product_id) REFERENCES products(id)
     );
@@ -640,6 +643,28 @@ def _migrate_columns(conn: sqlite3.Connection):
             ('void_reason', "ALTER TABLE stock_consumptions ADD COLUMN void_reason TEXT"),
         ):
             if sc_cols and col not in sc_cols:
+                conn.execute(ddl)
+    except Exception:
+        pass
+    # Preserve the retail price that applied when each item was consumed.
+    try:
+        sci_cols = {
+            r[1] for r in conn.execute(
+                "PRAGMA table_info(stock_consumption_items)").fetchall()
+        }
+        for col, ddl in (
+            (
+                'unit_selling_price',
+                "ALTER TABLE stock_consumption_items "
+                "ADD COLUMN unit_selling_price REAL",
+            ),
+            (
+                'total_selling_value',
+                "ALTER TABLE stock_consumption_items "
+                "ADD COLUMN total_selling_value REAL",
+            ),
+        ):
+            if sci_cols and col not in sci_cols:
                 conn.execute(ddl)
     except Exception:
         pass
@@ -5832,9 +5857,205 @@ class APIClient:
         try:
             if active_only:
                 return _rows(db.execute(
-                    "SELECT * FROM departments WHERE active=1 ORDER BY name"
+                    "SELECT d.*, (SELECT COUNT(*) FROM stock_consumptions sc "
+                    "WHERE sc.department_id=d.id) AS usage_count "
+                    "FROM departments d WHERE d.active=1 ORDER BY d.name"
                 ))
-            return _rows(db.execute("SELECT * FROM departments ORDER BY name"))
+            return _rows(db.execute(
+                "SELECT d.*, (SELECT COUNT(*) FROM stock_consumptions sc "
+                "WHERE sc.department_id=d.id) AS usage_count "
+                "FROM departments d ORDER BY d.active DESC,d.name"
+            ))
+        finally:
+            db.close()
+
+    def create_department(self, name: str) -> dict:
+        """Create or restore a department used by internal consumption."""
+        from desktop.utils.security import has_permission
+        if not has_permission(
+                {'role': self._role or 'viewer'},
+                'consumption.manage_departments'):
+            return {
+                'error': (
+                    'Your role cannot add departments. Ask a Manager, Admin or '
+                    'the shop owner.'
+                ),
+                'status': 403,
+            }
+        clean = ' '.join(str(name or '').strip().split())[:80]
+        if not clean:
+            return {'error': 'Enter the department name.', 'status': 400}
+        db = _db()
+        try:
+            existing = db.execute(
+                'SELECT id,name,active FROM departments WHERE lower(name)=lower(?)',
+                (clean,),
+            ).fetchone()
+            if existing:
+                if int(existing['active'] or 0) == 1:
+                    return {
+                        'error': f'{existing["name"]} is already in the department list.',
+                        'status': 409,
+                    }
+                db.execute(
+                    'UPDATE departments SET name=?,active=1 WHERE id=?',
+                    (clean, existing['id']),
+                )
+                db.commit()
+                _audit(
+                    self._user_id, self._username, 'RESTORE_DEPARTMENT',
+                    'consumption', f'id={existing["id"]} name={clean}',
+                )
+                return {
+                    'success': True, 'id': int(existing['id']), 'name': clean,
+                    'message': f'{clean} was restored to the department list.',
+                }
+            cur = db.execute(
+                'INSERT INTO departments (name,active) VALUES (?,1)', (clean,))
+            db.commit()
+            department_id = int(cur.lastrowid)
+            _audit(
+                self._user_id, self._username, 'CREATE_DEPARTMENT',
+                'consumption', f'id={department_id} name={clean}',
+            )
+            return {
+                'success': True, 'id': department_id, 'name': clean,
+                'message': f'{clean} was added.',
+            }
+        except sqlite3.IntegrityError:
+            db.rollback()
+            return {
+                'error': 'A department with that name already exists.',
+                'status': 409,
+            }
+        except Exception:
+            db.rollback()
+            logger.exception('create_department failed')
+            return {
+                'error': 'The department was not added. Nothing was changed — try again.',
+                'status': 500,
+            }
+        finally:
+            db.close()
+
+    def update_department(self, department_id: int, name: str) -> dict:
+        from desktop.utils.security import has_permission
+        if not has_permission(
+                {'role': self._role or 'viewer'},
+                'consumption.manage_departments'):
+            return {
+                'error': (
+                    'Your role cannot edit departments. Ask a Manager, Admin or '
+                    'the shop owner.'
+                ),
+                'status': 403,
+            }
+        clean = ' '.join(str(name or '').strip().split())[:80]
+        if not clean:
+            return {'error': 'Enter the department name.', 'status': 400}
+        db = _db()
+        try:
+            row = db.execute(
+                'SELECT id,name FROM departments WHERE id=?',
+                (int(department_id),),
+            ).fetchone()
+            if not row:
+                return {
+                    'error': 'That department is no longer on the list. Refresh and try again.',
+                    'status': 404,
+                }
+            clash = db.execute(
+                'SELECT id FROM departments WHERE lower(name)=lower(?) AND id<>?',
+                (clean, int(department_id)),
+            ).fetchone()
+            if clash:
+                return {
+                    'error': 'Another department already uses that name.',
+                    'status': 409,
+                }
+            db.execute(
+                'UPDATE departments SET name=?,active=1 WHERE id=?',
+                (clean, int(department_id)),
+            )
+            db.commit()
+            _audit(
+                self._user_id, self._username, 'UPDATE_DEPARTMENT',
+                'consumption',
+                f'id={department_id} old={row["name"]} new={clean}',
+            )
+            return {'success': True, 'message': f'Department renamed to {clean}.'}
+        except Exception:
+            db.rollback()
+            logger.exception('update_department failed')
+            return {
+                'error': 'The department was not updated. Nothing was changed — try again.',
+                'status': 500,
+            }
+        finally:
+            db.close()
+
+    def archive_department(self, department_id: int) -> dict:
+        """Hide a department from new usage while preserving its history."""
+        from desktop.utils.security import has_permission
+        if not has_permission(
+                {'role': self._role or 'viewer'},
+                'consumption.manage_departments'):
+            return {
+                'error': (
+                    'Your role cannot archive departments. Ask a Manager, Admin '
+                    'or the shop owner.'
+                ),
+                'status': 403,
+            }
+        db = _db()
+        try:
+            row = db.execute(
+                'SELECT id,name,active FROM departments WHERE id=?',
+                (int(department_id),),
+            ).fetchone()
+            if not row:
+                return {
+                    'error': 'That department is no longer on the list. Refresh and try again.',
+                    'status': 404,
+                }
+            if int(row['active'] or 0) == 0:
+                return {
+                    'success': True,
+                    'message': f'{row["name"]} is already archived.',
+                }
+            active_count = int(db.execute(
+                'SELECT COUNT(*) FROM departments WHERE active=1').fetchone()[0])
+            if active_count <= 1:
+                return {
+                    'error': (
+                        'Keep at least one active department so internal '
+                        'consumption can still be recorded.'
+                    ),
+                    'status': 409,
+                }
+            db.execute(
+                'UPDATE departments SET active=0 WHERE id=?',
+                (int(department_id),),
+            )
+            db.commit()
+            _audit(
+                self._user_id, self._username, 'ARCHIVE_DEPARTMENT',
+                'consumption', f'id={department_id} name={row["name"]}',
+            )
+            return {
+                'success': True,
+                'message': (
+                    f'{row["name"]} was archived. Existing consumption history '
+                    'was kept.'
+                ),
+            }
+        except Exception:
+            db.rollback()
+            logger.exception('archive_department failed')
+            return {
+                'error': 'The department was not archived. Nothing was changed — try again.',
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -5857,7 +6078,13 @@ class APIClient:
                 self._user_id, self._username, 'CREATE_CONSUMPTION_DENIED',
                 'consumption', f'role={self._role or "none"}',
             )
-            return {'error': 'Insufficient permissions to record consumption.'}
+            return {
+                'error': (
+                    'Your role cannot record internal consumption. Ask a Manager, '
+                    'Admin or the shop owner.'
+                ),
+                'status': 403,
+            }
         items = data.get('items') or []
         if not items:
             return {'error': 'Add at least one product line.'}
@@ -5878,7 +6105,13 @@ class APIClient:
             ).fetchone()
             if not dept:
                 db.rollback()
-                return {'error': 'Invalid department.'}
+                return {
+                    'error': (
+                        'That department is no longer active. Choose another '
+                        'department or restore it first.'
+                    ),
+                    'status': 400,
+                }
 
             ref = self._next_consumption_ref(db)
             cons_date = (data.get('date') or str(date.today())).strip()
@@ -5890,47 +6123,101 @@ class APIClient:
             line_rows = []
             total_cost = 0.0
             seen_products = set()
-            for item in items:
+            for position, item in enumerate(items, start=1):
                 pid = item.get('product_id')
-                qty = round(float(item.get('quantity') or 0), 4)
+                try:
+                    qty = round(float(item.get('quantity') or 0), 4)
+                except (TypeError, ValueError, OverflowError):
+                    db.rollback()
+                    return {
+                        'error': f'Enter a valid quantity on line {position}.',
+                        'status': 400,
+                    }
                 if not pid or qty <= 0:
                     db.rollback()
-                    return {'error': 'Each line needs a product and quantity > 0.'}
-                pid = int(pid)
+                    return {
+                        'error': (
+                            f'Line {position} needs a product and a quantity '
+                            f'greater than zero.'
+                        ),
+                        'status': 400,
+                    }
+                try:
+                    pid = int(pid)
+                except (TypeError, ValueError, OverflowError):
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'The product on line {position} is no longer available. '
+                            f'Refresh the list and choose it again.'
+                        ),
+                        'status': 400,
+                    }
                 if pid in seen_products:
                     db.rollback()
                     return {
                         'error': (
-                            f'Product id {pid} appears more than once. '
-                            'Combine it into one consumption line.'
-                        )
+                            f'The product on line {position} is already selected. '
+                            'Keep one line and change its quantity.'
+                        ),
+                        'status': 409,
                     }
                 seen_products.add(pid)
                 prod = db.execute(
-                    "SELECT id, name, stock, cost_price FROM products WHERE id=? AND is_active=1",
+                    "SELECT id, name, stock, cost_price, price "
+                    "FROM products WHERE id=? AND is_active=1",
                     (pid,)
                 ).fetchone()
                 if not prod:
                     db.rollback()
-                    return {'error': f'Product id {pid} not found.'}
+                    return {
+                        'error': (
+                            f'The product on line {position} is no longer in '
+                            f'inventory. Nothing was used — refresh and choose it again.'
+                        ),
+                        'status': 404,
+                    }
                 stock = round(float(prod['stock'] or 0), 4)
                 if stock < qty:
                     db.rollback()
                     return {
                         'error': (
-                            f"Insufficient stock for '{prod['name']}': "
-                            f"requested {qty}, available {stock}"
-                        )
+                            f"{prod['name']} only has {stock:g} available. "
+                            f"Reduce the quantity from {qty:g} before saving."
+                        ),
+                        'status': 400,
                     }
                 unit_cost = item.get('unit_cost')
                 if unit_cost is None or unit_cost == '':
                     unit_cost = float(prod['cost_price'] or 0)
                 else:
-                    unit_cost = float(unit_cost)
+                    try:
+                        unit_cost = float(unit_cost)
+                    except (TypeError, ValueError, OverflowError):
+                        db.rollback()
+                        return {
+                            'error': (
+                                f'Enter a valid unit cost for {prod["name"]}.'
+                            ),
+                            'status': 400,
+                        }
+                if not math.isfinite(unit_cost) or unit_cost < 0:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f'Enter a valid unit cost for {prod["name"]}.'
+                        ),
+                        'status': 400,
+                    }
                 unit_cost = round(unit_cost, 4)
                 line_total = round(qty * unit_cost, 2)
+                unit_selling_price = round(float(prod['price'] or 0), 4)
+                total_selling_value = round(qty * unit_selling_price, 2)
                 total_cost += line_total
-                line_rows.append((prod, qty, unit_cost, line_total, stock))
+                line_rows.append((
+                    prod, qty, unit_cost, line_total, unit_selling_price,
+                    total_selling_value, stock,
+                ))
 
             db.execute(
                 "INSERT INTO stock_consumptions "
@@ -5943,13 +6230,18 @@ class APIClient:
             cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             audit_lines = []
 
-            for prod, qty, unit_cost, line_total, old_stock in line_rows:
+            for (prod, qty, unit_cost, line_total, unit_selling_price,
+                 total_selling_value, old_stock) in line_rows:
                 new_stock = round(old_stock - qty, 4)
                 db.execute(
                     "INSERT INTO stock_consumption_items "
-                    "(consumption_id, product_id, product_name, quantity, unit_cost, total_cost) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (cons_id, prod['id'], prod['name'], qty, unit_cost, line_total)
+                    "(consumption_id, product_id, product_name, quantity, "
+                    "unit_cost, total_cost, unit_selling_price, total_selling_value) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        cons_id, prod['id'], prod['name'], qty, unit_cost,
+                        line_total, unit_selling_price, total_selling_value,
+                    )
                 )
                 db.execute(
                     "UPDATE products SET stock=?, updated_at=? WHERE id=?",
@@ -5985,13 +6277,10 @@ class APIClient:
                     ),
                 )
 
-            try:
-                from desktop.utils.accounting_hooks import post_consumption_journal
-                post_consumption_journal(
-                    db, cons_id,
-                    user_id=self._user_id, username=created_name, safe=True)
-            except Exception as _je:
-                logger.error('consumption accounting: %s', _je, exc_info=True)
+            from desktop.utils.accounting_hooks import post_consumption_journal
+            post_consumption_journal(
+                db, cons_id,
+                user_id=self._user_id, username=created_name, safe=False)
 
             db.execute(
                 "INSERT INTO audit_log "
@@ -6011,13 +6300,19 @@ class APIClient:
                 'reference_no': ref,
                 'total_cost': round(total_cost, 2),
             }
-        except Exception as e:
+        except Exception:
             try:
                 db.rollback()
             except Exception:
                 pass
             logger.exception('create_consumption failed')
-            return {'error': str(e)}
+            return {
+                'error': (
+                    'This consumption was not saved and no stock was changed. '
+                    'Try again — if it keeps failing, call MugoByte support.'
+                ),
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -6026,11 +6321,19 @@ class APIClient:
         """Soft-void a consumption and restore stock. Admin / superadmin + PIN."""
         reason = (reason or '').strip()
         if not reason:
-            return {'error': 'Void reason is required.'}
+            return {
+                'error': 'Enter why this consumption is being voided.',
+                'status': 400,
+            }
         if self._role not in ('admin', 'superadmin'):
             _audit(self._user_id, self._username, 'VOID_CONSUMPTION_DENIED',
                    'consumption', f"id={consumption_id} role={self._role}")
-            return {'error': 'Insufficient permissions to void consumptions.'}
+            return {
+                'error': (
+                    'Only Admin or Super Admin can void internal consumption.'
+                ),
+                'status': 403,
+            }
 
         db = _db()
         device = self._device_name()
@@ -6049,10 +6352,22 @@ class APIClient:
             ).fetchone()
             if not cons:
                 db.rollback()
-                return {'error': 'Consumption not found.'}
+                return {
+                    'error': (
+                        'That consumption entry is no longer available. '
+                        'Refresh the history and try again.'
+                    ),
+                    'status': 404,
+                }
             if int(cons['voided'] or 0) == 1:
                 db.rollback()
-                return {'error': 'Consumption already voided.'}
+                return {
+                    'error': (
+                        'This consumption was already voided. Its stock has '
+                        'already been restored.'
+                    ),
+                    'status': 409,
+                }
 
             items = db.execute(
                 "SELECT * FROM stock_consumption_items WHERE consumption_id=?",
@@ -6096,14 +6411,11 @@ class APIClient:
                 " voided_at=?, void_reason=? WHERE id=?",
                 (self._user_id, self._username or 'admin', now, reason, consumption_id)
             )
-            try:
-                from desktop.utils.accounting_hooks import reverse_consumption_journal
-                reverse_consumption_journal(
-                    db, consumption_id, reason=reason,
-                    user_id=self._user_id, username=self._username or 'admin',
-                    safe=True)
-            except Exception as _je:
-                logger.error('void consumption accounting: %s', _je, exc_info=True)
+            from desktop.utils.accounting_hooks import reverse_consumption_journal
+            reverse_consumption_journal(
+                db, consumption_id, reason=reason,
+                user_id=self._user_id, username=self._username or 'admin',
+                safe=False)
             db.commit()
             for line in audit_lines:
                 _audit(
@@ -6115,13 +6427,19 @@ class APIClient:
                 f"ref={cons['reference_no']} reason={reason} device={device}"
             )
             return {'success': True}
-        except Exception as e:
+        except Exception:
             try:
                 db.rollback()
             except Exception:
                 pass
             logger.exception('void_consumption failed')
-            return {'error': str(e)}
+            return {
+                'error': (
+                    'Nothing was voided or restored. Try again — if it keeps '
+                    'failing, call MugoByte support.'
+                ),
+                'status': 500,
+            }
         finally:
             db.close()
 
@@ -6137,9 +6455,41 @@ class APIClient:
             if not cons:
                 return {}
             cons['items'] = _rows(db.execute(
-                "SELECT * FROM stock_consumption_items WHERE consumption_id=? ORDER BY id",
+                "SELECT sci.*, p.sku AS product_sku, p.unit AS product_unit, "
+                "COALESCE(sci.unit_selling_price,p.price,0) "
+                "AS effective_selling_price, "
+                "COALESCE(sci.total_selling_value,"
+                "sci.quantity * COALESCE(p.price,0),0) "
+                "AS effective_selling_value, "
+                "CASE WHEN sci.unit_selling_price IS NULL THEN 1 ELSE 0 END "
+                "AS selling_price_is_estimate "
+                "FROM stock_consumption_items sci "
+                "LEFT JOIN products p ON p.id=sci.product_id "
+                "WHERE sci.consumption_id=? ORDER BY sci.id",
                 (consumption_id,)
             ))
+            active_items = cons['items']
+            total_qty = round(sum(
+                float(item.get('quantity') or 0) for item in active_items
+            ), 4)
+            total_buying = round(sum(
+                float(item.get('total_cost') or 0) for item in active_items
+            ), 2)
+            opportunity_value = round(sum(
+                float(item.get('effective_selling_value') or 0)
+                for item in active_items
+            ), 2)
+            cons['total_quantity'] = total_qty
+            cons['total_buying_cost'] = total_buying
+            cons['average_buying_cost'] = round(
+                total_buying / total_qty, 4) if total_qty > 0 else 0
+            cons['opportunity_value'] = opportunity_value
+            cons['foregone_gross_profit'] = round(
+                opportunity_value - total_buying, 2)
+            cons['has_estimated_selling_prices'] = any(
+                int(item.get('selling_price_is_estimate') or 0)
+                for item in active_items
+            )
             return cons
         finally:
             db.close()
@@ -6182,10 +6532,18 @@ class APIClient:
                        sc.voided, sc.void_reason, sc.voided_by_name, sc.voided_at,
                        d.name as department_name,
                        sci.product_id, sci.product_name, sci.quantity,
-                       sci.unit_cost, sci.total_cost
+                       sci.unit_cost, sci.total_cost,
+                       COALESCE(sci.unit_selling_price,p.price,0)
+                           AS effective_selling_price,
+                       COALESCE(sci.total_selling_value,
+                           sci.quantity * COALESCE(p.price,0),0)
+                           AS effective_selling_value,
+                       CASE WHEN sci.unit_selling_price IS NULL THEN 1 ELSE 0 END
+                           AS selling_price_is_estimate
                 FROM stock_consumption_items sci
                 JOIN stock_consumptions sc ON sc.id = sci.consumption_id
                 LEFT JOIN departments d ON d.id = sc.department_id
+                LEFT JOIN products p ON p.id=sci.product_id
                 WHERE date(sc.date) BETWEEN ? AND ?
             """
             params = [start, end]
@@ -6206,17 +6564,31 @@ class APIClient:
             sql += " ORDER BY sc.date DESC, sc.reference_no, sci.id"
 
             rows = _rows(db.execute(sql, params))
-            total_qty = sum(float(r.get('quantity') or 0) for r in rows)
-            total_cost = sum(float(r.get('total_cost') or 0) for r in rows)
+            posted_rows = [
+                r for r in rows if int(r.get('voided') or 0) == 0
+            ]
+            total_qty = sum(
+                float(r.get('quantity') or 0) for r in posted_rows)
+            total_cost = sum(
+                float(r.get('total_cost') or 0) for r in posted_rows)
+            opportunity_value = sum(
+                float(r.get('effective_selling_value') or 0)
+                for r in posted_rows)
             # Distinct consumptions / products
-            cons_ids = {r['consumption_id'] for r in rows}
+            cons_ids = {r['consumption_id'] for r in posted_rows}
             return {
                 'rows': rows,
                 'totals': {
                     'line_count': len(rows),
                     'consumption_count': len(cons_ids),
+                    'voided_line_count': len(rows) - len(posted_rows),
                     'total_qty': round(total_qty, 4),
                     'total_cost': round(total_cost, 2),
+                    'average_buying_cost': round(
+                        total_cost / total_qty, 4) if total_qty > 0 else 0,
+                    'opportunity_value': round(opportunity_value, 2),
+                    'foregone_gross_profit': round(
+                        opportunity_value - total_cost, 2),
                 },
             }
         finally:

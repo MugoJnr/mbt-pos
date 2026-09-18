@@ -114,6 +114,16 @@ class CategoriesConsumptionGate(unittest.TestCase):
         self.assertAlmostEqual(after, before - 3.0, places=3)
         self.assertIsNotNone(mov)
         self.assertAlmostEqual(float(mov['qty_change']), -3.0, places=3)
+        detail = self.api.get_consumption(int(created['id']))
+        self.assertEqual(len(detail['items']), 1)
+        self.assertEqual(float(detail['items'][0]['unit_cost']), 20.0)
+        self.assertEqual(
+            float(detail['items'][0]['effective_selling_price']), 50.0)
+        self.assertEqual(float(detail['total_buying_cost']), 60.0)
+        self.assertEqual(float(detail['average_buying_cost']), 20.0)
+        self.assertEqual(float(detail['opportunity_value']), 150.0)
+        self.assertEqual(float(detail['foregone_gross_profit']), 90.0)
+        self.assertFalse(detail['has_estimated_selling_prices'])
 
     def test_duplicate_consumption_product_is_rejected_atomically(self):
         dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
@@ -140,6 +150,33 @@ class CategoriesConsumptionGate(unittest.TestCase):
         )
         db.close()
 
+    def test_consumption_rolls_back_stock_if_accounting_cannot_post(self):
+        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
+        with patch(
+            'desktop.utils.accounting_hooks.post_consumption_journal',
+            side_effect=RuntimeError('journal unavailable'),
+        ):
+            denied = self.api.create_consumption({
+                'date': str(date.today()),
+                'department_id': dept_id,
+                'reason': 'must remain atomic',
+                'items': [{'product_id': 1, 'quantity': 3}],
+            })
+        self.assertIn('error', denied)
+        self.assertNotIn('journal unavailable', denied['error'])
+        db = self.ac._db()
+        self.assertEqual(
+            float(db.execute(
+                'SELECT stock FROM products WHERE id=1').fetchone()['stock']),
+            30.0,
+        )
+        self.assertEqual(
+            db.execute(
+                'SELECT COUNT(*) FROM stock_consumptions').fetchone()[0],
+            0,
+        )
+        db.close()
+
     def test_cashier_cannot_record_internal_consumption_directly(self):
         self.api._role = 'cashier'
         dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
@@ -157,6 +194,76 @@ class CategoriesConsumptionGate(unittest.TestCase):
             30.0,
         )
         db.close()
+
+    def test_department_management_preserves_history_and_permissions(self):
+        self.api._role = 'manager'
+        created = self.api.create_department('Packing Room')
+        self.assertTrue(created.get('success'), created)
+        department_id = int(created['id'])
+        renamed = self.api.update_department(department_id, 'Main Packing Room')
+        self.assertTrue(renamed.get('success'), renamed)
+
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO stock_consumptions "
+            "(reference_no,date,department_id,reason,total_cost,voided) "
+            "VALUES ('AUTO-DEPT',?,?,?,?,0)",
+            (str(date.today()), department_id, 'maintenance', 5.0),
+        )
+        db.commit()
+        db.close()
+
+        archived = self.api.archive_department(department_id)
+        self.assertTrue(archived.get('success'), archived)
+        active_ids = {
+            int(row['id']) for row in self.api.get_departments(active_only=True)
+        }
+        self.assertNotIn(department_id, active_ids)
+        all_rows = self.api.get_departments(active_only=False)
+        row = next(r for r in all_rows if int(r['id']) == department_id)
+        self.assertEqual(row['name'], 'Main Packing Room')
+        self.assertEqual(int(row['usage_count']), 1)
+        self.assertEqual(int(row['active']), 0)
+
+        restored = self.api.create_department('Main Packing Room')
+        self.assertTrue(restored.get('success'), restored)
+        self.assertIn('restored', restored.get('message', '').lower())
+
+        self.api._role = 'cashier'
+        denied = self.api.create_department('Cashier Department')
+        self.assertEqual(denied.get('status'), 403)
+        denied_archive = self.api.archive_department(department_id)
+        self.assertEqual(denied_archive.get('status'), 403)
+
+    def test_consumption_ui_and_dashboard_expose_departments_and_multi_select(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        desktop = (
+            root / 'desktop' / 'tabs' / 'consumption_tab.py'
+        ).read_text(encoding='utf-8')
+        web = (
+            root / 'web' / 'dashboard-ui' / 'src' / 'routes'
+            / 'consumption.tsx'
+        ).read_text(encoding='utf-8')
+        routes = (
+            root / 'web' / 'web_routes.py'
+        ).read_text(encoding='utf-8')
+        nav = (
+            root / 'web' / 'dashboard-ui' / 'src' / 'components'
+            / 'app-shell.tsx'
+        ).read_text(encoding='utf-8')
+        self.assertIn("self._tabs.addTab(self._departments, 'Departments')", desktop)
+        self.assertIn('QAbstractItemView.ExtendedSelection', desktop)
+        self.assertIn('+ Add Selected', desktop)
+        self.assertIn('PROD_LIST_ITEM_H * 6', desktop)
+        self.assertIn('Tick as many products as needed', web)
+        self.assertIn('max-h-[520px] min-h-[360px]', web)
+        self.assertIn('setDetailId(Number(row.id))', web)
+        self.assertIn('product_name', web)
+        self.assertIn('Departments', web)
+        self.assertIn("@web.route('/api/departments', methods=['GET', 'POST'])", routes)
+        self.assertIn("@web.route('/api/consumptions', methods=['GET', 'POST'])", routes)
+        self.assertIn('to: "/consumption"', nav)
 
 
 if __name__ == '__main__':

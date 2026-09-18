@@ -372,7 +372,9 @@ def init_db():
         product_name TEXT,
         quantity REAL NOT NULL,
         unit_cost REAL NOT NULL,
-        total_cost REAL NOT NULL
+        total_cost REAL NOT NULL,
+        unit_selling_price REAL,
+        total_selling_value REAL
     );
 
     CREATE TABLE IF NOT EXISTS stock_movements (

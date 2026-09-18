@@ -22,6 +22,7 @@ import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as DiagnosticsRouteImport } from './routes/diagnostics'
 import { Route as DebtRouteImport } from './routes/debt'
+import { Route as ConsumptionRouteImport } from './routes/consumption'
 import { Route as BranchesRouteImport } from './routes/branches'
 import { Route as BackupRouteImport } from './routes/backup'
 import { Route as AuditRouteImport } from './routes/audit'
@@ -94,6 +95,11 @@ const DebtRoute = DebtRouteImport.update({
   path: '/debt',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ConsumptionRoute = ConsumptionRouteImport.update({
+  id: '/consumption',
+  path: '/consumption',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BranchesRoute = BranchesRouteImport.update({
   id: '/branches',
   path: '/branches',
@@ -132,6 +138,7 @@ export interface FileRoutesByFullPath {
   '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
@@ -153,6 +160,7 @@ export interface FileRoutesByTo {
   '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
@@ -175,6 +183,7 @@ export interface FileRoutesById {
   '/audit': typeof AuditRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
@@ -198,6 +207,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
@@ -219,6 +229,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
@@ -240,6 +251,7 @@ export interface FileRouteTypes {
     | '/audit'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
@@ -262,6 +274,7 @@ export interface RootRouteChildren {
   AuditRoute: typeof AuditRoute
   BackupRoute: typeof BackupRoute
   BranchesRoute: typeof BranchesRoute
+  ConsumptionRoute: typeof ConsumptionRoute
   DebtRoute: typeof DebtRoute
   DiagnosticsRoute: typeof DiagnosticsRoute
   HealthRoute: typeof HealthRoute
@@ -370,6 +383,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DebtRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/consumption': {
+      id: '/consumption'
+      path: '/consumption'
+      fullPath: '/consumption'
+      preLoaderRoute: typeof ConsumptionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/branches': {
       id: '/branches'
       path: '/branches'
@@ -422,6 +442,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuditRoute: AuditRoute,
   BackupRoute: BackupRoute,
   BranchesRoute: BranchesRoute,
+  ConsumptionRoute: ConsumptionRoute,
   DebtRoute: DebtRoute,
   DiagnosticsRoute: DiagnosticsRoute,
   HealthRoute: HealthRoute,

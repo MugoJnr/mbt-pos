@@ -722,7 +722,8 @@ def export_consumption_report(
 ) -> str:
     headers = [
         'Date', 'Reference', 'Department', 'Taken By', 'Reason', 'Notes',
-        'Product', 'Qty', 'Unit Cost', 'Total Cost', 'User', 'Status',
+        'Product', 'Qty', 'Buy / Unit', 'Total Buying', 'Sell / Unit',
+        'Retail Opportunity Value', 'Foregone Gross Profit', 'User', 'Status',
     ]
     table = []
     for r in rows:
@@ -738,13 +739,35 @@ def export_consumption_report(
             float(r.get('quantity') or 0),
             float(r.get('unit_cost') or 0),
             float(r.get('total_cost') or 0),
+            float(r.get('effective_selling_price') or 0),
+            float(r.get('effective_selling_value') or 0),
+            float(r.get('effective_selling_value') or 0)
+            - float(r.get('total_cost') or 0),
             r.get('created_by_name') or '',
             'Voided' if voided else 'OK',
         ])
     tot = totals or {}
     total_cols = {
-        8: (float(tot.get('total_qty') or sum(r[7] for r in table)), 'qty'),
-        10: (float(tot.get('total_cost') or sum(r[9] for r in table)), 'currency'),
+        8: (
+            float(tot['total_qty']) if 'total_qty' in tot
+            else sum(r[7] for r in table),
+            'qty',
+        ),
+        10: (
+            float(tot['total_cost']) if 'total_cost' in tot
+            else sum(r[9] for r in table),
+            'currency',
+        ),
+        12: (
+            float(tot['opportunity_value']) if 'opportunity_value' in tot
+            else sum(r[11] for r in table),
+            'currency',
+        ),
+        13: (
+            float(tot['foregone_gross_profit'])
+            if 'foregone_gross_profit' in tot else sum(r[12] for r in table),
+            'currency',
+        ),
     }
     path = output_path or os.path.join(
         get_export_dir(),
@@ -755,8 +778,9 @@ def export_consumption_report(
         headers=headers,
         rows=table,
         kinds=['date', 'text', 'text', 'text', 'text', 'text',
-               'text', 'qty', 'currency', 'currency', 'text', 'center'],
-        widths=[12, 14, 14, 14, 18, 24, 22, 10, 12, 14, 14, 10],
+               'text', 'qty', 'currency', 'currency', 'currency', 'currency',
+               'currency', 'text', 'center'],
+        widths=[12, 14, 14, 14, 18, 24, 22, 10, 12, 14, 12, 18, 18, 14, 10],
         shop_name=shop_name,
         period=f'{start_date} → {end_date}',
         generated_by=generated_by,

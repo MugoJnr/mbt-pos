@@ -3277,6 +3277,162 @@ def web_purchase_detail(purchase_id):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# INTERNAL CONSUMPTION + DEPARTMENTS
+# ══════════════════════════════════════════════════════════════════════════
+
+@web.route('/api/departments', methods=['GET', 'POST'])
+def web_departments():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Internal Consumption access is required.'}), 403
+        api = _inventory_api_for_current_user()
+        if request.method == 'GET':
+            return jsonify(api.get_departments(
+                active_only=request.args.get('all') not in ('1', 'true', 'yes')
+            ))
+        if not _has_perm('consumption.manage_departments'):
+            return jsonify({
+                'error': (
+                    'Your role cannot add departments. Ask a Manager, Admin or '
+                    'the shop owner.'
+                )
+            }), 403
+        result = api.create_department((request.json or {}).get('name'))
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/departments/<int:department_id>', methods=['PUT', 'DELETE'])
+def web_department_detail(department_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Internal Consumption access is required.'}), 403
+        if not _has_perm('consumption.manage_departments'):
+            return jsonify({
+                'error': (
+                    'Your role cannot change departments. Ask a Manager, Admin '
+                    'or the shop owner.'
+                )
+            }), 403
+        api = _inventory_api_for_current_user()
+        if request.method == 'DELETE':
+            result = api.archive_department(department_id)
+        else:
+            result = api.update_department(
+                department_id, (request.json or {}).get('name'))
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/departments/<int:department_id>/restore', methods=['POST'])
+def web_restore_department(department_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption') or not _has_perm(
+                'consumption.manage_departments'):
+            return jsonify({
+                'error': (
+                    'Your role cannot restore departments. Ask a Manager, Admin '
+                    'or the shop owner.'
+                )
+            }), 403
+        departments = _inventory_api_for_current_user().get_departments(
+            active_only=False)
+        row = next(
+            (d for d in departments if int(d.get('id') or 0) == department_id),
+            None,
+        )
+        if not row:
+            return jsonify({
+                'error': 'That department is no longer on the list. Refresh and try again.'
+            }), 404
+        result = _inventory_api_for_current_user().create_department(row.get('name'))
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/consumptions', methods=['GET', 'POST'])
+def web_consumptions():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Internal Consumption access is required.'}), 403
+        api = _inventory_api_for_current_user()
+        if request.method == 'GET':
+            if not _has_perm('consumption.view_report'):
+                return jsonify({
+                    'error': 'Your role cannot view consumption history.'
+                }), 403
+            return jsonify(api.get_consumptions(
+                start=request.args.get('start') or None,
+                end=request.args.get('end') or None,
+                department_id=request.args.get('department_id') or None,
+                include_voided=request.args.get('include_voided', '1')
+                not in ('0', 'false', 'no'),
+                limit=request.args.get('limit') or 500,
+            ))
+        if not _has_perm('consumption.create'):
+            return jsonify({
+                'error': (
+                    'Your role cannot record internal consumption. Ask a Manager, '
+                    'Admin or the shop owner.'
+                )
+            }), 403
+        result = api.create_consumption(request.json or {})
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:consumption_id>', methods=['GET'])
+def web_consumption_detail(consumption_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption') or not _has_perm(
+                'consumption.view_report'):
+            return jsonify({'error': 'Consumption history access is required.'}), 403
+        result = _inventory_api_for_current_user().get_consumption(consumption_id)
+        if not result:
+            return jsonify({
+                'error': 'That consumption entry is no longer available.'
+            }), 404
+        return jsonify(result)
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:consumption_id>/void', methods=['POST'])
+def web_void_consumption(consumption_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _user_can('consumption') or not _has_perm('consumption.void'):
+            return jsonify({
+                'error': (
+                    'Only Admin or Super Admin can void internal consumption.'
+                )
+            }), 403
+        data = request.json or {}
+        result = _inventory_api_for_current_user().void_consumption(
+            consumption_id,
+            str(data.get('reason') or ''),
+            pin=str(data.get('pin') or ''),
+        )
+        status = int(result.pop('status', 200 if result.get('success') else 400))
+        return jsonify(result), status
+    return _inner()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # STOCK ADJUSTMENT (web-accessible)
 # ══════════════════════════════════════════════════════════════════════════
 

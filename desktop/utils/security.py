@@ -54,7 +54,8 @@ _PERMISSIONS = {
         'users.view',
         'settings.view',
         'debt.view', 'debt.create', 'debt.collect', 'debt.customer_manage',
-        'consumption.create', 'consumption.view_report', 'consumption.export',
+        'consumption.create', 'consumption.manage_departments',
+        'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
         'accounting.reverse_journal', 'accounting.create_expenses',
@@ -74,7 +75,7 @@ _PERMISSIONS = {
         'audit.view',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel', 'debt.delete',
-        'consumption.create', 'consumption.void',
+        'consumption.create', 'consumption.void', 'consumption.manage_departments',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
@@ -99,7 +100,7 @@ _PERMISSIONS = {
         'security.override',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel', 'debt.delete',
-        'consumption.create', 'consumption.void',
+        'consumption.create', 'consumption.void', 'consumption.manage_departments',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
@@ -142,6 +143,9 @@ _ACTION_REASONS = {
     'users.create': 'Creating users needs Admin or Super Admin.',
     'users.edit': 'Editing users needs Admin or Super Admin.',
     'consumption.void': 'Voiding internal consumption needs Admin or higher.',
+    'consumption.manage_departments': (
+        'Adding, renaming or archiving departments needs Manager, Admin or Super Admin.'
+    ),
     'accounting.create_expenses': 'Recording expenses needs Cashier or higher.',
     'accounting.approve_expenses': (
         'Editing or voiding expenses needs Manager or higher. '

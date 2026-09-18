@@ -59,7 +59,7 @@ class BackendSecurityGates(unittest.TestCase):
             "VALUES (?,?,?,?,1,?)",
             (
                 'manager_gate', 'x:y', 'Manager Gate', 'manager',
-                '["dashboard","sales","inventory","reports","debt"]',
+                '["dashboard","sales","inventory","consumption","reports","debt"]',
             ),
         )
         self.manager_id = int(
@@ -182,6 +182,70 @@ class BackendSecurityGates(unittest.TestCase):
         self.assertEqual(
             db.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 2)
         db.close()
+
+    def test_consumption_web_flow_saves_batch_and_returns_product_detail(self):
+        department = self.client.post(
+            '/api/departments',
+            json={'name': 'HTTP Kitchen'},
+            headers=self.manager_headers,
+        )
+        self.assertEqual(department.status_code, 200, department.get_json())
+        department_id = int(department.get_json()['id'])
+        created = self.client.post(
+            '/api/consumptions',
+            json={
+                'date': str(time.strftime('%Y-%m-%d')),
+                'department_id': department_id,
+                'reason': 'Team tea',
+                'taken_by': 'Kitchen',
+                'items': [{
+                    'product_id': self.product_id,
+                    'quantity': 2,
+                }],
+            },
+            headers=self.manager_headers,
+        )
+        self.assertEqual(created.status_code, 200, created.get_json())
+        consumption_id = int(created.get_json()['id'])
+
+        history = self.client.get(
+            '/api/consumptions?start=2000-01-01&end=2100-01-01',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(history.status_code, 200, history.get_json())
+        self.assertEqual(len(history.get_json()), 1)
+        self.assertEqual(int(history.get_json()[0]['item_count']), 1)
+
+        detail = self.client.get(
+            f'/api/consumptions/{consumption_id}',
+            headers=self.manager_headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        self.assertEqual(detail.get_json()['items'][0]['product_name'], 'HTTP Widget')
+        self.assertEqual(detail.get_json()['items'][0]['product_sku'], 'HTTP-1')
+        self.assertEqual(float(detail.get_json()['items'][0]['quantity']), 2.0)
+        self.assertEqual(float(detail.get_json()['total_buying_cost']), 80.0)
+        self.assertEqual(float(detail.get_json()['opportunity_value']), 200.0)
+        self.assertEqual(
+            float(detail.get_json()['foregone_gross_profit']), 120.0)
+
+        db = self.ac._db()
+        stock = db.execute(
+            'SELECT stock FROM products WHERE id=?', (self.product_id,)
+        ).fetchone()['stock']
+        db.close()
+        self.assertEqual(float(stock), 8.0)
+
+        cashier_denied = self.client.post(
+            '/api/consumptions',
+            json={
+                'department_id': department_id,
+                'reason': 'Should fail',
+                'items': [{'product_id': self.product_id, 'quantity': 1}],
+            },
+            headers=self.headers,
+        )
+        self.assertEqual(cashier_denied.status_code, 403)
 
     def test_web_debt_writer_rejects_cashier_and_orphan_invoice(self):
         payload = {

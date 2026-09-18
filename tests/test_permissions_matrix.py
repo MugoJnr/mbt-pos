@@ -46,6 +46,7 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertTrue(has_permission(u, 'inventory.adjust_stock'))
         self.assertTrue(has_permission(u, 'inventory.receive_stock'))
         self.assertTrue(has_permission(u, 'inventory.delete'))
+        self.assertTrue(has_permission(u, 'consumption.manage_departments'))
         self.assertTrue(can_delete_debt(u))
 
     def test_cashier_can_receive_create_not_adjust_or_delete(self):
@@ -58,6 +59,7 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(has_permission(u, 'inventory.manage_categories'))
         self.assertFalse(has_permission(u, 'inventory.view_cost'))
         self.assertFalse(has_permission(u, 'reports.export'))
+        self.assertFalse(has_permission(u, 'consumption.manage_departments'))
 
     def test_viewer_cannot_receive_stock(self):
         u = _user(ROLE_VIEWER)
