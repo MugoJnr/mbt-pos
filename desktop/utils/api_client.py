@@ -166,12 +166,26 @@ def _hash_pw(pw: str) -> str:
 
 
 def _authorize_superadmin_pin(db, pin: str, *, operation: str,
-                              user_id=None, username=None) -> dict | None:
+                              user_id=None, username=None,
+                              session_role: str = '') -> dict | None:
     """Verify the owner PIN inside the caller's transaction.
 
-    Returns an API error mapping on failure, otherwise records a successful
-    authorization and returns ``None``.
+    A manager, admin, or super admin who is already signed in does not type
+    the PIN again. Everyone else still must present it. Returns an API error
+    mapping on failure, otherwise records the authorization and returns None.
     """
+    from desktop.utils.security import session_authorizes_step_up
+    if session_authorizes_step_up(session_role):
+        db.execute(
+            "INSERT INTO audit_log "
+            "(user_id,username,action,module,details) VALUES (?,?,?,?,?)",
+            (
+                user_id, username or 'SYSTEM',
+                'SESSION_AUTHORIZED', 'security',
+                f'operation={operation} role={session_role}',
+            ),
+        )
+        return None
     pin_text = str(pin or '')
     if not pin_text:
         return {'error': 'Super-Admin PIN is required.', 'status': 403}
@@ -891,6 +905,8 @@ def _migrate_columns(conn: sqlite3.Connection):
         prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
         if prod_cols and 'supplier_id' not in prod_cols:
             conn.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER")
+        if prod_cols and 'image_path' not in prod_cols:
+            conn.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
     except Exception:
         pass
     # Cash rounding adjustment ledger (does not inflate product revenue)
@@ -1941,12 +1957,13 @@ class APIClient:
             # buy price even though general cost reports remain hidden.
             sku = (data.get('sku') or '').strip() or None
             db.execute(
-                "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode,image_path)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (name, sku, data.get('category'),
                  selling_price, cost_price,
                  initial_stock, int(data.get('min_stock', 5) or 5),
-                 data.get('unit') or 'pcs', data.get('barcode'))
+                 data.get('unit') or 'pcs', data.get('barcode'),
+                 (data.get('image_path') or None))
             )
             pid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             db.commit()
@@ -2016,7 +2033,7 @@ class APIClient:
         try:
             fields, values = [], []
             for field in ('name','sku','category','price','cost_price',
-                          'min_stock','unit','barcode','is_active'):
+                          'min_stock','unit','barcode','is_active','image_path'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
 
@@ -2191,6 +2208,7 @@ class APIClient:
             pin_error = _authorize_superadmin_pin(
                 db, pin, operation=f'stock_adjust pid={pid}',
                 user_id=self._user_id, username=self._username,
+                session_role=self._role,
             )
             if pin_error:
                 # Commit only the authorisation audit row; stock is untouched.
@@ -3865,6 +3883,174 @@ class APIClient:
         finally:
             db.close()
 
+    def _approval_ttl_hours(self, db) -> int:
+        try:
+            row = db.execute(
+                "SELECT value FROM system_settings WHERE key='approval_ttl_hours'"
+            ).fetchone()
+            hours = int(float(row['value'])) if row and row['value'] else 48
+        except Exception:
+            hours = 48
+        return max(1, min(hours, 24 * 14))
+
+    def release_stale_approvals(self) -> None:
+        """Return crashed claims to pending and expire old unanswered requests."""
+        from datetime import timedelta
+        db = _db()
+        try:
+            self._ensure_void_notice_tables(db)
+            now = datetime.now()
+            claim_cutoff = (now - timedelta(minutes=10)).isoformat(timespec='seconds')
+            expire_cutoff = (
+                now - timedelta(hours=self._approval_ttl_hours(db))
+            ).isoformat(timespec='seconds')
+            db.execute(
+                "UPDATE cc_approvals SET status='pending', updated_at=? "
+                "WHERE status='executing' AND COALESCE(updated_at, created_at) < ?",
+                (now.isoformat(timespec='seconds'), claim_cutoff),
+            )
+            db.execute(
+                "UPDATE cc_approvals SET status='expired', updated_at=? "
+                "WHERE status IN ('pending','escalated') "
+                "AND COALESCE(created_at, updated_at) < ?",
+                (now.isoformat(timespec='seconds'), expire_cutoff),
+            )
+            db.commit()
+        except Exception:
+            logger.exception('release_stale_approvals')
+        finally:
+            db.close()
+
+    def execute_approval(self, approval_id: int, note: str = '') -> dict:
+        """Claim one pending request and run it once.
+
+        A second approve, a replay, or a request that already ran returns
+        without changing the sale, stock, debt, or expense again.
+        """
+        if str(self._role or '').lower() not in ('admin', 'superadmin', 'manager'):
+            return {'error': 'Manager or admin access required.', 'status': 403}
+        self.release_stale_approvals()
+        db = _db()
+        try:
+            self._ensure_void_notice_tables(db)
+            now = datetime.now().isoformat(timespec='seconds')
+            claimed = db.execute(
+                "UPDATE cc_approvals SET status='executing', reviewed_by=?, "
+                "reviewed_by_id=?, review_note=?, updated_at=? "
+                "WHERE id=? AND status IN ('pending','escalated')",
+                (
+                    self._username or '', self._user_id, (note or '')[:500],
+                    now, int(approval_id),
+                ),
+            )
+            if claimed.rowcount != 1:
+                db.commit()
+                existing = db.execute(
+                    "SELECT status FROM cc_approvals WHERE id=?",
+                    (int(approval_id),),
+                ).fetchone()
+                status = existing['status'] if existing else 'missing'
+                return {
+                    'error': f'This request is already {status}.',
+                    'status': 409,
+                    'approval_status': status,
+                }
+            db.commit()
+            row = db.execute(
+                "SELECT * FROM cc_approvals WHERE id=?", (int(approval_id),)
+            ).fetchone()
+        finally:
+            db.close()
+        outcome = self._run_approved_action(row)
+        db = _db()
+        try:
+            stamp = datetime.now().isoformat(timespec='seconds')
+            if outcome.get('success'):
+                db.execute(
+                    "UPDATE cc_approvals SET status='executed', updated_at=? "
+                    "WHERE id=? AND status='executing'",
+                    (stamp, int(approval_id)),
+                )
+                title = row['title'] or 'Approval'
+                db.execute(
+                    "INSERT INTO cc_notifications "
+                    "(type, title, body, severity, link, is_read, created_at) "
+                    "VALUES (?, ?, ?, 'ok', '/approvals', 0, ?)",
+                    (
+                        row['type'] or 'approval',
+                        f'Executed {title}',
+                        note or row['details'] or '',
+                        stamp,
+                    ),
+                )
+                db.commit()
+                return {'success': True, 'status': 'executed'}
+            db.execute(
+                "UPDATE cc_approvals SET status='pending', review_note=?, updated_at=? "
+                "WHERE id=? AND status='executing'",
+                ((outcome.get('error') or 'Not completed')[:500], stamp, int(approval_id)),
+            )
+            db.commit()
+            if 'status' not in outcome:
+                outcome['status'] = 400
+            return outcome
+        finally:
+            db.close()
+
+    def _run_approved_action(self, row) -> dict:
+        import json as _json
+        kind = str(row['type'] or '').strip().lower()
+        try:
+            meta = _json.loads(row['meta_json'] or '{}')
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        reason = str(meta.get('reason') or row['details'] or 'Approved request').strip()
+        if kind == 'void':
+            sale_id = int(meta.get('sale_id') or 0)
+            if not sale_id:
+                return {'error': 'This void request has no receipt to void.', 'status': 400}
+            return self.void_sale(sale_id, reason, pin='')
+        if kind == 'refund':
+            sale_id = int(meta.get('sale_id') or 0)
+            items = meta.get('items') or []
+            if not sale_id or not items:
+                return {'error': 'This refund request has no receipt lines.', 'status': 400}
+            return self.return_sale(
+                sale_id, items, reason,
+                refund_method=str(meta.get('refund_method') or 'cash'),
+                pin='',
+            )
+        if kind == 'stock_adjust':
+            product_id = int(meta.get('product_id') or 0)
+            if not product_id:
+                return {'error': 'This stock request has no product.', 'status': 400}
+            return self.adjust_stock(
+                product_id,
+                str(meta.get('direction') or 'remove'),
+                meta.get('quantity'),
+                reason,
+                pin='',
+                expected_stock=meta.get('expected_stock'),
+            )
+        if kind == 'expense':
+            expense_id = int(meta.get('expense_id') or 0)
+            if not expense_id:
+                return {'error': 'This expense request has no expense.', 'status': 400}
+            return self.accounting_reverse_expense(expense_id, reason)
+        if kind == 'credit':
+            invoice_id = int(meta.get('invoice_id') or 0)
+            if not invoice_id:
+                return {'error': 'This debt request has no invoice.', 'status': 400}
+            return self.delete_debt_invoice(invoice_id, reason, pin='')
+        if kind == 'stocktake_adjust':
+            stocktake_id = int(meta.get('stocktake_id') or 0)
+            if not stocktake_id:
+                return {'error': 'This stocktake request has no stocktake.', 'status': 400}
+            return self.apply_stocktake(stocktake_id, reason)
+        return {'success': True, 'recorded': True}
+
     def request_sale_void(self, sale_id: int, reason: str) -> dict:
         """Cashier asks an admin to void. Does not change the sale."""
         reason = (reason or '').strip()
@@ -3977,6 +4163,7 @@ class APIClient:
             pin_error = _authorize_superadmin_pin(
                 db, pin, operation=f'void_sale sale_id={sale_id}',
                 user_id=self._user_id, username=self._username,
+                session_role=self._role,
             )
             if pin_error:
                 db.commit()
@@ -4213,6 +4400,7 @@ class APIClient:
             pin_error = _authorize_superadmin_pin(
                 db, pin, operation=f'return_sale sale_id={sale_id}',
                 user_id=self._user_id, username=self._username,
+                session_role=self._role,
             )
             if pin_error:
                 db.commit()
@@ -5757,6 +5945,7 @@ class APIClient:
             pin_error = _authorize_superadmin_pin(
                 db, pin, operation=f'delete_debt invoice_id={invoice_id}',
                 user_id=self._user_id, username=self._username,
+                session_role=self._role,
             )
             if pin_error:
                 db.commit()
@@ -6523,6 +6712,7 @@ class APIClient:
             pin_error = _authorize_superadmin_pin(
                 db, pin, operation=f'void_consumption id={consumption_id}',
                 user_id=self._user_id, username=self._username,
+                session_role=self._role,
             )
             if pin_error:
                 db.commit()
@@ -7174,6 +7364,223 @@ class APIClient:
         try:
             from desktop.utils.accounting_engine import get_currency_code
             return get_currency_code(db)
+        finally:
+            db.close()
+
+    def _stocktake_perm(self, action: str) -> bool:
+        from desktop.utils.security import has_permission
+        return has_permission({'role': self._role}, action)
+
+    def start_stocktake(self, data: dict) -> dict:
+        if not self._stocktake_perm('stocktake.create'):
+            return {'error': 'You cannot start a stocktake.', 'status': 403}
+        db = _db()
+        try:
+            from desktop.utils.stocktake import start_stocktake
+            result = start_stocktake(
+                db,
+                name=data.get('name') or '',
+                scope_type=data.get('scope_type') or 'all',
+                scope_ids=data.get('scope_ids') or [],
+                counting_mode=data.get('counting_mode') or 'normal',
+                reason=data.get('reason') or '',
+                allow_sales=bool(data.get('allow_sales', True)),
+                user_id=self._user_id,
+                username=self._username or '',
+                location_name=data.get('location_name') or '',
+            )
+            if result.get('success'):
+                _audit(
+                    self._user_id, self._username, 'STOCKTAKE_START', 'stocktake',
+                    f"{result.get('reference')} {data.get('name') or ''}",
+                )
+            return result
+        finally:
+            db.close()
+
+    def record_stocktake_count(self, line_id: int, quantity, recount: bool = False) -> dict:
+        if not self._stocktake_perm('stocktake.count'):
+            return {'error': 'You cannot enter stock counts.', 'status': 403}
+        db = _db()
+        try:
+            from desktop.utils.stocktake import record_count
+            return record_count(
+                db, int(line_id), quantity,
+                user_id=self._user_id, username=self._username or '', recount=recount,
+            )
+        finally:
+            db.close()
+
+    def stocktake_reconcile(self, stocktake_id: int) -> dict:
+        if not self._stocktake_perm('stocktake.view'):
+            return {'error': 'You cannot view stocktakes.', 'status': 403}
+        db = _db()
+        try:
+            from desktop.utils.stocktake import reconcile
+            reveal = self._stocktake_perm('stocktake.review')
+            data = reconcile(db, int(stocktake_id), reveal=reveal)
+            if data.get('success') and not reveal:
+                session = data.get('stocktake') or {}
+                if session.get('counting_mode') != 'blind':
+                    data = reconcile(db, int(stocktake_id), reveal=True)
+            return data
+        finally:
+            db.close()
+
+    def list_stocktakes(self, status: str = '') -> dict:
+        if not self._stocktake_perm('stocktake.view'):
+            return {'error': 'You cannot view stocktakes.', 'status': 403}
+        db = _db()
+        try:
+            from desktop.utils.stocktake import list_stocktakes
+            return {'success': True, 'stocktakes': list_stocktakes(db, status)}
+        finally:
+            db.close()
+
+    def stocktake_set_status(self, stocktake_id: int, status: str) -> dict:
+        needed = {
+            'SUBMITTED': 'stocktake.submit',
+            'CANCELLED': 'stocktake.cancel',
+            'IN_PROGRESS': 'stocktake.reopen',
+            'UNDER_REVIEW': 'stocktake.review',
+            'APPROVED': 'stocktake.approve',
+            'RECOUNT_REQUIRED': 'stocktake.review',
+        }.get(status, 'stocktake.review')
+        if not self._stocktake_perm(needed):
+            return {'error': 'You cannot change this stocktake.', 'status': 403}
+        db = _db()
+        try:
+            from desktop.utils.stocktake import mark_status
+            result = mark_status(db, int(stocktake_id), status)
+            if result.get('success'):
+                _audit(
+                    self._user_id, self._username, 'STOCKTAKE_STATUS', 'stocktake',
+                    f'id={stocktake_id} status={status}',
+                )
+            return result
+        finally:
+            db.close()
+
+    def apply_stocktake(self, stocktake_id: int, reason: str = '') -> dict:
+        if not self._stocktake_perm('stocktake.adjust_inventory'):
+            return {'error': 'You cannot adjust inventory from a stocktake.', 'status': 403}
+        reason = (reason or 'Stocktake physical count accepted').strip()
+        db = _db()
+        try:
+            from desktop.utils.stocktake import reconcile, mark_line_adjusted, mark_status
+            data = reconcile(db, int(stocktake_id), reveal=True)
+        finally:
+            db.close()
+        if data.get('error'):
+            return data
+        session = data['stocktake']
+        if session['status'] in ('CANCELLED', 'ADJUSTED'):
+            return {'error': 'This stocktake cannot adjust stock.', 'status': 400}
+        applied = skipped = 0
+        failures = []
+        for line in data['lines']:
+            if line.get('adjusted') or line.get('physical_qty') is None:
+                continue
+            variance = line.get('variance_qty')
+            if variance is None or abs(float(variance)) < 0.0001:
+                continue
+            db = _db()
+            try:
+                current = db.execute(
+                    "SELECT stock FROM products WHERE id=?", (line['product_id'],)
+                ).fetchone()
+            finally:
+                db.close()
+            if not current:
+                failures.append(line['product_name'])
+                continue
+            outcome = self.adjust_stock(
+                int(line['product_id']), 'set', line['physical_qty'],
+                f"{reason} ({session['reference']})",
+                pin='', expected_stock=current['stock'],
+            )
+            if outcome.get('error'):
+                failures.append(f"{line['product_name']}: {outcome['error']}")
+                continue
+            db = _db()
+            try:
+                if mark_line_adjusted(db, line['line_id']):
+                    applied += 1
+                else:
+                    skipped += 1
+            finally:
+                db.close()
+        db = _db()
+        try:
+            if not failures:
+                mark_status(db, int(stocktake_id), 'ADJUSTED')
+            _audit(
+                self._user_id, self._username, 'STOCKTAKE_ADJUST', 'stocktake',
+                f"{session['reference']} applied={applied} failed={len(failures)}",
+            )
+        finally:
+            db.close()
+        return {
+            'success': not failures,
+            'applied': applied,
+            'skipped': skipped,
+            'failures': failures,
+            'reference': session['reference'],
+        }
+
+    def request_stocktake_adjust(self, stocktake_id: int, reason: str) -> dict:
+        if not self._stocktake_perm('stocktake.view'):
+            return {'error': 'You cannot request this approval.', 'status': 403}
+        reason = (reason or '').strip()
+        if len(reason) < 3:
+            return {'error': 'Say why the physical count should change stock.', 'status': 400}
+        data = self.stocktake_reconcile(int(stocktake_id))
+        if data.get('error'):
+            return data
+        session = data['stocktake']
+        summary = data.get('summary') or {}
+        db = _db()
+        try:
+            self._ensure_void_notice_tables(db)
+            existing = db.execute(
+                "SELECT id FROM cc_approvals WHERE type='stocktake_adjust' "
+                "AND status IN ('pending','escalated','executing') AND meta_json LIKE ?",
+                (f'%"stocktake_id": {int(stocktake_id)}%',),
+            ).fetchone()
+            if existing:
+                return {
+                    'success': True, 'already_pending': True, 'id': int(existing['id']),
+                    'message': 'An admin already has this stocktake request.',
+                }
+            import json as _json
+            details = (
+                f"{session.get('name')} ({session.get('reference')}). "
+                f"Counted {summary.get('counted')} of {summary.get('products')}. "
+                f"Shortage cost {summary.get('shortage_cost')}. "
+                f"Excess cost {summary.get('excess_cost')}. {reason}"
+            )
+            cur = db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+                "VALUES ('stocktake_adjust', ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    f"Adjust stock from {session.get('reference')}",
+                    details,
+                    float(summary.get('net_cost') or 0),
+                    self._username or '',
+                    self._user_id,
+                    _json.dumps({
+                        'stocktake_id': int(stocktake_id),
+                        'reference': session.get('reference'),
+                        'reason': reason,
+                        'expected_note': 'Physical counts replace expected stock after approval.',
+                        'shortage_cost': summary.get('shortage_cost'),
+                        'excess_cost': summary.get('excess_cost'),
+                    }),
+                ),
+            )
+            db.commit()
+            return {'success': True, 'id': int(cur.lastrowid)}
         finally:
             db.close()
 

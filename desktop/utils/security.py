@@ -22,7 +22,7 @@ from roles import (
 # Tabs (Users & Access) open screens; these flags + Super-Admin PIN guard vault actions.
 _PERMISSIONS = {
     ROLE_CASHIER: {
-        'sales.create', 'sales.view_own',
+        'sales.create', 'sales.view_own', 'sales.view_all',
         'inventory.view',
         'inventory.create',                # Add Product (metadata; stock via Receive)
         'inventory.edit_info',             # name/price/SKU fixes
@@ -33,6 +33,7 @@ _PERMISSIONS = {
         'sales.variance_handle',
         # POS till expenses — create only; edit/delete stay Manager+
         'accounting.create_expenses',
+        'stocktake.count', 'stocktake.view', 'stocktake.view_history',
     },
     ROLE_VIEWER: {
         'sales.view_all',
@@ -43,6 +44,7 @@ _PERMISSIONS = {
         'consumption.view_report',
         'reports.view_variance',
         'accounting.view', 'accounting.view_reports',
+        'stocktake.view',
     },
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
@@ -62,6 +64,9 @@ _PERMISSIONS = {
         'accounting.approve_expenses',
         'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
+        'stocktake.create', 'stocktake.count', 'stocktake.submit',
+        'stocktake.review', 'stocktake.cancel', 'stocktake.reopen',
+        'stocktake.view', 'stocktake.export', 'stocktake.view_history',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
@@ -83,6 +88,11 @@ _PERMISSIONS = {
         'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
+        'stocktake.create', 'stocktake.count', 'stocktake.submit',
+        'stocktake.review', 'stocktake.approve', 'stocktake.adjust_inventory',
+        'stocktake.cancel', 'stocktake.reopen', 'stocktake.view',
+        'stocktake.export', 'stocktake.view_history',
+        'reports.export_full_shop',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
@@ -109,6 +119,11 @@ _PERMISSIONS = {
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'ai_ops.developer',
+        'stocktake.create', 'stocktake.count', 'stocktake.submit',
+        'stocktake.review', 'stocktake.approve', 'stocktake.adjust_inventory',
+        'stocktake.cancel', 'stocktake.reopen', 'stocktake.view',
+        'stocktake.export', 'stocktake.view_history',
+        'reports.export_full_shop',
     },
 }
 
@@ -285,9 +300,11 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
 
     Automation: set env MBT_AUTO_SUPERADMIN_PIN (e.g. 1110) to skip the dialog.
     """
-    pin = prompt_superadmin_pin(parent_widget, reason=reason)
-    if not pin:
+    pin = collect_step_up_pin(api, parent_widget, reason=reason)
+    if pin is None:
         return False
+    if pin == '':
+        return True
     return verify_superadmin_pin(pin, api, parent_widget, log_attempt=True)
 
 
@@ -317,6 +334,33 @@ def prompt_superadmin_pin(parent_widget=None, reason='') -> str:
 def can_edit_sales(user: dict) -> bool:
     """True if user may edit completed sale receipts (superadmin / sales.edit)."""
     return has_permission(user, 'sales.edit')
+
+
+def session_authorizes_step_up(role: str) -> bool:
+    """A signed-in manager, admin, or super admin already holds the privileged session.
+
+    Destructive actions still confirm what will change. The owner PIN remains
+    for people who are not signed in as one of those roles, and for exports
+    that use the PIN as a file secret.
+    """
+    return str(role or '').strip().lower() in (
+        ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPERADMIN,
+    )
+
+
+def collect_step_up_pin(api, parent_widget=None, reason='', user=None):
+    """Return '' when this login may proceed, None if the PIN dialog was cancelled."""
+    role = ''
+    if isinstance(user, dict):
+        role = str((user.get('user') or user).get('role') or '')
+    if not role:
+        role = str(getattr(api, '_role', '') or '')
+    if session_authorizes_step_up(role):
+        return ''
+    pin = prompt_superadmin_pin(parent_widget, reason=reason)
+    if not pin:
+        return None
+    return str(pin)
 
 
 def can_void_sales(user: dict) -> bool:
@@ -460,8 +504,8 @@ def prompt_delete_debt(api, parent_widget, invoice_id: int, *,
         f'Write off debt {label}' if float(amount_paid or 0) > 0.009
         else f'Delete debt {label}'
     )
-    pin = prompt_superadmin_pin(parent_widget, reason=pin_reason)
-    if not pin:
+    pin = collect_step_up_pin(api, parent_widget, reason=pin_reason, user=user)
+    if pin is None:
         return False
 
     res = api.delete_debt_invoice(int(invoice_id), reason, pin=pin)
@@ -598,8 +642,8 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
     if not receipt or not reason:
         return False
 
-    pin = prompt_superadmin_pin(parent_widget, reason=f'Void {receipt}')
-    if not pin:
+    pin = collect_step_up_pin(api, parent_widget, reason=f'Void {receipt}')
+    if pin is None:
         return False
 
     db = _db()

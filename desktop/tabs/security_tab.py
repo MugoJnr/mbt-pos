@@ -21,7 +21,7 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     lovable_tab_qss, Badge, section_card,
                                     tone_chip_qss)
 from desktop.utils.security import (
-    ROLE_SUPERADMIN, prompt_superadmin_pin, set_superadmin_pin,
+    ROLE_SUPERADMIN, collect_step_up_pin, set_superadmin_pin,
     verify_superadmin_pin,
 )
 from desktop.utils.option_lists import STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS
@@ -371,8 +371,10 @@ class SecurityTab(QWidget):
         # so only a net reduction is challenged.
         pin = ''
         if resulting < current:
-            pin = prompt_superadmin_pin(self, reason='Stock Reduction')
-            if not pin:
+            pin = collect_step_up_pin(
+                self.api, self, reason='Stock Reduction', user=getattr(self, 'user', None),
+            )
+            if pin is None:
                 return
         res = self.api.adjust_stock(
             prod['id'], direction, quantity, reason, pin=pin,

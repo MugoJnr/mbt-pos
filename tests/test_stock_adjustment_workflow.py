@@ -128,15 +128,15 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
         self.assertEqual(audits[-1]['username'], 'owner')
 
     def test_wrong_pin_and_unauthorised_role_cannot_change_stock(self):
-        # Every manual correction is protected; supplier receiving is separate.
-        wrong = self._adjust('remove', 2, pin='999999')
-        self.assertIn('Incorrect', wrong.get('error', ''))
-        self.assertEqual(self._stock(), 10)
-
+        # Signed-in admin/super admin no longer re-enters the owner PIN.
+        # A cashier still cannot adjust stock, even with the owner PIN.
+        allowed = self._adjust('remove', 2, pin='')
+        self.assertTrue(allowed.get('success'), allowed)
+        self.assertEqual(self._stock(), 8)
         self.api._role = 'cashier'
-        denied = self._adjust('add', 2)
+        denied = self._adjust('add', 2, expected=8)
         self.assertIn('Only Admin or Super Admin', denied.get('error', ''))
-        self.assertEqual(self._stock(), 10)
+        self.assertEqual(self._stock(), 8)
 
         db = self.ac._db()
         try:
@@ -150,8 +150,8 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
             ).fetchone()['c']
         finally:
             db.close()
-        self.assertEqual(movement_count, 0)
-        self.assertEqual(pin_fail, 1)
+        self.assertEqual(movement_count, 1)
+        self.assertEqual(pin_fail, 0)
 
     def test_invalid_direction_quantity_reason_and_excess_remove(self):
         cases = [
@@ -220,17 +220,9 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
         self.assertEqual(float(product['stock']), 10.5)
 
     def test_set_counted_higher_and_lower_need_pin_equal_is_noop(self):
-        blocked_higher = self._adjust(
-            'set', 14, pin='', reason='Stock-take Surplus')
-        self.assertEqual(blocked_higher.get('status'), 403)
         higher = self._adjust(
-            'set', 14, reason='Stock-take Surplus')
+            'set', 14, pin='', reason='Stock-take Surplus')
         self.assertTrue(higher.get('success'), higher)
-        self.assertEqual(self._stock(), 14)
-
-        blocked = self._adjust(
-            'set', 8, pin='', expected=14, reason='Stock-take Shortage')
-        self.assertEqual(blocked.get('status'), 403)
         self.assertEqual(self._stock(), 14)
 
         lower = self._adjust(
@@ -244,13 +236,8 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
         self.assertEqual(self._stock(), 8)
 
     def test_set_counted_to_zero_requires_pin_and_applies(self):
-        blocked = self._adjust(
-            'set', 0, pin='', expected=10, reason='Stock-take Shortage')
-        self.assertEqual(blocked.get('status'), 403)
-        self.assertEqual(self._stock(), 10)
-
         lowered = self._adjust(
-            'set', 0, expected=10, reason='Stock-take Shortage')
+            'set', 0, pin='', expected=10, reason='Stock-take Shortage')
         self.assertTrue(lowered.get('success'), lowered)
         self.assertEqual(lowered['new_stock'], 0)
         self.assertEqual(self._stock(), 0)
@@ -336,10 +323,9 @@ class StockAdjustmentWorkflowTests(unittest.TestCase):
 
 
 class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
-    """The owner PIN guards every manual correction.
+    """Adjust Stock stays Admin/Super Admin. A signed-in owner does not re-enter the PIN.
 
-    Supplier receiving remains a fast counter action without PIN; Adjust Stock
-    is reserved for Admin/Super Admin and always takes a step-up PIN.
+    Supplier receiving remains a fast counter action. A cashier cannot adjust stock.
     """
 
     def _movements(self):
@@ -356,18 +342,11 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             db.close()
 
     def test_add_and_reduce_need_pin(self):
-        blocked_add = self._adjust('add', 4, pin='')
-        self.assertEqual(blocked_add.get('status'), 403)
-        added = self._adjust('add', 4)
+        added = self._adjust('add', 4, pin='')
         self.assertTrue(added.get('success'), added)
         self.assertEqual(self._stock(), 14)
 
-        blocked = self._adjust('remove', 4, pin='', expected=14)
-        self.assertEqual(blocked.get('status'), 403)
-        self.assertIn('PIN', blocked.get('error', ''))
-        self.assertEqual(self._stock(), 14)
-
-        allowed = self._adjust('remove', 4, expected=14)
+        allowed = self._adjust('remove', 4, pin='', expected=14)
         self.assertTrue(allowed.get('success'), allowed)
         self.assertEqual(self._stock(), 10)
 
@@ -377,10 +356,12 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         )
 
     def test_reduce_with_wrong_pin_writes_no_stock_or_movement(self):
+        self.api._role = 'cashier'
         rejected = self._adjust('remove', 6, pin='000000')
         self.assertEqual(rejected.get('status'), 403)
         self.assertEqual(self._stock(), 10)
         self.assertEqual(self._movements(), [])
+        self.api._role = 'superadmin'
 
         db = self.ac._db()
         try:
@@ -391,7 +372,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             ).fetchone()['c']
         finally:
             db.close()
-        self.assertEqual(fails, 1)
+        self.assertEqual(fails, 0)
 
     def test_signed_delta_not_client_direction_decides_the_gate(self):
         # A negative quantity is the spoof that would turn "add" into a
@@ -404,12 +385,13 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         self.assertEqual(self._movements(), [])
 
     def test_no_pin_reduction_is_refused_for_every_reason_label(self):
-        # Write-off style reasons must not become a PIN-free reduction path.
+        self.api._role = 'cashier'
         for reason in ('Damaged / Spoiled', 'Other: shrinkage', 'Stock Count Correction'):
             result = self._adjust('remove', 1, pin='', reason=reason)
             self.assertEqual(result.get('status'), 403, reason)
         self.assertEqual(self._stock(), 10)
         self.assertEqual(self._movements(), [])
+        self.api._role = 'superadmin'
 
     def test_repeat_submit_of_one_reduction_moves_stock_once(self):
         first = self._adjust('remove', 2)

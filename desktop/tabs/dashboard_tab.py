@@ -1173,24 +1173,6 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard KPI: {e}")
 
-        if not self._owner_dashboard():
-            try:
-                own = self._sales_for_this_login(self.api.get_sales(start, end) or [])
-                active = [
-                    s for s in own
-                    if (s.get('status') or 'completed').lower() != 'voided'
-                ]
-                today_tx = len(active)
-                today_rev = round(sum(float(s.get('total') or 0) for s in active), 2)
-                avg = round(today_rev / today_tx, 2) if today_tx else 0
-                self._k_sales.set_value(str(today_tx))
-                self._k_sales.set_sub('Your receipts')
-                self._k_rev.set_value(f"{cur} {today_rev:,.2f}")
-                self._k_rev.set_sub('Your sales')
-                self._k_avg.set_value(f"{cur} {avg:,.2f}")
-            except Exception as e:
-                log.warning(f"Dashboard own-sales KPI: {e}")
-
         # Yesterday comparison trends (only meaningful for Today preset)
         try:
             yday = str(date.today() - timedelta(days=1))
@@ -1551,16 +1533,12 @@ class DashboardTab(QWidget):
         return self._tab_allowed('reports')
 
     def _sales_for_this_login(self, sales):
-        if self._owner_dashboard():
-            return list(sales or [])
-        account = self.user.get('user') or self.user
-        uid = account.get('id')
-        if uid is None:
-            return list(sales or [])
-        return [
-            s for s in (sales or [])
-            if str(s.get('cashier_id') or '') == str(uid)
-        ]
+        """Sales in this shop database are visible to every signed-in till user.
+
+        Profit, cost and expenses stay behind role permissions. One installation
+        database is one shop, so an admin sale must show on a cashier till.
+        """
+        return list(sales or [])
 
     def _apply_cashier_dashboard(self):
         """Cashiers see today's sales and receipts, not profit, debt or costs."""

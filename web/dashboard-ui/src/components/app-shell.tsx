@@ -57,6 +57,7 @@ const NAV: NavItem[] = [
   { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview" },
   { to: "/pos", label: "Point of Sale", icon: ShoppingCart, module: "sales", group: "Operations" },
   { to: "/inventory", label: "Inventory", icon: Package, module: "inventory", group: "Operations" },
+  { to: "/stocktake", label: "Stocktake", icon: ClipboardCheck, module: "inventory", group: "Operations" },
   { to: "/consumption", label: "Internal Consumption", icon: PackageMinus, module: "consumption", group: "Operations" },
   { to: "/debt", label: "Debt Management", icon: Banknote, module: "debt", group: "Operations" },
   { to: "/reports", label: "Reports", icon: BarChart3, module: "reports", group: "Operations" },

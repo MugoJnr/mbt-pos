@@ -27,7 +27,7 @@ class _Login:
 
 
 class DashboardRoleTests(unittest.TestCase):
-    def test_cashier_sees_only_their_receipts(self):
+    def test_cashier_sees_shop_receipts_including_admin_sales(self):
         login = _Login('cashier', 7, ['dashboard', 'sales', 'inventory'])
         sales = [
             {'id': 1, 'cashier_id': 7, 'receipt_number': 'A', 'total': 50, 'status': 'completed'},
@@ -35,7 +35,7 @@ class DashboardRoleTests(unittest.TestCase):
         ]
         login._owner_dashboard = lambda: DashboardTab._owner_dashboard(login)
         kept = DashboardTab._sales_for_this_login(login, sales)
-        self.assertEqual([s['receipt_number'] for s in kept], ['A'])
+        self.assertEqual([s['receipt_number'] for s in kept], ['A', 'B'])
         self.assertFalse(DashboardTab._owner_dashboard(login))
 
     def test_admin_manager_and_reports_viewer_see_the_shop(self):

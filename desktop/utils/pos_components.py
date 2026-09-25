@@ -2937,7 +2937,11 @@ class ProductGrid(QWidget):
         for i, p in enumerate(batch):
             idx = start + i
             cat = p.get('category') or 'General'
-            meta = cmap.get(cat) or cmap.get(str(cat).lower()) or {}
+            try:
+                from desktop.utils.category_visuals import category_dict_from_product
+                meta = category_dict_from_product(p, cmap)
+            except Exception:
+                meta = cmap.get(cat) or cmap.get(str(cat).lower()) or {}
             card = ProductCard(
                 p, currency=self._currency, card_size=card_size,
                 category_meta=meta, compact=self._pro_density)

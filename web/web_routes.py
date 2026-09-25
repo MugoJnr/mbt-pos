@@ -2568,11 +2568,6 @@ class _WebPosApi:
         if end:
             q += " AND date(created_at)<=?"
             params.append(str(end)[:10])
-        user = getattr(g, 'current_user', None) or {}
-        role = (user.get('role') or '').lower()
-        if role == 'cashier' and user.get('id'):
-            q += " AND cashier_id=?"
-            params.append(user['id'])
         q += " ORDER BY created_at DESC LIMIT 500"
         rows = db.execute(q, params).fetchall()
         out = []
@@ -2653,12 +2648,8 @@ def _cc_today_snapshot(user=None):
     db = _get_db()
     today = str(date.today())
     user = user or getattr(g, 'current_user', None) or {}
-    role = (user.get('role') or '').lower()
     sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
     params = [today]
-    if role == 'cashier' and user.get('id'):
-        sales_clause += " AND cashier_id=?"
-        params.append(user['id'])
 
     sales_n = int(db.execute(
         f"SELECT COUNT(*) FROM sales WHERE {sales_clause}", params,
@@ -2727,7 +2718,7 @@ def _cc_today_snapshot(user=None):
         'by_payment': by_pay,
         'top_products': top,
         'monthly_revenue': _month_revenue(db) if _user_can('reports', user) else None,
-        'scope': 'own_sales' if role == 'cashier' else 'shop',
+        'scope': 'shop',
     }
 
 
@@ -3104,16 +3095,6 @@ def sale_receipt_detail(sale_id):
             if not sale:
                 return jsonify({'error': 'Sale not found'}), 404
             sale_d = dict(sale)
-            # Cashiers with view_own only see their receipts
-            user = g.current_user or {}
-            if (
-                _has_perm('sales.view_own')
-                and not _has_perm('sales.view_all')
-                and not _has_perm('sales.void')
-            ):
-                uid = user.get('id')
-                if uid and sale_d.get('cashier_id') not in (uid, str(uid)):
-                    return jsonify({'error': 'Forbidden'}), 403
             lines = [
                 dict(r) for r in db.execute(
                     'SELECT * FROM sale_items WHERE sale_id=? ORDER BY id',
@@ -3755,7 +3736,7 @@ new Chart(document.getElementById('payChart'), {{
 
 _APPROVAL_TYPES = (
     'void', 'refund', 'large_discount', 'price_override',
-    'stock_adjust', 'expense', 'credit',
+    'stock_adjust', 'stocktake_adjust', 'expense', 'credit',
 )
 
 
@@ -4003,12 +3984,8 @@ def cc_summary():
         _ensure_command_center_schema(db)
         today = str(date.today())
         user = g.current_user or {}
-        role = (user.get('role') or '').lower()
         sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
         params = [today]
-        if role == 'cashier' and user.get('id'):
-            sales_clause += " AND cashier_id=?"
-            params.append(user['id'])
         sales = _tr(db.execute(f"""
             SELECT COUNT(*) as txns, COALESCE(SUM(total),0) as revenue,
                    COALESCE(AVG(total),0) as avg_txn,
@@ -4048,9 +4025,6 @@ def cc_summary():
                 "WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'"
             )
             top_params = [today]
-            if role == 'cashier' and user.get('id'):
-                top_sql += " AND s.cashier_id=?"
-                top_params.append(user['id'])
             top_sql += " GROUP BY si.product_name ORDER BY revenue DESC LIMIT 8"
             top_products = _trs(db.execute(top_sql, top_params).fetchall())
             try:
@@ -4062,9 +4036,6 @@ def cc_summary():
                     "WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'"
                 )
                 cat_params = [today]
-                if role == 'cashier' and user.get('id'):
-                    cat_sql += " AND s.cashier_id=?"
-                    cat_params.append(user['id'])
                 cat_sql += " GROUP BY 1 ORDER BY revenue DESC LIMIT 8"
                 top_categories = _trs(db.execute(cat_sql, cat_params).fetchall())
             except Exception:
@@ -4129,7 +4100,7 @@ def cc_summary():
             'top_products': top_products,
             'top_categories': top_categories,
             'business_health': business_health,
-            'scope': 'own_sales' if role == 'cashier' else 'shop',
+            'scope': 'shop',
             'permissions': sorted(_user_tabs(user)),
         })
     return _inner()
@@ -4217,32 +4188,14 @@ def _review_approval(aid, action):
         elif action == 'approve':
             if cur not in ('pending', 'escalated'):
                 return jsonify({'error': f"Already {row['status']}"}), 400
-            if (row.get('type') or '') == 'void':
-                meta = {}
-                try:
-                    meta = json.loads(row.get('meta_json') or '{}')
-                except Exception:
-                    meta = {}
-                sale_id = int(meta.get('sale_id') or 0)
-                if not sale_id:
-                    return jsonify({
-                        'error': 'This void request has no receipt to void.',
-                    }), 400
-                pin = str(data.get('pin') or '')
-                from desktop.utils.api_client import APIClient
-                reviewer = g.current_user
-                api = APIClient()
-                api._role = str(reviewer.get('role') or '')
-                api._user_id = reviewer.get('id')
-                api._username = reviewer.get('full_name') or reviewer.get('username') or 'admin'
-                voided = api.void_sale(
-                    sale_id,
-                    reason=str(meta.get('reason') or row.get('details') or 'Approved void request'),
-                    pin=pin,
-                )
-                if not voided.get('success'):
-                    return jsonify(voided), int(voided.get('status') or 400)
-            status = 'approved'
+            from desktop.utils.api_client import APIClient
+            reviewer = g.current_user
+            api = APIClient()
+            api._role = str(reviewer.get('role') or '')
+            api._user_id = reviewer.get('id')
+            api._username = reviewer.get('full_name') or reviewer.get('username') or 'admin'
+            executed = api.execute_approval(aid, note=note)
+            return jsonify(executed), (200 if executed.get('success') else int(executed.get('status') or 400))
         elif action == 'reject':
             if cur not in ('pending', 'escalated'):
                 return jsonify({'error': f"Already {row['status']}"}), 400
@@ -5082,15 +5035,6 @@ def _sales_where(filt, alias='s'):
         f"COALESCE({p}status,'completed')='completed'",
     ]
     params = [filt['start'], filt['end']]
-    # Cashiers only see their own receipts unless they have reports tab
-    try:
-        user = getattr(g, 'current_user', None) or {}
-        role = (user.get('role') or '').lower()
-        if role == 'cashier' and user.get('id') and not _user_can('reports', user):
-            clauses.append(f"{p}cashier_id=?")
-            params.append(user['id'])
-    except Exception:
-        pass
     if filt.get('employee'):
         clauses.append(f"({p}cashier_name LIKE ? OR CAST({p}cashier_id AS TEXT)=?)")
         params.extend([f"%{filt['employee']}%", filt['employee']])
@@ -5609,6 +5553,206 @@ def global_search():
             seen.add(key)
             uniq.append(item)
         return jsonify({'results': uniq[:40], 'q': q})
+    return _inner()
+
+
+def _actor_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = str(user.get('role') or '')
+    api._user_id = user.get('id')
+    api._username = user.get('full_name') or user.get('username') or ''
+    return api
+
+
+def _last_sync_label(db):
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key IN ('last_sync','last_cloud_sync_at') "
+            "ORDER BY key LIMIT 1"
+        ).fetchone()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
+@web.route('/api/stocktakes', methods=['GET'])
+def list_stocktakes_route():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        api = _actor_api()
+        result = api.list_stocktakes(request.args.get('status') or '')
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        result['last_sync'] = _last_sync_label(_get_db())
+        result['source'] = 'shop_database'
+        return jsonify(result)
+    return _inner()
+
+
+@web.route('/api/stocktakes', methods=['POST'])
+def start_stocktake_route():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        result = _actor_api().start_stocktake(request.json or {})
+        return jsonify(result), (200 if result.get('success') else int(result.get('status') or 400))
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>', methods=['GET'])
+def stocktake_detail_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        result = _actor_api().stocktake_reconcile(stocktake_id)
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/count', methods=['POST'])
+def stocktake_count_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _actor_api().record_stocktake_count(
+            int(data.get('line_id') or 0), data.get('quantity'), bool(data.get('recount')),
+        )
+        return jsonify(result), (200 if result.get('success') else int(result.get('status') or 400))
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/status', methods=['POST'])
+def stocktake_status_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        result = _actor_api().stocktake_set_status(
+            stocktake_id, (request.json or {}).get('status') or '',
+        )
+        return jsonify(result), (200 if result.get('success') else int(result.get('status') or 400))
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/recount', methods=['POST'])
+def stocktake_recount_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('stocktake.review'):
+            return jsonify({'error': 'You cannot request a recount.'}), 403
+        from desktop.utils.stocktake import request_recount
+        db = _get_db()
+        result = request_recount(db, stocktake_id, (request.json or {}).get('line_id'))
+        return jsonify(result), (200 if result.get('success') else 400)
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/apply', methods=['POST'])
+def stocktake_apply_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        result = _actor_api().apply_stocktake(
+            stocktake_id, (request.json or {}).get('reason') or '',
+        )
+        return jsonify(result), (200 if result.get('success') else int(result.get('status') or 400))
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/request-adjust', methods=['POST'])
+def stocktake_request_adjust_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        result = _actor_api().request_stocktake_adjust(
+            stocktake_id, (request.json or {}).get('reason') or '',
+        )
+        return jsonify(result), (200 if result.get('success') else int(result.get('status') or 400))
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/export', methods=['GET'])
+def stocktake_export_route(stocktake_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('stocktake.export'):
+            return jsonify({'error': 'You cannot export stocktakes.'}), 403
+        from io import BytesIO
+        from flask import send_file
+        from desktop.utils.stocktake import export_workbook
+        db = _get_db()
+        try:
+            payload = export_workbook(db, stocktake_id)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 404
+        return send_file(
+            BytesIO(payload), as_attachment=True,
+            download_name=f'stocktake-{stocktake_id}.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+    return _inner()
+
+
+@web.route('/api/stocktakes/compare', methods=['GET'])
+def stocktake_compare_route():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('stocktake.review'):
+            return jsonify({'error': 'You cannot compare stocktakes.'}), 403
+        from desktop.utils.stocktake import compare_stocktakes
+        result = compare_stocktakes(
+            _get_db(), request.args.get('left'), request.args.get('right'),
+        )
+        return jsonify(result), (200 if result.get('success') else 400)
+    return _inner()
+
+
+@web.route('/api/reports/full-shop', methods=['GET'])
+def full_shop_report():
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _has_perm('reports.export_full_shop'):
+            return jsonify({'error': 'You cannot download the full shop report.'}), 403
+        from io import BytesIO
+        from flask import send_file
+        from desktop.utils.api_client import _audit
+        from desktop.utils.shop_report import build_shop_workbook
+        user = g.current_user or {}
+        db = _get_db()
+        shop = 'Shop'
+        try:
+            row = db.execute(
+                "SELECT value FROM system_settings WHERE key='shop_name'"
+            ).fetchone()
+            if row and row[0]:
+                shop = row[0]
+        except Exception:
+            pass
+        preset = request.args.get('preset') or 'today'
+        start = request.args.get('start') or ''
+        end = request.args.get('end') or ''
+        payload = build_shop_workbook(
+            db, shop_name=shop, preset=preset, start=start, end=end,
+            generated_by=user.get('full_name') or user.get('username') or '',
+        )
+        _audit(
+            user.get('id'), user.get('username') or '',
+            'FULL_SHOP_REPORT', 'reports',
+            f'preset={preset} start={start} end={end}',
+        )
+        return send_file(
+            BytesIO(payload), as_attachment=True,
+            download_name='MBT_Shop_Report.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
     return _inner()
 
 

@@ -14,7 +14,7 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     apply_table_row_backgrounds,
                                     align_header_right)
 from desktop.utils.security import (has_permission, require_permission,
-                                     prompt_superadmin_pin, ROLE_SUPERADMIN,
+                                     collect_step_up_pin, ROLE_SUPERADMIN,
                                      apply_locked_button, denial_reason)
 from desktop.utils.option_lists import (
     STOCK_INCREASE_REASONS, STOCK_DECREASE_REASONS, PRODUCT_STATUSES,
@@ -134,6 +134,15 @@ class InventoryTab(QWidget):
         else:
             apply_locked_button(adj, self.user, 'inventory.adjust_stock')
         tb.addWidget(adj)
+
+        stocktake = SecondaryBtn('Stocktake', 40)
+        stocktake.setObjectName('btnStocktake')
+        if has_permission(self.user, 'stocktake.view'):
+            stocktake.setToolTip('Count physical stock and review differences')
+            stocktake.clicked.connect(self._open_stocktake)
+        else:
+            apply_locked_button(stocktake, self.user, 'stocktake.view')
+        tb.addWidget(stocktake)
 
         exp = SecondaryBtn('Export Excel', 40)
         exp.setObjectName('btnInventoryExport')
@@ -484,6 +493,11 @@ class InventoryTab(QWidget):
         from desktop.dialogs.receive_stock_dialog import SuppliersDialog
         SuppliersDialog(self.api, self).exec_()
 
+    def _open_stocktake(self):
+        from desktop.dialogs.stocktake_dialog import StocktakeDialog
+        StocktakeDialog(self.api, self.user, self).exec_()
+        self.refresh()
+
     def _adjust_stock_dialog(self):
         """Superadmin: adjust stock with PIN and reason. Never crashes the app."""
         if self._role() != ROLE_SUPERADMIN:
@@ -738,9 +752,11 @@ class InventoryTab(QWidget):
                 if projected < selected['stock']:
                     # Must parent to dlg — parenting to the tab puts the PIN
                     # prompt behind this modal and Windows reports Not Responding.
-                    pin = prompt_superadmin_pin(
-                        dlg, reason=f"Reduce '{prod['name']}' stock")
-                    if not pin:
+                    pin = collect_step_up_pin(
+                        self.api, dlg, reason=f"Reduce '{prod['name']}' stock",
+                        user=getattr(self, 'user', None),
+                    )
+                    if pin is None:
                         return
                 busy['value'] = True
                 buttons.button(QDialogButtonBox.Ok).setEnabled(False)
@@ -910,6 +926,12 @@ class _ProdDlg(QDialog):
         self.unit  = QLineEdit();      self.unit.setMinimumHeight(42);  self.unit.setText('pcs')
         self.status = Select(items=list(PRODUCT_STATUSES))
         self.status.setMinimumHeight(42)
+        self._image_path = (prod or {}).get('image_path') or ''
+        self._image_btn = QPushButton(
+            'Change photo' if self._image_path else 'Add photo'
+        )
+        self._image_btn.setMinimumHeight(42)
+        self._image_btn.clicked.connect(self._pick_photo)
 
         if prod:
             self.name.setText(prod.get('name') or '')
@@ -937,6 +959,7 @@ class _ProdDlg(QDialog):
             except Exception:
                 pass
 
+        lay.addRow(lbl('Photo'), self._image_btn)
         lay.addRow(lbl('Name *'),           self.name)
         lay.addRow(lbl('SKU / Code'),        self.sku)
         # Category + live visual preview (icon from offline library)
@@ -1068,10 +1091,30 @@ class _ProdDlg(QDialog):
             'unit':       self.unit.text().strip() or 'pcs',
             'is_active':  1 if status == 'Active' else 0,
             'product_status': status,
+            'image_path': self._image_path or None,
         }
         if self._is_new:
             d['stock'] = 0
         return d
+
+    def _pick_photo(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Product photo', '',
+            'Images (*.png *.jpg *.jpeg *.webp)',
+        )
+        if not path:
+            return
+        try:
+            from desktop.utils.category_visuals import save_category_image
+            saved = save_category_image(path, max_side=256)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Photo', f'The photo was not saved.\n\n{exc}')
+            return
+        if not saved:
+            QMessageBox.warning(self, 'Photo', 'Choose a PNG or JPG photo.')
+            return
+        self._image_path = saved
+        self._image_btn.setText('Change photo')
 
 # -- Product History Dialog -----------------------------------------------------
 

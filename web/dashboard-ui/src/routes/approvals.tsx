@@ -5,6 +5,7 @@ import { Check, X, Plus, Filter } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/approvals")({
@@ -17,9 +18,21 @@ const TYPES = [
   "large_discount",
   "price_override",
   "stock_adjust",
+  "stocktake_adjust",
   "expense",
   "credit",
 ] as const;
+
+const STATUS_LABEL: Record<string, string> = {
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
+  expired: "Expired",
+  cancelled: "Cancelled",
+  executed: "Completed",
+  escalated: "Pending",
+  executing: "Pending",
+};
 
 type Approval = {
   id: number;
@@ -36,6 +49,9 @@ type Approval = {
 
 function ApprovalsPage() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const role = String(user?.role || "").toLowerCase();
+  const signedInCanApprove = ["admin", "superadmin", "manager"].includes(role);
   const [status, setStatus] = useState("pending");
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({
@@ -58,7 +74,7 @@ function ApprovalsPage() {
   const approveM = useMutation({
     mutationFn: (row: Approval) => {
       let pin = "";
-      if (row.type === "void") {
+      if (row.type === "void" && !signedInCanApprove) {
         pin = window.prompt("Super-Admin PIN to void this receipt") || "";
         if (!pin.trim()) throw new Error("PIN is required to void a receipt.");
       }
@@ -102,15 +118,18 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="Cashiers can ask for a void. Approving a void request with the Super-Admin PIN voids that receipt on this shop. Other request types are recorded only."
+        description="Review privileged requests. Approving runs the action once. A second approval does not repeat it."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
             <Filter className="h-3.5 w-3.5 text-text2" />
             <Select value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="pending">Pending</option>
+              <option value="executed">Completed</option>
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
+              <option value="expired">Expired</option>
+              <option value="cancelled">Cancelled</option>
               <option value="all">All</option>
             </Select>
           </div>
@@ -239,7 +258,7 @@ function ApprovalsPage() {
                       </td>
                       <td className="px-4 py-3 text-text2">{a.requested_by || "—"}</td>
                       <td className="px-4 py-3">
-                        <Badge tone={tone(a.status) as any}>{a.status}</Badge>
+                        <Badge tone={tone(a.status) as any}>{STATUS_LABEL[a.status] || a.status}</Badge>
                       </td>
                       <td className="px-4 py-3">
                         {a.status === "pending" || a.status === "escalated" ? (
@@ -295,7 +314,7 @@ function ApprovalsPage() {
                     </div>
                     <div className="font-semibold text-text">{a.title}</div>
                   </div>
-                  <Badge tone={tone(a.status) as any}>{a.status}</Badge>
+                  <Badge tone={tone(a.status) as any}>{STATUS_LABEL[a.status] || a.status}</Badge>
                 </div>
                 {a.details ? <p className="text-sm text-text2 mb-2">{a.details}</p> : null}
                 <div className="flex items-center justify-between text-sm mb-3">

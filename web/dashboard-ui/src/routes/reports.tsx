@@ -44,6 +44,15 @@ function rangeForPreset(preset: string): { start: string; end: string } {
     const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
     return { start, end };
   }
+  if (preset === "Last Month") {
+    const d = new Date();
+    const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+    const last = new Date(d.getFullYear(), d.getMonth(), 0);
+    const iso = (day: Date) =>
+      `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    return { start: iso(first), end: iso(last) };
+  }
+  if (preset === "All data") return { start: "2000-01-01", end };
   if (preset === "Custom") return { start: end, end };
   return { start: end, end };
 }
@@ -134,6 +143,27 @@ function Reports() {
   const pageCount = Math.max(1, Math.ceil(sortedSales.length / pageSize));
   const pageRows = sortedSales.slice(page * pageSize, page * pageSize + pageSize);
 
+  async function downloadShopReport() {
+    const ok = window.confirm(
+      "Download a full shop report? It contains sensitive business information.",
+    );
+    if (!ok) return;
+    try {
+      setExporting("shop");
+      toast.message("Preparing report...");
+      const shopPreset = preset === "All data" ? "all" : "custom";
+      await downloadApi(
+        `/reports/full-shop?preset=${shopPreset}&start=${range.start}&end=${range.end}`,
+        "MBT_Shop_Report.xlsx",
+      );
+      toast.success("Download ready");
+    } catch (e: any) {
+      toast.error(e?.message || "Export failed");
+    } finally {
+      setExporting(null);
+    }
+  }
+
   async function doExport(format: string, openPrint = false) {
     try {
       setExporting(format);
@@ -169,6 +199,14 @@ function Reports() {
         description={`${range.start} → ${range.end}${data.sales_total != null ? ` · ${data.sales_total} sales` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              className="min-h-[44px]"
+              disabled={!!exporting}
+              onClick={downloadShopReport}
+            >
+              <FileSpreadsheet className="h-4 w-4" /> Full shop report
+            </Button>
             <Button
               variant="secondary"
               className="min-h-[44px]"
@@ -217,7 +255,7 @@ function Reports() {
               }}
               className="mt-1 min-h-[44px]"
             >
-              {["Today", "Yesterday", "This Week", "This Month", "Custom"].map((p) => (
+              {["Today", "Yesterday", "This Week", "This Month", "Last Month", "All data", "Custom"].map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </Select>

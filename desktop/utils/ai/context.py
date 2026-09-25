@@ -94,14 +94,6 @@ def build_context(
             sales = []
             if hasattr(api, 'get_sales'):
                 sales = api.get_sales(start=today, end=today) or []
-            if has_permission(user, 'sales.view_own') and not has_permission(user, 'sales.view_all'):
-                uid = _uid(user)
-                uname = (user.get('user') or user).get('username', '')
-                sales = [
-                    s for s in sales
-                    if str(s.get('user_id', '')) == uid
-                    or str(s.get('cashier', '')).lower() == str(uname).lower()
-                ]
             # Compact
             total = 0.0
             for s in sales[:200]:

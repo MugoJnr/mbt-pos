@@ -167,11 +167,12 @@ class VoidRequestTests(unittest.TestCase):
         self.assertAlmostEqual(float(row['unit_cost']), 40.0, places=2)
         db.close()
 
+        self.api._role = 'cashier'
+        blocked = self.api.void_sale(sale['sale_id'], 'Wrong item scanned', pin=self.PIN)
+        self.assertFalse(blocked.get('success'))
         self.api._role = 'admin'
         self.api._username = 'owner'
-        denied = self.api.void_sale(sale['sale_id'], 'Wrong item scanned', pin='000000')
-        self.assertFalse(denied.get('success'))
-        approved = self.api.void_sale(sale['sale_id'], 'Wrong item scanned', pin=self.PIN)
+        approved = self.api.void_sale(sale['sale_id'], 'Wrong item scanned', pin='')
         self.assertTrue(approved.get('success'), approved)
         voided = self.api.get_sale(sale['sale_id'])
         self.assertEqual(voided.get('status'), 'voided')
@@ -183,3 +184,25 @@ class VoidRequestTests(unittest.TestCase):
         db.close()
         self.assertIsNotNone(note)
         self.assertIn(sale['receipt_number'], note['title'])
+
+    def test_approval_executes_once(self):
+        sale = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Widget', 'sku': 'W1',
+                'quantity': 1, 'unit_price': 100, 'discount': 0, 'total': 100,
+            }],
+            'subtotal': 100, 'discount': 0, 'tax': 0, 'total': 100,
+            'payment_method': 'Cash', 'amount_paid': 100, 'change_amount': 0,
+        })
+        self.assertTrue(sale.get('success'), sale)
+        asked = self.api.request_sale_void(sale['sale_id'], 'Duplicate sale')
+        self.api._role = 'admin'
+        self.api._username = 'owner'
+        first = self.api.execute_approval(asked['id'])
+        self.assertTrue(first.get('success'), first)
+        self.assertEqual(first.get('status'), 'executed')
+        second = self.api.execute_approval(asked['id'])
+        self.assertFalse(second.get('success'))
+        self.assertEqual(second.get('status'), 409)
+        voided = self.api.get_sale(sale['sale_id'])
+        self.assertEqual(voided.get('status'), 'voided')

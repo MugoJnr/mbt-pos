@@ -151,10 +151,10 @@ class ReturnSaleDialog(QDialog):
         if not payload:
             QMessageBox.warning(self, 'Empty', 'Set at least one return quantity.')
             return
-        from desktop.utils.security import prompt_superadmin_pin
-        pin = prompt_superadmin_pin(
-            self, reason=f"Return {self._sale.get('receipt_number')}")
-        if not pin:
+        from desktop.utils.security import collect_step_up_pin
+        pin = collect_step_up_pin(
+            self.api, self, reason=f"Return {self._sale.get('receipt_number')}")
+        if pin is None:
             return
         res = self.api.return_sale(
             int(self._sale['id']), payload, reason,

@@ -1,8 +1,8 @@
 {
-    "version": "3.1.7",
-    "build": "RC-2026-09-25-v3.1.7",
+    "version": "3.1.8",
+    "build": "RC-2026-09-25-v3.1.8",
     "released": "2026-09-25",
-    "release_notes": "MBT POS v3.1.7 shows a cashier void request on the till and the web dashboard as Pending void, including who asked and why. A voided receipt stays on the dashboard and is marked Voided. Approving the request with the Super-Admin PIN voids that receipt. Also carries the v3.1.6 M-Pesa save, Mixed-only split pay, and delivery cost tracking. Preserves AppData identity, license state and mbt_pos.db.",
-    "checksum_sha256": "f2c2979e09400a947ac57899ce16569d105bb902c09fc20f65cd939dbb8e9809",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.7/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.1.8 adds Stocktake and Reconciliation under Inventory. Counts save as they are entered, expected stock follows movements during the count, and inventory changes only after an authorized adjustment. The web dashboard lists stocktakes and approvals, and an admin can download a full shop report. Preserves AppData identity, license state and mbt_pos.db.",
+    "checksum_sha256": "0ee4a31bc988d6046131feeb08d526853e82ea93586e459265a528a260daa6dc",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.8/MBT_POS_Setup.exe"
 }

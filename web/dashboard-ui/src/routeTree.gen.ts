@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsersRouteImport } from './routes/users'
+import { Route as StocktakeRouteImport } from './routes/stocktake'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecurityRouteImport } from './routes/security'
 import { Route as ReportsRouteImport } from './routes/reports'
@@ -33,6 +34,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
   path: '/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StocktakeRoute = StocktakeRouteImport.update({
+  id: '/stocktake',
+  path: '/stocktake',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -151,6 +157,7 @@ export interface FileRoutesByFullPath {
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
+  '/stocktake': typeof StocktakeRoute
   '/users': typeof UsersRoute
 }
 export interface FileRoutesByTo {
@@ -173,6 +180,7 @@ export interface FileRoutesByTo {
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
+  '/stocktake': typeof StocktakeRoute
   '/users': typeof UsersRoute
 }
 export interface FileRoutesById {
@@ -196,6 +204,7 @@ export interface FileRoutesById {
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
+  '/stocktake': typeof StocktakeRoute
   '/users': typeof UsersRoute
 }
 export interface FileRouteTypes {
@@ -220,6 +229,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/security'
     | '/settings'
+    | '/stocktake'
     | '/users'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -242,6 +252,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/security'
     | '/settings'
+    | '/stocktake'
     | '/users'
   id:
     | '__root__'
@@ -264,6 +275,7 @@ export interface FileRouteTypes {
     | '/reports'
     | '/security'
     | '/settings'
+    | '/stocktake'
     | '/users'
   fileRoutesById: FileRoutesById
 }
@@ -287,6 +299,7 @@ export interface RootRouteChildren {
   ReportsRoute: typeof ReportsRoute
   SecurityRoute: typeof SecurityRoute
   SettingsRoute: typeof SettingsRoute
+  StocktakeRoute: typeof StocktakeRoute
   UsersRoute: typeof UsersRoute
 }
 
@@ -297,6 +310,13 @@ declare module '@tanstack/react-router' {
       path: '/users'
       fullPath: '/users'
       preLoaderRoute: typeof UsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stocktake': {
+      id: '/stocktake'
+      path: '/stocktake'
+      fullPath: '/stocktake'
+      preLoaderRoute: typeof StocktakeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -455,6 +475,7 @@ const rootRouteChildren: RootRouteChildren = {
   ReportsRoute: ReportsRoute,
   SecurityRoute: SecurityRoute,
   SettingsRoute: SettingsRoute,
+  StocktakeRoute: StocktakeRoute,
   UsersRoute: UsersRoute,
 }
 export const routeTree = rootRouteImport

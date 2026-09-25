@@ -1212,10 +1212,8 @@ def list_sales():
     end = request.args.get('end', str(date.today()))
     where = "date(s.created_at) BETWEEN ? AND ?"
     params = [start, end]
-    if _actor_role() == 'cashier':
-        # Cashier HTTP history is limited to receipts created by that account.
-        where += " AND s.cashier_id=?"
-        params.append(g.current_user.get('id'))
+    # This shop database is the tenant. Cashiers see every receipt here.
+    # Profit and cost stay on the reports permission, not on this list.
     sales = db.execute(f"""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
                            FROM sales s LEFT JOIN sale_items si ON s.id = si.sale_id
                            WHERE {where}
@@ -1266,10 +1264,8 @@ def sales_summary():
     # the richer /api/reports/data feed.
     full_access = _user_tab_allowed('reports')
     own_only = False
-    if not full_access:
-        if not _user_tab_allowed('sales'):
-            return jsonify({'error': 'Reports access required'}), 403
-        own_only = True
+    if not full_access and not _user_tab_allowed('sales'):
+        return jsonify({'error': 'Reports access required'}), 403
 
     db = get_db()
     start = request.args.get('start', str(date.today()))
