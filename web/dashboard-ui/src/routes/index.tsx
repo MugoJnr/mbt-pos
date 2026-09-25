@@ -129,7 +129,7 @@ function ReceiptActions({ row, canVoid }: { row: any; canVoid: boolean }) {
       <button type="button" className="text-xs font-semibold text-gold" onClick={copy}>
         Copy
       </button>
-      {!canVoid && row.id ? (
+      {!canVoid && row.id && String(row.status || "").toLowerCase() !== "voided" ? (
         <button type="button" className="text-xs font-semibold text-warn" onClick={askVoid}>
           Ask void
         </button>
@@ -184,6 +184,11 @@ function Dashboard() {
     queryFn: () => GET<any>("/sales", { start: d, end: d }),
     refetchInterval: refreshMs,
   });
+  const voidQ = useQuery({
+    queryKey: ["pending-voids"],
+    queryFn: () => GET<{ approvals: any[] }>("/approvals", { status: "pending" }),
+    refetchInterval: refreshMs,
+  });
   const insightsQ = useQuery({
     queryKey: ["ai-insights-dash"],
     queryFn: () => GET<any>("/ai/insights"),
@@ -213,6 +218,25 @@ function Dashboard() {
     ? productsQ.data
     : productsQ.data?.products || [];
   const sales = Array.isArray(salesQ.data) ? salesQ.data : salesQ.data?.sales || [];
+  const pendingVoids = (voidQ.data?.approvals || []).filter(
+    (row) => String(row.type || "") === "void",
+  );
+  const pendingVoidBySale = new Map<number, any>();
+  for (const row of pendingVoids) {
+    let meta: any = {};
+    try {
+      meta = typeof row.meta_json === "string" ? JSON.parse(row.meta_json || "{}") : row.meta_json || {};
+    } catch {
+      meta = {};
+    }
+    const saleId = Number(meta.sale_id || 0);
+    if (saleId) pendingVoidBySale.set(saleId, { ...row, meta });
+  }
+  function receiptState(row: any) {
+    if (String(row.status || "").toLowerCase() === "voided") return "Voided";
+    if (pendingVoidBySale.has(Number(row.id))) return "Pending void";
+    return "Done";
+  }
   const lowStock =
     Number(cc.low_stock ?? 0) ||
     products.filter((p: any) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)).length;
@@ -728,6 +752,28 @@ function Dashboard() {
         </div>
       ) : null}
 
+      {pendingVoids.length > 0 ? (
+        <Link to="/approvals" className="block mb-4">
+          <Card className="p-4 border-warn/50 bg-warn/10">
+            <div className="text-sm font-bold text-warn">
+              Pending void — {pendingVoids.length} receipt{pendingVoids.length === 1 ? "" : "s"} waiting for an admin
+            </div>
+            <ul className="mt-2 space-y-1">
+              {pendingVoids.slice(0, 4).map((row) => (
+                <li key={row.id} className="text-sm text-text">
+                  {row.title || "Void request"}
+                  {row.requested_by ? ` · ${row.requested_by}` : ""}
+                  {row.details ? ` · ${row.details}` : ""}
+                </li>
+              ))}
+            </ul>
+            <div className="text-xs font-semibold text-gold mt-2">
+              {isAdmin ? "Open Approvals to void with the Super-Admin PIN" : "Waiting for an admin to approve"}
+            </div>
+          </Card>
+        </Link>
+      ) : null}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <Card className="lg:col-span-2 overflow-hidden">
           <div className="p-4 border-b border-border">
@@ -750,8 +796,10 @@ function Dashboard() {
           ) : (
             <>
               <div className="hidden sm:block">
-                <Table head={["Receipt", "What was sold", "Total", "Pay", "Cashier", ""]}>
-                  {sales.slice(0, dense ? 10 : 8).map((row: any) => (
+                <Table head={["Receipt", "What was sold", "Total", "Pay", "Cashier", "Status", ""]}>
+                  {sales.slice(0, dense ? 10 : 8).map((row: any) => {
+                    const state = receiptState(row);
+                    return (
                     <tr key={row.id || row.receipt_number}>
                       <td className={cn("px-4 font-mono text-text", dense ? "py-1.5" : "py-2.5")}>
                         {row.receipt_number || row.id}
@@ -761,7 +809,8 @@ function Dashboard() {
                       </td>
                       <td
                         className={cn(
-                          "px-4 tabular-nums font-semibold text-gold",
+                          "px-4 tabular-nums font-semibold",
+                          state === "Voided" ? "text-text2 line-through" : "text-gold",
                           dense ? "py-1.5" : "py-2.5",
                         )}
                       >
@@ -774,10 +823,16 @@ function Dashboard() {
                         {String(row.cashier_name || "—")}
                       </td>
                       <td className={cn("px-4", dense ? "py-1.5" : "py-2.5")}>
+                        <Badge tone={state === "Voided" ? "err" : state === "Pending void" ? "warn" : "ok"}>
+                          {state}
+                        </Badge>
+                      </td>
+                      <td className={cn("px-4", dense ? "py-1.5" : "py-2.5")}>
                         <ReceiptActions row={row} canVoid={isAdmin} />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </Table>
               </div>
               <div className="sm:hidden divide-y divide-border">
@@ -790,7 +845,7 @@ function Dashboard() {
                       <span className="font-bold text-gold tabular-nums">{KES(row.total)}</span>
                     </div>
                     <div className="text-xs text-text2 mt-0.5">
-                      {row.payment_method || "—"} · {row.cashier_name || "—"}
+                      {row.payment_method || "—"} · {row.cashier_name || "—"} · {receiptState(row)}
                     </div>
                   </div>
                 ))}

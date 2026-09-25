@@ -554,11 +554,20 @@ class DashboardTab(QWidget):
         scl.addLayout(sh)
         scl.addWidget(_sep(self._is_light))
 
+        self._void_banner = QLabel('')
+        self._void_banner.setWordWrap(True)
+        self._void_banner.setStyleSheet(
+            f"color:{p['warn']}; background:{qss_alpha(p['warn'], 0.12)}; "
+            f"border:1px solid {qss_alpha(p['warn'], 0.45)}; border-radius:8px; "
+            f"font-size:13px; font-weight:700; padding:10px 14px;")
+        self._void_banner.hide()
+        scl.addWidget(self._void_banner)
+
         # Sales table
         self._tbl = make_table(
             ['Receipt', 'Time', 'What was sold', 'Cashier', 'Total', 'Status'],
             stretch_col=2, row_height=44)
-        for ci, w in [(0, 150), (1, 80), (3, 110), (4, 110), (5, 90)]:
+        for ci, w in [(0, 150), (1, 80), (3, 110), (4, 110), (5, 130)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.setMinimumHeight(240)
         self._tbl.setAlternatingRowColors(False)
@@ -1292,11 +1301,14 @@ class DashboardTab(QWidget):
         # -- Recent sales table ---
         try:
             sales = self._sales_for_this_login(self.api.get_sales(today, today) or [])
+            pending = self._pending_voids_by_sale()
+            self._apply_void_banner(list(pending.values()))
             self._tbl.setRowCount(0)
             for i, s in enumerate(sales[:40]):
                 self._tbl.insertRow(i)
                 status = (s.get('status') or 'completed').lower()
                 voided = status == 'voided'
+                waiting = pending.get(int(s.get('id') or 0))
 
                 self._tbl.setItem(i, 0, tbl_item(s.get('receipt_number', '')))
                 t = (s.get('created_at', '') or '')
@@ -1306,8 +1318,8 @@ class DashboardTab(QWidget):
                 total_col = p['muted'] if voided else p['ok']
                 self._tbl.setItem(i, 4, tbl_right(
                     f"{cur} {float(s.get('total', 0)):,.2f}", total_col))
-                st_label = 'x Voided' if voided else '+ Done'
-                st_color = p['err'] if voided else p['ok']
+                st_label = self._receipt_status_label(status, bool(waiting))
+                st_color = p['err'] if voided else (p['warn'] if waiting else p['ok'])
                 self._tbl.setItem(i, 5, tbl_center(st_label, st_color))
 
             n = len(sales)
@@ -1489,6 +1501,46 @@ class DashboardTab(QWidget):
             return ''
         item = self._tbl.item(row, 0)
         return item.text().strip() if item else ''
+
+    @staticmethod
+    def _receipt_status_label(status: str, pending: bool) -> str:
+        if (status or '').lower() == 'voided':
+            return 'Voided'
+        if pending:
+            return 'Pending void'
+        return 'Done'
+
+    def _pending_voids_by_sale(self) -> dict:
+        if not hasattr(self.api, 'pending_void_requests'):
+            return {}
+        try:
+            rows = self.api.pending_void_requests() or []
+        except Exception:
+            return {}
+        out = {}
+        for row in rows:
+            sale_id = int(row.get('sale_id') or 0)
+            if sale_id:
+                out[sale_id] = row
+        return out
+
+    def _apply_void_banner(self, requests):
+        if not getattr(self, '_void_banner', None):
+            return
+        lines = []
+        for row in requests or []:
+            receipt = row.get('receipt_number') or 'receipt'
+            who = row.get('requested_by') or 'Cashier'
+            reason = row.get('reason') or ''
+            lines.append(f'{receipt} — {who} asked to void. {reason}'.strip())
+        if not lines:
+            self._void_banner.hide()
+            self._void_banner.setText('')
+            return
+        self._void_banner.setText(
+            'Pending void — an admin still has to approve:\n' + '\n'.join(lines[:4])
+        )
+        self._void_banner.show()
 
     def _owner_dashboard(self) -> bool:
         account = self.user.get('user') or self.user

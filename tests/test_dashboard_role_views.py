@@ -82,6 +82,17 @@ class DashboardRoleTests(unittest.TestCase):
         self.assertFalse(tab._copy_btn.isHidden())
         self.assertIsNone(tab._void_btn)
         self.assertFalse(tab._ask_void_btn.isHidden())
+        self.assertEqual(DashboardTab._receipt_status_label('voided', False), 'Voided')
+        self.assertEqual(DashboardTab._receipt_status_label('completed', True), 'Pending void')
+        self.assertEqual(DashboardTab._receipt_status_label('completed', False), 'Done')
+        tab._apply_void_banner([{
+            'receipt_number': 'RCP-1', 'requested_by': 'till', 'reason': 'wrong item',
+        }])
+        self.assertFalse(tab._void_banner.isHidden())
+        self.assertIn('RCP-1', tab._void_banner.text())
+        self.assertIn('Pending void', tab._void_banner.text())
+        tab._apply_void_banner([])
+        self.assertTrue(tab._void_banner.isHidden())
         self.assertIn('What was sold', [
             tab._tbl.horizontalHeaderItem(i).text()
             for i in range(tab._tbl.columnCount())

@@ -152,6 +152,10 @@ class VoidRequestTests(unittest.TestCase):
         self.assertTrue(sale.get('success'), sale)
         asked = self.api.request_sale_void(sale['sale_id'], 'Wrong item scanned')
         self.assertTrue(asked.get('success'), asked)
+        waiting = self.api.pending_void_requests()
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]['sale_id'], sale['sale_id'])
+        self.assertEqual(waiting[0]['reason'], 'Wrong item scanned')
         still = self.api.get_sale(sale['sale_id'])
         self.assertNotEqual((still.get('status') or ''), 'voided')
         db = self.ac._db()
@@ -171,3 +175,11 @@ class VoidRequestTests(unittest.TestCase):
         self.assertTrue(approved.get('success'), approved)
         voided = self.api.get_sale(sale['sale_id'])
         self.assertEqual(voided.get('status'), 'voided')
+        self.assertEqual(self.api.pending_void_requests(), [])
+        db = self.ac._db()
+        note = db.execute(
+            "SELECT title FROM cc_notifications WHERE title LIKE 'Voided %'"
+        ).fetchone()
+        db.close()
+        self.assertIsNotNone(note)
+        self.assertIn(sale['receipt_number'], note['title'])

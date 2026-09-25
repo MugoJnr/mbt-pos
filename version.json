@@ -1,8 +1,8 @@
 {
-    "version": "3.1.6",
-    "build": "RC-2026-09-25-v3.1.6",
+    "version": "3.1.7",
+    "build": "RC-2026-09-25-v3.1.7",
     "released": "2026-09-25",
-    "release_notes": "MBT POS v3.1.6 lets the till save an M-Pesa sale from the customer code and phone without waiting on the payments cloud. Split pay is only the Mixed method, so a cash sale is no longer blocked by a leftover electronic amount. Stock deliveries keep each buying price, and profit uses the cost of the units actually sold. Cashiers see today's sales and receipts, can copy a receipt number, and can ask an admin to void; the admin approves that void on this PC or the web dashboard with the Super-Admin PIN. Also carries the v3.1.5 single-window launch behaviour. Preserves AppData identity, license state and mbt_pos.db.",
-    "checksum_sha256": "b96ba4093c4cf8d840325f8bd30c0b7e7e54110a24869798d3abc1edb70bb049",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.6/MBT_POS_Setup.exe"
+    "release_notes": "MBT POS v3.1.7 shows a cashier void request on the till and the web dashboard as Pending void, including who asked and why. A voided receipt stays on the dashboard and is marked Voided. Approving the request with the Super-Admin PIN voids that receipt. Also carries the v3.1.6 M-Pesa save, Mixed-only split pay, and delivery cost tracking. Preserves AppData identity, license state and mbt_pos.db.",
+    "checksum_sha256": "f2c2979e09400a947ac57899ce16569d105bb902c09fc20f65cd939dbb8e9809",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.7/MBT_POS_Setup.exe"
 }

@@ -3799,6 +3799,72 @@ class APIClient:
                  self._user_id, self._username or 'admin')
             )
 
+    def _ensure_void_notice_tables(self, db):
+        """Approvals and notifications the till and the web dashboard share."""
+        db.executescript(
+            "CREATE TABLE IF NOT EXISTS cc_approvals ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "type TEXT NOT NULL, title TEXT NOT NULL, details TEXT DEFAULT '',"
+            "amount REAL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',"
+            "requested_by TEXT DEFAULT '', requested_by_id INTEGER,"
+            "reviewed_by TEXT DEFAULT '', reviewed_by_id INTEGER,"
+            "review_note TEXT DEFAULT '', meta_json TEXT DEFAULT '{}',"
+            "created_at TEXT DEFAULT (datetime('now')),"
+            "updated_at TEXT DEFAULT (datetime('now')));"
+            "CREATE TABLE IF NOT EXISTS cc_notifications ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "type TEXT, title TEXT, body TEXT, severity TEXT DEFAULT 'info',"
+            "link TEXT, is_read INTEGER DEFAULT 0, meta_json TEXT DEFAULT '{}',"
+            "created_at TEXT DEFAULT (datetime('now')), read_at TEXT);"
+        )
+        cols = {row[1] for row in db.execute('PRAGMA table_info(cc_notifications)')}
+        if 'is_read' not in cols:
+            db.execute(
+                'ALTER TABLE cc_notifications ADD COLUMN is_read INTEGER DEFAULT 0'
+            )
+        if 'meta_json' not in cols:
+            db.execute(
+                "ALTER TABLE cc_notifications ADD COLUMN meta_json TEXT DEFAULT '{}'"
+            )
+
+    def pending_void_requests(self) -> list:
+        """Open cashier void requests, for the till and web dashboards."""
+        import json as _json
+        db = _db()
+        try:
+            exists = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cc_approvals'"
+            ).fetchone()
+            if not exists:
+                return []
+            rows = db.execute(
+                "SELECT id, title, details, amount, requested_by, meta_json, created_at "
+                "FROM cc_approvals WHERE type='void' AND status='pending' "
+                "ORDER BY id DESC"
+            ).fetchall()
+            out = []
+            for row in rows:
+                try:
+                    meta = _json.loads(row['meta_json'] or '{}')
+                except Exception:
+                    meta = {}
+                out.append({
+                    'id': int(row['id']),
+                    'sale_id': int(meta.get('sale_id') or 0),
+                    'receipt_number': meta.get('receipt_number') or '',
+                    'reason': meta.get('reason') or row['details'] or '',
+                    'requested_by': row['requested_by'] or '',
+                    'title': row['title'] or '',
+                    'amount': float(row['amount'] or 0),
+                    'created_at': row['created_at'] or '',
+                })
+            return out
+        except Exception:
+            logger.exception('pending_void_requests')
+            return []
+        finally:
+            db.close()
+
     def request_sale_void(self, sale_id: int, reason: str) -> dict:
         """Cashier asks an admin to void. Does not change the sale."""
         reason = (reason or '').strip()
@@ -3815,27 +3881,11 @@ class APIClient:
                 return {'error': 'Receipt not found.', 'status': 404}
             if (sale['status'] or '') == 'voided':
                 return {'error': 'This receipt is already voided.', 'status': 400}
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS cc_approvals ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "type TEXT NOT NULL, title TEXT NOT NULL, details TEXT DEFAULT '',"
-                "amount REAL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',"
-                "requested_by TEXT DEFAULT '', requested_by_id INTEGER,"
-                "reviewed_by TEXT DEFAULT '', reviewed_by_id INTEGER,"
-                "review_note TEXT DEFAULT '', meta_json TEXT DEFAULT '{}',"
-                "created_at TEXT DEFAULT (datetime('now')),"
-                "updated_at TEXT DEFAULT (datetime('now')))"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS cc_notifications ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                "type TEXT, title TEXT, body TEXT, severity TEXT DEFAULT 'info',"
-                "link TEXT, created_at TEXT DEFAULT (datetime('now')), read_at TEXT)"
-            )
+            self._ensure_void_notice_tables(db)
             open_req = db.execute(
                 "SELECT id FROM cc_approvals WHERE type='void' AND status='pending' "
                 "AND meta_json LIKE ?",
-                (f'%"sale_id": {int(sale_id)}%',),
+                (f'%"sale_id": {int(sale_id)},%',),
             ).fetchone()
             if open_req:
                 return {
@@ -3865,9 +3915,10 @@ class APIClient:
                 ),
             )
             db.execute(
-                "INSERT INTO cc_notifications (type, title, body, severity, link) "
-                "VALUES ('void', ?, ?, 'warn', '/approvals')",
-                (title, details),
+                "INSERT INTO cc_notifications "
+                "(type, title, body, severity, link, is_read, created_at) "
+                "VALUES ('void', ?, ?, 'warn', '/approvals', 0, ?)",
+                (title, details, datetime.now().isoformat(timespec='seconds')),
             )
             db.commit()
             return {'success': True, 'id': int(cur.lastrowid), 'message': 'Sent to the admin.'}
@@ -3877,6 +3928,34 @@ class APIClient:
             return {'error': 'The void request was not sent. Try again.', 'status': 500}
         finally:
             db.close()
+
+    def _close_void_request(self, db, sale_id: int, receipt: str, reason: str):
+        """Mark a cashier's pending void as done and tell the web dashboard."""
+        try:
+            self._ensure_void_notice_tables(db)
+            now = datetime.now().isoformat(timespec='seconds')
+            db.execute(
+                "UPDATE cc_approvals SET status='approved', reviewed_by=?, "
+                "reviewed_by_id=?, review_note=?, updated_at=? "
+                "WHERE type='void' AND status='pending' AND meta_json LIKE ?",
+                (
+                    self._username or 'admin', self._user_id,
+                    f'Voided: {reason}', now,
+                    f'%"sale_id": {int(sale_id)},%',
+                ),
+            )
+            db.execute(
+                "INSERT INTO cc_notifications "
+                "(type, title, body, severity, link, is_read, created_at) "
+                "VALUES ('void', ?, ?, 'warn', '/approvals', 0, ?)",
+                (
+                    f'Voided {receipt}',
+                    f"{self._username or 'Admin'} voided {receipt}. {reason}",
+                    now,
+                ),
+            )
+        except Exception:
+            logger.exception('void notification')
 
     def void_sale(self, sale_id: int, reason: str, *,
                   force_with_payments: bool = False, pin: str = '') -> dict:
@@ -4033,6 +4112,7 @@ class APIClient:
                 "UPDATE sales SET status='voided', notes=? WHERE id=?",
                 (f"VOIDED by {self._username}: {reason}", sale_id)
             )
+            self._close_void_request(db, sale_id, sale['receipt_number'] or '', reason)
 
             # Log the edit
             db.execute(
