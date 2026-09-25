@@ -2277,7 +2277,9 @@ def cloud_analytics_export():
         try:
             org_id, role, can_see_finance = _analytics_authorize()
             args = _analytics_common_args()
-            fmt = args['format'] if args['format'] in ('csv', 'json') else 'csv'
+            fmt = args['format'] if args['format'] in (
+                'csv', 'json', 'xlsx', 'pdf', 'html',
+            ) else 'csv'
             default_start, default_end = _analytics_default_range()
             start = args['start'] or default_start
             end = args['end'] or default_end
@@ -2286,6 +2288,96 @@ def cloud_analytics_export():
                 analytics_redact_payload,
                 analytics_rows_to_csv,
             )
+            from backend.cloud.analytics_documents import (
+                collect_portal_sheets,
+                render_portal_csv,
+                render_portal_html,
+                render_portal_pdf,
+                render_portal_xlsx,
+            )
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            stem = f"mbt-{(args['report'] or 'analytics')}-{start}-{stamp}"
+            if fmt in ('xlsx', 'pdf', 'html'):
+                who = (
+                    (g.current_user or {}).get('full_name')
+                    or (g.current_user or {}).get('email')
+                    or 'Portal'
+                )
+                shop = (request.args.get('shop_name') or 'MBT POS').replace('\n', ' ')[:80]
+                period = f'{start} to {end}'
+                title = 'Full shop report' if args['report'] == 'shop' else (
+                    args['report'] or 'sales'
+                ).replace('_', ' ').title()
+                sheets = collect_portal_sheets(
+                    org_id,
+                    args['report'],
+                    start=start,
+                    end=end,
+                    can_see_finance=can_see_finance,
+                    status=args['status'],
+                    payment=args['payment'],
+                    cashier=args['cashier'],
+                    customer=args['customer'],
+                    q=args['q'],
+                    stock=args['stock'],
+                    sort=args['sort'],
+                    order=args['order'],
+                )
+                pretty = f"MBT_{title.replace(' ', '_')}_{start}_{stamp}"
+                if fmt == 'xlsx':
+                    body = render_portal_xlsx(
+                        sheets, shop_name=shop, title=title, period=period,
+                        generated_by=who, filters=period,
+                    )
+                    return Response(
+                        body,
+                        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={'Content-Disposition': f'attachment; filename="{pretty}.xlsx"'},
+                    )
+                if fmt == 'pdf':
+                    body = render_portal_pdf(
+                        sheets, shop_name=shop, title=title, period=period,
+                        generated_by=who,
+                    )
+                    return Response(
+                        body,
+                        mimetype='application/pdf',
+                        headers={'Content-Disposition': f'attachment; filename="{pretty}.pdf"'},
+                    )
+                page = render_portal_html(
+                    sheets, shop_name=shop, title=title, period=period,
+                    generated_by=who,
+                    auto_print=request.args.get('print') in ('1', 'true', 'yes'),
+                )
+                return Response(
+                    page,
+                    mimetype='text/html; charset=utf-8',
+                    headers={'Content-Disposition': f'inline; filename="{pretty}.html"'},
+                )
+            if args['report'] in ('shop', 'overview'):
+                sheets = collect_portal_sheets(
+                    org_id,
+                    args['report'],
+                    start=start,
+                    end=end,
+                    can_see_finance=can_see_finance,
+                    status=args['status'],
+                    payment=args['payment'],
+                    cashier=args['cashier'],
+                    customer=args['customer'],
+                    q=args['q'],
+                    stock=args['stock'],
+                    sort=args['sort'],
+                    order=args['order'],
+                )
+                csv_body = render_portal_csv(sheets)
+                return Response(
+                    csv_body.encode('utf-8'),
+                    mimetype='text/csv; charset=utf-8',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{stem}.csv"',
+                    },
+                )
             rows, fields = analytics_export_rows(
                 org_id,
                 report=args['report'],
@@ -2307,8 +2399,6 @@ def cloud_analytics_export():
                 fields = [f for f in fields if f not in (
                     'cost_price', 'unit_cost', 'cost', 'gross_profit', 'profit',
                 )]
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            stem = f"mbt-{(args['report'] or 'analytics')}-{start}-{stamp}"
             if fmt == 'json':
                 body = json.dumps({
                     'org_id': org_id,

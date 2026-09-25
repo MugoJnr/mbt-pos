@@ -911,5 +911,52 @@ class TestAnalyticsSaleDetailLines(unittest.TestCase):
         ])
 
 
+class TestDebtPaymentHistoryLabels(unittest.TestCase):
+    def test_payment_uses_the_debt_invoice_customer_and_receipt(self):
+        payment = {
+            'device_id': 'dev-1',
+            'invoice_source_id': '15',
+            'payment_receipt': 'PAY-1',
+            'cashier_name': 'mercy',
+            'amount': 50,
+        }
+
+        def fake_select(table, query):
+            self.assertEqual(table, 'cloud_debt_invoices')
+            self.assertIn('source_id=in.(15)', query)
+            return [{
+                'device_id': 'dev-1',
+                'source_id': '15',
+                'customer_name': 'Jane Wanjiku',
+                'customer_phone': '0712345678',
+                'invoice_number': 'INV-15',
+                'receipt_number': 'RCP-20260925-0001',
+            }]
+
+        with mock.patch.object(ps, 'service_select_strict', side_effect=fake_select):
+            ps._attach_debt_payment_customers('org-1', [payment])
+        self.assertEqual(payment['customer_name'], 'Jane Wanjiku')
+        self.assertEqual(payment['payer_name'], 'Jane Wanjiku')
+        self.assertEqual(payment['payer_phone'], '0712345678')
+        self.assertEqual(payment['invoice_number'], 'INV-15')
+        self.assertEqual(payment['receipt_number'], 'RCP-20260925-0001')
+
+    def test_missing_customer_stays_blank_and_payment_receipt_is_kept(self):
+        payment = {'invoice_source_id': '9', 'payment_receipt': 'PAY-9'}
+        with mock.patch.object(ps, 'service_select_strict', return_value=[]):
+            ps._attach_debt_payment_customers('org-1', [payment])
+        self.assertNotIn('customer_name', payment)
+        self.assertEqual(payment['receipt_number'], 'PAY-9')
+
+    def test_normalize_aliases_payment_receipt(self):
+        row = ps.analytics_normalize_row({
+            'payment_receipt': 'PAY-9',
+            'source_created_at': '2026-09-25T16:39:00Z',
+            'cashier_name': 'mercy',
+        })
+        self.assertEqual(row['receipt_number'], 'PAY-9')
+        self.assertEqual(row['created_at'], '2026-09-25T16:39:00Z')
+
+
 if __name__ == '__main__':
     unittest.main()

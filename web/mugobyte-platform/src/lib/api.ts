@@ -241,6 +241,14 @@ export async function downloadAnalyticsExport(
     throw new Error(payload.error || `Export failed (${response.status})`);
   }
   const blob = await response.blob();
+  if (query.format === "html") {
+    const page = window.open("", "_blank");
+    if (!page) throw new Error("Allow pop-ups to print this report");
+    page.document.open();
+    page.document.write(await blob.text());
+    page.document.close();
+    return;
+  }
   const disposition = response.headers.get("content-disposition") || "";
   const filename =
     disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i)?.[1] ||

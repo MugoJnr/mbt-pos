@@ -252,6 +252,36 @@ def _row(cursor):
     return dict(r) if r else None
 
 
+_SEEDED_DEPARTMENT_NAMES = (
+    'Kitchen', 'Bakery', 'Juice Bar', 'Office',
+    'Workshop', 'Manufacturing', 'Maintenance',
+)
+
+
+def _retire_unused_seed_departments(conn) -> None:
+    """Hide the old built-in department list when a shop never used it."""
+    try:
+        done = conn.execute(
+            "SELECT value FROM system_settings WHERE key='departments_seed_retired'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return
+    if done:
+        return
+    for name in _SEEDED_DEPARTMENT_NAMES:
+        conn.execute(
+            "UPDATE departments SET active=0 "
+            "WHERE lower(name)=lower(?) AND id NOT IN ("
+            "SELECT department_id FROM stock_consumptions "
+            "WHERE department_id IS NOT NULL)",
+            (name,),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)",
+        ('departments_seed_retired', '1'),
+    )
+
+
 # ── Schema bootstrap (called on every _db() open so tables always exist) ────────
 def _ensure_schema(conn: sqlite3.Connection):
     """Create all tables if they don't exist yet.  Safe to call repeatedly."""
@@ -634,15 +664,9 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
-    # Seed default departments for internal stock consumption
-    for dept_name in (
-        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
-        'Workshop', 'Manufacturing', 'Maintenance',
-    ):
-        conn.execute(
-            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
-            (dept_name,),
-        )
+    # Departments belong to the shop. Older installs received a fixed list;
+    # hide those names once when they have never been used.
+    _retire_unused_seed_departments(conn)
     # Ensure consumption void / taken_by columns on upgrades
     try:
         sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumptions)").fetchall()}
@@ -6392,16 +6416,6 @@ class APIClient:
                     'success': True,
                     'message': f'{row["name"]} is already archived.',
                 }
-            active_count = int(db.execute(
-                'SELECT COUNT(*) FROM departments WHERE active=1').fetchone()[0])
-            if active_count <= 1:
-                return {
-                    'error': (
-                        'Keep at least one active department so internal '
-                        'consumption can still be recorded.'
-                    ),
-                    'status': 409,
-                }
             db.execute(
                 'UPDATE departments SET active=0 WHERE id=?',
                 (int(department_id),),
@@ -6556,9 +6570,11 @@ class APIClient:
                         ),
                         'status': 400,
                     }
+                from desktop.utils.stock_layers import consume_fifo
+                fifo_cost = consume_fifo(db, pid, qty)
                 unit_cost = item.get('unit_cost')
                 if unit_cost is None or unit_cost == '':
-                    unit_cost = float(prod['cost_price'] or 0)
+                    unit_cost = fifo_cost
                 else:
                     try:
                         unit_cost = float(unit_cost)
@@ -6756,6 +6772,11 @@ class APIClient:
                     continue
                 old_stock = round(float(prod['stock'] or 0), 4)
                 qty = round(float(item['quantity'] or 0), 4)
+                from desktop.utils.stock_layers import restore_layer
+                restore_layer(
+                    db, int(pid), qty, float(item['unit_cost'] or 0),
+                    received_at=now, source='consumption_void',
+                )
                 new_stock = round(old_stock + qty, 4)
                 db.execute(
                     "UPDATE products SET stock=?, updated_at=? WHERE id=?",

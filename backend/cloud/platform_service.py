@@ -2189,7 +2189,61 @@ def analytics_normalize_row(row: dict | None) -> dict:
         out["created_at"] = out["source_created_at"]
     if out.get("source_updated_at") and not out.get("updated_at"):
         out["updated_at"] = out["source_updated_at"]
+    if out.get("payment_receipt") and not out.get("receipt_number"):
+        out["receipt_number"] = out["payment_receipt"]
     return out
+
+
+def _attach_debt_payment_customers(org_id: str, payments: list[dict]) -> None:
+    """Fill payer and invoice labels from the synced debt invoice.
+
+    Payment rows store only the invoice id. The portal needs the customer
+    name and the invoice or receipt number that were on that debt.
+    """
+    wanted = []
+    for row in payments:
+        invoice_id = str(row.get("invoice_source_id") or row.get("invoice_id") or "").strip()
+        if invoice_id:
+            wanted.append(invoice_id)
+    found: dict[tuple[str, str], dict] = {}
+    for start_at in range(0, len(wanted), 80):
+        chunk = wanted[start_at:start_at + 80]
+        listed = ",".join(quote(item, safe="") for item in chunk)
+        query = "&".join([
+            _org_eq(org_id),
+            f"source_id=in.({listed})",
+            "select=device_id,source_id,customer_name,customer_phone,invoice_number,receipt_number",
+        ])
+        try:
+            invoices = service_select_strict("cloud_debt_invoices", query) or []
+        except SupabaseError:
+            invoices = []
+        for invoice in invoices:
+            device = str(invoice.get("device_id") or "")
+            source = str(invoice.get("source_id") or "")
+            found[(device, source)] = invoice
+            found.setdefault(("", source), invoice)
+    for row in payments:
+        invoice_id = str(row.get("invoice_source_id") or row.get("invoice_id") or "").strip()
+        device = str(row.get("device_id") or "")
+        invoice = found.get((device, invoice_id)) or found.get(("", invoice_id)) or {}
+        name = str(invoice.get("customer_name") or row.get("customer_name") or "").strip()
+        phone = str(invoice.get("customer_phone") or row.get("customer_phone") or "").strip()
+        invoice_no = str(invoice.get("invoice_number") or row.get("invoice_number") or "").strip()
+        sale_receipt = str(invoice.get("receipt_number") or "").strip()
+        payment_receipt = str(row.get("payment_receipt") or row.get("receipt_number") or "").strip()
+        if name:
+            row["customer_name"] = name
+            row["payer_name"] = name
+        if phone:
+            row["customer_phone"] = phone
+            row["payer_phone"] = phone
+        if invoice_no:
+            row["invoice_number"] = invoice_no
+        if sale_receipt:
+            row["receipt_number"] = sale_receipt
+        elif payment_receipt:
+            row["receipt_number"] = payment_receipt
 
 
 def analytics_redact_row(row: dict | None, *, can_see_finance: bool, manager: bool = False) -> dict:
@@ -2847,6 +2901,7 @@ def analytics_list_debt_payments(
         'cloud_debt_payments', query, limit=page_size, offset=offset,
     )
     payments = [analytics_normalize_row(r) for r in rows]
+    _attach_debt_payment_customers(org_id, payments)
     pages = max(1, int(math.ceil(total / page_size))) if page_size else 1
     return {
         'org_id': org_id,
@@ -3525,11 +3580,14 @@ def analytics_export_rows(
         rows = analytics_fetch_all(
             'cloud_debt_payments', '&'.join(parts), max_rows=ANALYTICS_EXPORT_MAX,
         )
+        payments = [analytics_normalize_row(r) for r in rows]
+        _attach_debt_payment_customers(org_id, payments)
         fields = [
-            'device_id', 'source_id', 'payment_receipt', 'source_created_at', 'amount',
+            'device_id', 'source_id', 'customer_name', 'invoice_number',
+            'receipt_number', 'payment_receipt', 'source_created_at', 'amount',
             'payment_method', 'cashier_name', 'invoice_source_id', 'customer_id',
         ]
-        return [analytics_normalize_row(r) for r in rows], fields
+        return payments, fields
     if kind in ('inventory', 'products', 'stock'):
         parts = [_org_eq(org_id), 'select=*']
         if q:

@@ -444,14 +444,11 @@ def init_db():
     );
     """)
 
-    for dept_name in (
-        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
-        'Workshop', 'Manufacturing', 'Maintenance',
-    ):
-        cur.execute(
-            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
-            (dept_name,),
-        )
+    try:
+        from desktop.utils.api_client import _retire_unused_seed_departments
+        _retire_unused_seed_departments(cur)
+    except Exception:
+        pass
 
     # Production never creates a known default credential. API-only development
     # may opt in with an explicit, non-empty bootstrap password.

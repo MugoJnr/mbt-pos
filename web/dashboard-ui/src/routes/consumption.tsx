@@ -251,6 +251,9 @@ function NewConsumption({
                 <option value="">Select department…</option>
                 {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
+              {!departments.length ? (
+                <p className="mt-1 text-xs text-text2">Add this shop’s departments on the Departments tab. None are created automatically.</p>
+              ) : null}
             </label>
             <label className="text-xs font-medium text-text2">Reason
               <Input className="mt-1" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this stock being used?" />

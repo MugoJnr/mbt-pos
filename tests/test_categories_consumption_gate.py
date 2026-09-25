@@ -79,10 +79,43 @@ class CategoriesConsumptionGate(unittest.TestCase):
         bev = next(c for c in cats if (c.get('name') or '').lower() == 'beverages')
         self.assertTrue(bev.get('icon_name') or bev.get('accent_color') or bev.get('image_path'))
 
+    def _department(self, name='Stores'):
+        created = self.api.create_department(name)
+        self.assertTrue(created.get('success'), created)
+        return int(created['id'])
+
+    def test_shop_starts_without_builtin_departments(self):
+        names = {
+            (row.get('name') or '').lower()
+            for row in (self.api.get_departments(active_only=False) or [])
+        }
+        self.assertFalse(names & {
+            'kitchen', 'bakery', 'juice bar', 'office',
+            'workshop', 'manufacturing', 'maintenance',
+        })
+        db = self.ac._db()
+        db.execute(
+            "DELETE FROM system_settings WHERE key='departments_seed_retired'"
+        )
+        db.execute(
+            "INSERT INTO departments (name, active) VALUES ('Kitchen', 1)"
+        )
+        db.execute(
+            "INSERT INTO departments (name, active) VALUES ('Poultry', 1)"
+        )
+        db.commit()
+        db.close()
+        self.ac._SCHEMA_READY = False
+        self.ac._db().close()
+        active = {
+            (row.get('name') or '').lower()
+            for row in self.api.get_departments(active_only=True)
+        }
+        self.assertNotIn('kitchen', active)
+        self.assertIn('poultry', active)
+
     def test_v04_create_consumption_decrements_stock_and_movement(self):
-        depts = self.api.get_departments(active_only=True) or []
-        self.assertTrue(depts, 'seeded departments expected')
-        dept_id = int(depts[0]['id'])
+        dept_id = self._department()
 
         db = self.ac._db()
         before = float(db.execute(
@@ -126,7 +159,7 @@ class CategoriesConsumptionGate(unittest.TestCase):
         self.assertFalse(detail['has_estimated_selling_prices'])
 
     def test_duplicate_consumption_product_is_rejected_atomically(self):
-        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
+        dept_id = self._department()
         denied = self.api.create_consumption({
             'date': str(date.today()),
             'department_id': dept_id,
@@ -151,7 +184,7 @@ class CategoriesConsumptionGate(unittest.TestCase):
         db.close()
 
     def test_consumption_rolls_back_stock_if_accounting_cannot_post(self):
-        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
+        dept_id = self._department()
         with patch(
             'desktop.utils.accounting_hooks.post_consumption_journal',
             side_effect=RuntimeError('journal unavailable'),
@@ -178,8 +211,8 @@ class CategoriesConsumptionGate(unittest.TestCase):
         db.close()
 
     def test_cashier_cannot_record_internal_consumption_directly(self):
+        dept_id = self._department()
         self.api._role = 'cashier'
-        dept_id = int(self.api.get_departments(active_only=True)[0]['id'])
         denied = self.api.create_consumption({
             'date': str(date.today()),
             'department_id': dept_id,
@@ -235,6 +268,43 @@ class CategoriesConsumptionGate(unittest.TestCase):
         denied_archive = self.api.archive_department(department_id)
         self.assertEqual(denied_archive.get('status'), 403)
 
+    def test_consumption_uses_fifo_cost_and_restores_the_layer(self):
+        from desktop.utils.stock_layers import record_receipt, list_layers
+        dept_id = self._department('Cold Room')
+        db = self.ac._db()
+        record_receipt(
+            db, 1, quantity=10, unit_cost=8, qty_before=0, previous_cost=0,
+            source='purchase',
+        )
+        db.commit()
+        db.close()
+        created = self.api.create_consumption({
+            'date': str(date.today()),
+            'department_id': dept_id,
+            'reason': 'Staff use',
+            'items': [{'product_id': 1, 'quantity': 4}],
+        })
+        self.assertTrue(created.get('success'), created)
+        detail = self.api.get_consumption(int(created['id']))
+        self.assertEqual(float(detail['total_buying_cost']), 32.0)
+        self.assertEqual(float(detail['opportunity_value']), 200.0)
+        self.assertEqual(float(detail['foregone_gross_profit']), 168.0)
+        db = self.ac._db()
+        left = sum(float(row['qty_remaining']) for row in list_layers(db, 1))
+        stock = float(db.execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()[0])
+        db.close()
+        self.assertAlmostEqual(left, 6.0, places=3)
+        self.assertAlmostEqual(stock, 26.0, places=3)
+        self.api._role = 'superadmin'
+        voided = self.api.void_consumption(int(created['id']), 'Wrong entry', pin='')
+        self.assertTrue(voided.get('success'), voided)
+        db = self.ac._db()
+        stock = float(db.execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()[0])
+        db.close()
+        self.assertAlmostEqual(stock, 30.0, places=3)
+
     def test_consumption_ui_and_dashboard_expose_departments_and_multi_select(self):
         from pathlib import Path
         root = Path(__file__).resolve().parents[1]
@@ -255,7 +325,8 @@ class CategoriesConsumptionGate(unittest.TestCase):
         self.assertIn("self._tabs.addTab(self._departments, 'Departments')", desktop)
         self.assertIn('QAbstractItemView.ExtendedSelection', desktop)
         self.assertIn('+ Add Selected', desktop)
-        self.assertIn('PROD_LIST_ITEM_H * 6', desktop)
+        self.assertIn('PROD_LIST_ITEM_H * 3', desktop)
+        self.assertIn('no departments yet', desktop)
         self.assertIn('Tick as many products as needed', web)
         self.assertIn('max-h-[520px] min-h-[360px]', web)
         self.assertIn('setDetailId(Number(row.id))', web)

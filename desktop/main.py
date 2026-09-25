@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-09-25-v3.1.8"
-APP_VERSION   = "3.1.8"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-09-26-v3.1.9"
+APP_VERSION   = "3.1.9"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -2545,7 +2545,7 @@ class MainWindow(QMainWindow):
             # on top of them. AI stays one click away via the sidebar (AI
             # Operations) â€” quiet-POS wins over an overlay during checkout.
             active = getattr(self, '_active_tab_id', None) or ''
-            if active in ('dashboard', 'sales'):
+            if active in ('dashboard', 'sales', 'consumption'):
                 fab.hide()
             else:
                 fab.show()

@@ -282,6 +282,7 @@ class _CreatePane(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
+        self._scroll = scroll
         body = QWidget()
         body.setStyleSheet('background:transparent; border:none;')
         lay, _ = page_layout(body, margins=(20, 18, 20, 12), spacing=16)
@@ -318,6 +319,11 @@ class _CreatePane(QWidget):
         row2.setSpacing(16)
         self._dept = SearchableSelect(placeholder='Select department…')
         self._dept.setMinimumHeight(CONTROL_HEIGHT)
+        self._dept_hint = Caption(
+            'This shop has no departments yet. Open the Departments tab and add '
+            'the ones you use. Nothing is created for you.')
+        self._dept_hint.setWordWrap(True)
+        self._dept_hint.hide()
         self._reason = ReasonSelect(reasons=REASONS, height=CONTROL_HEIGHT)
         self._taken = SearchableSelect(placeholder='Search staff or type name…')
         self._taken.setMinimumHeight(CONTROL_HEIGHT)
@@ -326,6 +332,7 @@ class _CreatePane(QWidget):
         row2.addWidget(_field('Reason', self._reason), 1)
         row2.addWidget(_field('Taken By', self._taken), 1)
         fl.addLayout(row2)
+        fl.addWidget(self._dept_hint)
 
         self._notes = QPlainTextEdit()
         self._notes.setObjectName('mbtNotes')
@@ -366,8 +373,8 @@ class _CreatePane(QWidget):
         self._prod_list = QListWidget()
         self._prod_list.setObjectName('mbtConsProdList')
         self._prod_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._prod_list.setMaximumHeight(PROD_LIST_ITEM_H * 9 + 24)
-        self._prod_list.setMinimumHeight(PROD_LIST_ITEM_H * 6 + 16)
+        self._prod_list.setMaximumHeight(PROD_LIST_ITEM_H * 4 + 8)
+        self._prod_list.setMinimumHeight(PROD_LIST_ITEM_H * 3 + 8)
         self._prod_list.setUniformItemSizes(True)
         self._prod_list.itemDoubleClicked.connect(self._add_from_list)
         self._prod_list.itemActivated.connect(self._add_from_list)
@@ -383,7 +390,8 @@ class _CreatePane(QWidget):
             ['Product', 'Stock', 'Qty', 'Unit Cost', 'Total Cost', ''],
             stretch_col=0, row_height=LINE_ROW_H)
         self._tbl.verticalHeader().setMinimumSectionSize(LINE_ROW_H)
-        for col, w in ((1, 70), (2, 100), (3, 120), (4, 120), (5, 56)):
+        self._tbl.setMinimumHeight(36 + LINE_ROW_H * 3)
+        for col, w in ((1, 70), (2, 110), (3, 130), (4, 130), (5, 56)):
             self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._tbl.setColumnWidth(col, w)
         ll.addWidget(self._tbl)
@@ -398,7 +406,9 @@ class _CreatePane(QWidget):
         foot_lay.setSpacing(12)
         self._total_lbl = QLabel('Total Cost Used: —')
         self._total_lbl.setObjectName('mbtConsTotal')
-        foot_lay.addWidget(self._total_lbl)
+        self._total_lbl.setWordWrap(True)
+        self._total_lbl.setMinimumWidth(0)
+        foot_lay.addWidget(self._total_lbl, 1)
         foot_lay.addStretch()
         self._clear_btn = GhostBtn('Clear', 40)
         self._clear_btn.setToolTip('Reset the form without saving')
@@ -463,6 +473,7 @@ class _CreatePane(QWidget):
         cur = self._dept.current_value()
         items = [(d.get('name') or '', d.get('id')) for d in depts]
         self._dept.set_items(items)
+        self._dept_hint.setVisible(not items)
         if cur is not None:
             self._dept.set_value(cur)
 
@@ -702,6 +713,9 @@ class _CreatePane(QWidget):
             # Cell widgets can shrink Fusion rows below defaultSectionSize — lock height
             self._tbl.setRowHeight(i, LINE_ROW_H)
 
+        if self._lines and getattr(self, '_scroll', None) is not None:
+            self._scroll.ensureWidgetVisible(self._tbl, 0, 24)
+
         retail = sum(
             float(line['quantity']) * float(line.get('selling_price') or 0)
             for line in self._lines
@@ -847,7 +861,7 @@ class _DepartmentsPane(QWidget):
         row = QHBoxLayout()
         row.setSpacing(10)
         self._name = QLineEdit()
-        self._name.setPlaceholderText('e.g. Kitchen, Workshop, Poultry Unit…')
+        self._name.setPlaceholderText('Type the department this shop uses')
         self._name.setMinimumHeight(CONTROL_HEIGHT)
         self._name.returnPressed.connect(self._save)
         self._save_btn = PrimaryBtn('Add Department', CONTROL_HEIGHT)

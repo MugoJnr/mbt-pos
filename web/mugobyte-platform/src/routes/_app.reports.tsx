@@ -24,6 +24,7 @@ import { InventoryPanel } from "@/components/reports/InventoryPanel";
 import { SavedReports } from "@/components/reports/SavedReports";
 import { ShopSearch } from "@/components/reports/ShopSearch";
 import { DateRangePicker } from "@/components/reports/ReportControls";
+import { ReportDownloads } from "@/components/reports/ReportDownloads";
 import {
   type AnalyticsResponse,
   type AnalyticsSearch,
@@ -130,6 +131,15 @@ function Reports() {
             />
           </div>
         </div>
+        {orgId ? (
+          <ReportDownloads
+            orgId={orgId}
+            shopName={activeOrg?.name || "MBT POS"}
+            start={start}
+            end={end}
+            tab={tab}
+          />
+        ) : null}
       </div>
 
       {!orgId ? (
