@@ -4041,23 +4041,32 @@ def cc_summary():
         top_products = []
         top_categories = []
         if _user_can('reports', user) or _user_can('sales', user):
-            top_products = _trs(db.execute("""
-                SELECT si.product_name as name, SUM(si.quantity) as qty,
-                       COALESCE(SUM(si.total),0) as revenue
-                FROM sale_items si JOIN sales s ON si.sale_id=s.id
-                WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
-                GROUP BY si.product_name ORDER BY revenue DESC LIMIT 8
-            """, (today,)).fetchall())
+            top_sql = (
+                "SELECT si.product_name as name, SUM(si.quantity) as qty, "
+                "COALESCE(SUM(si.total),0) as revenue "
+                "FROM sale_items si JOIN sales s ON si.sale_id=s.id "
+                "WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'"
+            )
+            top_params = [today]
+            if role == 'cashier' and user.get('id'):
+                top_sql += " AND s.cashier_id=?"
+                top_params.append(user['id'])
+            top_sql += " GROUP BY si.product_name ORDER BY revenue DESC LIMIT 8"
+            top_products = _trs(db.execute(top_sql, top_params).fetchall())
             try:
-                top_categories = _trs(db.execute("""
-                    SELECT COALESCE(NULLIF(TRIM(p.category),''), 'Uncategorized') as name,
-                           SUM(si.quantity) as qty, COALESCE(SUM(si.total),0) as revenue
-                    FROM sale_items si
-                    JOIN sales s ON si.sale_id=s.id
-                    LEFT JOIN products p ON p.id=si.product_id
-                    WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
-                    GROUP BY 1 ORDER BY revenue DESC LIMIT 8
-                """, (today,)).fetchall())
+                cat_sql = (
+                    "SELECT COALESCE(NULLIF(TRIM(p.category),''), 'Uncategorized') as name, "
+                    "SUM(si.quantity) as qty, COALESCE(SUM(si.total),0) as revenue "
+                    "FROM sale_items si JOIN sales s ON si.sale_id=s.id "
+                    "LEFT JOIN products p ON p.id=si.product_id "
+                    "WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'"
+                )
+                cat_params = [today]
+                if role == 'cashier' and user.get('id'):
+                    cat_sql += " AND s.cashier_id=?"
+                    cat_params.append(user['id'])
+                cat_sql += " GROUP BY 1 ORDER BY revenue DESC LIMIT 8"
+                top_categories = _trs(db.execute(cat_sql, cat_params).fetchall())
             except Exception:
                 top_categories = []
 
@@ -4175,7 +4184,7 @@ def create_approval():
                 atype, title, details, amount,
                 user.get('full_name') or user.get('username') or '',
                 user.get('id'),
-                json.dumps(data.get('meta') or {}),
+                json.dumps(data.get('meta') or data.get('meta_json') or {}),
             ),
         )
         _push_notification(
@@ -4208,6 +4217,31 @@ def _review_approval(aid, action):
         elif action == 'approve':
             if cur not in ('pending', 'escalated'):
                 return jsonify({'error': f"Already {row['status']}"}), 400
+            if (row.get('type') or '') == 'void':
+                meta = {}
+                try:
+                    meta = json.loads(row.get('meta_json') or '{}')
+                except Exception:
+                    meta = {}
+                sale_id = int(meta.get('sale_id') or 0)
+                if not sale_id:
+                    return jsonify({
+                        'error': 'This void request has no receipt to void.',
+                    }), 400
+                pin = str(data.get('pin') or '')
+                from desktop.utils.api_client import APIClient
+                reviewer = g.current_user
+                api = APIClient()
+                api._role = str(reviewer.get('role') or '')
+                api._user_id = reviewer.get('id')
+                api._username = reviewer.get('full_name') or reviewer.get('username') or 'admin'
+                voided = api.void_sale(
+                    sale_id,
+                    reason=str(meta.get('reason') or row.get('details') or 'Approved void request'),
+                    pin=pin,
+                )
+                if not voided.get('success'):
+                    return jsonify(voided), int(voided.get('status') or 400)
             status = 'approved'
         elif action == 'reject':
             if cur not in ('pending', 'escalated'):

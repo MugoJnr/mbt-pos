@@ -18,6 +18,7 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, badge_qss,
 from desktop.utils.charts import (
     GoldLineChart, PaymentBars, ChartCard, ChartDetailsDialog,
 )
+from desktop.utils.quiet_ui import soft_warn
 from desktop.utils.security import can_void_sales, prompt_void_sale
 from desktop.utils.lifecycle import defer, is_alive
 from desktop.utils.ui_polish import (
@@ -286,6 +287,7 @@ class DashboardTab(QWidget):
         self._page_scroll.setWidget(self._page)
         outer.addWidget(self._page_scroll, 1)
         self._build_content()
+        self._apply_cashier_dashboard()
         # No overlay + FAB — Quick Actions already cover those launches; FAB
         # was clipping By Payment bars / last chart row under Copilot clearance.
 
@@ -504,6 +506,12 @@ class DashboardTab(QWidget):
         sh.addWidget(self._sales_title)
         sh.addStretch()
 
+        self._copy_btn = QPushButton('Copy receipt')
+        self._copy_btn.setMinimumHeight(32)
+        self._copy_btn.setCursor(Qt.PointingHandCursor)
+        self._copy_btn.setToolTip('Copy the selected receipt number')
+        self._copy_btn.clicked.connect(self._copy_selected_receipt)
+        sh.addWidget(self._copy_btn)
         if can_void_sales(self.user):
             self._void_btn = QPushButton('Void Sale')
             self._void_btn.setObjectName('mbtVoidSaleBtn')
@@ -522,6 +530,13 @@ class DashboardTab(QWidget):
             sh.addWidget(self._void_btn)
         else:
             self._void_btn = None
+            self._ask_void_btn = QPushButton('Ask admin to void')
+            self._ask_void_btn.setMinimumHeight(32)
+            self._ask_void_btn.setCursor(Qt.PointingHandCursor)
+            self._ask_void_btn.setToolTip(
+                'Send this receipt to the admin. They can void it here or on the web dashboard.')
+            self._ask_void_btn.clicked.connect(self._ask_admin_to_void)
+            sh.addWidget(self._ask_void_btn)
 
         ref_btn = QPushButton()
         ref_btn.setIcon(ref_btn.style().standardIcon(QStyle.SP_BrowserReload))
@@ -541,9 +556,9 @@ class DashboardTab(QWidget):
 
         # Sales table
         self._tbl = make_table(
-            ['Receipt', 'Time', 'Cashier', 'Total', 'Status'],
-            stretch_col=0, row_height=44)
-        for ci, w in [(1, 130), (2, 110), (3, 110), (4, 90)]:
+            ['Receipt', 'Time', 'What was sold', 'Cashier', 'Total', 'Status'],
+            stretch_col=2, row_height=44)
+        for ci, w in [(0, 150), (1, 80), (3, 110), (4, 110), (5, 90)]:
             self._tbl.setColumnWidth(ci, w)
         self._tbl.setMinimumHeight(240)
         self._tbl.setAlternatingRowColors(False)
@@ -1149,6 +1164,24 @@ class DashboardTab(QWidget):
         except Exception as e:
             log.warning(f"Dashboard KPI: {e}")
 
+        if not self._owner_dashboard():
+            try:
+                own = self._sales_for_this_login(self.api.get_sales(start, end) or [])
+                active = [
+                    s for s in own
+                    if (s.get('status') or 'completed').lower() != 'voided'
+                ]
+                today_tx = len(active)
+                today_rev = round(sum(float(s.get('total') or 0) for s in active), 2)
+                avg = round(today_rev / today_tx, 2) if today_tx else 0
+                self._k_sales.set_value(str(today_tx))
+                self._k_sales.set_sub('Your receipts')
+                self._k_rev.set_value(f"{cur} {today_rev:,.2f}")
+                self._k_rev.set_sub('Your sales')
+                self._k_avg.set_value(f"{cur} {avg:,.2f}")
+            except Exception as e:
+                log.warning(f"Dashboard own-sales KPI: {e}")
+
         # Yesterday comparison trends (only meaningful for Today preset)
         try:
             yday = str(date.today() - timedelta(days=1))
@@ -1258,7 +1291,7 @@ class DashboardTab(QWidget):
 
         # -- Recent sales table ---
         try:
-            sales = self.api.get_sales(today, today) or []
+            sales = self._sales_for_this_login(self.api.get_sales(today, today) or [])
             self._tbl.setRowCount(0)
             for i, s in enumerate(sales[:40]):
                 self._tbl.insertRow(i)
@@ -1268,13 +1301,14 @@ class DashboardTab(QWidget):
                 self._tbl.setItem(i, 0, tbl_item(s.get('receipt_number', '')))
                 t = (s.get('created_at', '') or '')
                 self._tbl.setItem(i, 1, tbl_item(t[11:16] if len(t) > 11 else t))
-                self._tbl.setItem(i, 2, tbl_item(s.get('cashier_name', '')))
+                self._tbl.setItem(i, 2, tbl_item(s.get('items_summary') or ''))
+                self._tbl.setItem(i, 3, tbl_item(s.get('cashier_name', '')))
                 total_col = p['muted'] if voided else p['ok']
-                self._tbl.setItem(i, 3, tbl_right(
+                self._tbl.setItem(i, 4, tbl_right(
                     f"{cur} {float(s.get('total', 0)):,.2f}", total_col))
                 st_label = 'x Voided' if voided else '+ Done'
                 st_color = p['err'] if voided else p['ok']
-                self._tbl.setItem(i, 4, tbl_center(st_label, st_color))
+                self._tbl.setItem(i, 5, tbl_center(st_label, st_color))
 
             n = len(sales)
             has = n > 0
@@ -1455,6 +1489,82 @@ class DashboardTab(QWidget):
             return ''
         item = self._tbl.item(row, 0)
         return item.text().strip() if item else ''
+
+    def _owner_dashboard(self) -> bool:
+        account = self.user.get('user') or self.user
+        role = str(account.get('role') or 'cashier').lower()
+        if role in ('admin', 'superadmin', 'manager'):
+            return True
+        # A reports login sees the shop. A cashier does not.
+        return self._tab_allowed('reports')
+
+    def _sales_for_this_login(self, sales):
+        if self._owner_dashboard():
+            return list(sales or [])
+        account = self.user.get('user') or self.user
+        uid = account.get('id')
+        if uid is None:
+            return list(sales or [])
+        return [
+            s for s in (sales or [])
+            if str(s.get('cashier_id') or '') == str(uid)
+        ]
+
+    def _apply_cashier_dashboard(self):
+        """Cashiers see today's sales and receipts, not profit, debt or costs."""
+        if self._owner_dashboard():
+            return
+        for widget_name in (
+            '_period', '_k_low', '_kpi_legend', '_rev_break_host',
+            '_debt_chip_host', '_k_cons', '_trend_card', '_pay_card',
+            '_qa_card', '_st_card',
+        ):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.hide()
+        if hasattr(self, '_shop_lbl'):
+            self._shop_lbl.setText('Today’s sales and receipts.')
+
+    def _copy_selected_receipt(self):
+        receipt = self._selected_receipt()
+        if not receipt:
+            soft_warn(self, 'Select a receipt first.')
+            return
+        QApplication.clipboard().setText(receipt)
+        ToastNotification.show_toast(self, f'Copied {receipt}', tone='ok')
+
+    def _ask_admin_to_void(self):
+        receipt = self._selected_receipt()
+        if not receipt:
+            soft_warn(self, 'Select the receipt you want voided.')
+            return
+        reason, ok = QInputDialog.getText(
+            self, 'Ask admin to void',
+            f'Why should {receipt} be voided?',
+        )
+        if not ok:
+            return
+        reason = (reason or '').strip()
+        if len(reason) < 3:
+            soft_warn(self, 'Write a short reason so the admin knows what happened.')
+            return
+        sale = None
+        try:
+            rows = self.api.get_sales(
+                str(date.today()), str(date.today()),
+            ) or []
+            sale = next((s for s in rows if s.get('receipt_number') == receipt), None)
+        except Exception:
+            sale = None
+        if not sale or not sale.get('id'):
+            soft_warn(self, 'Could not find that receipt.')
+            return
+        result = self.api.request_sale_void(int(sale['id']), reason)
+        if result.get('success'):
+            ToastNotification.show_toast(
+                self, result.get('message') or 'Sent to the admin', tone='ok')
+        else:
+            soft_warn(self, result.get('error') or 'The request was not sent.')
 
     def _void_sale_prompt(self):
         if prompt_void_sale(self.api, self):

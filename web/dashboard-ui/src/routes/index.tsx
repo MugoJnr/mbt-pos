@@ -48,7 +48,7 @@ import {
   Skeleton,
   Table,
 } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES, todayISO } from "@/lib/format";
 import { loadPrefs, prefsRefreshMs, type DashboardPrefs } from "@/lib/prefs";
@@ -100,6 +100,42 @@ function ChartTooltip({ active, payload, label }: any) {
 function can(perms: string[], ...need: string[]) {
   if (!perms.length) return true; // admin payloads may omit; UI still gated by API
   return need.some((n) => perms.includes(n));
+}
+
+function ReceiptActions({ row, canVoid }: { row: any; canVoid: boolean }) {
+  const [note, setNote] = useState("");
+  const receipt = String(row.receipt_number || row.id || "");
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(receipt);
+    } catch {
+      window.prompt("Copy receipt number", receipt);
+    }
+  }
+  async function askVoid() {
+    const reason = window.prompt(`Why should ${receipt} be voided?`, note);
+    if (!reason || reason.trim().length < 3) return;
+    const result = await POST<any>("/approvals", {
+      type: "void",
+      title: `Void ${receipt}`,
+      details: reason.trim(),
+      amount: Number(row.total) || 0,
+      meta: { sale_id: row.id, receipt_number: receipt, reason: reason.trim() },
+    });
+    window.alert(result?.error || "Sent to the admin.");
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      <button type="button" className="text-xs font-semibold text-gold" onClick={copy}>
+        Copy
+      </button>
+      {!canVoid && row.id ? (
+        <button type="button" className="text-xs font-semibold text-warn" onClick={askVoid}>
+          Ask void
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function Dashboard() {
@@ -349,6 +385,7 @@ function Dashboard() {
       </div>
 
       {/* Attention strip */}
+      {isAdmin ? (
       <div className="flex flex-wrap gap-2 mb-4">
         {lowStock > 0 ? (
           <Link to="/inventory">
@@ -373,6 +410,7 @@ function Dashboard() {
           Backup {bakLabel}
         </Badge>
       </div>
+      ) : null}
 
       {loading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
@@ -399,27 +437,33 @@ function Dashboard() {
               accent="gold"
               icon={<ShoppingCart className="h-5 w-5" />}
             />
-            <KpiCard
-              label="Today's Profit"
-              value={KES(profit)}
-              sub="From live cost data"
-              accent="ok"
-              icon={<DollarSign className="h-5 w-5" />}
-            />
-            <KpiCard
-              label="Monthly Revenue"
-              value={KES(monthRev)}
-              sub="This calendar month"
-              accent="info"
-              icon={<LineChart className="h-5 w-5" />}
-            />
-            <KpiCard
-              label="Low Stock"
-              value={String(lowStock)}
-              sub="Products at/below min"
-              accent={lowStock ? "warn" : "ok"}
-              icon={<AlertTriangle className="h-5 w-5" />}
-            />
+            {isAdmin ? (
+              <KpiCard
+                label="Today's Profit"
+                value={KES(profit)}
+                sub="From live cost data"
+                accent="ok"
+                icon={<DollarSign className="h-5 w-5" />}
+              />
+            ) : null}
+            {isAdmin ? (
+              <KpiCard
+                label="Monthly Revenue"
+                value={KES(monthRev)}
+                sub="This calendar month"
+                accent="info"
+                icon={<LineChart className="h-5 w-5" />}
+              />
+            ) : null}
+            {isAdmin ? (
+              <KpiCard
+                label="Low Stock"
+                value={String(lowStock)}
+                sub="Products at/below min"
+                accent={lowStock ? "warn" : "ok"}
+                icon={<AlertTriangle className="h-5 w-5" />}
+              />
+            ) : null}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
@@ -446,6 +490,7 @@ function Dashboard() {
             />
           </div>
 
+          {isAdmin ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
             <KpiCard
               label="Expenses"
@@ -476,6 +521,7 @@ function Dashboard() {
               icon={<TrendingUp className="h-5 w-5" />}
             />
           </div>
+          ) : null}
         </>
       )}
 
@@ -500,7 +546,7 @@ function Dashboard() {
         </Card>
       ) : null}
 
-      {prefs.showCharts ? (
+      {isAdmin && prefs.showCharts ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
           <Card className="p-4 lg:col-span-2">
             <SectionTitle
@@ -704,11 +750,14 @@ function Dashboard() {
           ) : (
             <>
               <div className="hidden sm:block">
-                <Table head={["Receipt", "Total", "Pay", "Cashier"]}>
+                <Table head={["Receipt", "What was sold", "Total", "Pay", "Cashier", ""]}>
                   {sales.slice(0, dense ? 10 : 8).map((row: any) => (
                     <tr key={row.id || row.receipt_number}>
                       <td className={cn("px-4 font-mono text-text", dense ? "py-1.5" : "py-2.5")}>
                         {row.receipt_number || row.id}
+                      </td>
+                      <td className={cn("px-4 text-text2", dense ? "py-1.5" : "py-2.5")}>
+                        {String(row.items_summary || "—")}
                       </td>
                       <td
                         className={cn(
@@ -723,6 +772,9 @@ function Dashboard() {
                       </td>
                       <td className={cn("px-4 text-text2", dense ? "py-1.5" : "py-2.5")}>
                         {String(row.cashier_name || "—")}
+                      </td>
+                      <td className={cn("px-4", dense ? "py-1.5" : "py-2.5")}>
+                        <ReceiptActions row={row} canVoid={isAdmin} />
                       </td>
                     </tr>
                   ))}

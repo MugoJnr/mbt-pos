@@ -413,6 +413,7 @@ class PaymentService:
         confirmed_by: str = '',
         notes: str = '',
         force_verify: bool = False,
+        phone: str = '',
     ) -> PaymentRecord:
         assert_no_pin(notes)
         payment = self.repo.get_payment(payment_id)
@@ -420,26 +421,53 @@ class PaymentService:
             raise ValueError('Payment not found')
         ref = provider_reference.strip().upper()
         if len(ref) < 6:
-            raise ValueError('M-Pesa reference looks too short')
+            raise ValueError('Enter the full M-Pesa code from the customer message.')
         other = self.repo.get_by_provider_reference(ref)
         if other and other.id != payment.id:
-            raise ValueError(f'Reference already used by payment {other.id}')
+            # A cancelled checkout must not lock the customer's code forever.
+            if other.sale_id or other.status == PaymentStatus.COMPLETED.value:
+                raise ValueError(
+                    f'This M-Pesa code is already on receipt {other.receipt_number or other.id}.'
+                )
+            other.provider_reference = ''
+            other.notes = (other.notes + ' | reference released for a new sale').strip(' |')
+            self.repo.update_payment(other, 'reference_released', ref)
 
-        result = self.provider.register_manual_reference(
-            shop_id=payment.shop_id,
-            payment_id=payment.id,
-            provider_reference=ref,
-            amount=float(amount if amount is not None else payment.amount_expected),
-            notes=notes,
+        from desktop.payments.security import mask_phone, normalize_ke_phone
+        phone_e164 = normalize_ke_phone(phone)
+        if phone and not phone_e164:
+            raise ValueError('Enter the customer phone as 07… or 2547…')
+        confirmed_amount = round(
+            float(amount if amount is not None else payment.amount_expected), 2
         )
+        # "Save with this code" must not wait on payments.mugobyte.com.
+        cloud_status = ''
+        cloud_note = ''
+        if not force_verify:
+            result = self.provider.register_manual_reference(
+                shop_id=payment.shop_id,
+                payment_id=payment.id,
+                provider_reference=ref,
+                amount=confirmed_amount,
+                notes=notes,
+            )
+            cloud_status = result.status or ''
+            if result.ok and float(result.amount_received or 0) > 0:
+                confirmed_amount = round(float(result.amount_received), 2)
+            cloud_note = result.result_desc or ''
+        else:
+            cloud_note = 'Saved on this till from the customer code.'
+
         payment.provider_reference = ref
         payment.channel = PaymentChannel.MANUAL.value
-        payment.amount_received = round(
-            float(result.amount_received or amount or payment.amount_expected), 2
-        )
-        payment.notes = (payment.notes + ' | ' + notes).strip(' |') if notes else payment.notes
+        payment.amount_received = confirmed_amount
+        if phone_e164:
+            payment.phone_e164 = phone_e164
+            payment.phone_masked = mask_phone(phone_e164)
+        extra = ' | '.join(p for p in (notes, cloud_note) if p)
+        payment.notes = (payment.notes + ' | ' + extra).strip(' |') if extra else payment.notes
         payment.confirmed_by = confirmed_by
-        if force_verify or (result.status == PaymentStatus.VERIFIED.value):
+        if force_verify or cloud_status == PaymentStatus.VERIFIED.value:
             return self._mark_verified_or_variance(payment)
         payment.status = PaymentStatus.MANUAL_PENDING.value
         return self.repo.update_payment(payment, 'manual_pending', ref)

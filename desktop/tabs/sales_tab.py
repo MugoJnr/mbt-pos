@@ -586,7 +586,8 @@ class SalesTab(QWidget):
 
     def _is_split_method(self, method=None) -> bool:
         method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
-        return method in ('Cash', 'Mixed')
+        from desktop.utils.payment_tenders import is_split_pay_method
+        return is_split_pay_method(method)
 
     def _is_part_sale(self) -> bool:
         if getattr(self, '_pro_sale_type', '') == 'part':
@@ -1055,8 +1056,8 @@ class SalesTab(QWidget):
         if AutoFillService.is_cash_like(method):
             self._cash_paid_dirty = False
             self._elec_paid_dirty = False
-        else:
-            # Leaving split methods — clear electronic portion
+        if method != 'Mixed':
+            # Cash is not a split. A leftover M-Pesa amount must not block it.
             if hasattr(self, '_elec_paid'):
                 self._elec_paid.blockSignals(True)
                 self._elec_paid.setValue(0)
@@ -2410,9 +2411,12 @@ class SalesTab(QWidget):
             return None
         # Prefill manual ref field from panel when cashier already typed one
         initial_ref = ''
+        initial_phone = ''
         try:
             if hasattr(self, '_mpesa_ref'):
                 initial_ref = (self._mpesa_ref.text() or '').strip()
+            if hasattr(self, '_mpesa_phone'):
+                initial_phone = (self._mpesa_phone.text() or '').strip()
         except Exception:
             pass
         payment = run_mpesa_checkout(
@@ -2426,6 +2430,7 @@ class SalesTab(QWidget):
             customer_name=cust_name,
             account_reference='',
             initial_ref=initial_ref,
+            initial_phone=initial_phone,
         )
         if payment is None:
             return None

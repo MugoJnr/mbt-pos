@@ -139,7 +139,10 @@ class MpesaCheckoutDialog(QDialog):
         self.btn_wait.setVisible(bool(self.caps.can_detect_till or self.caps.till_number or self.caps.paybill_number))
         row.addWidget(self.btn_wait)
 
-        self.btn_manual = QPushButton('Confirm Manual Ref')
+        self.btn_manual = QPushButton('Save sale with this code')
+        self.btn_manual.setToolTip(
+            'Record the M-Pesa code and phone from the customer message '
+            'and complete the sale on this till.')
         self.btn_manual.clicked.connect(self._manual)
         row.addWidget(self.btn_manual)
         root.addLayout(row)
@@ -439,44 +442,44 @@ class MpesaCheckoutDialog(QDialog):
         if not self._ensure_payment():
             return
         ref = self.ref_edit.text().strip()
+        phone = self.phone.text().strip()
         if len(ref) < 6:
-            QMessageBox.warning(self, 'Reference', 'Enter the full M-Pesa receipt number.')
+            QMessageBox.warning(
+                self, 'M-Pesa code',
+                'Enter the full M-Pesa code from the customer message.',
+            )
+            return
+        if not normalize_ke_phone(phone):
+            QMessageBox.warning(
+                self, 'Phone',
+                'Enter the phone number that sent the M-Pesa (07… or 2547…).',
+            )
             return
         reply = QMessageBox.question(
-            self, 'Confirm manual M-Pesa',
-            f'Confirm M-Pesa receipt {ref.upper()} for '
-            f'{self.currency} {self.amount:,.2f}?\n\n'
-            'Use the receipt/code from the customer SMS only.\n'
-            'This confirmation is audited.',
+            self, 'Save M-Pesa sale',
+            f'Save this sale with M-Pesa code {ref.upper()} '
+            f'from {phone} for {self.currency} {self.amount:,.2f}?\n\n'
+            'Use the code and number from the customer message only.',
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
-        payment_id = self.payment.id
-        amount = self.amount
-        cashier = self.cashier_name or 'cashier'
-
-        def _work():
-            return self.svc.register_manual_reference(
-                payment_id,
+        try:
+            self.payment = self.svc.register_manual_reference(
+                self.payment.id,
                 ref,
-                amount=amount,
-                confirmed_by=cashier,
-                notes='manual_pos_fallback',
+                amount=self.amount,
+                confirmed_by=self.cashier_name or 'cashier',
+                notes='manual_pos_override',
                 force_verify=True,
+                phone=phone,
             )
-
-        def _ok(payment):
-            self.payment = payment
-            self._refresh_from_payment()
-
-        self._run_net(
-            _work,
-            on_ok=_ok,
-            busy_label='Recording manual reference…',
-            priority=True,
-            defer_message='Still contacting payments… confirming manual ref next.',
-        )
+        except Exception as e:
+            QMessageBox.warning(self, 'M-Pesa', str(e))
+            return
+        self._refresh_from_payment()
+        if self.payment and self.payment.status == PaymentStatus.VERIFIED.value:
+            self.accept()
 
     def _query(self):
         if not self._ensure_payment():

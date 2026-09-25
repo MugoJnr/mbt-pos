@@ -282,13 +282,23 @@ class PaymentMatrixTests(unittest.TestCase):
         cart = [{'product_id': 1, 'quantity': 1, 'unit_price': 10}]
         p1 = self.svc.create_pending_payment(amount=10, cart=cart, phone='0712000003')
         p1 = self.svc.register_manual_reference(
-            p1.id, 'SAME_REF_001', force_verify=True, confirmed_by='c'
+            p1.id, 'SAME_REF_001', force_verify=True, confirmed_by='c',
+            phone='0712000003',
         )
         self.assertEqual(p1.status, PaymentStatus.VERIFIED.value)
+        # No receipt yet — the cashier can use the same code on a fresh attempt.
         p2 = self.svc.create_pending_payment(amount=10, cart=cart, phone='0712000004')
+        p2 = self.svc.register_manual_reference(
+            p2.id, 'SAME_REF_001', force_verify=True, confirmed_by='c',
+            phone='0712000004',
+        )
+        self.assertEqual(p2.status, PaymentStatus.VERIFIED.value)
+        done = self.svc.complete_sale_if_verified(p2.id)
+        self.assertTrue(done['ok'])
+        p3 = self.svc.create_pending_payment(amount=10, cart=cart, phone='0712000005')
         with self.assertRaises(ValueError):
             self.svc.register_manual_reference(
-                p2.id, 'SAME_REF_001', force_verify=True, confirmed_by='c'
+                p3.id, 'SAME_REF_001', force_verify=True, confirmed_by='c',
             )
 
     # ── Till matching ─────────────────────────────────────────────

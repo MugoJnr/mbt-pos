@@ -2511,10 +2511,21 @@ class APIClient:
                     }
                 before = round(float(product['stock'] or 0), 4)
                 after = round(before + line['quantity'], 4)
+                previous_cost = float(product['cost_price'] or 0)
                 db.execute(
-                    'UPDATE products SET stock=?,cost_price=?,supplier_id=?,updated_at=? '
-                    'WHERE id=?',
-                    (after, line['unit_cost'], supplier_id, now, line['product_id']),
+                    'UPDATE products SET stock=?,supplier_id=?,updated_at=? WHERE id=?',
+                    (after, supplier_id, now, line['product_id']),
+                )
+                from desktop.utils.stock_layers import record_receipt
+                record_receipt(
+                    db, line['product_id'],
+                    quantity=line['quantity'],
+                    unit_cost=line['unit_cost'],
+                    qty_before=before,
+                    previous_cost=previous_cost,
+                    supplier_id=supplier_id,
+                    purchase_id=purchase_id,
+                    received_at=now,
                 )
                 db.execute(
                     'INSERT INTO purchase_items '
@@ -3112,22 +3123,20 @@ class APIClient:
                     pass
             for item in normalized_items:
                 pid = item.get('product_id')
-                unit_cost = item.get('unit_cost')
-                if unit_cost is None or unit_cost == '':
-                    unit_cost = 0.0
-                    if pid:
-                        crow = db.execute(
-                            "SELECT name, cost_price FROM products WHERE id=?",
-                            (pid,),
-                        ).fetchone()
-                        if crow is not None:
-                            unit_cost = float(crow['cost_price'] or 0)
-                            if not (
-                                item.get('product_name') or item.get('name')
-                            ):
-                                item['product_name'] = crow['name'] or ''
-                else:
-                    unit_cost = float(unit_cost)
+                unit_cost = 0.0
+                if pid:
+                    crow = db.execute(
+                        "SELECT name, cost_price FROM products WHERE id=?",
+                        (pid,),
+                    ).fetchone()
+                    if crow is not None and not (
+                        item.get('product_name') or item.get('name')
+                    ):
+                        item['product_name'] = crow['name'] or ''
+                    from desktop.utils.stock_layers import consume_fifo
+                    unit_cost = consume_fifo(
+                        db, int(pid), float(item['quantity']),
+                    )
                 pname = (
                     item.get('product_name')
                     or item.get('name')
@@ -3722,6 +3731,18 @@ class APIClient:
                 "UPDATE products SET stock=?, updated_at=? WHERE id=?",
                 (new_stock, now, pid)
             )
+            try:
+                from desktop.utils.stock_layers import restore_layer
+                try:
+                    line_cost = float(item['unit_cost'] or 0)
+                except (KeyError, IndexError, TypeError):
+                    line_cost = 0.0
+                restore_layer(
+                    db, int(pid), qty, line_cost,
+                    received_at=now, source=movement_type.lower(),
+                )
+            except Exception:
+                logger.exception('restock cost layer')
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
@@ -3777,6 +3798,85 @@ class APIClient:
                  f"Sale edit deduct: {rn}",
                  self._user_id, self._username or 'admin')
             )
+
+    def request_sale_void(self, sale_id: int, reason: str) -> dict:
+        """Cashier asks an admin to void. Does not change the sale."""
+        reason = (reason or '').strip()
+        if len(reason) < 3:
+            return {'error': 'Say why this receipt should be voided.', 'status': 400}
+        db = _db()
+        try:
+            sale = db.execute(
+                "SELECT id, receipt_number, total, status, cashier_name "
+                "FROM sales WHERE id=?",
+                (int(sale_id),),
+            ).fetchone()
+            if not sale:
+                return {'error': 'Receipt not found.', 'status': 404}
+            if (sale['status'] or '') == 'voided':
+                return {'error': 'This receipt is already voided.', 'status': 400}
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS cc_approvals ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "type TEXT NOT NULL, title TEXT NOT NULL, details TEXT DEFAULT '',"
+                "amount REAL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',"
+                "requested_by TEXT DEFAULT '', requested_by_id INTEGER,"
+                "reviewed_by TEXT DEFAULT '', reviewed_by_id INTEGER,"
+                "review_note TEXT DEFAULT '', meta_json TEXT DEFAULT '{}',"
+                "created_at TEXT DEFAULT (datetime('now')),"
+                "updated_at TEXT DEFAULT (datetime('now')))"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS cc_notifications ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "type TEXT, title TEXT, body TEXT, severity TEXT DEFAULT 'info',"
+                "link TEXT, created_at TEXT DEFAULT (datetime('now')), read_at TEXT)"
+            )
+            open_req = db.execute(
+                "SELECT id FROM cc_approvals WHERE type='void' AND status='pending' "
+                "AND meta_json LIKE ?",
+                (f'%"sale_id": {int(sale_id)}%',),
+            ).fetchone()
+            if open_req:
+                return {
+                    'success': True,
+                    'already_pending': True,
+                    'id': int(open_req['id']),
+                    'message': 'An admin already has this void request.',
+                }
+            import json as _json
+            title = f"Void {sale['receipt_number']}"
+            details = (
+                f"{self._username or 'Cashier'} asked to void "
+                f"{sale['receipt_number']} ({float(sale['total'] or 0):,.2f}). {reason}"
+            )
+            cur = db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+                "VALUES ('void', ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    title, details, float(sale['total'] or 0),
+                    self._username or 'cashier', self._user_id,
+                    _json.dumps({
+                        'sale_id': int(sale_id),
+                        'receipt_number': sale['receipt_number'],
+                        'reason': reason,
+                    }),
+                ),
+            )
+            db.execute(
+                "INSERT INTO cc_notifications (type, title, body, severity, link) "
+                "VALUES ('void', ?, ?, 'warn', '/approvals')",
+                (title, details),
+            )
+            db.commit()
+            return {'success': True, 'id': int(cur.lastrowid), 'message': 'Sent to the admin.'}
+        except Exception:
+            db.rollback()
+            logger.exception('request_sale_void')
+            return {'error': 'The void request was not sent. Try again.', 'status': 500}
+        finally:
+            db.close()
 
     def void_sale(self, sale_id: int, reason: str, *,
                   force_with_payments: bool = False, pin: str = '') -> dict:

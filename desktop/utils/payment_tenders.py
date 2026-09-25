@@ -9,6 +9,15 @@ def _r2(value: Any) -> float:
     return round(float(value or 0), 2)
 
 
+def is_split_pay_method(method: str) -> bool:
+    """Only an explicit split tender mixes cash with M-Pesa, card or bank.
+
+    Cash, M-Pesa, card and bank on their own are one method. Treating Cash as
+    a split made a leftover electronic amount block a normal cash sale.
+    """
+    return (method or '').strip() == 'Mixed'
+
+
 def remainder_electronic(due: float, cash_paid: float, elec_paid: float = 0.0) -> float:
     """If electronic amount is empty, remaining due after cash is the other tender."""
     elec = _r2(elec_paid)

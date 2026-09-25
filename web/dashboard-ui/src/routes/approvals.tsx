@@ -56,7 +56,14 @@ function ApprovalsPage() {
   });
 
   const approveM = useMutation({
-    mutationFn: (id: number) => POST(`/approvals/${id}/approve`, {}),
+    mutationFn: (row: Approval) => {
+      let pin = "";
+      if (row.type === "void") {
+        pin = window.prompt("Super-Admin PIN to void this receipt") || "";
+        if (!pin.trim()) throw new Error("PIN is required to void a receipt.");
+      }
+      return POST(`/approvals/${row.id}/approve`, { pin });
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
   });
   const rejectM = useMutation({
@@ -95,7 +102,7 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="Status tracking for void, refund, discount, and related requests. Approve/Reject updates queue status only — it does not run the POS action automatically. Execute voids and refunds on the desktop with Super-Admin PIN."
+        description="Cashiers can ask for a void. Approving a void request with the Super-Admin PIN voids that receipt on this shop. Other request types are recorded only."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
@@ -115,8 +122,8 @@ function ApprovalsPage() {
       />
 
       <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-text">
-        Approving here marks the request as approved for audit visibility. It does not void a sale,
-        issue a refund, or adjust stock on a POS terminal.
+        Approving a void request voids that receipt after the Super-Admin PIN. Refunds and stock
+        changes still happen on the till.
       </div>
       {showNew ? (
         <Card className="p-4 mb-4 space-y-3">
@@ -241,7 +248,7 @@ function ApprovalsPage() {
                               size="sm"
                               variant="success"
                               disabled={approveM.isPending}
-                              onClick={() => approveM.mutate(a.id)}
+                              onClick={() => approveM.mutate(a)}
                             >
                               <Check className="h-3.5 w-3.5" /> Approve
                             </Button>
@@ -302,7 +309,7 @@ function ApprovalsPage() {
                     <Button
                       className="flex-1 min-h-[44px]"
                       variant="success"
-                      onClick={() => approveM.mutate(a.id)}
+                      onClick={() => approveM.mutate(a)}
                     >
                       <Check className="h-4 w-4" /> Approve
                     </Button>
