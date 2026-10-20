@@ -1,0 +1,46 @@
+{
+  "recorded_at": "2026-10-20T18:31:00+03:00",
+  "original_source": "C:\\Users\\mugoj\\OneDrive\\Desktop\\MBT POS\\extracted\\mbt_pos",
+  "working_copy": "C:\\MBT_Build\\mbt-pos-port",
+  "branch_before": "main",
+  "head": "00935cd943e956e27da239f204e957575af6b50d",
+  "remote": "https://github.com/MugoJnr/mbt-pos.git",
+  "reference_branch": "feature/mpesa-payment-subsystem",
+  "reference_sha": "5aa945d25530c52c6cf7d6849b92befe6cea50e7",
+  "origin_main": "f570f2835df41c7ce2592d4fb13437c13512b6da",
+  "working_tree_status_lines_on_original": 249,
+  "copy_notes": "Robocopy of source excluding node_modules, caches, dist, build, data, logs, backups, exports, chrome, diagnostics, and _qa/_import screenshot trees. .git included. Original folder was not modified.",
+  "installed_exe": {
+    "path": "C:\\Program Files\\MugoByte\\MBT POS\\MBT_POS.exe",
+    "size": 10897643,
+    "mtime": "2026-10-18 09:12:10",
+    "version_json": "3.1.62",
+    "october_20_inventory_fixes_in_installer": false
+  },
+  "live_till": {
+    "process": "MBT_POS",
+    "pid": 14596,
+    "started": "2026-10-20 17:57:19"
+  },
+  "live_shop_db": {
+    "path": "C:\\Users\\mugoj\\AppData\\Local\\MugoByte\\MBT POS\\data\\mbt_pos.db",
+    "size": 2547712,
+    "mtime": "2026-10-20 17:58:22",
+    "sha256": "f5b68b5262461846461233efdc78820fad0714f9258d85e1386b37865a96f12d",
+    "hash_method": "shared read, till left running"
+  },
+  "license_file": {
+    "path": "C:\\ProgramData\\MugoByte\\MBT POS\\license\\lc.db",
+    "size": 69632,
+    "mtime": "2026-10-20 18:29:24",
+    "sha256": "c28eb58e13e5f7c3529ec43280981872c5dfa980fcddc3b9e45ee36dde8a5e3a"
+  },
+  "identity_config_present": [
+    "cloud_identity.json",
+    "cloud_config.json",
+    "web_config.json"
+  ],
+  "command_receipts": "absent at %LOCALAPPDATA%\\MugoByte\\MBT POS\\command_receipts.json",
+  "cloud_backup_on_this_pc": "left disabled; not changed",
+  "secrets_recorded": false
+}

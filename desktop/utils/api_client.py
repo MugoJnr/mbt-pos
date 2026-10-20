@@ -172,7 +172,7 @@ def _db(*, ensure_schema: bool = True) -> sqlite3.Connection:
     global _SCHEMA_READY
     db_path = get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30.0)
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=3.0)
     conn.row_factory = sqlite3.Row
     configure_sqlite_connection(conn)
     # Always ensure schema exists (safe on existing DBs via CREATE IF NOT EXISTS)
@@ -705,15 +705,16 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE sales ADD COLUMN original_sale_id INTEGER")
         if 'sale_date' not in sales_cols:
             conn.execute("ALTER TABLE sales ADD COLUMN sale_date TEXT")
-            conn.execute(
-                "UPDATE sales SET sale_date=date(created_at) "
-                "WHERE sale_date IS NULL OR sale_date=''"
-            )
-        else:
-            conn.execute(
-                "UPDATE sales SET sale_date=date(created_at) "
-                "WHERE sale_date IS NULL OR sale_date=''"
-            )
+        conn.execute(
+            "UPDATE sales SET sale_date=date(created_at) "
+            "WHERE sale_date IS NULL OR sale_date=''"
+        )
+        if 'client_token' not in sales_cols:
+            conn.execute("ALTER TABLE sales ADD COLUMN client_token TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_token "
+            "ON sales(client_token) WHERE client_token IS NOT NULL AND client_token != ''"
+        )
     except Exception:
         pass
     # Sale-item returned qty tracking (partial returns)
@@ -736,6 +737,45 @@ def _migrate_columns(conn: sqlite3.Connection):
         is_active INTEGER DEFAULT 1,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS stock_receipts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_number TEXT UNIQUE,
+        supplier_id INTEGER,
+        reference_note TEXT,
+        notes TEXT,
+        grand_total REAL DEFAULT 0,
+        user_id INTEGER,
+        username TEXT,
+        client_token TEXT UNIQUE,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS stock_receipt_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_id INTEGER NOT NULL,
+        product_id INTEGER,
+        product_name TEXT,
+        quantity REAL NOT NULL,
+        unit_cost REAL DEFAULT 0,
+        line_total REAL DEFAULT 0,
+        movement_id INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS stock_adjustment_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_number TEXT UNIQUE,
+        product_id INTEGER NOT NULL,
+        product_name TEXT,
+        current_stock REAL,
+        requested_qty REAL NOT NULL,
+        reason TEXT NOT NULL,
+        status TEXT DEFAULT 'pending',
+        user_id INTEGER,
+        username TEXT,
+        reviewer_id INTEGER,
+        reviewer_name TEXT,
+        review_note TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TEXT
     );
     """)
     try:
@@ -775,6 +815,11 @@ def _migrate_columns(conn: sqlite3.Connection):
         dp_cols = {r[1] for r in conn.execute("PRAGMA table_info(debt_payments)").fetchall()}
         if 'payment_reference' not in dp_cols:
             conn.execute("ALTER TABLE debt_payments ADD COLUMN payment_reference TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_debt_payment_reference "
+            "ON debt_payments(invoice_id, payment_reference) "
+            "WHERE payment_reference IS NOT NULL AND payment_reference != ''"
+        )
     except Exception:
         pass
     # Notes: pin support
@@ -1885,80 +1930,347 @@ class APIClient:
     def receive_stock(self, product_id: int, qty_add: float, *,
                       supplier_id: int = None, notes: str = '',
                       unit_cost: float = None) -> dict:
-        """Receive stock from a supplier (PURCHASE movement). Superadmin only."""
-        if self._role != 'superadmin':
-            return {'error': 'Only Super-Admin can receive stock.'}
-        qty_add = round(float(qty_add or 0), 4)
-        if qty_add <= 0:
-            return {'error': 'Quantity to receive must be greater than zero.'}
+        """One product on a supplier delivery. Authorized roles, no extra PIN."""
+        result = self.receive_delivery(
+            supplier_id,
+            [{'product_id': product_id, 'quantity': qty_add, 'unit_cost': unit_cost}],
+            notes=notes,
+        )
+        if result.get('error'):
+            return result
+        line = (result.get('lines') or [{}])[0]
+        return {
+            'success': True,
+            'old_stock': line.get('old_stock'),
+            'new_stock': line.get('new_stock'),
+            'supplier_id': result.get('supplier_id'),
+            'supplier_name': result.get('supplier_name'),
+            'receipt_number': result.get('receipt_number'),
+            'receipt_id': result.get('receipt_id'),
+        }
+
+    def receive_delivery(self, supplier_id, lines, *,
+                         reference: str = '', notes: str = '',
+                         client_token: str = '') -> dict:
+        """One supplier delivery, many products, one receipt. Atomic."""
+        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot receive supplier stock.'}
+        try:
+            supplier_id = int(supplier_id) if supplier_id not in (None, '', 0, '0') else None
+        except (TypeError, ValueError):
+            return {'error': 'Select a supplier.'}
+        if not supplier_id:
+            return {'error': 'Select a supplier.'}
+        cleaned = []
+        seen = set()
+        for raw in lines or []:
+            try:
+                pid = int(raw.get('product_id'))
+                qty = round(float(raw.get('quantity') or 0), 4)
+            except (TypeError, ValueError, AttributeError):
+                return {'error': 'Each line needs a product and a quantity.'}
+            if qty <= 0:
+                return {'error': 'Quantity to receive must be greater than zero.'}
+            if pid in seen:
+                return {'error': 'Each product can appear once on a delivery.'}
+            seen.add(pid)
+            cost = raw.get('unit_cost')
+            try:
+                cost = round(float(cost), 4) if cost not in (None, '') else None
+            except (TypeError, ValueError):
+                return {'error': 'Enter a valid purchase cost.'}
+            if cost is not None and cost < 0:
+                return {'error': 'Purchase cost cannot be negative.'}
+            cleaned.append({'product_id': pid, 'quantity': qty, 'unit_cost': cost})
+        if not cleaned:
+            return {'error': 'Add at least one product.'}
+        token = (client_token or '').strip()
+        db = _db()
+        try:
+            sup = db.execute(
+                "SELECT id, name FROM suppliers WHERE id=? AND COALESCE(is_active,1)=1",
+                (supplier_id,),
+            ).fetchone()
+            if not sup:
+                return {'error': 'Supplier not found'}
+            supplier_name = sup['name'] or ''
+            db.execute("BEGIN IMMEDIATE")
+            if token:
+                prior = db.execute(
+                    "SELECT id, receipt_number, grand_total FROM stock_receipts WHERE client_token=?",
+                    (token,),
+                ).fetchone()
+                if prior:
+                    db.rollback()
+                    return {
+                        'success': True, 'duplicate': True,
+                        'receipt_id': prior['id'],
+                        'receipt_number': prior['receipt_number'],
+                        'grand_total': prior['grand_total'],
+                        'supplier_id': supplier_id,
+                    }
+            day = datetime.now().strftime('%Y%m%d')
+            count = db.execute(
+                "SELECT COUNT(*) FROM stock_receipts WHERE receipt_number LIKE ?",
+                (f'RCV-{day}-%',),
+            ).fetchone()[0]
+            receipt_number = f"RCV-{day}-{int(count) + 1:04d}"
+            now = datetime.now().isoformat()
+            reason = f'Received from Supplier: {supplier_name}'
+            ref_note = (reference or '').strip()
+            note_txt = (notes or '').strip()
+            extra = ' — '.join(bit for bit in (ref_note, note_txt) if bit)
+            if extra:
+                reason = f'{reason} — {extra}'
+            saved = []
+            grand = 0.0
+            for line in cleaned:
+                row = db.execute(
+                    "SELECT id, name, stock, cost_price, supplier_id FROM products WHERE id=?",
+                    (line['product_id'],),
+                ).fetchone()
+                if not row:
+                    db.rollback()
+                    return {'error': 'Product not found'}
+                old_stock = round(float(row['stock'] or 0), 4)
+                new_stock = round(old_stock + line['quantity'], 4)
+                unit_cost = line['unit_cost']
+                if unit_cost is None:
+                    unit_cost = round(float(row['cost_price'] or 0), 4)
+                line_total = round(line['quantity'] * float(unit_cost), 2)
+                grand = round(grand + line_total, 2)
+                db.execute(
+                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                    (new_stock, now, row['id']),
+                )
+                if not row['supplier_id']:
+                    db.execute(
+                        "UPDATE products SET supplier_id=? WHERE id=?",
+                        (supplier_id, row['id']),
+                    )
+                if line['unit_cost'] is not None:
+                    db.execute(
+                        "UPDATE products SET cost_price=? WHERE id=?",
+                        (float(line['unit_cost']), row['id']),
+                    )
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (row['id'], row['name'], 'PURCHASE',
+                     old_stock, line['quantity'], new_stock,
+                     f"RECEIVE_sup={supplier_id}|RCV={receipt_number}", reason,
+                     self._user_id, self._username or self._role),
+                )
+                mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                saved.append({
+                    'product_id': row['id'], 'product_name': row['name'],
+                    'quantity': line['quantity'], 'unit_cost': float(unit_cost),
+                    'line_total': line_total, 'old_stock': old_stock,
+                    'new_stock': new_stock, 'movement_id': mov_id,
+                })
+            db.execute(
+                "INSERT INTO stock_receipts "
+                "(receipt_number,supplier_id,reference_note,notes,grand_total,"
+                "user_id,username,client_token,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (receipt_number, supplier_id, ref_note, note_txt, grand,
+                 self._user_id, self._username or self._role, token or None, now),
+            )
+            receipt_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            for line in saved:
+                db.execute(
+                    "INSERT INTO stock_receipt_lines "
+                    "(receipt_id,product_id,product_name,quantity,unit_cost,line_total,movement_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (receipt_id, line['product_id'], line['product_name'],
+                     line['quantity'], line['unit_cost'], line['line_total'],
+                     line['movement_id']),
+                )
+            db.commit()
+            _audit(self._user_id, self._username, 'RECEIVE_STOCK', 'inventory',
+                   f"receipt={receipt_number} supplier={supplier_id} lines={len(saved)} total={grand}")
+            return {
+                'success': True, 'receipt_id': receipt_id,
+                'receipt_number': receipt_number, 'supplier_id': supplier_id,
+                'supplier_name': supplier_name, 'grand_total': grand,
+                'lines': saved,
+            }
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('receive_delivery: %s', exc, exc_info=True)
+            return {'error': 'Could not save that delivery.'}
+        finally:
+            db.close()
+
+    def request_stock_adjustment(self, product_id: int, requested_qty, reason: str) -> dict:
+        """Cashier asks an administrator to change stock. Does not change stock."""
+        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot request a stock adjustment.'}
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'A reason is required.'}
+        try:
+            requested_qty = round(float(requested_qty), 4)
+        except (TypeError, ValueError):
+            return {'error': 'Enter a valid quantity.'}
+        if requested_qty < 0:
+            return {'error': 'Quantity cannot be negative.'}
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock, cost_price, supplier_id FROM products WHERE id=?",
-                (product_id,),
+                "SELECT id, name, stock FROM products WHERE id=?", (int(product_id),)
             ).fetchone()
             if not row:
                 return {'error': 'Product not found'}
-            old_stock = round(float(row['stock'] or 0), 4)
-            new_stock = round(old_stock + qty_add, 4)
-            now = datetime.now().isoformat()
-            supplier_name = ''
-            if supplier_id:
-                sup = db.execute(
-                    "SELECT name FROM suppliers WHERE id=?", (supplier_id,)
-                ).fetchone()
-                if not sup:
-                    return {'error': 'Supplier not found'}
-                supplier_name = sup['name'] or ''
-            reason = 'Received from Supplier'
-            if supplier_name:
-                reason = f'{reason}: {supplier_name}'
-            if notes:
-                reason = f'{reason} — {notes.strip()}'
+            day = datetime.now().strftime('%Y%m%d')
+            count = db.execute(
+                "SELECT COUNT(*) FROM stock_adjustment_requests WHERE request_number LIKE ?",
+                (f'ADJ-{day}-%',),
+            ).fetchone()[0]
+            number = f"ADJ-{day}-{int(count) + 1:04d}"
             db.execute(
-                "UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                (new_stock, now, product_id),
+                "INSERT INTO stock_adjustment_requests "
+                "(request_number,product_id,product_name,current_stock,requested_qty,"
+                "reason,status,user_id,username) VALUES (?,?,?,?,?,?,?,?,?)",
+                (number, row['id'], row['name'], float(row['stock'] or 0),
+                 requested_qty, reason, 'pending', self._user_id, self._username or self._role),
             )
-            if supplier_id and not row['supplier_id']:
-                try:
-                    db.execute(
-                        "UPDATE products SET supplier_id=? WHERE id=?",
-                        (supplier_id, product_id),
-                    )
-                except Exception:
-                    pass
-            if unit_cost is not None and float(unit_cost) >= 0:
-                db.execute(
-                    "UPDATE products SET cost_price=? WHERE id=?",
-                    (float(unit_cost), product_id),
+            db.commit()
+            return {'success': True, 'request_number': number, 'status': 'pending'}
+        finally:
+            db.close()
+
+    def list_stock_adjustment_requests(self, status: str = '') -> list:
+        db = _db()
+        try:
+            if status:
+                rows = db.execute(
+                    "SELECT * FROM stock_adjustment_requests WHERE status=? ORDER BY id DESC LIMIT 100",
+                    (status,),
                 )
+            else:
+                rows = db.execute(
+                    "SELECT * FROM stock_adjustment_requests ORDER BY id DESC LIMIT 100"
+                )
+            return _rows(rows)
+        except Exception:
+            return []
+        finally:
+            db.close()
+
+    def review_stock_adjustment(self, request_id: int, decision: str, note: str = '') -> dict:
+        """Administrator approves or rejects. Approval is the only stock write."""
+        if (self._role or '').lower() != 'superadmin':
+            return {'error': 'Only Super-Admin can decide a stock adjustment.'}
+        decision = (decision or '').strip().lower()
+        if decision not in ('approved', 'rejected'):
+            return {'error': 'Choose approve or reject.'}
+        db = _db()
+        try:
+            req = db.execute(
+                "SELECT * FROM stock_adjustment_requests WHERE id=?", (int(request_id),)
+            ).fetchone()
+            if not req:
+                return {'error': 'Request not found'}
+            if (req['status'] or '') != 'pending':
+                return {'success': True, 'status': req['status'], 'duplicate': True}
+            now = datetime.now().isoformat()
+            if decision == 'rejected':
+                db.execute(
+                    "UPDATE stock_adjustment_requests SET status='rejected', reviewer_id=?,"
+                    "reviewer_name=?, review_note=?, reviewed_at=? WHERE id=? AND status='pending'",
+                    (self._user_id, self._username or 'superadmin', (note or '').strip(), now, req['id']),
+                )
+                db.commit()
+                return {'success': True, 'status': 'rejected'}
+            import math
+            try:
+                new_qty = round(float(req['requested_qty']), 4)
+            except (TypeError, ValueError):
+                return {'error': 'Enter a valid stock quantity.'}
+            if not math.isfinite(new_qty) or not 0 <= new_qty <= 999999:
+                return {'error': 'Stock quantity is outside the allowed range.'}
+            db.execute("BEGIN IMMEDIATE")
+            fresh = db.execute(
+                "SELECT * FROM stock_adjustment_requests WHERE id=?", (req['id'],)
+            ).fetchone()
+            if not fresh or (fresh['status'] or '') != 'pending':
+                db.rollback()
+                return {
+                    'success': True,
+                    'status': (fresh['status'] if fresh else 'pending'),
+                    'duplicate': True,
+                }
+            row = db.execute(
+                "SELECT id, name, stock, cost_price FROM products WHERE id=?",
+                (int(fresh['product_id']),),
+            ).fetchone()
+            if not row:
+                db.rollback()
+                return {'error': 'Product not found'}
+            old_stock = round(float(row['stock'] or 0), 4)
+            expected = round(float(fresh['current_stock'] or 0), 4)
+            if expected != old_stock:
+                db.rollback()
+                return {
+                    'error': 'Stock changed. Refresh and review the latest quantity.',
+                    'current_stock': old_stock,
+                }
+            qty_change = round(new_qty - old_stock, 4)
+            changed = db.execute(
+                "UPDATE products SET stock=?, updated_at=? "
+                "WHERE id=? AND COALESCE(stock,0)=?",
+                (new_qty, now, row['id'], old_stock),
+            )
+            if changed.rowcount != 1:
+                db.rollback()
+                return {'error': 'Stock changed. Refresh and try again.'}
+            reason = f"Approved {fresh['request_number']}: {fresh['reason']}"
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
                 "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (product_id, row['name'], 'PURCHASE',
-                 old_stock, qty_add, new_stock,
-                 f"RECEIVE_sup={supplier_id or 0}", reason,
+                (row['id'], row['name'], 'SUPERADMIN_ADJUST',
+                 old_stock, qty_change, new_qty,
+                 f"ADJUST_pid={row['id']}", reason,
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             try:
-                cost = float(unit_cost) if unit_cost is not None else float(row['cost_price'] or 0)
                 from desktop.utils.accounting_hooks import post_stock_adjust_journal
-                post_stock_adjust_journal(
-                    db, product_id=product_id, product_name=row['name'],
-                    qty_change=qty_add, unit_cost=cost, reason=reason,
-                    movement_id=mov_id, user_id=self._user_id,
-                    username=self._username or 'superadmin', safe=True)
+                posted = post_stock_adjust_journal(
+                    db, product_id=row['id'], product_name=row['name'],
+                    qty_change=qty_change, unit_cost=float(row['cost_price'] or 0),
+                    reason=reason, movement_id=mov_id, user_id=self._user_id,
+                    username=self._username or 'superadmin', safe=False)
             except Exception as _je:
-                logger.error('receive stock accounting: %s', _je, exc_info=True)
+                logger.error('stock adjust accounting: %s', _je, exc_info=True)
+                db.rollback()
+                return {'error': 'Could not post the stock adjustment.'}
+            if (
+                isinstance(posted, dict)
+                and posted.get('error')
+                and not posted.get('success')
+                and not posted.get('skipped')
+            ):
+                db.rollback()
+                return {'error': 'Could not post the stock adjustment.'}
+            updated = db.execute(
+                "UPDATE stock_adjustment_requests SET status='approved', reviewer_id=?,"
+                "reviewer_name=?, review_note=?, reviewed_at=? WHERE id=? AND status='pending'",
+                (self._user_id, self._username or 'superadmin', (note or '').strip(), now, fresh['id']),
+            )
+            if updated.rowcount != 1:
+                db.rollback()
+                return {'error': 'Stock changed. Refresh and try again.'}
             db.commit()
-            _audit(self._user_id, self._username, 'RECEIVE_STOCK', 'inventory',
-                   f"pid={product_id} +{qty_add} supplier={supplier_id} {reason}")
-            return {
-                'success': True, 'old_stock': old_stock, 'new_stock': new_stock,
-                'supplier_id': supplier_id, 'supplier_name': supplier_name,
-            }
+            _audit(self._user_id, self._username,
+                   'STOCK_ADJUSTED', 'inventory',
+                   f"pid={row['id']} name={row['name']} {old_stock}→{new_qty} reason={reason}")
+            return {'success': True, 'status': 'approved', 'new_stock': new_qty}
         finally:
             db.close()
 
@@ -2065,6 +2377,24 @@ class APIClient:
             db.execute("BEGIN IMMEDIATE")
             # Allow sale line items even if a product was later removed from inventory.
             db.execute("PRAGMA foreign_keys=OFF")
+            sale_token = (data.get('client_token') or '').strip()
+            if sale_token:
+                existing = db.execute(
+                    "SELECT id, receipt_number, total, sale_date, created_at "
+                    "FROM sales WHERE client_token=?",
+                    (sale_token,),
+                ).fetchone()
+                if existing:
+                    db.rollback()
+                    return {
+                        'success': True,
+                        'duplicate': True,
+                        'sale_id': existing['id'],
+                        'receipt_number': existing['receipt_number'],
+                        'total': existing['total'],
+                        'sale_date': existing['sale_date'],
+                        'created_at': existing['created_at'],
+                    }
 
             rn = _next_receipt(db, business_day=sale_date_s)
             total = float(data.get('total') or 0)
@@ -2122,8 +2452,8 @@ class APIClient:
                 "credit_applied,customer_id,variance_handling,"
                 "original_total,cash_rounding_adj,electronic_paid,"
                 "electronic_method,cash_paid,payment_tenders,"
-                "sale_date,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sale_date,created_at,client_token)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (rn,
                  self._user_id,
                  self._username or 'staff',
@@ -2146,7 +2476,8 @@ class APIClient:
                  cash_paid_col,
                  tenders_json,
                  sale_date_s,
-                 created_at_s)
+                 created_at_s,
+                 sale_token or None)
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -3580,12 +3911,20 @@ class APIClient:
         finally:
             db.close()
 
-    def get_sales_trend(self, days: int = 7) -> list:
-        """Daily completed revenue for the last N days (inclusive of today)."""
+    def get_sales_trend(self, days: int = 7, start=None, end=None) -> list:
+        """Daily completed revenue. Pass start and end for a chosen range."""
         from datetime import date, timedelta
-        days = max(1, min(int(days or 7), 31))
-        end = date.today()
-        start = end - timedelta(days=days - 1)
+        if start and end:
+            start = date.fromisoformat(str(start)[:10])
+            end = date.fromisoformat(str(end)[:10])
+            if end < start:
+                start, end = end, start
+            if (end - start).days > 92:
+                start = end - timedelta(days=92)
+        else:
+            days = max(1, min(int(days or 7), 62))
+            end = date.today()
+            start = end - timedelta(days=days - 1)
         db = _db()
         try:
             rows = _rows(db.execute("""
@@ -4077,6 +4416,26 @@ class APIClient:
             if amount <= 0:
                 return {'error': 'Payment amount must be greater than zero.'}
 
+            ref = (payment_reference or '').strip()
+            dp_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
+            if ref and 'payment_reference' in dp_cols:
+                prev = db.execute(
+                    "SELECT payment_receipt, balance_before, balance_after "
+                    "FROM debt_payments WHERE invoice_id=? AND payment_reference=?",
+                    (invoice_id, ref),
+                ).fetchone()
+                if prev:
+                    return {
+                        'success': True,
+                        'duplicate': True,
+                        'payment_receipt': prev['payment_receipt'],
+                        'balance_before': prev['balance_before'],
+                        'balance_after': prev['balance_after'],
+                        'status': inv['status'],
+                        'invoice_number': inv['invoice_number'],
+                        'customer_id': inv['customer_id'],
+                    }
+
             balance_before = round(float(inv['balance']), 2)
             if amount > balance_before + 0.009:
                 return {
@@ -4091,8 +4450,6 @@ class APIClient:
                 balance_after = 0.0
 
             pay_receipt = self._next_payment_receipt(db)
-            dp_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
-            ref = (payment_reference or '').strip()
 
             if 'payment_reference' in dp_cols:
                 db.execute(
@@ -4185,11 +4542,13 @@ class APIClient:
         finally:
             db.close()
 
-    def get_debt_summary(self) -> dict:
+    def get_debt_summary(self, start=None, end=None) -> dict:
         """Dashboard widget data for debt management."""
         db = _db()
         try:
             today = str(date.today())
+            range_start = str(start or today)[:10]
+            range_end = str(end or today)[:10]
             outstanding = _row(db.execute(
                 "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count "
                 "FROM debt_invoices WHERE status NOT IN ('paid','cancelled')"
@@ -4201,11 +4560,13 @@ class APIClient:
             ))
             today_collected = _row(db.execute(
                 "SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count "
-                "FROM debt_payments WHERE date(created_at)=?", (today,)
+                "FROM debt_payments WHERE date(created_at) BETWEEN ? AND ?",
+                (range_start, range_end),
             ))
             credit_today = _row(db.execute(
                 "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count "
-                "FROM debt_invoices WHERE date(created_at)=?", (today,)
+                "FROM debt_invoices WHERE date(created_at) BETWEEN ? AND ?",
+                (range_start, range_end),
             ))
             customers_with_debt = db.execute(
                 "SELECT COUNT(DISTINCT customer_id) FROM debt_invoices "
@@ -4926,23 +5287,25 @@ class APIClient:
         finally:
             db.close()
 
-    def get_consumption_today_summary(self) -> dict:
+    def get_consumption_today_summary(self, start=None, end=None) -> dict:
         today = str(date.today())
+        range_start = str(start or today)[:10]
+        range_end = str(end or range_start)[:10]
         db = _db()
         try:
             hdr = _row(db.execute("""
                 SELECT COUNT(*) as consumption_count,
                        COALESCE(SUM(total_cost),0) as total_cost
                 FROM stock_consumptions
-                WHERE date(date)=? AND COALESCE(voided,0)=0
-            """, (today,)))
+                WHERE date(date) BETWEEN ? AND ? AND COALESCE(voided,0)=0
+            """, (range_start, range_end)))
             items = _row(db.execute("""
                 SELECT COALESCE(SUM(sci.quantity),0) as item_qty,
                        COUNT(sci.id) as line_count
                 FROM stock_consumption_items sci
                 JOIN stock_consumptions sc ON sc.id = sci.consumption_id
-                WHERE date(sc.date)=? AND COALESCE(sc.voided,0)=0
-            """, (today,)))
+                WHERE date(sc.date) BETWEEN ? AND ? AND COALESCE(sc.voided,0)=0
+            """, (range_start, range_end)))
             return {
                 'consumption_count': int((hdr or {}).get('consumption_count') or 0),
                 'total_cost': float((hdr or {}).get('total_cost') or 0),
