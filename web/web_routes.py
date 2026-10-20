@@ -3789,42 +3789,28 @@ def _review_approval(aid, action):
         row = _tr(db.execute("SELECT * FROM cc_approvals WHERE id=?", (aid,)).fetchone())
         if not row:
             return jsonify({'error': 'Not found'}), 404
-        cur = (row.get('status') or '').lower()
-        if action == 'escalate':
-            if cur != 'pending':
-                return jsonify({'error': f"Already {row['status']}"}), 400
-            status = 'escalated'
-        elif action == 'approve':
-            if cur not in ('pending', 'escalated'):
-                return jsonify({'error': f"Already {row['status']}"}), 400
-            status = 'approved'
-        elif action == 'reject':
-            if cur not in ('pending', 'escalated'):
-                return jsonify({'error': f"Already {row['status']}"}), 400
-            status = 'rejected'
-        else:
+        if action not in ('approve', 'reject', 'escalate'):
             return jsonify({'error': 'Unknown action'}), 400
         user = g.current_user
-        db.execute(
-            "UPDATE cc_approvals SET status=?, reviewed_by=?, reviewed_by_id=?, "
-            "review_note=?, updated_at=? WHERE id=?",
-            (
-                status,
-                user.get('full_name') or user.get('username') or '',
-                user.get('id'),
-                note,
-                datetime.now().isoformat(),
-                aid,
-            ),
+        from desktop.utils.api_client import APIClient
+        client = APIClient()
+        client._role = (user.get('role') or '').lower()
+        client._user_id = user.get('id')
+        client._username = user.get('username') or user.get('full_name') or ''
+        result = client.execute_approval(
+            aid, action, pin=str(data.get('pin') or ''), note=note,
         )
-        _push_notification(
-            db, row['type'], f"Approval {status}: {row['title']}",
-            note or row.get('details') or '',
-            'ok' if status == 'approved' else 'warn',
-            '/approvals',
-        )
-        db.commit()
-        return jsonify({'success': True, 'status': status})
+        if result.get('success'):
+            _push_notification(
+                db, row['type'], f"Approval {result.get('status')}: {row['title']}",
+                note or row.get('details') or '',
+                'ok' if result.get('status') == 'approved' else 'warn',
+                '/approvals',
+            )
+            db.commit()
+            return jsonify(result)
+        code = int(result.get('status') or 400)
+        return jsonify(result), code
     return _inner()
 
 

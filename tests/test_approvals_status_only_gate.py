@@ -20,31 +20,18 @@ WEB_ROUTES = os.path.join(ROOT, 'web', 'web_routes.py')
 
 
 class ApprovalsStatusOnlyGate(unittest.TestCase):
-    def test_review_approval_only_updates_status(self):
+    def test_review_approval_executes_through_the_service(self):
         with open(WEB_ROUTES, encoding='utf-8') as fh:
             full = fh.read()
-        # Locate the function body by anchors (avoid Flask import)
         start = full.find('def _review_approval(')
         self.assertGreaterEqual(start, 0)
         end = full.find('def approve_approval(', start)
         self.assertGreater(end, start)
         src = full[start:end]
-        self.assertIn('UPDATE cc_approvals SET status=', src)
-        self.assertIn("status = 'approved'", src)
-        self.assertIn("status = 'rejected'", src)
-        self.assertIn("status = 'escalated'", src)
-        for forbidden in (
-            'void_sale',
-            'edit_sale',
-            'create_sale',
-            'adjust_stock',
-            'create_consumption',
-            'collect_debt',
-            'issue_command',
-            'execute_local',
-        ):
-            self.assertNotIn(forbidden, src)
-        self.assertIn('_push_notification', src)
+        self.assertIn('execute_approval', src)
+        self.assertIn("_push_notification", src)
+        self.assertNotIn('issue_command', src)
+        self.assertNotIn('execute_local', src)
 
     def test_approvals_ui_honesty_labels(self):
         path = os.path.join(
@@ -52,10 +39,9 @@ class ApprovalsStatusOnlyGate(unittest.TestCase):
         )
         with open(path, encoding='utf-8') as fh:
             ui = fh.read()
-        self.assertIn('updates queue status only', ui)
-        self.assertIn('does not run the POS action automatically', ui)
-        self.assertIn('does not void a sale', ui)
-        self.assertIn('issue a refund', ui)
+        self.assertIn('runs that action once', ui)
+        self.assertIn('Super-Admin PIN', ui)
+        self.assertNotIn('updates queue status only', ui)
 
     def test_a02_reject_and_escalate_paths(self):
         with open(WEB_ROUTES, encoding='utf-8') as fh:
@@ -63,11 +49,15 @@ class ApprovalsStatusOnlyGate(unittest.TestCase):
         self.assertIn("/api/approvals/<int:aid>/reject", routes)
         self.assertIn("/api/approvals/<int:aid>/approve", routes)
         self.assertIn("/api/approvals/<int:aid>/escalate", routes)
-        self.assertIn("'escalated'", routes)
+        client = open(
+            os.path.join(ROOT, 'desktop', 'utils', 'api_client.py'), encoding='utf-8'
+        ).read()
+        self.assertIn("'escalated'", client)
+        self.assertIn("'expired'", client)
         start = routes.find('def _review_approval(')
         end = routes.find('def approve_approval(', start)
         review = routes[start:end]
-        self.assertIn("'rejected'", review)
+        self.assertIn('execute_approval', review)
         self.assertIn('escalate', review.lower())
 
     def test_a03_command_center_poller_contract(self):

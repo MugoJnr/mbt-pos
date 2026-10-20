@@ -13,7 +13,7 @@ import sqlite3
 import hashlib
 import logging
 import jwt
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from runtime_security import get_jwt_secret
 
 logger = logging.getLogger(__name__)
@@ -2253,6 +2253,238 @@ class APIClient:
             return _rows(rows)
         except Exception:
             return []
+        finally:
+            db.close()
+
+    def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '') -> dict:
+        """Run a pending void or stock approval once. Reject and escalate do not."""
+        action = (action or '').strip().lower()
+        if action not in ('approve', 'reject', 'escalate'):
+            return {'error': 'Unknown action', 'status': 400}
+        if (self._role or '').lower() not in ('admin', 'superadmin', 'manager'):
+            return {'error': 'Manager or admin access required', 'status': 403}
+        db = _db()
+        try:
+            self._ensure_approval_table(db)
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute(
+                "SELECT * FROM cc_approvals WHERE id=?", (int(approval_id),)
+            ).fetchone()
+            if not row:
+                db.rollback()
+                return {'error': 'Not found', 'status': 404}
+            status = (row['status'] or '').lower()
+            if action == 'approve' and status == 'approved':
+                db.rollback()
+                return {'success': True, 'duplicate': True, 'status': 'approved'}
+            if status == 'expired':
+                db.rollback()
+                return {'error': 'This request has expired.', 'status': 410}
+            if action == 'approve' and self._approval_is_expired(row):
+                db.execute(
+                    "UPDATE cc_approvals SET status='expired', updated_at=? "
+                    "WHERE id=? AND status IN ('pending','escalated')",
+                    (datetime.now().isoformat(), int(approval_id)),
+                )
+                db.commit()
+                return {'error': 'This request has expired.', 'status': 410}
+            if action != 'approve':
+                if status not in ('pending', 'escalated'):
+                    db.rollback()
+                    return {'error': f'Already {row["status"]}', 'status': 400}
+                new_status = 'rejected' if action == 'reject' else 'escalated'
+                db.execute(
+                    "UPDATE cc_approvals SET status=?, reviewed_by=?, reviewed_by_id=?, "
+                    "review_note=?, updated_at=? WHERE id=? AND status IN ('pending','escalated')",
+                    (new_status, self._username or '', self._user_id, note,
+                     datetime.now().isoformat(), int(approval_id)),
+                )
+                db.commit()
+                return {'success': True, 'status': new_status}
+            if status not in ('pending', 'escalated', 'executing'):
+                db.rollback()
+                return {'error': f'Already {row["status"]}', 'status': 400}
+            atype = (row['type'] or '').lower()
+            if atype in ('void', 'stock_adjust'):
+                pin_error = self._approval_pin_error(db, pin, int(approval_id))
+                if pin_error:
+                    db.rollback()
+                    return pin_error
+            if atype == 'stock_adjust' and (self._role or '').lower() != 'superadmin':
+                db.rollback()
+                return {'error': 'Only Super-Admin can apply a stock adjustment.', 'status': 403}
+            if status in ('pending', 'escalated'):
+                claimed = db.execute(
+                    "UPDATE cc_approvals SET status='executing', reviewed_by=?, "
+                    "reviewed_by_id=?, review_note=?, updated_at=? "
+                    "WHERE id=? AND status IN ('pending','escalated')",
+                    (self._username or '', self._user_id, note,
+                     datetime.now().isoformat(), int(approval_id)),
+                )
+                if claimed.rowcount != 1:
+                    current = db.execute(
+                        "SELECT status FROM cc_approvals WHERE id=?", (int(approval_id),)
+                    ).fetchone()
+                    db.rollback()
+                    if current and (current['status'] or '').lower() == 'approved':
+                        return {'success': True, 'duplicate': True, 'status': 'approved'}
+                    return {'error': 'Approval is already being processed.', 'status': 409}
+            db.commit()
+            meta_raw = row['meta_json'] or '{}'
+        except sqlite3.Error as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('approval claim failed: %s', exc, exc_info=True)
+            return {'error': 'Could not claim the approval.', 'status': 500}
+        finally:
+            db.close()
+        try:
+            meta = json.loads(meta_raw or '{}')
+        except json.JSONDecodeError:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        result = self._run_approved_action(atype, meta, note or row['details'] or '', pin)
+        finished = self._finish_approval(int(approval_id), result)
+        if finished.get('success'):
+            finished['result'] = {
+                'success': bool(result.get('success') or result.get('duplicate')),
+                'duplicate': bool(result.get('duplicate')),
+            }
+        return finished
+
+    def _ensure_approval_table(self, db) -> None:
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS cc_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                amount REAL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_by TEXT DEFAULT '',
+                requested_by_id INTEGER,
+                reviewed_by TEXT DEFAULT '',
+                reviewed_by_id INTEGER,
+                review_note TEXT DEFAULT '',
+                meta_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT,
+                execution_json TEXT DEFAULT ''
+            )"""
+        )
+        cols = {item[1] for item in db.execute("PRAGMA table_info(cc_approvals)")}
+        if 'expires_at' not in cols:
+            db.execute("ALTER TABLE cc_approvals ADD COLUMN expires_at TEXT")
+        if 'execution_json' not in cols:
+            db.execute("ALTER TABLE cc_approvals ADD COLUMN execution_json TEXT DEFAULT ''")
+
+    def _approval_is_expired(self, row) -> bool:
+        raw = ''
+        try:
+            raw = str(row['expires_at'] or '')
+        except (KeyError, IndexError):
+            raw = ''
+        if not raw:
+            created = str(row['created_at'] or '')
+            if not created:
+                return True
+            try:
+                start = datetime.fromisoformat(created.replace('Z', ''))
+            except ValueError:
+                return True
+            deadline = start + timedelta(hours=24)
+        else:
+            try:
+                deadline = datetime.fromisoformat(raw.replace('Z', ''))
+            except ValueError:
+                return True
+        return datetime.now() > deadline
+
+    def _approval_pin_error(self, db, pin: str, approval_id: int):
+        from desktop.utils.security import _pin_hash
+        stored = db.execute(
+            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+        ).fetchone()
+        stored_hash = str(stored['value'] if stored else '')
+        supplied = '' if pin is None else str(pin)
+        if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+            _audit(
+                self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
+                f'approval id={approval_id} result=fail',
+            )
+            message = (
+                'Incorrect Super-Admin PIN.'
+                if supplied else
+                'Super-Admin PIN is required.'
+            )
+            return {'error': message, 'status': 403}
+        return None
+
+    def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '') -> dict:
+        if atype == 'void':
+            try:
+                sale_id = int(meta.get('sale_id') or 0)
+            except (TypeError, ValueError):
+                return {'error': 'The void request has no sale.'}
+            if sale_id <= 0:
+                return {'error': 'The void request has no sale.'}
+            outcome = self.void_sale(sale_id, note or meta.get('reason') or 'Approved void')
+            if outcome.get('success'):
+                return outcome
+            if 'already voided' in str(outcome.get('error') or '').lower():
+                return {'success': True, 'duplicate': True}
+            return outcome
+        if atype == 'stock_adjust':
+            try:
+                product_id = int(meta.get('product_id') or 0)
+            except (TypeError, ValueError):
+                return {'error': 'The stock request has no product.'}
+            direction = str(meta.get('direction') or 'set')
+            quantity = meta.get('quantity', meta.get('new_qty'))
+            reason = str(meta.get('reason') or note or 'Stock Count Correction')
+            expected = meta.get('expected_stock')
+            outcome = self.adjust_stock(
+                product_id, direction, quantity, reason,
+                pin=pin,
+                expected_stock=expected,
+            )
+            return outcome
+        return {'error': 'This request type cannot be executed.'}
+
+    def _finish_approval(self, approval_id: int, result: dict) -> dict:
+        db = _db()
+        try:
+            ok = bool(result.get('success') or result.get('duplicate'))
+            now = datetime.now().isoformat()
+            if ok:
+                changed = db.execute(
+                    "UPDATE cc_approvals SET status='approved', execution_json=?, updated_at=? "
+                    "WHERE id=? AND status IN ('executing','pending','escalated')",
+                    (json.dumps({'ok': True, 'duplicate': bool(result.get('duplicate'))}),
+                     now, approval_id),
+                )
+                db.commit()
+                if changed.rowcount != 1:
+                    current = db.execute(
+                        "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
+                    ).fetchone()
+                    if current and (current['status'] or '').lower() == 'approved':
+                        return {'success': True, 'duplicate': True, 'status': 'approved'}
+                return {'success': True, 'status': 'approved', 'duplicate': bool(result.get('duplicate'))}
+            db.execute(
+                "UPDATE cc_approvals SET status='pending', review_note=?, updated_at=? "
+                "WHERE id=? AND status='executing'",
+                (str(result.get('error') or 'Could not complete the approval.'), now, approval_id),
+            )
+            db.commit()
+            return {
+                'error': str(result.get('error') or 'Could not complete the approval.'),
+                'status': int(result.get('status') or 409),
+            }
         finally:
             db.close()
 
