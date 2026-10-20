@@ -145,6 +145,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    manifest=os.path.join(HERE, 'mbt_pos.manifest'),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

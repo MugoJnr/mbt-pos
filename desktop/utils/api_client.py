@@ -1727,24 +1727,14 @@ class APIClient:
         return result or {'error': 'Could not save product'}
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
-        """
-        Update a product.
-        SECURITY: Stock changes require either:
-          - pin_verified=True (called after PIN check), OR
-          - caller is admin/superadmin (they use adjust_stock via UI with PIN)
-        Cashiers can never change stock regardless.
-        """
+        """Update a product. Stock changes go through adjust_stock only."""
         db = _db()
         try:
-            caller_role = getattr(self, '_role', self._role if hasattr(self, '_role') else 'cashier')
-            is_privileged = caller_role in ('admin', 'superadmin')
-
-            # Block direct stock manipulation from cashiers always
-            if 'stock' in data and not pin_verified and not is_privileged:
-                _audit(self._user_id, self._username,
-                       'STOCK_ADJUST_BLOCKED', 'inventory',
-                       f"pid={pid} attempted_stock={data['stock']} role={caller_role}")
-                return {'error': 'Stock adjustment requires Super-Admin PIN.'}
+            if 'stock' in data:
+                return {
+                    'error': 'Change stock through the protected Adjust Stock action.',
+                    'status': 403,
+                }
 
             # Get current values for audit trail
             old = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
@@ -1754,24 +1744,6 @@ class APIClient:
                           'min_stock','unit','barcode','is_active'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
-
-            # Stock adjustment — only reaches here if pin_verified=True
-            if 'stock' in data and pin_verified:
-                old_stock = round(float((old['stock'] if old else 0) or 0), 4)
-                new_stock  = round(float(data['stock']), 4)
-                qty_change = round(new_stock - old_stock, 4)
-                fields.append("stock=?"); values.append(new_stock)
-                # Mandatory movement log
-                db.execute(
-                    "INSERT INTO stock_movements "
-                    "(product_id,product_name,movement_type,qty_before,qty_change,"
-                    "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (pid, old['name'] if old else str(pid), 'MANUAL_ADJUST',
-                     old_stock, qty_change, new_stock,
-                     f"EDIT_pid={pid}",
-                     data.get('adjust_reason', 'Manual stock correction by superadmin'),
-                     self._user_id, self._username or 'system')
-                )
 
             if fields:
                 fields.append("updated_at=?"); values.append(datetime.now().isoformat())
@@ -1800,78 +1772,201 @@ class APIClient:
                 pass
         return {'success': True}
 
-    def adjust_stock(self, pid: int, new_qty, reason: str,
-                     expected_stock=None) -> dict:
+    def adjust_stock(self, pid: int, new_qty, reason: str = '',
+                     fourth=None, *, pin=None, expected_stock=None) -> dict:
         """
-        Superadmin-only direct stock adjustment.
-        Caller MUST have verified PIN before calling this.
-        Supports decimal quantities (e.g. 89.75 after quarter sales).
+        Super-admin stock adjustment.
+
+        Absolute form: adjust_stock(product_id, new_quantity, reason, pin=...).
+        Direction form: adjust_stock(product_id, 'add'|'remove'|'set', quantity, reason, pin=...).
+        A reduction requires the Super-Admin PIN inside this method.
         """
         if self._role != 'superadmin':
-            return {'error': 'Only Super-Admin can adjust stock quantities.'}
-        try:
-            import math
-            new_qty = round(float(new_qty), 4)
-        except (TypeError, ValueError):
-            return {'error': 'Enter a valid stock quantity.'}
-        if not math.isfinite(new_qty) or not 0 <= new_qty <= 999999:
-            return {'error': 'Stock quantity is outside the allowed range.'}
+            return {
+                'error': 'Only Super-Admin can adjust stock quantities.',
+                'status': 403,
+            }
+        direction = None
+        absolute = None
+        if isinstance(new_qty, str):
+            direction = new_qty.strip().lower()
+            quantity = reason
+            reason = '' if fourth is None else fourth
+        else:
+            absolute = new_qty
+            quantity = None
+            if fourth not in (None, '') and expected_stock is None:
+                expected_stock = fourth
+        return self._apply_stock_adjustment(
+            pid, direction, quantity, absolute, str(reason or ''),
+            pin=pin, expected_stock=expected_stock,
+        )
+
+    def _apply_stock_adjustment(self, pid, direction, quantity, absolute, reason, *,
+                                pin, expected_stock) -> dict:
+        import math
+        from desktop.utils.option_lists import (
+            STOCK_DECREASE_REASONS, STOCK_INCREASE_REASONS,
+        )
+        from desktop.utils.security import _pin_hash
+
+        def _number(value):
+            rounded = round(float(value), 4)
+            if abs(rounded - round(rounded)) < 1e-9:
+                return int(round(rounded))
+            return rounded
+
+        def _qty_text(value) -> str:
+            return f'{float(value):.4f}'.rstrip('0').rstrip('.') or '0'
+
         reason = str(reason or '').strip()
+        if direction is not None and direction not in ('add', 'remove', 'set'):
+            return {'error': 'Choose add, remove, or set.', 'status': 400}
+        try:
+            amount = round(float(quantity if direction else absolute), 4)
+        except (TypeError, ValueError):
+            return {'error': 'Enter a valid stock quantity.', 'status': 400}
+        if not math.isfinite(amount):
+            return {'error': 'Enter a valid stock quantity.', 'status': 400}
+        if direction in ('add', 'remove') and amount <= 0:
+            return {'error': 'Enter a quantity greater than zero.', 'status': 400}
+        if direction == 'set' and (amount < 0 or amount > 999999):
+            return {'error': 'Stock quantity is outside the allowed range.', 'status': 400}
+        if direction is None and (amount < 0 or amount > 999999):
+            return {'error': 'Stock quantity is outside the allowed range.', 'status': 400}
         if not reason:
-            return {'error': 'A reason is required for stock adjustments.'}
+            return {'error': 'A reason is required for stock adjustments.', 'status': 400}
+
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock FROM products WHERE id=?", (pid,)
+                "SELECT id, name, stock, cost_price FROM products WHERE id=?", (pid,)
             ).fetchone()
             if not row:
-                return {'error': 'Product not found'}
-            old_stock  = round(float(row['stock'] or 0), 4)
+                return {'error': 'Product not found', 'status': 404}
+            old_stock = round(float(row['stock'] or 0), 4)
+            if direction == 'add':
+                new_stock = round(old_stock + amount, 4)
+                signed = amount
+            elif direction == 'remove':
+                new_stock = round(old_stock - amount, 4)
+                signed = -amount
+            else:
+                new_stock = amount
+                signed = round(new_stock - old_stock, 4)
+            if new_stock < 0 or new_stock > 999999:
+                return {'error': 'Stock quantity is outside the allowed range.', 'status': 400}
+            if abs(signed) < 1e-9:
+                return {'success': True, 'no_op': True, 'old_stock': _number(old_stock),
+                        'new_stock': _number(old_stock)}
             if (
                 expected_stock is not None
                 and round(float(expected_stock), 4) != old_stock
             ):
                 return {
                     'error': 'Stock changed. Refresh and review the latest quantity.',
-                    'current_stock': old_stock,
+                    'current_stock': _number(old_stock),
+                    'status': 409,
                 }
-            qty_change = round(new_qty - old_stock, 4)
+            decreasing = signed < 0
+            if direction is not None:
+                catalog = STOCK_DECREASE_REASONS if decreasing else STOCK_INCREASE_REASONS
+                other = reason.startswith('Other:') and bool(reason[6:].strip())
+                if reason not in catalog and not other:
+                    return {'error': 'That reason does not match this stock change.', 'status': 400}
+            if decreasing:
+                stored = db.execute(
+                    "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+                ).fetchone()
+                stored_hash = str(stored['value'] if stored else '')
+                supplied = '' if pin is None else str(pin)
+                if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+                    _audit(
+                        self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
+                        f'stock_adjust pid={pid} result=fail',
+                    )
+                    message = (
+                        'Incorrect Super-Admin PIN.'
+                        if supplied else
+                        'Super-Admin PIN is required to reduce stock.'
+                    )
+                    return {'error': message, 'status': 403}
+
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute(
+                "SELECT COALESCE(stock,0) AS stock FROM products WHERE id=?", (pid,)
+            ).fetchone()
+            current_stock = round(float(current['stock'] if current else 0), 4)
+            if current_stock != old_stock or (
+                expected_stock is not None
+                and round(float(expected_stock), 4) != current_stock
+            ):
+                db.rollback()
+                return {
+                    'error': 'Stock changed. Refresh and review the latest quantity.',
+                    'current_stock': _number(current_stock),
+                    'status': 409,
+                }
             changed = db.execute(
                 "UPDATE products SET stock=?, updated_at=? "
                 "WHERE id=? AND COALESCE(stock,0)=?",
-                (new_qty, datetime.now().isoformat(), pid, old_stock),
+                (new_stock, datetime.now().isoformat(), pid, current_stock),
             )
             if changed.rowcount != 1:
                 db.rollback()
-                return {'error': 'Stock changed. Refresh and try again.'}
+                return {'error': 'Stock changed. Refresh and try again.', 'status': 409}
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
                 "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (pid, row['name'], 'SUPERADMIN_ADJUST',
-                 old_stock, qty_change, new_qty,
+                 current_stock, signed, new_stock,
                  f"ADJUST_pid={pid}", reason,
-                 self._user_id, self._username or 'superadmin')
+                 self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            shown_direction = direction or ('remove' if decreasing else 'add')
+            shown_qty = amount if direction in ('add', 'remove') else abs(signed)
+            db.execute(
+                "INSERT INTO audit_log (user_id,username,action,module,details) "
+                "VALUES (?,?,?,?,?)",
+                (self._user_id, self._username or 'superadmin', 'STOCK_ADJUSTED',
+                 'inventory',
+                 f"pid={pid} direction={shown_direction} quantity={_qty_text(shown_qty)} "
+                 f"{_qty_text(current_stock)}→{_qty_text(new_stock)} reason={reason}"),
+            )
             try:
-                cost_row = db.execute(
-                    "SELECT cost_price FROM products WHERE id=?", (pid,)
-                ).fetchone()
-                unit_cost = float(cost_row['cost_price'] or 0) if cost_row else 0
                 from desktop.utils.accounting_hooks import post_stock_adjust_journal
-                post_stock_adjust_journal(
+                posted = post_stock_adjust_journal(
                     db, product_id=pid, product_name=row['name'],
-                    qty_change=qty_change, unit_cost=unit_cost, reason=reason,
-                    movement_id=mov_id, user_id=self._user_id,
-                    username=self._username or 'superadmin', safe=True)
-            except Exception as _je:
-                logger.error('stock adjust accounting: %s', _je, exc_info=True)
+                    qty_change=signed, unit_cost=float(row['cost_price'] or 0),
+                    reason=reason, movement_id=mov_id, user_id=self._user_id,
+                    username=self._username or 'superadmin', safe=False)
+            except Exception as journal_error:
+                logger.error('stock adjust accounting: %s', journal_error, exc_info=True)
+                db.rollback()
+                return {'error': 'Could not post the stock adjustment.', 'status': 500}
+            if (
+                isinstance(posted, dict)
+                and posted.get('error')
+                and not posted.get('success')
+                and not posted.get('skipped')
+            ):
+                db.rollback()
+                return {'error': 'Could not post the stock adjustment.', 'status': 500}
             db.commit()
-            _audit(self._user_id, self._username,
-                   'STOCK_ADJUSTED', 'inventory',
-                   f"pid={pid} name={row['name']} {old_stock}→{new_qty} reason={reason}")
-            return {'success': True, 'old_stock': old_stock, 'new_stock': new_qty}
+            return {
+                'success': True,
+                'old_stock': _number(current_stock),
+                'new_stock': _number(new_stock),
+            }
+        except sqlite3.Error as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('stock adjust failed: %s', exc, exc_info=True)
+            return {'error': 'Could not adjust stock.', 'status': 500}
         finally:
             db.close()
 
@@ -3030,7 +3125,8 @@ class APIClient:
                  self._user_id, self._username or 'admin')
             )
 
-    def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False) -> dict:
+    def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False,
+                  pin: str = '') -> dict:
         """
         Void a completed sale. Manager / admin / superadmin.
         Restores stock for all items. Full audit trail.

@@ -10,6 +10,7 @@ Offline-first license validation with:
   • Remote activation / revoke / extend via Portal command center
 """
 import os, sys, json, time, uuid, hashlib, hmac, base64, shutil
+from functools import lru_cache
 import sqlite3, platform, threading, logging, requests
 import glob
 from datetime import datetime, timedelta, timezone
@@ -449,8 +450,14 @@ def _win_machine_guid() -> str:
         return ''
 
 
+_HW_PROBE_PARTS: list | None = None
+
+
 def _collect_hardware_probe_parts() -> list:
     """Hardware probes used by legacy fingerprinting (wmic can be flaky on some PCs)."""
+    global _HW_PROBE_PARTS
+    if _HW_PROBE_PARTS is not None:
+        return list(_HW_PROBE_PARTS)
     parts = []
     parts.append(platform.node())
     parts.append(platform.processor() or platform.machine())
@@ -464,9 +471,12 @@ def _collect_hardware_probe_parts() -> list:
             (['wmic', 'diskdrive', 'get', 'SerialNumber', '/value'], 'SerialNumber='),
         ]:
             try:
-                out = subprocess.check_output(cmd, shell=False,
-                                               stderr=subprocess.DEVNULL,
-                                               timeout=5).decode(errors='ignore')
+                out = subprocess.check_output(
+                    cmd, shell=False,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    creationflags=0x08000000,  # CREATE_NO_WINDOW — never flash cmd
+                ).decode(errors='ignore')
                 for line in out.splitlines():
                     if prefix in line:
                         val = line.split('=', 1)[-1].strip()
@@ -503,7 +513,8 @@ def _collect_hardware_probe_parts() -> list:
     except Exception:
         pass
 
-    return parts
+    _HW_PROBE_PARTS = list(parts)
+    return list(parts)
 
 
 def _get_legacy_wmic_fingerprint() -> str:
@@ -620,18 +631,54 @@ def _unwrap_license_blob(raw: str, device_id: str) -> Optional[str]:
     return None
 
 
+def _license_blob_matches(raw: str, device_id: str) -> Optional[str]:
+    """Return the inner token when this device id decrypts the stored license."""
+    if not raw or not device_id:
+        return None
+    inner = _unwrap_license_blob(raw, device_id)
+    if not inner:
+        return None
+    lic = _decrypt_payload_with_secrets(inner, device_id)
+    if lic and lic.get('expires_at'):
+        return inner
+    return None
+
+
+def _cheap_device_id_candidates() -> list:
+    """Device ids that do not spawn wmic. Tried before the legacy probe."""
+    seen = []
+    extra = []
+    try:
+        extra = _cloud_identity_device_ids()
+    except Exception:
+        extra = []
+    for did in (_read_cached_device_id(), _get_device_fingerprint(), *extra):
+        if did and did not in seen:
+            seen.append(did)
+    return seen
+
+
 def _resolve_inner_license_token() -> tuple[Optional[str], Optional[str]]:
-    """Return (inner_token, device_id) when lc.db holds a license."""
+    """Return (inner_token, device_id) when lc.db holds a license.
+
+    The legacy wmic fingerprint is only collected when the cached id and the
+    MachineGuid id both fail. Running wmic on every license read flashes a
+    command window and stalls the till.
+    """
     raw = _read_raw_license_token()
     if not raw:
         return None, None
-    for did in _fingerprint_device_id_candidates():
-        inner = _unwrap_license_blob(raw, did)
-        if not inner:
-            continue
-        lic = _decrypt_payload_with_secrets(inner, did)
-        if lic and lic.get('expires_at'):
+    tried = []
+    for did in _cheap_device_id_candidates():
+        tried.append(did)
+        inner = _license_blob_matches(raw, did)
+        if inner:
             return inner, did
+    legacy = _get_legacy_wmic_fingerprint()
+    if legacy and legacy not in tried:
+        inner = _license_blob_matches(raw, legacy)
+        if inner:
+            return inner, legacy
     return None, None
 
 
@@ -652,20 +699,10 @@ def _cloud_identity_device_ids() -> list:
 
 def _fingerprint_device_id_candidates() -> list:
     """Ids to try when matching an existing license (incl. migration)."""
-    seen = []
-    extra = []
-    try:
-        extra = _cloud_identity_device_ids()
-    except Exception:
-        extra = []
-    for did in (
-        _read_cached_device_id(),
-        _get_device_fingerprint(),
-        _get_legacy_wmic_fingerprint(),
-        *extra,
-    ):
-        if did and did not in seen:
-            seen.append(did)
+    seen = _cheap_device_id_candidates()
+    legacy = _get_legacy_wmic_fingerprint()
+    if legacy and legacy not in seen:
+        seen.append(legacy)
     return seen
 
 
@@ -721,10 +758,15 @@ def _verify_sig(data: bytes, sig: str, secret: bytes | None = None) -> bool:
         return False
     return hmac.compare_digest(_sign(data, secret), sig)
 
-def _derive_key(device_id: str, secret: bytes | None = None) -> bytes:
+@lru_cache(maxsize=32)
+def _derive_key_cached(device_id: str, secret: bytes) -> bytes:
     return hashlib.pbkdf2_hmac(
-        'sha256', device_id.encode(), _with_secret(secret),
+        'sha256', device_id.encode(), secret,
         iterations=100_000, dklen=32)
+
+
+def _derive_key(device_id: str, secret: bytes | None = None) -> bytes:
+    return _derive_key_cached(device_id, _with_secret(secret))
 
 def _xor_encrypt(data: bytes, key: bytes) -> bytes:
     out = bytearray(len(data)); kl = len(key)
@@ -951,6 +993,9 @@ def _fetch_trusted_time(*, allow_network: bool = True) -> Optional[int]:
         return None
     now = time.time()
     if now < float(_TRUSTED_TIME_CACHE.get('fail_until') or 0):
+        return None
+    from backend.cloud.net_gate import network_up
+    if not network_up(1.0):
         return None
     for url in _TIME_SOURCES:
         try:

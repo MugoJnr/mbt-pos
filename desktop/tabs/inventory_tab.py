@@ -14,7 +14,8 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
                                     apply_table_row_backgrounds, table_row_bg_hex,
                                     align_header_right)
 from desktop.utils.security import (has_permission, require_permission,
-                                     ask_superadmin_pin, ROLE_SUPERADMIN)
+                                     ask_superadmin_pin, collect_superadmin_pin,
+                                     ROLE_SUPERADMIN)
 from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS, PRODUCT_STATUSES
 from desktop.utils.select_controls import (
     SearchableSelect, ReasonSelect, Select, ReasonDialog,
@@ -48,35 +49,15 @@ def _fmt_stock(v, unit=None):
     return f"{f:.1f}".rstrip('0').rstrip('.') if abs(f) >= 0.1 else f"{f:.2f}"
 
 
-def _stock_pill(row_i, label, tone, tooltip=''):
-    """
-    Unified stock badge — color-coded pill, right-aligned in the Stock column.
-    tone: err (OUT) | warn (low) | ok (in stock). Label stays short (OUT / qty).
-    """
+def _stock_item(label, tone, tooltip=''):
+    """Stock cell drawn as text so a refresh does not build a widget per row."""
+    tone_key = {'err': 'err', 'warn': 'warn', 'ok': 'ok'}.get(tone, 'text')
+    item = tbl_right(label, tone=tone_key)
+    if tooltip:
+        item.setToolTip(tooltip)
     if tone == 'err':
-        bg, fg = C['err'], C.get('on_danger', '#FFFFFF')
-    elif tone == 'warn':
-        bg, fg = C['warn'], C.get('gold_fg', '#0B1220')
-    else:
-        bg, fg = C.get('ok_dim', C['card2']), C['ok']
-    badge = QLabel(label)
-    badge.setAlignment(Qt.AlignCenter)
-    badge.setFixedHeight(22)
-    # Size to contents so "OUT" / "41.5" never clip inside the pill
-    badge.adjustSize()
-    badge.setMinimumWidth(max(44, badge.sizeHint().width() + 16))
-    badge.setToolTip(tooltip)
-    badge.setStyleSheet(
-        f"QLabel {{ background:{bg}; color:{fg}; border:none; border-radius:6px; "
-        f"font-size:11px; font-weight:800; padding:0 8px; }}")
-    wrap = QWidget()
-    wrap.setAutoFillBackground(True)
-    wrap.setStyleSheet(f'background: {table_row_bg_hex(row_i)}; border: none;')
-    wl = QHBoxLayout(wrap)
-    wl.setContentsMargins(6, 4, 10, 4)
-    wl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-    wl.addWidget(badge)
-    return wrap
+        item.setData(Qt.UserRole + 40, 'out_of_stock')
+    return item
 
 
 class InventoryTab(QWidget):
@@ -114,6 +95,16 @@ class InventoryTab(QWidget):
         cats_btn.clicked.connect(self._manage_categories)
         tb.addWidget(cats_btn)
 
+        if has_permission(self.user, 'inventory.receive'):
+            recv = SecondaryBtn('Receive Stock', 40)
+            recv.setToolTip('Receive a supplier delivery. No extra PIN.')
+            recv.clicked.connect(self._receive_stock_dialog)
+            tb.addWidget(recv)
+        if has_permission(self.user, 'inventory.receive') and self._role() != ROLE_SUPERADMIN:
+            ask = SecondaryBtn('Request Adjustment', 40)
+            ask.setToolTip('Ask a Super-Admin to change stock. This does not change stock.')
+            ask.clicked.connect(self._request_adjustment_dialog)
+            tb.addWidget(ask)
         if self._role() == ROLE_SUPERADMIN:
             adj = SecondaryBtn('Adjust Stock', 40)
             try:
@@ -123,10 +114,10 @@ class InventoryTab(QWidget):
                 pass
             adj.clicked.connect(self._adjust_stock_dialog)
             tb.addWidget(adj)
-            recv = SecondaryBtn('Receive Stock', 40)
-            recv.setToolTip('Receive delivery from a supplier (increases stock)')
-            recv.clicked.connect(self._receive_stock_dialog)
-            tb.addWidget(recv)
+            pending = SecondaryBtn('Adjustment Requests', 40)
+            pending.setToolTip('Approve or reject cashier stock-adjustment requests')
+            pending.clicked.connect(self._review_adjustment_requests)
+            tb.addWidget(pending)
             sups = SecondaryBtn('Suppliers', 40)
             sups.clicked.connect(self._suppliers_dialog)
             tb.addWidget(sups)
@@ -152,6 +143,7 @@ class InventoryTab(QWidget):
         self._tbl = make_table(
             ['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Unit', 'Actions'],
             stretch_col=0, row_height=56)
+        self._tbl.cellClicked.connect(self._on_cell_clicked)
         self._tbl.setAlternatingRowColors(False)  # zebra via BackgroundRole only
         hdr = self._tbl.horizontalHeader()
         hdr.setSectionsClickable(True)
@@ -242,8 +234,9 @@ class InventoryTab(QWidget):
     def refresh(self):
         try:
             self.products = self.api.get_products() or []
-        except Exception:
-            self.products = []
+        except Exception as e:
+            self._stats.setText(f"  Inventory is busy. Showing the last list. ({e})")
+            return
         try:
             self._categories_by_name = self.api.categories_by_name_map()
         except Exception:
@@ -305,6 +298,13 @@ class InventoryTab(QWidget):
             self._stats.setText(f"  Could not filter inventory: {e}")
 
     def _populate(self, prods):
+        self._tbl.setUpdatesEnabled(False)
+        try:
+            self._populate_rows(prods)
+        finally:
+            self._tbl.setUpdatesEnabled(True)
+
+    def _populate_rows(self, prods):
         self._tbl.setRowCount(0)
         cfg  = self.config_getter() or {}
         cur  = cfg.get('currency_symbol', 'KES')
@@ -385,86 +385,150 @@ class InventoryTab(QWidget):
         self._tbl.setItem(i, 4, cost_item)
 
         stk_s = _fmt_stock(stock, unit)
-        stk_item = QTableWidgetItem('')
-        stk_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-        stk_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         if is_zero:
-            stk_item.setData(Qt.UserRole + 40, 'out_of_stock')
             tip = f'Out of stock · {stk_s} {unit}'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, 'OUT', 'err', tip))
+            stk_item = _stock_item('OUT', 'err', tip)
         elif is_low:
             tip = f'{stk_s} {unit} · low stock'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            # Short label — color carries "low"; full text in tooltip
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'warn', tip))
+            stk_item = _stock_item(stk_s, 'warn', tip)
         else:
             tip = f'{stk_s} {unit}'
-            stk_item.setToolTip(tip)
-            self._tbl.setItem(i, 5, stk_item)
-            self._tbl.setCellWidget(i, 5, _stock_pill(i, stk_s, 'ok', tip))
+            stk_item = _stock_item(stk_s, 'ok', tip)
+        self._tbl.setItem(i, 5, stk_item)
 
         unit_item = tbl_center(unit, tone='text2')
         unit_item.setToolTip(unit)
         self._tbl.setItem(i, 6, unit_item)
 
-        # Neutral zebra for actions cell — OUT signal is the stock-column badge only
-        row_bg = table_row_bg_hex(i)
-        cell = QWidget()
-        cell.setAutoFillBackground(True)
-        cell.setStyleSheet(f'background: {row_bg}; border: none;')
-        cl   = QHBoxLayout(cell)
-        cl.setContentsMargins(8, 4, 10, 4)
-        cl.setSpacing(0)
+        action = tbl_center('⋮', tone='text')
+        action.setData(Qt.UserRole, p.get('id'))
+        action.setData(Qt.UserRole + 1, bool(can_edit))
+        action.setData(Qt.UserRole + 2, bool(can_delete))
+        action.setToolTip('Product actions')
+        self._tbl.setItem(i, 7, action)
+        apply_table_row_backgrounds(self._tbl, row=i)
+        if is_zero:
+            self._apply_zero_stock_row(i)
 
-        # Single overflow control — avoids Edit/Hist/Del clipping in dense rows
-        more = QToolButton()
-        more.setText('⋮')
-        more.setPopupMode(QToolButton.InstantPopup)
-        more.setCursor(Qt.PointingHandCursor)
-        more.setFixedSize(36, 30)
-        more.setToolTip('Product actions')
-        more.setStyleSheet(
-            f"QToolButton {{ background:{C['input']}; color:{C['text']}; "
-            f"border:1px solid {C['border2']}; border-radius:7px; "
-            f"font-size:16px; font-weight:700; padding:0; }}"
-            f"QToolButton:hover {{ color:{C['gold']}; border-color:{C['gold']}; "
-            f"background:{C['hover']}; }}"
-            f"QToolButton::menu-indicator {{ image:none; width:0; }}"
-        )
-        menu = QMenu(more)
+    def _on_cell_clicked(self, row: int, col: int):
+        if col != 7:
+            return
+        item = self._tbl.item(row, col)
+        if item is None:
+            return
+        pid = item.data(Qt.UserRole)
+        if not pid:
+            return
+        menu = QMenu(self)
         menu.setStyleSheet(
             f"QMenu {{ background:{C['card']}; color:{C['text']}; "
             f"border:1px solid {C['border']}; padding:4px; }}"
             f"QMenu::item {{ padding:8px 18px; border-radius:6px; }}"
             f"QMenu::item:selected {{ background:{C['hover']}; color:{C['gold']}; }}"
         )
-        if can_edit:
-            act_edit = menu.addAction('Edit product')
-            act_edit.triggered.connect(lambda _=False, pid=p['id']: self._edit(pid))
-        act_hist = menu.addAction('History')
-        act_hist.triggered.connect(lambda _=False, pid=p['id']: self._show_history(pid))
-        if can_delete:
+        if item.data(Qt.UserRole + 1):
+            menu.addAction('Edit product', lambda pid=pid: self._edit(pid))
+        menu.addAction('History', lambda pid=pid: self._show_history(pid))
+        if item.data(Qt.UserRole + 2):
             menu.addSeparator()
-            act_del = menu.addAction('Delete')
-            act_del.triggered.connect(lambda _=False, pid=p['id']: self._delete(pid))
-        more.setMenu(menu)
-        cl.addStretch()
-        cl.addWidget(more)
-        self._tbl.setCellWidget(i, 7, cell)
-        apply_table_row_backgrounds(self._tbl, row=i)
-        if is_zero:
-            self._apply_zero_stock_row(i)
+            menu.addAction('Delete', lambda pid=pid: self._delete(pid))
+        menu.exec_(self._tbl.viewport().mapToGlobal(self._tbl.visualItemRect(item).bottomLeft()))
 
     def _apply_zero_stock_row(self, row: int):
         """OUT is badge-only — keep zebra row background (no maroon full-row tint)."""
         return
-    def _receive_stock_dialog(self):
+    def _request_adjustment_dialog(self):
+        if self._role() == ROLE_SUPERADMIN or not has_permission(self.user, 'inventory.receive'):
+            QMessageBox.warning(self, 'Access Denied',
+                'Use Adjust Stock if you are the Super-Admin.'); return
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Request a stock adjustment')
+        dlg.setMinimumWidth(460)
+        form = QFormLayout(dlg)
+        prod = QComboBox()
+        for p in (self.products or []):
+            prod.addItem(f"{p.get('name')}  (stock {p.get('stock')})", p.get('id'))
+        qty = QDoubleSpinBox()
+        qty.setRange(0, 999999)
+        qty.setDecimals(3)
+        reason = QLineEdit()
+        reason.setPlaceholderText('Why should stock change?')
+        form.addRow('Product', prod)
+        form.addRow('Target quantity', qty)
+        form.addRow('Reason', reason)
+        buttons = QHBoxLayout()
+        cancel = SecondaryBtn('Cancel', 36)
+        cancel.clicked.connect(dlg.reject)
+        go = PrimaryBtn('Send request', 36)
+        buttons.addWidget(cancel)
+        buttons.addWidget(go)
+        form.addRow(buttons)
+
+        def send():
+            if not reason.text().strip():
+                QMessageBox.warning(dlg, 'Required', 'Enter a reason.'); return
+            result = self.api.request_stock_adjustment(
+                prod.currentData(), qty.value(), reason.text().strip(),
+            )
+            if result.get('error'):
+                QMessageBox.warning(dlg, 'Not sent', result['error']); return
+            QMessageBox.information(
+                dlg, 'Request sent',
+                f"{result.get('request_number')} is waiting for a Super-Admin. Stock was not changed.",
+            )
+            dlg.accept()
+
+        go.clicked.connect(send)
+        dlg.exec_()
+
+    def _review_adjustment_requests(self):
         if self._role() != ROLE_SUPERADMIN:
             QMessageBox.warning(self, 'Access Denied',
-                'Only Super-Admin can receive stock.'); return
+                'Only Super-Admin can decide stock adjustments.'); return
+        rows = self.api.list_stock_adjustment_requests('pending') or []
+        if not rows:
+            QMessageBox.information(self, 'Adjustment requests', 'No pending requests.'); return
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Pending stock adjustments')
+        dlg.resize(640, 360)
+        lay = QVBoxLayout(dlg)
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(['Request', 'Product', 'Now', 'Target', 'Reason'])
+        for i, row in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(str(row.get('request_number') or '')))
+            table.setItem(i, 1, QTableWidgetItem(str(row.get('product_name') or '')))
+            table.setItem(i, 2, QTableWidgetItem(str(row.get('current_stock') or 0)))
+            table.setItem(i, 3, QTableWidgetItem(str(row.get('requested_qty') or 0)))
+            table.setItem(i, 4, QTableWidgetItem(str(row.get('reason') or '')))
+        table.resizeColumnsToContents()
+        lay.addWidget(table)
+        buttons = QHBoxLayout()
+        reject = SecondaryBtn('Reject selected', 36)
+        approve = PrimaryBtn('Approve selected', 36)
+        buttons.addStretch(1)
+        buttons.addWidget(reject)
+        buttons.addWidget(approve)
+        lay.addLayout(buttons)
+
+        def decide(decision):
+            idx = table.currentRow()
+            if idx < 0:
+                QMessageBox.warning(dlg, 'Select one', 'Select a request first.'); return
+            result = self.api.review_stock_adjustment(rows[idx]['id'], decision)
+            if result.get('error'):
+                QMessageBox.warning(dlg, 'Not applied', result['error']); return
+            QMessageBox.information(dlg, 'Saved', f"Request {result.get('status')}.")
+            dlg.accept()
+            self.refresh()
+
+        reject.clicked.connect(lambda: decide('rejected'))
+        approve.clicked.connect(lambda: decide('approved'))
+        dlg.exec_()
+
+    def _receive_stock_dialog(self):
+        if not has_permission(self.user, 'inventory.receive'):
+            QMessageBox.warning(self, 'Access Denied',
+                'Your role cannot receive supplier stock.'); return
         from desktop.dialogs.receive_stock_dialog import ReceiveStockDialog
         dlg = ReceiveStockDialog(self.api, self, products=self.products)
         if dlg.exec_():
@@ -601,13 +665,15 @@ class InventoryTab(QWidget):
                 return
             new_qty = round(float(qty.value()), 4)
 
-            if not ask_superadmin_pin(self.api, self,
-                    reason="Adjust '%s' stock" % prod['name']):
+            pin = collect_superadmin_pin(
+                self.api, self, reason="Adjust '%s' stock" % prod['name'])
+            if not pin:
                 return
 
             res = self.api.adjust_stock(
                 prod['id'], new_qty, reason.value(),
                 expected_stock=selected['stock'],
+                pin=pin,
             )
             if res and res.get('success'):
                 old_s = _safe_float(res.get('old_stock'))
@@ -802,6 +868,7 @@ class _ProdDlg(QDialog):
                 f"<span style='color:{C['muted']};font-size:12px;'>"
                 f"(Use the Adjust Stock button to change stock quantity)</span>")
             stk_info.setTextFormat(Qt.RichText)
+            stk_info.setWordWrap(True)
             stk_info.setStyleSheet(f"color:{C['text']}; font-size:14px; background:transparent;")
             lay.addRow(lbl('Current Stock'), stk_info)
 
@@ -822,6 +889,8 @@ class _ProdDlg(QDialog):
         btn_wrap = QWidget()
         btn_wrap.setLayout(btn_row)
         lay.addRow(btn_wrap)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=save, cancel=cancel)
 
         from desktop.utils.state_reset import StateResetManager
         if self._is_new:

@@ -20,7 +20,7 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, DangerBtn, Card,
                                     tbl_center, page_layout, H2, Caption,
                                     lovable_tab_qss, Badge, section_card)
 from desktop.utils.security import (
-    ROLE_SUPERADMIN, ask_superadmin_pin, set_superadmin_pin,
+    ROLE_SUPERADMIN, ask_superadmin_pin, collect_superadmin_pin, set_superadmin_pin,
     verify_superadmin_pin,
 )
 from desktop.utils.option_lists import STOCK_ADJUSTMENT_REASONS
@@ -284,11 +284,13 @@ class SecurityTab(QWidget):
                 f"Reason: {reason}\n\nContinue?",
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
-        if not ask_superadmin_pin(self.api, self, reason='Stock Adjustment'):
+        pin = collect_superadmin_pin(self.api, self, reason='Stock Adjustment')
+        if not pin:
             return
         res = self.api.adjust_stock(
             prod['id'], new_qty, reason,
             expected_stock=float(prod.get('stock') or 0),
+            pin=pin,
         )
         if res and res.get('success'):
             self._adj_result.setText(

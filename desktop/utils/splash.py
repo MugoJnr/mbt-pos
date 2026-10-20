@@ -189,6 +189,7 @@ class SplashScreen(QWidget):
         self.update()
 
     def finish_and_close(self, delay=400):
+        self._fade.stop()
         self._dot_t.stop()
         self._progress = 100
         self._status = 'Ready'

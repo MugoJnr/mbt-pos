@@ -74,6 +74,25 @@ STOCK_ADJUSTMENT_REASONS = (
     'Other',
 )
 
+STOCK_INCREASE_REASONS = (
+    'Received from Supplier',
+    'Stock Count Correction',
+    'Stock-take Surplus',
+    'Transfer In',
+    'Opening Balance',
+    'System Correction',
+)
+
+STOCK_DECREASE_REASONS = (
+    'Damaged / Spoiled',
+    'Theft / Loss',
+    'Return to Supplier',
+    'Stock Count Correction',
+    'Stock-take Shortage',
+    'Transfer Out',
+    'System Correction',
+)
+
 # ── Payments ──────────────────────────────────────────────────────────────────
 
 PAYMENT_METHODS = (
@@ -192,6 +211,7 @@ EXPENSE_CATEGORIES = (
 DATE_PRESETS = (
     ('Today', 'today'),
     ('Yesterday', 'yesterday'),
+    ('Choose a day', 'day'),
     ('This Week', 'week'),
     ('This Month', 'month'),
     ('Last Month', 'last_month'),
@@ -224,9 +244,14 @@ def date_range_for_preset(preset_key: str,
         return d, d
     if key in ('week', 'this_week'):
         start = today - timedelta(days=today.weekday())  # Monday
-        return start, today
+        return start, start + timedelta(days=6)  # through Sunday
     if key in ('month', 'this_month'):
-        return today.replace(day=1), today
+        start = today.replace(day=1)
+        if start.month == 12:
+            next_month = start.replace(year=start.year + 1, month=1)
+        else:
+            next_month = start.replace(month=start.month + 1)
+        return start, next_month - timedelta(days=1)
     if key == 'last_month':
         first_this = today.replace(day=1)
         last_end = first_this - timedelta(days=1)

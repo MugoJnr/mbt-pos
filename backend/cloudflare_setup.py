@@ -7,6 +7,7 @@ Used by the setup wizard, SETUP CLOUDFLARE.bat, and the embedded web service.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -693,6 +694,114 @@ def _get_cloudflare_api_token() -> str:
         if _looks_like_management_api_token(tok):
             return tok
     return ''
+
+
+_TUNNEL_UUID = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE,
+)
+_TRANSPORT_LADDER = ('auto', 'http2', 'http2-ipv4')
+
+
+def _tunnel_id_from_run_token(token: str) -> str:
+    raw = (token or '').strip()
+    if raw.lower().startswith('cfut_'):
+        raw = raw[5:]
+    if not raw:
+        return ''
+    try:
+        padded = raw + ('=' * (-len(raw) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except Exception:
+        return ''
+    tunnel_id = str((payload or {}).get('t') or '').strip()
+    if not _TUNNEL_UUID.match(tunnel_id):
+        return ''
+    return tunnel_id
+
+
+def _config_file_tunnel_id(directory: Path) -> str:
+    path = Path(directory) / 'config.yml'
+    if not path.is_file():
+        return ''
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return ''
+    for line in lines:
+        if line.strip().lower().startswith('tunnel:'):
+            return line.split(':', 1)[1].strip()
+    return ''
+
+
+def resolve_tunnel_authority() -> dict:
+    """Prefer the connector token. A conflicting config.yml is set aside."""
+    token_id = _tunnel_id_from_run_token(_get_tunnel_run_token())
+    app_dir = get_cloudflared_dir()
+    config_id = _config_file_tunnel_id(app_dir)
+    stored = str((load_web_config() or {}).get('tunnel_id') or '').strip()
+    if token_id:
+        repaired = False
+        if config_id and config_id != token_id:
+            source = app_dir / 'config.yml'
+            if source.is_file():
+                stamp = datetime.now().strftime('%Y%m%d%H%M%S%f')
+                source.rename(app_dir / f'config.superseded-{stamp}.yml')
+            repaired = True
+        if stored != token_id:
+            save_web_config({'tunnel_id': token_id})
+            repaired = True
+        return {
+            'mode': 'token',
+            'tunnel_id': token_id,
+            'repaired': repaired,
+            'token_tunnel_id': token_id,
+            'config_tunnel_id': config_id,
+        }
+    if config_id:
+        repaired = stored != config_id
+        if repaired:
+            save_web_config({'tunnel_id': config_id})
+        return {
+            'mode': 'config',
+            'tunnel_id': config_id,
+            'repaired': repaired,
+            'token_tunnel_id': '',
+            'config_tunnel_id': config_id,
+        }
+    return {
+        'mode': 'none',
+        'tunnel_id': '',
+        'repaired': False,
+        'token_tunnel_id': '',
+        'config_tunnel_id': '',
+    }
+
+
+def _transport_flags(mode: str) -> list:
+    if mode == 'http2':
+        return ['--protocol', 'http2']
+    if mode == 'http2-ipv4':
+        return ['--protocol', 'http2', '--edge-ip-version', '4']
+    return []
+
+
+def _with_transport_flags(args: list, mode: str) -> list:
+    flags = _transport_flags(mode)
+    if not flags:
+        return list(args)
+    out = list(args)
+    if 'tunnel' not in out:
+        return out + flags
+    index = out.index('tunnel') + 1
+    return out[:index] + flags + out[index:]
+
+
+def _preferred_transport() -> str:
+    mode = str((load_web_config() or {}).get('cloudflared_transport') or 'auto').strip()
+    if mode not in _TRANSPORT_LADDER:
+        return 'auto'
+    return mode
 
 
 def _get_tunnel_run_token() -> str:
@@ -2615,6 +2724,16 @@ class CloudflareTunnelService:
         self._monitor_thread = None
         self._stop = False
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _registered_since(log, offset: int) -> bool:
+        try:
+            with open(log, 'r', encoding='utf-8') as handle:
+                handle.seek(int(offset or 0))
+                text = handle.read()
+        except OSError:
+            return False
+        return 'Registered tunnel connection' in text
 
     def _launch_args(self) -> Optional[list]:
         """Build cloudflared argv — prefer connector token, else durable config.yml."""

@@ -97,7 +97,17 @@ class InventoryProductGate(unittest.TestCase):
         self.assertTrue(created.get('success'), created)
         pid = int(created['id'])
 
-        adj = self.api.adjust_stock(pid, 4, 'cycle count correction')
+        from desktop.utils.security import _pin_hash
+        db = self.ac._db()
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key,value) VALUES (?,?)",
+            ('superadmin_pin_hash', _pin_hash('123456')),
+        )
+        db.commit()
+        db.close()
+        blocked = self.api.adjust_stock(pid, 4, 'cycle count correction', pin='')
+        self.assertEqual(blocked.get('status'), 403)
+        adj = self.api.adjust_stock(pid, 4, 'cycle count correction', pin='123456')
         self.assertTrue(adj.get('success'), adj)
         self.assertAlmostEqual(float(adj.get('new_stock') or 0), 4.0, places=2)
 

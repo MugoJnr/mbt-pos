@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 import mimetypes
 import os
+import re
+import threading
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -22,13 +24,86 @@ from backend.cloud_backup.paths import (
 logger = logging.getLogger('cloud_backup.supabase')
 
 DEFAULT_TIMEOUT = 12  # Fail open quickly when Portal/Supabase unreachable
+
+
+class _GatedSession(requests.Session):
+    """Skip hostname DNS/TLS when the shop has no IP route, and never wait past the deadline.
+
+    The busy lock belongs to this session only. A timed-out call marks the
+    session abandoned and the client opens a new one. The abandoned worker
+    must not keep every later cloud call waiting.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._busy = threading.Lock()
+        self._abandoned = False
+
+    def request(self, method, url, **kwargs):
+        import time
+        from backend.cloud.net_gate import (
+            bounded_timeout, call_with_deadline, mark_network_down, network_up,
+        )
+        from backend.cloud.reliability_log import note
+        started = time.perf_counter()
+        if self._abandoned:
+            note('net', 'supabase', 0, 'abandoned', 'session replaced after timeout')
+            raise requests.ConnectionError('MugoByte Cloud is still not answering')
+        if not network_up(1.0):
+            mark_network_down()
+            note('net', 'supabase', (time.perf_counter() - started) * 1000, 'offline')
+            raise requests.ConnectionError('Offline — MugoByte Cloud unreachable')
+        if not self._busy.acquire(blocking=False):
+            note('net', 'supabase', 0, 'busy', 'previous cloud call still running')
+            raise requests.ConnectionError('MugoByte Cloud is still not answering')
+        limit = bounded_timeout(kwargs.get('timeout') or DEFAULT_TIMEOUT)
+        kwargs['timeout'] = limit
+
+        def _call():
+            try:
+                return super(_GatedSession, self).request(method, url, **kwargs)
+            finally:
+                self._busy.release()
+
+        try:
+            result = call_with_deadline(_call, limit, label='supabase')
+            note('net', 'supabase', (time.perf_counter() - started) * 1000, 'ok')
+            return result
+        except TimeoutError as exc:
+            self._abandoned = True
+            mark_network_down(20)
+            note('net', 'supabase', (time.perf_counter() - started) * 1000, 'timeout', str(exc))
+            raise requests.ConnectionError(str(exc)) from exc
+        except requests.RequestException as exc:
+            mark_network_down()
+            note('net', 'supabase', (time.perf_counter() - started) * 1000, 'error', type(exc).__name__)
+            raise
 UPLOAD_TIMEOUT = 300
 DOWNLOAD_TIMEOUT = 300
 
 
+_TOKEN_RE = re.compile(r'eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+
+
+def redact_tokens(text: str) -> str:
+    return _TOKEN_RE.sub('<redacted-token>', str(text or ''))
+
+
+def _looks_like_expired_session(err: Exception) -> bool:
+    if not isinstance(err, SupabaseError) or err.status not in (400, 401, 403):
+        return False
+    text = str(err).lower()
+    return (
+        'exp" claim' in text
+        or 'exp claim' in text
+        or 'jwt expired' in text
+        or 'token is expired' in text
+    )
+
+
 class SupabaseError(Exception):
     def __init__(self, message: str, status: int = 0, payload: Any = None):
-        super().__init__(message)
+        super().__init__(redact_tokens(message))
         self.status = status
         self.payload = payload
 
@@ -40,7 +115,15 @@ class SupabaseClient:
         self.anon = self.cfg.get('anon_key') or ''
         self.service = self.cfg.get('service_key') or ''
         self.bucket = self.cfg.get('bucket') or 'mbt-backups'
-        self._session = requests.Session()
+        self._http = _GatedSession()
+
+    @property
+    def _session(self):
+        """A timed-out session stays with its abandoned worker. The next call gets a new one."""
+        http = self.__dict__.get('_http')
+        if http is None or getattr(http, '_abandoned', False):
+            self._http = _GatedSession()
+        return self._http
 
     @property
     def configured(self) -> bool:
@@ -203,10 +286,10 @@ class SupabaseClient:
         try:
             return fn()
         except SupabaseError as e:
-            if e.status in (401, 403):
-                self.refresh_session()
-                return fn()
-            raise
+            if e.status not in (401, 403) and not _looks_like_expired_session(e):
+                raise
+            self.refresh_session()
+            return fn()
 
     # ── REST helpers ──────────────────────────────────────────────────────────
 
@@ -269,6 +352,32 @@ class SupabaseClient:
 
         return self.with_auth_retry(_do)
 
+    def rest_delete(self, table: str, query: str) -> Any:
+        def _do(use_service: bool = False):
+            if use_service and self.service:
+                h = {
+                    'apikey': self.service,
+                    'Authorization': f'Bearer {self.service}',
+                    'Prefer': 'return=minimal',
+                }
+            else:
+                h = self._authed_headers(prefer='return=minimal')
+            r = self._session.delete(
+                self._url(f'/rest/v1/{table}?{query}'),
+                headers=h,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            if r.status_code >= 400:
+                self._raise(r, f'Delete {table}')
+            return r.json() if r.content else None
+
+        try:
+            return self.with_auth_retry(lambda: _do(False))
+        except SupabaseError as e:
+            if self.service and e.status in (400, 401, 403):
+                return _do(True)
+            raise
+
     # ── Domain helpers ────────────────────────────────────────────────────────
 
     def upsert_business(self, name: str, owner_user_id: str) -> dict:
@@ -323,6 +432,39 @@ class SupabaseClient:
                 result = service_insert('backups', meta)
                 return result[0] if isinstance(result, list) else result
             raise
+
+    def upsert_backup_meta(self, meta: dict) -> dict:
+        """Update-in-place for rolling slots (latest / daily) so metadata does not grow forever."""
+        path = str((meta or {}).get('storage_path') or '').strip()
+        if not path:
+            return self.insert_backup_meta(meta)
+        existing = self.rest_select(
+            'backups',
+            f'storage_path=eq.{quote(path, safe="")}&select=id&limit=1',
+        ) or []
+        patch = {
+            'size_bytes': meta.get('size_bytes'),
+            'content_hash': meta.get('content_hash'),
+            'mbt_version': meta.get('mbt_version'),
+            'schema_version': meta.get('schema_version'),
+            'backup_type': meta.get('backup_type') or 'full_snapshot',
+            'reason': meta.get('reason'),
+            'created_at': meta.get('created_at'),
+            'device_id': meta.get('device_id'),
+            'business_id': meta.get('business_id'),
+        }
+        if existing and existing[0].get('id'):
+            rid = existing[0]['id']
+            try:
+                updated = self.rest_update('backups', f'id=eq.{quote(str(rid), safe="")}', patch)
+                if isinstance(updated, list) and updated:
+                    return updated[0]
+                row = dict(existing[0])
+                row.update(patch)
+                return row
+            except SupabaseError:
+                pass
+        return self.insert_backup_meta(meta)
 
     def list_backups(self, business_id: str, limit: int = 20) -> list:
         return self.rest_select(
@@ -406,6 +548,40 @@ class SupabaseClient:
             return total
 
         return self.with_auth_retry(_do)
+
+    def delete_files(self, object_paths: list) -> int:
+        """Delete storage objects. Returns number requested (API is best-effort)."""
+        paths = [p for p in (object_paths or []) if p]
+        if not paths:
+            return 0
+
+        def _do(use_service: bool = False):
+            token = self.service if use_service and self.service else self.access_token()
+            key = self.service if use_service and self.service else self.anon
+            url = self._url(f'/storage/v1/object/{self.bucket}')
+            headers = {
+                'apikey': key,
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+            }
+            r = self._session.request(
+                'DELETE', url, headers=headers, json={'prefixes': paths}, timeout=120,
+            )
+            # Some Storage versions expect a bare path array.
+            if r.status_code >= 400:
+                r = self._session.request(
+                    'DELETE', url, headers=headers, json=paths, timeout=120,
+                )
+            if r.status_code >= 400:
+                self._raise(r, 'Storage delete')
+            return len(paths)
+
+        try:
+            return self.with_auth_retry(lambda: _do(False))
+        except SupabaseError as e:
+            if self.service and e.status in (400, 401, 403):
+                return _do(True)
+            raise
 
     def ping(self) -> bool:
         if not self.configured:

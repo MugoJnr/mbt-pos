@@ -41,8 +41,24 @@ _COST_KEYS = frozenset({
 })
 
 
+_SVC_CLIENT = None
+_SVC_CONFIG_KEY = ()
+
+
 def _svc() -> SupabaseClient:
-    return SupabaseClient()
+    global _SVC_CLIENT, _SVC_CONFIG_KEY
+    cfg = load_cloud_config()
+    key = (
+        str(cfg.get('supabase_url') or ''),
+        str(cfg.get('anon_key') or ''),
+        str(cfg.get('service_key') or ''),
+        str(cfg.get('bucket') or ''),
+    )
+    if _SVC_CLIENT is not None and _SVC_CONFIG_KEY == key:
+        return _SVC_CLIENT
+    _SVC_CONFIG_KEY = key
+    _SVC_CLIENT = SupabaseClient(config=cfg)
+    return _SVC_CLIENT
 
 
 def has_service_role() -> bool:

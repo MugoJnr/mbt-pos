@@ -48,7 +48,11 @@ from backend.cloud_backup.supabase_client import SupabaseClient, SupabaseError
 
 logger = logging.getLogger('cloud_backup.sync')
 
-DEFAULT_INTERVAL_MIN = 5
+DEFAULT_INTERVAL_MIN = 1440
+DEFAULT_KEEP_COUNT = 7
+# Scheduled cloud backups must not run more often than this (free-tier safe).
+MIN_SCHEDULE_INTERVAL_MIN = 60
+LATEST_NAME = 'latest.mbtenc'
 BACKFILL_BATCH_SIZE = 200
 OUTBOX_FLUSH_LIMIT = 200
 OUTBOX_FLUSH_ROUNDS = 25  # up to ~5k rows per loop when backlog is deep
@@ -289,7 +293,7 @@ def create_sqlite_snapshot(db_path: str | None = None) -> tuple[str, str]:
     stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     zip_path = os.path.join(tmp_dir, f'mbt_pos_{stamp}.zip')
 
-    src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=30)
+    src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=5)
     dst = sqlite3.connect(snap_db)
     try:
         configure_sqlite_connection(src)
@@ -409,13 +413,19 @@ class SyncManager:
             'enabled': bool(cfg.get('enabled')),
             'configured': is_cloud_configured(),
             'logged_in': is_logged_in(),
+            'reauth_required': ident.get('auth_state') == 'reauth_required',
             'cloud_skipped': bool(ident.get('cloud_skipped')),
             'device_id': get_or_create_device_id(),
             'business_id': ident.get('business_id') or '',
             'business_name': ident.get('business_name') or '',
             'email': ident.get('email') or '',
             'org_id': ident.get('org_id') or '',
-            'interval_minutes': int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            'interval_minutes': max(
+                MIN_SCHEDULE_INTERVAL_MIN,
+                int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            ),
+            'backup_keep_count': max(1, int(cfg.get('backup_keep_count') or DEFAULT_KEEP_COUNT)),
+            'backup_style': 'rolling',
             'last_backup_at': state.get('last_backup_at') or '',
             'last_backup_size': state.get('last_backup_size') or 0,
             'last_backup_id': state.get('last_backup_id') or '',
@@ -490,7 +500,10 @@ class SyncManager:
         self._stop.wait(20)
         while not self._stop.is_set():
             cfg = load_cloud_config()
-            interval_min = max(1, int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN))
+            interval_min = max(
+                MIN_SCHEDULE_INTERVAL_MIN,
+                int(cfg.get('backup_interval_minutes') or DEFAULT_INTERVAL_MIN),
+            )
             try:
                 if self._session_ready_for_backup() and is_cloud_configured():
                     self.ensure_historical_backfill()
@@ -546,6 +559,10 @@ class SyncManager:
             'idempotency_key': batch_key,
             'entities': entities,
         }
+        from backend.cloud.net_gate import mark_network_down, network_up
+        if not network_up(1.0):
+            mark_network_down()
+            raise requests.ConnectionError('Offline — MugoByte Cloud unreachable')
         url = f'{portal_url}/api/cloud/sync/batch'
         response = requests.post(url, headers=headers, json=body, timeout=60)
         if response.status_code not in (401, 403):
@@ -956,13 +973,25 @@ class SyncManager:
             business_id = ident.get('business_id') or ''
             if not business_id:
                 return {'ok': False, 'error': 'No business linked to this cloud account'}
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            object_path = f'{business_id}/{device["device_id"]}/{stamp}.mbtenc'
+            # Rolling backup style: overwrite fixed slots instead of a new file
+            # every run (that previously filled free-tier storage in days).
+            now = datetime.now(timezone.utc)
+            day = now.strftime('%Y%m%d')
+            stamp = now.strftime('%Y%m%d_%H%M%S')
+            base = f'{business_id}/{device["device_id"]}'
+            latest_path = f'{base}/{LATEST_NAME}'
+            daily_path = f'{base}/daily/{day}.mbtenc'
+            # Manual runs still refresh latest+daily; no unique timestamped blob.
+            object_path = latest_path
 
             client = SupabaseClient()
             self._emit('Uploading to MugoByte Platform…', 55)
             try:
-                client.upload_file(object_path, enc_path, content_type='application/octet-stream')
+                client.upload_file(latest_path, enc_path, content_type='application/octet-stream')
+                try:
+                    client.upload_file(daily_path, enc_path, content_type='application/octet-stream')
+                except Exception as e:
+                    logger.warning('Daily backup slot upload skipped: %s', e)
             except (SupabaseError, OSError, ConnectionError) as e:
                 # Queue for retry when offline / upload fails
                 hold = os.path.join(
@@ -1014,16 +1043,28 @@ class SyncManager:
                 return {'ok': False, 'queued': True, 'error': str(e)}
 
             meta = self._build_meta(
-                business_id, device, object_path, enc_size, content_hash, reason)
+                business_id, device, latest_path, enc_size, content_hash, reason)
+            daily_meta = self._build_meta(
+                business_id, device, daily_path, enc_size, content_hash, reason or 'daily')
             self._emit('Saving backup metadata…', 85)
-            row = client.insert_backup_meta(meta)
+            row = client.upsert_backup_meta(meta)
+            try:
+                client.upsert_backup_meta(daily_meta)
+            except Exception as e:
+                logger.debug('Daily backup meta skipped: %s', e)
             client.log_sync({
                 'business_id': business_id,
                 'device_id': device['device_id'],
                 'event_type': 'backup',
                 'status': 'ok',
                 'message': reason,
-                'detail': json.dumps({'size': enc_size, 'hash': content_hash}),
+                'detail': json.dumps({
+                    'size': enc_size,
+                    'hash': content_hash,
+                    'latest': latest_path,
+                    'daily': daily_path,
+                    'style': 'rolling',
+                }),
             })
 
             # Touch device last_seen
@@ -1047,16 +1088,24 @@ class SyncManager:
                 'last_backup_at': _utc_now(),
                 'last_backup_size': enc_size,
                 'last_backup_id': backup_id or '',
-                'last_storage_path': object_path,
+                'last_storage_path': latest_path,
+                'last_daily_path': daily_path,
                 'last_content_hash': content_hash,
                 'last_plain_size': size_plain,
                 'last_error': '',
                 'last_reason': reason,
+                'backup_style': 'rolling',
             }
             save_json(backup_state_path(), state)
             self._last_error = ''
+            try:
+                pruned = self._prune_old_backups(client, business_id, device['device_id'])
+                if pruned:
+                    logger.info('Pruned %s old cloud backup(s) for %s', pruned, device['device_id'])
+            except Exception as e:
+                logger.warning('Backup prune skipped: %s', e)
             self._emit('Backup complete', 100)
-            logger.info('Cloud backup OK: %s (%.1f KB)', object_path, enc_size / 1024)
+            logger.info('Cloud backup OK: %s (%.1f KB)', latest_path, enc_size / 1024)
             return {'ok': True, 'meta': meta, 'row': row, 'size': enc_size}
         except EncryptionError as e:
             self._last_error = str(e)
@@ -1074,6 +1123,62 @@ class SyncManager:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                 except Exception:
                     pass
+
+    def _prune_old_backups(self, client: SupabaseClient, business_id: str, device_id: str) -> int:
+        """
+        Keep rolling slots only:
+          - {device}/latest.mbtenc
+          - {device}/daily/YYYYMMDD.mbtenc for the newest N days
+        Delete legacy timestamped blobs and older daily slots.
+        """
+        cfg = load_cloud_config()
+        keep = max(1, int(cfg.get('backup_keep_count') or DEFAULT_KEEP_COUNT))
+        rows = client.rest_select(
+            'backups',
+            f'business_id=eq.{quote(business_id, safe="")}'
+            f'&device_id=eq.{quote(device_id, safe="")}'
+            f'&order=created_at.desc&select=id,storage_path,created_at',
+        ) or []
+        if not rows:
+            return 0
+
+        latest_suffix = f'/{LATEST_NAME}'
+        daily_prefix = f'{business_id}/{device_id}/daily/'
+        daily_rows = []
+        doomed = []
+        for r in rows:
+            path = str(r.get('storage_path') or '')
+            if path.endswith(latest_suffix) or path.endswith(f'/{LATEST_NAME}'):
+                continue
+            if '/daily/' in path:
+                daily_rows.append(r)
+                continue
+            # Legacy unique-timestamp uploads — always prune once rolling style is active.
+            doomed.append(r)
+
+        # Keep newest N daily slots; prune the rest.
+        daily_rows.sort(key=lambda r: str(r.get('created_at') or ''), reverse=True)
+        doomed.extend(daily_rows[keep:])
+
+        if not doomed:
+            return 0
+        paths = [str(r.get('storage_path') or '') for r in doomed if r.get('storage_path')]
+        if paths:
+            try:
+                client.delete_files(paths)
+            except Exception as e:
+                logger.warning('Storage prune failed (%s); continuing with metadata cleanup', e)
+        removed = 0
+        for r in doomed:
+            rid = r.get('id')
+            if not rid:
+                continue
+            try:
+                client.rest_delete('backups', f'id=eq.{quote(str(rid), safe="")}')
+                removed += 1
+            except Exception as e:
+                logger.debug('backup row prune skipped: %s', e)
+        return removed
 
     def _build_meta(self, business_id, device, object_path, enc_size, content_hash, reason):
         return {

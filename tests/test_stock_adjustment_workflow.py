@@ -368,14 +368,14 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
 
         self.assertEqual(
             self._movements(),
-            [('SUPERADMIN_ADJUST', 4.0), ('SUPERADMIN_ADJUST', -4.0)],
+            [('INITIAL', 10.0), ('SUPERADMIN_ADJUST', 4.0), ('SUPERADMIN_ADJUST', -4.0)],
         )
 
     def test_reduce_with_wrong_pin_writes_no_stock_or_movement(self):
         rejected = self._adjust('remove', 6, pin='000000')
         self.assertEqual(rejected.get('status'), 403)
         self.assertEqual(self._stock(), 10)
-        self.assertEqual(self._movements(), [])
+        self.assertEqual(self._movements(), [('INITIAL', 10.0)])
 
         db = self.ac._db()
         try:
@@ -396,7 +396,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         spoof_remove = self._adjust('remove', -5, pin='')
         self.assertEqual(spoof_remove.get('status'), 400)
         self.assertEqual(self._stock(), 10)
-        self.assertEqual(self._movements(), [])
+        self.assertEqual(self._movements(), [('INITIAL', 10.0)])
 
     def test_no_pin_reduction_is_refused_for_every_reason_label(self):
         # Write-off style reasons must not become a PIN-free reduction path.
@@ -404,7 +404,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             result = self._adjust('remove', 1, pin='', reason=reason)
             self.assertEqual(result.get('status'), 403, reason)
         self.assertEqual(self._stock(), 10)
-        self.assertEqual(self._movements(), [])
+        self.assertEqual(self._movements(), [('INITIAL', 10.0)])
 
     def test_repeat_submit_of_one_reduction_moves_stock_once(self):
         first = self._adjust('remove', 2)
@@ -413,7 +413,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         second = self._adjust('remove', 2)
         self.assertEqual(second.get('status'), 409)
         self.assertEqual(self._stock(), 8)
-        self.assertEqual(self._movements(), [('SUPERADMIN_ADJUST', -2.0)])
+        self.assertEqual(self._movements(), [('INITIAL', 10.0), ('SUPERADMIN_ADJUST', -2.0)])
 
     def test_edit_product_blocks_stock_edits_in_both_directions(self):
         for target in (999, 1):
@@ -423,15 +423,43 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
         self.assertEqual(self._stock(), 10)
 
     def test_receiving_stock_needs_the_role_but_no_pin(self):
-        received = self.api.receive_stock(self.pid, 25, notes='QA receive')
+        # Supplier deliveries stay on the receipt path. A cashier may receive
+        # one; a viewer may not. The same delivery token cannot add stock twice.
+        supplier = self.api.create_supplier({'name': 'QA Supplier'})
+        self.assertTrue(supplier.get('success'), supplier)
+        received = self.api.receive_delivery(
+            supplier['id'],
+            [{'product_id': self.pid, 'quantity': 25}],
+            notes='QA receive',
+            client_token='qa-receive-once',
+        )
         self.assertTrue(received.get('success'), received)
         self.assertEqual(self._stock(), 35)
-
-        for role in ('cashier', 'viewer', 'manager', 'admin'):
-            self.api._role = role
-            denied = self.api.receive_stock(self.pid, 5)
-            self.assertEqual(denied.get('status'), 403, role)
+        again = self.api.receive_delivery(
+            supplier['id'],
+            [{'product_id': self.pid, 'quantity': 25}],
+            client_token='qa-receive-once',
+        )
+        self.assertTrue(again.get('duplicate') or again.get('success'), again)
         self.assertEqual(self._stock(), 35)
+
+        self.api._role = 'cashier'
+        cashier = self.api.receive_delivery(
+            supplier['id'],
+            [{'product_id': self.pid, 'quantity': 1}],
+            client_token='qa-receive-cashier',
+        )
+        self.assertTrue(cashier.get('success'), cashier)
+        self.assertEqual(self._stock(), 36)
+
+        self.api._role = 'viewer'
+        denied = self.api.receive_delivery(
+            supplier['id'],
+            [{'product_id': self.pid, 'quantity': 5}],
+            client_token='qa-receive-viewer',
+        )
+        self.assertIn('error', denied)
+        self.assertEqual(self._stock(), 36)
 
     def test_cashier_cannot_add_stock_without_a_pin_prompt_to_bypass(self):
         for role in ('cashier', 'viewer', 'manager', 'admin', ''):
@@ -440,7 +468,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             self.assertEqual(denied.get('status'), 403, role)
             self.assertIn('Only Super-Admin', denied.get('error', ''), role)
         self.assertEqual(self._stock(), 10)
-        self.assertEqual(self._movements(), [])
+        self.assertEqual(self._movements(), [('INITIAL', 10.0)])
 
 
 if __name__ == '__main__':

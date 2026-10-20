@@ -184,6 +184,25 @@ def verify_superadmin_pin(pin: str, api, parent_widget=None,
         return False
 
 
+def collect_superadmin_pin(api, parent_widget=None, reason='') -> str:
+    """Return a verified Super-Admin PIN, or an empty string if it was not accepted."""
+    from PyQt5.QtWidgets import QInputDialog, QLineEdit
+    auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
+    if auto:
+        return auto if verify_superadmin_pin(auto, api, parent_widget, log_attempt=True) else ''
+    prompt = 'Enter Super-Admin PIN'
+    if reason:
+        prompt += f'\n({reason})'
+    pin, ok = QInputDialog.getText(
+        parent_widget, 'Super-Admin Authorization', prompt,
+        QLineEdit.Password)
+    if not ok or not pin:
+        return ''
+    if not verify_superadmin_pin(pin, api, parent_widget, log_attempt=True):
+        return ''
+    return pin
+
+
 def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
     """
     Show PIN entry dialog and verify.

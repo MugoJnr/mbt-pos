@@ -13,6 +13,25 @@ import traceback
 _CONFIGURED = False
 
 
+def rotate_plain_log(path: str, max_bytes: int = 5 * 1024 * 1024, backup_count: int = 2) -> None:
+    """Rename an oversized plain log. The active path is left for the next writer."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= int(max_bytes):
+            return
+    except OSError:
+        return
+    keep = max(1, int(backup_count))
+    for index in range(keep, 1, -1):
+        src = f'{path}.{index - 1}'
+        dst = f'{path}.{index}'
+        if not os.path.isfile(src):
+            continue
+        if os.path.isfile(dst):
+            os.remove(dst)
+        os.replace(src, dst)
+    os.replace(path, path + '.1')
+
+
 def setup_logging(base_dir: str):
     """
     Call once at startup (from launcher.py).

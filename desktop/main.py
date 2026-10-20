@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-08-27-v3.0.74"
-APP_VERSION   = "3.0.74"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-10-18-v3.1.62"
+APP_VERSION   = "3.1.62"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -144,6 +144,21 @@ def _make_logo_label(max_w: int = 280, max_h: int = 140) -> QLabel:
         lbl.setText("MBT")
         lbl.setObjectName("logoText")
     return lbl
+
+
+def _screen_for_widget(widget=None):
+    """Screen the window is on, so sidebar width clamps to that monitor."""
+    try:
+        if widget is not None:
+            screen = widget.screen()
+            if screen is not None:
+                return screen
+    except Exception:
+        pass
+    try:
+        return QApplication.primaryScreen()
+    except Exception:
+        return None
 
 
 # ?? Signals ????????????????????????????????????????????????????????????????????
@@ -311,6 +326,8 @@ class LoginDialog(QDialog):
         self._login_form = form
         self._login_foot = foot
         self.refresh_theme()
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=self._btn, submit_exempt=(self._u, self._p))
 
     def refresh_theme(self):
         """Re-apply live ThemeManager colors to login chrome (no frozen dark copy)."""
@@ -641,10 +658,14 @@ class MainWindow(QMainWindow):
         self._pending_update_version = ''
         self._pending_installer_path = None
         self._pending_update_notes = ''
+        self._closing = False
+        self._services_started = False
+        self._resume_recovery_pending = False
+        self._windows_session_hwnd = None
 
         self.setWindowTitle("MBT POS - MugoByte Technologies")
         self.setWindowIcon(icon)
-        self.setMinimumSize(1200, 720)
+        self.setMinimumSize(self._responsive_minimum())
         # Do NOT freeze a copy of MBT_STYLESHEET on the window ? it blocks ThemeManager
         # light/dark updates (QApp sheet never reaches #sidebar / #topbar). Inherit QApp.
         self.setStyleSheet('')
@@ -717,6 +738,7 @@ class MainWindow(QMainWindow):
 
         # Paint chrome first ? defer first-tab show so the maximized frame paints
         self.showMaximized()
+        self._install_windows_session_events()
         # Optional evidence dumps: set MBT_QA_THEME=1 before RUN_DEV
         if os.environ.get('MBT_QA_THEME', '').strip() in ('1', 'true', 'yes'):
             try:
@@ -740,6 +762,11 @@ class MainWindow(QMainWindow):
         Override with env MBT_SESSION_IDLE_SEC (seconds). Set 0 to disable.
         Activity = mouse / key / wheel / touch on the app.
         """
+        try:
+            from desktop.utils.select_controls import install_combo_popup_fix
+            install_combo_popup_fix()
+        except Exception:
+            pass
         try:
             raw = (os.environ.get('MBT_SESSION_IDLE_SEC') or '').strip()
             if raw == '':
@@ -814,6 +841,11 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         try:
+            if event.type() == QEvent.Resize and obj is getattr(self, '_sidebar', None):
+                self._on_sidebar_resized()
+        except Exception:
+            pass
+        try:
             et = event.type()
             if et in (
                 QEvent.MouseMove,
@@ -847,7 +879,10 @@ class MainWindow(QMainWindow):
     def _open_global_search(self):
         try:
             from desktop.dialogs.global_search_dialog import GlobalSearchDialog
-            dlg = GlobalSearchDialog(self.api, self)
+            dlg = GlobalSearchDialog(
+                self.api, self,
+                allowed_modules=set(getattr(self, '_nav', {}).keys()),
+            )
             dlg.navigate.connect(self._on_global_search_nav)
             dlg.exec_()
         except Exception as e:
@@ -1018,7 +1053,28 @@ class MainWindow(QMainWindow):
             return {}
 
     # ?? Background services ????????????????????????????????????????????????????
+    def _responsive_minimum(self) -> QSize:
+        """Smallest usable shell size, clamped to the screen actually in use.
+
+        A hard 1200x720 minimum pushed the window wider than a 1024x768 screen.
+        """
+        from PyQt5.QtCore import QSize
+        want_w, want_h = 960, 600
+        screen = _screen_for_widget(self)
+        if screen is not None:
+            available = screen.availableGeometry()
+            if available.width() > 0:
+                want_w = min(want_w, available.width())
+            if available.height() > 0:
+                want_h = min(want_h, available.height())
+        return QSize(max(640, want_w), max(480, want_h))
+
     def _start_services(self):
+        # A retired window must never re-arm services, and a replayed timer must
+        # not start a second copy of every poller.
+        if self._closing or getattr(self, '_services_started', False):
+            return
+        self._services_started = True
         try:
             from backend.internet_monitor import InternetMonitor
             self._svc_net = InternetMonitor(
@@ -1189,7 +1245,8 @@ class MainWindow(QMainWindow):
             else:
                 self._pending_license_alert = None
 
-        QTimer.singleShot(0, _ui_update)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui_update)
 
     def _queue_deferred_license_alert(self, state, reason):
         self._pending_license_alert = (state, reason)
@@ -1228,7 +1285,8 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         log.info(f"Update downloaded: v{version}")
         self.signals.update_ready.emit(installer_path, version)
-        QTimer.singleShot(0, self._schedule_unattended_install)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(self._schedule_unattended_install)
 
     def _on_force_update(self, version, reason):
         self._pending_update_version = version
@@ -1260,7 +1318,8 @@ class MainWindow(QMainWindow):
                     self._sync_lbl.setText(f'Update: {title}'[:40])
             except Exception:
                 pass
-        QTimer.singleShot(3000, _show)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(lambda: QTimer.singleShot(3000, _show))
 
     def _on_download_failed(self, version, title, reason):
         def _show():
@@ -1279,7 +1338,8 @@ class MainWindow(QMainWindow):
                     self._sync_lbl.setText((title or 'Update')[:40])
             except Exception:
                 pass
-        QTimer.singleShot(0, _show)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_show)
 
     def is_safe_to_auto_update(self) -> bool:
         """True when no sale/payment/dialog/critical UI would be interrupted."""
@@ -1551,17 +1611,46 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Update Failed', str(e))
 
     def _stop_services(self):
+        """Tear down everything ``_start_services`` armed.
+
+        Logout hides this window but the object survives until Qt deletes it,
+        so any poller left running keeps hitting the database and the network
+        under the previous user's session.
+        """
+        self._services_started = False
         updater = getattr(self, '_updater', None)
         if updater:
             try:
                 updater.stop()
             except Exception:
                 pass
-        for svc in (self._svc_net, self._svc_lic, self._svc_diag,
-                    getattr(self, '_svc_sched', None)):
+        self._updater = None
+        for attr in ('_svc_net', '_svc_lic', '_svc_diag', '_svc_sched'):
+            svc = getattr(self, attr, None)
             if svc:
-                try: svc.stop()
-                except Exception: pass
+                try:
+                    svc.stop()
+                except Exception:
+                    pass
+            setattr(self, attr, None)
+        for module, func in (
+            ('backend.cloud_backup', 'stop_cloud_backup_service'),
+            ('backend.local_db_backup', 'stop_local_backup_scheduler'),
+            ('backend.cloud.report_engine', 'stop_report_scheduler'),
+            ('backend.cloudflare_setup', 'stop_auto_cloudflare'),
+        ):
+            try:
+                mod = __import__(module, fromlist=[func])
+                getattr(mod, func)()
+            except Exception as e:
+                log.debug('%s.%s: %s', module, func, e)
+        try:
+            from desktop.utils.lifecycle import stop_timers
+            stopped = stop_timers(self)
+            if stopped:
+                log.info('Stopped %d window timer(s) during teardown', stopped)
+        except Exception:
+            pass
 
     # ?? UI ?????????????????????????????????????????????????????????????????????
     def _build_ui(self):
@@ -1572,8 +1661,13 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        from desktop.utils.shell_splitter import ShellSplitter
+        split = ShellSplitter(Qt.Horizontal)
+        split.set_reset_callback(self._reset_sidebar_width)
+        self._shell_splitter = split
+
         self._sidebar = self._build_sidebar()
-        root.addWidget(self._sidebar)
+        split.addWidget(self._sidebar)
 
         right = QWidget(); right.setObjectName("content")
         rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(0)
@@ -1581,11 +1675,18 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget(); self._stack.setObjectName("pageStack")
         rl.addWidget(self._stack)
         rl.addWidget(self._build_statusbar())
-        root.addWidget(right, 1)
+        split.addWidget(right)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        root.addWidget(split, 1)
+
+        self._restore_sidebar_prefs()
+        self._connect_sidebar()
+        self._apply_sidebar_state(persist=False)
 
     def _build_sidebar(self):
-        # AppShell sidebar ? 240px (matches theme QSS), logo + brand, gold active rail
-        sb = QWidget(); sb.setObjectName("sidebar"); sb.setFixedWidth(240)
+        # Width is applied by _apply_sidebar_state (never fixed here or in QSS).
+        sb = QWidget(); sb.setObjectName("sidebar")
         # QWidget backgrounds need styled-background or light QSS never paints
         sb.setAttribute(Qt.WA_StyledBackground, True)
         sb.setAutoFillBackground(True)
@@ -1603,8 +1704,18 @@ class MainWindow(QMainWindow):
         t1 = QLabel("MBT"); t1.setObjectName("sidebarLogoText")
         t2 = QLabel("POS SYSTEM"); t2.setObjectName("sidebarLogoSub")
         brand.addWidget(t1); brand.addWidget(t2)
-        ll.addWidget(logo); ll.addLayout(brand, 1)
+        toggle = QPushButton()
+        toggle.setObjectName("sidebarToggle")
+        toggle.setCursor(Qt.PointingHandCursor)
+        toggle.setFocusPolicy(Qt.StrongFocus)
+        toggle.setFlat(True)
+        toggle.setToolTip("Collapse navigation")
+        ll.addWidget(logo); ll.addLayout(brand, 1); ll.addWidget(toggle, 0, Qt.AlignVCenter)
         sl.addWidget(lw)
+        self._sidebar_logo_row = lw
+        self._sidebar_logo = logo
+        self._sidebar_brand = (t1, t2)
+        self._sidebar_toggle = toggle
 
         sl.addSpacing(8)
 
@@ -1659,6 +1770,9 @@ class MainWindow(QMainWindow):
             btn.setObjectName("navBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
+            btn.setProperty('navLabel', lbl)
+            btn.setToolTip(lbl)
+            btn.setAccessibleName(lbl)
             try:
                 btn.setIcon(nav_icon(tid, 18))
                 btn.setIconSize(QSize(18, 18))
@@ -1681,9 +1795,252 @@ class MainWindow(QMainWindow):
         ur.setObjectName("sidebarUserRole")
         lo = QPushButton("Sign Out"); lo.setObjectName("logoutBtn")
         lo.setCursor(Qt.PointingHandCursor); lo.clicked.connect(self._logout)
+        lo.setToolTip('Sign out')
+        lo.setAccessibleName('Sign out')
         ul.addWidget(un); ul.addWidget(ur); ul.addWidget(lo)
         sl.addWidget(uw)
+        self._sidebar_user = uw
+        self._sidebar_user_labels = (un, ur)
+        self._sidebar_logout = lo
         return sb
+
+    def _sidebar_screen_width(self) -> int:
+        try:
+            screen = _screen_for_widget(self)
+            if screen is not None and screen.availableGeometry().width() > 0:
+                return int(screen.availableGeometry().width())
+        except Exception:
+            pass
+        return 0
+
+    def _sidebar_window_width(self) -> int:
+        try:
+            return max(int(self.width()), int(self.minimumWidth()))
+        except Exception:
+            return 0
+
+    def _restore_sidebar_prefs(self):
+        from desktop.utils.sidebar_prefs import load_sidebar_prefs
+        prefs = load_sidebar_prefs(
+            available_width=self._sidebar_screen_width(),
+            window_width=self._sidebar_window_width())
+        self._sidebar_collapsed = bool(prefs['collapsed'])
+        self._sidebar_width = int(prefs['width'])
+
+    def _connect_sidebar(self):
+        if getattr(self, '_sidebar_connected', False):
+            return
+        toggle = getattr(self, '_sidebar_toggle', None)
+        if toggle is not None:
+            toggle.clicked.connect(self._toggle_sidebar)
+        split = getattr(self, '_shell_splitter', None)
+        if split is not None:
+            split.splitterMoved.connect(self._on_sidebar_splitter_moved)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(450)
+        timer.timeout.connect(self._persist_sidebar_prefs)
+        self._sidebar_save_timer = timer
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is not None:
+            sidebar.installEventFilter(self)
+        try:
+            from PyQt5.QtWidgets import QShortcut
+            from PyQt5.QtGui import QKeySequence
+            shortcut = QShortcut(QKeySequence('Ctrl+B'), self)
+            shortcut.setContext(Qt.ApplicationShortcut)
+            shortcut.activated.connect(self._toggle_sidebar)
+            self._sidebar_shortcut = shortcut
+        except Exception as e:
+            log.debug('sidebar shortcut: %s', e)
+        self._sidebar_connected = True
+
+    def _toggle_sidebar(self, *_args):
+        self._sidebar_collapsed = not bool(getattr(self, '_sidebar_collapsed', False))
+        self._apply_sidebar_state(persist=True)
+
+    def _reset_sidebar_width(self, *_args):
+        from desktop.utils.sidebar_prefs import default_sidebar_state
+        _collapsed, width = default_sidebar_state(self._sidebar_screen_width())
+        self._sidebar_width = int(width)
+        self._apply_sidebar_state(persist=True)
+
+    @staticmethod
+    def _repolish(widget):
+        try:
+            style = widget.style()
+            style.unpolish(widget)
+            style.polish(widget)
+        except Exception:
+            pass
+
+    _NAV_LABEL_CHROME = 72
+
+    def _elide_nav_label(self, btn, label: str, width: int) -> str:
+        try:
+            from PyQt5.QtGui import QFontMetrics
+            available = max(36, int(width) - self._NAV_LABEL_CHROME)
+            return QFontMetrics(btn.font()).elidedText(
+                str(label), Qt.ElideRight, available)
+        except Exception:
+            return str(label)
+
+    def _on_sidebar_resized(self):
+        if getattr(self, '_sidebar_collapsed', False):
+            return
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        width = int(sidebar.width())
+        if width == int(getattr(self, '_nav_label_width', -1) or -1):
+            return
+        self._nav_label_width = width
+        self._relabel_nav(width)
+
+    def _relabel_nav(self, width: int, collapsed: bool = None):
+        if collapsed is None:
+            collapsed = bool(getattr(self, '_sidebar_collapsed', False))
+        for tid, btn in (getattr(self, '_nav', {}) or {}).items():
+            raw = btn.property('navLabel') or self._TAB_LABELS.get(tid, tid.title())
+            title = str(raw).replace('&&', '&')
+            btn.setToolTip(title)
+            btn.setAccessibleName(title)
+            btn.setText('' if collapsed else '  ' + self._elide_nav_label(btn, raw, width))
+
+    def _apply_sidebar_chrome(self, collapsed: bool, width: int):
+        toggle = getattr(self, '_sidebar_toggle', None)
+        if toggle is not None:
+            tip = 'Expand navigation' if collapsed else 'Collapse navigation'
+            toggle.setToolTip(tip)
+            toggle.setAccessibleName(tip)
+            try:
+                from desktop.utils.nav_icons import apply_button_icon
+                apply_button_icon(
+                    toggle, 'sidebar_expand' if collapsed else 'sidebar_collapse', 16)
+            except Exception:
+                pass
+        row = getattr(self, '_sidebar_logo_row', None)
+        if row is not None and row.layout() is not None:
+            row.layout().setContentsMargins(
+                *((12, 12, 12, 12) if collapsed else (16, 12, 16, 12)))
+        logo = getattr(self, '_sidebar_logo', None)
+        if logo is not None:
+            logo.setVisible(not collapsed)
+        for label in (getattr(self, '_sidebar_brand', None) or ()):
+            label.setVisible(not collapsed)
+        self._relabel_nav(width, collapsed=collapsed)
+        for btn in (getattr(self, '_nav', {}) or {}).values():
+            btn.setProperty('navCollapsed', bool(collapsed))
+            self._repolish(btn)
+        for label in (getattr(self, '_sidebar_user_labels', None) or ()):
+            label.setVisible(not collapsed)
+        logout = getattr(self, '_sidebar_logout', None)
+        if logout is not None:
+            logout.setText('' if collapsed else 'Sign Out')
+            logout.setProperty('navCollapsed', bool(collapsed))
+            try:
+                from desktop.utils.nav_icons import apply_button_icon
+                if collapsed:
+                    apply_button_icon(logout, 'signout', 16)
+                else:
+                    logout.setIcon(QIcon())
+            except Exception:
+                pass
+            self._repolish(logout)
+        user = getattr(self, '_sidebar_user', None)
+        if user is not None:
+            user.setProperty('navCollapsed', bool(collapsed))
+            if user.layout() is not None:
+                user.layout().setContentsMargins(
+                    *((10, 10, 10, 10) if collapsed else (16, 14, 16, 14)))
+            self._repolish(user)
+
+    def _apply_sidebar_state(self, persist: bool = True):
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        from desktop.utils.sidebar_prefs import (
+            COLLAPSED_WIDTH, EXPANDED_MIN, clamp_sidebar_width, max_width_for_window,
+        )
+        collapsed = bool(getattr(self, '_sidebar_collapsed', False))
+        window_width = self._sidebar_window_width()
+        width = clamp_sidebar_width(
+            getattr(self, '_sidebar_width', None), window_width)
+        self._sidebar_width = width
+        target = COLLAPSED_WIDTH if collapsed else width
+        self._nav_label_width = -1
+        self._sidebar_applying = True
+        sidebar.setUpdatesEnabled(False)
+        try:
+            self._apply_sidebar_chrome(collapsed, target)
+            if collapsed:
+                sidebar.setMinimumWidth(COLLAPSED_WIDTH)
+                sidebar.setMaximumWidth(COLLAPSED_WIDTH)
+            else:
+                sidebar.setMinimumWidth(EXPANDED_MIN)
+                sidebar.setMaximumWidth(max_width_for_window(window_width))
+            split = getattr(self, '_shell_splitter', None)
+            if split is not None:
+                total = max(int(split.width()), window_width, target + 1)
+                split.setSizes([target, max(1, total - target)])
+                handle = split.handle(1)
+                if handle is not None:
+                    handle.setEnabled(not collapsed)
+                    handle.setCursor(Qt.ArrowCursor if collapsed else Qt.SplitHCursor)
+                    handle.update()
+        finally:
+            sidebar.setUpdatesEnabled(True)
+            self._sidebar_applying = False
+        if persist:
+            self._queue_sidebar_save()
+
+    def _on_sidebar_splitter_moved(self, _pos: int = 0, _index: int = 0):
+        if getattr(self, '_sidebar_applying', False) or getattr(self, '_sidebar_collapsed', False):
+            return
+        sidebar = getattr(self, '_sidebar', None)
+        if sidebar is None:
+            return
+        from desktop.utils.sidebar_prefs import clamp_sidebar_width
+        width = clamp_sidebar_width(sidebar.width(), self._sidebar_window_width())
+        if width != int(getattr(self, '_sidebar_width', 0) or 0):
+            self._sidebar_width = width
+            self._relabel_nav(width)
+        self._queue_sidebar_save()
+
+    def _reclamp_sidebar_for_window(self):
+        sidebar = getattr(self, '_sidebar', None)
+        split = getattr(self, '_shell_splitter', None)
+        if sidebar is None or split is None or getattr(self, '_sidebar_applying', False):
+            return
+        if getattr(self, '_sidebar_collapsed', False):
+            return
+        from desktop.utils.sidebar_prefs import EXPANDED_MIN, max_width_for_window
+        allowed = max_width_for_window(self._sidebar_window_width())
+        sidebar.setMinimumWidth(EXPANDED_MIN)
+        sidebar.setMaximumWidth(allowed)
+        if sidebar.width() > allowed:
+            self._sidebar_applying = True
+            try:
+                total = max(int(split.width()), self._sidebar_window_width())
+                split.setSizes([allowed, max(1, total - allowed)])
+            finally:
+                self._sidebar_applying = False
+            self._relabel_nav(allowed)
+
+    def _queue_sidebar_save(self):
+        timer = getattr(self, '_sidebar_save_timer', None)
+        if timer is None:
+            self._persist_sidebar_prefs()
+            return
+        timer.start()
+
+    def _persist_sidebar_prefs(self):
+        from desktop.utils.sidebar_prefs import save_sidebar_prefs
+        if not save_sidebar_prefs(
+            bool(getattr(self, '_sidebar_collapsed', False)),
+            getattr(self, '_sidebar_width', None),
+        ):
+            log.debug('sidebar preference not saved')
 
     def _build_topbar(self):
         bar = QWidget(); bar.setObjectName("topbar"); bar.setFixedHeight(56)
@@ -1738,9 +2095,8 @@ class MainWindow(QMainWindow):
         web_btn.setObjectName("refreshBtn")
         web_btn.setCursor(Qt.PointingHandCursor)
         web_btn.setToolTip(
-            "Open the live web dashboard in your browser.\n"
-            "Uses local http://127.0.0.1:5050 when available;\n"
-            "falls back to your mugobyte.com remote URL if configured.")
+            "Choose which dashboard to open:\n"
+            "this shop, the owner portal, or the remote shop address.")
         web_btn.clicked.connect(self._open_web_dashboard)
         try:
             from desktop.utils.nav_icons import apply_button_icon
@@ -2013,6 +2369,11 @@ class MainWindow(QMainWindow):
         self._ai_ws_active = False
         ws = getattr(self, '_ai_workspace', None)
         if ws is not None:
+            try:
+                from desktop.utils.lifecycle import stop_timers
+                stop_timers(ws)
+            except Exception:
+                pass
             ws.hide()
         fab = getattr(self, '_ai_fab', None)
         if fab is not None:
@@ -2139,6 +2500,10 @@ class MainWindow(QMainWindow):
                 ws.setGeometry(self.centralWidget().rect())
             except Exception:
                 pass
+        try:
+            self._reclamp_sidebar_for_window()
+        except Exception:
+            pass
         try:
             self._position_ai_chrome()
         except Exception:
@@ -2382,7 +2747,8 @@ class MainWindow(QMainWindow):
                     self._tabs['settings']._refresh_cf_status()
                 except Exception:
                     pass
-        QTimer.singleShot(0, _ui)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui)
 
     def _on_auto_cloudflare_failed(self, result: dict):
         role = self.user_data.get('user', {}).get('role', '')
@@ -2405,7 +2771,8 @@ class MainWindow(QMainWindow):
                     self._set_status(f'Remote dashboard: {err[:120]}')
             except Exception:
                 pass
-        QTimer.singleShot(0, _ui)
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(_ui)
 
     def _on_sync(self, s: str):
         self._sync_lbl.setText(
@@ -2481,14 +2848,66 @@ class MainWindow(QMainWindow):
         ok = self._svc_net.is_connected if self._svc_net else False
         self._on_conn(ok)
 
+    def _dashboard_choice(self):
+        """Ask which dashboard to open. Returns shop, portal, remote, or ''."""
+        remote_url = ''
+        try:
+            from backend.cloudflare_setup import load_web_config
+            wcfg = load_web_config() or {}
+            domain = (wcfg.get('tunnel_domain') or '').strip()
+            if domain:
+                remote_url = f'https://{domain}'
+        except Exception:
+            remote_url = ''
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle('Open dashboard')
+        box.setText('Which dashboard do you want to open?')
+        box.setInformativeText(
+            'This shop is the live dashboard on this computer.\n'
+            'Owner portal is the cloud shop at portal.mugobyte.com.'
+            + (f'\nRemote shop is {remote_url}.' if remote_url else '')
+        )
+        shop = box.addButton('This shop', QMessageBox.AcceptRole)
+        portal = box.addButton('Owner portal', QMessageBox.ActionRole)
+        remote = box.addButton('Remote shop', QMessageBox.ActionRole) if remote_url else None
+        box.addButton('Cancel', QMessageBox.RejectRole)
+        box.exec_()
+        picked = box.clickedButton()
+        if picked == shop:
+            return 'shop'
+        if picked == portal:
+            return 'portal'
+        if remote is not None and picked == remote:
+            return 'remote'
+        return ''
+
     def _open_web_dashboard(self):
-        """Ensure embedded Flask is up, then open local (prefer) or remote URL.
+        """Ask which dashboard, then open that one.
 
         Handles the race where the button is clicked before the background
         WebDashStart thread finishes binding :5050.
         """
         import urllib.request
         import webbrowser
+
+        choice = self._dashboard_choice()
+        if choice == 'portal':
+            webbrowser.open('https://portal.mugobyte.com')
+            log.info('Opened owner portal')
+            return
+        if choice == 'remote':
+            try:
+                from backend.cloudflare_setup import load_web_config
+                domain = ((load_web_config() or {}).get('tunnel_domain') or '').strip()
+            except Exception:
+                domain = ''
+            if domain:
+                webbrowser.open(f'https://{domain}')
+                log.info('Opened remote shop dashboard: %s', domain)
+                return
+        if choice != 'shop':
+            return
 
         _start_web_dashboard()
 
@@ -2551,20 +2970,132 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
             ) != QMessageBox.Yes:
                 return
+        global _main_window
+        self._closing = True
         try:
             t = getattr(self, '_idle_timer', None)
             if t is not None:
                 t.stop()
         except Exception:
             pass
+        workspace = getattr(self, '_ai_workspace', None)
+        if workspace is not None:
+            try:
+                from desktop.utils.lifecycle import stop_timers
+                stop_timers(workspace)
+                workspace.close()
+                workspace.deleteLater()
+            except Exception:
+                pass
+            self._ai_workspace = None
+            self._ai_ws_active = False
         self._stop_services()
+        api = self.api
+        app = QApplication.instance()
+        if app is not None:
+            app.setQuitOnLastWindowClosed(False)
         self.hide()
-        _show_login(self.api)
+        if _main_window is self:
+            _main_window = None
+        self.close()
+        self.deleteLater()
+        QTimer.singleShot(0, lambda: _show_login(api))
 
     def _logout(self):
         self._perform_logout(confirm=True)
 
+    def _install_windows_session_events(self):
+        """Register this window for sleep, unlock, and session-switch events."""
+        if sys.platform != 'win32':
+            return
+        try:
+            from desktop.utils.windows_session import register_session_notifications
+            hwnd = int(self.winId())
+            if register_session_notifications(hwnd):
+                self._windows_session_hwnd = hwnd
+                log.info('Windows power/session event handling enabled')
+        except Exception as e:
+            log.warning('Windows session event setup: %s', e)
+
+    def nativeEvent(self, event_type, message):
+        """Wake the till after Windows sleep or unlock without a cloud call."""
+        try:
+            from desktop.utils.windows_session import (
+                classify_message, decode_native_message,
+            )
+            message_id, event_code = decode_native_message(message)
+            action = classify_message(message_id, event_code)
+            if action in ('resume', 'session-resume'):
+                self._schedule_resume_recovery(action)
+        except Exception as e:
+            log.debug('Windows native event decode skipped: %s', e)
+        return False, 0
+
+    def _schedule_resume_recovery(self, reason: str):
+        if self._closing or self._resume_recovery_pending:
+            return
+        self._resume_recovery_pending = True
+        QTimer.singleShot(250, lambda: self._recover_after_windows_resume(reason))
+
+    def _recover_after_windows_resume(self, reason: str):
+        """Recheck the local license and database after sleep. No cloud call."""
+        self._resume_recovery_pending = False
+        if self._closing:
+            return
+        try:
+            service = self._svc_lic
+            if service is not None:
+                previous = service._last_state
+                state = service.engine.revalidate()
+                service._last_state = state
+                status = service.engine.get_status_dict()
+                if state != previous:
+                    self._on_license_state(state, status)
+        except Exception as e:
+            log.warning('Post-resume license revalidation: %s', e)
+        self._probe_database_after_resume(0)
+        try:
+            if self._svc_net is not None:
+                self._on_conn(bool(self._svc_net.is_connected))
+            self._set_status('Session resumed')
+        except Exception as e:
+            log.warning('Post-resume status refresh: %s', e)
+
+    def _probe_database_after_resume(self, attempt: int):
+        if self._closing:
+            return
+        try:
+            from desktop.utils.api_client import _db_light
+            db = _db_light()
+            try:
+                db.execute('SELECT 1').fetchone()
+            finally:
+                db.close()
+        except Exception as e:
+            if attempt < 3:
+                QTimer.singleShot(
+                    1500 * (attempt + 1),
+                    lambda n=attempt + 1: self._probe_database_after_resume(n),
+                )
+            else:
+                log.error('Post-resume database reconnect failed: %s', e)
+                self._set_status('Database reconnect pending', transient=False)
+
     def closeEvent(self, event):
+        self._closing = True
+        hwnd = self._windows_session_hwnd
+        if hwnd:
+            try:
+                from desktop.utils.windows_session import unregister_session_notifications
+                unregister_session_notifications(hwnd)
+            except Exception:
+                pass
+            self._windows_session_hwnd = None
+        try:
+            from desktop.utils.lifecycle import stop_timers
+            stop_timers(self)
+        except Exception:
+            pass
         self._stop_services(); event.accept()
 
 
@@ -2625,6 +3156,9 @@ def _show_login(api: APIClient = None):
 
     dlg = LoginDialog(api, icon)
     # Centre it
+    app = QApplication.instance()
+    if app is not None:
+        app.setQuitOnLastWindowClosed(True)
     s = QApplication.primaryScreen().geometry()
     dlg.move(s.center().x() - dlg.width()//2, s.center().y() - dlg.height()//2)
 
@@ -2641,6 +3175,39 @@ def _show_login(api: APIClient = None):
             install(_main_window)
     except Exception:
         pass
+
+
+def _shutdown_and_exit(code):
+    """Stop owned services and leave without CPython finalizing PyQt.
+
+    On this build, returning from the event loop lets sip walk a wrapper map
+    that is already gone and faults the process on the way out. Everything the
+    app owns is stopped here, then the process exits immediately.
+    """
+    try:
+        _stop_web_dashboard()
+    except Exception:
+        pass
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except Exception:
+            pass
+    try:
+        exit_code = int(code)
+    except Exception:
+        exit_code = 0
+    os._exit(exit_code)
+
+
+def _read_boot_theme_is_light(settings) -> bool:
+    theme = str((settings or {}).get('theme') or (settings or {}).get('ui_theme') or 'dark').lower()
+    return theme == 'light'
 
 
 def main():
@@ -2662,12 +3229,20 @@ def main():
             pass
 
     # Force consistent high-DPI behavior so text isn't tiny on some PCs.
+    if hasattr(Qt, 'HighDpiScaleFactorRoundingPolicy'):
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     if hasattr(Qt, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    try:
+        from desktop.utils.qt_dispatch import install_ui_dispatcher
+        install_ui_dispatcher(app)
+    except Exception:
+        pass
     # Fusion makes QSS colors/borders reliable on Windows (native style ignores many rules)
     try:
         app.setStyle('Fusion')
@@ -2715,12 +3290,13 @@ def main():
     _boot_light = False
     try:
         _cfg0 = APIClient(BACKEND_URL).get_settings() or {}
-        _boot_light = str(
-            _cfg0.get('theme') or _cfg0.get('ui_theme') or 'dark'
-        ).lower() == 'light'
+        _boot_light = _read_boot_theme_is_light(_cfg0)
     except Exception:
-        pass
-    app.setStyleSheet(ThemeManager.apply(_boot_light, force=True))
+        _boot_light = False
+    if _boot_light:
+        app.setStyleSheet(ThemeManager.apply(True, force=True))
+    else:
+        app.setStyleSheet(ThemeManager.apply(False, force=True))
 
     icon = _load_icon()
     if not icon.isNull():
@@ -2781,7 +3357,7 @@ def main():
     QTimer.singleShot(700, _launch)
 
     app.aboutToQuit.connect(_stop_web_dashboard)
-    sys.exit(app.exec_())
+    _shutdown_and_exit(app.exec_())
 
 
 if __name__ == '__main__':

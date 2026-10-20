@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -13,6 +14,106 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 logger = logging.getLogger('cloud.commands')
+
+_receipt_lock = threading.Lock()
+_RECEIPT_LIMIT = 500
+
+
+def _receipt_path() -> str:
+    """Local command-id ledger. Not the shop database and not the license store."""
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    folder = os.path.join(base, 'MugoByte', 'MBT POS')
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, 'command_receipts.json')
+
+
+def load_command_receipts(path: str | None = None) -> set[str]:
+    path = path or _receipt_path()
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            return {str(x) for x in data if str(x).strip()}
+    except Exception:
+        return set()
+    return set()
+
+
+def remember_command(command_id: str, path: str | None = None) -> None:
+    """Record the id before any destructive effect. Crash-safe replace."""
+    command_id = str(command_id or '').strip()
+    if not command_id:
+        raise ValueError('command id required')
+    path = path or _receipt_path()
+    with _receipt_lock:
+        ids = list(load_command_receipts(path))
+        if command_id not in ids:
+            ids.append(command_id)
+        ids = ids[-_RECEIPT_LIMIT:]
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(ids, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+
+
+def updated_row_has_id(data: Any, command_id: str) -> bool:
+    """True only when PostgREST returned the row this device changed."""
+    command_id = str(command_id or '').strip()
+    if not command_id:
+        return False
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    for row in rows:
+        if isinstance(row, dict) and str(row.get('id') or '') == command_id:
+            return True
+    return False
+
+
+def claim_pending_command(command_id: str) -> bool:
+    """Atomically move pending -> running. Empty or failed updates do not claim."""
+    from backend.cloud.platform_service import service_update
+    from backend.cloud_backup.supabase_client import SupabaseError
+
+    command_id = str(command_id or '').strip()
+    if not command_id:
+        return False
+    query = f'id=eq.{quote(command_id, safe="")}&status=eq.pending'
+    patch = {'status': 'running', 'started_at': datetime.now().isoformat()}
+
+    def once() -> bool:
+        return updated_row_has_id(
+            service_update('remote_commands', query, patch),
+            command_id,
+        )
+
+    try:
+        return once()
+    except SupabaseError as exc:
+        if exc.status not in (401, 403):
+            logger.info('Command %s claim failed: %s', command_id, exc)
+            return False
+        if not _refresh_user_token():
+            return False
+        try:
+            return once()
+        except Exception as retry_exc:
+            logger.info('Command %s claim failed after token refresh: %s', command_id, retry_exc)
+            return False
+    except Exception as exc:
+        logger.info('Command %s claim failed: %s', command_id, exc)
+        return False
+
+
+def _refresh_user_token() -> bool:
+    """One background refresh. Uses the existing 12s client timeout."""
+    try:
+        from backend.cloud_backup.supabase_client import SupabaseClient
+        SupabaseClient().refresh_session()
+        return True
+    except Exception as exc:
+        logger.info('Command poll token refresh skipped: %s', exc)
+        return False
 
 COMMANDS = {
     'run_backup': 'Run Backup',
@@ -87,7 +188,15 @@ class CommandCenter:
 
     def poll_pending(self, device_id: str) -> list[dict]:
         try:
-            from backend.cloud.platform_service import service_select
+            from backend.cloud.net_gate import network_up
+            if not network_up(1.0):
+                return []
+            from backend.cloud.platform_service import has_service_role, service_select
+            from backend.cloud_backup.paths import load_identity
+            if not has_service_role():
+                identity = load_identity() or {}
+                if not str(identity.get('access_token') or '').strip():
+                    return []
             return service_select(
                 'remote_commands',
                 f'device_id=eq.{quote(device_id, safe="")}&status=eq.pending&select=*&order=issued_at.asc',
@@ -245,6 +354,36 @@ class CommandCenter:
             return False, str(e), None
 
 
+def dispatch_remote_command(center: CommandCenter, cmd: dict, receipt_path: str | None = None) -> str:
+    """Claim, record, then run. A missed claim or a saved id never reaches the handler."""
+    cmd_id = str(cmd.get('id') or '').strip()
+    command = cmd.get('command', '')
+    params = cmd.get('params') or {}
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except Exception:
+            params = {}
+    if not cmd_id or not command:
+        return 'ignored'
+    if cmd_id in load_command_receipts(receipt_path):
+        logger.info('Remote command %s already handled; not running again', cmd_id)
+        center.report_result(cmd_id, True, {'skipped': 'already_handled'}, '')
+        return 'skipped'
+    if not claim_pending_command(cmd_id):
+        logger.info('Remote command %s was not claimed; not executing %s', cmd_id, command)
+        return 'unclaimed'
+    try:
+        remember_command(cmd_id, receipt_path)
+    except Exception as rec_exc:
+        logger.warning('Command receipt not saved; not executing %s: %s', command, rec_exc)
+        return 'receipt_failed'
+    logger.info('Executing remote command: %s', command)
+    ok, msg, result = center.execute_local(command, params)
+    center.report_result(cmd_id, ok, result, '' if ok else msg)
+    return 'executed'
+
+
 class CommandPoller(threading.Thread):
     """Polls cloud for pending remote commands and executes them."""
 
@@ -253,9 +392,17 @@ class CommandPoller(threading.Thread):
         self.center = center
         self.device_id_getter = device_id_getter
         self._stop = threading.Event()
+        self._license_fp = ''
 
     def stop(self):
         self._stop.set()
+
+    def _get_license_device_id(self) -> str:
+        if self._license_fp:
+            return self._license_fp
+        from licensing.license_engine import LicenseEngine
+        self._license_fp = str(getattr(LicenseEngine(), 'device_id', '') or '')
+        return self._license_fp
 
     def run(self):
         logger.info('Remote command poller started')
@@ -264,35 +411,21 @@ class CommandPoller(threading.Thread):
                 device_id = self.device_id_getter()
                 if device_id:
                     pending = self.center.poll_pending(device_id)
-                    # Also poll by license engine fingerprint (may differ)
+                    # Also poll by license fingerprint (may differ).
+                    # Resolve once. A new LicenseEngine every poll runs wmic
+                    # and flashes a command window.
                     try:
-                        from licensing.license_engine import LicenseEngine
-                        fp = LicenseEngine().device_id
+                        if not self._license_fp:
+                            from licensing.license_engine import resolve_device_id
+                            self._license_fp = resolve_device_id() or ''
+                        fp = self._license_fp
                         if fp and fp != device_id:
                             pending = pending + [c for c in self.center.poll_pending(fp)
                                                  if c.get('id') not in {x.get('id') for x in pending}]
                     except Exception:
                         pass
                     for cmd in pending:
-                        cmd_id = cmd.get('id', '')
-                        command = cmd.get('command', '')
-                        params = cmd.get('params') or {}
-                        if isinstance(params, str):
-                            try:
-                                params = json.loads(params)
-                            except Exception:
-                                params = {}
-                        logger.info('Executing remote command: %s', command)
-                        try:
-                            from backend.cloud.platform_service import service_update
-                            service_update(
-                                'remote_commands', f'id=eq.{cmd_id}',
-                                {'status': 'running', 'started_at': datetime.now().isoformat()},
-                            )
-                        except Exception:
-                            pass
-                        ok, msg, result = self.center.execute_local(command, params)
-                        self.center.report_result(cmd_id, ok, result, '' if ok else msg)
+                        dispatch_remote_command(self.center, cmd)
             except Exception as e:
                 logger.debug('Command poll error: %s', e)
             self._stop.wait(CommandCenter.POLL_INTERVAL)

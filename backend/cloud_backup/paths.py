@@ -101,6 +101,20 @@ def ensure_production_cloud_config(*, persist: bool = True) -> dict[str, Any]:
     cfg = load_json(path, {})
     changed = False
 
+    # Retired project (storage-quota lock) → migrate shop installs to current Portal.
+    retired_refs = {'uynfglgttkaibyeglsrt'}
+    retired_hosts = {'uynfglgttkaibyeglsrt.supabase.co'}
+    cur_url = str(cfg.get('supabase_url') or '').strip().rstrip('/')
+    cur_ref = str(cfg.get('project_ref') or '').strip()
+    if cur_ref in retired_refs or any(h in cur_url for h in retired_hosts):
+        cfg['supabase_url'] = defaults['supabase_url']
+        cfg['anon_key'] = defaults['anon_key']
+        cfg['project_ref'] = defaults['project_ref']
+        cfg['project_name'] = defaults.get('project_name') or 'mbt-portal'
+        cfg['bucket'] = defaults.get('bucket') or 'mbt-backups'
+        changed = True
+        logger.info('Migrated cloud_config from retired Supabase project to %s', defaults['project_ref'])
+
     if not str(cfg.get('supabase_url') or '').strip():
         cfg['supabase_url'] = defaults['supabase_url']
         changed = True
@@ -116,6 +130,17 @@ def ensure_production_cloud_config(*, persist: bool = True) -> dict[str, Any]:
         changed = True
     if not cfg.get('backup_interval_minutes'):
         cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+        changed = True
+    # Always raise keep-count / slow interval if still on the old free-tier-hostile defaults.
+    try:
+        if int(cfg.get('backup_interval_minutes') or 0) < 60:
+            cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+            changed = True
+    except Exception:
+        cfg['backup_interval_minutes'] = defaults['backup_interval_minutes']
+        changed = True
+    if not cfg.get('backup_keep_count'):
+        cfg['backup_keep_count'] = defaults.get('backup_keep_count', 7)
         changed = True
     if 'service_key' not in cfg:
         cfg['service_key'] = ''
@@ -146,7 +171,8 @@ def load_cloud_config() -> dict[str, Any]:
         'anon_key': '',
         'service_key': '',
         'enabled': False,
-        'backup_interval_minutes': 5,
+        'backup_interval_minutes': 1440,
+        'backup_keep_count': 7,
         'bucket': 'mbt-backups',
     })
     defaults = production_cloud_defaults()
@@ -169,7 +195,12 @@ def load_cloud_config() -> dict[str, Any]:
     if env_svc:
         cfg['service_key'] = env_svc
     cfg['supabase_url'] = (cfg.get('supabase_url') or '').rstrip('/')
-    cfg['backup_interval_minutes'] = int(cfg.get('backup_interval_minutes') or 5)
+    cfg['backup_interval_minutes'] = int(
+        cfg.get('backup_interval_minutes') or defaults.get('backup_interval_minutes') or 1440
+    )
+    cfg['backup_keep_count'] = max(
+        1, int(cfg.get('backup_keep_count') or defaults.get('backup_keep_count') or 7)
+    )
     cfg['bucket'] = cfg.get('bucket') or 'mbt-backups'
     return cfg
 
@@ -196,13 +227,17 @@ def _protect(value: str) -> str:
     return _identity_cipher().encrypt(value.encode()).decode()
 
 
-def _unprotect(value: str) -> str:
+REAUTH_REQUIRED = 'reauth_required'
+
+
+def _unprotect(value: str, *, warn: bool = True) -> str:
     if not value:
         return ''
     try:
         return _identity_cipher().decrypt(value.encode()).decode()
     except (InvalidToken, ValueError):
-        logger.warning('Protected cloud identity token could not be decrypted')
+        if warn:
+            logger.warning('Protected cloud identity token could not be decrypted')
         return ''
 
 
@@ -220,6 +255,8 @@ def load_identity() -> dict[str, Any]:
         'created_at': '',
     })
     migrated = False
+    unreadable = False
+    already_noted = bool(identity.get('auth_unreadable_id'))
     for name in ('access_token', 'refresh_token', 'activation_token'):
         protected_name = f'{name}_protected'
         plaintext = str(identity.get(name) or '')
@@ -227,7 +264,25 @@ def load_identity() -> dict[str, Any]:
             identity[protected_name] = _protect(plaintext)
             identity[name] = ''
             migrated = True
-        identity[name] = _unprotect(str(identity.get(protected_name) or ''))
+        protected = str(identity.get(protected_name) or '')
+        if not protected:
+            identity[name] = ''
+            continue
+        try:
+            identity[name] = _identity_cipher().decrypt(protected.encode()).decode()
+        except (InvalidToken, ValueError):
+            identity[name] = ''
+            unreadable = True
+    if unreadable:
+        identity['auth_state'] = REAUTH_REQUIRED
+        identity['auth_error'] = 'protected_token_unreadable'
+        if not already_noted:
+            logger.warning('Protected cloud identity token could not be decrypted')
+            identity['auth_unreadable_id'] = 'unreadable'
+            migrated = True
+    else:
+        identity.pop('auth_state', None)
+        identity.pop('auth_error', None)
     if migrated:
         save_identity(identity)
     return identity
@@ -235,6 +290,10 @@ def load_identity() -> dict[str, Any]:
 
 def save_identity(identity: dict) -> None:
     stored = dict(identity)
+    if str(stored.get('access_token') or '').strip():
+        stored.pop('auth_state', None)
+        stored.pop('auth_error', None)
+        stored.pop('auth_unreadable_id', None)
     for name in ('access_token', 'refresh_token', 'activation_token'):
         plaintext = str(stored.pop(name, '') or '')
         protected_name = f'{name}_protected'
@@ -252,4 +311,23 @@ def is_cloud_configured() -> bool:
 
 def is_logged_in() -> bool:
     ident = load_identity()
+    if ident.get('auth_state') == REAUTH_REQUIRED:
+        return False
     return bool(ident.get('access_token') and ident.get('business_id'))
+
+
+def cloud_auth_status() -> dict[str, Any]:
+    ident = load_identity()
+    reauth = ident.get('auth_state') == REAUTH_REQUIRED
+    logged = bool(ident.get('access_token') and ident.get('business_id')) and not reauth
+    if reauth:
+        message = 'Sign in again. This PC cannot read the saved cloud session.'
+    elif logged:
+        message = 'Signed in'
+    else:
+        message = 'Not signed in'
+    return {
+        'reauth_required': reauth,
+        'logged_in': logged,
+        'message': message,
+    }

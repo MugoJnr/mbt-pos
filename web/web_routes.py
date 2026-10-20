@@ -107,10 +107,13 @@ def index():
 
 @web.route('/assets/<path:filename>')
 def spa_assets(filename):
-    assets = os.path.join(_active_dist_dir(), 'assets')
-    if not os.path.isdir(assets):
-        abort(404)
-    return send_from_directory(assets, filename)
+    # Hashed bundles differ per app. /assets requests have no ?app=, so look
+    # in the active dist first, then the other SPA.
+    for dist in (_active_dist_dir(), _PLATFORM_DIST, _LEGACY_DIST):
+        assets = os.path.join(dist, 'assets')
+        if os.path.isfile(os.path.join(assets, filename)):
+            return send_from_directory(assets, filename)
+    abort(404)
 
 
 @web.route('/static/<path:filename>')
@@ -507,6 +510,22 @@ def cloud_auth_login():
         _clear_login_attempts(client_key)
         return response
     except Exception as e:
+        from backend.cloud_backup.supabase_client import SupabaseError
+
+        msg = str(e) or ''
+        low = msg.lower()
+        status = getattr(e, 'status', 0) or 401
+        # Infra outages: don't blame credentials, and don't leak vendor/quota details to visitors.
+        if status == 402 or 'exceed_storage' in low or 'payment required' in low or 'restricted' in low:
+            current_app.logger.error('cloud auth login blocked by supabase: %s', msg)
+            return jsonify({
+                'error': 'Sign-in is temporarily unavailable. Please try again shortly.',
+            }), 503
+        if 'email not confirmed' in low or 'not confirmed' in low:
+            return jsonify({'error': 'Email not verified. Open Verify account and resend the link.'}), 401
+        if isinstance(e, SupabaseError) and status in (400, 401):
+            return jsonify({'error': 'Invalid email or password.'}), 401
+        current_app.logger.warning('cloud auth login failed: %s', msg)
         return jsonify({'error': 'Invalid email, password, or unverified account'}), 401
 
 
@@ -2581,6 +2600,22 @@ def pay_debt_invoice(inv_id):
             return jsonify({'error': 'Invoice not found'}), 404
         if inv['status'] in ('paid', 'cancelled'):
             return jsonify({'error': f"Invoice is already {inv['status']}"}), 400
+        ref = (data.get('payment_reference') or '').strip()
+        pay_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
+        if ref and 'payment_reference' in pay_cols:
+            prev = db.execute(
+                "SELECT payment_receipt, balance_before, balance_after "
+                "FROM debt_payments WHERE invoice_id=? AND payment_reference=?",
+                (inv_id, ref),
+            ).fetchone()
+            if prev:
+                return jsonify({
+                    'success': True,
+                    'duplicate': True,
+                    'payment_receipt': prev['payment_receipt'],
+                    'balance_before': prev['balance_before'],
+                    'balance_after': prev['balance_after'],
+                })
         bal_before = round(float(inv['balance']), 2)
         if amount > bal_before:
             return jsonify({'error': f"Payment ({amount:,.2f}) exceeds balance ({bal_before:,.2f})"}), 400
@@ -2589,15 +2624,27 @@ def pay_debt_invoice(inv_id):
         new_status = 'paid' if bal_after == 0 else 'partial'
         pay_r      = _next_pay_receipt(db)
         user       = g.current_user
-        db.execute(
-            "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-            "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (pay_r, inv_id, inv['customer_id'], amount,
-             data.get('payment_method','cash'), bal_before, bal_after,
-             user['id'], user.get('full_name') or user['username'],
-             data.get('notes',''))
-        )
+        if 'payment_reference' in pay_cols:
+            db.execute(
+                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                "amount,payment_method,payment_reference,balance_before,balance_after,"
+                "cashier_id,cashier_name,notes) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (pay_r, inv_id, inv['customer_id'], amount,
+                 data.get('payment_method','cash'), ref, bal_before, bal_after,
+                 user['id'], user.get('full_name') or user['username'],
+                 data.get('notes',''))
+            )
+        else:
+            db.execute(
+                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
+                "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (pay_r, inv_id, inv['customer_id'], amount,
+                 data.get('payment_method','cash'), bal_before, bal_after,
+                 user['id'], user.get('full_name') or user['username'],
+                 data.get('notes',''))
+            )
         db.execute(
             "UPDATE debt_invoices SET amount_paid=?,balance=?,status=?,updated_at=? WHERE id=?",
             (new_paid, bal_after, new_status, datetime.now().isoformat(), inv_id)
@@ -2635,6 +2682,142 @@ def list_debt_payments():
             f"{where} ORDER BY dp.created_at DESC", params
         ).fetchall()
         return jsonify(_trs(rows))
+    return _inner()
+
+
+def stock_receipt_rows(db, limit=300):
+    """Supplier deliveries stored as PURCHASE stock movements."""
+    try:
+        rows = db.execute(
+            """
+            SELECT m.id, m.product_id, m.product_name,
+                   m.qty_before, m.qty_change, m.qty_after,
+                   m.reference, m.reason, m.username, m.created_at,
+                   p.sku AS sku, p.barcode AS barcode, p.category AS category,
+                   p.unit AS unit, p.price AS price, p.cost_price AS cost_price,
+                   p.stock AS current_stock, p.min_stock AS min_stock,
+                   CASE
+                     WHEN m.reference LIKE 'RECEIVE_sup=%'
+                     THEN CAST(substr(m.reference, 13) AS INTEGER)
+                     ELSE NULL
+                   END AS supplier_id
+            FROM stock_movements m
+            LEFT JOIN products p ON p.id = m.product_id
+            WHERE m.movement_type = 'PURCHASE'
+            ORDER BY m.id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    suppliers = {}
+    try:
+        for s in db.execute(
+            "SELECT id, name, phone, notes FROM suppliers"
+        ).fetchall():
+            suppliers[s['id']] = dict(s)
+    except sqlite3.OperationalError:
+        suppliers = {}
+    grouped = []
+    try:
+        headers = db.execute(
+            """
+            SELECT id, receipt_number, supplier_id, reference_note, notes,
+                   grand_total, username, created_at
+            FROM stock_receipts
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        for header in headers:
+            header = dict(header)
+            lines = [
+                dict(line) for line in db.execute(
+                    """
+                    SELECT l.product_id, l.product_name, l.quantity, l.unit_cost,
+                           l.line_total, p.sku, p.unit, p.price, p.cost_price,
+                           p.stock AS current_stock
+                    FROM stock_receipt_lines l
+                    LEFT JOIN products p ON p.id = l.product_id
+                    WHERE l.receipt_id=?
+                    ORDER BY l.id
+                    """,
+                    (header['id'],),
+                ).fetchall()
+            ]
+            supplier = suppliers.get(header.get('supplier_id')) or {}
+            names = [line.get('product_name') or 'Product' for line in lines]
+            grouped.append({
+                'id': header['id'],
+                'receipt_number': header.get('receipt_number'),
+                'product_name': names[0] if len(names) == 1 else f"{len(names)} products",
+                'qty_change': sum(float(line.get('quantity') or 0) for line in lines),
+                'reason': header.get('reference_note') or header.get('notes') or '',
+                'username': header.get('username') or '',
+                'created_at': header.get('created_at'),
+                'supplier_name': (supplier.get('name') or '').strip(),
+                'supplier_phone': supplier.get('phone') or '',
+                'supplier_notes': supplier.get('notes') or '',
+                'grand_total': header.get('grand_total') or 0,
+                'lines': lines,
+                'grouped': True,
+            })
+    except sqlite3.OperationalError:
+        grouped = []
+    seen = {
+        str(item.get('receipt_number') or '')
+        for item in grouped if item.get('receipt_number')
+    }
+    out = list(grouped)
+    for row in rows:
+        item = dict(row)
+        supplier = suppliers.get(item.get('supplier_id')) or {}
+        name = (supplier.get('name') or '').strip()
+        reason = item.get('reason') or ''
+        if not name and 'Received from Supplier:' in reason:
+            rest = reason.split('Received from Supplier:', 1)[1].strip()
+            name = rest.split('—', 1)[0].split(' - ', 1)[0].strip()
+        item['supplier_name'] = name
+        item['supplier_phone'] = supplier.get('phone') or ''
+        item['supplier_notes'] = supplier.get('notes') or ''
+        reference = str(item.get('reference') or '')
+        receipt_no = reference.split('RCV=', 1)[1].strip() if 'RCV=' in reference else ''
+        if receipt_no and receipt_no in seen:
+            continue
+        item['receipt_number'] = receipt_no
+        out.append(item)
+    return out
+
+
+@web.route('/api/cloud/analytics/stock-receipts', methods=['GET'])
+def cloud_analytics_stock_receipts():
+    """Supplier receipts for the owner portal. This till returns its own saved receipts."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required'}), 403
+        return jsonify({
+            'receipts': stock_receipt_rows(_get_db()),
+            'source': 'till',
+        })
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts', methods=['GET'])
+def list_stock_receipts():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required'}), 403
+        return jsonify(stock_receipt_rows(_get_db()))
+
     return _inner()
 
 
@@ -2713,16 +2896,213 @@ def adjust_stock(pid):
         movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
         try:
             from desktop.utils.accounting_hooks import post_stock_adjust_journal
-            post_stock_adjust_journal(
+            posted = post_stock_adjust_journal(
                 db, product_id=pid, product_name=row['name'],
                 qty_change=qty_change, unit_cost=float(row['cost_price'] or 0),
                 reason=reason, movement_id=movement_id, user_id=user['id'],
-                username=user.get('full_name') or user['username'], safe=True,
+                username=user.get('full_name') or user['username'], safe=False,
             )
         except Exception:
+            db.rollback()
             current_app.logger.exception('web stock adjust accounting')
+            return jsonify({'error': 'Could not post the stock adjustment.'}), 500
+        if (
+            isinstance(posted, dict)
+            and posted.get('error')
+            and not posted.get('success')
+            and not posted.get('skipped')
+        ):
+            db.rollback()
+            return jsonify({'error': 'Could not post the stock adjustment.'}), 500
         db.commit()
         return jsonify({'success': True, 'old_stock': old_qty, 'new_stock': new_qty})
+    return _inner()
+
+
+def _web_superadmin_pin(db, data):
+    """Same PIN check the till uses before a stock write. Returns an error response or None."""
+    if (g.current_user or {}).get('role') != 'superadmin':
+        return jsonify({'error': 'Super-Admin access required'}), 403
+    pin = str((data or {}).get('pin') or '')
+    pin_row = db.execute(
+        "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+    ).fetchone()
+    stored_hash = str(pin_row[0] if pin_row else '')
+    if not stored_hash:
+        return jsonify({'error': 'Super-Admin PIN is not configured'}), 403
+    if not pin:
+        return jsonify({'error': 'Super-Admin PIN is required'}), 403
+    import hashlib
+    import hmac
+    supplied_hash = hashlib.pbkdf2_hmac(
+        'sha256', pin.encode(), b'MBT_POS_SUPERADMIN_SALT_2024', 200_000
+    ).hex()
+    if not hmac.compare_digest(supplied_hash, stored_hash):
+        return jsonify({'error': 'Incorrect Super-Admin PIN'}), 403
+    return None
+
+
+@web.route('/api/suppliers', methods=['GET'])
+def list_suppliers_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required'}), 403
+        from desktop.utils.api_client import APIClient
+        return jsonify(APIClient().get_suppliers() or [])
+
+    return _inner()
+
+
+@web.route('/api/suppliers', methods=['POST'])
+def create_supplier_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return jsonify({'error': 'You cannot add a supplier.'}), 403
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = role
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.create_supplier({
+            'name': data.get('name') or '',
+            'phone': data.get('phone') or '',
+            'notes': data.get('notes') or '',
+        })
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/receive', methods=['POST'])
+def receive_stock_http(pid):
+    """Receive a supplier delivery. Same movement the till writes."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return jsonify({'error': 'You cannot receive supplier stock.'}), 403
+        try:
+            qty = float(data.get('quantity') if data.get('quantity') is not None else data.get('qty'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Enter the quantity received'}), 400
+        supplier_id = data.get('supplier_id')
+        try:
+            supplier_id = int(supplier_id) if supplier_id not in (None, '', 0, '0') else None
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Select a supplier'}), 400
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = role
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.receive_stock(
+            int(pid), qty,
+            supplier_id=supplier_id,
+            notes=str(data.get('notes') or '').strip(),
+        )
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts', methods=['POST'])
+def create_stock_receipt():
+    """Save one supplier delivery with every product line. No extra PIN."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return jsonify({'error': 'You cannot receive supplier stock.'}), 403
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = role
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.receive_delivery(
+            data.get('supplier_id'),
+            data.get('lines') or [],
+            reference=str(data.get('reference') or data.get('notes') or ''),
+            notes=str(data.get('notes') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        code = 200 if result.get('success') else 400
+        return jsonify(result), code
+
+    return _inner()
+
+
+def _inventory_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = (user.get('role') or '').lower()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    return api
+
+
+@web.route('/api/stock-adjustment-requests', methods=['GET', 'POST'])
+def stock_adjustment_requests():
+    """Cashiers ask for a stock change. The request does not change stock."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _inventory_api()
+        if request.method == 'GET':
+            if api._role not in ('cashier', 'manager', 'admin', 'superadmin'):
+                return jsonify({'error': 'You cannot view adjustment requests.'}), 403
+            status = (request.args.get('status') or '').strip()
+            return jsonify(api.list_stock_adjustment_requests(status))
+        if api._role not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return jsonify({'error': 'You cannot request a stock adjustment.'}), 403
+        data = request.json or {}
+        result = api.request_stock_adjustment(
+            data.get('product_id'), data.get('requested_qty'), data.get('reason') or '',
+        )
+        code = 200 if result.get('success') else 400
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-adjustment-requests/<int:request_id>/review', methods=['POST'])
+def review_stock_adjustment_request(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _inventory_api()
+        data = request.json or {}
+        result = api.review_stock_adjustment(
+            request_id, data.get('decision') or '', data.get('note') or '',
+        )
+        code = 200 if result.get('success') else 400
+        if 'Super-Admin' in (result.get('error') or ''):
+            code = 403
+        return jsonify(result), code
+
     return _inner()
 
 
@@ -4231,9 +4611,10 @@ def _report_filters_from_request():
 def _sales_where(filt, alias='s'):
     """Build WHERE for completed sales with optional filters. Returns (sql, params)."""
     p = alias + '.' if alias else ''
+    day = f"COALESCE(NULLIF({p}sale_date,''), date({p}created_at))"
     clauses = [
-        f"date({p}created_at) BETWEEN ? AND ?",
-        f"COALESCE({p}status,'completed')='completed'",
+        f"{day} BETWEEN ? AND ?",
+        f"COALESCE({p}status,'completed') IN ('completed','return')",
     ]
     params = [filt['start'], filt['end']]
     # Cashiers only see their own receipts unless they have reports tab
