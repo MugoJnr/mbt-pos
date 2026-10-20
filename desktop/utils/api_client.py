@@ -5522,7 +5522,10 @@ class APIClient:
             db.close()
 
     def accounting_create_expense(self, data: dict) -> dict:
-        if not self._acc_perm('accounting.approve_expenses'):
+        if not (
+            self._acc_perm('accounting.create_expenses')
+            or self._acc_perm('accounting.approve_expenses')
+        ):
             return {'error': 'Insufficient permissions to record expenses'}
         db = _db()
         try:
