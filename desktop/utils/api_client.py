@@ -1121,14 +1121,17 @@ def _next_receipt(conn=None, business_day=None) -> str:
 
 
 # ── Audit logger ────────────────────────────────────────────────────────────────
-def _audit(user_id, username, action, module='system', details=''):
+def _audit(user_id, username, action, module='system', details='', conn=None):
     try:
-        db = _db_light()
+        own = conn is None
+        db = conn if conn is not None else _db_light()
         db.execute(
             "INSERT INTO audit_log (user_id,username,action,module,details) VALUES (?,?,?,?,?)",
             (user_id, username, action, module, details)
         )
-        db.commit(); db.close()
+        if own:
+            db.commit()
+            db.close()
     except Exception as e:
         logger.warning(f"Audit log: {e}")
 
@@ -5768,6 +5771,31 @@ class APIClient:
         device = self._device_name()
         try:
             db.execute("BEGIN IMMEDIATE")
+            token = (data.get('client_token') or '').strip()
+            canonical = {
+                'date': (data.get('date') or str(date.today())).strip(),
+                'department_id': int(dept_id),
+                'reason': reason,
+                'notes': (data.get('notes') or '').strip(),
+                'taken_by': (data.get('taken_by') or '').strip(),
+                'items': sorted(
+                    (
+                        {
+                            'product_id': int(item.get('product_id') or 0),
+                            'quantity': round(float(item.get('quantity') or 0), 4),
+                        }
+                        for item in items
+                    ),
+                    key=lambda row: row['product_id'],
+                ),
+            }
+            receipt = _read_request_receipt(db, token, 'create_consumption', canonical)
+            if receipt and receipt.get('error'):
+                db.rollback()
+                return receipt
+            if receipt and not receipt.get('new'):
+                db.rollback()
+                return receipt
             dept = db.execute(
                 "SELECT id, name FROM departments WHERE id=? AND active=1",
                 (dept_id,)
@@ -5812,15 +5840,8 @@ class APIClient:
                             f"requested {qty}, available {stock}"
                         )
                     }
-                from desktop.utils.stock_layers import consume_fifo
-                layer = consume_fifo(db, int(pid), qty, reference='consumption')
-                if layer.get('error'):
-                    db.rollback()
-                    return {'error': layer['error']}
                 unit_cost = item.get('unit_cost')
-                if layer.get('success'):
-                    unit_cost = round(float(layer['cogs']) / qty, 4)
-                elif unit_cost is None or unit_cost == '':
+                if unit_cost is None or unit_cost == '':
                     unit_cost = float(prod['cost_price'] or 0)
                 else:
                     unit_cost = float(unit_cost)
@@ -5842,8 +5863,32 @@ class APIClient:
             )
             cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             audit_lines = []
-
+            from desktop.utils.stock_layers import consume_fifo
+            priced_rows = []
+            total_cost = 0.0
             for prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone in line_rows:
+                layer = consume_fifo(
+                    db, int(prod['id']), qty,
+                    reference=f"CONSUMPTION:{cons_id}:{prod['id']}",
+                )
+                if layer.get('error'):
+                    db.rollback()
+                    return {'error': layer['error']}
+                if layer.get('success'):
+                    unit_cost = round(float(layer['cogs']) / qty, 4)
+                    line_total = round(qty * unit_cost, 2)
+                    opportunity = round(qty * selling, 2)
+                    foregone = round(opportunity - line_total, 2)
+                total_cost += line_total
+                priced_rows.append(
+                    (prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone)
+                )
+            db.execute(
+                "UPDATE stock_consumptions SET total_cost=? WHERE id=?",
+                (round(total_cost, 2), cons_id),
+            )
+
+            for prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone in priced_rows:
                 new_stock = round(old_stock - qty, 4)
                 db.execute(
                     "INSERT INTO stock_consumption_items "
@@ -5853,10 +5898,14 @@ class APIClient:
                     (cons_id, prod['id'], prod['name'], qty, unit_cost, line_total,
                      selling, opportunity, foregone)
                 )
-                db.execute(
-                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                    (new_stock, now, prod['id'])
+                changed = db.execute(
+                    "UPDATE products SET stock=?, updated_at=? "
+                    "WHERE id=? AND ROUND(COALESCE(stock,0),4)=?",
+                    (new_stock, now, prod['id'], old_stock),
                 )
+                if changed.rowcount != 1:
+                    db.rollback()
+                    return {'error': 'Stock changed before the consumption could be saved.'}
                 mov_reason = (
                     f"{reason} | Dept: {dept['name']}"
                     + (f" | Taken by: {taken_by}" if taken_by else "")
@@ -5879,7 +5928,8 @@ class APIClient:
                 _audit(
                     self._user_id, created_name, 'INTERNAL_USE', 'inventory',
                     f"ref={ref} product={prod['name']} prev={old_stock} new={new_stock} "
-                    f"qty={qty} reason={reason} notes={notes} device={device}"
+                    f"qty={qty} reason={reason} notes={notes} device={device}",
+                    conn=db,
                 )
 
             try:
@@ -5894,6 +5944,16 @@ class APIClient:
                 db.rollback()
                 return {'error': posted['error']}
 
+            result = {
+                'success': True,
+                'id': cons_id,
+                'reference_no': ref,
+                'total_cost': round(total_cost, 2),
+            }
+            if receipt and receipt.get('new'):
+                _save_request_receipt(
+                    db, token, 'create_consumption', receipt['hash'], result,
+                )
             db.commit()
             _audit(
                 self._user_id, created_name, 'CREATE_CONSUMPTION', 'consumption',
@@ -5901,12 +5961,7 @@ class APIClient:
                 f"reason={reason} notes={notes} device={device} | "
                 + '; '.join(audit_lines)
             )
-            return {
-                'success': True,
-                'id': cons_id,
-                'reference_no': ref,
-                'total_cost': round(total_cost, 2),
-            }
+            return result
         except Exception as e:
             try:
                 db.rollback()
@@ -5947,6 +6002,8 @@ class APIClient:
                 (consumption_id,)
             ).fetchall()
 
+            from desktop.utils.stock_layers import restore_reference_layers
+            restore_reference_layers(db, f"CONSUMPTION:{consumption_id}:")
             audit_lines = []
             for item in items:
                 pid = item['product_id']

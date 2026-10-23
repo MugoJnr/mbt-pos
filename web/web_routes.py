@@ -2822,6 +2822,193 @@ def list_stock_receipts():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# INTERNAL CONSUMPTION
+# ══════════════════════════════════════════════════════════════════════════
+
+def _consumption_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = (user.get('role') or '').lower()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    return api
+
+
+@web.route('/api/departments', methods=['GET'])
+def list_departments_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Consumption access required'}), 403
+        return jsonify(_consumption_api().get_departments() or [])
+
+    return _inner()
+
+
+@web.route('/api/departments', methods=['POST'])
+def create_department_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _consumption_api().save_department(data.get('name') or '')
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/consumptions', methods=['GET'])
+def list_consumptions_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Consumption access required'}), 403
+        rows = _consumption_api().get_consumptions(
+            request.args.get('start') or None,
+            request.args.get('end') or None,
+            include_voided=True,
+        )
+        return jsonify(rows or [])
+
+    return _inner()
+
+
+@web.route('/api/consumptions', methods=['POST'])
+def create_consumption_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _consumption_api().create_consumption(data)
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:cid>', methods=['GET'])
+def get_consumption_http(cid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('consumption'):
+            return jsonify({'error': 'Consumption access required'}), 403
+        row = _consumption_api().get_consumption(cid)
+        if not row:
+            return jsonify({'error': 'Consumption not found.'}), 404
+        return jsonify(row)
+
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:cid>/void', methods=['POST'])
+def void_consumption_http(cid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _consumption_api().void_consumption(cid, data.get('reason') or '')
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+def _report_filters():
+    def _int(name):
+        raw = (request.args.get(name) or '').strip()
+        return int(raw) if raw.isdigit() else None
+
+    return {
+        'start': request.args.get('start') or None,
+        'end': request.args.get('end') or None,
+        'department_id': _int('department_id'),
+        'user_id': _int('user_id'),
+        'product_id': _int('product_id'),
+        'reason': (request.args.get('reason') or '').strip() or None,
+    }
+
+
+@web.route('/api/consumptions/report', methods=['GET'])
+def consumption_report_http():
+    from backend.app import token_required
+    from desktop.utils.security import has_permission
+
+    @token_required
+    def _inner():
+        api = _consumption_api()
+        if not has_permission({'role': api._role}, 'consumption.view_report'):
+            return jsonify({'error': 'You cannot view the consumption report.'}), 403
+        filters = _report_filters()
+        return jsonify(api.get_consumption_report(
+            filters['start'] or str(date.today()),
+            filters['end'] or str(date.today()),
+            department_id=filters['department_id'],
+            user_id=filters['user_id'],
+            product_id=filters['product_id'],
+            reason=filters['reason'],
+            include_voided=True,
+        ))
+
+    return _inner()
+
+
+@web.route('/api/consumptions/report/export', methods=['GET'])
+def consumption_report_export_http():
+    from backend.app import token_required
+    from desktop.utils.security import has_permission
+    from flask import send_file
+
+    @token_required
+    def _inner():
+        api = _consumption_api()
+        if not has_permission({'role': api._role}, 'consumption.export'):
+            return jsonify({'error': 'You cannot export the consumption report.'}), 403
+        filters = _report_filters()
+        start = filters['start'] or str(date.today())
+        end = filters['end'] or start
+        data = api.get_consumption_report(
+            start, end,
+            department_id=filters['department_id'],
+            user_id=filters['user_id'],
+            product_id=filters['product_id'],
+            reason=filters['reason'],
+            include_voided=True,
+        )
+        from backend.report_export_service import export_consumption_report
+        user = g.current_user or {}
+        path = export_consumption_report(
+            data.get('rows') or [],
+            shop_name='Shop',
+            start_date=start,
+            end_date=end,
+            generated_by=user.get('full_name') or user.get('username') or 'web',
+            filters=f'Date range {start} to {end}',
+            totals=data.get('totals') or {},
+        )
+        return send_file(
+            path,
+            as_attachment=True,
+            download_name=f'consumption-{start}-to-{end}.xlsx',
+        )
+
+    return _inner()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # STOCK ADJUSTMENT (web-accessible)
 # ══════════════════════════════════════════════════════════════════════════
 

@@ -132,7 +132,9 @@ function SidebarContent({
 
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2.5">
         {groups.map((group) => {
-          const items = NAV.filter((n) => n.group === group);
+          const roleKey = String(user?.role || "").toLowerCase();
+          const canConsume = roleKey === "manager" || roleKey === "admin" || roleKey === "superadmin";
+          const items = NAV.filter((n) => n.group === group && (n.to !== "/consumption" || canConsume));
           if (!items.length) return null;
           return (
             <div key={group} className="mb-3">

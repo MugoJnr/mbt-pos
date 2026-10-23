@@ -819,12 +819,16 @@ class _CreatePane(QWidget):
                     f"Reduce the quantity before saving.")
                 return
 
+        import uuid
+        if not getattr(self, '_client_token', ''):
+            self._client_token = uuid.uuid4().hex
         payload = {
             'date': self._date.date().toString('yyyy-MM-dd'),
             'department_id': dept_id,
             'reason': self._reason.value(),
             'notes': self._notes.toPlainText().strip(),
             'taken_by': self._taken_text(),
+            'client_token': self._client_token,
             'items': [
                 {
                     'product_id': ln['product_id'],
@@ -842,6 +846,7 @@ class _CreatePane(QWidget):
         if res.get('error'):
             QMessageBox.critical(self, 'Save Failed', res['error'])
             return
+        self._client_token = ''
 
         ref = res.get('reference_no', '')
         cur = _currency(self.p._cfg())
@@ -876,7 +881,7 @@ class _HistoryPane(QWidget):
         self._preset = DatePresetSelect()
         self._preset.setMinimumWidth(160)
         self._preset.presetChanged.connect(self._on_preset)
-        self._s = _make_date_edit(QDate.currentDate().addDays(-30))
+        self._s = _make_date_edit(QDate.currentDate())
         self._e = _make_date_edit(QDate.currentDate())
         add_labeled(fl, 'Period', self._preset, spacing=14)
         add_labeled(fl, 'From', self._s, spacing=14)
@@ -891,7 +896,7 @@ class _HistoryPane(QWidget):
             ['Date', 'Reference', 'Department', 'Reason', 'Taken By',
              'Lines', 'Total Cost', 'By', 'Status', ''],
             stretch_col=2, row_height=44)
-        for col, w in ((0, 110), (1, 110), (3, 140), (4, 110), (5, 60),
+        for col, w in ((0, 110), (1, 148), (3, 180), (4, 120), (5, 60),
                        (6, 110), (7, 100), (8, 80), (9, 90)):
             self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._tbl.setColumnWidth(col, w)

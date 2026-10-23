@@ -100,6 +100,37 @@ def consume_fifo(db, product_id: int, qty: float, sale_id=None, reference: str =
     return {'success': True, 'cogs': cogs, 'uses': uses}
 
 
+def restore_reference_layers(db, reference: str) -> dict:
+    """Put back cost-layer uses recorded against one consumption reference prefix."""
+    ensure_cost_layers(db)
+    prefix = (reference or '').strip()
+    if not prefix:
+        return {'success': True, 'restored': 0}
+    uses = db.execute(
+        "SELECT id, layer_id, quantity FROM cost_layer_uses "
+        "WHERE reference LIKE ? AND reversed=0",
+        (prefix + '%',),
+    ).fetchall()
+    restored = 0.0
+    for use in uses:
+        layer = db.execute(
+            "SELECT remaining_qty, original_qty FROM cost_layers WHERE id=?",
+            (use[1],),
+        ).fetchone()
+        if not layer:
+            continue
+        room = round(float(layer[1]) - float(layer[0]), 4)
+        put = min(float(use[2]), max(room, 0))
+        if put > 0:
+            db.execute(
+                "UPDATE cost_layers SET remaining_qty=remaining_qty+? WHERE id=?",
+                (put, use[1]),
+            )
+            restored = round(restored + put, 4)
+        db.execute("UPDATE cost_layer_uses SET reversed=1 WHERE id=?", (use[0],))
+    return {'success': True, 'restored': restored}
+
+
 def restore_sale_layers(db, sale_id: int) -> dict:
     ensure_cost_layers(db)
     uses = db.execute(

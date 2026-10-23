@@ -1,8 +1,8 @@
 {
-    "version": "3.1.64",
-    "build": "RC-2026-10-23-v3.1.64",
+    "version": "3.1.65",
+    "build": "RC-2026-10-23-v3.1.65",
     "released": "2026-10-23",
-    "release_notes": "Void and stock approvals send the Super-Admin PIN to the server, apply once, and do not report success when the status write fails. Repeated PIN attempts are limited per account. A repeated void request does not create a second pending row.",
-    "checksum_sha256": "168c0bc1bbde072ee6a1c3ee15ad75882fa21ef332e1852c3fb2a785df570114",
+    "release_notes": "Internal consumption can be recorded for several products at once from the till and the web dashboard. A repeated save does not deduct stock twice, and voiding a record restores both stock and its cost layers.",
+    "checksum_sha256": "188b822a62388f9dab1825d8bc83f56e88dbbb0b2ba71f133b5b6506fbcf8e07",
     "download_url": ""
 }
