@@ -94,6 +94,10 @@ def gh_release(vj: dict) -> None:
         f"MBT POS {ver}",
         "--notes",
         body,
+        "--target",
+        subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+        ).strip(),
         "--latest",
     ]
     print("Running:", " ".join(cmd[:6]), "...")
