@@ -3022,6 +3022,64 @@ def receive_stock_http(pid):
     return _inner()
 
 
+@web.route('/api/sales/<int:sale_id>/return', methods=['POST'])
+def return_sale_http(sale_id):
+    """Return sale lines through the same rules the till uses."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = role
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.return_sale(
+            int(sale_id),
+            data.get('items') or [],
+            str(data.get('reason') or ''),
+            refund_method=str(data.get('refund_method') or 'cash'),
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/debts/<int:invoice_id>/write-off', methods=['POST'])
+def write_off_debt_http(invoice_id):
+    """Write off a debt. No cash receipt is created."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = role
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.write_off_debt(
+            int(invoice_id),
+            data.get('amount'),
+            str(data.get('reason') or ''),
+            pin=str(data.get('pin') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
 @web.route('/api/stock-receipts', methods=['POST'])
 def create_stock_receipt():
     """Save one supplier delivery with every product line. No extra PIN."""
@@ -3747,6 +3805,10 @@ def create_approval():
         atype = (data.get('type') or '').strip().lower()
         if atype not in _APPROVAL_TYPES:
             return jsonify({'error': f'Invalid type. Allowed: {", ".join(_APPROVAL_TYPES)}'}), 400
+        if atype in ('void', 'stock_adjust'):
+            return jsonify({
+                'error': 'Create a void from the receipt, or a stock request from inventory.',
+            }), 400
         title = (data.get('title') or atype.replace('_', ' ').title()).strip()
         details = (data.get('details') or '').strip()
         try:

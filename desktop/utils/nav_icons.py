@@ -588,6 +588,41 @@ def kpi_pixmap(icon_or_key: str, size: int = 22, accent: str | None = None) -> Q
     return kpi_icon(icon_or_key, size=size, accent=accent).pixmap(size, size)
 
 
+def icon_sidebar_collapse(size=16, accent=None) -> QIcon:
+    """Nav rail with a left chevron. Collapses the sidebar."""
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(muted, max(1.3, s * 0.09), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60), 2.5, 2.5)
+        p.drawLine(QPointF(s * 0.42, s * 0.20), QPointF(s * 0.42, s * 0.80))
+        p.setPen(QPen(gold, max(1.5, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(s * 0.72, s * 0.38), QPointF(s * 0.58, s * 0.50))
+        p.drawLine(QPointF(s * 0.58, s * 0.50), QPointF(s * 0.72, s * 0.62))
+    return _paint_base(size, draw, accent=accent)
+
+
+def icon_sidebar_expand(size=16, accent=None) -> QIcon:
+    """Nav rail with a right chevron. Expands the sidebar."""
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(muted, max(1.3, s * 0.09), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(s * 0.16, s * 0.20, s * 0.68, s * 0.60), 2.5, 2.5)
+        p.drawLine(QPointF(s * 0.42, s * 0.20), QPointF(s * 0.42, s * 0.80))
+        p.setPen(QPen(gold, max(1.5, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(s * 0.58, s * 0.38), QPointF(s * 0.72, s * 0.50))
+        p.drawLine(QPointF(s * 0.72, s * 0.50), QPointF(s * 0.58, s * 0.62))
+    return _paint_base(size, draw, accent=accent)
+
+
+def icon_power(size=16, accent=None) -> QIcon:
+    def draw(p, s, gold, muted):
+        p.setPen(QPen(gold, max(1.4, s * 0.10), Qt.SolidLine, Qt.RoundCap))
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(s * 0.24, s * 0.26, s * 0.52, s * 0.52), -60 * 16, 300 * 16)
+        p.drawLine(QPointF(s * 0.50, s * 0.18), QPointF(s * 0.50, s * 0.48))
+    return _paint_base(size, draw, accent=accent)
+
+
 ACTION_ICON_BUILDERS = {
     'refresh': icon_refresh,
     'sun': icon_sun,
@@ -603,6 +638,9 @@ ACTION_ICON_BUILDERS = {
     'warning': icon_warning,
     'ai': icon_ai,
     'sparkle': icon_ai,
+    'sidebar_collapse': icon_sidebar_collapse,
+    'sidebar_expand': icon_sidebar_expand,
+    'signout': icon_power,
 }
 
 

@@ -12,11 +12,100 @@ import json
 import sqlite3
 import hashlib
 import logging
+import secrets
+import threading
 import jwt
 from datetime import datetime, date, timedelta
 from runtime_security import get_jwt_secret
 
 logger = logging.getLogger(__name__)
+
+_PIN_FAILS = {}
+_PIN_FAILS_LOCK = threading.Lock()
+_PIN_WINDOW_SECONDS = 600
+_PIN_MAX_FAILURES = 8
+_APPROVAL_CLAIM_SECONDS = 45
+
+
+def _pin_failures_blocked(user_id) -> tuple[bool, int]:
+    """Process-local PIN lockout for one account. A till runs one web worker."""
+    now = datetime.now().timestamp()
+    key = str(user_id or 0)
+    with _PIN_FAILS_LOCK:
+        attempts = [ts for ts in _PIN_FAILS.get(key, []) if now - ts < _PIN_WINDOW_SECONDS]
+        _PIN_FAILS[key] = attempts
+        if len(attempts) >= _PIN_MAX_FAILURES:
+            retry_after = max(1, int(_PIN_WINDOW_SECONDS - (now - attempts[0])))
+            return True, retry_after
+    return False, 0
+
+
+def _pin_failure_record(user_id) -> None:
+    now = datetime.now().timestamp()
+    key = str(user_id or 0)
+    with _PIN_FAILS_LOCK:
+        attempts = [ts for ts in _PIN_FAILS.get(key, []) if now - ts < _PIN_WINDOW_SECONDS]
+        attempts.append(now)
+        _PIN_FAILS[key] = attempts
+
+
+def _pin_failures_clear(user_id) -> None:
+    with _PIN_FAILS_LOCK:
+        _PIN_FAILS.pop(str(user_id or 0), None)
+
+
+def _request_payload_hash(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _ensure_request_receipts(db) -> None:
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS request_receipts (
+            client_token TEXT PRIMARY KEY,
+            operation TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            result_json TEXT NOT NULL
+        )"""
+    )
+
+
+def _read_request_receipt(db, token: str, operation: str, payload: dict):
+    """Inside a write transaction. None means this call has no token."""
+    token = (token or '').strip()
+    if not token:
+        return None
+    _ensure_request_receipts(db)
+    digest = _request_payload_hash({'operation': operation, 'payload': payload})
+    row = db.execute(
+        "SELECT operation, payload_hash, result_json FROM request_receipts "
+        "WHERE client_token=?",
+        (token,),
+    ).fetchone()
+    if not row:
+        return {'new': True, 'hash': digest}
+    if row['operation'] != operation or row['payload_hash'] != digest:
+        return {
+            'error': 'This request token was already used for a different change.',
+            'status': 409,
+        }
+    prior = json.loads(row['result_json'])
+    prior['duplicate'] = True
+    prior['success'] = True
+    return prior
+
+
+def _save_request_receipt(db, token: str, operation: str, digest: str, result: dict) -> None:
+    token = (token or '').strip()
+    if not token or not digest:
+        return
+    _ensure_request_receipts(db)
+    stored = {key: value for key, value in result.items() if key != 'duplicate'}
+    db.execute(
+        "INSERT INTO request_receipts "
+        "(client_token, operation, payload_hash, result_json) VALUES (?,?,?,?)",
+        (token, operation, digest, json.dumps(stored, default=str)),
+    )
 
 from mbt_paths import get_project_root, get_db_path, ensure_data_dirs, configure_sqlite_connection
 
@@ -397,6 +486,9 @@ def _ensure_schema(conn: sqlite3.Connection):
         quantity REAL NOT NULL,
         unit_cost REAL NOT NULL,
         total_cost REAL NOT NULL,
+        selling_price REAL DEFAULT 0,
+        retail_opportunity REAL DEFAULT 0,
+        foregone_profit REAL DEFAULT 0,
         FOREIGN KEY(consumption_id) REFERENCES stock_consumptions(id),
         FOREIGN KEY(product_id) REFERENCES products(id)
     );
@@ -572,15 +664,26 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
-    # Seed default departments for internal stock consumption
+    # Unused default departments are archived only when they have no history.
+    # A new shop starts with an empty department list.
     for dept_name in (
         'Kitchen', 'Bakery', 'Juice Bar', 'Office',
         'Workshop', 'Manufacturing', 'Maintenance',
     ):
-        conn.execute(
-            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
-            (dept_name,),
-        )
+        row = conn.execute(
+            "SELECT id FROM departments WHERE name=?", (dept_name,)
+        ).fetchone()
+        if not row:
+            continue
+        used = conn.execute(
+            "SELECT COUNT(*) FROM stock_consumptions WHERE department_id=?",
+            (row['id'],),
+        ).fetchone()[0]
+        if int(used or 0) == 0:
+            conn.execute(
+                "UPDATE departments SET active=0 WHERE id=?",
+                (row['id'],),
+            )
     # Ensure consumption void / taken_by columns on upgrades
     try:
         sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumptions)").fetchall()}
@@ -595,6 +698,14 @@ def _migrate_columns(conn: sqlite3.Connection):
             ('void_reason', "ALTER TABLE stock_consumptions ADD COLUMN void_reason TEXT"),
         ):
             if sc_cols and col not in sc_cols:
+                conn.execute(ddl)
+        item_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumption_items)").fetchall()}
+        for col, ddl in (
+            ('selling_price', "ALTER TABLE stock_consumption_items ADD COLUMN selling_price REAL DEFAULT 0"),
+            ('retail_opportunity', "ALTER TABLE stock_consumption_items ADD COLUMN retail_opportunity REAL DEFAULT 0"),
+            ('foregone_profit', "ALTER TABLE stock_consumption_items ADD COLUMN foregone_profit REAL DEFAULT 0"),
+        ):
+            if item_cols and col not in item_cols:
                 conn.execute(ddl)
     except Exception:
         pass
@@ -1773,7 +1884,8 @@ class APIClient:
         return {'success': True}
 
     def adjust_stock(self, pid: int, new_qty, reason: str = '',
-                     fourth=None, *, pin=None, expected_stock=None) -> dict:
+                     fourth=None, *, pin=None, expected_stock=None,
+                     idempotency_key: str = '') -> dict:
         """
         Super-admin stock adjustment.
 
@@ -1800,10 +1912,11 @@ class APIClient:
         return self._apply_stock_adjustment(
             pid, direction, quantity, absolute, str(reason or ''),
             pin=pin, expected_stock=expected_stock,
+            idempotency_key=idempotency_key,
         )
 
     def _apply_stock_adjustment(self, pid, direction, quantity, absolute, reason, *,
-                                pin, expected_stock) -> dict:
+                                pin, expected_stock, idempotency_key='') -> dict:
         import math
         from desktop.utils.option_lists import (
             STOCK_DECREASE_REASONS, STOCK_INCREASE_REASONS,
@@ -1875,12 +1988,20 @@ class APIClient:
                 if reason not in catalog and not other:
                     return {'error': 'That reason does not match this stock change.', 'status': 400}
             if decreasing:
+                blocked, retry_after = _pin_failures_blocked(self._user_id)
+                if blocked:
+                    return {
+                        'error': 'Too many PIN attempts. Wait and try again.',
+                        'status': 429,
+                        'retry_after': retry_after,
+                    }
                 stored = db.execute(
                     "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
                 ).fetchone()
                 stored_hash = str(stored['value'] if stored else '')
                 supplied = '' if pin is None else str(pin)
                 if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+                    _pin_failure_record(self._user_id)
                     _audit(
                         self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
                         f'stock_adjust pid={pid} result=fail',
@@ -1891,8 +2012,18 @@ class APIClient:
                         'Super-Admin PIN is required to reduce stock.'
                     )
                     return {'error': message, 'status': 403}
+                _pin_failures_clear(self._user_id)
 
             db.execute('BEGIN IMMEDIATE')
+            movement_ref = (idempotency_key or '').strip() or f'ADJUST_pid={pid}'
+            if (idempotency_key or '').strip():
+                prior = db.execute(
+                    "SELECT id FROM stock_movements WHERE reference=? LIMIT 1",
+                    (movement_ref,),
+                ).fetchone()
+                if prior:
+                    db.rollback()
+                    return {'success': True, 'duplicate': True}
             current = db.execute(
                 "SELECT COALESCE(stock,0) AS stock FROM products WHERE id=?", (pid,)
             ).fetchone()
@@ -1921,7 +2052,7 @@ class APIClient:
                 "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (pid, row['name'], 'SUPERADMIN_ADJUST',
                  current_stock, signed, new_stock,
-                 f"ADJUST_pid={pid}", reason,
+                 movement_ref, reason,
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -2256,6 +2387,81 @@ class APIClient:
         finally:
             db.close()
 
+    def request_sale_void(self, sale_id: int, reason: str) -> dict:
+        """Ask for a void. The sale stays completed until a manager approves it."""
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'Enter a reason for the void request.', 'status': 400}
+        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot request a void.', 'status': 403}
+        db = _db()
+        try:
+            self._ensure_approval_table(db)
+            sale = db.execute(
+                "SELECT id, receipt_number, total, status FROM sales WHERE id=?",
+                (int(sale_id),),
+            ).fetchone()
+            if not sale:
+                return {'error': 'Sale was not found.', 'status': 404}
+            if (sale['status'] or '').lower() != 'completed':
+                return {'error': 'Only a completed sale can be sent for void.', 'status': 409}
+            db.execute('BEGIN IMMEDIATE')
+            open_rows = db.execute(
+                "SELECT id, meta_json FROM cc_approvals "
+                "WHERE type='void' AND status IN ('pending','escalated','executing')"
+            ).fetchall()
+            for open_row in open_rows:
+                try:
+                    open_meta = json.loads(open_row['meta_json'] or '{}')
+                except json.JSONDecodeError:
+                    open_meta = {}
+                if not isinstance(open_meta, dict):
+                    continue
+                try:
+                    open_sale = int(open_meta.get('sale_id') or 0)
+                except (TypeError, ValueError):
+                    open_sale = 0
+                if open_sale == int(sale_id):
+                    db.rollback()
+                    return {
+                        'success': True,
+                        'duplicate': True,
+                        'id': int(open_row['id']),
+                        'sale_status': 'completed',
+                    }
+            now = datetime.now()
+            db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, "
+                "meta_json, created_at, expires_at) "
+                "VALUES ('void', ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                (
+                    f"Void {sale['receipt_number']}",
+                    reason,
+                    float(sale['total'] or 0),
+                    self._username or '',
+                    self._user_id,
+                    json.dumps({'sale_id': int(sale_id), 'receipt_number': sale['receipt_number']}),
+                    now.isoformat(),
+                    (now + timedelta(hours=24)).isoformat(),
+                ),
+            )
+            approval_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            db.commit()
+            still = db.execute(
+                "SELECT status FROM sales WHERE id=?", (int(sale_id),)
+            ).fetchone()['status']
+            return {'success': True, 'id': approval_id, 'sale_status': still}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('void request failed: %s', exc, exc_info=True)
+            return {'error': 'Could not save the void request.', 'status': 500}
+        finally:
+            db.close()
+
     def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '') -> dict:
         """Run a pending void or stock approval once. Reject and escalate do not."""
         action = (action or '').strip().lower()
@@ -2280,7 +2486,7 @@ class APIClient:
             if status == 'expired':
                 db.rollback()
                 return {'error': 'This request has expired.', 'status': 410}
-            if action == 'approve' and self._approval_is_expired(row):
+            if action == 'approve' and status in ('pending', 'escalated') and self._approval_is_expired(row):
                 db.execute(
                     "UPDATE cc_approvals SET status='expired', updated_at=? "
                     "WHERE id=? AND status IN ('pending','escalated')",
@@ -2305,30 +2511,54 @@ class APIClient:
                 db.rollback()
                 return {'error': f'Already {row["status"]}', 'status': 400}
             atype = (row['type'] or '').lower()
-            if atype in ('void', 'stock_adjust'):
-                pin_error = self._approval_pin_error(db, pin, int(approval_id))
-                if pin_error:
+            if atype not in ('void', 'stock_adjust'):
+                if status not in ('pending', 'escalated'):
                     db.rollback()
-                    return pin_error
-            if atype == 'stock_adjust' and (self._role or '').lower() != 'superadmin':
-                db.rollback()
-                return {'error': 'Only Super-Admin can apply a stock adjustment.', 'status': 403}
-            if status in ('pending', 'escalated'):
-                claimed = db.execute(
-                    "UPDATE cc_approvals SET status='executing', reviewed_by=?, "
+                    return {'error': f'Already {row["status"]}', 'status': 400}
+                decided = db.execute(
+                    "UPDATE cc_approvals SET status='approved', reviewed_by=?, "
                     "reviewed_by_id=?, review_note=?, updated_at=? "
                     "WHERE id=? AND status IN ('pending','escalated')",
                     (self._username or '', self._user_id, note,
                      datetime.now().isoformat(), int(approval_id)),
                 )
-                if claimed.rowcount != 1:
-                    current = db.execute(
-                        "SELECT status FROM cc_approvals WHERE id=?", (int(approval_id),)
-                    ).fetchone()
-                    db.rollback()
-                    if current and (current['status'] or '').lower() == 'approved':
-                        return {'success': True, 'duplicate': True, 'status': 'approved'}
+                db.commit()
+                if decided.rowcount != 1:
                     return {'error': 'Approval is already being processed.', 'status': 409}
+                return {'success': True, 'status': 'approved', 'executed': False}
+            pin_error = self._approval_pin_error(db, pin, int(approval_id))
+            if pin_error:
+                db.rollback()
+                return pin_error
+            if atype == 'stock_adjust' and (self._role or '').lower() != 'superadmin':
+                db.rollback()
+                return {'error': 'Only Super-Admin can apply a stock adjustment.', 'status': 403}
+            claim = json.dumps({'claim': secrets.token_hex(8)})
+            now = datetime.now().isoformat()
+            if status in ('pending', 'escalated'):
+                claimed = db.execute(
+                    "UPDATE cc_approvals SET status='executing', reviewed_by=?, "
+                    "reviewed_by_id=?, review_note=?, updated_at=?, execution_json=? "
+                    "WHERE id=? AND status IN ('pending','escalated')",
+                    (self._username or '', self._user_id, note, now, claim, int(approval_id)),
+                )
+            else:
+                stale_before = (datetime.now() - timedelta(seconds=_APPROVAL_CLAIM_SECONDS)).isoformat()
+                claimed = db.execute(
+                    "UPDATE cc_approvals SET reviewed_by=?, reviewed_by_id=?, "
+                    "updated_at=?, execution_json=? "
+                    "WHERE id=? AND status='executing' AND (updated_at IS NULL OR updated_at < ?)",
+                    (self._username or '', self._user_id, now, claim,
+                     int(approval_id), stale_before),
+                )
+            if claimed.rowcount != 1:
+                current = db.execute(
+                    "SELECT status FROM cc_approvals WHERE id=?", (int(approval_id),)
+                ).fetchone()
+                db.rollback()
+                if current and (current['status'] or '').lower() == 'approved':
+                    return {'success': True, 'duplicate': True, 'status': 'approved'}
+                return {'error': 'Approval is already being processed.', 'status': 409}
             db.commit()
             meta_raw = row['meta_json'] or '{}'
         except sqlite3.Error as exc:
@@ -2346,7 +2576,9 @@ class APIClient:
             meta = {}
         if not isinstance(meta, dict):
             meta = {}
-        result = self._run_approved_action(atype, meta, note or row['details'] or '', pin)
+        result = self._run_approved_action(
+            atype, meta, note or row['details'] or '', pin, int(approval_id),
+        )
         finished = self._finish_approval(int(approval_id), result)
         if finished.get('success'):
             finished['result'] = {
@@ -2406,12 +2638,20 @@ class APIClient:
 
     def _approval_pin_error(self, db, pin: str, approval_id: int):
         from desktop.utils.security import _pin_hash
+        blocked, retry_after = _pin_failures_blocked(self._user_id)
+        if blocked:
+            return {
+                'error': 'Too many PIN attempts. Wait and try again.',
+                'status': 429,
+                'retry_after': retry_after,
+            }
         stored = db.execute(
             "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
         ).fetchone()
         stored_hash = str(stored['value'] if stored else '')
         supplied = '' if pin is None else str(pin)
         if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+            _pin_failure_record(self._user_id)
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
                 f'approval id={approval_id} result=fail',
@@ -2422,9 +2662,11 @@ class APIClient:
                 'Super-Admin PIN is required.'
             )
             return {'error': message, 'status': 403}
+        _pin_failures_clear(self._user_id)
         return None
 
-    def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '') -> dict:
+    def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '',
+                             approval_id: int = 0) -> dict:
         if atype == 'void':
             try:
                 sale_id = int(meta.get('sale_id') or 0)
@@ -2451,6 +2693,7 @@ class APIClient:
                 product_id, direction, quantity, reason,
                 pin=pin,
                 expected_stock=expected,
+                idempotency_key=f'APPROVAL:{int(approval_id)}',
             )
             return outcome
         return {'error': 'This request type cannot be executed.'}
@@ -2474,6 +2717,10 @@ class APIClient:
                     ).fetchone()
                     if current and (current['status'] or '').lower() == 'approved':
                         return {'success': True, 'duplicate': True, 'status': 'approved'}
+                    return {
+                        'error': 'The approval changed before the result could be saved.',
+                        'status': 409,
+                    }
                 return {'success': True, 'status': 'approved', 'duplicate': bool(result.get('duplicate'))}
             db.execute(
                 "UPDATE cc_approvals SET status='pending', review_note=?, updated_at=? "
@@ -2852,6 +3099,13 @@ class APIClient:
                              rn, f"Sale: {rn}",
                              self._user_id, self._username or 'staff')
                         )
+                        from desktop.utils.stock_layers import consume_fifo
+                        layer = consume_fifo(
+                            db, pid, qty_requested, sale_id=sale_id, reference=rn,
+                        )
+                        if layer.get('error'):
+                            db.rollback()
+                            raise ValueError(layer['error'])
 
             # Apply store credit against this sale (reduces amount due; not product revenue)
             wallet_balance_after = None
@@ -3418,6 +3672,8 @@ class APIClient:
                 movement_type='VOID_RESTORE',
                 skip_if_restored=True,
             )
+            from desktop.utils.stock_layers import restore_sale_layers
+            restore_sale_layers(db, sale_id)
 
             # Cancel linked debt invoices for this sale (keep payment history)
             debt_rows = db.execute(
@@ -3585,7 +3841,7 @@ class APIClient:
             db.close()
 
     def return_sale(self, sale_id: int, items: list, reason: str,
-                    *, refund_method: str = 'cash') -> dict:
+                    *, refund_method: str = 'cash', client_token: str = '') -> dict:
         """
         Partial product return against a completed sale.
         Restocks inventory, records a status='return' sale (negative totals),
@@ -3598,10 +3854,41 @@ class APIClient:
             return {'error': 'A return reason is required.'}
         if not items:
             return {'error': 'Select at least one item to return.'}
+        method = (refund_method or 'cash').strip() or 'cash'
+        token = (client_token or '').strip()
+        norm_items = []
+        seen_lines = set()
+        for spec in items:
+            try:
+                si_id = int(spec.get('sale_item_id') or 0)
+                qty = round(float(spec.get('quantity')), 4)
+            except (TypeError, ValueError):
+                return {'error': 'Enter a valid return quantity.', 'status': 400}
+            if si_id <= 0 or qty <= 0:
+                return {'error': 'Enter a valid return quantity.', 'status': 400}
+            if si_id in seen_lines:
+                return {'error': 'Enter each sale line once on this return.', 'status': 400}
+            seen_lines.add(si_id)
+            norm_items.append({'sale_item_id': si_id, 'quantity': qty})
+        norm_items.sort(key=lambda row: row['sale_item_id'])
+        request_body = {
+            'sale_id': int(sale_id),
+            'items': norm_items,
+            'reason': reason,
+            'refund_method': method,
+        }
 
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
+            claim = _read_request_receipt(db, token, 'return_sale', request_body)
+            if claim and claim.get('error'):
+                db.rollback()
+                return claim
+            if claim and claim.get('duplicate'):
+                db.rollback()
+                return claim
+            digest = (claim or {}).get('hash') or ''
             sale = db.execute(
                 "SELECT * FROM sales WHERE id=?", (sale_id,)
             ).fetchone()
@@ -3630,11 +3917,9 @@ class APIClient:
             created_at_s = sale_created_at_for_day(sale_date_s)
             now = created_at_s
 
-            for spec in items:
-                si_id = int(spec.get('sale_item_id') or 0)
-                qty = round(float(spec.get('quantity') or 0), 4)
-                if si_id <= 0 or qty <= 0:
-                    continue
+            for spec in norm_items:
+                si_id = int(spec['sale_item_id'])
+                qty = float(spec['quantity'])
                 line = db.execute(
                     "SELECT * FROM sale_items WHERE id=? AND sale_id=?",
                     (si_id, sale_id),
@@ -3708,8 +3993,7 @@ class APIClient:
                     (round(rl['already'] + qty, 4), rl['sale_item_id']),
                 )
 
-            ret_rn = f"RET-{datetime.now().strftime('%Y%m%d%H%M%S')}-{sale_id}"
-            method = (refund_method or 'cash').strip() or 'cash'
+            ret_rn = f"RET-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{sale_id}"
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
@@ -3747,17 +4031,19 @@ class APIClient:
             except Exception:
                 pass
 
-            db.commit()
-            _audit(self._user_id, self._username, 'RETURN_SALE', 'sales',
-                   f"sale_id={sale_id} return_id={ret_id} receipt={ret_rn} "
-                   f"refund={refund_total} reason={reason}")
-            return {
+            result = {
                 'success': True,
                 'return_sale_id': ret_id,
                 'receipt_number': ret_rn,
                 'refund_total': refund_total,
                 'original_receipt': orig_rn,
             }
+            _save_request_receipt(db, token, 'return_sale', digest, result)
+            db.commit()
+            _audit(self._user_id, self._username, 'RETURN_SALE', 'sales',
+                   f"sale_id={sale_id} return_id={ret_id} receipt={ret_rn} "
+                   f"refund={refund_total} reason={reason}")
+            return result
         except Exception as e:
             db.rollback()
             logger.error(f"return_sale: {e}", exc_info=True)
@@ -3781,6 +4067,18 @@ class APIClient:
         reason = (data.get('reason') or '').strip()
         if not reason:
             return {'error': 'An edit reason is required.'}
+        token = str(data.get('client_token') or '').strip()
+        edit_body = {
+            'sale_id': int(sale_id),
+            'reason': reason,
+            'items': data.get('items'),
+            'discount': data.get('discount'),
+            'tax': data.get('tax'),
+            'total': data.get('total'),
+            'payment_method': data.get('payment_method'),
+            'customer_id': data.get('customer_id'),
+            'amount_paid': data.get('amount_paid'),
+        }
 
         new_items = data.get('items')
         if new_items is not None:
@@ -3790,6 +4088,14 @@ class APIClient:
         db = _db()
         try:
             db.execute("BEGIN IMMEDIATE")
+            claim = _read_request_receipt(db, token, 'edit_sale', edit_body)
+            if claim and claim.get('error'):
+                db.rollback()
+                return claim
+            if claim and claim.get('duplicate'):
+                db.rollback()
+                return claim
+            digest = (claim or {}).get('hash') or ''
             sale = db.execute(
                 "SELECT * FROM sales WHERE id=?", (sale_id,)
             ).fetchone()
@@ -4059,14 +4365,7 @@ class APIClient:
             except Exception as _je:
                 logger.error('edit_sale accounting: %s', _je, exc_info=True)
 
-            db.commit()
-            action = 'REINSTATE_EDIT_SALE' if reinstate else 'EDIT_SALE'
-            _audit(
-                self._user_id, self._username, action, 'sales',
-                f"sale_id={sale_id} receipt={rn} total={old_snap['total']}→{total} "
-                f"method={payment_method} reinstate={reinstate} reason={reason}"
-            )
-            return {
+            result = {
                 'success': True,
                 'sale_id': sale_id,
                 'receipt_number': rn,
@@ -4074,6 +4373,15 @@ class APIClient:
                 'items': normalized,
                 'reinstated': reinstate,
             }
+            _save_request_receipt(db, token, 'edit_sale', digest, result)
+            db.commit()
+            action = 'REINSTATE_EDIT_SALE' if reinstate else 'EDIT_SALE'
+            _audit(
+                self._user_id, self._username, action, 'sales',
+                f"sale_id={sale_id} receipt={rn} total={old_snap['total']}→{total} "
+                f"method={payment_method} reinstate={reinstate} reason={reason}"
+            )
+            return result
         except ValueError as e:
             db.rollback()
             return {'error': str(e)}
@@ -4916,6 +5224,146 @@ class APIClient:
         finally:
             db.close()
 
+    def write_off_debt(self, invoice_id: int, amount: float, reason: str = '',
+                       *, pin: str = '', client_token: str = '') -> dict:
+        """Reduce a debt without recording a cash receipt. The invoice row stays."""
+        if (self._role or '').lower() != 'superadmin':
+            return {'error': 'Only a Super-Admin can write off a debt.', 'status': 403}
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'Enter a reason for the write-off.', 'status': 400}
+        try:
+            amount = round(float(amount), 2)
+        except (TypeError, ValueError):
+            return {'error': 'Enter the amount to write off.', 'status': 400}
+        if amount <= 0:
+            return {'error': 'Amount must be greater than zero.', 'status': 400}
+        token = (client_token or '').strip()
+        db = _db()
+        try:
+            from desktop.utils.security import _pin_hash
+            stored = db.execute(
+                "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+            ).fetchone()
+            stored_hash = str(stored['value'] if stored else '')
+            supplied = '' if pin is None else str(pin)
+            if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+                return {'error': 'Super-Admin PIN is required.', 'status': 403}
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS debt_write_offs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    reason TEXT NOT NULL,
+                    client_token TEXT UNIQUE,
+                    user_id INTEGER,
+                    username TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            db.execute('BEGIN IMMEDIATE')
+            if token:
+                prior = _row(db.execute(
+                    "SELECT id, amount FROM debt_write_offs WHERE client_token=?",
+                    (token,),
+                ))
+                if prior:
+                    db.commit()
+                    return {'success': True, 'duplicate': True, 'id': prior['id'],
+                            'amount': prior['amount']}
+            inv = _row(db.execute(
+                "SELECT id, balance, status, total_amount FROM debt_invoices WHERE id=?",
+                (int(invoice_id),),
+            ))
+            if not inv:
+                db.rollback()
+                return {'error': 'Invoice was not found.', 'status': 404}
+            balance = round(float(inv['balance'] or 0), 2)
+            if inv['status'] in ('paid', 'cancelled', 'written_off') or balance <= 0:
+                db.rollback()
+                return {'error': 'This invoice has no balance to write off.', 'status': 409}
+            if amount > balance + 0.001:
+                db.rollback()
+                return {'error': 'Write-off is larger than the balance.', 'status': 400}
+            new_balance = round(balance - amount, 2)
+            status = 'written_off' if new_balance <= 0.009 else inv['status']
+            cur = db.execute(
+                "UPDATE debt_invoices SET balance=?, status=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND balance=?",
+                (new_balance, status, int(invoice_id), balance),
+            )
+            if cur.rowcount != 1:
+                db.rollback()
+                return {'error': 'The balance changed. Reload and try again.', 'status': 409}
+            db.execute(
+                "INSERT INTO debt_write_offs "
+                "(invoice_id, amount, reason, client_token, user_id, username) "
+                "VALUES (?,?,?,?,?,?)",
+                (int(invoice_id), amount, reason, token or None,
+                 self._user_id, self._username or ''),
+            )
+            db.commit()
+            return {'success': True, 'balance': new_balance, 'status': status,
+                    'cash_receipt': False}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return {'error': str(exc), 'status': 500}
+        finally:
+            db.close()
+
+    def record_print_attempt(self, sale_id: int, outcome: str, message: str = '') -> dict:
+        """Store a print result on its own. This never creates a sale."""
+        outcome = (outcome or '').strip().lower()
+        if outcome not in ('queued', 'printed', 'failed'):
+            return {'error': 'Print outcome must be queued, printed, or failed.', 'status': 400}
+        db = _db()
+        try:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS print_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_id INTEGER,
+                    outcome TEXT NOT NULL,
+                    message TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            before = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            db.execute(
+                "INSERT INTO print_attempts (sale_id, outcome, message) VALUES (?,?,?)",
+                (int(sale_id) if sale_id else None, outcome, message or ''),
+            )
+            after = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            db.commit()
+            attempt_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            return {'success': True, 'id': attempt_id, 'sales_unchanged': before == after}
+        except Exception as exc:
+            return {'error': str(exc), 'status': 500}
+        finally:
+            db.close()
+
+    def print_history(self, sale_id: int) -> list:
+        db = _db()
+        try:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS print_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_id INTEGER,
+                    outcome TEXT NOT NULL,
+                    message TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            return _rows(db.execute(
+                "SELECT id, sale_id, outcome, message, created_at "
+                "FROM print_attempts WHERE sale_id=? ORDER BY id",
+                (int(sale_id),),
+            ))
+        finally:
+            db.close()
+
     def get_aging_report(self) -> dict:
         """Debt aging: 0-30, 31-60, 61-90, 90+ days."""
         db = _db()
@@ -5256,6 +5704,27 @@ class APIClient:
                 n = db.execute("SELECT COUNT(*) FROM stock_consumptions").fetchone()[0]
         return f"AUTO-{n + 1:06d}"
 
+    def save_department(self, name: str) -> dict:
+        name = (name or '').strip()
+        if not name:
+            return {'error': 'Enter a department name.', 'status': 400}
+        if (self._role or '').lower() not in ('manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot change departments.', 'status': 403}
+        db = _db()
+        try:
+            existing = db.execute(
+                "SELECT id, active FROM departments WHERE name=?", (name,)
+            ).fetchone()
+            if existing:
+                db.execute("UPDATE departments SET active=1 WHERE id=?", (existing['id'],))
+                db.commit()
+                return {'success': True, 'id': existing['id'], 'duplicate': True}
+            db.execute("INSERT INTO departments (name, active) VALUES (?, 1)", (name,))
+            db.commit()
+            return {'success': True, 'id': db.execute('SELECT last_insert_rowid()').fetchone()[0]}
+        finally:
+            db.close()
+
     def get_departments(self, active_only: bool = True) -> list:
         db = _db()
         try:
@@ -5283,6 +5752,11 @@ class APIClient:
         items = data.get('items') or []
         if not items:
             return {'error': 'Add at least one product line.'}
+        if (self._role or '').lower() not in ('manager', 'admin', 'superadmin'):
+            return {
+                'error': 'Cashiers cannot record consumption directly.',
+                'status': 403,
+            }
         reason = (data.get('reason') or '').strip()
         if not reason:
             return {'error': 'Reason is required.'}
@@ -5311,14 +5785,19 @@ class APIClient:
 
             line_rows = []
             total_cost = 0.0
+            seen_products = set()
             for item in items:
                 pid = item.get('product_id')
                 qty = round(float(item.get('quantity') or 0), 4)
                 if not pid or qty <= 0:
                     db.rollback()
                     return {'error': 'Each line needs a product and quantity > 0.'}
+                if int(pid) in seen_products:
+                    db.rollback()
+                    return {'error': 'Enter each product once on this consumption.'}
+                seen_products.add(int(pid))
                 prod = db.execute(
-                    "SELECT id, name, stock, cost_price FROM products WHERE id=? AND is_active=1",
+                    "SELECT id, name, stock, cost_price, price FROM products WHERE id=? AND is_active=1",
                     (pid,)
                 ).fetchone()
                 if not prod:
@@ -5333,15 +5812,25 @@ class APIClient:
                             f"requested {qty}, available {stock}"
                         )
                     }
+                from desktop.utils.stock_layers import consume_fifo
+                layer = consume_fifo(db, int(pid), qty, reference='consumption')
+                if layer.get('error'):
+                    db.rollback()
+                    return {'error': layer['error']}
                 unit_cost = item.get('unit_cost')
-                if unit_cost is None or unit_cost == '':
+                if layer.get('success'):
+                    unit_cost = round(float(layer['cogs']) / qty, 4)
+                elif unit_cost is None or unit_cost == '':
                     unit_cost = float(prod['cost_price'] or 0)
                 else:
                     unit_cost = float(unit_cost)
                 unit_cost = round(unit_cost, 4)
                 line_total = round(qty * unit_cost, 2)
+                selling = round(float(prod['price'] or 0), 4)
+                opportunity = round(qty * selling, 2)
+                foregone = round(opportunity - line_total, 2)
                 total_cost += line_total
-                line_rows.append((prod, qty, unit_cost, line_total, stock))
+                line_rows.append((prod, qty, unit_cost, line_total, stock, selling, opportunity, foregone))
 
             db.execute(
                 "INSERT INTO stock_consumptions "
@@ -5354,13 +5843,15 @@ class APIClient:
             cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             audit_lines = []
 
-            for prod, qty, unit_cost, line_total, old_stock in line_rows:
+            for prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone in line_rows:
                 new_stock = round(old_stock - qty, 4)
                 db.execute(
                     "INSERT INTO stock_consumption_items "
-                    "(consumption_id, product_id, product_name, quantity, unit_cost, total_cost) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (cons_id, prod['id'], prod['name'], qty, unit_cost, line_total)
+                    "(consumption_id, product_id, product_name, quantity, unit_cost, total_cost,"
+                    " selling_price, retail_opportunity, foregone_profit) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (cons_id, prod['id'], prod['name'], qty, unit_cost, line_total,
+                     selling, opportunity, foregone)
                 )
                 db.execute(
                     "UPDATE products SET stock=?, updated_at=? WHERE id=?",
@@ -5393,11 +5884,15 @@ class APIClient:
 
             try:
                 from desktop.utils.accounting_hooks import post_consumption_journal
-                post_consumption_journal(
+                posted = post_consumption_journal(
                     db, cons_id,
-                    user_id=self._user_id, username=created_name, safe=True)
-            except Exception as _je:
-                logger.error('consumption accounting: %s', _je, exc_info=True)
+                    user_id=self._user_id, username=created_name, safe=False)
+            except Exception as journal_error:
+                db.rollback()
+                return {'error': f'Consumption was not saved: {journal_error}'}
+            if posted.get('error'):
+                db.rollback()
+                return {'error': posted['error']}
 
             db.commit()
             _audit(
@@ -5865,6 +6360,61 @@ class APIClient:
         except Exception as e:
             db.rollback()
             return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_reverse_expense(self, expense_id: int, reason: str) -> dict:
+        if not self._acc_perm('accounting.approve_expenses'):
+            return {'error': 'Insufficient permissions to reverse expenses'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import reverse_expense
+            r = reverse_expense(
+                db, int(expense_id), reason,
+                user_id=self._user_id, username=self._username or '',
+            )
+            if r.get('error'):
+                db.rollback()
+                return r
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_cash_position(self) -> dict:
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import cash_position
+            return cash_position(db)
+        finally:
+            db.close()
+
+    def accounting_save_expense_category(self, name: str) -> dict:
+        if not (
+            self._acc_perm('accounting.create_expenses')
+            or self._acc_perm('accounting.approve_expenses')
+        ):
+            return {'error': 'Insufficient permissions to record expense categories'}
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import save_expense_category
+            r = save_expense_category(db, name)
+            db.commit()
+            return r
+        except Exception as e:
+            db.rollback()
+            return {'error': str(e)}
+        finally:
+            db.close()
+
+    def accounting_expense_categories(self) -> list:
+        db = _db()
+        try:
+            from desktop.utils.accounting_engine import list_expense_categories
+            return list_expense_categories(db)
         finally:
             db.close()
 

@@ -1781,12 +1781,18 @@ class SalesTab(QWidget):
         warn = getattr(self, '_biz_warn', None)
         if warn is None:
             return
-        from desktop.utils.shop_time import shop_today
+        from desktop.utils.shop_time import sale_day_caption, shop_today
+        from desktop.utils.theme import C
         day = getattr(self, '_business_day', shop_today())
-        if day != shop_today():
-            warn.setText(f'Recording sales for {day.isoformat()} (not today)')
-        else:
+        text, tone = sale_day_caption(day)
+        if tone == 'today':
             warn.setText('')
+        else:
+            warn.setText(text)
+            warn.setStyleSheet(
+                f"color:{C.get('err', '#DC2626')};font-size:12px;font-weight:800;"
+                f"background:transparent;"
+            )
 
     def _on_business_day_changed(self, qdate):
         from desktop.utils.security import can_set_business_day
@@ -1833,8 +1839,15 @@ class SalesTab(QWidget):
         ed = getattr(self, '_biz_date', None)
         self._business_day = today
         if ed is not None:
-            # Must raise maximumDate before setDate or Qt keeps the old year
-            self._business_day = apply_shop_day_edit(ed, today, today=today)
+            # Must raise maximumDate before setDate or Qt keeps the old year.
+            # Leave signals on so the button caption follows the date. The
+            # hidden edit used to update while the button stayed on the old day.
+            self._business_day = apply_shop_day_edit(
+                ed, today, today=today, block_signals=False)
+        bar = getattr(self, '_business_day_bar', None)
+        picker = getattr(bar, '_picker', None) if bar is not None else None
+        if picker is not None:
+            picker._sync_label()
         self._sync_business_day_warn()
 
     def _open_business_day_sales(self):
@@ -2294,6 +2307,9 @@ class SalesTab(QWidget):
         if getattr(self, '_pro_sale_type', 'cash') == 'quotation':
             self._preview()
             return
+        if not getattr(self, '_sale_token', ''):
+            import uuid
+            self._sale_token = str(uuid.uuid4())
         self._processing_sale = True
         charge = getattr(self, '_charge_btn', None)
         if charge is not None:
@@ -2555,6 +2571,7 @@ class SalesTab(QWidget):
                     else ''
                 ),
                 'sale_date':      self._business_day_iso(),
+                'client_token':   getattr(self, '_sale_token', '') or '',
             }
             if cust_id:
                 sale_payload['customer_id'] = cust_id
@@ -2624,6 +2641,7 @@ class SalesTab(QWidget):
                     cfg = self.config_getter() or {}
                 except Exception:
                     pass
+                self._sale_token = ''
                 StateResetManager.reset_pos(self, cfg, force_walk_in=True)
                 self.sale_completed.emit()
             else:

@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QComboBox, QPushButton,
 )
 from PyQt5.QtCore import Qt
+import uuid
 
 from desktop.utils.theme import C, ThemeManager
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
@@ -19,6 +20,7 @@ class ReturnSaleDialog(QDialog):
         self.api = api
         self._sale = None
         self._items = []
+        self._client_token = uuid.uuid4().hex
         self.setWindowTitle('Return / Exchange')
         self.setMinimumSize(640, 480)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
@@ -80,6 +82,8 @@ class ReturnSaleDialog(QDialog):
         self._go.setEnabled(False)
         btns.addWidget(cancel)
         btns.addWidget(self._go)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=self._go, cancel=cancel, submit_exempt=(self._receipt,))
         lay.addLayout(btns)
 
         self._apply_theme()
@@ -152,6 +156,7 @@ class ReturnSaleDialog(QDialog):
         res = self.api.return_sale(
             int(self._sale['id']), payload, reason,
             refund_method=self._method.currentText(),
+            client_token=self._client_token,
         )
         if res and res.get('success'):
             info_toast(

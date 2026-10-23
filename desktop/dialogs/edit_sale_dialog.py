@@ -4,6 +4,7 @@ Super Admin — Edit Sale Receipt dialog.
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
+import uuid
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
@@ -28,6 +29,7 @@ class EditSaleDialog(QDialog):
         self.api = api
         self.sale = sale or {}
         self.currency = currency
+        self._client_token = uuid.uuid4().hex
         self.setWindowTitle(f"Edit Sale — {self.sale.get('receipt_number') or ''}")
         self.setMinimumSize(780, 560)
         apply_themed_dialog(self)
@@ -125,6 +127,8 @@ class EditSaleDialog(QDialog):
         save = PrimaryBtn('Save Changes', 42)
         save.clicked.connect(self._save)
         actions.addWidget(save)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=save, cancel=cancel)
         lay.addLayout(actions)
 
     def _load_sale(self):
@@ -297,6 +301,7 @@ class EditSaleDialog(QDialog):
             'customer_id': self._cust.currentData(),
             'amount_paid': float(self._amount_paid.value()),
             'total': total,
+            'client_token': self._client_token,
         }
         res = self.api.edit_sale(int(self.sale['id']), payload)
         if res.get('error'):

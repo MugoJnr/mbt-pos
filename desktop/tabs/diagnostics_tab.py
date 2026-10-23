@@ -177,9 +177,11 @@ class DiagnosticsTab(QWidget):
                 )
                 rep = reconcile_cloudflare_state(force_dns=True, verify_https=True)
                 process_cf_retry_queue(max_items=3)
-                QTimer.singleShot(0, lambda: self._cf_repair_done(rep))
+                from desktop.utils.qt_dispatch import run_on_ui_thread
+                run_on_ui_thread(lambda: self._cf_repair_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._cf_repair_done(
+                from desktop.utils.qt_dispatch import run_on_ui_thread
+                run_on_ui_thread(lambda: self._cf_repair_done(
                     {'ok': False, 'errors': [str(e)]}))
 
         import threading
@@ -323,6 +325,12 @@ class DiagnosticsTab(QWidget):
         try:
             with open(path,'w',encoding='utf-8') as f:
                 f.write(self._dlog.toPlainText()+'\n\n'+self._blog.toPlainText())
+                try:
+                    from backend.cloud.reliability_log import write_support_report
+                    f.write('\n\n')
+                    f.write(write_support_report())
+                except Exception as report_exc:
+                    f.write(f'\n\nSupport report unavailable: {report_exc}\n')
             QMessageBox.information(self,'Exported',f'Saved to {path}')
         except Exception as e: QMessageBox.warning(self,'Error',str(e))
 

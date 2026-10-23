@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import csv
 import os
+import shutil
 import sys
+import tempfile
 from datetime import datetime, date
 from typing import Any, Iterable, Optional, Sequence, Union
 
@@ -743,24 +745,20 @@ def export_inventory_full(
 ) -> str:
     """Snapshot + movements in one workbook."""
     products_by_id = {p.get('id'): p for p in products if p.get('id') is not None}
+    # Temps must not share the final filename. The old snapshot used the same
+    # MBT_Inventory_YYYYMMDD_HHMMSS name, then cleanup deleted the saved workbook.
+    from openpyxl import load_workbook
+
+    folder = get_export_dir()
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+    tmp = tempfile.mkdtemp(prefix='mbt_inv_')
     snap = export_inventory_snapshot(
         products, shop_name=shop_name, currency=currency,
         generated_by=generated_by,
-        output_path=None,  # temp path unused — we rebuild
+        output_path=os.path.join(tmp, 'snapshot.xlsx'),
     )
-    # Rebuild as combined to keep formatting consistent
-    from openpyxl import load_workbook
-    import tempfile
-
-    path = output_path or os.path.join(
-        get_export_dir(),
-        f"MBT_Inventory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-    )
-    # Start from snapshot file, append movements sheet content by re-exporting movements to temp
-    move_tmp = os.path.join(
-        get_export_dir(),
-        f"_tmp_moves_{datetime.now().strftime('%H%M%S%f')}.xlsx",
-    )
+    path = output_path or os.path.join(folder, f'MBT_Inventory_{stamp}.xlsx')
+    move_tmp = os.path.join(tmp, 'movements.xlsx')
     export_inventory_movements(
         movements, products_by_id=products_by_id, shop_name=shop_name,
         currency=currency, generated_by=generated_by,
@@ -794,11 +792,7 @@ def export_inventory_full(
         except Exception:
             pass
     wb.save(path)
-    for p in (snap, move_tmp):
-        try:
-            os.remove(p)
-        except Exception:
-            pass
+    shutil.rmtree(tmp, ignore_errors=True)
     return path
 
 
@@ -854,3 +848,31 @@ def export_inventory_snapshot(
         total_cols={9: (total_value, 'currency')},
         sheet_name='Inventory',
     )
+
+
+def authorize_protected_export(role: str, pin: str, stored_hash: str) -> dict:
+    """A protected workbook is written only after the Super-Admin PIN matches."""
+    from desktop.utils.security import _pin_hash
+    if (role or '').lower() != 'superadmin':
+        return {'error': 'Only a Super-Admin can export this workbook.', 'status': 403}
+    supplied = '' if pin is None else str(pin)
+    if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
+        return {'error': 'Super-Admin PIN is required.', 'status': 403}
+    return {'success': True}
+
+
+def export_protected_workbook(path: str, rows: list, *, role: str, pin: str,
+                              stored_hash: str) -> dict:
+    auth = authorize_protected_export(role, pin, stored_hash)
+    if auth.get('error'):
+        return auth
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Finance'
+    ws.protection.sheet = True
+    ws.protection.password = 'locked'
+    for row in rows:
+        ws.append(list(row))
+    wb.save(path)
+    return {'success': True, 'path': path, 'sheet_locked': True}

@@ -71,7 +71,7 @@ def configure_sqlite_connection(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     try:
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=3000")
     except sqlite3.OperationalError:
         pass
     try:

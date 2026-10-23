@@ -102,13 +102,97 @@ class DateField(QWidget):
         self.refresh_theme()
 
     def _open_calendar(self):
-        self._edit.setFocus(Qt.MouseFocusReason)
-        QApplication.sendEvent(
-            self._edit,
-            QKeyEvent(QEvent.KeyPress, Qt.Key_Down, Qt.AltModifier))
-        QApplication.sendEvent(
-            self._edit,
-            QKeyEvent(QEvent.KeyRelease, Qt.Key_Down, Qt.AltModifier))
+        """Month grid of buttons. Native calendar day cells do not paint on the till."""
+        from PyQt5.QtCore import QDate
+        from PyQt5.QtWidgets import QDialog, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+        parent = self.window() if self.window() is not None else self
+        box = QDialog(parent)
+        box.setWindowTitle("Choose date")
+        box.setModal(True)
+        box.resize(460, 420)
+        box.setStyleSheet("QDialog{background-color:#F7F9FC;}")
+        style = (
+            "QPushButton{background-color:#F7F9FC;color:#121820;border:1px solid #C5D0DE;"
+            "min-height:34px;min-width:40px;font-size:14px;font-weight:600;}"
+            "QPushButton:hover{background-color:#E7EEF6;color:#121820;}"
+            "QPushButton:disabled{color:#9CA3AF;background-color:#F7F9FC;}"
+        )
+        picked_style = style.replace("#F7F9FC", "#D6E4F5", 1)
+        lay = QVBoxLayout(box)
+        head = QHBoxLayout()
+        prev = QPushButton("<", box)
+        title = QPushButton(box)
+        nxt = QPushButton(">", box)
+        for btn in (prev, title, nxt):
+            btn.setStyleSheet(style)
+        title.setMinimumWidth(180)
+        head.addWidget(prev)
+        head.addWidget(title, 1)
+        head.addWidget(nxt)
+        lay.addLayout(head)
+        host = QWidget(box)
+        grid = QGridLayout(host)
+        grid.setSpacing(4)
+        lay.addWidget(host)
+        try:
+            current = self._edit.date()
+        except Exception:
+            current = QDate.currentDate()
+        state = {"y": current.year(), "m": current.month()}
+        names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+        def _apply(chosen):
+            if chosen > QDate.currentDate():
+                chosen = QDate.currentDate()
+            try:
+                self._edit.setMaximumDate(QDate.currentDate())
+                self._edit.setDate(chosen)
+            except Exception:
+                pass
+            try:
+                self.setDate(chosen)
+            except Exception:
+                pass
+            box.accept()
+
+        def _rebuild():
+            while grid.count():
+                item = grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            first = QDate(state["y"], state["m"], 1)
+            title.setText(first.toString("MMMM yyyy"))
+            for col, name in enumerate(names):
+                label = QPushButton(name, host)
+                label.setStyleSheet(style)
+                grid.addWidget(label, 0, col)
+            offset = first.dayOfWeek() - 1
+            today = QDate.currentDate()
+            for day_num in range(1, first.daysInMonth() + 1):
+                chosen = QDate(state["y"], state["m"], day_num)
+                day_btn = QPushButton(str(day_num), host)
+                day_btn.setStyleSheet(picked_style if chosen == current else style)
+                if chosen > today:
+                    day_btn.setEnabled(False)
+                day_btn.pressed.connect(lambda _=False, picked=chosen: _apply(picked))
+                slot = offset + day_num - 1
+                grid.addWidget(day_btn, 1 + (slot // 7), slot % 7)
+
+        def _shift(delta):
+            month = state["m"] + delta
+            year = state["y"]
+            if month < 1:
+                month, year = 12, year - 1
+            elif month > 12:
+                month, year = 1, year + 1
+            state["m"], state["y"] = month, year
+            _rebuild()
+
+        prev.pressed.connect(lambda: _shift(-1))
+        nxt.pressed.connect(lambda: _shift(1))
+        _rebuild()
+        box.exec_()
 
     def date(self):
         return self._edit.date()

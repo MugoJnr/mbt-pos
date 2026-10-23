@@ -49,9 +49,7 @@ export async function api<T = any>(
   const data = (await r.json().catch(() => ({}))) as T & { error?: string };
   if (r.status === 401 && !noAuth) {
     clearSession();
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
+    if (typeof window !== "undefined") window.location.reload();
     return null;
   }
   return data;

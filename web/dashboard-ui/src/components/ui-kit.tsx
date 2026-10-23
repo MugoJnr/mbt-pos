@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { forwardRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function Card({
@@ -150,17 +150,20 @@ export function Button({
   );
 }
 
-export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className={cn(
-        "h-9 w-full rounded-lg bg-input border border-border px-3 text-sm text-text placeholder:text-muted-fg transition-ui focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25",
-        props.className,
-      )}
-    />
-  );
-}
+export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
+  function Input(props, ref) {
+    return (
+      <input
+        ref={ref}
+        {...props}
+        className={cn(
+          "h-9 w-full rounded-lg bg-input border border-border px-3 text-sm text-text placeholder:text-muted-fg transition-ui focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25",
+          props.className,
+        )}
+      />
+    );
+  },
+);
 
 export function Select({
   children,

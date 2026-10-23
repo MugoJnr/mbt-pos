@@ -8,6 +8,7 @@ import { OverviewPanel } from "@/components/reports/OverviewPanel";
 import { SalesPanel } from "@/components/reports/SalesPanel";
 import { DebtsPanel } from "@/components/reports/DebtsPanel";
 import { InventoryPanel } from "@/components/reports/InventoryPanel";
+import { ReceiptsPanel } from "@/components/reports/ReceiptsPanel";
 import { SavedReports } from "@/components/reports/SavedReports";
 import { DateRangePicker } from "@/components/reports/ReportControls";
 import {
@@ -22,7 +23,7 @@ import { fetchOrganizations } from "@/lib/platform";
 
 export const Route = createFileRoute("/_app/reports")({
   validateSearch: (search: Record<string, unknown>): AnalyticsSearch => {
-    const validTabs = ["overview", "sales", "debts", "inventory", "saved"] as const;
+    const validTabs = ["overview", "sales", "debts", "inventory", "receipts", "saved"] as const;
     const tab = validTabs.includes(search.tab as (typeof validTabs)[number])
       ? (search.tab as AnalyticsTab)
       : "overview";
@@ -95,6 +96,7 @@ function Reports() {
               <TabsTrigger value="sales">All Sales</TabsTrigger>
               <TabsTrigger value="debts">Debts</TabsTrigger>
               <TabsTrigger value="inventory">Inventory</TabsTrigger>
+              <TabsTrigger value="receipts">Supplier receipts</TabsTrigger>
               <TabsTrigger value="saved">Saved Reports</TabsTrigger>
             </TabsList>
           </div>
@@ -109,6 +111,9 @@ function Reports() {
           </TabsContent>
           <TabsContent value="inventory" className="mt-4">
             <InventoryPanel orgId={orgId} start={start} end={end} filters={filtersQ.data} />
+          </TabsContent>
+          <TabsContent value="receipts" className="mt-4">
+            <ReceiptsPanel orgId={orgId} />
           </TabsContent>
           <TabsContent value="saved" className="mt-4">
             <SavedReports orgId={orgId} />

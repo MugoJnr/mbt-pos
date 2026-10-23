@@ -259,12 +259,10 @@ def biz_day_button_qss(*, date_width: int | None = None, micro: bool = False) ->
     min_h = 32 if micro else 34
 
     if micro:
-        dw = date_width or 104
-        width_block = f"min-width:{dw}px;max-width:{max(dw + 40, 144)}px;"
+        width_block = "min-width:168px;"
         pad = "padding:3px 10px;font-size:11px;"
     elif date_width is not None and date_width < 130:
-        dw = date_width
-        width_block = f"min-width:{dw}px;max-width:{max(dw + 80, 160)}px;"
+        width_block = "min-width:168px;"
         pad = "padding:4px 12px;font-size:12px;"
     elif date_width is not None:
         width_block = f"min-width:{date_width}px;"
@@ -359,7 +357,24 @@ QFrame#posBusinessDayBar QPushButton#posBizDayBtn {{
 #sidebar {{
     background: {p['sidebar']};
     border-right: 1px solid {p['border']};
-    min-width: 240px; max-width: 240px;
+}}
+#shellSplitter::handle:horizontal {{
+    background: transparent;
+    width: 10px;
+    margin: 0px;
+    padding: 0px;
+}}
+#sidebarToggle {{
+    background: {p['card']};
+    border: 1px solid {p['border2']};
+    border-radius: {r_md}px;
+    min-width: 32px; max-width: 32px;
+    min-height: 32px; max-height: 32px;
+    padding: 0px;
+}}
+#sidebarToggle:hover {{
+    background: {gold_tint};
+    border: 1px solid {p['gold']};
 }}
 #sidebarLogo {{
     background: {p['sidebar']};
@@ -403,6 +418,15 @@ QFrame#posBusinessDayBar QPushButton#posBizDayBtn {{
     background: {gold_tint};
     color: {p['gold']};
 }}
+#navBtn[navCollapsed="true"] {{
+    padding: 10px 0px 10px 0px;
+    text-align: center;
+    margin: 2px 6px;
+    min-height: 44px;
+}}
+#navBtn[navCollapsed="true"]:checked {{
+    padding-left: 0px;
+}}
 #sidebarUser {{
     background: {p['panel']};
     border-top: 1px solid {p['border']};
@@ -432,6 +456,13 @@ QFrame#posBusinessDayBar QPushButton#posBizDayBtn {{
     color: {p['err']};
     border-color: {p['err']};
     background: {p['err_dim']};
+}}
+#logoutBtn[navCollapsed="true"] {{
+    padding: 8px 0px;
+    margin-top: 0px;
+}}
+#sidebarUser[navCollapsed="true"] {{
+    min-height: 0px;
 }}
 
 /* ── TOPBAR ── */

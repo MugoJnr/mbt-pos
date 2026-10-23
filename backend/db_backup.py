@@ -35,7 +35,7 @@ def create_db_backup_zip(db_path: str = None) -> tuple[str, int, str]:
     zip_name = f'MBT_POS_DB_{stamp}.zip'
     zip_path = os.path.join(tmp_dir, zip_name)
 
-    src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=30)
+    src = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=5)
     dst = sqlite3.connect(snap_db)
     try:
         configure_sqlite_connection(src)

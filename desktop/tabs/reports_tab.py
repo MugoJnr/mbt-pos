@@ -251,6 +251,27 @@ class ReportsTab(QWidget):
     def _on_preset(self, key):
         if key == 'custom':
             return
+        if key == 'day':
+            from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+            from desktop.tabs.consumption_tab import DateField
+            box = QDialog(self)
+            box.setWindowTitle('Choose a day')
+            box.setModal(True)
+            lay = QVBoxLayout(box)
+            lay.addWidget(QLabel('Day'))
+            picked = DateField(parent=box)
+            lay.addWidget(picked)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(box.accept)
+            buttons.rejected.connect(box.reject)
+            lay.addWidget(buttons)
+            if box.exec_() != QDialog.Accepted:
+                return
+            day = picked.date()
+            self._s.setDate(day)
+            self._e.setDate(day)
+            self.refresh()
+            return
         start, end = date_range_for_preset(key)
         self._s.setDate(QDate(start.year, start.month, start.day))
         self._e.setDate(QDate(end.year, end.month, end.day))

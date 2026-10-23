@@ -24,7 +24,7 @@ TAB_PERMISSIONS_BY_ROLE = {
         'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
         'reports', 'notes', 'settings', 'ai_ops',
     ],
-    ROLE_CASHIER: ['dashboard', 'sales'],
+    ROLE_CASHIER: ['dashboard', 'sales', 'inventory'],
     ROLE_VIEWER: ['dashboard', 'reports', 'accounting'],
 }
 

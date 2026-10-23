@@ -61,7 +61,7 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertTrue(has_permission(u, 'reports.view_all'))
 
     def test_tab_defaults(self):
-        self.assertEqual(default_tab_permissions(ROLE_CASHIER), ['dashboard', 'sales'])
+        self.assertEqual(default_tab_permissions(ROLE_CASHIER), ['dashboard', 'sales', 'inventory'])
         self.assertIn('security', default_tab_permissions(ROLE_SUPERADMIN))
         self.assertNotIn('security', default_tab_permissions(ROLE_ADMIN))
         self.assertNotIn('license', default_tab_permissions(ROLE_ADMIN))

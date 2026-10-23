@@ -21,6 +21,7 @@ import {
   Bell,
   Activity,
   ClipboardCheck,
+  ClipboardList,
   HeartPulse,
   HardDrive,
   GitBranch,
@@ -53,6 +54,7 @@ const NAV: NavItem[] = [
   { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview" },
   { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations" },
   { to: "/inventory", label: "Inventory", icon: Package, group: "Operations" },
+  { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations" },
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations" },
   { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations" },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Command" },
@@ -220,12 +222,12 @@ function SidebarContent({
   );
 }
 
-function HwDot({ label }: { label: string }) {
+function HwDot({ label, state, ready = false }: { label: string; state: string; ready?: boolean }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <Circle className="h-2 w-2 fill-ok text-ok" />
+      <Circle className={cn("h-2 w-2", ready ? "fill-ok text-ok" : "fill-text2 text-text2")} />
       <span>
-        {label}: <span className="text-ok">Connected</span>
+        {label}: <span className={ready ? "text-ok" : "text-text"}>{state}</span>
       </span>
     </span>
   );
@@ -570,7 +572,7 @@ export function AppShell({
   }, [location.pathname]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-app text-text">
+    <div className={cn("flex flex-col bg-app text-text", isPos ? "h-dvh overflow-hidden" : "min-h-screen")}>
       <div className="flex flex-1 min-h-0">
         {/* Desktop Sidebar */}
         <aside className="hidden lg:flex w-[240px] shrink-0 flex-col bg-sidebar border-r border-border">
@@ -667,15 +669,17 @@ export function AppShell({
 
           <main
             className={cn(
-              "flex-1 min-h-0 overflow-y-auto scrollbar-thin overflow-x-hidden",
-              isPos ? "pb-[52px] lg:pb-9" : "pb-[76px] lg:pb-0",
+              "flex-1 min-h-0 overflow-x-hidden",
+              isPos
+                ? "overflow-hidden pb-[76px] lg:pb-0"
+                : "overflow-y-auto scrollbar-thin pb-[76px] lg:pb-0",
             )}
           >
             <div
               key={location.pathname}
               className={cn(
                 "page-enter",
-                isPos ? "p-2.5 sm:p-3 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
+                isPos ? "h-full min-h-0 p-2 sm:p-2.5 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
               )}
             >
               {children}
@@ -685,9 +689,9 @@ export function AppShell({
           {isPos ? (
             <footer className="hidden lg:flex min-h-9 shrink-0 items-center justify-between gap-3 px-4 py-1.5 border-t border-border bg-panel/80 text-[11px] text-text2">
               <div className="flex items-center gap-4">
-                <HwDot label="Barcode Scanner" />
-                <HwDot label="Receipt Printer" />
-                <HwDot label="Cash Drawer" />
+                <HwDot label="Barcode scanner" state="Search box" ready />
+                <HwDot label="Receipt printer" state="Main till" />
+                <HwDot label="Cash drawer" state="Main till" />
               </div>
               <span className="font-mono truncate">
                 Last Sync: just now · v{ver}

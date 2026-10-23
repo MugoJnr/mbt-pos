@@ -16,12 +16,14 @@ import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as PosRouteImport } from './routes/pos'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as NotesRouteImport } from './routes/notes'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LicenseRouteImport } from './routes/license'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as DiagnosticsRouteImport } from './routes/diagnostics'
 import { Route as DebtRouteImport } from './routes/debt'
+import { Route as ConsumptionRouteImport } from './routes/consumption'
 import { Route as BranchesRouteImport } from './routes/branches'
 import { Route as BackupRouteImport } from './routes/backup'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
@@ -63,6 +65,11 @@ const NotesRoute = NotesRouteImport.update({
   path: '/notes',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LiveRoute = LiveRouteImport.update({
   id: '/live',
   path: '/live',
@@ -91,6 +98,11 @@ const DiagnosticsRoute = DiagnosticsRouteImport.update({
 const DebtRoute = DebtRouteImport.update({
   id: '/debt',
   path: '/debt',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConsumptionRoute = ConsumptionRouteImport.update({
+  id: '/consumption',
+  path: '/consumption',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BranchesRoute = BranchesRouteImport.update({
@@ -125,12 +137,14 @@ export interface FileRoutesByFullPath {
   '/approvals': typeof ApprovalsRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -145,12 +159,14 @@ export interface FileRoutesByTo {
   '/approvals': typeof ApprovalsRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -166,12 +182,14 @@ export interface FileRoutesById {
   '/approvals': typeof ApprovalsRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
+  '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
+  '/login': typeof LoginRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -188,12 +206,14 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
     | '/inventory'
     | '/license'
     | '/live'
+    | '/login'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -208,12 +228,14 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
     | '/inventory'
     | '/license'
     | '/live'
+    | '/login'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -228,12 +250,14 @@ export interface FileRouteTypes {
     | '/approvals'
     | '/backup'
     | '/branches'
+    | '/consumption'
     | '/debt'
     | '/diagnostics'
     | '/health'
     | '/inventory'
     | '/license'
     | '/live'
+    | '/login'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -249,12 +273,14 @@ export interface RootRouteChildren {
   ApprovalsRoute: typeof ApprovalsRoute
   BackupRoute: typeof BackupRoute
   BranchesRoute: typeof BranchesRoute
+  ConsumptionRoute: typeof ConsumptionRoute
   DebtRoute: typeof DebtRoute
   DiagnosticsRoute: typeof DiagnosticsRoute
   HealthRoute: typeof HealthRoute
   InventoryRoute: typeof InventoryRoute
   LicenseRoute: typeof LicenseRoute
   LiveRoute: typeof LiveRoute
+  LoginRoute: typeof LoginRoute
   NotesRoute: typeof NotesRoute
   NotificationsRoute: typeof NotificationsRoute
   PosRoute: typeof PosRoute
@@ -315,6 +341,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof NotesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/live': {
       id: '/live'
       path: '/live'
@@ -355,6 +388,13 @@ declare module '@tanstack/react-router' {
       path: '/debt'
       fullPath: '/debt'
       preLoaderRoute: typeof DebtRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/consumption': {
+      id: '/consumption'
+      path: '/consumption'
+      fullPath: '/consumption'
+      preLoaderRoute: typeof ConsumptionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/branches': {
@@ -401,12 +441,14 @@ const rootRouteChildren: RootRouteChildren = {
   ApprovalsRoute: ApprovalsRoute,
   BackupRoute: BackupRoute,
   BranchesRoute: BranchesRoute,
+  ConsumptionRoute: ConsumptionRoute,
   DebtRoute: DebtRoute,
   DiagnosticsRoute: DiagnosticsRoute,
   HealthRoute: HealthRoute,
   InventoryRoute: InventoryRoute,
   LicenseRoute: LicenseRoute,
   LiveRoute: LiveRoute,
+  LoginRoute: LoginRoute,
   NotesRoute: NotesRoute,
   NotificationsRoute: NotificationsRoute,
   PosRoute: PosRoute,

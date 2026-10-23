@@ -43,8 +43,328 @@ def _popup_view_qss() -> str:
     )
 
 
+_COMBO_POPUP_INSTALLED = False
+
+
+def install_combo_popup_fix() -> None:
+    """Replace combo and menu popups with readable button lists.
+
+    The global stylesheet sets ``QWidget { background: transparent }``. On the
+    Windows till, style-drawn combo rows and menu items do not paint. Button
+    text does. ``pressed`` is used because a Qt.Popup closes before ``clicked``.
+    """
+    global _COMBO_POPUP_INSTALLED
+    if _COMBO_POPUP_INSTALLED:
+        return
+    _COMBO_POPUP_INSTALLED = True
+    from PyQt5.QtCore import QEvent, QObject, QPoint, QTimer
+    from PyQt5.QtWidgets import (
+        QApplication, QFrame, QLabel, QMenu, QPushButton, QScrollArea,
+        QVBoxLayout, QWidget,
+    )
+
+    original_show = QComboBox.showPopup
+    original_hide = QComboBox.hidePopup
+    original_menu_popup = QMenu.popup
+    original_menu_exec = QMenu.exec_
+
+    def _hide_popup(self):
+        panel = getattr(self, "_mbt_row_popup", None)
+        self._mbt_row_popup = None
+        if panel is not None:
+            panel.close()
+        return original_hide(self)
+
+    def _show_popup(self):
+        try:
+            old = getattr(self, "_mbt_row_popup", None)
+            if old is not None:
+                old.close()
+            popup = QFrame(None, Qt.Popup | Qt.FramelessWindowHint)
+            popup.setObjectName("mbtRowPopup")
+            popup.setAttribute(Qt.WA_StyledBackground, True)
+            popup.setStyleSheet(
+                "QFrame#mbtRowPopup{background-color:#F7F9FC;border:1px solid #C5D0DE;}"
+                "QScrollArea{background-color:#F7F9FC;border:none;}"
+                "QWidget#mbtRowHost{background-color:#F7F9FC;}"
+            )
+            outer = QVBoxLayout(popup)
+            outer.setContentsMargins(0, 0, 0, 0)
+            scroll = QScrollArea(popup)
+            scroll.setWidgetResizable(True)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            host = QWidget()
+            host.setObjectName("mbtRowHost")
+            lay = QVBoxLayout(host)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            count = int(self.count() or 0)
+            current = self.currentIndex()
+            buttons = []
+            if count <= 0:
+                empty = QLabel("No options", host)
+                empty.setStyleSheet(
+                    "color:#6B7280;background-color:#F7F9FC;padding:8px 12px;"
+                )
+                lay.addWidget(empty)
+                shown = 1
+            else:
+                shown = min(count, 12)
+                for i in range(count):
+                    text = self.itemText(i) or "(blank)"
+                    enabled = True
+                    try:
+                        item = self.model().item(i)
+                        if item is not None:
+                            enabled = bool(item.isEnabled())
+                    except Exception:
+                        enabled = True
+                    btn = QPushButton(text, host)
+                    btn.setEnabled(enabled)
+                    bg = "#D6E4F5" if i == current else "#F7F9FC"
+                    fg = "#121820" if enabled else "#6B7280"
+                    btn.setStyleSheet(
+                        "QPushButton{background-color:%s;color:%s;border:none;"
+                        "text-align:left;padding:6px 12px;min-height:28px;font-size:13px;}"
+                        "QPushButton:hover{background-color:#E7EEF6;color:#121820;}"
+                        "QPushButton:disabled{color:#6B7280;background-color:#F7F9FC;}"
+                        % (bg, fg)
+                    )
+
+                    def _pick(idx=i, box=self, panel=popup):
+                        try:
+                            item = box.model().item(idx)
+                            allowed = item is None or item.isEnabled()
+                        except Exception:
+                            allowed = True
+                        if allowed:
+                            box.setCurrentIndex(idx)
+                        panel.close()
+                        box.hidePopup()
+
+                    btn.pressed.connect(_pick)
+                    lay.addWidget(btn)
+                    buttons.append(btn)
+            scroll.setWidget(host)
+            outer.addWidget(scroll)
+            width = max(int(self.width()), 220)
+            height = min(320, shown * 34 + 8)
+            popup.resize(width, height)
+            origin = self.mapToGlobal(QPoint(0, self.height()))
+            screen = QApplication.desktop().availableGeometry(self)
+            x, y = origin.x(), origin.y()
+            if y + height > screen.bottom() - 8:
+                y = max(screen.top() + 8, origin.y() - self.height() - height)
+            if x + width > screen.right() - 8:
+                x = max(screen.left() + 8, screen.right() - width - 8)
+            popup.move(x, y)
+            self._mbt_row_popup = popup
+            popup._mbt_btns = buttons
+            popup._mbt_pos = current if 0 <= current < len(buttons) else 0
+
+            def _paint_row(active):
+                for n, b in enumerate(buttons):
+                    on = n == active and b.isEnabled()
+                    b.setStyleSheet(
+                        "QPushButton{background-color:%s;color:%s;border:none;"
+                        "text-align:left;padding:6px 12px;min-height:28px;font-size:13px;}"
+                        "QPushButton:hover{background-color:#E7EEF6;color:#121820;}"
+                        "QPushButton:disabled{color:#6B7280;background-color:#F7F9FC;}"
+                        % (
+                            "#D6E4F5" if on else "#F7F9FC",
+                            "#121820" if b.isEnabled() else "#6B7280",
+                        )
+                    )
+
+            class _RowKeys(QObject):
+                def eventFilter(_s, obj, event):
+                    if event.type() != QEvent.KeyPress or not buttons:
+                        return False
+                    key = event.key()
+                    if key == Qt.Key_Escape:
+                        popup.close()
+                        self.hidePopup()
+                        return True
+                    if key in (Qt.Key_Down, Qt.Key_Up):
+                        step = 1 if key == Qt.Key_Down else -1
+                        i = popup._mbt_pos
+                        for _n in range(len(buttons)):
+                            i = (i + step) % len(buttons)
+                            if buttons[i].isEnabled():
+                                break
+                        popup._mbt_pos = i
+                        _paint_row(i)
+                        return True
+                    if key in (Qt.Key_Return, Qt.Key_Enter):
+                        buttons[popup._mbt_pos].pressed.emit()
+                        return True
+                    return False
+
+            popup._mbt_keys = _RowKeys(popup)
+            popup.installEventFilter(popup._mbt_keys)
+            popup.setFocusPolicy(Qt.StrongFocus)
+            popup.show()
+            popup.raise_()
+            QTimer.singleShot(0, popup.setFocus)
+            return None
+        except Exception:
+            return original_show(self)
+
+    def _action_panel(menu, global_pos, result=None):
+        popup = QFrame(None, Qt.Popup | Qt.FramelessWindowHint)
+        popup.setObjectName("mbtMenuPopup")
+        popup.setAttribute(Qt.WA_StyledBackground, True)
+        popup.setStyleSheet(
+            "QFrame#mbtMenuPopup{background-color:#F7F9FC;border:1px solid #C5D0DE;}"
+            "QWidget#mbtMenuHost{background-color:#F7F9FC;}"
+            "QScrollArea{background-color:#F7F9FC;border:none;}"
+        )
+        outer = QVBoxLayout(popup)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(popup)
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        host.setObjectName("mbtMenuHost")
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        shown = 0
+        for act in menu.actions():
+            if act.isSeparator():
+                continue
+            label = (act.text() or "").replace("&", "") or "(item)"
+            btn = QPushButton(label, host)
+            btn.setEnabled(act.isEnabled())
+            btn.setStyleSheet(
+                "QPushButton{background-color:#F7F9FC;color:#121820;border:none;"
+                "text-align:left;padding:6px 12px;min-height:28px;font-size:13px;}"
+                "QPushButton:hover{background-color:#E7EEF6;}"
+                "QPushButton:disabled{color:#6B7280;}"
+            )
+
+            def _fire(a=act, panel=popup, parent_menu=menu):
+                if result is not None:
+                    result["action"] = a
+                panel.close()
+                try:
+                    parent_menu.close()
+                except Exception:
+                    pass
+                loop = None if result is None else result.get("loop")
+                if loop is not None:
+                    loop.quit()
+                sub = a.menu()
+                if sub is not None:
+                    _action_panel(sub, panel.pos())
+                    return
+                a.trigger()
+
+            btn.pressed.connect(_fire)
+            lay.addWidget(btn)
+            shown += 1
+        if shown == 0:
+            return None
+        scroll.setWidget(host)
+        outer.addWidget(scroll)
+        popup.resize(260, min(320, shown * 34 + 8))
+        popup.move(global_pos)
+
+        def _closed(event, panel=popup):
+            QFrame.closeEvent(panel, event)
+            loop = None if result is None else result.get("loop")
+            if loop is not None:
+                loop.quit()
+
+        popup.closeEvent = _closed
+        popup.show()
+        popup.raise_()
+        return popup
+
+    def _menu_popup(self, pos, action=None):
+        try:
+            return _action_panel(self, pos)
+        except Exception:
+            return original_menu_popup(self, pos)
+
+    def _menu_exec(self, *args, **kwargs):
+        try:
+            from PyQt5.QtCore import QEventLoop
+            pos = args[0] if args and hasattr(args[0], "x") else QPoint(0, 0)
+            result = {"action": None, "loop": QEventLoop()}
+            panel = _action_panel(self, pos, result)
+            if panel is None:
+                return None
+            result["loop"].exec_()
+            return result["action"]
+        except Exception:
+            return original_menu_exec(self, *args, **kwargs)
+
+    QComboBox.showPopup = _show_popup
+    QComboBox.hidePopup = _hide_popup
+    QMenu.popup = _menu_popup
+    QMenu.exec_ = _menu_exec
+
+
+# Dark item backgrounds do not paint glyphs while the global sheet sets
+# QWidget { background: transparent }. An opaque light list is what shows the rows.
+_POPUP_BG = "#F7F9FC"
+_POPUP_FG = "#121820"
+_POPUP_SEL = "#D6E4F5"
+_POPUP_HOVER = "#E7EEF6"
+_POPUP_BORDER = "#C5D0DE"
+_POPUP_MUTED = "#6B7280"
+
+
+def _combo_popup_qss() -> str:
+    return (
+        f"QAbstractItemView{{background-color:{_POPUP_BG};color:{_POPUP_FG};"
+        f"border:1px solid {_POPUP_BORDER};outline:0;"
+        f"selection-background-color:{_POPUP_SEL};selection-color:{_POPUP_FG};}}"
+        f"QAbstractItemView::item{{background-color:{_POPUP_BG};color:{_POPUP_FG};"
+        f"min-height:28px;padding:4px 10px;}}"
+        f"QAbstractItemView::item:selected{{background-color:{_POPUP_SEL};color:{_POPUP_FG};}}"
+        f"QAbstractItemView::item:hover{{background-color:{_POPUP_HOVER};color:{_POPUP_FG};}}"
+        f"QAbstractItemView::item:disabled{{color:{_POPUP_MUTED};background-color:{_POPUP_BG};}}"
+    )
+
+
+def _prepare_combo_popup(combo: QComboBox) -> None:
+    view = combo.view()
+    if view is None:
+        return
+    if combo.maxVisibleItems() > 16:
+        combo.setMaxVisibleItems(12)
+    view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    view.setStyleSheet(_combo_popup_qss())
+    viewport = view.viewport()
+    if viewport is not None:
+        viewport.setStyleSheet(
+            f"background-color:{_POPUP_BG};color:{_POPUP_FG};")
+
+
+def _finish_combo_popup(combo: QComboBox) -> None:
+    """Size the open list to its rows and keep the opaque paint."""
+    _prepare_combo_popup(combo)
+    view = combo.view()
+    if view is None:
+        return
+    try:
+        from desktop.utils.pos_light_theme import _fit_combo_popup
+        _fit_combo_popup(
+            combo, bg=_POPUP_BG, fg=_POPUP_FG,
+            border=_POPUP_BORDER, max_items=12)
+    except Exception:
+        count = max(1, min(int(combo.count() or 1), 12))
+        height = min(280, count * 32 + 8)
+        view.setMaximumHeight(height)
+    # _fit replaces the view sheet; put the opaque viewport back afterwards.
+    _prepare_combo_popup(combo)
+
+
 def _style_combo_popup(combo: QComboBox) -> None:
     """Force popup palette + QSS so dark mode never shows empty white sheets."""
+    install_combo_popup_fix()
     view = combo.view()
     if view is None:
         return
@@ -279,19 +599,7 @@ class Select(QComboBox):
 
     def showPopup(self):
         self.refresh_theme()
-        _style_combo_popup(self)
         super().showPopup()
-        # Fit outer QComboBoxPrivateContainer — kills tall white sheet
-        try:
-            from desktop.utils.pos_light_theme import _fit_combo_popup
-            bg, fg, bd = C['card'], C['text'], C['border']
-            _fit_combo_popup(self, bg=bg, fg=fg, border=bd, max_items=14)
-            QTimer.singleShot(
-                0, lambda: _fit_combo_popup(
-                    self, bg=C['card'], fg=C['text'], border=C['border'],
-                    max_items=14))
-        except Exception:
-            pass
 
     def refresh_theme(self):
         self.setStyleSheet(_select_qss(self.objectName() or 'mbtSelect'))
@@ -746,3 +1054,6 @@ class DatePresetSelect(Select):
     def current_key(self) -> str:
         v = self.current_value()
         return str(v) if v else 'today'
+
+
+install_combo_popup_fix()

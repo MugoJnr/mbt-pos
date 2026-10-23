@@ -465,6 +465,10 @@ class AnimatedKPI(QFrame):
     def leaveEvent(self, e):
         super().leaveEvent(e)
 
+    def set_label(self, text: str):
+        self._label = text
+        self._lbl.setText(text)
+
     def set_value(self, v, color=None):
         """Set display value; animates when purely numeric or KES money-like."""
         if color:

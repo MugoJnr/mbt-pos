@@ -49,12 +49,27 @@ def pick_shop_day_dialog(
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     dlg.setModal(True)
-    dlg.setMinimumWidth(340)
+    dlg.setMinimumSize(380, 420)
+    dlg.setStyleSheet(
+        "QDialog{background:#101820;color:#f5f7fb;}"
+        "QLabel{color:#f5f7fb;background:transparent;}"
+        "QCalendarWidget{background:#101820;color:#f5f7fb;}"
+        "QCalendarWidget QWidget{background:#101820;color:#f5f7fb;alternate-background-color:#16202b;}"
+        "QCalendarWidget QAbstractItemView{background:#101820;color:#f5f7fb;"
+        "selection-background-color:#e0b15a;selection-color:#101820;}"
+        "QCalendarWidget QToolButton{color:#f5f7fb;background:#1c2836;font-size:14px;}"
+        "QDialogButtonBox QPushButton{min-height:36px;background:#1c2836;color:#f5f7fb;"
+        "border:1px solid #e0b15a;padding:6px 14px;font-weight:700;}"
+    )
     lay = QVBoxLayout(dlg)
     lay.setContentsMargins(12, 12, 12, 12)
     lay.setSpacing(10)
+    title_lbl = QLabel(title)
+    title_lbl.setStyleSheet("font-size:16px;font-weight:700;color:#f5f7fb;")
+    lay.addWidget(title_lbl)
 
     cal = QCalendarWidget(dlg)
+    cal.setMinimumSize(340, 280)
     cal.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
     cal.setGridVisible(True)
     cal.setSelectedDate(_as_qdate(initial))

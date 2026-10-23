@@ -37,6 +37,20 @@ def shop_today() -> date:
     return shop_now().date()
 
 
+def sale_day_caption(day: date | None, *, today: date | None = None) -> tuple[str, str]:
+    """Visible sale-date label. Returns (text, tone).
+
+    tone is today, backdated, or future. Today is the word Today only.
+    """
+    today = today or shop_today()
+    if day is None or day == today:
+        return 'Today', 'today'
+    label = f"{day.day} {day.strftime('%b %Y')}"
+    if day < today:
+        return f"{label} — BACKDATED", 'backdated'
+    return f"{label} — FUTURE DATE", 'future'
+
+
 def parse_sale_date(value) -> date | None:
     """Parse YYYY-MM-DD (or ISO datetime prefix) to date, or None."""
     if value is None:

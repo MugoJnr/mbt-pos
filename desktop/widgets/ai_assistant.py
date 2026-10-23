@@ -227,7 +227,7 @@ class AiAssistantPanel(QFrame):
         self._build()
         self.refresh_theme()
         conn = get_connectivity()
-        conn.subscribe(lambda online: QTimer.singleShot(0, self._on_conn))
+        conn.subscribe(self._on_conn_changed)
         conn.start_watch(45)
         QTimer.singleShot(100, self._refresh_home)
 
@@ -788,7 +788,14 @@ class AiAssistantPanel(QFrame):
         self.setFixedHeight(parent.height())
         self.move(parent.width() - self.width(), 0)
 
+    def _on_conn_changed(self, online: bool):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+        run_on_ui_thread(self._on_conn)
+
     def _on_conn(self):
+        from desktop.utils.lifecycle import is_alive
+        if not is_alive(self):
+            return
         st = get_ai_service().status()
         if st.get('banner'):
             self._banner.setText('!  ' + st['banner'])

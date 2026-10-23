@@ -23,6 +23,7 @@ from desktop.utils.ui_polish import (
     apply_card_shadow, time_greeting,
 )
 from desktop.utils.select_controls import DatePresetSelect
+from desktop.utils.lifecycle import defer, is_alive
 from desktop.utils.option_lists import date_range_for_preset
 
 log = logging.getLogger(__name__)
@@ -633,7 +634,7 @@ class DashboardTab(QWidget):
         open_ai.clicked.connect(self._open_floating_ai)
         ail.addWidget(open_ai)
         rcol.addWidget(self._ai_card)
-        QTimer.singleShot(600, lambda: self._load_ai_insights(force=False))
+        defer(self, 600, lambda: self._load_ai_insights(force=False))
 
         # -- Operational alerts (live data only — no placeholder checklists) ---
         self._tasks_card = _Card(self._is_light)
@@ -905,7 +906,7 @@ class DashboardTab(QWidget):
             self._shop_lbl.setText(f'{shop} | {sub}')
         except Exception:
             pass
-        QTimer.singleShot(0, self._load)
+        defer(self, 0, self._load)
 
     def _open_consumption_report(self):
         """Dashboard KPI click -> Internal Consumption report."""
@@ -983,6 +984,8 @@ class DashboardTab(QWidget):
 
     def _load_ai_insights(self, force: bool = False):
         """Load cached/local/AI dashboard insights into the insights card."""
+        if not is_alive(self) or not is_alive(getattr(self, '_ai_summary', None)):
+            return
         try:
             from desktop.utils.ai.insights import get_dashboard_insights
             data = get_dashboard_insights(self.api, self.user, force=force)
@@ -1016,16 +1019,56 @@ class DashboardTab(QWidget):
     def refresh(self):
         self._load()
 
+    def _ask_range(self, single: bool):
+        """Pick one day, or a start and end. Cancel leaves the previous range."""
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+        from desktop.tabs.consumption_tab import DateField
+        box = QDialog(self)
+        box.setWindowTitle('Choose a day' if single else 'Choose dates')
+        box.setModal(True)
+        lay = QVBoxLayout(box)
+        start_edit = DateField(parent=box)
+        lay.addWidget(QLabel('Day' if single else 'From'))
+        lay.addWidget(start_edit)
+        end_edit = None
+        if not single:
+            end_edit = DateField(parent=box)
+            lay.addWidget(QLabel('To'))
+            lay.addWidget(end_edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(box.accept)
+        buttons.rejected.connect(box.reject)
+        lay.addWidget(buttons)
+        if box.exec_() != QDialog.Accepted:
+            return None
+        start = start_edit.date().toPyDate()
+        end = start if end_edit is None else end_edit.date().toPyDate()
+        if end < start:
+            start, end = end, start
+        return start, end
+
     def _on_period(self, key):
-        self._period_key = key or 'today'
+        key = key or 'today'
+        if key in ('day', 'custom'):
+            picked = self._ask_range(single=(key == 'day'))
+            if not picked:
+                prev = getattr(self, '_period_key', None) or 'today'
+                self._period.blockSignals(True)
+                self._period.set_value(prev)
+                self._period.blockSignals(False)
+                return
+            self._custom_start, self._custom_end = picked
+        self._period_key = key
         self._load()
 
     def _load(self):
+        if not is_alive(self) or not is_alive(getattr(self, '_k_sales', None)):
+            return
         key = getattr(self, '_period_key', None) or (
             self._period.current_key() if hasattr(self, '_period') else 'today')
-        if key == 'custom':
-            # Custom keeps last loaded range; default to today
-            start_d, end_d = date.today(), date.today()
+        if key in ('day', 'custom'):
+            start_d = getattr(self, '_custom_start', None) or date.today()
+            end_d = getattr(self, '_custom_end', None) or start_d
         else:
             start_d, end_d = date_range_for_preset(key)
         start = start_d.isoformat()
@@ -1037,6 +1080,15 @@ class DashboardTab(QWidget):
             today = str(date.today())
         p     = _palette(self._is_light)
         cur   = self._currency
+        span = start if start == end else f"{start} to {end}"
+        self._period_span = span
+        if getattr(self, '_pay_card', None):
+            self._pay_card.set_title(f"By Payment | {span}")
+        if getattr(self, '_top_title', None):
+            self._top_title.setText(f"Top Products | {span}")
+        if getattr(self, '_sales_empty', None):
+            self._sales_empty._title.setText(
+                'No sales today' if start == end == today else f'No sales for {span}')
 
         # -- Sales KPIs ---
         today_tx = 0
@@ -1056,8 +1108,15 @@ class DashboardTab(QWidget):
                 self._k_rev.set_value(f"{cur} {today_rev:,.2f}")
                 self._k_rev.set_sub(f"Collected {cur} {today_collected:,.2f}")
                 self._k_avg.set_value(f"{cur} {avg:,.2f}")
-                period_lbl = self._period.current_label() if hasattr(self, '_period') else 'Period'
+                if start_d == end_d:
+                    period_lbl = start_d.strftime('%d %b %Y')
+                else:
+                    period_lbl = f"{start_d.strftime('%d %b %Y')} – {end_d.strftime('%d %b %Y')}"
+                self._k_sales.set_label('Sales')
+                self._k_rev.set_label('Revenue')
                 self._k_sales.set_sub(period_lbl or 'Transactions')
+                if hasattr(self, '_shop_lbl'):
+                    self._shop_lbl.setText(f"Showing {period_lbl}.")
                 cash_c = float(s.get('cash_sales_collected') or s.get('cash_received') or 0)
                 mpesa_c = float(s.get('mpesa_collected') or 0)
                 card_c = float(s.get('card_collected') or 0)
@@ -1138,7 +1197,7 @@ class DashboardTab(QWidget):
 
         # -- Debt KPIs ---
         try:
-            ds = self.api.get_debt_summary()
+            ds = self.api.get_debt_summary(start, end)
             if ds:
                 out  = ds.get('outstanding', {})
                 col  = ds.get('today_collected', {})
@@ -1171,7 +1230,7 @@ class DashboardTab(QWidget):
                          p['err'] if over_n > 0 else p['ok'], 'debt'),
                     ]
                     try:
-                        cs = self.api.get_consumption_today_summary() or {}
+                        cs = self.api.get_consumption_today_summary(start, end) or {}
                         lines = int(cs.get('line_count') or 0)
                         cost = float(cs.get('total_cost') or 0)
                         debt_chips.append(
@@ -1198,28 +1257,33 @@ class DashboardTab(QWidget):
 
         # -- Internal consumption today ---
         try:
-            cs = self.api.get_consumption_today_summary() or {}
+            cs = self.api.get_consumption_today_summary(start, end) or {}
             lines = int(cs.get('line_count') or 0)
             qty = float(cs.get('item_qty') or 0)
             cost = float(cs.get('total_cost') or 0)
             # Prefer item count (lines); show qty in sub when useful
             self._k_cons.set_value(str(lines if lines else int(qty) if qty else 0))
-            self._k_cons.set_sub(f"{cur} {cost:,.0f} used today")
+            self._k_cons.set_sub(f"{cur} {cost:,.0f} used in range")
         except Exception as e:
             log.warning(f"Dashboard consumption KPI: {e}")
 
         # -- Recent sales table ---
         try:
-            sales = self.api.get_sales(today, today) or []
+            sales = self.api.get_sales(start, end) or []
             self._tbl.setRowCount(0)
-            for i, s in enumerate(sales[:40]):
+            shown = sales[:500]
+            for i, s in enumerate(shown):
                 self._tbl.insertRow(i)
                 status = (s.get('status') or 'completed').lower()
                 voided = status == 'voided'
 
                 self._tbl.setItem(i, 0, tbl_item(s.get('receipt_number', '')))
                 t = (s.get('created_at', '') or '')
-                self._tbl.setItem(i, 1, tbl_item(t[11:16] if len(t) > 11 else t))
+                if start == end:
+                    when = t[11:16] if len(t) > 11 else t
+                else:
+                    when = (t[:16].replace('T', ' ') if len(t) >= 16 else t)
+                self._tbl.setItem(i, 1, tbl_item(when))
                 self._tbl.setItem(i, 2, tbl_item(s.get('cashier_name', '')))
                 total_col = p['muted'] if voided else p['ok']
                 self._tbl.setItem(i, 3, tbl_right(
@@ -1233,8 +1297,12 @@ class DashboardTab(QWidget):
             self._tbl.setVisible(has)
             if getattr(self, '_sales_empty', None):
                 self._sales_empty.setVisible(not has)
+            span = start if start == end else f"{start} to {end}"
+            extra = ''
+            if n > len(shown):
+                extra = f" | showing {len(shown)} of {n}"
             self._tbl_footer.setText(
-                f"  {n} transaction{'s' if n != 1 else ''} today" +
+                f"  {n} transaction{'s' if n != 1 else ''} · {span}{extra}" +
                 (f" | Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
             self._on_sale_selected()
 
@@ -1245,7 +1313,7 @@ class DashboardTab(QWidget):
 
         # -- Top products ---
         try:
-            d = self.api.get_report_summary(today, today)
+            d = self.api.get_report_summary(start, end)
             top = (d.get('top_products') or [])[:5] if d else []
             self._top_data = top
             self._reload_top_products()
@@ -1254,20 +1322,19 @@ class DashboardTab(QWidget):
 
         # -- Charts (7-day trend + payment mix) ---
         try:
-            trend = self.api.get_sales_trend(7) or []
+            trend = self.api.get_sales_trend(start=start, end=end) or []
             self._trend_chart.set_data(
                 [t.get('revenue', 0) for t in trend],
                 [t.get('label', '') for t in trend],
             )
             total_7 = sum(float(t.get('revenue') or 0) for t in trend)
             self._trend_card.set_title(
-                f"Sales | Last 7 Days | {cur} {total_7:,.0f}")
+                f"Sales | {start} to {end} | {cur} {total_7:,.0f}")
         except Exception as e:
             log.warning(f"Dashboard sales trend: {e}")
 
         try:
-            start_7 = (date.today() - timedelta(days=6)).isoformat()
-            pay_data = self.api.get_report_summary(start_7, today) or {}
+            pay_data = self.api.get_report_summary(start, end) or {}
             by_pay = pay_data.get('by_payment') or []
             # Merge duplicate methods (cash/Cash/CASH → one Cash row)
             merged: dict[str, float] = {}
@@ -1379,7 +1446,8 @@ class DashboardTab(QWidget):
         cur = self._currency
 
         if not top:
-            empty = EmptyState('box', 'No sales today', 'Top products will appear after your first sale')
+            span = getattr(self, '_period_span', 'today')
+            empty = EmptyState('box', f'No sales for {span}', 'Top products appear after a completed sale')
             self._no_top = empty
             self._top_container.addWidget(empty)
             return

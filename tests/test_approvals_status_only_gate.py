@@ -41,6 +41,9 @@ class ApprovalsStatusOnlyGate(unittest.TestCase):
             ui = fh.read()
         self.assertIn('runs that action once', ui)
         self.assertIn('Super-Admin PIN', ui)
+        self.assertIn('The server checks the PIN', ui)
+        self.assertIn('Could not refresh approvals', ui)
+        self.assertIn('type="password"', ui)
         self.assertNotIn('updates queue status only', ui)
 
     def test_a02_reject_and_escalate_paths(self):
@@ -59,6 +62,7 @@ class ApprovalsStatusOnlyGate(unittest.TestCase):
         review = routes[start:end]
         self.assertIn('execute_approval', review)
         self.assertIn('escalate', review.lower())
+        self.assertIn('Create a void from the receipt', routes)
 
     def test_a03_command_center_poller_contract(self):
         from backend.cloud.command_center import COMMANDS, CommandCenter

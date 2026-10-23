@@ -7,14 +7,17 @@ from pathlib import Path
 
 
 def test_production_defaults_have_public_endpoints_only():
-    from backend.cloud_backup.defaults import production_cloud_defaults
+    from backend.cloud_backup.defaults import (
+        PRODUCTION_SUPABASE_URL,
+        production_cloud_defaults,
+    )
 
     cfg = production_cloud_defaults()
+    assert cfg['supabase_url'].rstrip('/') == PRODUCTION_SUPABASE_URL.rstrip('/')
     assert cfg['supabase_url'].startswith('https://') and 'supabase.co' in cfg['supabase_url']
     assert cfg['anon_key'].startswith('eyJ')
     assert cfg.get('service_key') in ('', None)
     assert cfg.get('enabled') is True
-    assert 'uynfglgttkaibyeglsrt' in cfg['supabase_url']
 
 
 def test_shop_fresh_install_is_cloud_configured(tmp_path, monkeypatch):

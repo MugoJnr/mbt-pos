@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Phone, Receipt, Banknote, Users, AlertTriangle, TrendingDown } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { Badge, Button, Card, Input, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
+import { GET, POST } from "@/lib/api";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/debt")({
@@ -13,8 +13,20 @@ export const Route = createFileRoute("/debt")({
 
 const TABS = ["Overview", "Invoices", "Customers", "Payments"] as const;
 
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function Debt() {
+  const qc = useQueryClient();
   const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
+  const [payId, setPayId] = useState("");
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState("Cash");
+  const [payDate, setPayDate] = useState(localToday());
+  const [payError, setPayError] = useState("");
+  const [query, setQuery] = useState("");
 
   const summaryQ = useQuery({
     queryKey: ["debt-summary"],
@@ -48,7 +60,39 @@ function Debt() {
   const topDebtors = Array.isArray(ds.top_debtors) ? ds.top_debtors : [];
   const largest = topDebtors[0];
 
-  const invoices = Array.isArray(invoicesQ.data) ? invoicesQ.data : [];
+  const invoices = (Array.isArray(invoicesQ.data) ? invoicesQ.data : []).filter((inv) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return [inv.invoice_number, inv.customer_name, inv.receipt_number, inv.status, inv.phone]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+
+  const payToken = useRef("");
+  async function collect() {
+    setPayError("");
+    const amount = Number(payAmount);
+    if (!payId) return setPayError("Choose an open invoice.");
+    if (!Number.isFinite(amount) || amount <= 0) return setPayError("Payment must be greater than zero.");
+    if (payDate > localToday()) return setPayError("Future payment dates are not allowed.");
+    if (!payToken.current) payToken.current = crypto.randomUUID();
+    const res = await POST<any>(`/debt/invoices/${payId}/pay`, {
+      amount,
+      payment_method: payMethod,
+      payment_date: payDate,
+      payment_reference: payToken.current,
+    });
+    if (!res || res.error) {
+      setPayError(res?.error || "Payment was not recorded.");
+      return;
+    }
+    payToken.current = "";
+    setPayAmount("");
+    await qc.invalidateQueries({ queryKey: ["debt-invoices"] });
+    await qc.invalidateQueries({ queryKey: ["debt-summary"] });
+    await qc.invalidateQueries({ queryKey: ["debt-payments"] });
+  }
   const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
   const payments = Array.isArray(paymentsQ.data) ? paymentsQ.data : [];
 
@@ -148,6 +192,25 @@ function Debt() {
               </tr>
             ))}
           </Table>
+        ) : null}
+
+        {tab === "Invoices" ? (
+          <div className="p-4 border-b border-border grid grid-cols-1 md:grid-cols-5 gap-2">
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customer, invoice, status" />
+            <select className="h-9 rounded-lg border border-border bg-input px-3 text-sm" value={payId} onChange={(e) => setPayId(e.target.value)}>
+              <option value="">Open invoice</option>
+              {invoices.filter((inv) => Number(inv.balance) > 0 && inv.status !== "cancelled").map((inv) => (
+                <option key={inv.id} value={inv.id}>{inv.invoice_number} · {inv.customer_name} · {inv.balance}</option>
+              ))}
+            </select>
+            <Input value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="Amount" />
+            <select className="h-9 rounded-lg border border-border bg-input px-3 text-sm" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+              {["Cash", "M-Pesa", "Bank"].map((m) => <option key={m}>{m}</option>)}
+            </select>
+            <Input type="date" max={localToday()} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            <Button onClick={collect}>Record payment</Button>
+            {payError ? <p className="md:col-span-4 text-sm text-err">{payError}</p> : null}
+          </div>
         ) : null}
 
         {tab === "Invoices" ? (

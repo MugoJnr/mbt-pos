@@ -17,9 +17,11 @@ class GlobalSearchDialog(QDialog):
 
     navigate = pyqtSignal(str, object)
 
-    def __init__(self, api, parent=None):
+    def __init__(self, api, parent=None, allowed_modules=None):
         super().__init__(parent)
         self.api = api
+        self.allowed_modules = set(
+            allowed_modules or ('sales', 'inventory', 'debt'))
         self.setWindowTitle('Search')
         self.setModal(True)
         self.setMinimumSize(560, 420)
@@ -29,7 +31,7 @@ class GlobalSearchDialog(QDialog):
         lay.setContentsMargins(16, 16, 16, 16)
         lay.setSpacing(10)
 
-        self._hint = QLabel('Search products, receipts, customers, open debts')
+        self._hint = QLabel(self._hint_text())
         self._hint.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
         lay.addWidget(self._hint)
 
@@ -52,9 +54,23 @@ class GlobalSearchDialog(QDialog):
         close_btn.clicked.connect(self.reject)
         row.addWidget(close_btn)
         lay.addLayout(row)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=None, cancel=close_btn, submit_exempt=(self._q,))
 
         self._apply_theme()
         self._q.setFocus()
+
+    def _hint_text(self) -> str:
+        kinds = []
+        if 'inventory' in self.allowed_modules:
+            kinds.append('products')
+        if 'sales' in self.allowed_modules:
+            kinds.append('receipts')
+        if 'debt' in self.allowed_modules:
+            kinds.extend(('customers', 'open debts'))
+        if not kinds:
+            return 'No searchable modules are available for your role'
+        return 'Search ' + ', '.join(kinds)
 
     def _apply_theme(self):
         light = ThemeManager.is_light()
@@ -78,8 +94,16 @@ class GlobalSearchDialog(QDialog):
         ql = q.lower()
         results = []
 
+        if not self.allowed_modules:
+            item = QListWidgetItem('No searchable modules are available for your role')
+            item.setFlags(Qt.NoItemFlags)
+            self._list.addItem(item)
+            return
+
         # Products
         try:
+            if 'inventory' not in self.allowed_modules:
+                raise RuntimeError('skip')
             for p in (self.api.get_products() or [])[:800]:
                 if not p.get('is_active', 1):
                     continue
@@ -102,6 +126,8 @@ class GlobalSearchDialog(QDialog):
 
         # Customers
         try:
+            if 'debt' not in self.allowed_modules:
+                raise RuntimeError('skip')
             customers = []
             if hasattr(self.api, 'search_customers'):
                 customers = self.api.search_customers(q) or []
@@ -122,6 +148,8 @@ class GlobalSearchDialog(QDialog):
 
         # Receipts (last 90 days)
         try:
+            if 'sales' not in self.allowed_modules:
+                raise RuntimeError('skip')
             end = date.today()
             start = end - timedelta(days=90)
             sales = self.api.get_sales(str(start), str(end)) or []
@@ -142,6 +170,8 @@ class GlobalSearchDialog(QDialog):
 
         # Open debts
         try:
+            if 'debt' not in self.allowed_modules:
+                raise RuntimeError('skip')
             debts = self.api.get_debt_invoices() or []
             for d in debts:
                 status = (d.get('status') or '').lower()

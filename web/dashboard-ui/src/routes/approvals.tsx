@@ -12,14 +12,14 @@ export const Route = createFileRoute("/approvals")({
 });
 
 const TYPES = [
-  "void",
   "refund",
   "large_discount",
   "price_override",
-  "stock_adjust",
   "expense",
   "credit",
 ] as const;
+
+const EXECUTABLE = new Set(["void", "stock_adjust"]);
 
 type Approval = {
   id: number;
@@ -44,28 +44,66 @@ function ApprovalsPage() {
     details: "",
     amount: "",
   });
+  const [pin, setPin] = useState("");
+  const [actionError, setActionError] = useState("");
 
   const q = useQuery({
     queryKey: ["approvals", status],
-    queryFn: () =>
-      GET<{ approvals: Approval[] }>(
+    queryFn: async () => {
+      const data = await GET<{ approvals: Approval[]; error?: string }>(
         "/approvals",
         status === "all" ? undefined : { status },
-      ),
+      );
+      if (!data || data.error) {
+        throw new Error(data?.error || "Could not load approvals");
+      }
+      return data;
+    },
     refetchInterval: 20_000,
   });
 
   const approveM = useMutation({
-    mutationFn: (id: number) => POST(`/approvals/${id}/approve`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+    mutationFn: (item: { id: number; type: string }) => {
+      if (EXECUTABLE.has(item.type) && !pin.trim()) {
+        return Promise.resolve({
+          error: "Enter the Super-Admin PIN. The server checks it before anything changes.",
+        });
+      }
+      return POST<{ success?: boolean; error?: string }>(
+        `/approvals/${item.id}/approve`,
+        EXECUTABLE.has(item.type) ? { pin } : {},
+      );
+    },
+    onSuccess: (data) => {
+      if (!data || data.error || data.success === false) {
+        setActionError(data?.error || "The approval was not completed.");
+        return;
+      }
+      setActionError("");
+      qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
   });
   const rejectM = useMutation({
-    mutationFn: (id: number) => POST(`/approvals/${id}/reject`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+    mutationFn: (id: number) => POST<{ success?: boolean; error?: string }>(`/approvals/${id}/reject`, {}),
+    onSuccess: (data) => {
+      if (!data || data.error || data.success === false) {
+        setActionError(data?.error || "The request was not rejected.");
+        return;
+      }
+      setActionError("");
+      qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
   });
   const escalateM = useMutation({
-    mutationFn: (id: number) => POST(`/approvals/${id}/escalate`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
+    mutationFn: (id: number) => POST<{ success?: boolean; error?: string }>(`/approvals/${id}/escalate`, {}),
+    onSuccess: (data) => {
+      if (!data || data.error || data.success === false) {
+        setActionError(data?.error || "The request was not escalated.");
+        return;
+      }
+      setActionError("");
+      qc.invalidateQueries({ queryKey: ["approvals"] });
+    },
   });
   const createM = useMutation({
     mutationFn: () =>
@@ -102,8 +140,10 @@ function ApprovalsPage() {
             <Filter className="h-3.5 w-3.5 text-text2" />
             <Select value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="pending">Pending</option>
+              <option value="escalated">Escalated</option>
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
+              <option value="expired">Expired</option>
               <option value="all">All</option>
             </Select>
           </div>
@@ -116,8 +156,30 @@ function ApprovalsPage() {
 
       <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-text">
         Approving a void or stock change runs that action once. A missing or incorrect
-        Super-Admin PIN does not change the sale or the stock.
+        Super-Admin PIN does not change the sale or the stock. The server checks the PIN.
       </div>
+      <div className="mb-4 max-w-xs">
+        <div className="text-[10px] tracking-[0.16em] font-semibold text-text2 uppercase mb-1">
+          Super-Admin PIN
+        </div>
+        <Input
+          type="password"
+          autoComplete="off"
+          value={pin}
+          placeholder="Required for void and stock"
+          onChange={(e) => setPin(e.target.value)}
+        />
+      </div>
+      {actionError ? (
+        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-text">
+          {actionError}
+        </div>
+      ) : null}
+      {q.isError ? (
+        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-text">
+          Could not refresh approvals. Do not treat the list on screen as current.
+        </div>
+      ) : null}
       {showNew ? (
         <Card className="p-4 mb-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -186,6 +248,13 @@ function ApprovalsPage() {
 
       {q.isLoading ? (
         <div className="py-12 text-center text-sm text-text2">Loading approvals…</div>
+      ) : q.isError ? (
+        <Card>
+          <EmptyState
+            title="Approvals unavailable"
+            description="The latest request failed. This screen is not showing a current queue."
+          />
+        </Card>
       ) : rows.length === 0 ? (
         <Card>
           <EmptyState
@@ -241,7 +310,7 @@ function ApprovalsPage() {
                               size="sm"
                               variant="success"
                               disabled={approveM.isPending}
-                              onClick={() => approveM.mutate(a.id)}
+                              onClick={() => approveM.mutate({ id: a.id, type: a.type })}
                             >
                               <Check className="h-3.5 w-3.5" /> Approve
                             </Button>
@@ -297,12 +366,12 @@ function ApprovalsPage() {
                   </span>
                   <span className="text-text2 text-xs">{a.requested_by || "—"}</span>
                 </div>
-                {a.status === "pending" ? (
+                {a.status === "pending" || a.status === "escalated" ? (
                   <div className="flex gap-2">
                     <Button
                       className="flex-1 min-h-[44px]"
                       variant="success"
-                      onClick={() => approveM.mutate(a.id)}
+                      onClick={() => approveM.mutate({ id: a.id, type: a.type })}
                     >
                       <Check className="h-4 w-4" /> Approve
                     </Button>

@@ -3,6 +3,7 @@
   "anon_key": "YOUR_SUPABASE_ANON_KEY",
   "service_key": "",
   "enabled": false,
-  "backup_interval_minutes": 5,
+  "backup_interval_minutes": 1440,
+  "backup_keep_count": 7,
   "bucket": "mbt-backups"
 }

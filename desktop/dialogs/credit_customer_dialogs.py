@@ -71,6 +71,8 @@ class CreditCustomerChoiceDialog(QDialog):
         cancel = SecondaryBtn('Cancel', 42)
         cancel.clicked.connect(self.reject)
         lay.addWidget(cancel)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=existing, cancel=cancel)
 
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.clear_modal_on_close(self)
@@ -129,6 +131,8 @@ class QuickCustomerDialog(QDialog):
         save.clicked.connect(self._save)
         br.addWidget(cancel, 1)
         br.addWidget(save, 1)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=save, cancel=cancel)
         lay.addRow(br)
 
         from desktop.utils.state_reset import StateResetManager
@@ -221,6 +225,8 @@ class CustomerPickerDialog(QDialog):
         ok.clicked.connect(self._accept)
         br.addWidget(cancel, 1)
         br.addWidget(ok, 1)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=ok, cancel=cancel)
         lay.addLayout(br)
 
         self._load()

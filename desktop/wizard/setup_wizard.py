@@ -918,8 +918,10 @@ class SetupWizard(QDialog):
         self.w_cf_log.clear()
         self._data['cloudflare_setup_ok'] = False
 
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -927,9 +929,9 @@ class SetupWizard(QDialog):
                 result = CloudflareSetup(
                     shop, subdomain=sub, log_callback=_cb,
                 ).run()
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done(result))
+                run_on_ui_thread(lambda: self._on_cf_setup_done(result))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done({
+                run_on_ui_thread(lambda: self._on_cf_setup_done({
                     'ok': False, 'errors': [str(e)], 'log_path': '',
                 }))
 
@@ -967,16 +969,18 @@ class SetupWizard(QDialog):
         self.w_cf_status.setText("⏳ Running diagnostics…")
         self._cf_test_btn.setEnabled(False)
 
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
                 from backend.cloudflare_setup import run_diagnostics
                 rep = run_diagnostics(_cb)
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_test_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_test_done({'ok': False, 'checks': []}))
+                run_on_ui_thread(lambda: self._on_cf_test_done({'ok': False, 'checks': []}))
 
         import threading
         threading.Thread(target=worker, daemon=True).start()

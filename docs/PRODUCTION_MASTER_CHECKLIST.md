@@ -6,6 +6,20 @@ URL: https://chatgpt.com/share/6a5fe519-062c-83ea-8ac9-a90540723c21
 Status legend: `PASS` | `FAIL` | `PARTIAL` | `N/A` | `TODO`  
 Rule: No production claim until critical items are PASS with evidence.
 
+## 3.1.64 candidate — 2026-10-23
+
+Older rows below are historical. They were not re-certified for this candidate.
+
+| Area | Status | Evidence | Remaining work | Release blocking? |
+|---|---|---|---|---|
+| Approval execution | PASS | `tests/test_executable_approvals.py` inside 555 passed | Process-local claim lease | No |
+| Approval web PIN | PASS | `approvals.tsx` sends PIN; source gate | Browser click-through not run | No |
+| Full Python suite | PASS | second run 555 passed, exit 0 | First run had one unreproduced `users` error | No |
+| Ruff / mypy | NOT TESTED | modules are not installed | Do not treat 52/272 as current | No |
+| Windows installer | PASS as a built artifact | `C:\MBT_Build\release_3.1.64\MBT_POS_Setup.exe`, SHA-256 `168c0bc1bbde072ee6a1c3ee15ad75882fa21ef332e1852c3fb2a785df570114`, 59431891 bytes. Not installed. | Install and activation on a disposable PC | Yes for shop rollout |
+| GitHub release tag | NOT PUBLISHED | `v3.1.63` left in place | Do not move that tag | No |
+| Live shop install | NOT TESTED | protected on purpose | Do not install over the till | Not authorized |
+
 ---
 
 ## 0. Loop control

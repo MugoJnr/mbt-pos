@@ -30,6 +30,7 @@ class ExecutableApprovalTests(unittest.TestCase):
         import desktop.utils.api_client as ac
         from desktop.utils.security import _pin_hash
         ac._SCHEMA_READY = False
+        ac._pin_failures_clear(1)
         self.ac = ac
         self.api = ac.APIClient()
         self.api._role = 'superadmin'
@@ -218,6 +219,133 @@ class ExecutableApprovalTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(int(moves), 1)
+
+    def test_repeat_void_request_does_not_duplicate_or_void(self):
+        sale = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Approval Item', 'sku': 'APP-1',
+                'quantity': 1, 'unit_price': 80, 'discount': 0, 'total': 80,
+            }],
+            'subtotal': 80, 'discount': 0, 'tax': 0, 'total': 80,
+            'payment_method': 'Cash', 'amount_paid': 80, 'change_amount': 0,
+        })
+        self.api._role = 'cashier'
+        first = self.api.request_sale_void(sale['sale_id'], 'Wrong item')
+        second = self.api.request_sale_void(sale['sale_id'], 'Wrong item again')
+        self.assertTrue(first.get('success'), first)
+        self.assertTrue(second.get('duplicate'), second)
+        self.assertEqual(second.get('id'), first.get('id'))
+        db = self.ac._db()
+        try:
+            count = db.execute(
+                "SELECT COUNT(*) FROM cc_approvals WHERE type='void'"
+            ).fetchone()[0]
+            status = db.execute(
+                "SELECT status FROM sales WHERE id=?", (sale['sale_id'],)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(int(count), 1)
+        self.assertEqual(status, 'completed')
+        self.assertEqual(self._stock(), 19)
+
+    def test_status_only_approval_does_not_change_stock(self):
+        approval_id = self._request('refund', {'sale_id': 1})
+        decided = self.api.execute_approval(approval_id, 'approve', pin='')
+        self.assertTrue(decided.get('success'), decided)
+        self.assertFalse(decided.get('executed'))
+        self.assertEqual(self._stock(), 20)
+        db = self.ac._db()
+        try:
+            status = db.execute(
+                "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(status, 'approved')
+
+    def test_stale_executing_claim_recovers_once(self):
+        approval_id = self._request('stock_adjust', {
+            'product_id': 1, 'direction': 'remove', 'quantity': 2,
+            'reason': 'Damaged / Spoiled', 'expected_stock': 20,
+        })
+        db = self.ac._db()
+        try:
+            db.execute(
+                "UPDATE cc_approvals SET status='executing', updated_at=? WHERE id=?",
+                ((datetime.now() - timedelta(minutes=5)).isoformat(), approval_id),
+            )
+            db.commit()
+        finally:
+            db.close()
+        recovered = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertTrue(recovered.get('success'), recovered)
+        self.assertEqual(self._stock(), 18)
+        again = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertTrue(again.get('duplicate'), again)
+        self.assertEqual(self._stock(), 18)
+
+    def test_live_executing_claim_is_not_run_twice(self):
+        approval_id = self._request('stock_adjust', {
+            'product_id': 1, 'direction': 'remove', 'quantity': 2,
+            'reason': 'Damaged / Spoiled', 'expected_stock': 20,
+        })
+        db = self.ac._db()
+        try:
+            db.execute(
+                "UPDATE cc_approvals SET status='executing', updated_at=? WHERE id=?",
+                (datetime.now().isoformat(), approval_id),
+            )
+            db.commit()
+        finally:
+            db.close()
+        busy = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertEqual(busy.get('status'), 409)
+        self.assertEqual(self._stock(), 20)
+
+    def test_failed_status_write_is_not_reported_as_success(self):
+        approval_id = self._request('refund', {})
+        db = self.ac._db()
+        try:
+            db.execute(
+                "UPDATE cc_approvals SET status='rejected' WHERE id=?",
+                (approval_id,),
+            )
+            db.commit()
+        finally:
+            db.close()
+        finished = self.api._finish_approval(approval_id, {'success': True})
+        self.assertEqual(finished.get('status'), 409)
+        self.assertIn('error', finished)
+        self.assertNotIn(self.PIN, json.dumps(finished))
+        db = self.ac._db()
+        try:
+            status = db.execute(
+                "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(status, 'rejected')
+
+    def test_pin_failures_are_limited_per_user_and_do_not_echo_the_pin(self):
+        approval_id = self._request('stock_adjust', {
+            'product_id': 1, 'direction': 'remove', 'quantity': 1,
+            'reason': 'Damaged / Spoiled', 'expected_stock': 20,
+        })
+        secret = '999999'
+        last = {}
+        for _ in range(8):
+            last = self.api.execute_approval(approval_id, 'approve', pin=secret)
+            self.assertEqual(last.get('status'), 403)
+            self.assertNotIn(secret, json.dumps(last))
+        blocked = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertEqual(blocked.get('status'), 429)
+        self.assertNotIn(self.PIN, json.dumps(blocked))
+        self.assertEqual(self._stock(), 20)
+        self.ac._pin_failures_clear(1)
+        applied = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertTrue(applied.get('success'), applied)
+        self.assertEqual(self._stock(), 19)
 
 
 if __name__ == '__main__':

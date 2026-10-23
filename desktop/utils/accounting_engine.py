@@ -1056,6 +1056,106 @@ def create_expense(conn, data: dict, *, user_id=None, username='') -> dict:
             'journal_id': result.get('journal_id')}
 
 
+def reverse_expense(conn, expense_id: int, reason: str, *, user_id=None, username='') -> dict:
+    """Post the opposite journal. The original expense row stays."""
+    reason = (reason or '').strip()
+    if not reason:
+        return {'error': 'Enter a reason for the reversal'}
+    row = conn.execute(
+        "SELECT * FROM expense_entries WHERE id=? AND deleted_at IS NULL",
+        (int(expense_id),),
+    ).fetchone()
+    if not row:
+        return {'error': 'Expense was not found'}
+    if (row['status'] or '') == 'reversed':
+        return {'success': True, 'duplicate': True, 'id': row['id']}
+    amount = D(row['amount'] or 0)
+    if amount <= 0:
+        return {'error': 'This expense cannot be reversed'}
+    num = _next_doc(conn, 'expense_entries', 'expense_number', 'REV-')
+    posted = post_journal(
+        conn,
+        [
+            {'account_code': row['pay_from_code'], 'debit': amount, 'memo': reason},
+            {'account_code': row['account_code'], 'credit': amount, 'memo': reason},
+        ],
+        description=f'Reverse {row["expense_number"]}: {reason}',
+        entry_date=date.today().isoformat(),
+        source_module='expense_reversal',
+        source_id=num,
+        entry_type='expense_reversal',
+        user_id=user_id,
+        username=username,
+    )
+    if not posted.get('success'):
+        return posted
+    conn.execute(
+        "INSERT INTO expense_entries "
+        "(expense_number,expense_date,account_code,pay_from_code,amount,description,"
+        "status,journal_id,created_by,created_by_name) "
+        "VALUES (?,?,?,?,?,?, 'reversal', ?,?,?)",
+        (num, date.today().isoformat(), row['account_code'], row['pay_from_code'],
+         money_float(amount), reason, posted.get('journal_id'), user_id, username or ''),
+    )
+    conn.execute(
+        "UPDATE expense_entries SET status='reversed' WHERE id=? AND status!='reversed'",
+        (int(expense_id),),
+    )
+    return {'success': True, 'reversal_number': num, 'journal_id': posted.get('journal_id'),
+            'deleted': False}
+
+
+def cash_position(conn, code: str = '1000') -> dict:
+    """Posted cash is debits minus credits on the cash account."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(jl.debit),0) AS debit_total, "
+        "COALESCE(SUM(jl.credit),0) AS credit_total "
+        "FROM journal_lines jl "
+        "JOIN journal_entries je ON je.id=jl.journal_id "
+        "WHERE jl.account_code=? AND je.status='posted' AND je.deleted_at IS NULL",
+        (code,),
+    ).fetchone()
+    debit = D(row['debit_total'] if row else 0)
+    credit = D(row['credit_total'] if row else 0)
+    return {
+        'account_code': code,
+        'debits': money_float(debit),
+        'credits': money_float(credit),
+        'balance': money_float(debit - credit),
+    }
+
+
+def ensure_expense_categories(conn) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS expense_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            active INTEGER DEFAULT 1
+        )"""
+    )
+
+
+def save_expense_category(conn, name: str) -> dict:
+    name = (name or '').strip()
+    if not name:
+        return {'error': 'Enter a category name'}
+    ensure_expense_categories(conn)
+    existing = conn.execute(
+        "SELECT id FROM expense_categories WHERE name=?", (name,)
+    ).fetchone()
+    if existing:
+        return {'success': True, 'id': existing['id'], 'duplicate': True}
+    conn.execute("INSERT INTO expense_categories (name) VALUES (?)", (name,))
+    return {'success': True, 'id': conn.execute('SELECT last_insert_rowid()').fetchone()[0]}
+
+
+def list_expense_categories(conn) -> list:
+    ensure_expense_categories(conn)
+    return [dict(r) for r in conn.execute(
+        "SELECT id, name, active FROM expense_categories WHERE active=1 ORDER BY name"
+    ).fetchall()]
+
+
 def create_transfer(conn, data: dict, *, user_id=None, username='') -> dict:
     amount = D(data.get('amount') or 0)
     if amount <= 0:

@@ -37,6 +37,31 @@ ADVANCED_OPTIONS = (
 # Back-compat alias used by smoke scripts / imports
 HANDLING_OPTIONS = PRIMARY_OPTIONS + ADVANCED_OPTIONS
 
+
+def parse_money(value):
+    """Coerce a money-ish value to float.
+
+    Returns ``(amount, ok)``. Callers sometimes pass widget text
+    ('1,250.00', 'KES 300', '') or ``None``; those must not raise out of
+    a dialog constructor mid-checkout.
+    """
+    if value is None or isinstance(value, bool):
+        return 0.0, False
+    if isinstance(value, (int, float)):
+        amount = float(value)
+        if amount != amount or amount in (float('inf'), float('-inf')):
+            return 0.0, False
+        return amount, True
+    text = str(value).strip()
+    if not text:
+        return 0.0, False
+    cleaned = ''.join(ch for ch in text if ch.isdigit() or ch in '.-')
+    try:
+        return float(cleaned), bool(cleaned) and cleaned not in ('-', '.', '-.')
+    except (TypeError, ValueError):
+        return 0.0, False
+
+
 MISC_CATEGORIES = (
     'Rounding', 'Staff Error Adjustment', 'Preference', 'Delivery Surcharge',
     'Service Charge', 'Other',
@@ -63,9 +88,14 @@ class PaymentVarianceDialog(QDialog):
         self.setMinimumWidth(480)
         self.setModal(True)
         self._currency = currency or 'KES'
-        self._sale_total = float(sale_total)
-        self._received = float(amount_received)
-        self._excess = round(float(excess), 2)
+        self._sale_total, total_ok = parse_money(sale_total)
+        self._received, recv_ok = parse_money(amount_received)
+        excess_value, excess_ok = parse_money(excess)
+        if not excess_ok and total_ok and recv_ok:
+            excess_value = self._received - self._sale_total
+            excess_ok = True
+        self._excess = round(excess_value, 2)
+        self.invalid_amounts = not (total_ok and recv_ok and excess_ok)
         self._settings = settings or {}
         self._has_customer = bool(has_customer)
         self.result_data = None
@@ -76,9 +106,12 @@ class PaymentVarianceDialog(QDialog):
         lay.setContentsMargins(20, 18, 20, 18)
         lay.setSpacing(12)
 
-        title = QLabel(
-            f'Customer paid {self._currency} {self._excess:,.2f} more than the invoice'
-        )
+        if self.invalid_amounts:
+            title = QLabel('Overpayment amounts could not be read')
+        else:
+            title = QLabel(
+                f'Customer paid {self._currency} {self._excess:,.2f} more than the invoice'
+            )
         title.setWordWrap(True)
         title.setStyleSheet(
             f"color:{C['text']};font-size:15px;font-weight:800;background:transparent;")
@@ -195,6 +228,11 @@ class PaymentVarianceDialog(QDialog):
         cancel.clicked.connect(self.reject)
         ok = PrimaryBtn('Confirm', 40)
         ok.clicked.connect(self._confirm)
+        self._confirm_btn = ok
+        if self.invalid_amounts:
+            ok.setEnabled(False)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=ok, cancel=cancel)
         btns.addWidget(cancel)
         btns.addStretch()
         btns.addWidget(ok)

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
+import { SaleReceiptDialog } from "@/components/sale-receipt-dialog";
 import {
   Button,
   Card,
@@ -22,7 +23,7 @@ import {
 } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
 import { downloadApi, exportQuery } from "@/lib/download";
-import { addDaysISO, KES, todayISO } from "@/lib/format";
+import { KES, localISO, rangeForPreset } from "@/lib/format";
 
 export const Route = createFileRoute("/reports")({
   component: Reports,
@@ -30,27 +31,11 @@ export const Route = createFileRoute("/reports")({
 
 const TABS = ["Sales List", "Top Products", "By Payment", "By Cashier"] as const;
 
-function rangeForPreset(preset: string): { start: string; end: string } {
-  const end = todayISO();
-  if (preset === "Yesterday") {
-    const y = addDaysISO(-1);
-    return { start: y, end: y };
-  }
-  if (preset === "This Week") return { start: addDaysISO(-6), end };
-  if (preset === "This Month") {
-    const d = new Date();
-    const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
-    return { start, end };
-  }
-  if (preset === "Custom") return { start: end, end };
-  return { start: end, end };
-}
-
 function Reports() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Sales List");
   const [preset, setPreset] = useState("Today");
-  const [customStart, setCustomStart] = useState(todayISO());
-  const [customEnd, setCustomEnd] = useState(todayISO());
+  const [customStart, setCustomStart] = useState(localISO());
+  const [customEnd, setCustomEnd] = useState(localISO());
   const [employee, setEmployee] = useState("");
   const [payment, setPayment] = useState("");
   const [category, setCategory] = useState("");
@@ -62,10 +47,14 @@ function Reports() {
   );
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
+  const [openSaleId, setOpenSaleId] = useState<number | null>(null);
   const pageSize = 25;
 
   const range = useMemo(() => {
-    if (preset === "Custom") return { start: customStart, end: customEnd };
+    if (preset === "Custom" || preset === "Choose a day") {
+      const end = preset === "Choose a day" ? customStart : customEnd;
+      return { start: customStart, end: end < customStart ? customStart : end };
+    }
     return rangeForPreset(preset);
   }, [preset, customStart, customEnd]);
 
@@ -214,15 +203,15 @@ function Reports() {
               }}
               className="mt-1 min-h-[44px]"
             >
-              {["Today", "Yesterday", "This Week", "This Month", "Custom"].map((p) => (
+              {["Today", "Yesterday", "Choose a day", "This Week", "This Month", "Last Month", "Custom"].map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </Select>
           </label>
-          {preset === "Custom" ? (
+          {preset === "Custom" || preset === "Choose a day" ? (
             <>
               <label className="block text-xs font-semibold text-text2">
-                Start
+                {preset === "Choose a day" ? "Day" : "Start"}
                 <Input
                   type="date"
                   value={customStart}
@@ -230,6 +219,7 @@ function Reports() {
                   className="mt-1 min-h-[44px]"
                 />
               </label>
+              {preset === "Custom" ? (
               <label className="block text-xs font-semibold text-text2">
                 End
                 <Input
@@ -239,6 +229,7 @@ function Reports() {
                   className="mt-1 min-h-[44px]"
                 />
               </label>
+              ) : null}
             </>
           ) : (
             <div className="text-xs text-text2 flex items-end gap-1 pb-3">
@@ -454,7 +445,15 @@ function Reports() {
             >
               {pageRows.map((r: any) => (
                 <tr key={r.id || r.receipt_number}>
-                  <td className="px-4 py-2.5 font-mono text-text">{r.receipt_number}</td>
+                  <td className="px-4 py-2.5 font-mono text-text">
+                    <button
+                      type="button"
+                      className="font-semibold text-gold hover:underline"
+                      onClick={() => setOpenSaleId(Number(r.id))}
+                    >
+                      {r.receipt_number}
+                    </button>
+                  </td>
                   <td className="px-4 py-2.5 text-text2 tabular-nums">
                     {(r.created_at || "").slice(0, 16)}
                   </td>
@@ -494,6 +493,7 @@ function Reports() {
           </>
         )}
       </Card>
+      <SaleReceiptDialog saleId={openSaleId} currency={currency} onClose={() => setOpenSaleId(null)} />
     </AppShell>
   );
 }

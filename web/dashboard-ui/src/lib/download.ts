@@ -10,7 +10,7 @@ export async function downloadApi(
   if (token) headers.Authorization = `Bearer ${token}`;
   const r = await fetch("/api" + pathWithQuery, { headers });
   if (r.status === 401) {
-    window.location.href = "/login";
+    window.location.href = "/";
     throw new Error("Unauthorized");
   }
   if (!r.ok) {

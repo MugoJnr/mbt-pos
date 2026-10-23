@@ -1,8 +1,8 @@
 {
-    "version": "3.0.74",
-    "build": "RC-2026-08-27-v3.0.74",
-    "released": "2026-08-27",
-    "release_notes": "MBT POS v3.0.74 Stability Follow-up: preserves legitimate rapid taps across different product controls while still blocking a faulty touchscreen repeatedly firing the same control, replays deferred expiry notices once a sale becomes idle, and never silently auto-answers repeated confirmation dialogs. Stock adjustment now locks before confirmation/PIN, handles an empty refreshed catalog correctly, refreshes stale web quantities in-place instead of 409-looping, and hides the web Stock action from non-Super-Admins. Tamper alerts are emitted once, and installer certification now fails immediately and accurately when Windows UAC is cancelled.",
-    "checksum_sha256": "4130d4761acc0e72ec74aa39004c326fc4492706103365ed2986a139dfee8383",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.0.74/MBT_POS_Setup.exe"
+    "version": "3.1.64",
+    "build": "RC-2026-10-23-v3.1.64",
+    "released": "2026-10-23",
+    "release_notes": "Void and stock approvals send the Super-Admin PIN to the server, apply once, and do not report success when the status write fails. Repeated PIN attempts are limited per account. A repeated void request does not create a second pending row.",
+    "checksum_sha256": "168c0bc1bbde072ee6a1c3ee15ad75882fa21ef332e1852c3fb2a785df570114",
+    "download_url": ""
 }

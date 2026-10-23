@@ -75,11 +75,19 @@ class _BizDayButton(QPushButton):
             return
         if qdate is None:
             qdate = self._date.date()
-        iso = qdate.toString('yyyy-MM-dd')
-        if self._show_caption:
-            self.setText(f'{self._CAPTION}  |  {iso}  ▼')
-        else:
-            self.setText(f'{iso}  ▼')
+        from datetime import date as date_cls
+        from desktop.utils.shop_time import sale_day_caption
+        day = date_cls(qdate.year(), qdate.month(), qdate.day())
+        text, tone = sale_day_caption(day)
+        self.setText(f'{text}  ▼')
+        self.setProperty('saleDayTone', tone)
+        color = C.get('err', '#DC2626') if tone != 'today' else C.get('text', '#F8FAFC')
+        border = C.get('err', '#DC2626') if tone != 'today' else C.get('border', '#334155')
+        self.setStyleSheet(
+            biz_day_button_qss()
+            + f" QPushButton {{ color:{color}; border:1px solid {border}; font-weight:800; }}"
+        )
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(self.text()) + 36)
 
     def set_editable(self, editable: bool) -> None:
         self.setEnabled(editable)
@@ -116,7 +124,7 @@ class BusinessDayBar(QFrame):
     #: Below this width: short button labels + tighter insets (hide caption).
     COMPACT_UNDER = 620
     #: Below this width: date + Today on row 1; View / Copy / warn on row 2.
-    STACK_UNDER = 500
+    STACK_UNDER = 760
     #: Below this width: smallest date field + minimal button padding.
     MICRO_UNDER = 320
 
@@ -229,6 +237,7 @@ class BusinessDayBar(QFrame):
             if copy_btn is not None:
                 self._row2.addWidget(copy_btn)
             if self._warn is not None:
+                self._warn.setWordWrap(True)
                 self._row2.addWidget(self._warn, 1)
             self._row2.setContentsMargins(0, 0, 0, 0)
         else:
@@ -236,6 +245,7 @@ class BusinessDayBar(QFrame):
             for btn, _, _ in self._buttons:
                 self._row1.addWidget(btn)
             if self._warn is not None:
+                self._warn.setWordWrap(True)
                 self._row1.addWidget(self._warn, 1)
 
         self.setMinimumHeight(68 if stacked else 40)

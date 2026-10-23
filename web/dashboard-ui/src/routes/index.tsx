@@ -25,7 +25,7 @@ import {
   Search,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Area,
   AreaChart,
@@ -38,19 +38,22 @@ import {
   YAxis,
 } from "recharts";
 import { AppShell, ThemeToggle } from "@/components/app-shell";
+import { SaleReceiptDialog } from "@/components/sale-receipt-dialog";
 import {
   Badge,
   Button,
   Card,
   EmptyState,
+  Input,
   KpiCard,
   SectionTitle,
+  Select,
   Skeleton,
   Table,
 } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { KES, todayISO } from "@/lib/format";
+import { GET, POST } from "@/lib/api";
+import { KES, localISO, rangeForPreset } from "@/lib/format";
 import { loadPrefs, prefsRefreshMs, type DashboardPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -104,6 +107,11 @@ function can(perms: string[], ...need: string[]) {
 
 function Dashboard() {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [voidFor, setVoidFor] = useState<any>(null);
+  const [openSaleId, setOpenSaleId] = useState<number | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidMsg, setVoidMsg] = useState("");
   const [prefs, setPrefs] = useState<DashboardPrefs>(() => loadPrefs());
   useEffect(() => {
     const onChange = (e: Event) => {
@@ -124,18 +132,39 @@ function Dashboard() {
   });
   const [weekday, ...rest] = today.split(" ");
   const name = user?.full_name || user?.username || "Staff";
-  const d = todayISO();
+  const [preset, setPreset] = useState("Today");
+  const [customStart, setCustomStart] = useState(localISO());
+  const [customEnd, setCustomEnd] = useState(localISO());
+  const range = useMemo(() => {
+    if (preset === "Choose a day") return { start: customStart, end: customStart };
+    if (preset === "Custom") {
+      const end = customEnd < customStart ? customStart : customEnd;
+      return { start: customStart, end };
+    }
+    return rangeForPreset(preset);
+  }, [preset, customStart, customEnd]);
+  const d = range.start;
+  const rangeEnd = range.end;
+  const rangeLabel = d === rangeEnd ? d : `${d} to ${rangeEnd}`;
   const role = String(user?.role || "").toLowerCase();
   const isAdmin = ["admin", "superadmin", "manager"].includes(role);
 
   const summaryQ = useQuery({
-    queryKey: ["reports-summary", d],
-    queryFn: () => GET<any>("/reports/summary", { start: d, end: d }),
+    queryKey: ["reports-summary", d, rangeEnd],
+    queryFn: async () => {
+      const data = await GET<any>("/reports/summary", { start: d, end: rangeEnd });
+      if (!data || data.error) throw new Error(data?.error || "Could not load this period");
+      return data;
+    },
     refetchInterval: refreshMs,
   });
   const ccQ = useQuery({
     queryKey: ["cc-summary"],
-    queryFn: () => GET<any>("/command-center/summary"),
+    queryFn: async () => {
+      const data = await GET<any>("/command-center/summary");
+      if (!data || data.error) throw new Error(data?.error || "Could not load shop status");
+      return data;
+    },
     refetchInterval: refreshMs,
   });
   const productsQ = useQuery({
@@ -144,9 +173,32 @@ function Dashboard() {
     refetchInterval: refreshMs * 1.5,
   });
   const salesQ = useQuery({
-    queryKey: ["sales-today", d],
-    queryFn: () => GET<any>("/sales", { start: d, end: d }),
+    queryKey: ["sales-range", d, rangeEnd],
+    queryFn: async () => {
+      const data = await GET<any>("/sales", { start: d, end: rangeEnd });
+      if (!data || (data as { error?: string }).error) {
+        throw new Error((data as { error?: string })?.error || "Could not load sales");
+      }
+      return data;
+    },
     refetchInterval: refreshMs,
+  });
+  const voidSale = useMutation({
+    mutationFn: async () => {
+      const reason = voidReason.trim();
+      if (!reason) throw new Error("Enter a reason before voiding this sale.");
+      const res = await POST<any>(`/sales/${voidFor.id}/void`, { reason });
+      if (!res || res.error) throw new Error(res?.message || res?.error || "Could not void that sale.");
+      return res;
+    },
+    onSuccess: async () => {
+      setVoidMsg("");
+      setVoidFor(null);
+      setVoidReason("");
+      await queryClient.invalidateQueries({ queryKey: ["sales-range"] });
+      await queryClient.invalidateQueries({ queryKey: ["reports-summary"] });
+    },
+    onError: (err: Error) => setVoidMsg(err.message || "Could not void that sale."),
   });
   const insightsQ = useQuery({
     queryKey: ["ai-insights-dash"],
@@ -181,19 +233,29 @@ function Dashboard() {
     Number(cc.low_stock ?? 0) ||
     products.filter((p: any) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)).length;
 
-  const revenue = Number(cc.today?.revenue ?? s.total_revenue ?? 0);
-  const txns = Number(cc.today?.transactions ?? s.total_transactions ?? sales.length ?? 0);
-  const profit = Number(cc.today?.profit ?? 0);
-  const monthRev = Number(cc.monthly_revenue ?? 0);
+  const revenue = Number(s.total_revenue ?? 0);
+  const txns = Number(s.total_transactions ?? sales.length ?? 0);
+  const avgSale = Number(s.avg_transaction ?? 0);
+  const discounts = Number(s.total_discounts ?? 0);
+  const tax = Number(s.total_tax ?? 0);
   const expenses = Number(cc.expenses ?? 0);
   const invValue = Number(cc.inventory_value ?? 0);
   const debts = Number(cc.outstanding_debts ?? 0);
-  const cashFlow = Number(cc.cash_flow ?? revenue);
-  const cash = Number(cc.today?.cash ?? 0);
-  const mpesa = Number(cc.today?.mpesa ?? 0);
-  const bank = Number(cc.today?.bank ?? 0);
+  const cashFlow = revenue;
+  const payRows = Array.isArray(wrap.by_payment) ? wrap.by_payment : [];
+  const payOf = (names: string[]) =>
+    payRows
+      .filter((p: any) => names.includes(String(p.payment_method || "").toLowerCase().replace(/\s+/g, "")))
+      .reduce((sum: number, p: any) => sum + Number(p.total || 0), 0);
+  const cash = payOf(["cash"]);
+  const mpesa = payOf(["mpesa", "m-pesa"]);
+  const bank = payOf(["bank", "card", "bank/card"]);
   const businessHealth = Number(cc.business_health ?? healthQ.data?.score ?? 0);
-  const topProducts = Array.isArray(cc.top_products) ? cc.top_products : [];
+  const topProducts = Array.isArray(wrap.top_products) && wrap.top_products.length
+    ? wrap.top_products
+    : Array.isArray(cc.top_products)
+      ? cc.top_products
+      : [];
   const topCategories = Array.isArray(cc.top_categories) ? cc.top_categories : [];
   const bak = liveQ.data?.backup || {};
   const syncPending = Number(liveQ.data?.sync?.pending || 0);
@@ -256,10 +318,10 @@ function Dashboard() {
   }, [wrap.hourly, sales]);
 
   const byPayment = useMemo(() => {
-    const raw = Array.isArray(cc.by_payment)
-      ? cc.by_payment
-      : Array.isArray(wrap.by_payment)
-        ? wrap.by_payment
+    const raw = Array.isArray(wrap.by_payment)
+      ? wrap.by_payment
+      : Array.isArray(cc.by_payment)
+        ? cc.by_payment
         : [];
     const map: Record<string, number> = {};
     const order: string[] = [];
@@ -318,12 +380,41 @@ function Dashboard() {
             <span className="mx-1 text-muted-fg">·</span>
             <span>{rest.join(" ")}</span>
           </div>
-          <h2 className="text-display text-text mt-1">How is business today?</h2>
+          <h2 className="text-display text-text mt-1">How is business for {rangeLabel}?</h2>
+          {summaryQ.isError ? (
+            <div className="mt-2 rounded-lg border border-err/40 bg-err/10 px-3 py-2 text-sm text-err">
+              Could not load sales for {rangeLabel}. {summaryQ.error instanceof Error ? summaryQ.error.message : "Refresh and sign in again."}
+            </div>
+          ) : null}
           <div className="text-sm text-text2 mt-0.5">
             Welcome back, {name} · Live Dashboard · refreshes every {prefs.refreshIntervalSec}s
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <label className="block text-xs font-semibold text-text2">
+            Period
+            <Select
+              value={preset}
+              onChange={(e) => setPreset(e.target.value)}
+              className="mt-1 min-h-[44px] min-w-[160px]"
+            >
+              {["Today", "Yesterday", "Choose a day", "This Week", "This Month", "Last Month", "Custom"].map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </Select>
+          </label>
+          {preset === "Choose a day" || preset === "Custom" ? (
+            <label className="block text-xs font-semibold text-text2">
+              {preset === "Choose a day" ? "Day" : "From"}
+              <Input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 min-h-[44px]" />
+            </label>
+          ) : null}
+          {preset === "Custom" ? (
+            <label className="block text-xs font-semibold text-text2">
+              To
+              <Input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 min-h-[44px]" />
+            </label>
+          ) : null}
           {prefs.widgets.health ? (
             <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 shadow-card">
               <HealthRing
@@ -350,7 +441,9 @@ function Dashboard() {
 
       {/* Attention strip */}
       <div className="flex flex-wrap gap-2 mb-4">
-        {lowStock > 0 ? (
+        {ccQ.isError ? (
+          <Badge tone="err">Could not load shop status</Badge>
+        ) : lowStock > 0 ? (
           <Link to="/inventory">
             <Badge tone="warn">{lowStock} low stock — needs attention</Badge>
           </Link>
@@ -361,7 +454,7 @@ function Dashboard() {
           <Link to="/debt">
             <Badge tone="warn">Outstanding credit {KES(debts)}</Badge>
           </Link>
-        ) : (
+        ) : ccQ.isError ? null : (
           <Badge tone="ok">No open credit</Badge>
         )}
         {syncPending > 0 ? (
@@ -393,23 +486,23 @@ function Dashboard() {
             )}
           >
             <KpiCard
-              label="Today's Sales"
+              label="Sales"
               value={KES(revenue)}
-              sub={`${txns} transactions`}
+              sub={`${txns} transactions · ${rangeLabel}`}
               accent="gold"
               icon={<ShoppingCart className="h-5 w-5" />}
             />
             <KpiCard
-              label="Today's Profit"
-              value={KES(profit)}
-              sub="From live cost data"
+              label="Avg sale"
+              value={KES(avgSale)}
+              sub={discounts ? `Discounts ${KES(discounts)}` : rangeLabel}
               accent="ok"
               icon={<DollarSign className="h-5 w-5" />}
             />
             <KpiCard
-              label="Monthly Revenue"
-              value={KES(monthRev)}
-              sub="This calendar month"
+              label="Tax"
+              value={KES(tax)}
+              sub={rangeLabel}
               accent="info"
               icon={<LineChart className="h-5 w-5" />}
             />
@@ -426,21 +519,21 @@ function Dashboard() {
             <KpiCard
               label="Cash"
               value={KES(cash)}
-              sub="Today"
+              sub={rangeLabel}
               accent="ok"
               icon={<Banknote className="h-5 w-5" />}
             />
             <KpiCard
               label="M-Pesa"
               value={KES(mpesa)}
-              sub="Today"
+              sub={rangeLabel}
               accent="gold"
               icon={<Smartphone className="h-5 w-5" />}
             />
             <KpiCard
               label="Bank / Card"
               value={KES(bank)}
-              sub="Today"
+              sub={rangeLabel}
               accent="info"
               icon={<Building2 className="h-5 w-5" />}
             />
@@ -450,7 +543,7 @@ function Dashboard() {
             <KpiCard
               label="Expenses"
               value={KES(expenses)}
-              sub="Month (ledger)"
+              sub="Month to date"
               accent="warn"
               icon={<Wallet className="h-5 w-5" />}
             />
@@ -469,9 +562,9 @@ function Dashboard() {
               icon={<Landmark className="h-5 w-5" />}
             />
             <KpiCard
-              label="Cash Flow"
+              label="Completed sales"
               value={KES(cashFlow)}
-              sub="Today proxy"
+              sub={rangeLabel}
               accent="gold"
               icon={<TrendingUp className="h-5 w-5" />}
             />
@@ -590,9 +683,9 @@ function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
           {prefs.widgets.bestSellers ? (
             <Card className="p-4">
-              <SectionTitle>Best sellers today</SectionTitle>
+              <SectionTitle>Best sellers · {rangeLabel}</SectionTitle>
               {topProducts.length === 0 ? (
-                <p className="text-sm text-text2 py-3">No product sales yet today.</p>
+                <p className="text-sm text-text2 py-3">No product sales for {rangeLabel}.</p>
               ) : (
                 <ul className="space-y-2">
                   {topProducts.slice(0, 6).map((p: any, i: number) => (
@@ -692,23 +785,64 @@ function Dashboard() {
                 </Link>
               }
             >
-              Recent Sales
+              Sales · {rangeLabel}
             </SectionTitle>
           </div>
-          {sales.length === 0 ? (
+          {voidFor ? (
+            <div className="mx-4 mt-3 rounded-lg border border-err/40 bg-err/10 p-3">
+              <div className="text-sm font-semibold text-text">
+                Void {voidFor.receipt_number || voidFor.id}
+              </div>
+              <p className="mt-1 text-xs text-text2">
+                This marks the sale voided and puts the stock back. It cannot be undone from this page.
+              </p>
+              <Input
+                value={voidReason}
+                onChange={(e) => setVoidReason(e.target.value)}
+                placeholder="Reason"
+                className="mt-2"
+              />
+              {voidMsg ? <div className="mt-2 text-sm text-err">{voidMsg}</div> : null}
+              <div className="mt-2 flex gap-2">
+                <Button
+                  variant="primary"
+                  size="touch"
+                  disabled={voidSale.isPending}
+                  onClick={() => voidSale.mutate()}
+                >
+                  {voidSale.isPending ? "Voiding…" : "Void this sale"}
+                </Button>
+                <Button variant="secondary" size="touch" onClick={() => setVoidFor(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          {salesQ.isError ? (
+            <div className="px-4 py-3 text-sm text-err">
+              {salesQ.error instanceof Error ? salesQ.error.message : "Could not load the sales list."}
+            </div>
+          ) : null}
+          {sales.length === 0 && !salesQ.isError ? (
             <EmptyState
               icon={<BarChart3 className="h-6 w-6" />}
-              title="No sales yet today"
-              description="Complete a sale on Point of Sale to see it here."
+              title={`No sales for ${rangeLabel}`}
+              description="Sales, voids, and totals on this page follow the period you picked."
             />
           ) : (
             <>
               <div className="hidden sm:block">
-                <Table head={["Receipt", "Total", "Pay", "Cashier"]}>
-                  {sales.slice(0, dense ? 10 : 8).map((row: any) => (
+                <Table head={["Receipt", "Total", "Pay", "Status", "Cashier", ""]}>
+                  {sales.slice(0, 40).map((row: any) => (
                     <tr key={row.id || row.receipt_number}>
                       <td className={cn("px-4 font-mono text-text", dense ? "py-1.5" : "py-2.5")}>
-                        {row.receipt_number || row.id}
+                        <button
+                          type="button"
+                          className="font-semibold text-gold hover:underline"
+                          onClick={() => setOpenSaleId(Number(row.id))}
+                        >
+                          {row.receipt_number || row.id}
+                        </button>
                       </td>
                       <td
                         className={cn(
@@ -722,7 +856,26 @@ function Dashboard() {
                         {String(row.payment_method || "—")}
                       </td>
                       <td className={cn("px-4 text-text2", dense ? "py-1.5" : "py-2.5")}>
+                        {String(row.status || "completed")}
+                      </td>
+                      <td className={cn("px-4 text-text2", dense ? "py-1.5" : "py-2.5")}>
                         {String(row.cashier_name || "—")}
+                      </td>
+                      <td className={cn("px-4 text-right", dense ? "py-1.5" : "py-2.5")}>
+                        {isAdmin && String(row.status || "completed").toLowerCase() !== "voided" ? (
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-err hover:underline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setVoidFor(row);
+                              setVoidReason("");
+                              setVoidMsg("");
+                            }}
+                          >
+                            Void
+                          </button>
+                        ) : null}
                       </td>
                     </tr>
                   ))}
@@ -730,22 +883,28 @@ function Dashboard() {
               </div>
               <div className="sm:hidden divide-y divide-border">
                 {sales.slice(0, 6).map((row: any) => (
-                  <div key={row.id || row.receipt_number} className="px-4 py-3">
+                  <button
+                    type="button"
+                    key={row.id || row.receipt_number}
+                    className="block w-full px-4 py-3 text-left"
+                    onClick={() => setOpenSaleId(Number(row.id))}
+                  >
                     <div className="flex justify-between gap-2">
-                      <span className="font-mono text-sm text-text">
+                      <span className="font-mono text-sm font-semibold text-gold">
                         {row.receipt_number || row.id}
                       </span>
                       <span className="font-bold text-gold tabular-nums">{KES(row.total)}</span>
                     </div>
                     <div className="text-xs text-text2 mt-0.5">
-                      {row.payment_method || "—"} · {row.cashier_name || "—"}
+                      {row.payment_method || "—"} · {row.status || "completed"} · {row.cashier_name || "—"}
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </>
           )}
         </Card>
+        <SaleReceiptDialog saleId={openSaleId} onClose={() => setOpenSaleId(null)} />
 
         {prefs.widgets.activity ? (
           <Card className="p-4">

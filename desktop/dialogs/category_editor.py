@@ -123,6 +123,8 @@ class CategoryEditorDialog(QDialog):
         save = PrimaryBtn('Save Category', 40)
         save.clicked.connect(self._save)
         btns.addWidget(save)
+        from desktop.utils.dialog_keys import wire_dialog_keys
+        wire_dialog_keys(self, primary=save, cancel=cancel)
         lay.addLayout(btns)
 
         self.setStyleSheet(

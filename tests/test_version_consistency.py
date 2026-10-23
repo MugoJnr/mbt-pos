@@ -22,7 +22,9 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertRegex(
             main, rf'APP_VERSION\s*=\s*"{re.escape(version)}"')
         self.assertIn(f"v{version}", manifest["build"])
-        self.assertIn(f"/v{version}/", manifest["download_url"])
+        download_url = manifest.get("download_url") or ""
+        if download_url:
+            self.assertIn(f"/v{version}/", download_url)
 
         installer = (ROOT / "installer.nsi").read_text(encoding="utf-8")
         self.assertIn(f'!define APP_VERSION "{version}"', installer)

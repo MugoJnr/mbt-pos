@@ -80,9 +80,9 @@ class CategoriesConsumptionGate(unittest.TestCase):
         self.assertTrue(bev.get('icon_name') or bev.get('accent_color') or bev.get('image_path'))
 
     def test_v04_create_consumption_decrements_stock_and_movement(self):
-        depts = self.api.get_departments(active_only=True) or []
-        self.assertTrue(depts, 'seeded departments expected')
-        dept_id = int(depts[0]['id'])
+        saved = self.api.save_department('Office')
+        self.assertTrue(saved.get('success'), saved)
+        dept_id = int(saved['id'])
 
         db = self.ac._db()
         before = float(db.execute(

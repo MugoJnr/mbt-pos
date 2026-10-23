@@ -129,6 +129,11 @@ COMMANDS = {
     'update_now': 'Update Now',
     'verify_database': 'Verify Database',
     'test_printer': 'Test Printer',
+    'update_product_price': 'Change Product Price',
+    'update_product_cost': 'Change Product Cost',
+    'adjust_stock': 'Adjust Stock',
+    'disable_user': 'Disable User',
+    'reset_user_pin': 'Reset User PIN',
 }
 
 
@@ -247,6 +252,13 @@ class CommandCenter:
         self.register_handler('suspend_license', self._cmd_suspend_license)
         self.register_handler('collect_logs', self._cmd_collect_logs)
         self.register_handler('verify_database', self._cmd_verify_database)
+        self.register_handler('update_product_price', self._cmd_update_product_price)
+        self.register_handler('update_product_cost', self._cmd_update_product_cost)
+        self.register_handler('adjust_stock', self._cmd_adjust_stock)
+        self.register_handler('disable_user', self._cmd_disable_user)
+        self.register_handler('reset_user_pin', self._cmd_reset_user_pin)
+        self.register_handler('restart_sync', self._cmd_restart_sync)
+        self.register_handler('update_now', self._cmd_update_now)
 
     def _cmd_run_backup(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
@@ -352,6 +364,182 @@ class CommandCenter:
             return ok, f'Database integrity: {result}', {'integrity': result}
         except Exception as e:
             return False, str(e), None
+
+    def _shop_db(self):
+        db = sqlite3.connect(self.db_path)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def _one_row(self, sql: str, args: tuple) -> tuple[bool, str, dict | None]:
+        """A successful HTTP-style update must change exactly one row."""
+        db = self._shop_db()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            cur = db.execute(sql, args)
+            if cur.rowcount != 1:
+                db.rollback()
+                return False, 'No matching row was updated', None
+            db.commit()
+            return True, 'Updated', {'rows': 1}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False, str(exc), None
+        finally:
+            db.close()
+
+    def _cmd_update_product_price(self, params: dict) -> tuple[bool, str, dict | None]:
+        try:
+            price = round(float(params.get('price')), 2)
+        except (TypeError, ValueError):
+            return False, 'Enter a price', None
+        if price < 0:
+            return False, 'Price cannot be negative', None
+        return self._one_row(
+            'UPDATE products SET price=? WHERE id=?',
+            (price, int(params.get('product_id') or 0)),
+        )
+
+    def _cmd_update_product_cost(self, params: dict) -> tuple[bool, str, dict | None]:
+        try:
+            cost = round(float(params.get('cost_price')), 2)
+        except (TypeError, ValueError):
+            return False, 'Enter a cost', None
+        if cost < 0:
+            return False, 'Cost cannot be negative', None
+        return self._one_row(
+            'UPDATE products SET cost_price=? WHERE id=?',
+            (cost, int(params.get('product_id') or 0)),
+        )
+
+    def _cmd_adjust_stock(self, params: dict) -> tuple[bool, str, dict | None]:
+        command_id = str(params.get('command_id') or '').strip()
+        if not command_id:
+            return False, 'A command id is required', None
+        try:
+            delta = float(params.get('delta'))
+        except (TypeError, ValueError):
+            return False, 'Enter a quantity', None
+        if delta == 0:
+            return False, 'Quantity cannot be zero', None
+        pid = int(params.get('product_id') or 0)
+        ref = f'CMD:{command_id}'
+        db = self._shop_db()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            already = db.execute(
+                'SELECT id FROM stock_movements WHERE reference=?', (ref,)
+            ).fetchone()
+            if already:
+                db.commit()
+                return True, 'Already applied', {'duplicate': True}
+            row = db.execute(
+                'SELECT id, name, stock FROM products WHERE id=?', (pid,)
+            ).fetchone()
+            if not row:
+                db.rollback()
+                return False, 'Product was not updated', None
+            old = float(row['stock'] or 0)
+            new = round(old + delta, 4)
+            if new < 0:
+                db.rollback()
+                return False, 'Stock cannot go below zero', None
+            cur = db.execute(
+                'UPDATE products SET stock=? WHERE id=? AND stock=?',
+                (new, pid, old),
+            )
+            if cur.rowcount != 1:
+                db.rollback()
+                return False, 'Stock changed before this command', None
+            db.execute(
+                "INSERT INTO stock_movements "
+                "(product_id,product_name,movement_type,qty_before,qty_change,"
+                "qty_after,reference,reason,user_id,username) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (pid, row['name'], 'REMOTE_ADJUST', old, delta, new,
+                 ref, str(params.get('reason') or 'Remote stock adjustment'),
+                 None, 'remote'),
+            )
+            db.commit()
+            return True, 'Stock adjusted', {'stock': new}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return False, str(exc), None
+        finally:
+            db.close()
+
+    def _cmd_disable_user(self, params: dict) -> tuple[bool, str, dict | None]:
+        return self._one_row(
+            'UPDATE users SET is_active=0 WHERE id=?',
+            (int(params.get('user_id') or 0),),
+        )
+
+    def _cmd_reset_user_pin(self, params: dict) -> tuple[bool, str, dict | None]:
+        pin = str(params.get('pin') or '')
+        if not (pin.isdigit() and len(pin) == 6):
+            return False, 'PIN must be 6 digits', None
+        from desktop.utils.security import _pin_hash
+        db = self._shop_db()
+        try:
+            cols = {row[1] for row in db.execute('PRAGMA table_info(users)').fetchall()}
+            if 'pin_hash' not in cols:
+                db.execute('ALTER TABLE users ADD COLUMN pin_hash TEXT')
+            db.commit()
+        except Exception as exc:
+            return False, str(exc), None
+        finally:
+            db.close()
+        ok, msg, result = self._one_row(
+            'UPDATE users SET pin_hash=? WHERE id=?',
+            (_pin_hash(pin), int(params.get('user_id') or 0)),
+        )
+        if result is not None:
+            result = {'rows': 1}
+        return ok, msg, result
+
+    def _cmd_restart_sync(self, params: dict) -> tuple[bool, str, dict | None]:
+        db = self._shop_db()
+        try:
+            db.execute(
+                'CREATE TABLE IF NOT EXISTS system_settings '
+                '(key TEXT PRIMARY KEY, value TEXT)'
+            )
+            db.execute(
+                "INSERT INTO system_settings (key, value) VALUES ('sync_restart_requested', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'"
+            )
+            db.commit()
+            return True, 'Sync restart requested', {'processes_killed': 0}
+        except Exception as exc:
+            return False, str(exc), None
+        finally:
+            db.close()
+
+    def _cmd_update_now(self, params: dict) -> tuple[bool, str, dict | None]:
+        """Record the request. Do not launch an installer or stop the till."""
+        db = self._shop_db()
+        try:
+            db.execute(
+                'CREATE TABLE IF NOT EXISTS system_settings '
+                '(key TEXT PRIMARY KEY, value TEXT)'
+            )
+            db.execute(
+                "INSERT INTO system_settings (key, value) VALUES ('update_requested', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'"
+            )
+            db.commit()
+            return True, 'Update requested; installer was not started', {
+                'installer_started': False,
+            }
+        except Exception as exc:
+            return False, str(exc), None
+        finally:
+            db.close()
 
 
 def dispatch_remote_command(center: CommandCenter, cmd: dict, receipt_path: str | None = None) -> str:

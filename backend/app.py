@@ -110,6 +110,11 @@ else:
 
 @app.before_request
 def _request_context():
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        origin = (request.headers.get('Origin') or '').rstrip('/')
+        host = (request.host_url or '').rstrip('/')
+        if origin and origin not in _ALLOWED_ORIGINS and origin != host:
+            return jsonify({'error': 'Origin is not allowed.'}), 403
     g.request_id = request.headers.get('X-Request-ID') or secrets.token_hex(12)
 
 
@@ -507,6 +512,24 @@ def init_db():
         cur.execute("ALTER TABLE sales ADD COLUMN cash_rounding_adj REAL DEFAULT 0")
     if 'electronic_paid' not in sales_cols:
         cur.execute("ALTER TABLE sales ADD COLUMN electronic_paid REAL DEFAULT 0")
+    if 'electronic_method' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN electronic_method TEXT")
+    if 'cash_paid' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN cash_paid REAL DEFAULT 0")
+    if 'payment_tenders' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN payment_tenders TEXT")
+    if 'sale_date' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN sale_date TEXT")
+        cur.execute(
+            "UPDATE sales SET sale_date=date(created_at) "
+            "WHERE sale_date IS NULL OR sale_date=''"
+        )
+    if 'client_token' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN client_token TEXT")
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_token "
+        "ON sales(client_token) WHERE client_token IS NOT NULL AND client_token != ''"
+    )
 
     note_cols = {r[1] for r in cur.execute("PRAGMA table_info(notes)").fetchall()}
     if 'pinned' not in note_cols:
@@ -761,15 +784,18 @@ def token_required(f):
         try:
             from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config
             if is_cloud_configured():
-                import requests as _req
+                from backend.cloud.net_gate import network_up
+                if not network_up(1.0):
+                    return jsonify({'error': 'Invalid token'}), 401
+                from backend.cloud_backup.supabase_client import SupabaseClient
                 cfg = load_cloud_config()
-                r = _req.get(
+                r = SupabaseClient()._session.get(
                     f"{(cfg.get('supabase_url') or '').rstrip('/')}/auth/v1/user",
                     headers={
                         'apikey': cfg.get('anon_key') or '',
                         'Authorization': f'Bearer {token}',
                     },
-                    timeout=10,
+                    timeout=4,
                 )
                 if r.status_code < 400:
                     u = r.json() or {}
@@ -1091,18 +1117,56 @@ def delete_product(pid):
 
 # ── SALES ─────────────────────────────────────────────────────────────────────
 
+def _sale_day_sql(alias: str = '') -> str:
+    """Same business day the till uses: sale_date, otherwise the created date."""
+    prefix = f'{alias}.' if alias else ''
+    return f"COALESCE(NULLIF({prefix}sale_date,''), date({prefix}created_at))"
+
+
 @app.route('/api/sales', methods=['GET'])
 @token_required
 def list_sales():
     db = get_db()
     start = request.args.get('start', str(date.today()))
     end = request.args.get('end', str(date.today()))
-    sales = db.execute("""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
+    day = _sale_day_sql('s')
+    sales = db.execute(f"""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
                           FROM sales s LEFT JOIN sale_items si ON s.id = si.sale_id
-                          WHERE date(s.created_at) BETWEEN ? AND ?
+                          WHERE {day} BETWEEN ? AND ?
                           GROUP BY s.id ORDER BY s.created_at DESC""",
                        (start, end)).fetchall()
     return jsonify([dict(s) for s in sales])
+
+
+@app.route('/api/sales/<int:sale_id>/void', methods=['POST'])
+@token_required
+def void_sale_http(sale_id):
+    """Void one sale. Same rules as the till: manager/admin, a reason, stock restored."""
+    data = request.json or {}
+    reason = (data.get('reason') or '').strip()
+    if not reason:
+        return jsonify({'error': 'Enter a reason before voiding this sale.'}), 400
+    user = g.current_user or {}
+    role = (user.get('role') or '').lower()
+    if role not in ('admin', 'superadmin', 'manager'):
+        return jsonify({'error': 'Only a manager or admin can void a sale.'}), 403
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    api._role = role
+    try:
+        result = api.void_sale(
+            int(sale_id),
+            reason,
+            force_with_payments=bool(data.get('force_with_payments')),
+        )
+    except Exception as exc:
+        return jsonify({'error': f'Could not void that sale. {exc}'}), 500
+    if result.get('error'):
+        code = 409 if result.get('error') == 'credit_payments_exist' else 400
+        return jsonify(result), code
+    return jsonify(result)
 
 
 @app.route('/api/sales', methods=['POST'])
@@ -1114,29 +1178,93 @@ def create_sale():
         return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
     db = get_db()
     user = g.current_user
+    from desktop.utils.shop_time import (
+        business_day_iso, parse_sale_date, sale_created_at_for_day, shop_today,
+    )
+    role = (user.get('role') or '').lower()
+    raw_day = (data.get('sale_date') or data.get('business_day') or '').strip()
+    requested = parse_sale_date(raw_day) if raw_day else shop_today()
+    if requested is None:
+        return jsonify({'error': 'Invalid sale date. Use YYYY-MM-DD.'}), 400
+    if requested > shop_today():
+        return jsonify({'error': 'Sale date cannot be in the future.'}), 400
+    if requested != shop_today() and role not in ('admin', 'superadmin', 'manager'):
+        return jsonify({'error': 'Only a manager or admin can backdate a sale.'}), 403
+    sale_date_s = business_day_iso(requested)
+    created_at_s = sale_created_at_for_day(sale_date_s)
     try:
         db.execute("BEGIN IMMEDIATE")
         db.execute("PRAGMA foreign_keys=OFF")
-
-        today = datetime.now().strftime('%Y%m%d')
+        sale_token = (data.get('client_token') or '').strip()
+        if sale_token:
+            existing = db.execute(
+                "SELECT id, receipt_number, total, sale_date FROM sales WHERE client_token=?",
+                (sale_token,),
+            ).fetchone()
+            if existing:
+                db.rollback()
+                return jsonify({
+                    'success': True,
+                    'duplicate': True,
+                    'sale_id': existing['id'],
+                    'receipt_number': existing['receipt_number'],
+                    'total': existing['total'],
+                    'sale_date': existing['sale_date'],
+                })
+        day_key = sale_date_s.replace('-', '')
         count = db.execute(
-            "SELECT COUNT(*) FROM sales WHERE date(created_at)=date('now')"
+            "SELECT COUNT(*) FROM sales WHERE " + _sale_day_sql() + "=?",
+            (sale_date_s,),
         ).fetchone()[0]
-        receipt_number = f"RCP-{today}-{count+1:04d}"
+        receipt_number = f"RCP-{day_key}-{count+1:04d}"
 
-        notes = data.get('notes', '') or ''
+        notes = data.get('notes', '') or data.get('note', '') or ''
+        if sale_date_s != shop_today().isoformat() and 'business day' not in notes.lower():
+            notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
         mpesa_ref = (data.get('mpesa_ref') or '').strip()
         if mpesa_ref and 'mpesa ref' not in notes.lower():
             notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
+        method_name = (data.get('payment_method') or 'cash').strip()
+        electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
+        cash_paid_col = round(float(data.get('cash_paid') or 0), 2)
+        emethod = (data.get('electronic_method') or '').strip()
+        if method_name.lower() in ('mixed', 'split'):
+            method_name = 'Mixed'
+            if cash_paid_col <= 0.009 or electronic_paid <= 0.009:
+                db.rollback()
+                return jsonify({'error': 'A split sale needs both a cash amount and a second payment.'}), 400
+            if cash_paid_col + electronic_paid + 0.009 < float(data.get('total') or 0):
+                db.rollback()
+                return jsonify({'error': 'Split payments do not cover the total.'}), 400
+        tenders = data.get('payment_tenders')
+        if isinstance(tenders, list):
+            tenders_json = json.dumps(tenders)
+        else:
+            tenders_json = None
+        if not tenders_json and electronic_paid > 0.009:
+            from desktop.utils.payment_tenders import build_tenders
+            tenders_json = json.dumps(build_tenders(
+                cash_paid=cash_paid_col,
+                electronic_paid=electronic_paid,
+                electronic_method=emethod or 'M-Pesa',
+            ))
+        if electronic_paid > 0.009 and 'split:' not in notes.lower():
+            notes = (
+                notes + f' | Split: {emethod or "M-Pesa"} {electronic_paid:,.2f} + Cash {cash_paid_col:,.2f}'
+            ).strip(' |')
 
         db.execute("""INSERT INTO sales (receipt_number, cashier_id, cashier_name, subtotal, discount,
-                  tax, total, payment_method, amount_paid, change_amount, notes, mpesa_ref)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  tax, total, payment_method, amount_paid, change_amount, notes, mpesa_ref,
+                  sale_date, created_at, customer_id, electronic_paid, electronic_method,
+                  cash_paid, payment_tenders, client_token)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                (receipt_number, user['id'], user['full_name'] or user['username'],
                 data.get('subtotal', 0), data.get('discount', 0), data.get('tax', 0),
-                data['total'], data.get('payment_method', 'cash'),
+                data['total'], method_name,
                 data.get('amount_paid', 0), data.get('change_amount', 0),
-                notes, mpesa_ref or None))
+                notes, mpesa_ref or None, sale_date_s, created_at_s,
+                data.get('customer_id') or None, electronic_paid, emethod or None,
+                cash_paid_col, tenders_json, sale_token or None))
 
         sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
@@ -1189,10 +1317,30 @@ def create_sale():
         db.commit()
         log_action('CREATE_SALE', 'sales',
                    f"Receipt: {receipt_number}, Total: {data['total']}")
+        debt = None
+        method = (data.get('payment_method') or 'cash').strip().lower()
+        cust_id = data.get('customer_id')
+        if method in ('credit sale', 'credit', 'part payment', 'part-payment') and cust_id:
+            try:
+                from desktop.utils.api_client import APIClient
+                debt = APIClient().create_debt_invoice({
+                    'customer_id': cust_id,
+                    'sale_id': sale_id,
+                    'receipt_number': receipt_number,
+                    'total_amount': data['total'],
+                    'amount_paid': data.get('amount_paid') or 0,
+                    'payment_method': method,
+                    'notes': notes,
+                })
+            except Exception as debt_err:
+                logger.error(f"debt invoice after sale failed: {debt_err}", exc_info=True)
+                debt = {'error': str(debt_err)}
         return jsonify({
             'success': True,
             'receipt_number': receipt_number,
-            'sale_id': sale_id
+            'sale_id': sale_id,
+            'sale_date': sale_date_s,
+            'debt': debt,
         })
     except Exception as e:
         try:
@@ -1215,9 +1363,35 @@ def get_sale(sale_id):
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale:
         return jsonify({'error': 'Not found'}), 404
-    items = db.execute("SELECT * FROM sale_items WHERE sale_id=?", (sale_id,)).fetchall()
+    items = db.execute(
+        """SELECT si.*,
+                  p.sku AS product_sku, p.barcode, p.category, p.unit,
+                  p.price AS product_price, p.cost_price, p.stock AS current_stock
+           FROM sale_items si
+           LEFT JOIN products p ON p.id = si.product_id
+           WHERE si.sale_id=?""",
+        (sale_id,),
+    ).fetchall()
     result = dict(sale)
     result['items'] = [dict(i) for i in items]
+    if result.get('customer_id'):
+        cust = db.execute(
+            "SELECT name, phone FROM customers WHERE id=?",
+            (result['customer_id'],),
+        ).fetchone()
+        if cust:
+            result['customer_name'] = cust['name'] or ''
+            result['customer_phone'] = cust['phone'] or ''
+    try:
+        debt = db.execute(
+            "SELECT invoice_number, status, balance, total_amount, amount_paid "
+            "FROM debt_invoices WHERE sale_id=? ORDER BY id DESC LIMIT 1",
+            (sale_id,),
+        ).fetchone()
+        if debt:
+            result['debt'] = dict(debt)
+    except Exception:
+        pass
     return jsonify(result)
 
 
@@ -1237,26 +1411,30 @@ def sales_summary():
             COALESCE(AVG(total), 0) as avg_transaction,
             COALESCE(SUM(discount), 0) as total_discounts,
             COALESCE(SUM(tax), 0) as total_tax
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
+          AND status IN ('completed','return')
     """, (start, end)).fetchone()
 
     top_products = db.execute("""
         SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
         FROM sale_items si
         JOIN sales s ON si.sale_id = s.id
-        WHERE date(s.created_at) BETWEEN ? AND ? AND s.status='completed'
+        WHERE """ + _sale_day_sql('s') + """ BETWEEN ? AND ?
+          AND s.status IN ('completed','return')
         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10
     """, (start, end)).fetchall()
 
     by_payment = db.execute("""
         SELECT payment_method, COUNT(*) as count, SUM(total) as total
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
+          AND status IN ('completed','return')
         GROUP BY payment_method
     """, (start, end)).fetchall()
 
     hourly = db.execute("""
         SELECT strftime('%H', created_at) as hour, COUNT(*) as count, SUM(total) as total
-        FROM sales WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
+          AND status IN ('completed','return')
         GROUP BY hour ORDER BY hour
     """, (start, end)).fetchall()
 

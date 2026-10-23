@@ -175,7 +175,24 @@ class LicenseService(threading.Thread):
                 # No cloud — treat local-only installs as OK for grace clock
                 self.engine.store.set('last_cloud_ok_ts', int(time.time()))
                 return
-            key = self.engine.store.get('cloud_license_key') or (self.engine._license_data or {}).get('license_key')
+            from backend.cloud.net_gate import network_up
+            if not network_up(1.0):
+                logger.info('Cloud license check skipped — offline')
+                return
+            lic = self.engine._license_data or {}
+            embedded_key = str(lic.get('license_key') or '').strip()
+            source = str(lic.get('source') or '').strip().lower()
+            # A locally signed license must not phone home with a stale trial key.
+            # That call is what locked a paid till after the network dropped.
+            if lic and not embedded_key and source != 'mbt_cloud':
+                now = int(time.time())
+                self.engine.store.set('last_cloud_ok_ts', now)
+                self.engine.store.set('last_cloud_check_ts', now)
+                self.engine.store.set('requires_online', False)
+                self.engine.store.set('offline_lock', False)
+                logger.info('Local signed license validated offline')
+                return
+            key = embedded_key or str(self.engine.store.get('cloud_license_key') or '').strip()
             if not key:
                 # Local signed key only — stamp OK so offline grace doesn't false-lock
                 self.engine.store.set('last_cloud_ok_ts', int(time.time()))

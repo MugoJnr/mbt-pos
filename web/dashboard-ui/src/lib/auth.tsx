@@ -37,6 +37,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(res.token, res.user);
     setToken(res.token);
     setUser(res.user);
+    try {
+      await fetch("/api/sessions/open", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${res.token}` },
+      });
+    } catch {
+      /* session list is optional until the till answers */
+    }
     return null;
   }, []);
 

@@ -1,4 +1,4 @@
-export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "saved";
+export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "receipts" | "saved";
 
 export type AnalyticsSearch = {
   tab?: AnalyticsTab;

@@ -959,8 +959,10 @@ class SettingsTab(QWidget):
         self._cf_status.setText('⏳ Repairing Cloudflare (DNS/ingress/HTTPS)…')
         self._cf_repair_btn.setEnabled(False)
 
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -971,9 +973,9 @@ class SettingsTab(QWidget):
                 rep = reconcile_cloudflare_state(
                     force_dns=True, verify_https=True, log=log)
                 process_cf_retry_queue(max_items=3)
-                QTimer.singleShot(0, lambda: self._on_cf_repair_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_repair_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_repair_done(
+                run_on_ui_thread(lambda: self._on_cf_repair_done(
                     {'ok': False, 'errors': [str(e)], 'active': False}))
 
         threading.Thread(target=worker, daemon=True, name='CF-Repair').start()
@@ -1371,8 +1373,10 @@ class SettingsTab(QWidget):
         self._cf_status.setText('⏳ Setting up Cloudflare tunnel…')
         self._cf_log.clear()
 
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
@@ -1381,9 +1385,9 @@ class SettingsTab(QWidget):
                     shop, subdomain=sub, log_callback=_cb,
                     force_relogin=force_relogin,
                 ).run()
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done(result))
+                run_on_ui_thread(lambda: self._on_cf_setup_done(result))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_setup_done({
+                run_on_ui_thread(lambda: self._on_cf_setup_done({
                     'ok': False, 'errors': [str(e)], 'log_path': '',
                 }))
 
@@ -1428,16 +1432,18 @@ class SettingsTab(QWidget):
         self._cf_status.setText('⏳ Running diagnostics…')
         self._cf_test_btn.setEnabled(False)
 
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
         def _cb(level, msg):
-            QTimer.singleShot(0, lambda l=level, m=msg: self._cf_log_append(l, m))
+            run_on_ui_thread(lambda l=level, m=msg: self._cf_log_append(l, m))
 
         def worker():
             try:
                 from backend.cloudflare_setup import run_diagnostics
                 rep = run_diagnostics(_cb)
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(rep))
+                run_on_ui_thread(lambda: self._on_cf_test_done(rep))
             except Exception as e:
-                QTimer.singleShot(0, lambda: self._on_cf_test_done(
+                run_on_ui_thread(lambda: self._on_cf_test_done(
                     {'ok': False, 'checks': [], 'error': str(e)}))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1693,7 +1699,8 @@ class SettingsTab(QWidget):
                     QMessageBox.information(self, 'Report Sent', msg)
                 else:
                     QMessageBox.warning(self, 'Report', msg)
-            QTimer.singleShot(0, _ui)
+            from desktop.utils.qt_dispatch import run_on_ui_thread
+            run_on_ui_thread(_ui)
         threading.Thread(target=_run, daemon=True).start()
 
     def _send_backup_now(self):
@@ -1709,7 +1716,8 @@ class SettingsTab(QWidget):
                     QMessageBox.information(self, 'Backup Sent', msg)
                 else:
                     QMessageBox.warning(self, 'Backup', msg)
-            QTimer.singleShot(0, _ui)
+            from desktop.utils.qt_dispatch import run_on_ui_thread
+            run_on_ui_thread(_ui)
 
         send_db_backup_now(self.config_getter, api=self.api, on_done=on_done, reason='manual')
 

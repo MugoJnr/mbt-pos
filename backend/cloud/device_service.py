@@ -17,15 +17,8 @@ logger = logging.getLogger('cloud.devices')
 
 def _quick_online(timeout: float = 1.0) -> bool:
     """Fail-open connectivity probe — never hang shop UI/threads."""
-    import socket
-    for host in (('1.1.1.1', 53), ('8.8.8.8', 53)):
-        try:
-            s = socket.create_connection(host, timeout=timeout)
-            s.close()
-            return True
-        except OSError:
-            pass
-    return False
+    from backend.cloud.net_gate import network_up
+    return network_up(timeout)
 
 
 def _resolve_cloud_ids() -> tuple[str, str]:
@@ -92,11 +85,14 @@ class DeviceService:
         from licensing.license_engine import LicenseEngine
 
         device_id = get_or_create_device_id()
-        try:
-            eng = LicenseEngine()
-            fingerprint = eng.device_id
-        except Exception:
-            fingerprint = device_id
+        fingerprint = getattr(self, '_fingerprint', '') or ''
+        if not fingerprint:
+            try:
+                eng = LicenseEngine()
+                fingerprint = eng.device_id
+                self._fingerprint = fingerprint
+            except Exception:
+                fingerprint = device_id
 
         cfg = self.config_getter() or {}
         try:

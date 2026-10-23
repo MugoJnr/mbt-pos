@@ -941,6 +941,13 @@ def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
 
 # ── Main updater class ─────────────────────────────────────────────────────────
 
+def should_trigger_reconnect_check(last_online, now_online, check_running=False) -> bool:
+    """One update check when the network returns. An in-flight check is left alone."""
+    if check_running:
+        return False
+    return bool(now_online) and not bool(last_online)
+
+
 class UpdateChecker:
     """
     Background update checker. Instantiate once, call start().
@@ -971,6 +978,7 @@ class UpdateChecker:
         self._download_warned_version = ''
         self._has_updater_lock = False
         self._install_lock = threading.Lock()
+        self._checking = False
 
         # Callbacks — set by caller (MainWindow)
         self.on_update_available = None   # (version, notes, url)
@@ -1095,12 +1103,20 @@ class UpdateChecker:
         self._stop.wait(FIRST_CHECK_DELAY)
         last_online = self._is_online()
         while not self._stop.is_set():
-            ok = self._check()
+            if self._checking:
+                self._stop.wait(1)
+                continue
+            self._checking = True
+            try:
+                ok = self._check()
+            finally:
+                self._checking = False
             deadline = time.time() + (RECHECK_INTERVAL if ok else RETRY_INTERVAL)
             while time.time() < deadline and not self._stop.is_set():
                 self._stop.wait(30)
                 now_online = self._is_online()
-                if now_online and not last_online:
+                if should_trigger_reconnect_check(last_online, now_online, self._checking):
+                    last_online = True
                     logger.info('Internet reconnected — rechecking for updates')
                     break
                 last_online = now_online
@@ -1108,6 +1124,19 @@ class UpdateChecker:
     def _check(self) -> bool:
         """Return True when GitHub was reached (even if already up to date)."""
         try:
+            from backend.cloud.net_gate import network_up
+            if not network_up(1.0):
+                logger.info(
+                    f"Update check skipped — offline (current=v{self.current_version})")
+                return False
+            try:
+                reported = bool(self._is_online())
+            except Exception:
+                reported = False
+            if not reported:
+                logger.info(
+                    f"Update check skipped — offline (current=v{self.current_version})")
+                return False
             logger.info(f"Update check starting (current=v{self.current_version})")
             info = self._fetch_release_info()
             if not info:
