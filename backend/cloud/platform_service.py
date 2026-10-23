@@ -1360,12 +1360,15 @@ def admin_force_validate(license_id: str, actor: str | None = None) -> dict:
 
 def admin_transfer_license(license_id: str, old_device_id: str, new_device_id: str,
                            actor: str | None = None) -> dict:
-    ok, msg = get_license_server().transfer_device(license_id, old_device_id, new_device_id, actor)
+    ok, msg, issue_revoke = get_license_server().transfer_device(
+        license_id, old_device_id, new_device_id, actor)
     if not ok:
         raise SupabaseError(msg, 400)
-    # Revoke on old device; force validate / activate on new when it comes online
     rows = service_select('licenses', f'id=eq.{quote(license_id, safe="")}&select=*')
     lic = rows[0] if rows else {}
+    if not issue_revoke:
+        return {'ok': True, 'message': msg, 'license': lic, 'already': True}
+    # One revoke for the computer that lost the seat. A repeat move must not queue another.
     org_id = lic.get('org_id') or ''
     from backend.cloud.command_center import get_command_center
     center = get_command_center()

@@ -30,6 +30,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { downloadApi, exportQuery } from "@/lib/download";
 import { LICENSE_PRODUCTS } from "@/lib/platform";
+import { cleanDeviceId, graceDaysFor, graceView } from "@/lib/licenseAdmin";
 
 export const Route = createFileRoute("/_admin/admin/licenses")({
   component: AdminLicensesPage,
@@ -109,7 +110,7 @@ function AdminLicensesPage() {
     mutationFn: () =>
       createCloudLicense(plan, `Issued from admin (${productId}/${plan})`, orgId, {
         assigned_email: issueEmail.trim() || undefined,
-        reserved_device_id: issueDeviceId.trim() || undefined,
+        reserved_device_id: cleanDeviceId(issueDeviceId) || undefined,
         product_id: productId,
       }),
     onSuccess: (res) => {
@@ -124,6 +125,7 @@ function AdminLicensesPage() {
       setIssueDeviceId("");
       refreshAll();
     },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const assignMut = useMutation({
@@ -135,7 +137,7 @@ function AdminLicensesPage() {
     }) =>
       assignCloudLicense(args.id, {
         assigned_email: args.assigned_email,
-        reserved_device_id: args.reserved_device_id,
+        reserved_device_id: args.reserved_device_id ? cleanDeviceId(args.reserved_device_id) : args.reserved_device_id,
         clear: args.clear,
       }),
     onSuccess: (res, vars) => {
@@ -197,15 +199,16 @@ function AdminLicensesPage() {
   });
 
   const transferMut = useMutation({
-    mutationFn: () => transferCloudLicense(transferLic, transferOld.trim(), transferNew.trim()),
+    mutationFn: () => transferCloudLicense(transferLic, cleanDeviceId(transferOld), cleanDeviceId(transferNew)),
     onSuccess: (res) => {
       if (res?.error || !res?.ok) {
         toast.error(res?.error || "Transfer failed");
         return;
       }
-      toast.success(res.message || "Device transferred — old device will revoke on next poll");
+      toast.success(res.message || "Device transferred. The old computer loses this seat on its next check-in.");
       refreshAll();
     },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const lic = licQ.data || {};
@@ -365,7 +368,7 @@ function AdminLicensesPage() {
                           <div className="text-xs text-muted-foreground">Expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}</div>
                           <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                             <div>Email: <span className="font-mono text-foreground">{row.assigned_email || "—"}</span></div>
-                            <div>Device: <span className="font-mono text-foreground">{row.reserved_device_id || "—"}</span></div>
+                            <div>Device: <span className="font-mono text-foreground">{row.reserved_device_id || "—"}</span> · {graceView(row.last_seen_at, Date.now(), graceDaysFor(row.product_id))}</div>
                           </div>
                         </div>
                         <Button variant="outline" size="sm" onClick={() => copyKey(row.license_key)}><Copy className="h-3.5 w-3.5" /></Button>

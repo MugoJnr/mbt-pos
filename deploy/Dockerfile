@@ -3,6 +3,7 @@ WORKDIR /app
 COPY deploy/requirements-web.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
+COPY licensing/__init__.py licensing/device_transfer.py ./licensing/
 COPY web ./web
 RUN mkdir -p ./config
 COPY config/__init__.py config/deploy.py config/web_config.json ./config/

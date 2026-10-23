@@ -608,27 +608,62 @@ class CloudLicenseServer:
         self._log_history(license_id, 'renewed', actor, {'days': days, 'new_expiry': new_expiry.isoformat()})
         return True
 
-    def transfer_device(self, license_id: str, old_device_id: str, new_device_id: str, actor: str | None = None) -> tuple[bool, str]:
+    def transfer_device(self, license_id: str, old_device_id: str, new_device_id: str, actor: str | None = None) -> tuple[bool, str, bool]:
         from urllib.parse import quote
+        from licensing.device_transfer import classify_device_transfer
+
+        active_rows = self._rows(
+            'license_activations',
+            f'license_id=eq.{license_id}&is_active=eq.true&select=device_id',
+        ) or []
+        active_ids = {str(row.get('device_id') or '') for row in active_rows}
+        ok, message, issue_revoke = classify_device_transfer(old_device_id, new_device_id, active_ids)
+        new_id = (new_device_id or '').strip()
+        if not ok:
+            return False, message, False
+        if not issue_revoke:
+            self._update('licenses', f'id=eq.{license_id}', {'reserved_device_id': new_id})
+            return True, message, False
+
+        old_id = (old_device_id or '').strip()
         self._update(
             'license_activations',
-            f'license_id=eq.{license_id}&device_id=eq.{quote(old_device_id, safe="")}',
+            f'license_id=eq.{license_id}&device_id=eq.{quote(old_id, safe="")}',
             {'is_active': False},
         )
-        token = generate_activation_token('', new_device_id)
-        # Need org_id for activation
+        token = generate_activation_token('', new_id)
         lic = self._rows('licenses', f'id=eq.{license_id}&select=org_id')
         org_id = (lic[0].get('org_id') if lic else '') or ''
         self._insert('license_activations', {
             'license_id': license_id,
-            'device_id': new_device_id,
+            'device_id': new_id,
             'org_id': org_id,
             'activation_token': token,
             'is_active': True,
         }, upsert=True, on_conflict='license_id,device_id')
+        self._update('licenses', f'id=eq.{license_id}', {'reserved_device_id': new_id})
         self._sync_activated_devices(license_id)
-        self._log_history(license_id, 'transferred', actor, {'from': old_device_id, 'to': new_device_id})
-        return True, 'Device transferred'
+        self._log_history(license_id, 'transferred', actor, {'from': old_id, 'to': new_id})
+        return True, message, True
+
+    def validate_account_device(self, email: str, device_id: str, product_id: str | None = None) -> tuple[int, dict]:
+        """Tell a signed-in computer whether it still holds this product."""
+        from licensing.device_transfer import classify_seat_validation, validation_http
+
+        pid = normalize_product_id(product_id) if product_id else None
+        seats = self.find_licenses_for_email(email, product_id=pid) if email else []
+        activations: dict[str, list[dict]] = {}
+        for seat in seats:
+            sid = str(seat.get("id") or "")
+            if not sid:
+                continue
+            activations[sid] = self._rows(
+                "license_activations",
+                f"license_id=eq.{sid}&select=device_id,is_active",
+            ) or []
+        aliases = self._expand_device_aliases([device_id])
+        outcome, message = classify_seat_validation(device_id, seats, activations, aliases)
+        return validation_http(outcome, message)
 
     def list_licenses(self, org_id: str) -> list[dict]:
         return self._rows('licenses', f'org_id=eq.{org_id}&select=*&order=created_at.desc')

@@ -1237,6 +1237,37 @@ def cloud_licenses_claim():
     return _inner()
 
 
+@web.route('/api/cloud/licenses/validate', methods=['POST'])
+def cloud_licenses_validate():
+    """Signed-in computer asks whether it still holds this product.
+
+    A moved, suspended, or revoked seat returns 403. No paid seat returns 200
+    so a free Pulse account is not locked. Missing this route used to let the
+    old computer refresh its offline grace forever.
+    """
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        device_id = (data.get('device_id') or '').strip()
+        product_id = (data.get('product_id') or data.get('product') or '').strip() or None
+        if not device_id:
+            return jsonify({'error': 'device_id required'}), 400
+        user = getattr(g, 'current_user', None) or {}
+        email = (user.get('email') or data.get('email') or '').strip()
+        if not email:
+            return jsonify({'error': 'Signed-in email required'}), 400
+        try:
+            from backend.cloud.license_server import get_license_server
+            status, body = get_license_server().validate_account_device(email, device_id, product_id)
+            return jsonify(body), status
+        except Exception as e:
+            return _cloud_exception(e)
+
+    return _inner()
+
+
 @web.route('/api/cloud/devices', methods=['GET'])
 def cloud_devices_list():
     from backend.app import token_required
