@@ -1,9 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
-import { Button, Card } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Button, Card, Input } from "@/components/ui-kit";
+import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 
 type SaleLine = {
+  id?: number;
+  returned_qty?: number;
   product_name?: string;
   sku?: string;
   product_sku?: string;
@@ -65,6 +69,13 @@ export function SaleReceiptDialog({
   currency?: string;
   onClose: () => void;
 }) {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const tokenRef = useRef("");
+  const [reason, setReason] = useState("");
+  const [qtyByLine, setQtyByLine] = useState<Record<number, string>>({});
+  const [returnMsg, setReturnMsg] = useState("");
+  const canReturn = ["admin", "superadmin", "manager"].includes(String(user?.role || "").toLowerCase());
   const detailQ = useQuery({
     queryKey: ["sale-detail", saleId],
     enabled: saleId != null,
@@ -169,6 +180,62 @@ export function SaleReceiptDialog({
                   })}
                 </div>
               )}
+              {canReturn && !voided ? (
+                <div className="border-t border-border px-5 py-4">
+                  <div className="text-sm font-semibold text-text">Return items</div>
+                  <p className="mt-1 text-xs text-text2">
+                    Enter a quantity only for the lines to return. A second save with the same request does not return them twice.
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {items.map((item) => {
+                      const lineId = Number(item.id || 0);
+                      const already = Number(item.returned_qty || 0);
+                      const left = Number(item.quantity || 0) - already;
+                      if (!lineId || left <= 0) return null;
+                      return (
+                        <label key={lineId} className="flex items-center justify-between gap-3 text-sm">
+                          <span className="text-text">{item.product_name} · {left} left</span>
+                          <Input
+                            className="w-24"
+                            value={qtyByLine[lineId] || ""}
+                            placeholder="0"
+                            onChange={(e) => setQtyByLine((prev) => ({ ...prev, [lineId]: e.target.value }))}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <Input className="mt-3" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Return reason" />
+                  <Button
+                    className="mt-3"
+                    onClick={async () => {
+                      setReturnMsg("");
+                      if (!tokenRef.current) tokenRef.current = crypto.randomUUID();
+                      const lines = Object.entries(qtyByLine)
+                        .map(([id, qty]) => ({ sale_item_id: Number(id), quantity: Number(qty) }))
+                        .filter((row) => row.quantity > 0);
+                      const res = await POST<any>(`/sales/${saleId}/return`, {
+                        items: lines,
+                        reason,
+                        refund_method: "cash",
+                        client_token: tokenRef.current,
+                      });
+                      if (res?.success) {
+                        tokenRef.current = "";
+                        setReason("");
+                        setQtyByLine({});
+                        setReturnMsg(res.duplicate ? "That return was already saved." : "Return saved.");
+                        await qc.invalidateQueries({ queryKey: ["sale-detail", saleId] });
+                        return;
+                      }
+                      setReturnMsg(res?.error || "Could not save the return.");
+                    }}
+                  >
+                    Save return
+                  </Button>
+                  {returnMsg ? <div className="mt-2 text-sm text-text2">{returnMsg}</div> : null}
+                </div>
+              ) : null}
               {sale.debt ? (
                 <div className="border-t border-border px-5 py-4 text-sm text-text2">
                   Linked debt: {sale.debt.invoice_number || "—"} · {sale.debt.status || "—"} · balance{" "}

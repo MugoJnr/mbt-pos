@@ -92,7 +92,6 @@ const PAY_METHODS = [
   { k: "Split", i: SplitSquareVertical, accent: "gold" as const, enabled: true },
   { k: "Credit", i: Wallet, accent: "gold" as const, enabled: true },
   { k: "Part Pay", i: Receipt, accent: "gold" as const, enabled: true },
-  /** Future-ready stub — not backed by checkout API yet */
   { k: "Gift Card", i: Gift, accent: "muted" as const, enabled: false },
 ];
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000] as const;
@@ -786,7 +785,7 @@ function POS() {
                     key={m.k}
                     type="button"
                     disabled={!m.enabled}
-                    title={m.enabled ? m.k : "Gift Card is not available yet"}
+                    title={m.enabled ? m.k : "Gift cards are not available. This button does not take payment."}
                     onClick={() => m.enabled && setPayment(m.k)}
                     className={cn(
                       "h-8 rounded-lg border text-[10px] font-bold inline-flex items-center justify-center gap-1 px-1 transition-ui",
@@ -796,7 +795,7 @@ function POS() {
                     )}
                   >
                     <Icon className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{m.k === "Gift Card" ? "Gift" : m.k}</span>
+                    <span className="truncate">{m.k === "Gift Card" ? "No gift card" : m.k}</span>
                   </button>
                 );
               })}

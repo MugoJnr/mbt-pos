@@ -21,7 +21,13 @@ function Users() {
   const qc = useQueryClient();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [pwMsg, setPwMsg] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newRole, setNewRole] = useState("cashier");
+  const [userMsg, setUserMsg] = useState("");
   const usersQ = useQuery({
     queryKey: ["users"],
     queryFn: () => GET<any[]>("/users"),
@@ -44,7 +50,7 @@ function Users() {
       <PageHeader
         eyebrow="Admin"
         title="Users & Access"
-        description="Staff accounts and roles from the POS database. Create or edit users from the desktop app when needed."
+        description="Change your own password here. An admin can add a staff account. Ending a till sign-in asks that till to return to the login screen."
       />
 
       <Card className="mb-4">
@@ -65,6 +71,13 @@ function Users() {
               placeholder="New password"
               className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text"
             />
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm new password"
+              className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text"
+            />
           </div>
           <Button
             onClick={async () => {
@@ -72,11 +85,13 @@ function Users() {
               const res = await POST<any>("/account/password", {
                 current_password: currentPassword,
                 new_password: newPassword,
+                confirm_password: confirmPassword,
               });
               if (res?.success) {
                 setPwMsg("Password changed.");
                 setCurrentPassword("");
                 setNewPassword("");
+                setConfirmPassword("");
               } else {
                 setPwMsg(res?.error || "Could not change password");
               }
@@ -85,6 +100,45 @@ function Users() {
             Save password
           </Button>
           {pwMsg ? <div className="text-sm text-text2">{pwMsg}</div> : null}
+        </div>
+      </Card>
+
+      <Card className="mb-4">
+        <div className="p-4 space-y-3">
+          <div className="text-sm font-semibold text-text">Add a staff account</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Full name" className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text" />
+            <input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="Username" className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text" />
+            <input type="password" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} placeholder="Password" className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text" />
+            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} className="h-11 rounded-lg border border-border bg-input px-3 text-sm text-text">
+              <option value="cashier">Cashier</option>
+              <option value="manager">Manager</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+          <Button
+            onClick={async () => {
+              setUserMsg("");
+              const res = await POST<any>("/users", {
+                full_name: newName,
+                username: newUsername,
+                password: newUserPassword,
+                role: newRole,
+              });
+              if (res?.success) {
+                setUserMsg("Account created.");
+                setNewName("");
+                setNewUsername("");
+                setNewUserPassword("");
+                qc.invalidateQueries({ queryKey: ["users"] });
+              } else {
+                setUserMsg(res?.error || "Could not create that account.");
+              }
+            }}
+          >
+            Create account
+          </Button>
+          {userMsg ? <div className="text-sm text-text2">{userMsg}</div> : null}
         </div>
       </Card>
 
@@ -117,7 +171,8 @@ function Users() {
                         variant="ghost"
                         disabled={s.state === "pending"}
                         onClick={async () => {
-                          await POST(`/till/signins/${s.id}/end`);
+                          const res = await POST<any>(`/till/signins/${s.id}/end`);
+                          if (res?.error) setUserMsg(res.error);
                           qc.invalidateQueries({ queryKey: ["till-signins"] });
                         }}
                       >
@@ -148,7 +203,8 @@ function Users() {
                     <Button
                       variant="ghost"
                       onClick={async () => {
-                        await POST(`/sessions/${s.id}/revoke`);
+                        const res = await POST<any>(`/sessions/${s.id}/revoke`);
+                        if (res?.error) setUserMsg(res.error);
                         qc.invalidateQueries({ queryKey: ["sessions"] });
                       }}
                     >

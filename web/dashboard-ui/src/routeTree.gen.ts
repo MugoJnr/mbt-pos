@@ -21,6 +21,7 @@ import { Route as LiveRouteImport } from './routes/live'
 import { Route as LicenseRouteImport } from './routes/license'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as HealthRouteImport } from './routes/health'
+import { Route as FinanceRouteImport } from './routes/finance'
 import { Route as DiagnosticsRouteImport } from './routes/diagnostics'
 import { Route as DebtRouteImport } from './routes/debt'
 import { Route as ConsumptionRouteImport } from './routes/consumption'
@@ -90,6 +91,11 @@ const HealthRoute = HealthRouteImport.update({
   path: '/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FinanceRoute = FinanceRouteImport.update({
+  id: '/finance',
+  path: '/finance',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DiagnosticsRoute = DiagnosticsRouteImport.update({
   id: '/diagnostics',
   path: '/diagnostics',
@@ -140,6 +146,7 @@ export interface FileRoutesByFullPath {
   '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
@@ -162,6 +169,7 @@ export interface FileRoutesByTo {
   '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
@@ -185,6 +193,7 @@ export interface FileRoutesById {
   '/consumption': typeof ConsumptionRoute
   '/debt': typeof DebtRoute
   '/diagnostics': typeof DiagnosticsRoute
+  '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
   '/license': typeof LicenseRoute
@@ -209,6 +218,7 @@ export interface FileRouteTypes {
     | '/consumption'
     | '/debt'
     | '/diagnostics'
+    | '/finance'
     | '/health'
     | '/inventory'
     | '/license'
@@ -231,6 +241,7 @@ export interface FileRouteTypes {
     | '/consumption'
     | '/debt'
     | '/diagnostics'
+    | '/finance'
     | '/health'
     | '/inventory'
     | '/license'
@@ -253,6 +264,7 @@ export interface FileRouteTypes {
     | '/consumption'
     | '/debt'
     | '/diagnostics'
+    | '/finance'
     | '/health'
     | '/inventory'
     | '/license'
@@ -276,6 +288,7 @@ export interface RootRouteChildren {
   ConsumptionRoute: typeof ConsumptionRoute
   DebtRoute: typeof DebtRoute
   DiagnosticsRoute: typeof DiagnosticsRoute
+  FinanceRoute: typeof FinanceRoute
   HealthRoute: typeof HealthRoute
   InventoryRoute: typeof InventoryRoute
   LicenseRoute: typeof LicenseRoute
@@ -376,6 +389,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/finance': {
+      id: '/finance'
+      path: '/finance'
+      fullPath: '/finance'
+      preLoaderRoute: typeof FinanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/diagnostics': {
       id: '/diagnostics'
       path: '/diagnostics'
@@ -444,6 +464,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConsumptionRoute: ConsumptionRoute,
   DebtRoute: DebtRoute,
   DiagnosticsRoute: DiagnosticsRoute,
+  FinanceRoute: FinanceRoute,
   HealthRoute: HealthRoute,
   InventoryRoute: InventoryRoute,
   LicenseRoute: LicenseRoute,

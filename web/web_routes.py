@@ -3342,6 +3342,7 @@ def review_stock_adjustment_request(request_id):
         data = request.json or {}
         result = api.review_stock_adjustment(
             request_id, data.get('decision') or '', data.get('note') or '',
+            pin=str(data.get('pin') or ''),
         )
         code = 200 if result.get('success') else 400
         if 'Super-Admin' in (result.get('error') or ''):
@@ -4048,6 +4049,7 @@ def _review_approval(aid, action):
         client._username = user.get('username') or user.get('full_name') or ''
         result = client.execute_approval(
             aid, action, pin=str(data.get('pin') or ''), note=note,
+            confirm_credit_payments=bool(data.get('confirm_credit_payments')),
         )
         if result.get('success'):
             _push_notification(
@@ -5464,4 +5466,117 @@ def license_status():
                 'version': ver.get('version'),
             })
         return jsonify(info)
+    return _inner()
+
+
+def _finance_api():
+    from backend.app import g
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = (user.get('role') or '').lower()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or ''
+    return api
+
+
+def _finance_json(result, ok_status=200):
+    from flask import jsonify
+    if isinstance(result, dict) and result.get('error') and not result.get('success'):
+        code = 403 if 'permission' in str(result.get('error')).lower() else 400
+        return jsonify(result), code
+    return jsonify(result), ok_status
+
+
+@web.route('/api/finance/summary', methods=['GET'])
+def finance_summary_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _finance_api()
+        summary = api.accounting_dashboard()
+        if isinstance(summary, dict) and summary.get('error'):
+            return _finance_json(summary)
+        return _finance_json({
+            'summary': summary,
+            'cash': api.accounting_cash_position(),
+            'currency': api.accounting_currency(),
+        })
+
+    return _inner()
+
+
+@web.route('/api/finance/expenses', methods=['GET', 'POST'])
+def finance_expenses_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _finance_api()
+        if request.method == 'GET':
+            return _finance_json(api.accounting_expenses(
+                request.args.get('start'), request.args.get('end'),
+            ))
+        result = api.accounting_create_expense(request.json or {})
+        return _finance_json(result, 201 if result.get('success') else 400)
+
+    return _inner()
+
+
+@web.route('/api/finance/expenses/<int:expense_id>/reverse', methods=['POST'])
+def finance_reverse_expense_http(expense_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _finance_api().accounting_reverse_expense(
+            expense_id, str(data.get('reason') or ''),
+        )
+        return _finance_json(result)
+
+    return _inner()
+
+
+@web.route('/api/finance/journals', methods=['GET', 'POST'])
+def finance_journals_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _finance_api()
+        if request.method == 'GET':
+            return _finance_json(api.accounting_journals(
+                request.args.get('start'), request.args.get('end'),
+            ))
+        result = api.accounting_post_manual(request.json or {})
+        return _finance_json(result, 201 if result.get('success') else 400)
+
+    return _inner()
+
+
+@web.route('/api/finance/reports/trial-balance', methods=['GET'])
+def finance_trial_balance_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        return _finance_json(_finance_api().accounting_trial_balance(
+            request.args.get('as_of'), request.args.get('start'),
+        ))
+
+    return _inner()
+
+
+@web.route('/api/finance/reports/pnl', methods=['GET'])
+def finance_pnl_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        return _finance_json(_finance_api().accounting_pnl(
+            request.args.get('start'), request.args.get('end'),
+        ))
+
     return _inner()

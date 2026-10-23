@@ -133,7 +133,7 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="A void or stock approval runs that action once after the Super-Admin PIN is verified. Rejected and expired requests do not change the sale or the stock."
+        description="A void or stock approval runs that action once after the Super-Admin PIN is verified. Refund, discount, expense, credit, and price-override requests only record the decision. Rejected and expired requests do not change the sale or the stock."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">

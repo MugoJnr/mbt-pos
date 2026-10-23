@@ -1,8 +1,8 @@
 {
-    "version": "3.1.65",
-    "build": "RC-2026-10-23-v3.1.65",
+    "version": "3.1.66",
+    "build": "RC-2026-10-23-v3.1.66",
     "released": "2026-10-23",
-    "release_notes": "Internal consumption can be recorded for several products at once from the till and the web dashboard. A repeated save does not deduct stock twice, and voiding a record restores both stock and its cost layers.",
-    "checksum_sha256": "188b822a62388f9dab1825d8bc83f56e88dbbb0b2ba71f133b5b6506fbcf8e07",
+    "release_notes": "The web dashboard can change a password, set the Super-Admin PIN, record finance, return a sale, and end a till sign-in. A stock reduction needs the PIN, and a credit sale that already has payments needs an explicit superadmin confirmation before it can be voided.",
+    "checksum_sha256": "1103d84174cde79b532ba02106dbb535c2b5d76c6e948bf9aedd2c4c1fa79d2a",
     "download_url": ""
 }

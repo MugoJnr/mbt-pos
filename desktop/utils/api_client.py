@@ -28,30 +28,19 @@ _APPROVAL_CLAIM_SECONDS = 45
 
 
 def _pin_failures_blocked(user_id) -> tuple[bool, int]:
-    """Process-local PIN lockout for one account. A till runs one web worker."""
-    now = datetime.now().timestamp()
-    key = str(user_id or 0)
-    with _PIN_FAILS_LOCK:
-        attempts = [ts for ts in _PIN_FAILS.get(key, []) if now - ts < _PIN_WINDOW_SECONDS]
-        _PIN_FAILS[key] = attempts
-        if len(attempts) >= _PIN_MAX_FAILURES:
-            retry_after = max(1, int(_PIN_WINDOW_SECONDS - (now - attempts[0])))
-            return True, retry_after
-    return False, 0
+    """Shared PIN lockout stored in the shop database."""
+    from desktop.utils.account_sessions import pin_blocked
+    return pin_blocked(user_id)
 
 
 def _pin_failure_record(user_id) -> None:
-    now = datetime.now().timestamp()
-    key = str(user_id or 0)
-    with _PIN_FAILS_LOCK:
-        attempts = [ts for ts in _PIN_FAILS.get(key, []) if now - ts < _PIN_WINDOW_SECONDS]
-        attempts.append(now)
-        _PIN_FAILS[key] = attempts
+    from desktop.utils.account_sessions import pin_record
+    pin_record(user_id)
 
 
 def _pin_failures_clear(user_id) -> None:
-    with _PIN_FAILS_LOCK:
-        _PIN_FAILS.pop(str(user_id or 0), None)
+    from desktop.utils.account_sessions import pin_clear
+    pin_clear(user_id)
 
 
 def _request_payload_hash(payload: dict) -> str:
@@ -1326,8 +1315,17 @@ class APIClient:
             }, SECRET_KEY, algorithm='HS256')
 
             perms = json.loads(user.get('tab_permissions') or '[]')
+            till_session_id = None
+            try:
+                from desktop.utils.account_sessions import open_till_session
+                till_session_id = open_till_session(db, user)
+                db.commit()
+            except Exception:
+                logger.exception('till session')
+            self._till_session_id = till_session_id
             result = {
                 'token': token,
+                'till_session_id': till_session_id,
                 'user': {
                     'id':              user['id'],
                     'username':        user['username'],
@@ -1344,6 +1342,82 @@ class APIClient:
             return result
         finally:
             db.close()
+
+    def poll_till_logout(self) -> bool:
+        """True when the dashboard has ended this till sign-in."""
+        sid = getattr(self, '_till_session_id', None)
+        if not sid:
+            return False
+        db = _db()
+        try:
+            from desktop.utils.account_sessions import take_till_end
+            ended = take_till_end(db, int(sid))
+            if ended:
+                db.commit()
+            return ended
+        finally:
+            db.close()
+
+    def change_own_password(self, current_password: str, new_password: str,
+                            confirm_password: str = '') -> dict:
+        """Change the signed-in account. Requires the current password."""
+        current_password = '' if current_password is None else str(current_password)
+        new_password = '' if new_password is None else str(new_password)
+        confirm_password = '' if confirm_password is None else str(confirm_password)
+        if confirm_password and confirm_password != new_password:
+            return {'error': 'New password and confirmation do not match.'}
+        if len(new_password.strip()) < 6 or new_password != new_password.strip():
+            return {'error': 'New password must be at least 6 characters.'}
+        if not self._user_id:
+            return {'error': 'Sign in before changing the password.', 'status': 401}
+        db = _db()
+        try:
+            user = db.execute(
+                "SELECT id, password_hash FROM users WHERE id=? AND is_active=1",
+                (self._user_id,),
+            ).fetchone()
+            if not user or not _check_pw(current_password, user['password_hash']):
+                return {'error': 'Current password is incorrect.'}
+            db.execute(
+                "UPDATE users SET password_hash=? WHERE id=?",
+                (_hash_pw(new_password), user['id']),
+            )
+            db.commit()
+            _audit(self._user_id, self._username, 'PASSWORD_CHANGED', 'users', 'own account')
+            return {'success': True}
+        finally:
+            db.close()
+
+    def change_superadmin_pin(self, current_pin: str, new_pin: str, confirm_pin: str) -> dict:
+        """Set or change the shop Super-Admin PIN. Superadmin only."""
+        if (self._role or '').lower() != 'superadmin':
+            return {'error': 'Only the superadmin can change the Super-Admin PIN.', 'status': 403}
+        new_pin = '' if new_pin is None else str(new_pin).strip()
+        confirm_pin = '' if confirm_pin is None else str(confirm_pin).strip()
+        current_pin = '' if current_pin is None else str(current_pin).strip()
+        if len(new_pin) < 6 or new_pin != confirm_pin:
+            return {'error': 'Enter a new PIN of at least 6 characters and confirm it.'}
+        if not new_pin.isdigit():
+            return {'error': 'The Super-Admin PIN must be digits only.'}
+        from desktop.utils.security import _pin_hash, set_superadmin_pin
+        cfg = self.get_settings() or {}
+        stored = str(cfg.get('superadmin_pin_hash') or '')
+        if stored:
+            blocked, retry_after = _pin_failures_blocked(self._user_id)
+            if blocked:
+                return {
+                    'error': 'Too many PIN attempts. Wait and try again.',
+                    'status': 429,
+                    'retry_after': retry_after,
+                }
+            if not current_pin or _pin_hash(current_pin) != stored:
+                _pin_failure_record(self._user_id)
+                return {'error': 'Current Super-Admin PIN is incorrect.', 'status': 403}
+            _pin_failures_clear(self._user_id)
+        if not set_superadmin_pin(new_pin, self):
+            return {'error': 'Could not save the Super-Admin PIN.'}
+        _audit(self._user_id, self._username, 'SUPERADMIN_PIN_CHANGED', 'security', 'pin updated')
+        return {'success': True}
 
     def reset_forgotten_admin_password(self, pin: str, target_username: str, new_password: str) -> dict:
         """Self-service emergency reset for admin/superadmin accounts using Super-Admin PIN."""
@@ -2367,8 +2441,14 @@ class APIClient:
                 (number, row['id'], row['name'], float(row['stock'] or 0),
                  requested_qty, reason, 'pending', self._user_id, self._username or self._role),
             )
+            request_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             db.commit()
-            return {'success': True, 'request_number': number, 'status': 'pending'}
+            return {
+                'success': True,
+                'id': request_id,
+                'request_number': number,
+                'status': 'pending',
+            }
         finally:
             db.close()
 
@@ -2465,7 +2545,8 @@ class APIClient:
         finally:
             db.close()
 
-    def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '') -> dict:
+    def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '',
+                         confirm_credit_payments: bool = False) -> dict:
         """Run a pending void or stock approval once. Reject and escalate do not."""
         action = (action or '').strip().lower()
         if action not in ('approve', 'reject', 'escalate'):
@@ -2475,6 +2556,20 @@ class APIClient:
         db = _db()
         try:
             self._ensure_approval_table(db)
+            preview = db.execute(
+                "SELECT type, status FROM cc_approvals WHERE id=?",
+                (int(approval_id),),
+            ).fetchone()
+            if action == 'approve' and preview:
+                preview_type = (preview['type'] or '').lower()
+                preview_status = (preview['status'] or '').lower()
+                if (
+                    preview_type in ('void', 'stock_adjust')
+                    and preview_status in ('pending', 'escalated', 'executing')
+                ):
+                    pin_error = self._approval_pin_error(db, pin, int(approval_id))
+                    if pin_error:
+                        return pin_error
             db.execute('BEGIN IMMEDIATE')
             row = db.execute(
                 "SELECT * FROM cc_approvals WHERE id=?", (int(approval_id),)
@@ -2529,10 +2624,6 @@ class APIClient:
                 if decided.rowcount != 1:
                     return {'error': 'Approval is already being processed.', 'status': 409}
                 return {'success': True, 'status': 'approved', 'executed': False}
-            pin_error = self._approval_pin_error(db, pin, int(approval_id))
-            if pin_error:
-                db.rollback()
-                return pin_error
             if atype == 'stock_adjust' and (self._role or '').lower() != 'superadmin':
                 db.rollback()
                 return {'error': 'Only Super-Admin can apply a stock adjustment.', 'status': 403}
@@ -2581,6 +2672,8 @@ class APIClient:
             meta = {}
         result = self._run_approved_action(
             atype, meta, note or row['details'] or '', pin, int(approval_id),
+            confirm_credit_payments=bool(confirm_credit_payments)
+            and (self._role or '').lower() == 'superadmin',
         )
         finished = self._finish_approval(int(approval_id), result)
         if finished.get('success'):
@@ -2669,7 +2762,7 @@ class APIClient:
         return None
 
     def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '',
-                             approval_id: int = 0) -> dict:
+                             approval_id: int = 0, confirm_credit_payments: bool = False) -> dict:
         if atype == 'void':
             try:
                 sale_id = int(meta.get('sale_id') or 0)
@@ -2677,7 +2770,19 @@ class APIClient:
                 return {'error': 'The void request has no sale.'}
             if sale_id <= 0:
                 return {'error': 'The void request has no sale.'}
-            outcome = self.void_sale(sale_id, note or meta.get('reason') or 'Approved void')
+            outcome = self.void_sale(
+                sale_id, note or meta.get('reason') or 'Approved void',
+                force_with_payments=bool(confirm_credit_payments),
+            )
+            if outcome.get('error') == 'credit_payments_exist':
+                return {
+                    'error': outcome.get('message') or (
+                        'This credit sale already has payments. '
+                        'A superadmin must confirm before it can be voided.'
+                    ),
+                    'credit_payments_exist': True,
+                    'status': 409,
+                }
             if outcome.get('success'):
                 return outcome
             if 'already voided' in str(outcome.get('error') or '').lower():
@@ -2738,7 +2843,8 @@ class APIClient:
         finally:
             db.close()
 
-    def review_stock_adjustment(self, request_id: int, decision: str, note: str = '') -> dict:
+    def review_stock_adjustment(self, request_id: int, decision: str, note: str = '',
+                                pin: str = '') -> dict:
         """Administrator approves or rejects. Approval is the only stock write."""
         if (self._role or '').lower() != 'superadmin':
             return {'error': 'Only Super-Admin can decide a stock adjustment.'}
@@ -2770,6 +2876,13 @@ class APIClient:
                 return {'error': 'Enter a valid stock quantity.'}
             if not math.isfinite(new_qty) or not 0 <= new_qty <= 999999:
                 return {'error': 'Stock quantity is outside the allowed range.'}
+            preview = db.execute(
+                "SELECT stock FROM products WHERE id=?", (int(req['product_id']),)
+            ).fetchone()
+            if preview and new_qty < round(float(preview['stock'] or 0), 4):
+                pin_error = self._approval_pin_error(db, pin, int(req['id']))
+                if pin_error:
+                    return pin_error
             db.execute("BEGIN IMMEDIATE")
             fresh = db.execute(
                 "SELECT * FROM stock_adjustment_requests WHERE id=?", (req['id'],)

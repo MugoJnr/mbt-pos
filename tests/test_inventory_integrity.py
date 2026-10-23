@@ -49,6 +49,11 @@ class InventoryIntegrityTests(unittest.TestCase):
             "INSERT INTO suppliers (name, phone) VALUES (?,?)",
             ('Audit Supplies', '0700'),
         )
+        from desktop.utils.security import _pin_hash
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('superadmin_pin_hash', ?)",
+            (_pin_hash('246810'),),
+        )
         db.commit()
         db.close()
 
@@ -131,7 +136,7 @@ class InventoryIntegrityTests(unittest.TestCase):
 
         self.api._role = 'superadmin'
         self.api._username = 'admin'
-        approved = self.api.review_stock_adjustment(1, 'approved')
+        approved = self.api.review_stock_adjustment(1, 'approved', pin='246810')
         self.assertTrue(approved.get('success'), approved)
         self.assertEqual(approved.get('new_stock'), 7)
         self.assertEqual(self._stock(1), 7)
@@ -150,7 +155,7 @@ class InventoryIntegrityTests(unittest.TestCase):
 
         def approve():
             barrier.wait(timeout=5)
-            results.append(self.api.review_stock_adjustment(1, 'approved'))
+            results.append(self.api.review_stock_adjustment(1, 'approved', pin='246810'))
 
         threads = [threading.Thread(target=approve) for _ in range(2)]
         for thread in threads:
@@ -173,7 +178,7 @@ class InventoryIntegrityTests(unittest.TestCase):
             raise RuntimeError('journal down')
 
         with patch('desktop.utils.accounting_hooks.post_stock_adjust_journal', side_effect=boom):
-            failed = self.api.review_stock_adjustment(1, 'approved')
+            failed = self.api.review_stock_adjustment(1, 'approved', pin='246810')
         self.assertIn('error', failed)
         self.assertEqual(self._stock(1), 10)
         db = self.ac._db()

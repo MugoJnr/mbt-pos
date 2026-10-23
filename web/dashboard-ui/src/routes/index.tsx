@@ -112,6 +112,7 @@ function Dashboard() {
   const [openSaleId, setOpenSaleId] = useState<number | null>(null);
   const [voidReason, setVoidReason] = useState("");
   const [voidMsg, setVoidMsg] = useState("");
+  const [confirmCreditVoid, setConfirmCreditVoid] = useState(false);
   const [prefs, setPrefs] = useState<DashboardPrefs>(() => loadPrefs());
   useEffect(() => {
     const onChange = (e: Event) => {
@@ -187,7 +188,14 @@ function Dashboard() {
     mutationFn: async () => {
       const reason = voidReason.trim();
       if (!reason) throw new Error("Enter a reason before voiding this sale.");
-      const res = await POST<any>(`/sales/${voidFor.id}/void`, { reason });
+      const res = await POST<any>(`/sales/${voidFor.id}/void`, {
+        reason,
+        confirm_credit_payments: confirmCreditVoid,
+      });
+      if (res?.error === "credit_payments_exist" || res?.credit_payments_exist) {
+        setConfirmCreditVoid(true);
+        throw new Error(res?.message || "This credit sale already has payments. Confirm to void it.");
+      }
       if (!res || res.error) throw new Error(res?.message || res?.error || "Could not void that sale.");
       return res;
     },
@@ -810,7 +818,11 @@ function Dashboard() {
                   disabled={voidSale.isPending}
                   onClick={() => voidSale.mutate()}
                 >
-                  {voidSale.isPending ? "Voiding…" : "Void this sale"}
+                  {voidSale.isPending
+                    ? "Voiding…"
+                    : confirmCreditVoid && role === "superadmin"
+                      ? "Confirm void with payments"
+                      : "Void this sale"}
                 </Button>
                 <Button variant="secondary" size="touch" onClick={() => setVoidFor(null)}>
                   Cancel

@@ -3,8 +3,8 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ShieldCheck, Lock, KeyRound, ScrollText } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Card, Input, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { Badge, Button, Card, Input, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
+import { GET, POST } from "@/lib/api";
 
 export const Route = createFileRoute("/security")({
   component: Security,
@@ -12,6 +12,10 @@ export const Route = createFileRoute("/security")({
 
 function Security() {
   const [q, setQ] = useState("");
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [pinMsg, setPinMsg] = useState("");
   const settingsQ = useQuery({
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
@@ -51,6 +55,40 @@ function Security() {
         description="Policy settings from the POS database and live audit trail."
         icon={<ShieldCheck className="h-5 w-5 text-gold" />}
       />
+      <Card className="mb-4 p-4">
+        <div className="text-sm font-semibold text-text">Super-Admin PIN</div>
+        <p className="mt-1 text-xs text-text2">
+          This is not the login password. Leave the current PIN blank only when no PIN has been set.
+          A stock reduction and a void use this PIN.
+        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <Input type="password" value={currentPin} onChange={(e) => setCurrentPin(e.target.value)} placeholder="Current PIN" />
+          <Input type="password" value={newPin} onChange={(e) => setNewPin(e.target.value)} placeholder="New PIN, 6 digits" />
+          <Input type="password" value={confirmPin} onChange={(e) => setConfirmPin(e.target.value)} placeholder="Confirm PIN" />
+        </div>
+        <Button
+          className="mt-3"
+          onClick={async () => {
+            setPinMsg("");
+            const res = await POST<any>("/account/pin", {
+              current_pin: currentPin,
+              new_pin: newPin,
+              confirm_pin: confirmPin,
+            });
+            if (res?.success) {
+              setPinMsg("Super-Admin PIN saved.");
+              setCurrentPin("");
+              setNewPin("");
+              setConfirmPin("");
+            } else {
+              setPinMsg(res?.error || "Could not save the PIN.");
+            }
+          }}
+        >
+          Save PIN
+        </Button>
+        {pinMsg ? <div className="mt-2 text-sm text-text2">{pinMsg}</div> : null}
+      </Card>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         {[
           {
@@ -114,7 +152,7 @@ function Security() {
           <ul className="space-y-2 text-sm text-text2">
             <li>Audit access requires manager or admin role.</li>
             <li>Privileged actions (voids, settings, user changes) appear below.</li>
-            <li>Force session lock and PIN rotation remain desktop Superadmin tools.</li>
+            <li>The Super-Admin PIN can be changed on this page. It is not the login password.</li>
           </ul>
         </Card>
       </div>

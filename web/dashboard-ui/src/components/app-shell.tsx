@@ -57,6 +57,7 @@ const NAV: NavItem[] = [
   { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations" },
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations" },
   { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations" },
+  { to: "/finance", label: "Finance", icon: Banknote, group: "Operations" },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Command" },
   { to: "/health", label: "System Health", icon: HeartPulse, group: "Command" },
   { to: "/backup", label: "Backup", icon: HardDrive, group: "Command" },
@@ -134,7 +135,13 @@ function SidebarContent({
         {groups.map((group) => {
           const roleKey = String(user?.role || "").toLowerCase();
           const canConsume = roleKey === "manager" || roleKey === "admin" || roleKey === "superadmin";
-          const items = NAV.filter((n) => n.group === group && (n.to !== "/consumption" || canConsume));
+          const canFinance = canConsume || roleKey === "cashier";
+          const items = NAV.filter((n) => {
+            if (n.group !== group) return false;
+            if (n.to === "/consumption") return canConsume;
+            if (n.to === "/finance") return canFinance;
+            return true;
+          });
           if (!items.length) return null;
           return (
             <div key={group} className="mb-3">

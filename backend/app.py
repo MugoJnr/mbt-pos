@@ -775,7 +775,13 @@ def token_required(f):
             user = db.execute("SELECT * FROM users WHERE id=? AND is_active=1",
                               (data['user_id'],)).fetchone()
             if user:
+                sid = str(data.get('sid') or '')
+                if sid:
+                    from desktop.utils.account_sessions import web_session_active
+                    if not web_session_active(db, sid):
+                        return jsonify({'error': 'This sign-in has ended. Sign in again.'}), 401
                 g.current_user = dict(user)
+                g.session_id = sid
                 g.auth_provider = 'local'
                 return f(*args, **kwargs)
         except Exception:
@@ -896,12 +902,15 @@ def login():
     else:
         db.execute("UPDATE users SET last_login=? WHERE id=?",
                    (datetime.now().isoformat(), user['id']))
+    from desktop.utils.account_sessions import open_web_session
+    sid = open_web_session(db, dict(user), request.remote_addr or '')
     db.commit()
 
     token = jwt.encode({
         'user_id': user['id'],
         'username': user['username'],
         'role': user['role'],
+        'sid': sid,
         'iat': int(time.time()),
         'exp': int(time.time()) + int(os.environ.get('MBT_JWT_TTL_SECONDS', '28800')),
     }, SECRET_KEY, algorithm='HS256')
@@ -923,6 +932,103 @@ def login():
 @token_required
 def me():
     return jsonify(g.current_user)
+
+
+def _account_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or ''
+    api._role = (user.get('role') or '').lower()
+    return api
+
+
+def _manage_users():
+    return _role_is('admin', 'superadmin', 'manager')
+
+
+@app.route('/api/account/password', methods=['POST'])
+@token_required
+def change_own_password_http():
+    data = request.json or {}
+    result = _account_api().change_own_password(
+        data.get('current_password') or '',
+        data.get('new_password') or '',
+        data.get('confirm_password') or '',
+    )
+    if result.get('success'):
+        keep = getattr(g, 'session_id', '') or ''
+        db = get_db()
+        from desktop.utils.account_sessions import revoke_other_web_sessions
+        revoke_other_web_sessions(db, g.current_user.get('id'), keep)
+        db.commit()
+        return jsonify(result)
+    code = int(result.get('status') or 400)
+    return jsonify(result), code
+
+
+@app.route('/api/account/pin', methods=['POST'])
+@token_required
+def change_superadmin_pin_http():
+    data = request.json or {}
+    result = _account_api().change_superadmin_pin(
+        data.get('current_pin') or '',
+        data.get('new_pin') or '',
+        data.get('confirm_pin') or '',
+    )
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
+
+
+@app.route('/api/sessions', methods=['GET'])
+@token_required
+def list_sessions_http():
+    if not _manage_users():
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.account_sessions import list_web_sessions
+    db = get_db()
+    return jsonify({'sessions': list_web_sessions(db)})
+
+
+@app.route('/api/sessions/<sid>/revoke', methods=['POST'])
+@token_required
+def revoke_session_http(sid):
+    if not _manage_users():
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.account_sessions import revoke_web_session
+    db = get_db()
+    result = revoke_web_session(db, sid)
+    if result.get('error'):
+        return jsonify(result), 404
+    db.commit()
+    log_action('SESSION_REVOKED', 'users', 'web session ended')
+    return jsonify(result)
+
+
+@app.route('/api/till/signins', methods=['GET'])
+@token_required
+def list_till_signins_http():
+    if not _manage_users():
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.account_sessions import list_till_sessions
+    db = get_db()
+    return jsonify({'signins': list_till_sessions(db)})
+
+
+@app.route('/api/till/signins/<int:session_id>/end', methods=['POST'])
+@token_required
+def end_till_signin_http(session_id):
+    if not _manage_users():
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.account_sessions import request_till_end
+    db = get_db()
+    result = request_till_end(db, session_id)
+    if result.get('error'):
+        return jsonify(result), 404
+    db.commit()
+    log_action('TILL_SIGNIN_END', 'users', f'session={session_id}')
+    return jsonify(result)
 
 
 # ── USERS ─────────────────────────────────────────────────────────────────────
@@ -949,19 +1055,28 @@ def create_user():
     err = _user_role_guard(new_role)
     if err:
         return err
-    pw_hash = hash_pw(data['password'])
+    username = (data.get('username') or '').strip()
+    password = '' if data.get('password') is None else str(data.get('password'))
+    if not username or len(password.strip()) < 6 or password != password.strip():
+        return jsonify({'error': 'Username and a password of at least 6 characters are required.'}), 400
+    pw_hash = hash_pw(password)
     db = get_db()
     raw_perms = data.get('tab_permissions')
     if raw_perms is None:
         perms = default_tab_permissions(new_role)
     else:
         perms = sanitize_tab_permissions(new_role, raw_perms)
-    db.execute("""INSERT INTO users (username, password_hash, role, full_name, email, tab_permissions)
-                  VALUES (?, ?, ?, ?, ?, ?)""",
-               (data['username'], pw_hash, new_role,
-                data.get('full_name'), data.get('email'), json.dumps(perms)))
-    db.commit()
-    log_action('CREATE_USER', 'admin', f"Created user: {data['username']} role={new_role}")
+    try:
+        db.execute("""INSERT INTO users (username, password_hash, role, full_name, email, tab_permissions)
+                      VALUES (?, ?, ?, ?, ?, ?)""",
+                   (username, pw_hash, new_role,
+                    data.get('full_name'), data.get('email'), json.dumps(perms)))
+        db.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({'error': 'That username already exists.'}), 400
+    except (KeyError, TypeError):
+        return jsonify({'error': 'Username and password are required.'}), 400
+    log_action('CREATE_USER', 'admin', f"Created user: {username} role={new_role}")
     # Flag suspicious privilege creation
     if new_role in ('superadmin', 'admin'):
         try:
@@ -1159,7 +1274,7 @@ def void_sale_http(sale_id):
         result = api.void_sale(
             int(sale_id),
             reason,
-            force_with_payments=bool(data.get('force_with_payments')),
+            force_with_payments=bool(data.get('confirm_credit_payments')) and role == 'superadmin',
         )
     except Exception as exc:
         return jsonify({'error': f'Could not void that sale. {exc}'}), 500

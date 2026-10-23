@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-10-23-v3.1.65"
-APP_VERSION   = "3.1.65"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-10-23-v3.1.66"
+APP_VERSION   = "3.1.66"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -746,6 +746,10 @@ class MainWindow(QMainWindow):
                 self._qa_dump_theme_evidence()
             except Exception as e:
                 log.warning('QA sync dump: %s', e)
+        self._till_end_timer = QTimer(self)
+        self._till_end_timer.setInterval(4000)
+        self._till_end_timer.timeout.connect(self._poll_till_end)
+        self._till_end_timer.start()
         QTimer.singleShot(120, self._open_first_tab)
         QTimer.singleShot(200, self._load_saved_theme)
         QTimer.singleShot(600, self._start_services)
@@ -1793,11 +1797,18 @@ class MainWindow(QMainWindow):
         un.setObjectName("sidebarUserName")
         ur = QLabel(u.get('role', '').upper())
         ur.setObjectName("sidebarUserRole")
+        mine = QPushButton("My password"); mine.setObjectName("logoutBtn")
+        mine.setCursor(Qt.PointingHandCursor)
+        change_password = getattr(self, '_change_my_password', None)
+        if change_password is not None:
+            mine.clicked.connect(change_password)
+        mine.setToolTip('Change the password for this account')
+        mine.setAccessibleName('Change my password')
         lo = QPushButton("Sign Out"); lo.setObjectName("logoutBtn")
         lo.setCursor(Qt.PointingHandCursor); lo.clicked.connect(self._logout)
         lo.setToolTip('Sign out')
         lo.setAccessibleName('Sign out')
-        ul.addWidget(un); ul.addWidget(ur); ul.addWidget(lo)
+        ul.addWidget(un); ul.addWidget(ur); ul.addWidget(mine); ul.addWidget(lo)
         sl.addWidget(uw)
         self._sidebar_user = uw
         self._sidebar_user_labels = (un, ur)
@@ -2963,6 +2974,53 @@ class MainWindow(QMainWindow):
         )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
+    def _change_my_password(self):
+        from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Change my password')
+        form = QFormLayout(dlg)
+        current = QLineEdit(); current.setEchoMode(QLineEdit.Password)
+        new = QLineEdit(); new.setEchoMode(QLineEdit.Password)
+        confirm = QLineEdit(); confirm.setEchoMode(QLineEdit.Password)
+        current.setPlaceholderText('Current password')
+        new.setPlaceholderText('New password, at least 6 characters')
+        confirm.setPlaceholderText('Confirm new password')
+        form.addRow('Current password', current)
+        form.addRow('New password', new)
+        form.addRow('Confirm', confirm)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        form.addRow(buttons)
+        buttons.rejected.connect(dlg.reject)
+
+        def _save():
+            result = self.api.change_own_password(current.text(), new.text(), confirm.text())
+            if result.get('success'):
+                QMessageBox.information(self, 'Password changed', 'Your password has been changed.')
+                dlg.accept()
+                return
+            QMessageBox.warning(self, 'Password not changed', result.get('error') or 'Could not change the password.')
+
+        buttons.accepted.connect(_save)
+        dlg.exec_()
+
+    def _poll_till_end(self):
+        if getattr(self, '_closing', False):
+            return
+        try:
+            ended = self.api.poll_till_logout()
+        except Exception:
+            return
+        if not ended:
+            return
+        timer = getattr(self, '_till_end_timer', None)
+        if timer is not None:
+            timer.stop()
+        QMessageBox.information(
+            self, 'Signed out',
+            'This till sign-in was ended from the dashboard.',
+        )
+        self._perform_logout(confirm=False)
+
     def _perform_logout(self, *, confirm: bool = True):
         if confirm:
             if QMessageBox.question(
