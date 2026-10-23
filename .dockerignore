@@ -40,7 +40,9 @@ web/**/*.tsx
 desktop/
 printing/
 diagnostics/
-licensing/
+licensing/*
+!licensing/__init__.py
+!licensing/device_transfer.py
 tests/
 docs/
 scripts/
