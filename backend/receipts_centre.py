@@ -28,6 +28,36 @@ def _day(expr: str, start: str, end: str) -> tuple[str, list]:
     return "1=1", []
 
 
+def _sale_history(db, tables: set[str], sale_id: int) -> list:
+    if not _has(tables, "sale_edits"):
+        return []
+    columns = {row[1] for row in db.execute("PRAGMA table_info(sale_edits)").fetchall()}
+    stamp = "created_at" if "created_at" in columns else "id"
+    return [
+        dict(row) for row in db.execute(
+            f"""SELECT edit_type, field_name, old_value, new_value, reason,
+                       edited_by_name, {stamp} AS at
+                FROM sale_edits WHERE sale_id=? ORDER BY id""",
+            (int(sale_id),),
+        ).fetchall()
+    ]
+
+
+def _receipt_audit(db, tables: set[str], reference: str) -> list:
+    if not reference or not _has(tables, "audit_log"):
+        return []
+    return [
+        dict(row) for row in db.execute(
+            """SELECT created_at, username, action, details
+               FROM audit_log
+               WHERE details LIKE ?
+                 AND action IN ('VOID_SALE','UNVOID_SALE','VOID_CONSUMPTION','UNVOID_CONSUMPTION')
+               ORDER BY id""",
+            (f"%{reference}%",),
+        ).fetchall()
+    ]
+
+
 def list_receipts(
     db,
     *,
@@ -57,8 +87,11 @@ def list_receipts(
     def keep(item: dict) -> bool:
         if kind and item["kind"] != kind:
             return False
-        if status and (item.get("status") or "").lower() != status:
-            return False
+        if status:
+            shown = (item.get("display_status") or item.get("status") or "").lower()
+            raw = (item.get("status") or "").lower()
+            if status not in (shown, raw):
+                return False
         if query:
             blob = " ".join(
                 str(item.get(key) or "")
@@ -82,6 +115,7 @@ def list_receipts(
             params,
         ).fetchall()
         for row in found:
+            raw_status = (row["status"] or "completed").lower()
             rows.append({
                 "kind": "sale",
                 "id": row["id"],
@@ -89,10 +123,22 @@ def list_receipts(
                 "at": row["created_at"],
                 "user": row["cashier_name"] or "",
                 "amount": row["total"],
-                "status": row["status"] or "completed",
+                "status": raw_status,
+                "display_status": "voided" if raw_status == "voided" else (
+                    "pending" if raw_status in ("pending", "held") else "active"
+                ),
                 "payment": row["payment_method"] or "",
                 "summary": row["products"] or "",
             })
+        if _has(tables, "sale_edits"):
+            restored = {
+                int(item[0]) for item in db.execute(
+                    "SELECT DISTINCT sale_id FROM sale_edits WHERE edit_type='UNVOID'"
+                ).fetchall()
+            }
+            for item in rows:
+                if item.get("kind") == "sale" and item["id"] in restored and item["status"] != "voided":
+                    item["display_status"] = "restored"
 
     if can_consumption and _has(tables, "stock_consumptions"):
         clause, params = _day("COALESCE(c.date, c.created_at)", start, end)
@@ -113,9 +159,23 @@ def list_receipts(
                 "user": row["created_by_name"] or "",
                 "amount": row["total_cost"],
                 "status": "voided" if int(row["voided"] or 0) else "recorded",
+                "display_status": "voided" if int(row["voided"] or 0) else "active",
                 "payment": "",
                 "summary": row["reason"] or "",
             })
+        if _has(tables, "stock_movements"):
+            restored_refs = {
+                item[0] for item in db.execute(
+                    "SELECT reference FROM stock_movements WHERE movement_type='INTERNAL_USE_UNVOID'"
+                ).fetchall()
+            }
+            for item in rows:
+                if (
+                    item.get("kind") == "consumption"
+                    and item.get("reference") in restored_refs
+                    and item.get("status") != "voided"
+                ):
+                    item["display_status"] = "restored"
 
     if can_inventory and _has(tables, "stock_receipts"):
         clause, params = _day("r.created_at", start, end)
@@ -288,6 +348,9 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
             "header": body,
             "lines": [dict(item) for item in items],
             "approvals": linked,
+            "history": _sale_history(db, tables, record_id) + _receipt_audit(
+                db, tables, sale["receipt_number"] or ""
+            ),
         }
 
     if kind == "consumption" and _has(tables, "stock_consumptions"):
@@ -313,6 +376,7 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
             "reference": row["reference_no"],
             "header": header,
             "lines": cleaned,
+            "history": _receipt_audit(db, tables, row["reference_no"] or ""),
         }
 
     if kind == "supplier" and _has(tables, "stock_receipts"):

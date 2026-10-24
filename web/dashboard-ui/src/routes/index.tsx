@@ -112,7 +112,6 @@ function Dashboard() {
   const [openSaleId, setOpenSaleId] = useState<number | null>(null);
   const [voidReason, setVoidReason] = useState("");
   const [voidMsg, setVoidMsg] = useState("");
-  const [confirmCreditVoid, setConfirmCreditVoid] = useState(false);
   const [prefs, setPrefs] = useState<DashboardPrefs>(() => loadPrefs());
   useEffect(() => {
     const onChange = (e: Event) => {
@@ -149,6 +148,7 @@ function Dashboard() {
   const rangeLabel = d === rangeEnd ? d : `${d} to ${rangeEnd}`;
   const role = String(user?.role || "").toLowerCase();
   const isAdmin = ["admin", "superadmin", "manager"].includes(role);
+  const canRequestVoid = ["cashier", "manager", "admin", "superadmin"].includes(role);
 
   const summaryQ = useQuery({
     queryKey: ["reports-summary", d, rangeEnd],
@@ -187,26 +187,21 @@ function Dashboard() {
   const voidSale = useMutation({
     mutationFn: async () => {
       const reason = voidReason.trim();
-      if (!reason) throw new Error("Enter a reason before voiding this sale.");
-      const res = await POST<any>(`/sales/${voidFor.id}/void`, {
-        reason,
-        confirm_credit_payments: confirmCreditVoid,
-      });
-      if (res?.error === "credit_payments_exist" || res?.credit_payments_exist) {
-        setConfirmCreditVoid(true);
-        throw new Error(res?.message || "This credit sale already has payments. Confirm to void it.");
-      }
-      if (!res || res.error) throw new Error(res?.message || res?.error || "Could not void that sale.");
+      if (!reason) throw new Error("Enter a reason before requesting this void.");
+      const res = await POST<any>(`/sales/${voidFor.id}/void`, { reason });
+      if (!res || res.error) throw new Error(res?.message || res?.error || "The void request was not sent.");
       return res;
     },
     onSuccess: async () => {
-      setVoidMsg("");
+      setVoidMsg(voidFor?.receipt_number
+        ? `${voidFor.receipt_number} was sent for approval. The sale is still completed.`
+        : "The void request was sent. The sale is still completed.");
       setVoidFor(null);
       setVoidReason("");
       await queryClient.invalidateQueries({ queryKey: ["sales-range"] });
-      await queryClient.invalidateQueries({ queryKey: ["reports-summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["approvals"] });
     },
-    onError: (err: Error) => setVoidMsg(err.message || "Could not void that sale."),
+    onError: (err: Error) => setVoidMsg(err.message || "The void request was not sent."),
   });
   const insightsQ = useQuery({
     queryKey: ["ai-insights-dash"],
@@ -799,10 +794,10 @@ function Dashboard() {
           {voidFor ? (
             <div className="mx-4 mt-3 rounded-lg border border-err/40 bg-err/10 p-3">
               <div className="text-sm font-semibold text-text">
-                Void {voidFor.receipt_number || voidFor.id}
+                Request void {voidFor.receipt_number || voidFor.id}
               </div>
               <p className="mt-1 text-xs text-text2">
-                This marks the sale voided and puts the stock back. It cannot be undone from this page.
+                This sends the sale to Approvals. It stays completed until a manager approves it with the Super-Admin PIN.
               </p>
               <Input
                 value={voidReason}
@@ -818,17 +813,16 @@ function Dashboard() {
                   disabled={voidSale.isPending}
                   onClick={() => voidSale.mutate()}
                 >
-                  {voidSale.isPending
-                    ? "Voiding…"
-                    : confirmCreditVoid && role === "superadmin"
-                      ? "Confirm void with payments"
-                      : "Void this sale"}
+                  {voidSale.isPending ? "Sending…" : "Send void request"}
                 </Button>
                 <Button variant="secondary" size="touch" onClick={() => setVoidFor(null)}>
                   Cancel
                 </Button>
               </div>
             </div>
+          ) : null}
+          {voidMsg && !voidFor ? (
+            <div className="mx-4 mt-3 rounded-lg border border-border bg-card px-3 py-2 text-sm text-text">{voidMsg}</div>
           ) : null}
           {salesQ.isError ? (
             <div className="px-4 py-3 text-sm text-err">
@@ -874,7 +868,7 @@ function Dashboard() {
                         {String(row.cashier_name || "—")}
                       </td>
                       <td className={cn("px-4 text-right", dense ? "py-1.5" : "py-2.5")}>
-                        {isAdmin && String(row.status || "completed").toLowerCase() !== "voided" ? (
+                        {canRequestVoid && String(row.status || "completed").toLowerCase() !== "voided" ? (
                           <button
                             type="button"
                             className="text-xs font-semibold text-err hover:underline"
@@ -885,7 +879,7 @@ function Dashboard() {
                               setVoidMsg("");
                             }}
                           >
-                            Void
+                            Request void
                           </button>
                         ) : null}
                       </td>

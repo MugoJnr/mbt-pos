@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
+import { ProductPhoto, productPhotoSrc } from "@/components/product-photo";
 import { Button, Card, EmptyState, Input, Select, Skeleton } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -47,6 +48,7 @@ type Product = {
   min_stock?: number;
   unit?: string;
   image_url?: string;
+  image_path?: string;
 };
 
 type Customer = {
@@ -513,7 +515,7 @@ function POS() {
                           : "border-border bg-card2 hover:border-gold/60",
                       )}
                     >
-                      <Thumb name={p.name} />
+                      <Thumb name={p.name} image={p.image_path || p.image_url} />
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-semibold text-text truncate">{p.name}</div>
                         <div className="text-[11px] text-text2 font-mono">{p.sku || `#${p.id}`}</div>
@@ -1001,26 +1003,12 @@ function ToolToggle({
   );
 }
 
-function Thumb({ name, small }: { name: string; small?: boolean }) {
-  const initials = name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase() || "")
-    .join("");
-  return (
-    <div
-      className={cn(
-        "shrink-0 rounded-xl bg-panel border border-border grid place-items-center text-muted-fg",
-        small ? "h-8 w-8" : "h-12 w-12",
-      )}
-    >
-      {small ? (
-        <span className="text-[9px] font-bold">{initials || "?"}</span>
-      ) : (
-        <span className="text-[11px] font-bold text-gold/90">{initials || "?"}</span>
-      )}
-    </div>
-  );
+function Thumb({ name, image, small }: { name: string; image?: string; small?: boolean }) {
+  const src = productPhotoSrc(image);
+  if (src) {
+    return <img src={src} alt="" title={name} className={cn("shrink-0 rounded-xl object-cover", small ? "h-8 w-8" : "h-12 w-12")} />;
+  }
+  return <ProductPhoto size={small ? "sm" : "md"} />;
 }
 
 function StockBadge({
@@ -1076,11 +1064,11 @@ function ProductCard({
           : "border-border bg-card2 hover:border-gold/55 hover:shadow-md active:scale-[0.98]",
       )}
     >
-      <div className="relative h-11 bg-gradient-to-br from-panel via-[#121c30] to-card2 border-b border-border/50 grid place-items-center">
-        {p.image_url ? (
-          <img src={p.image_url} alt="" className="h-full w-full object-cover" />
+      <div className="relative h-16 bg-gradient-to-br from-panel via-[#121c30] to-card2 border-b border-border/50 grid place-items-center overflow-hidden">
+        {productPhotoSrc(p.image_path || p.image_url) ? (
+          <img src={productPhotoSrc(p.image_path || p.image_url)} alt="" className="h-full w-full object-cover" />
         ) : (
-          <Package className="h-5 w-5 text-muted-fg/70" />
+          <ProductPhoto size="sm" />
         )}
         <span
           role="button"

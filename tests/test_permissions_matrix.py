@@ -31,6 +31,11 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(can_delete_debt(u))
         self.assertFalse(can_set_business_day(u))
         self.assertTrue(has_permission(u, 'sales.create'))
+        self.assertTrue(has_permission(u, 'sales.request_void'))
+        self.assertFalse(has_permission(u, 'sales.void'))
+        self.assertTrue(has_permission(u, 'inventory.create'))
+        self.assertTrue(has_permission(u, 'inventory.edit_info'))
+        self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
 
     def test_manager_can_void_not_edit(self):
         u = _user(ROLE_MANAGER)

@@ -31,6 +31,9 @@ class ReceiptsCentreTests(unittest.TestCase):
         self.api._username = "admin"
         db = ac._db()
         db.execute(
+            "INSERT INTO users (id,username,password_hash,role) VALUES (1,'admin','x:y','superadmin')"
+        )
+        db.execute(
             "INSERT INTO products (name, sku, barcode, price, cost_price, stock, min_stock) "
             "VALUES (?,?,?,?,?,?,?)",
             ("Centre Soap", "CENT-SOAP", "6161888001", 100, 60, 10, 1),
@@ -64,6 +67,15 @@ class ReceiptsCentreTests(unittest.TestCase):
         db.close()
         self.assertEqual(detail["lines"][0]["product_name"], "Centre Soap")
         self.assertAlmostEqual(float(detail["lines"][0]["total"]), 200.0, places=2)
+
+    def test_voided_sale_stays_in_the_list(self):
+        from backend.receipts_centre import list_receipts
+        self.api.void_sale(1, "Listed while voided")
+        db = self.ac._db()
+        listed = list_receipts(db, can_sales=True)
+        db.close()
+        self.assertEqual(listed["total"], 1)
+        self.assertEqual(listed["receipts"][0]["display_status"], "voided")
 
     def test_cashier_query_does_not_include_hidden_kinds(self):
         from backend.receipts_centre import list_receipts

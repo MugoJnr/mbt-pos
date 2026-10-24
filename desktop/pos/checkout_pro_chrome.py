@@ -1196,7 +1196,7 @@ def ensure_pro_widgets(tab) -> None:
             ('Resume', C['gold'], '_resume_held'),
             ('Suspend Sale', warn, '_suspend_sale'),
             ('Clear Cart', C['err'], '_clear'),
-            ('Void Sale', C['err'], '_void_sale'),
+            ('Request Void', C['err'], '_void_sale'),
             ('Return / Exchange', warn, '_open_return_sale'),
             ('Reprint', info, '_reprint_receipt'),
             ('Print Preview', info, '_preview'),

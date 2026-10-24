@@ -787,9 +787,10 @@ def category_dict_from_product(product: dict, categories_by_name: dict = None) -
     else:
         cat.setdefault('name', cat_name)
 
-    # Product-level image wins
-    pimg = product.get('image_path') or product.get('image') or ''
-    if pimg and os.path.isfile(str(pimg)):
+    # Product-level image wins. The stored value is the file name beside the database.
+    from desktop.utils.product_photo import resolve_product_image
+    pimg = resolve_product_image(product.get('image_path') or product.get('image') or '')
+    if pimg:
         return {
             'name': cat_name,
             'visual_type': 'image',

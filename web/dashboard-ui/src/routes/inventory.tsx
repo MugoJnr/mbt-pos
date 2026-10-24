@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, Package, Download } from "lucide-react";
+import { ProductPhoto } from "@/components/product-photo";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
@@ -94,6 +95,13 @@ function Inventory() {
   >([]);
   const [recvCost, setRecvCost] = useState("");
   const [productDetail, setProductDetail] = useState<Product | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newProduct, setNewProduct] = useState({
+    name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "",
+  });
+  const [newPhoto, setNewPhoto] = useState<File | null>(null);
+  const [newPhotoUrl, setNewPhotoUrl] = useState("");
+  const [savingProduct, setSavingProduct] = useState(false);
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -265,6 +273,9 @@ function Inventory() {
                   className="mt-1 h-11"
                 />
               </label>
+              {user?.role === "superadmin" ? (
+                <div className="text-xs text-text2">Signed in as Super Admin. No PIN is required.</div>
+              ) : (
               <label className="text-xs font-semibold text-text2">
                 Super-Admin PIN
                 <Input
@@ -277,6 +288,7 @@ function Inventory() {
                   className="mt-1 h-11"
                 />
               </label>
+              )}
               <div className="text-xs font-semibold text-text2">
                 Current stock
                 <div id="adj-current-stock" className="mt-1 text-lg font-extrabold text-text">
@@ -296,7 +308,7 @@ function Inventory() {
                   setAdjMsg("Enter a quantity greater than zero.");
                   return;
                 }
-                if (!adjPin.trim()) {
+                if (user?.role !== "superadmin" && !adjPin.trim()) {
                   setAdjMsg("Super-Admin PIN is required.");
                   return;
                 }
@@ -597,6 +609,13 @@ function Inventory() {
               />
             </div>
             <Button
+              variant="primary"
+              onClick={() => setShowAdd(true)}
+              className="min-h-[44px]"
+            >
+              Add product
+            </Button>
+            <Button
               variant="secondary"
               disabled={exporting}
               onClick={() => exportInv("csv")}
@@ -664,6 +683,9 @@ function Inventory() {
         <Card className="mb-3">
           <div className="p-4 space-y-2">
             <div className="text-sm font-extrabold text-text">Pending adjustment requests</div>
+            {user?.role === "superadmin" ? (
+              <div className="text-xs text-text2">Signed in as Super Admin. A reduction does not ask for the PIN again.</div>
+            ) : (
             <Input
               type="password"
               aria-label="Super-Admin PIN for this approval"
@@ -672,6 +694,7 @@ function Inventory() {
               onChange={(e) => setReviewPin(e.target.value)}
               className="h-11 max-w-xs"
             />
+            )}
             {(requestsQ.data || []).length === 0 ? (
               <div className="text-sm text-text2">No pending requests.</div>
             ) : (requestsQ.data || []).map((row) => (
@@ -791,15 +814,14 @@ function Inventory() {
                 return (
                   <tr key={p.id}>
                     <td className="px-4 py-2.5">
-                      {p.image_path ? (
-                        <img
-                          src={`/product-images/${p.image_path.split(/[/\\\\]/).pop()}`}
-                          alt=""
-                          className="h-10 w-10 rounded-md object-cover"
-                        />
-                      ) : (
-                        <span className="text-xs text-text2">—</span>
-                      )}
+                      <button
+                        type="button"
+                        className="rounded-xl focus-visible:ring-2 focus-visible:ring-gold/70"
+                        aria-label={p.image_path ? `Change photograph for ${p.name}` : `Add photograph for ${p.name}`}
+                        onClick={() => setProductDetail(p)}
+                      >
+                        <ProductPhoto src={p.image_path} size="sm" />
+                      </button>
                     </td>
                     <td className="px-4 py-2.5 text-text font-medium">
                       <button
@@ -855,6 +877,106 @@ function Inventory() {
         )}
       </Card>
 
+      {showAdd ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={() => setShowAdd(false)}>
+          <div className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <Card className="p-5">
+              <div className="mb-3 text-lg font-extrabold text-text">Add product</div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="text-xs text-text2 sm:col-span-2">Name
+                  <Input className="mt-1 h-11" value={newProduct.name} onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })} />
+                </label>
+                <label className="text-xs text-text2">Selling price
+                  <Input className="mt-1 h-11" type="number" min={0} value={newProduct.price} onChange={(e) => setNewProduct({ ...newProduct, price: e.target.value })} />
+                </label>
+                {seeCost ? (
+                  <label className="text-xs text-text2">Cost
+                    <Input className="mt-1 h-11" type="number" min={0} value={newProduct.cost_price} onChange={(e) => setNewProduct({ ...newProduct, cost_price: e.target.value })} />
+                  </label>
+                ) : null}
+                <label className="text-xs text-text2">Opening stock
+                  <Input className="mt-1 h-11" type="number" min={0} value={newProduct.stock} onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })} />
+                </label>
+                <label className="text-xs text-text2">Unit
+                  <Input className="mt-1 h-11" value={newProduct.unit} onChange={(e) => setNewProduct({ ...newProduct, unit: e.target.value })} />
+                </label>
+                <label className="text-xs text-text2">Category
+                  <Input className="mt-1 h-11" value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} />
+                </label>
+                <label className="text-xs text-text2">SKU
+                  <Input className="mt-1 h-11" value={newProduct.sku} onChange={(e) => setNewProduct({ ...newProduct, sku: e.target.value })} />
+                </label>
+              </div>
+              <div className="mt-3">
+                <ProductPhoto
+                  preview={newPhotoUrl}
+                  size="lg"
+                  onFile={(file) => {
+                    setNewPhoto(file);
+                    setNewPhotoUrl(URL.createObjectURL(file));
+                  }}
+                  onRemove={newPhotoUrl ? () => { setNewPhoto(null); setNewPhotoUrl(""); } : undefined}
+                />
+                <div className="mt-2 text-xs text-text2">Click the camera to add a JPEG, PNG, or WebP photograph.</div>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Button>
+                <Button
+                  variant="primary"
+                  disabled={savingProduct}
+                  onClick={async () => {
+                    if (!newProduct.name.trim()) {
+                      toast.error("Enter the product name.");
+                      return;
+                    }
+                    setSavingProduct(true);
+                    try {
+                      const created = await POST<{ success?: boolean; id?: number; error?: string }>("/products", {
+                        name: newProduct.name.trim(),
+                        sku: newProduct.sku.trim(),
+                        category: newProduct.category.trim(),
+                        price: Number(newProduct.price || 0),
+                        cost_price: Number(newProduct.cost_price || 0),
+                        stock: Number(newProduct.stock || 0),
+                        unit: newProduct.unit.trim() || "pcs",
+                        barcode: newProduct.barcode.trim(),
+                      });
+                      if (!created || created.error || !created.id) {
+                        toast.error(created?.error || "The product was not saved.");
+                        return;
+                      }
+                      if (newPhoto) {
+                        const body = new FormData();
+                        body.append("image", newPhoto);
+                        const response = await fetch(`/api/products/${created.id}/image`, {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${getToken()}` },
+                          body,
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || data.error) {
+                          toast.error(data.error || "The product was saved, but the photograph was not.");
+                        }
+                      }
+                      setShowAdd(false);
+                      setNewProduct({ name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "" });
+                      setNewPhoto(null);
+                      setNewPhotoUrl("");
+                      qc.invalidateQueries({ queryKey: ["products"] });
+                      toast.success("Product saved.");
+                    } finally {
+                      setSavingProduct(false);
+                    }
+                  }}
+                >
+                  {savingProduct ? "Saving…" : "Save product"}
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      ) : null}
+
       {productDetail ? (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
@@ -872,44 +994,42 @@ function Inventory() {
                 </Button>
               </div>
               <div className="px-5 pt-4">
-                {productDetail.image_path ? (
-                  <img
-                    src={`/product-images/${productDetail.image_path.split(/[/\\\\]/).pop()}`}
-                    alt=""
-                    className="h-28 w-28 rounded-lg object-cover"
-                  />
-                ) : (
-                  <div className="text-sm text-text2">No photograph yet.</div>
-                )}
-                {seeCost ? (
-                  <label className="mt-3 block text-sm text-text2">
-                    Replace photograph
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      className="mt-1 block text-sm text-text"
-                      onChange={async (event) => {
-                        const file = event.target.files?.[0];
-                        if (!file) return;
-                        const body = new FormData();
-                        body.append("image", file);
-                        const response = await fetch(`/api/products/${productDetail.id}/image`, {
-                          method: "POST",
-                          headers: { Authorization: `Bearer ${getToken()}` },
-                          body,
-                        });
-                        const data = await response.json().catch(() => ({}));
-                        if (!response.ok || data.error) {
-                          toast.error(data.error || "The photograph was not saved.");
-                          return;
-                        }
-                        setProductDetail({ ...productDetail, image_path: data.image_path });
-                        qc.invalidateQueries({ queryKey: ["products"] });
-                        toast.success("Photograph saved.");
-                      }}
-                    />
-                  </label>
-                ) : null}
+                <ProductPhoto
+                  src={productDetail.image_path}
+                  size="lg"
+                  onFile={async (file) => {
+                    const body = new FormData();
+                    body.append("image", file);
+                    const response = await fetch(`/api/products/${productDetail.id}/image`, {
+                      method: "POST",
+                      headers: { Authorization: `Bearer ${getToken()}` },
+                      body,
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data.error) {
+                      toast.error(data.error || "The photograph was not saved.");
+                      return;
+                    }
+                    const stamped = `${data.image_path}?v=${Date.now()}`;
+                    setProductDetail({ ...productDetail, image_path: stamped });
+                    qc.invalidateQueries({ queryKey: ["products"] });
+                    toast.success("Photograph saved.");
+                  }}
+                  onRemove={productDetail.image_path ? async () => {
+                    const response = await fetch(`/api/products/${productDetail.id}/image`, {
+                      method: "DELETE",
+                      headers: { Authorization: `Bearer ${getToken()}` },
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data.error) {
+                      toast.error(data.error || "The photograph was not removed.");
+                      return;
+                    }
+                    setProductDetail({ ...productDetail, image_path: "" });
+                    qc.invalidateQueries({ queryKey: ["products"] });
+                    toast.success("Photograph removed.");
+                  } : undefined}
+                />
               </div>
               <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm">
                 {[

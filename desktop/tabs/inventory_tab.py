@@ -1,5 +1,6 @@
 """MBT POS - Inventory | MugoByte Technologies"""
 import logging
+import os
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
@@ -355,6 +356,23 @@ class InventoryTab(QWidget):
         name_item = tbl_item(name, tone='text')
         name_item.setToolTip(raw_name if raw_name != name else name)
         self._tbl.setItem(i, 0, name_item)
+        try:
+            from desktop.utils.product_photo import ProductPhotoTile
+            tile = ProductPhotoTile(p.get('image_path') or '', size=36)
+            tile.setEnabled(bool(can_edit))
+            tile.choose = lambda pid=p.get('id'): self._edit(pid) if can_edit else None
+            name_wrap = QWidget()
+            name_wrap.setStyleSheet('background:transparent;')
+            name_lay = QHBoxLayout(name_wrap)
+            name_lay.setContentsMargins(4, 0, 4, 0)
+            name_lay.setSpacing(8)
+            name_lay.addWidget(tile)
+            name_label = QLabel(name)
+            name_label.setStyleSheet(f"color:{C['text']}; background:transparent; font-size:13px;")
+            name_lay.addWidget(name_label, 1)
+            self._tbl.setCellWidget(i, 0, name_wrap)
+        except Exception:
+            _log.exception('Product photo tile failed')
 
         sku_item = tbl_item(sku if sku else '—', tone='text2' if not sku else 'text')
         sku_item.setToolTip(sku or 'No SKU')
@@ -714,6 +732,12 @@ class InventoryTab(QWidget):
                 return
             res = self.api.create_product(dlg.data())
             if res and res.get('success'):
+                if dlg.photo_source() and res.get('id'):
+                    saved = self.api.save_product_image(res['id'], dlg.photo_source())
+                    if saved.get('error'):
+                        QMessageBox.warning(
+                            self, 'Photograph',
+                            saved['error'])
                 self.refresh()
             else:
                 QMessageBox.critical(
@@ -737,6 +761,14 @@ class InventoryTab(QWidget):
                 return
             res = self.api.update_product(pid, dlg.data(), pin_verified=False)
             if res and res.get('success'):
+                if dlg.photo_source():
+                    saved = self.api.save_product_image(pid, dlg.photo_source())
+                    if saved.get('error'):
+                        QMessageBox.warning(self, 'Photograph', saved['error'])
+                elif dlg.photo_cleared():
+                    saved = self.api.clear_product_image(pid)
+                    if saved.get('error'):
+                        QMessageBox.warning(self, 'Photograph', saved['error'])
                 self.refresh()
             else:
                 QMessageBox.critical(
@@ -854,6 +886,28 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Unit'),              self.unit)
         lay.addRow(lbl('Status'),            self.status)
 
+        from desktop.utils.product_photo import ProductPhotoTile
+        self._photo = ProductPhotoTile((prod or {}).get('image_path') or '', size=88)
+        photo_side = QVBoxLayout()
+        photo_side.setContentsMargins(0, 0, 0, 0)
+        photo_side.setSpacing(6)
+        photo_hint = QLabel('Click the camera to add or change the photograph.')
+        photo_hint.setWordWrap(True)
+        photo_hint.setStyleSheet(f"color:{C['muted']}; font-size:12px; background:transparent;")
+        photo_clear = GhostBtn('Remove photograph', 32)
+        photo_clear.setToolTip('Remove the photograph and show the empty camera tile')
+        photo_clear.clicked.connect(self._photo.clear_photo)
+        photo_side.addWidget(photo_hint)
+        photo_side.addWidget(photo_clear, 0, Qt.AlignLeft)
+        photo_side.addStretch()
+        photo_wrap = QWidget()
+        photo_lay = QHBoxLayout(photo_wrap)
+        photo_lay.setContentsMargins(0, 0, 0, 0)
+        photo_lay.setSpacing(10)
+        photo_lay.addWidget(self._photo)
+        photo_lay.addLayout(photo_side, 1)
+        lay.addRow(lbl('Photograph'), photo_wrap)
+
         # Stock field â€” only when adding a NEW product
         if self._is_new:
             self.stock = QDoubleSpinBox()
@@ -923,6 +977,14 @@ class _ProdDlg(QDialog):
                 accent_color=sug.get('accent_color'),
                 name=name,
             )
+
+    def photo_source(self) -> str:
+        tile = getattr(self, '_photo', None)
+        return tile.photo_source() if tile else ''
+
+    def photo_cleared(self) -> bool:
+        tile = getattr(self, '_photo', None)
+        return bool(tile and tile.photo_cleared())
 
     def _val(self):
         if not self.name.text().strip():

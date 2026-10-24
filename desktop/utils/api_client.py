@@ -1859,15 +1859,22 @@ class APIClient:
         db = _db()
         try:
             # Narrow columns — SELECT * was a main-thread stall on large catalogs
+            cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
+            image_sql = ", image_path" if "image_path" in cols else ""
             return _rows(db.execute(
                 "SELECT id, name, sku, barcode, category, price, cost_price, "
-                "stock, min_stock, unit, is_active "
+                f"stock, min_stock, unit, is_active{image_sql} "
                 "FROM products WHERE is_active=1 ORDER BY name"
             ))
         finally:
             db.close()
 
     def create_product(self, data: dict) -> dict:
+        from desktop.utils.security import has_permission
+        role = (self._role or '').lower()
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.create'):
+            return {'error': 'You cannot add a product.', 'status': 403}
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Product name is required.'}
@@ -1901,7 +1908,7 @@ class APIClient:
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
                    f"name={name} stock={initial_stock}")
-            result = {'success': True, 'id': pid}
+            result = {'success': True, 'id': pid, 'name': name}
         except sqlite3.IntegrityError as e:
             logger.warning(f"create_product integrity: {e}")
             msg = str(e).lower()
@@ -1920,6 +1927,85 @@ class APIClient:
             except Exception:
                 pass
         return result or {'error': 'Could not save product'}
+
+    def save_product_image(self, product_id: int, source_path: str) -> dict:
+        """Store a product photograph beside the shop database and link it."""
+        from desktop.utils.product_photo import MAX_IMAGE_BYTES, image_error, sniff_image
+        from desktop.utils.security import has_permission
+        role = (self._role or '').lower()
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.edit_info'):
+            return {'error': 'You cannot change a product photograph.', 'status': 403}
+        source_path = (source_path or '').strip()
+        if not source_path or not os.path.isfile(source_path):
+            return {'error': 'Choose a photograph first.'}
+        try:
+            with open(source_path, 'rb') as handle:
+                data = handle.read(MAX_IMAGE_BYTES + 1)
+        except OSError:
+            return {'error': 'That photograph could not be read.'}
+        error = image_error(data)
+        if error:
+            return {'error': error}
+        ext = sniff_image(data)
+        from mbt_paths import get_data_dir
+        folder = os.path.join(get_data_dir(), 'product-images')
+        os.makedirs(folder, exist_ok=True)
+        filename = f"product-{int(product_id)}{ext}"
+        dest = os.path.join(folder, filename)
+        for old_ext in ('.jpg', '.png', '.webp'):
+            old = os.path.join(folder, f"product-{int(product_id)}{old_ext}")
+            if old != dest and os.path.isfile(old):
+                os.remove(old)
+        with open(dest, 'wb') as handle:
+            handle.write(data)
+        db = _db()
+        try:
+            cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
+            if 'image_path' not in cols:
+                db.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
+            changed = db.execute(
+                "UPDATE products SET image_path=?, updated_at=? WHERE id=?",
+                (filename, datetime.now().isoformat(), int(product_id)),
+            )
+            if changed.rowcount != 1:
+                db.rollback()
+                return {'error': 'Product not found.', 'status': 404}
+            db.commit()
+            _audit(self._user_id, self._username, 'PRODUCT_IMAGE', 'inventory',
+                   f"pid={product_id} image={filename}")
+            return {'success': True, 'image_path': filename}
+        finally:
+            db.close()
+
+    def clear_product_image(self, product_id: int) -> dict:
+        """Remove a product photograph and show the empty photo tile again."""
+        from desktop.utils.security import has_permission
+        role = (self._role or '').lower()
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.edit_info'):
+            return {'error': 'You cannot change a product photograph.', 'status': 403}
+        from mbt_paths import get_data_dir
+        folder = os.path.join(get_data_dir(), 'product-images')
+        for ext in ('.jpg', '.png', '.webp'):
+            path = os.path.join(folder, f"product-{int(product_id)}{ext}")
+            if os.path.isfile(path):
+                os.remove(path)
+        db = _db()
+        try:
+            changed = db.execute(
+                "UPDATE products SET image_path=NULL, updated_at=? WHERE id=?",
+                (datetime.now().isoformat(), int(product_id)),
+            )
+            if changed.rowcount != 1:
+                db.rollback()
+                return {'error': 'Product not found.', 'status': 404}
+            db.commit()
+            _audit(self._user_id, self._username, 'PRODUCT_IMAGE_CLEAR', 'inventory',
+                   f"pid={product_id}")
+            return {'success': True, 'image_path': ''}
+        finally:
+            db.close()
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
         """Update a product. Stock changes go through adjust_stock only."""
@@ -1975,7 +2061,7 @@ class APIClient:
 
         Absolute form: adjust_stock(product_id, new_quantity, reason, pin=...).
         Direction form: adjust_stock(product_id, 'add'|'remove'|'set', quantity, reason, pin=...).
-        A reduction requires the Super-Admin PIN inside this method.
+        A reduction by anyone except the signed-in Super Admin requires the PIN.
         """
         if self._role != 'superadmin':
             return {
@@ -2071,7 +2157,12 @@ class APIClient:
                 other = reason.startswith('Other:') and bool(reason[6:].strip())
                 if reason not in catalog and not other:
                     return {'error': 'That reason does not match this stock change.', 'status': 400}
-            if decreasing:
+            if (self._role or '').lower() == 'superadmin':
+                _audit(
+                    self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
+                    f'stock_adjust pid={pid} pin_skipped=session',
+                )
+            elif decreasing:
                 blocked, retry_after = _pin_failures_blocked(self._user_id)
                 if blocked:
                     return {
@@ -2740,6 +2831,12 @@ class APIClient:
         return datetime.now() > deadline
 
     def _approval_pin_error(self, db, pin: str, approval_id: int):
+        if (self._role or '').lower() == 'superadmin':
+            _audit(
+                self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
+                f'approval id={approval_id} pin_skipped=session',
+            )
+            return None
         from desktop.utils.security import _pin_hash
         blocked, retry_after = _pin_failures_blocked(self._user_id)
         if blocked:
@@ -3179,29 +3276,15 @@ class APIClient:
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
             for item in data.get('items', []):
-                pid = item.get('product_id')
-                qty = float(item.get('quantity') or 1)
-                unit_price = float(item.get('unit_price') or 0)
-                discount = float(item.get('discount') or 0)
-                raw_total = item.get('total')
-                if raw_total is None or raw_total == '':
-                    line_total = round(qty * unit_price - discount, 2)
-                else:
-                    line_total = float(raw_total)
-                product_name = (item.get('product_name') or '').strip()
-                sku = (item.get('sku') or '').strip()
-                if pid and (not product_name or not sku):
-                    named = db.execute(
-                        "SELECT name, sku FROM products WHERE id=?", (pid,)
-                    ).fetchone()
-                    if named:
-                        product_name = product_name or (named['name'] or '')
-                        sku = sku or (named['sku'] or '')
+                from backend.sale_lines import fill_sale_line
+                line = fill_sale_line(db, item)
+                pid = line['product_id']
                 db.execute(
                     "INSERT INTO sale_items"
                     " (sale_id,product_id,product_name,sku,quantity,unit_price,discount,total)"
                     " VALUES (?,?,?,?,?,?,?,?)",
-                    (sale_id, pid, product_name, sku, qty, unit_price, discount, line_total)
+                    (sale_id, pid, line['product_name'], line['sku'], line['quantity'],
+                     line['unit_price'], line['discount'], line['total'])
                 )
                 # Stock enforcement — block sale if insufficient stock
                 if pid:
@@ -3938,6 +4021,248 @@ class APIClient:
             raise
         finally:
             db.close()
+
+    def unvoid_sale(self, sale_id: int, reason: str) -> dict:
+        """Restore one voided sale. Super Admin session only. Effects apply once."""
+        reason = (reason or '').strip()
+        if (self._role or '').lower() != 'superadmin':
+            _audit(self._user_id, self._username, 'UNVOID_SALE_DENIED', 'sales',
+                   f"sale_id={sale_id} role={self._role}")
+            return {'error': 'Only a signed-in Super Admin can restore a receipt.', 'status': 403}
+        if not reason:
+            return {'error': 'Enter a reason for restoring this receipt.', 'status': 400}
+
+        db = _db()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (int(sale_id),)).fetchone()
+            if not sale:
+                db.rollback()
+                return {'error': 'Sale not found.', 'status': 404}
+            status = (sale['status'] or '').lower()
+            if status == 'completed':
+                db.rollback()
+                return {'success': True, 'duplicate': True, 'status': 'completed'}
+            if status != 'voided':
+                db.rollback()
+                return {'error': 'Only a voided sale can be restored.', 'status': 409}
+
+            items = db.execute(
+                "SELECT product_id, product_name, quantity FROM sale_items WHERE sale_id=?",
+                (int(sale_id),),
+            ).fetchall()
+            now = datetime.now().isoformat()
+            stock_changes = []
+            for item in items:
+                pid = item['product_id']
+                qty = round(float(item['quantity'] or 0), 4)
+                if not pid or qty <= 0:
+                    continue
+                prod = db.execute(
+                    "SELECT name, COALESCE(stock,0) AS stock FROM products WHERE id=?",
+                    (int(pid),),
+                ).fetchone()
+                if not prod:
+                    db.rollback()
+                    return {
+                        'error': f"{item['product_name'] or 'A product'} on this receipt no longer exists.",
+                        'status': 409,
+                    }
+                old_stock = round(float(prod['stock'] or 0), 4)
+                if old_stock + 1e-9 < qty:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f"Not enough {prod['name']} on hand ({old_stock:g}) to restore "
+                            f"this sale ({qty:g}). Receive stock, then restore the receipt."
+                        ),
+                        'status': 409,
+                    }
+                new_stock = round(old_stock - qty, 4)
+                changed = db.execute(
+                    "UPDATE products SET stock=?, updated_at=? "
+                    "WHERE id=? AND ROUND(COALESCE(stock,0),4)>=?",
+                    (new_stock, now, int(pid), qty),
+                )
+                if changed.rowcount != 1:
+                    db.rollback()
+                    return {
+                        'error': f"Stock for {prod['name']} changed before the receipt could be restored.",
+                        'status': 409,
+                    }
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (int(pid), prod['name'], 'UNVOID_DEDUCT', old_stock, -qty, new_stock,
+                     f"UNVOID_sale={int(sale_id)}",
+                     f"Restore voided sale {sale['receipt_number']}: {reason}",
+                     self._user_id, self._username or 'superadmin'),
+                )
+                stock_changes.append(f"{prod['name']} {old_stock}->{new_stock}")
+
+            self._reapply_voided_layers(db, int(sale_id))
+
+            sale_keys = set(sale.keys())
+            rn = sale['receipt_number']
+            cust_id = sale['customer_id'] if 'customer_id' in sale_keys else None
+            credit_applied = float(sale['credit_applied'] or 0) if 'credit_applied' in sale_keys else 0.0
+            if cust_id and credit_applied > 0.009:
+                self._wallet_adjust(
+                    db, int(cust_id), -credit_applied, 'unvoid_reapply_credit',
+                    sale_id=int(sale_id), receipt_number=rn,
+                    notes=f'Restore credit applied on {rn}',
+                )
+            try:
+                var = db.execute(
+                    "SELECT * FROM payment_variances WHERE sale_id=? ORDER BY id DESC LIMIT 1",
+                    (int(sale_id),),
+                ).fetchone()
+            except Exception:
+                var = None
+            if var:
+                v_cust = cust_id or (var['customer_id'] if var['customer_id'] else None)
+                dep = float(var['deposit_amount'] or 0) + float(var['advance_amount'] or 0)
+                if v_cust and dep > 0.009:
+                    self._wallet_adjust(
+                        db, int(v_cust), dep, 'unvoid_restore_deposit',
+                        sale_id=int(sale_id), receipt_number=rn,
+                        notes=f'Restore deposit reversed by the void of {rn}',
+                    )
+
+            invoices = db.execute(
+                "SELECT id, invoice_number, total_amount, amount_paid, notes "
+                "FROM debt_invoices WHERE sale_id=? AND status='cancelled'",
+                (int(sale_id),),
+            ).fetchall()
+            for inv in invoices:
+                note = (inv['notes'] or '')
+                if 'voided' not in note.lower():
+                    continue
+                total = float(inv['total_amount'] or 0)
+                paid = float(inv['amount_paid'] or 0)
+                balance = round(max(0.0, total - paid), 2)
+                next_status = 'paid' if balance <= 0.009 else 'open'
+                db.execute(
+                    "UPDATE debt_invoices SET status=?, balance=?, notes=?, updated_at=? WHERE id=?",
+                    (next_status, balance,
+                     note + f" | RESTORED by {self._username or 'superadmin'}: {reason}",
+                     now, inv['id']),
+                )
+
+            prior = db.execute(
+                "SELECT id FROM cash_rounding_adjustments "
+                "WHERE sale_id=? AND notes LIKE 'UNVOID restore%' LIMIT 1",
+                (int(sale_id),),
+            ).fetchone()
+            if not prior:
+                void_rows = db.execute(
+                    "SELECT adjustment FROM cash_rounding_adjustments "
+                    "WHERE sale_id=? AND notes LIKE 'VOID reverse%' ORDER BY id",
+                    (int(sale_id),),
+                ).fetchall()
+                for row in void_rows:
+                    db.execute(
+                        "INSERT INTO cash_rounding_adjustments "
+                        "(sale_id,receipt_number,original_amount,rounded_amount,adjustment,"
+                        "payment_method,cashier_id,cashier_name,voided,notes) "
+                        "VALUES (?,?,?,?,?,?,?,?,0,?)",
+                        (int(sale_id), rn, float(sale['total'] or 0), float(sale['total'] or 0),
+                         -float(row['adjustment'] or 0),
+                         sale['payment_method'] if 'payment_method' in sale_keys else 'cash',
+                         self._user_id, self._username or 'superadmin',
+                         f'UNVOID restore cash rounding for {rn}'),
+                    )
+
+            previous_notes = sale['notes'] if 'notes' in sale_keys and sale['notes'] else ''
+            db.execute(
+                "UPDATE sales SET status='completed', notes=? WHERE id=? AND status='voided'",
+                (f"{previous_notes} | RESTORED by {self._username or 'superadmin'}: {reason}".strip(' |'),
+                 int(sale_id)),
+            )
+            db.execute(
+                "INSERT INTO sale_edits "
+                "(sale_id,edited_by_id,edited_by_name,edit_type,"
+                "field_name,old_value,new_value,reason) VALUES (?,?,?,?,?,?,?,?)",
+                (int(sale_id), self._user_id, self._username or 'superadmin',
+                 'UNVOID', 'status', 'voided', 'completed', reason),
+            )
+            self._reverse_void_journal(db, int(sale_id), reason)
+            db.commit()
+            _audit(
+                self._user_id, self._username, 'UNVOID_SALE', 'sales',
+                f"sale_id={sale_id} receipt={rn} reason={reason} "
+                f"before=voided after=completed stock={'; '.join(stock_changes)}",
+            )
+            return {'success': True, 'status': 'completed', 'receipt_number': rn}
+        except ValueError as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return {'error': str(exc), 'status': 409}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception('unvoid_sale failed')
+            return {'error': str(exc), 'status': 500}
+        finally:
+            db.close()
+
+    def _reapply_voided_layers(self, db, sale_id: int) -> None:
+        try:
+            uses = db.execute(
+                "SELECT id, layer_id, quantity FROM cost_layer_uses "
+                "WHERE sale_id=? AND reversed=1",
+                (int(sale_id),),
+            ).fetchall()
+        except Exception:
+            return
+        for use in uses:
+            layer = db.execute(
+                "SELECT remaining_qty FROM cost_layers WHERE id=?", (use['layer_id'],)
+            ).fetchone()
+            if not layer or float(layer['remaining_qty'] or 0) + 1e-9 < float(use['quantity'] or 0):
+                raise ValueError(
+                    'A later stock movement used the quantity this void returned. '
+                    'The receipt was not restored.'
+                )
+        for use in uses:
+            changed = db.execute(
+                "UPDATE cost_layers SET remaining_qty=remaining_qty-? "
+                "WHERE id=? AND remaining_qty>=?",
+                (float(use['quantity'] or 0), use['layer_id'], float(use['quantity'] or 0)),
+            )
+            if changed.rowcount != 1:
+                raise ValueError(
+                    'A later stock movement used the quantity this void returned. '
+                    'The receipt was not restored.'
+                )
+            db.execute("UPDATE cost_layer_uses SET reversed=0 WHERE id=?", (use['id'],))
+
+    def _reverse_void_journal(self, db, sale_id: int, reason: str) -> None:
+        try:
+            row = db.execute(
+                "SELECT id FROM journal_entries WHERE source_module='sales' AND source_id=? "
+                "AND entry_type='sale_void' AND status='posted' AND deleted_at IS NULL "
+                "AND reversed_by_id IS NULL ORDER BY id DESC LIMIT 1",
+                (str(int(sale_id)),),
+            ).fetchone()
+        except Exception:
+            return
+        if not row:
+            return
+        from desktop.utils.accounting_engine import reverse_journal
+        result = reverse_journal(
+            db, row['id'], reason=f'Unvoid: {reason}',
+            user_id=self._user_id, username=self._username or 'superadmin',
+            source_module='sales', source_id=str(int(sale_id)),
+            entry_type='sale_unvoid',
+        )
+        if result.get('error') and 'already reversed' not in str(result.get('error')).lower():
+            raise ValueError(result['error'])
 
     def get_sale_for_return(self, receipt: str) -> dict:
         """Lookup a completed sale with returnable line quantities."""
@@ -6199,6 +6524,135 @@ class APIClient:
             return {'error': str(e)}
         finally:
             db.close()
+
+    def unvoid_consumption(self, consumption_id: int, reason: str) -> dict:
+        """Restore one voided internal-use receipt. Super Admin session only."""
+        reason = (reason or '').strip()
+        if (self._role or '').lower() != 'superadmin':
+            _audit(self._user_id, self._username, 'UNVOID_CONSUMPTION_DENIED',
+                   'consumption', f"id={consumption_id} role={self._role}")
+            return {'error': 'Only a signed-in Super Admin can restore a receipt.', 'status': 403}
+        if not reason:
+            return {'error': 'Enter a reason for restoring this receipt.', 'status': 400}
+        db = _db()
+        now = datetime.now().isoformat()
+        try:
+            db.execute('BEGIN IMMEDIATE')
+            cons = db.execute(
+                "SELECT * FROM stock_consumptions WHERE id=?", (int(consumption_id),)
+            ).fetchone()
+            if not cons:
+                db.rollback()
+                return {'error': 'Consumption not found.', 'status': 404}
+            if int(cons['voided'] or 0) != 1:
+                db.rollback()
+                return {'success': True, 'duplicate': True, 'status': 'active'}
+            items = db.execute(
+                "SELECT product_id, quantity FROM stock_consumption_items WHERE consumption_id=?",
+                (int(consumption_id),),
+            ).fetchall()
+            changes = []
+            for item in items:
+                pid = item['product_id']
+                qty = round(float(item['quantity'] or 0), 4)
+                if not pid or qty <= 0:
+                    continue
+                prod = db.execute(
+                    "SELECT name, COALESCE(stock,0) AS stock FROM products WHERE id=?",
+                    (int(pid),),
+                ).fetchone()
+                if not prod:
+                    db.rollback()
+                    return {'error': 'A product on this receipt no longer exists.', 'status': 409}
+                old_stock = round(float(prod['stock'] or 0), 4)
+                if old_stock + 1e-9 < qty:
+                    db.rollback()
+                    return {
+                        'error': (
+                            f"Not enough {prod['name']} on hand ({old_stock:g}) to restore "
+                            f"this consumption ({qty:g})."
+                        ),
+                        'status': 409,
+                    }
+                new_stock = round(old_stock - qty, 4)
+                changed = db.execute(
+                    "UPDATE products SET stock=?, updated_at=? "
+                    "WHERE id=? AND ROUND(COALESCE(stock,0),4)>=?",
+                    (new_stock, now, int(pid), qty),
+                )
+                if changed.rowcount != 1:
+                    db.rollback()
+                    return {'error': 'Stock changed before the receipt could be restored.', 'status': 409}
+                db.execute(
+                    "INSERT INTO stock_movements "
+                    "(product_id,product_name,movement_type,qty_before,qty_change,"
+                    "qty_after,reference,reason,user_id,username,device_id) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (int(pid), prod['name'], 'INTERNAL_USE_UNVOID',
+                     old_stock, -qty, new_stock, cons['reference_no'],
+                     f"Restore voided consumption: {reason}",
+                     self._user_id, self._username or 'superadmin', self._device_name()),
+                )
+                changes.append(f"{prod['name']} {old_stock}->{new_stock}")
+            self._reapply_reference_layers(db, f"CONSUMPTION:{int(consumption_id)}:")
+            db.execute(
+                "UPDATE stock_consumptions SET voided=0 WHERE id=? AND voided=1",
+                (int(consumption_id),),
+            )
+            db.commit()
+            _audit(
+                self._user_id, self._username, 'UNVOID_CONSUMPTION', 'consumption',
+                f"ref={cons['reference_no']} reason={reason} "
+                f"before=voided after=active stock={'; '.join(changes)} "
+                f"original_void_reason={cons['void_reason'] or ''}",
+            )
+            return {'success': True, 'status': 'active', 'reference': cons['reference_no']}
+        except ValueError as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return {'error': str(exc), 'status': 409}
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception('unvoid_consumption failed')
+            return {'error': str(exc), 'status': 500}
+        finally:
+            db.close()
+
+    def _reapply_reference_layers(self, db, prefix: str) -> None:
+        try:
+            uses = db.execute(
+                "SELECT id, layer_id, quantity FROM cost_layer_uses "
+                "WHERE reference LIKE ? AND reversed=1",
+                (prefix + '%',),
+            ).fetchall()
+        except Exception:
+            return
+        for use in uses:
+            layer = db.execute(
+                "SELECT remaining_qty FROM cost_layers WHERE id=?", (use['layer_id'],)
+            ).fetchone()
+            if not layer or float(layer['remaining_qty'] or 0) + 1e-9 < float(use['quantity'] or 0):
+                raise ValueError(
+                    'A later stock movement used the quantity this void returned. '
+                    'The receipt was not restored.'
+                )
+        for use in uses:
+            changed = db.execute(
+                "UPDATE cost_layers SET remaining_qty=remaining_qty-? "
+                "WHERE id=? AND remaining_qty>=?",
+                (float(use['quantity'] or 0), use['layer_id'], float(use['quantity'] or 0)),
+            )
+            if changed.rowcount != 1:
+                raise ValueError(
+                    'A later stock movement used the quantity this void returned. '
+                    'The receipt was not restored.'
+                )
+            db.execute("UPDATE cost_layer_uses SET reversed=0 WHERE id=?", (use['id'],))
 
     def get_consumption(self, consumption_id: int) -> dict:
         db = _db()

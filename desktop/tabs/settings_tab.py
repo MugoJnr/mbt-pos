@@ -783,11 +783,11 @@ class SettingsTab(QWidget):
         role = self.user.get('user', {}).get('role', '')
         if role in ('admin', 'superadmin'):
             lay.addWidget(SecuritySettingsTab(self.api, self.user, self.config_getter))
-            vg, vg_body = section_card('X', 'Void Completed Sale', 'Cancel a sale by receipt number')
+            vg, vg_body = section_card('X', 'Request a void', 'Send a completed sale for approval')
             vinfo = QLabel(
-                'Cancel a completed sale by receipt number. Stock is restored automatically.\n'
-                'Pick a standardized void reason (Other requires specify). Requires Super-Admin PIN.\n'
-                'Also available from Point of Sale (Void Sale) and Dashboard → Recent Sales.')
+                'This does not void the sale. A manager approves it from Approvals '
+                'with the Super-Admin PIN, and stock is restored once.\n'
+                'Also available from Point of Sale and Dashboard → Recent Sales.')
             vinfo.setWordWrap(True)
             vinfo.setStyleSheet(
                 f"color:{C['text2']}; font-size:13px; background:transparent;")
@@ -795,7 +795,7 @@ class SettingsTab(QWidget):
             vrow = QHBoxLayout()
             self._void_receipt = Field('Receipt number  e.g. RCP-20260605-0089')
             self._void_receipt.setMinimumHeight(42)
-            void_btn = DangerBtn('Void Sale', 42)
+            void_btn = DangerBtn('Request Void', 42)
             void_btn.clicked.connect(self._void_sale)
             vrow.addWidget(self._void_receipt, 1)
             vrow.addWidget(void_btn)

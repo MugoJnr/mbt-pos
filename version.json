@@ -2,7 +2,7 @@
     "version": "3.1.67",
     "build": "RC-2026-10-24-v3.1.67",
     "released": "2026-10-24",
-    "release_notes": "All Receipts lists sales, deliveries, consumption, debts, expenses, stock requests, and approvals. A sale keeps its product names and line totals. A stock reduction still needs the Super-Admin PIN. Product photographs are stored with the shop and included in the local backup.",
-    "checksum_sha256": "",
-    "download_url": ""
+    "release_notes": "All Receipts lists sales, deliveries, consumption, debts, expenses, stock requests, and approvals. A signed-in Super Admin can approve stock changes and restore a voided sale or consumption without entering the PIN again. A manager still enters the PIN, and a cashier sends a void request instead of voiding the sale. Product photographs can be added from the till and the dashboard and are included in the shop backup. A sale keeps its product names and line totals.",
+    "checksum_sha256": "be3ed6f406a871a83e8e1c679a1dabcae1e4e0543bafd004275ad0beb4d0e045",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.67/MBT_POS_Setup.exe"
 }

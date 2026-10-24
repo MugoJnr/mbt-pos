@@ -5,6 +5,7 @@ import { Check, X, Plus, Filter } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/approvals")({
@@ -46,6 +47,15 @@ function ApprovalsPage() {
   });
   const [pin, setPin] = useState("");
   const [actionError, setActionError] = useState("");
+  const [voidReceipt, setVoidReceipt] = useState("");
+  const [voidReason, setVoidReason] = useState("");
+  const [voidNote, setVoidNote] = useState("");
+  const [sendingVoid, setSendingVoid] = useState(false);
+  const { user } = useAuth();
+  const role = String(user?.role || "").toLowerCase();
+  const sessionSuper = role === "superadmin";
+  const canReview = ["manager", "admin", "superadmin"].includes(role);
+  const canRequest = ["cashier", "manager", "admin", "superadmin"].includes(role);
 
   const q = useQuery({
     queryKey: ["approvals", status],
@@ -64,7 +74,7 @@ function ApprovalsPage() {
 
   const approveM = useMutation({
     mutationFn: (item: { id: number; type: string }) => {
-      if (EXECUTABLE.has(item.type) && !pin.trim()) {
+      if (EXECUTABLE.has(item.type) && !sessionSuper && !pin.trim()) {
         return Promise.resolve({
           error: "Enter the Super-Admin PIN. The server checks it before anything changes.",
         });
@@ -133,7 +143,7 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="A void or stock approval runs that action once after the Super-Admin PIN is verified. Refund, discount, expense, credit, and price-override requests only record the decision. Rejected and expired requests do not change the sale or the stock."
+        description="A signed-in Super Admin approves a void or stock change without entering the PIN again. A manager still enters the Super-Admin PIN, and the action runs once. Refund, discount, expense, credit, and price-override requests only record the decision. Rejected and expired requests do not change the sale or the stock."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
@@ -158,6 +168,59 @@ function ApprovalsPage() {
         Approving a void or stock change runs that action once. A missing or incorrect
         Super-Admin PIN does not change the sale or the stock. The server checks the PIN.
       </div>
+      {canRequest ? (
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-semibold text-text">Request a void</div>
+          <p className="mt-1 text-xs text-text2">
+            Enter the receipt number. The sale stays completed until a manager approves it.
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
+            <Input
+              value={voidReceipt}
+              placeholder="Receipt number"
+              onChange={(e) => setVoidReceipt(e.target.value)}
+            />
+            <Input
+              value={voidReason}
+              placeholder="Reason"
+              onChange={(e) => setVoidReason(e.target.value)}
+            />
+            <Button
+              variant="primary"
+              disabled={sendingVoid}
+              onClick={async () => {
+                if (!voidReceipt.trim() || !voidReason.trim()) {
+                  setVoidNote("Enter the receipt number and a reason.");
+                  return;
+                }
+                setSendingVoid(true);
+                try {
+                  const data = await POST<{ success?: boolean; error?: string; duplicate?: boolean }>(
+                    "/sales/void-request",
+                    { receipt_number: voidReceipt.trim(), reason: voidReason.trim() },
+                  );
+                  if (!data || data.error) {
+                    setVoidNote(data?.error || "The void request was not sent.");
+                    return;
+                  }
+                  setVoidNote(data.duplicate
+                    ? "That sale is already waiting for approval. It is still completed."
+                    : "Request sent. The sale is still completed.");
+                  setVoidReceipt("");
+                  setVoidReason("");
+                  qc.invalidateQueries({ queryKey: ["approvals"] });
+                } finally {
+                  setSendingVoid(false);
+                }
+              }}
+            >
+              {sendingVoid ? "Sending…" : "Send request"}
+            </Button>
+          </div>
+          {voidNote ? <div className="mt-2 text-sm text-text">{voidNote}</div> : null}
+        </Card>
+      ) : null}
+      {canReview && !sessionSuper ? (
       <div className="mb-4 max-w-xs">
         <div className="text-[10px] tracking-[0.16em] font-semibold text-text2 uppercase mb-1">
           Super-Admin PIN
@@ -170,6 +233,7 @@ function ApprovalsPage() {
           onChange={(e) => setPin(e.target.value)}
         />
       </div>
+      ) : null}
       {actionError ? (
         <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-text">
           {actionError}
@@ -305,6 +369,7 @@ function ApprovalsPage() {
                       </td>
                       <td className="px-4 py-3">
                         {a.status === "pending" || a.status === "escalated" ? (
+                          canReview ? (
                           <div className="flex flex-wrap gap-2">
                             <Button
                               size="sm"
@@ -333,6 +398,9 @@ function ApprovalsPage() {
                               </Button>
                             ) : null}
                           </div>
+                          ) : (
+                            <span className="text-xs text-text2">Waiting for a manager</span>
+                          )
                         ) : (
                           <span className="text-xs text-text2">
                             {a.reviewed_by || "—"}
@@ -366,7 +434,7 @@ function ApprovalsPage() {
                   </span>
                   <span className="text-text2 text-xs">{a.requested_by || "—"}</span>
                 </div>
-                {a.status === "pending" || a.status === "escalated" ? (
+                {(a.status === "pending" || a.status === "escalated") && canReview ? (
                   <div className="flex gap-2">
                     <Button
                       className="flex-1 min-h-[44px]"

@@ -944,12 +944,11 @@ def build_shared_panels(tab) -> None:
     br.addWidget(tab._resume_btn)
     br.addWidget(tab._prv_btn, 1)
     br.addWidget(tab._reprint_btn)
-    from desktop.utils.security import can_void_sales
-    if can_void_sales(tab.user):
-        tab._void_btn = DangerBtn('Void Sale', 40)
+    from desktop.utils.security import can_request_void
+    if can_request_void(tab.user):
+        tab._void_btn = DangerBtn('Request Void', 40)
         tab._void_btn.setToolTip(
-            'Void a completed sale (reason dropdown + Super-Admin PIN). '
-            'Returns not available — void or edit instead.')
+            'Ask for a void. The sale stays completed until a manager approves it.')
         tab._void_btn.clicked.connect(tab._void_sale)
         br.addWidget(tab._void_btn)
     else:

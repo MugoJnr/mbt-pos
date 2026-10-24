@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Receipt } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Select, Table } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES, todayISO } from "@/lib/format";
 
 export const Route = createFileRoute("/receipts")({
@@ -19,6 +20,7 @@ type ReceiptRow = {
   user?: string;
   amount?: number | null;
   status?: string;
+  display_status?: string;
   payment?: string;
   summary?: string;
 };
@@ -43,6 +45,10 @@ function ReceiptsPage() {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<ReceiptRow | null>(null);
+  const [restoreReason, setRestoreReason] = useState("");
+  const [restoreMsg, setRestoreMsg] = useState("");
+  const { user } = useAuth();
+  const qc = useQueryClient();
   const limit = 25;
 
   const listQ = useQuery({
@@ -70,6 +76,25 @@ function ReceiptsPage() {
   const pages = Math.max(1, Math.ceil(total / limit));
   const header = detailQ.data?.header || {};
   const lines = Array.isArray(detailQ.data?.lines) ? detailQ.data.lines : [];
+  const history = Array.isArray(detailQ.data?.history) ? detailQ.data.history : [];
+  const shownStatus = String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
+  const canRestore = user?.role === "superadmin" && open && (
+    (open.kind === "sale" && String(header.status || "").toLowerCase() === "voided")
+    || (open.kind === "consumption" && Number(header.voided || 0) === 1)
+  );
+  const restoreM = useMutation({
+    mutationFn: () => POST<any>(`/receipts/${open!.kind}/${open!.id}/restore`, { reason: restoreReason }),
+    onSuccess: (data) => {
+      if (!data || data.error || data.success === false) {
+        setRestoreMsg(data?.error || "The receipt was not restored.");
+        return;
+      }
+      setRestoreMsg(data.duplicate ? "This receipt is already active." : "Receipt restored.");
+      setRestoreReason("");
+      qc.invalidateQueries({ queryKey: ["receipts"] });
+      qc.invalidateQueries({ queryKey: ["receipt", open?.kind, open?.id] });
+    },
+  });
 
   return (
     <AppShell title="All Receipts">
@@ -109,7 +134,7 @@ function ReceiptsPage() {
                 <td className="px-4 py-2.5">{row.user || "—"}</td>
                 <td className="px-4 py-2.5 tabular-nums">{row.amount == null ? "—" : KES(row.amount)}</td>
                 <td className="px-4 py-2.5">{row.payment || "—"}</td>
-                <td className="px-4 py-2.5"><Badge tone={row.status === "voided" ? "err" : row.status === "pending" ? "warn" : "ok"}>{row.status}</Badge></td>
+                <td className="px-4 py-2.5"><Badge tone={(row.display_status || row.status) === "voided" ? "err" : (row.display_status || row.status) === "pending" ? "warn" : "ok"}>{row.display_status || row.status}</Badge></td>
                 <td className="px-4 py-2.5">
                   <Button size="sm" variant="ghost" onClick={() => setOpen(row)}>Open</Button>
                 </td>
@@ -141,7 +166,7 @@ function ReceiptsPage() {
               {detailQ.data?.error ? <div className="text-sm text-err">{detailQ.data.error}</div> : null}
               <p className="mb-3 text-sm text-text2">{open.summary}</p>
               <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
-                <div>Status <span className="font-semibold text-text">{header.status || open.status}</span></div>
+                <div>Status <span className="font-semibold text-text">{shownStatus || "—"}</span></div>
                 <div>User <span className="font-semibold text-text">{header.cashier_name || header.username || header.created_by_name || open.user || "—"}</span></div>
                 <div>Payment <span className="font-semibold text-text">{header.payment_method || open.payment || "—"}</span></div>
                 <div>Total <span className="font-semibold text-text">{header.total == null && open.amount == null ? "—" : KES(header.total ?? open.amount)}</span></div>
@@ -158,6 +183,40 @@ function ReceiptsPage() {
                   ))}
                 </Table>
               ) : null}
+              {history.length ? (
+                <div className="mt-3 space-y-1 text-sm">
+                  <div className="font-semibold text-text">History</div>
+                  {history.map((item: any, index: number) => (
+                    <div key={index} className="text-text2">
+                      {item.edit_type || item.action} · {item.edited_by_name || item.username || "—"} · {item.reason || item.details}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {canRestore ? (
+                <div className="mt-4 space-y-2">
+                  <Input
+                    aria-label="Reason for restoring this receipt"
+                    placeholder="Reason for restoring this receipt"
+                    value={restoreReason}
+                    onChange={(e) => setRestoreReason(e.target.value)}
+                  />
+                  <Button
+                    onClick={() => {
+                      setRestoreMsg("");
+                      if (!restoreReason.trim()) {
+                        setRestoreMsg("Enter a reason for restoring this receipt.");
+                        return;
+                      }
+                      restoreM.mutate();
+                    }}
+                    disabled={restoreM.isPending}
+                  >
+                    {restoreM.isPending ? "Restoring…" : "Un-void / Restore Receipt"}
+                  </Button>
+                </div>
+              ) : null}
+              {restoreMsg ? <div className="mt-3 text-sm text-text">{restoreMsg}</div> : null}
               {Array.isArray(detailQ.data?.approvals) && detailQ.data.approvals.length ? (
                 <div className="mt-3 text-sm">
                   {detailQ.data.approvals.map((item: any) => (

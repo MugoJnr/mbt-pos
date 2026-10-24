@@ -96,10 +96,12 @@ class ExecutableApprovalTests(unittest.TestCase):
         self.assertTrue(sale.get('success'), sale)
         self.assertEqual(self._stock(), 16)
         approval_id = self._request('void', {'sale_id': int(sale['sale_id'])})
+        self.api._role = 'manager'
         denied = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertEqual(denied.get('status'), 403)
         self.assertEqual(self._stock(), 16)
-        approved = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.api._role = 'superadmin'
+        approved = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertTrue(approved.get('success'), approved)
         self.assertEqual(self._stock(), 20)
         again = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
@@ -125,10 +127,12 @@ class ExecutableApprovalTests(unittest.TestCase):
             'product_id': 1, 'direction': 'remove', 'quantity': 3,
             'reason': 'Damaged / Spoiled', 'expected_stock': 20,
         })
+        self.api._role = 'manager'
         wrong = self.api.execute_approval(approval_id, 'approve', pin='000000')
         self.assertEqual(wrong.get('status'), 403)
         self.assertEqual(self._stock(), 20)
-        applied = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.api._role = 'superadmin'
+        applied = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertTrue(applied.get('success'), applied)
         self.assertEqual(self._stock(), 17)
         again = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
@@ -333,6 +337,7 @@ class ExecutableApprovalTests(unittest.TestCase):
             'reason': 'Damaged / Spoiled', 'expected_stock': 20,
         })
         secret = '999999'
+        self.api._role = 'manager'
         last = {}
         for _ in range(8):
             last = self.api.execute_approval(approval_id, 'approve', pin=secret)
@@ -343,7 +348,12 @@ class ExecutableApprovalTests(unittest.TestCase):
         self.assertNotIn(self.PIN, json.dumps(blocked))
         self.assertEqual(self._stock(), 20)
         self.ac._pin_failures_clear(1)
-        applied = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        still_manager = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        self.assertEqual(still_manager.get('status'), 403)
+        self.assertNotIn(self.PIN, json.dumps(still_manager))
+        self.assertEqual(self._stock(), 20)
+        self.api._role = 'superadmin'
+        applied = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertTrue(applied.get('success'), applied)
         self.assertEqual(self._stock(), 19)
 

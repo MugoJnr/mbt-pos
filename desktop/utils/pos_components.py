@@ -321,7 +321,20 @@ class ProductCard(QFrame):
         top.setSpacing(8 if self._compact else 10)
         icon_sz = 28 if self._compact else 44
         self._icon_sz = icon_sz
-        self._icon = CategoryIcon(cat, size=icon_sz, category_meta=self._category_meta)
+        photo_meta = dict(self._category_meta or {})
+        try:
+            from desktop.utils.product_photo import resolve_product_image
+            photo = resolve_product_image(self._product.get('image_path') or '')
+        except Exception:
+            photo = ''
+        if photo:
+            photo_meta = {
+                'name': name,
+                'visual_type': 'image',
+                'image_path': photo,
+                'accent_color': photo_meta.get('accent_color') or '#d4a017',
+            }
+        self._icon = CategoryIcon(cat, size=icon_sz, category_meta=photo_meta)
         top.addWidget(self._icon, 0, Qt.AlignTop)
 
         tcol = QVBoxLayout()

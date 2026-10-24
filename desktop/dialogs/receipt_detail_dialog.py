@@ -169,6 +169,11 @@ class ReceiptDetailDialog(QDialog):
         role = (self.user.get('role') or '').lower()
         is_voided = status in ('void', 'voided')
 
+        if role == 'superadmin' and is_voided:
+            restore_b = PrimaryBtn('Un-void / Restore Receipt', 40)
+            restore_b.clicked.connect(self._unvoid)
+            btns.addWidget(restore_b)
+
         if role == 'superadmin':
             edit_lbl = 'Reinstate & Edit…' if is_voided else 'Edit Sale…'
             edit_b = PrimaryBtn(edit_lbl, 40)
@@ -177,9 +182,9 @@ class ReceiptDetailDialog(QDialog):
 
         if not is_voided:
             try:
-                from desktop.utils.security import can_void_sales
-                if can_void_sales(self.user):
-                    void_b = DangerBtn('Void Sale…', 40)
+                from desktop.utils.security import can_request_void
+                if can_request_void(self.user):
+                    void_b = DangerBtn('Request Void…', 40)
                     void_b.clicked.connect(self._void)
                     btns.addWidget(void_b)
             except Exception:
@@ -189,6 +194,31 @@ class ReceiptDetailDialog(QDialog):
         close_b.clicked.connect(self.reject)
         btns.addWidget(close_b)
         lay.addLayout(btns)
+
+    def _unvoid(self):
+        from PyQt5.QtWidgets import QInputDialog
+        reason, ok = QInputDialog.getText(
+            self, 'Restore receipt', 'Reason for restoring this receipt:',
+        )
+        if not ok:
+            return
+        if not (reason or '').strip():
+            QMessageBox.warning(self, 'Restore receipt', 'Enter a reason for restoring this receipt.')
+            return
+        try:
+            result = self.api.unvoid_sale(int(self.sale.get('id') or 0), reason.strip())
+        except Exception as exc:
+            QMessageBox.critical(self, 'Restore receipt', str(exc))
+            return
+        if not result.get('success'):
+            QMessageBox.warning(self, 'Restore receipt', result.get('error') or 'The receipt was not restored.')
+            return
+        self.edited = True
+        QMessageBox.information(
+            self, 'Restore receipt',
+            'This receipt is already active.' if result.get('duplicate') else 'Receipt restored.',
+        )
+        self.accept()
 
     def _edit(self):
         from desktop.dialogs.edit_sale_dialog import prompt_edit_sale

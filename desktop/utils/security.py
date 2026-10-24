@@ -21,8 +21,8 @@ from roles import (
 # What each role can do — granular action flags
 _PERMISSIONS = {
     ROLE_CASHIER: {
-        'sales.create', 'sales.view_own',
-        'inventory.view', 'inventory.receive',
+        'sales.create', 'sales.view_own', 'sales.request_void',
+        'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'reports.view_basic',
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',
@@ -31,7 +31,7 @@ _PERMISSIONS = {
     },
     ROLE_VIEWER: {
         'sales.view_all',
-        'inventory.view',
+        'inventory.view', 'inventory.create', 'inventory.edit_info',
         'reports.view_all',
         'notes.view_all',
         'debt.view',
@@ -40,7 +40,7 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports',
     },
     ROLE_MANAGER: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -56,7 +56,7 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
     },
     ROLE_ADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -75,7 +75,7 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
     },
     ROLE_SUPERADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.edit',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.edit',
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.adjust_stock',          # ONLY superadmin can change stock directly
@@ -185,8 +185,17 @@ def verify_superadmin_pin(pin: str, api, parent_widget=None,
 
 
 def collect_superadmin_pin(api, parent_widget=None, reason='') -> str:
-    """Return a verified Super-Admin PIN, or an empty string if it was not accepted."""
+    """Return a verified Super-Admin PIN, or an empty string if it was not accepted.
+
+    A signed-in Super Admin returns a session marker. The server still checks
+    the authenticated role and does not accept that marker from anyone else.
+    """
     from PyQt5.QtWidgets import QInputDialog, QLineEdit
+    if (getattr(api, '_role', None) or '').lower() == 'superadmin':
+        from desktop.utils.api_client import _audit
+        _audit(getattr(api, '_user_id', None), getattr(api, '_username', None) or 'superadmin',
+               'SUPERADMIN_SESSION_AUTH', 'security', f'pin_skipped reason={reason or "action"}')
+        return 'session-authorized'
     auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
     if auto:
         return auto if verify_superadmin_pin(auto, api, parent_widget, log_attempt=True) else ''
@@ -206,11 +215,14 @@ def collect_superadmin_pin(api, parent_widget=None, reason='') -> str:
 def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
     """
     Show PIN entry dialog and verify.
-    Returns True if correct PIN entered.
-
-    Automation: set env MBT_AUTO_SUPERADMIN_PIN (e.g. 1110) to skip the dialog.
+    A signed-in Super Admin is already authorized and is not asked again.
     """
     from PyQt5.QtWidgets import QInputDialog, QLineEdit
+    if (getattr(api, '_role', None) or '').lower() == 'superadmin':
+        from desktop.utils.api_client import _audit
+        _audit(getattr(api, '_user_id', None), getattr(api, '_username', None) or 'superadmin',
+               'SUPERADMIN_SESSION_AUTH', 'security', f'pin_skipped reason={reason or "action"}')
+        return True
     auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
     if auto:
         return verify_superadmin_pin(auto, api, parent_widget, log_attempt=True)
@@ -231,8 +243,13 @@ def can_edit_sales(user: dict) -> bool:
 
 
 def can_void_sales(user: dict) -> bool:
-    """True if user may void completed sales (manager / admin / superadmin)."""
+    """True if user may approve a void (manager / admin / superadmin)."""
     return has_permission(user, 'sales.void')
+
+
+def can_request_void(user: dict) -> bool:
+    """True if user may ask for a void. The sale stays completed until approval."""
+    return has_permission(user, 'sales.request_void')
 
 
 def can_set_business_day(user: dict) -> bool:
@@ -419,21 +436,21 @@ class VoidSaleDialog:
         from desktop.utils.select_controls import ReasonSelect, CONTROL_HEIGHT
 
         dlg = QDialog(parent_widget)
-        dlg.setWindowTitle('Void Sale')
+        dlg.setWindowTitle('Request a void')
         dlg.setMinimumWidth(460)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        title = QLabel('Void Sale')
+        title = QLabel('Request a void')
         title.setStyleSheet(
             f"color:{C['text']};font-size:18px;font-weight:700;background:transparent;")
         lay.addWidget(title)
 
         hint = QLabel(
-            'Cancel a completed sale and restore stock. '
-            'Requires Super-Admin PIN after you confirm the reason.')
+            'This sends the sale to Approvals. The sale stays completed, '
+            'and stock stays as it is, until a manager approves it with the Super-Admin PIN.')
         hint.setWordWrap(True)
         hint.setStyleSheet(
             f"color:{C['text2']};font-size:13px;background:transparent;")
@@ -469,7 +486,7 @@ class VoidSaleDialog:
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         ok_btn = buttons.button(QDialogButtonBox.Ok)
         if ok_btn:
-            ok_btn.setText('Continue')
+            ok_btn.setText('Send request')
         buttons.rejected.connect(dlg.reject)
 
         def _accept():
@@ -497,18 +514,21 @@ class VoidSaleDialog:
 
 
 def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool:
-    """
-    Prompt for receipt, standardized void reason, and super-admin PIN;
-    void the sale if confirmed. Returns True when a sale was voided successfully.
-    """
+    """Ask for a void. The sale stays completed until Approvals accepts it."""
     from PyQt5.QtWidgets import QMessageBox
     from desktop.utils.api_client import _db
 
-    receipt, reason = VoidSaleDialog.ask(parent_widget, receipt_prefill=receipt_prefill)
-    if not receipt or not reason:
+    user = getattr(parent_widget, 'user', None) or {}
+    if getattr(api, '_role', None):
+        user = {'role': api._role}
+    if not can_request_void(user):
+        QMessageBox.warning(
+            parent_widget, 'Not allowed',
+            'You cannot request a void.')
         return False
 
-    if not ask_superadmin_pin(api, parent_widget, reason=f'Void {receipt}'):
+    receipt, reason = VoidSaleDialog.ask(parent_widget, receipt_prefill=receipt_prefill)
+    if not receipt or not reason:
         return False
 
     db = _db()
@@ -525,30 +545,18 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
                             f'Sale {receipt} is already voided.')
         return False
 
-    res = api.void_sale(row['id'], reason.strip())
-    if res and res.get('error') == 'credit_payments_exist':
-        paid = float(res.get('debt_paid_total') or 0)
-        msg = res.get('message') or (
-            f'This credit sale has debt payments totaling {paid:,.2f} already collected.\n\n'
-            f'Voiding will cancel the remaining balance. Collected amounts must be '
-            f'refunded manually if applicable.\n\nProceed with void?')
-        confirm = QMessageBox.warning(
-            parent_widget, 'Credit Sale Has Payments',
-            msg,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No)
-        if confirm != QMessageBox.Yes:
-            return False
-        res = api.void_sale(row['id'], reason.strip(), force_with_payments=True)
-
+    res = api.request_sale_void(row['id'], reason.strip())
     if res and res.get('success'):
-        extra = res.get('warning') or ''
-        QMessageBox.information(
-            parent_widget, 'Voided',
-            f'Sale {receipt} has been voided.\nStock has been restored.'
-            + (f'\n\n{extra}' if extra else ''))
+        if res.get('duplicate'):
+            QMessageBox.information(
+                parent_widget, 'Already requested',
+                f'Sale {receipt} is already waiting for approval. It is still completed.')
+        else:
+            QMessageBox.information(
+                parent_widget, 'Request sent',
+                f'Sale {receipt} was sent for approval. It stays completed until a manager approves it.')
         return True
 
     QMessageBox.critical(parent_widget, 'Error',
-                         (res or {}).get('error', 'Failed to void sale.'))
+                         (res or {}).get('error', 'Could not send the void request.'))
     return False

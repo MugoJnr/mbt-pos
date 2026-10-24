@@ -3052,20 +3052,12 @@ def adjust_stock(pid):
         if not reason:
             return jsonify({'error': 'Reason is required for stock adjustments'}), 400
         db  = _get_db()
-        pin = str(data.get('pin') or '')
-        pin_row = db.execute(
-            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-        ).fetchone()
-        stored_hash = str(pin_row[0] if pin_row else '')
-        if not stored_hash:
-            return jsonify({'error': 'Super-Admin PIN is not configured'}), 403
-        import hashlib
-        import hmac
-        supplied_hash = hashlib.pbkdf2_hmac(
-            'sha256', pin.encode(), b'MBT_POS_SUPERADMIN_SALT_2024', 200_000
-        ).hex()
-        if not hmac.compare_digest(supplied_hash, stored_hash):
-            return jsonify({'error': 'Incorrect Super-Admin PIN'}), 403
+        from desktop.utils.api_client import _audit
+        _audit(
+            g.current_user.get('id'), g.current_user.get('username'),
+            'SUPERADMIN_SESSION_AUTH', 'security',
+            f'stock_adjust pid={pid} pin_skipped=session',
+        )
         row = _tr(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
         if not row:
             return jsonify({'error': 'Product not found'}), 404
@@ -3126,25 +3118,16 @@ def adjust_stock(pid):
 
 
 def _web_superadmin_pin(db, data):
-    """Same PIN check the till uses before a stock write. Returns an error response or None."""
+    """A signed-in Super Admin is already authorized. Other roles are refused."""
     if (g.current_user or {}).get('role') != 'superadmin':
         return jsonify({'error': 'Super-Admin access required'}), 403
-    pin = str((data or {}).get('pin') or '')
-    pin_row = db.execute(
-        "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-    ).fetchone()
-    stored_hash = str(pin_row[0] if pin_row else '')
-    if not stored_hash:
-        return jsonify({'error': 'Super-Admin PIN is not configured'}), 403
-    if not pin:
-        return jsonify({'error': 'Super-Admin PIN is required'}), 403
-    import hashlib
-    import hmac
-    supplied_hash = hashlib.pbkdf2_hmac(
-        'sha256', pin.encode(), b'MBT_POS_SUPERADMIN_SALT_2024', 200_000
-    ).hex()
-    if not hmac.compare_digest(supplied_hash, stored_hash):
-        return jsonify({'error': 'Incorrect Super-Admin PIN'}), 403
+    from desktop.utils.api_client import _audit
+    _audit(
+        (g.current_user or {}).get('id'),
+        (g.current_user or {}).get('username'),
+        'SUPERADMIN_SESSION_AUTH', 'security',
+        'pin_skipped=session',
+    )
     return None
 
 
@@ -3394,6 +3377,42 @@ def receipt_detail_http(kind, record_id):
     return _inner()
 
 
+@web.route('/api/receipts/<kind>/<int:record_id>/restore', methods=['POST'])
+def restore_receipt_http(kind, record_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        if role != 'superadmin':
+            return jsonify({'error': 'Only a signed-in Super Admin can restore a receipt.'}), 403
+        data = request.json or {}
+        reason = (data.get('reason') or '').strip()
+        from desktop.utils.api_client import APIClient
+        client = APIClient()
+        client._role = role
+        client._user_id = user.get('id')
+        client._username = user.get('username') or user.get('full_name') or ''
+        kind_name = (kind or '').lower()
+        if kind_name == 'sale':
+            result = client.unvoid_sale(record_id, reason)
+        elif kind_name == 'consumption':
+            result = client.unvoid_consumption(record_id, reason)
+        else:
+            return jsonify({
+                'error': (
+                    'This receipt type cannot be voided, so there is no restoration. '
+                    'Supplier deliveries, expenses, debt repayments, and stock adjustments '
+                    'keep their original records.'
+                ),
+            }), 409
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
 @web.route('/api/products/<int:pid>/image', methods=['POST'])
 def upload_product_image(pid):
     from backend.app import token_required
@@ -3402,14 +3421,19 @@ def upload_product_image(pid):
     def _inner():
         user = g.current_user or {}
         role = (user.get('role') or '').lower()
-        if role not in ('admin', 'superadmin', 'manager'):
-            return jsonify({'error': 'Only a manager or admin can change a product photograph.'}), 403
+        from desktop.utils.security import has_permission
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.edit_info'):
+            return jsonify({'error': 'You cannot change a product photograph.'}), 403
+        from desktop.utils.product_photo import MAX_IMAGE_BYTES, image_error, sniff_image
         upload = request.files.get('image')
         if not upload or not upload.filename:
             return jsonify({'error': 'Choose a photograph.'}), 400
-        ext = os.path.splitext(upload.filename)[1].lower()
-        if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
-            return jsonify({'error': 'Use a JPEG, PNG, or WebP photograph.'}), 400
+        data = upload.read(MAX_IMAGE_BYTES + 1)
+        error = image_error(data)
+        if error:
+            code = 413 if '8 MB' in error else 400
+            return jsonify({'error': error}), code
         db = _get_db()
         cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
         if 'image_path' not in cols:
@@ -3417,15 +3441,40 @@ def upload_product_image(pid):
         row = db.execute("SELECT id FROM products WHERE id=?", (pid,)).fetchone()
         if not row:
             return jsonify({'error': 'Product not found.'}), 404
+        ext = sniff_image(data)
         filename = f"product-{pid}{ext}"
-        path = os.path.join(_product_image_dir(), filename)
-        upload.save(path)
+        folder = _product_image_dir()
+        for old_ext in ('.jpg', '.png', '.webp'):
+            old = os.path.join(folder, f"product-{pid}{old_ext}")
+            if os.path.isfile(old):
+                os.remove(old)
+        with open(os.path.join(folder, filename), 'wb') as handle:
+            handle.write(data)
         db.execute(
             "UPDATE products SET image_path=?, updated_at=? WHERE id=?",
             (filename, datetime.now().isoformat(), pid),
         )
         db.commit()
         return jsonify({'success': True, 'image_path': filename})
+
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/image', methods=['DELETE'])
+def clear_product_image_http(pid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        from desktop.utils.api_client import APIClient
+        client = APIClient()
+        client._role = (user.get('role') or '').lower()
+        client._user_id = user.get('id')
+        client._username = user.get('username') or user.get('full_name') or ''
+        result = client.clear_product_image(pid)
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
 
     return _inner()
 

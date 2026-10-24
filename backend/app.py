@@ -1190,26 +1190,29 @@ def list_products():
 @token_required
 def create_product():
     data = request.json or {}
-    db = get_db()
-    db.execute("""INSERT INTO products (name, sku, category, price, cost_price, stock, min_stock, unit, barcode)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-               (data['name'], data.get('sku'), data.get('category'),
-                data.get('price', 0), data.get('cost_price', 0),
-                data.get('stock', 0), data.get('min_stock', 5),
-                data.get('unit', 'pcs'), data.get('barcode')))
-    db.commit()
-    log_action('CREATE_PRODUCT', 'inventory', f"Product: {data['name']}")
-    return jsonify({'success': True})
+    user = g.current_user or {}
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    api._role = (user.get('role') or 'cashier').lower()
+    result = api.create_product(data)
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
 
 
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 @token_required
 def update_product(pid):
     data = request.json or {}
+    if 'stock' in data:
+        return jsonify({
+            'error': 'Change stock through the protected Adjust Stock action.',
+        }), 403
     db = get_db()
     fields = []
     values = []
-    for field in ('name', 'sku', 'category', 'price', 'cost_price', 'stock', 'min_stock', 'unit', 'barcode'):
+    for field in ('name', 'sku', 'category', 'price', 'cost_price', 'min_stock', 'unit', 'barcode'):
         if field in data:
             fields.append(f"{field}=?")
             values.append(data[field])
@@ -1253,35 +1256,38 @@ def list_sales():
     return jsonify([dict(s) for s in sales])
 
 
+@app.route('/api/sales/void-request', methods=['POST'])
 @app.route('/api/sales/<int:sale_id>/void', methods=['POST'])
 @token_required
-def void_sale_http(sale_id):
-    """Void one sale. Same rules as the till: manager/admin, a reason, stock restored."""
+def void_sale_http(sale_id=None):
+    """Ask for a void. The sale stays completed until Approvals accepts it."""
     data = request.json or {}
     reason = (data.get('reason') or '').strip()
     if not reason:
-        return jsonify({'error': 'Enter a reason before voiding this sale.'}), 400
+        return jsonify({'error': 'Enter a reason before requesting a void.'}), 400
     user = g.current_user or {}
-    role = (user.get('role') or '').lower()
-    if role not in ('admin', 'superadmin', 'manager'):
-        return jsonify({'error': 'Only a manager or admin can void a sale.'}), 403
     from desktop.utils.api_client import APIClient
+    from desktop.utils.security import has_permission
+    role = (user.get('role') or '').lower()
+    if not has_permission({'role': role}, 'sales.request_void'):
+        return jsonify({'error': 'You cannot request a void.'}), 403
+    if sale_id is None:
+        receipt = (data.get('receipt_number') or '').strip()
+        if not receipt:
+            return jsonify({'error': 'Enter the receipt number.'}), 400
+        row = get_db().execute(
+            "SELECT id FROM sales WHERE receipt_number=?", (receipt,)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'Sale was not found.'}), 404
+        sale_id = row['id']
     api = APIClient()
     api._user_id = user.get('id')
     api._username = user.get('username') or user.get('full_name') or 'web'
     api._role = role
-    try:
-        result = api.void_sale(
-            int(sale_id),
-            reason,
-            force_with_payments=bool(data.get('confirm_credit_payments')) and role == 'superadmin',
-        )
-    except Exception as exc:
-        return jsonify({'error': f'Could not void that sale. {exc}'}), 500
-    if result.get('error'):
-        code = 409 if result.get('error') == 'credit_payments_exist' else 400
-        return jsonify(result), code
-    return jsonify(result)
+    result = api.request_sale_void(int(sale_id), reason)
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
 
 
 @app.route('/api/sales', methods=['POST'])
@@ -1383,13 +1389,14 @@ def create_sale():
 
         sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
+        from backend.sale_lines import fill_sale_line
         for item in items:
-            pid = item.get('product_id')
+            line = fill_sale_line(db, item)
+            pid = line['product_id']
             db.execute("""INSERT INTO sale_items (sale_id, product_id, product_name, sku, quantity, unit_price, discount, total)
                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                       (sale_id, pid, item['product_name'],
-                        item.get('sku', ''), item['quantity'], item['unit_price'],
-                        item.get('discount', 0), item['total']))
+                       (sale_id, pid, line['product_name'], line['sku'],
+                        line['quantity'], line['unit_price'], line['discount'], line['total']))
 
             if pid:
                 prod_row = db.execute(

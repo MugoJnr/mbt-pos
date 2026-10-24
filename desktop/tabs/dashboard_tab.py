@@ -17,7 +17,7 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, make_table,
 from desktop.utils.charts import (
     GoldLineChart, PaymentBars, ChartCard, ChartDetailsDialog,
 )
-from desktop.utils.security import can_void_sales, prompt_void_sale
+from desktop.utils.security import can_void_sales, can_request_void, prompt_void_sale
 from desktop.utils.ui_polish import (
     AnimatedKPI, EmptyState, FloatingActionButton, ToastNotification,
     apply_card_shadow, time_greeting,
@@ -470,15 +470,15 @@ class DashboardTab(QWidget):
         sh.addWidget(self._sales_title)
         sh.addStretch()
 
-        if can_void_sales(self.user):
-            self._void_btn = QPushButton('Void Sale')
+        if can_request_void(self.user):
+            self._void_btn = QPushButton('Request Void')
             self._void_btn.setObjectName('mbtVoidSaleBtn')
             self._void_btn.setMinimumHeight(32)
             self._void_btn.setMinimumWidth(100)
             self._void_btn.setCursor(Qt.PointingHandCursor)
             self._void_btn.setToolTip(
                 'Select a sale below, or click to enter a receipt number.\n'
-                'Uses reason dropdown + Super-Admin PIN.')
+                'Sends a void request. The sale stays completed until it is approved.')
             self._void_btn.setStyleSheet(
                 f"QPushButton {{ background:{p['err_dim']}; color:{p['err']}; "
                 f"border:1px solid {qss_alpha(p['err'], 0.45)}; border-radius:7px; "
@@ -1484,7 +1484,7 @@ class DashboardTab(QWidget):
         """Void selected sale, or open blank receipt dialog if none selected."""
         receipt = self._selected_receipt()
         if prompt_void_sale(self.api, self, receipt_prefill=receipt):
-            ToastNotification.show_toast(self, 'Sale voided', tone='warn')
+            ToastNotification.show_toast(self, 'Void request sent', tone='warn')
             self._load()
 
     def _void_selected_sale(self):

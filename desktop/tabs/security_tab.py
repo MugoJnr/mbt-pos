@@ -373,7 +373,7 @@ class SecurityTab(QWidget):
         self._void_receipt = QLineEdit(); self._void_receipt.setPlaceholderText(
             'Receipt number  e.g. RCP-20260520-0001')
         self._void_receipt.setMinimumHeight(38); vl.addWidget(self._void_receipt, 1)
-        void_btn = DangerBtn('Void Sale', 42); void_btn.clicked.connect(self._void_sale)
+        void_btn = DangerBtn('Request Void', 42); void_btn.clicked.connect(self._void_sale)
         vl.addWidget(void_btn)
         view_btn = SecondaryBtn('View Receipt', 42); view_btn.clicked.connect(self._view_receipt)
         view_btn.setToolTip('Open full receipt with line items (including voided)')
