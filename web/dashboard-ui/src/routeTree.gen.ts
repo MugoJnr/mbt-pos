@@ -13,6 +13,7 @@ import { Route as UsersRouteImport } from './routes/users'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecurityRouteImport } from './routes/security'
 import { Route as ReportsRouteImport } from './routes/reports'
+import { Route as ReceiptsRouteImport } from './routes/receipts'
 import { Route as PosRouteImport } from './routes/pos'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as NotesRouteImport } from './routes/notes'
@@ -49,6 +50,11 @@ const SecurityRoute = SecurityRouteImport.update({
 const ReportsRoute = ReportsRouteImport.update({
   id: '/reports',
   path: '/reports',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReceiptsRoute = ReceiptsRouteImport.update({
+  id: '/receipts',
+  path: '/receipts',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PosRoute = PosRouteImport.update({
@@ -155,6 +161,7 @@ export interface FileRoutesByFullPath {
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
+  '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
@@ -178,6 +185,7 @@ export interface FileRoutesByTo {
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
+  '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
@@ -202,6 +210,7 @@ export interface FileRoutesById {
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
+  '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
@@ -227,6 +236,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/notifications'
     | '/pos'
+    | '/receipts'
     | '/reports'
     | '/security'
     | '/settings'
@@ -250,6 +260,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/notifications'
     | '/pos'
+    | '/receipts'
     | '/reports'
     | '/security'
     | '/settings'
@@ -273,6 +284,7 @@ export interface FileRouteTypes {
     | '/notes'
     | '/notifications'
     | '/pos'
+    | '/receipts'
     | '/reports'
     | '/security'
     | '/settings'
@@ -297,6 +309,7 @@ export interface RootRouteChildren {
   NotesRoute: typeof NotesRoute
   NotificationsRoute: typeof NotificationsRoute
   PosRoute: typeof PosRoute
+  ReceiptsRoute: typeof ReceiptsRoute
   ReportsRoute: typeof ReportsRoute
   SecurityRoute: typeof SecurityRoute
   SettingsRoute: typeof SettingsRoute
@@ -331,6 +344,13 @@ declare module '@tanstack/react-router' {
       path: '/reports'
       fullPath: '/reports'
       preLoaderRoute: typeof ReportsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/receipts': {
+      id: '/receipts'
+      path: '/receipts'
+      fullPath: '/receipts'
+      preLoaderRoute: typeof ReceiptsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pos': {
@@ -473,6 +493,7 @@ const rootRouteChildren: RootRouteChildren = {
   NotesRoute: NotesRoute,
   NotificationsRoute: NotificationsRoute,
   PosRoute: PosRoute,
+  ReceiptsRoute: ReceiptsRoute,
   ReportsRoute: ReportsRoute,
   SecurityRoute: SecurityRoute,
   SettingsRoute: SettingsRoute,

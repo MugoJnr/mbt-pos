@@ -1577,6 +1577,11 @@ def update_settings():
     if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
     data = request.json or {}
+    from backend.settings_guard import reject_secret_settings
+    try:
+        data = reject_secret_settings(data)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     db = get_db()
     for k, v in data.items():
         db.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",

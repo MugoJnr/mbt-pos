@@ -882,6 +882,8 @@ def _migrate_columns(conn: sqlite3.Connection):
         prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
         if prod_cols and 'supplier_id' not in prod_cols:
             conn.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER")
+        if prod_cols and 'image_path' not in prod_cols:
+            conn.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
     except Exception:
         pass
     # Cash rounding adjustment ledger (does not inflate product revenue)
@@ -1593,6 +1595,11 @@ class APIClient:
             db.close()
 
     def update_settings(self, data: dict) -> dict:
+        from backend.settings_guard import reject_secret_settings
+        try:
+            data = reject_secret_settings(data or {})
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
         db = _db()
         try:
             for k, v in data.items():
@@ -3173,18 +3180,28 @@ class APIClient:
 
             for item in data.get('items', []):
                 pid = item.get('product_id')
+                qty = float(item.get('quantity') or 1)
+                unit_price = float(item.get('unit_price') or 0)
+                discount = float(item.get('discount') or 0)
+                raw_total = item.get('total')
+                if raw_total is None or raw_total == '':
+                    line_total = round(qty * unit_price - discount, 2)
+                else:
+                    line_total = float(raw_total)
+                product_name = (item.get('product_name') or '').strip()
+                sku = (item.get('sku') or '').strip()
+                if pid and (not product_name or not sku):
+                    named = db.execute(
+                        "SELECT name, sku FROM products WHERE id=?", (pid,)
+                    ).fetchone()
+                    if named:
+                        product_name = product_name or (named['name'] or '')
+                        sku = sku or (named['sku'] or '')
                 db.execute(
                     "INSERT INTO sale_items"
                     " (sale_id,product_id,product_name,sku,quantity,unit_price,discount,total)"
                     " VALUES (?,?,?,?,?,?,?,?)",
-                    (sale_id,
-                     pid,
-                     item.get('product_name', ''),
-                     item.get('sku', '') or '',
-                     float(item.get('quantity') or 1),
-                     float(item.get('unit_price') or 0),
-                     float(item.get('discount') or 0),
-                     float(item.get('total') or 0))
+                    (sale_id, pid, product_name, sku, qty, unit_price, discount, line_total)
                 )
                 # Stock enforcement — block sale if insufficient stock
                 if pid:

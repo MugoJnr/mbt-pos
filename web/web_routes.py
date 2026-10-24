@@ -121,6 +121,25 @@ def static_files(filename):
     return send_from_directory(os.path.join(_HERE, 'static'), filename)
 
 
+def _product_image_dir() -> str:
+    from mbt_paths import get_data_dir
+    folder = os.path.join(get_data_dir(), 'product-images')
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+@web.route('/product-images/<path:filename>')
+def product_image_file(filename):
+    """Local product photograph. The filename is the saved basename only."""
+    safe = os.path.basename(filename)
+    if not safe or safe != filename or '..' in filename:
+        abort(404)
+    folder = _product_image_dir()
+    if not os.path.isfile(os.path.join(folder, safe)):
+        abort(404)
+    return send_from_directory(folder, safe)
+
+
 @web.route('/licenses')
 @web.route('/licenses/')
 def licenses_alias_redirect():
@@ -3305,6 +3324,110 @@ def _inventory_api():
     api._user_id = user.get('id')
     api._username = user.get('username') or user.get('full_name') or 'web'
     return api
+
+
+@web.route('/api/receipts', methods=['GET'])
+def list_receipts_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.receipts_centre import list_receipts
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        try:
+            limit = int(request.args.get('limit') or 50)
+            offset = int(request.args.get('offset') or 0)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Page size is not a number.'}), 400
+        data = list_receipts(
+            _get_db(),
+            can_sales=_user_can('sales', user),
+            can_consumption=role in ('manager', 'admin', 'superadmin') or _user_can('consumption', user),
+            can_inventory=role in ('manager', 'admin', 'superadmin'),
+            can_adjustments=_user_can('inventory', user) or _user_can('sales', user),
+            can_debt=_user_can('debt', user),
+            can_finance=role in ('manager', 'admin', 'superadmin') or _user_can('reports', user),
+            can_approvals=_user_can('sales', user),
+            username=user.get('username') or '',
+            kind=request.args.get('type') or '',
+            status=request.args.get('status') or '',
+            query=request.args.get('q') or '',
+            start=request.args.get('start') or '',
+            end=request.args.get('end') or '',
+            limit=limit,
+            offset=offset,
+        )
+        return jsonify(data)
+
+    return _inner()
+
+
+@web.route('/api/receipts/<kind>/<int:record_id>', methods=['GET'])
+def receipt_detail_http(kind, record_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.receipts_centre import receipt_detail
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        gates = {
+            'sale': _user_can('sales', user),
+            'consumption': role in ('manager', 'admin', 'superadmin'),
+            'supplier': role in ('manager', 'admin', 'superadmin'),
+            'debt_payment': _user_can('debt', user) or _user_can('sales', user),
+            'expense': role in ('manager', 'admin', 'superadmin'),
+            'stock_adjustment': _user_can('sales', user) or role in ('manager', 'admin', 'superadmin'),
+            'approval': _user_can('sales', user),
+        }
+        if not gates.get((kind or '').lower()):
+            return jsonify({'error': 'You cannot open this receipt.'}), 403
+        detail = receipt_detail(
+            _get_db(), kind, record_id,
+            show_cost=role in ('admin', 'superadmin', 'manager'),
+        )
+        if not detail:
+            return jsonify({'error': 'Receipt not found.'}), 404
+        return jsonify(detail)
+
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/image', methods=['POST'])
+def upload_product_image(pid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        role = (user.get('role') or '').lower()
+        if role not in ('admin', 'superadmin', 'manager'):
+            return jsonify({'error': 'Only a manager or admin can change a product photograph.'}), 403
+        upload = request.files.get('image')
+        if not upload or not upload.filename:
+            return jsonify({'error': 'Choose a photograph.'}), 400
+        ext = os.path.splitext(upload.filename)[1].lower()
+        if ext not in ('.jpg', '.jpeg', '.png', '.webp'):
+            return jsonify({'error': 'Use a JPEG, PNG, or WebP photograph.'}), 400
+        db = _get_db()
+        cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
+        if 'image_path' not in cols:
+            db.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
+        row = db.execute("SELECT id FROM products WHERE id=?", (pid,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Product not found.'}), 404
+        filename = f"product-{pid}{ext}"
+        path = os.path.join(_product_image_dir(), filename)
+        upload.save(path)
+        db.execute(
+            "UPDATE products SET image_path=?, updated_at=? WHERE id=?",
+            (filename, datetime.now().isoformat(), pid),
+        )
+        db.commit()
+        return jsonify({'success': True, 'image_path': filename})
+
+    return _inner()
 
 
 @web.route('/api/stock-adjustment-requests', methods=['GET', 'POST'])

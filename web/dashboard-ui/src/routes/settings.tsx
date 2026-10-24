@@ -18,6 +18,41 @@ export const Route = createFileRoute("/settings")({
   component: Settings,
 });
 
+function darajaReadiness(url: string): string {
+  const head = url.trim()
+    ? "Gateway URL: saved. This is not a connection."
+    : "Gateway URL: configuration incomplete.";
+  return [
+    head,
+    "Checkout uses manual M-Pesa. STK Push is not implemented.",
+    "Production is disabled.",
+    "Consumer secrets and the passkey stay on the gateway, not in this browser.",
+    "Callback reachability: not verified.",
+    "A health check is not a completed payment.",
+  ].join("\n");
+}
+
+async function testDaraja(url: string) {
+  const trimmed = url.trim().replace(/\/$/, "");
+  let host = "";
+  try {
+    host = new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    toast.error("Enter the lab gateway URL");
+    return;
+  }
+  if (!host || host.includes("safaricom")) {
+    toast.error("The dashboard must not call Safaricom directly");
+    return;
+  }
+  try {
+    const response = await fetch(`${trimmed}/api/v1/health`, { signal: AbortSignal.timeout(3000) });
+    toast.success(`Gateway health HTTP ${response.status}. Checkout is still manual.`);
+  } catch {
+    toast.error("Gateway unavailable");
+  }
+}
+
 function Section({
   icon,
   title,
@@ -82,6 +117,8 @@ function Settings() {
         receipt_footer: form.receipt_footer || "",
         currency_symbol: form.currency_symbol || "KES",
         tax_rate: form.tax_rate || "0",
+        daraja_gateway_url: (form.daraja_gateway_url || "").trim(),
+        daraja_environment: "sandbox",
       };
       const res = await PUT<{ success?: boolean; error?: string }>("/settings", payload);
       if (!res?.success) throw new Error(res?.error || "Save failed");
@@ -303,6 +340,33 @@ function Settings() {
               onChange={(e) => set("receipt_footer", e.target.value)}
             />
           </Field>
+        </Section>
+
+        <Section
+          icon={<SlidersHorizontal className="h-5 w-5" />}
+          title="M-Pesa gateway"
+          desc="Readiness only. Checkout still records a manual M-Pesa reference."
+        >
+          <Field label="Gateway URL">
+            <Input
+              value={form.daraja_gateway_url || ""}
+              placeholder="http://127.0.0.1:8080"
+              onChange={(e) => set("daraja_gateway_url", e.target.value)}
+            />
+          </Field>
+          <Field label="Environment">
+            <Input value="Sandbox (production disabled)" readOnly />
+          </Field>
+          <p className="text-sm text-text2 whitespace-pre-line">
+            {darajaReadiness(form.daraja_gateway_url || "")}
+          </p>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => void testDaraja(form.daraja_gateway_url || "")}
+          >
+            Test gateway health
+          </Button>
         </Section>
 
         <Section

@@ -122,6 +122,46 @@ class CertCheckoutMoney(unittest.TestCase):
         self.assertAlmostEqual(float(row[0] or 0), 80.50, places=2)
         self.assertEqual(row[1], 'M-Pesa')
         self.assertAlmostEqual(float(row[2] or 0), 50.0, places=2)
+        self.assertAlmostEqual(float(row[0] or 0) + float(row[2] or 0), 130.50, places=2)
+
+    def test_manual_mpesa_reference_persists_without_a_gateway(self):
+        r = self._sale(payment_method='M-Pesa', amount_paid=130.50, mpesa_ref='QAH9TEST')
+        self.assertTrue(r.get('ok') or r.get('id') or r.get('sale_id'), r)
+        db = self.ac._db()
+        row = db.execute(
+            'SELECT payment_method, mpesa_ref, notes FROM sales ORDER BY id DESC LIMIT 1'
+        ).fetchone()
+        db.close()
+        self.assertIn('pesa', (row[0] or '').lower())
+        self.assertEqual(row[1], 'QAH9TEST')
+        self.assertIn('QAH9TEST', row[2] or '')
+
+    def test_repeated_sale_token_does_not_create_a_second_payment(self):
+        first = self._sale(payment_method='M-Pesa', mpesa_ref='QAH9ONCE', client_token='cert-token-1')
+        second = self._sale(payment_method='M-Pesa', mpesa_ref='QAH9ONCE', client_token='cert-token-1')
+        self.assertTrue(second.get('duplicate'), second)
+        db = self.ac._db()
+        count = db.execute(
+            "SELECT COUNT(*) FROM sales WHERE mpesa_ref='QAH9ONCE'"
+        ).fetchone()[0]
+        db.close()
+        self.assertEqual(count, 1)
+
+    def test_shop_settings_keep_gateway_secrets_out_and_checkout_manual(self):
+        saved = self.api.update_settings({
+            'daraja_gateway_url': 'http://127.0.0.1:8080',
+            'daraja_environment': 'sandbox',
+            'mpesa_mode': 'manual',
+        })
+        self.assertTrue(saved.get('success'), saved)
+        blocked = self.api.update_settings({'daraja_passkey': 'not-stored'})
+        self.assertFalse(blocked.get('success'))
+        cfg = self.api.get_settings()
+        self.assertEqual(cfg.get('daraja_gateway_url'), 'http://127.0.0.1:8080')
+        self.assertNotIn('daraja_passkey', cfg)
+        sales = open(os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py'), encoding='utf-8').read()
+        self.assertNotIn('gateway.daraja', sales)
+        self.assertNotIn('stk_push', sales)
 
     def test_split_part_pay_creates_debt_balance(self):
         r = self._sale(
@@ -220,6 +260,32 @@ class CertCheckoutMoney(unittest.TestCase):
         db.close()
         self.assertEqual(float(soap), 20.0)
         self.assertIn(str(status).lower(), ('voided', 'void', 'cancelled', 'revoked'))
+
+    def test_omitted_line_total_is_calculated_and_named(self):
+        r = self.api.create_sale({
+            'items': [
+                {'product_id': 1, 'quantity': 2, 'unit_price': 110.50},
+            ],
+            'subtotal': 221.0,
+            'discount': 0,
+            'tax': 0,
+            'total': 221.0,
+            'payment_method': 'Cash',
+            'amount_paid': 221.0,
+            'change_amount': 0,
+            'status': 'completed',
+            'client_token': 'cert-line-total',
+        })
+        self.assertTrue(r.get('success'), r)
+        db = self.ac._db()
+        row = db.execute(
+            "SELECT product_name, sku, total FROM sale_items WHERE sale_id="
+            "(SELECT id FROM sales WHERE client_token='cert-line-total')"
+        ).fetchone()
+        db.close()
+        self.assertEqual(row['product_name'], 'Cert Soap')
+        self.assertEqual(row['sku'], 'CERT-SOAP')
+        self.assertAlmostEqual(float(row['total']), 221.0, places=2)
 
 
 if __name__ == '__main__':

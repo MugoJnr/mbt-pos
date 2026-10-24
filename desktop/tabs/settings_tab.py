@@ -257,13 +257,31 @@ class SettingsTab(QWidget):
         self.mpesa_business = Field('Name shown on receipt')
         mpesa_hint = QLabel(
             'Each shop uses its own Till or Paybill. Cashiers confirm payment on the customer\'s phone — '
-            'no buyer personal details are stored. STK Push is not available yet.')
+            'no buyer personal details are stored. STK Push is not available yet. '
+            'The gateway checklist does not take payment.')
         mpesa_hint.setWordWrap(True)
         mpesa_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         for lbl, w in [('Till Number', self.mpesa_till),
                        ('Paybill (optional)', self.mpesa_paybill), ('Business Name', self.mpesa_business)]:
             FormRow(lbl, w, mf)
         mf.addRow(mpesa_hint)
+        self.daraja_gateway_url = Field('http://127.0.0.1:8080')
+        self.daraja_env = QComboBox()
+        self.daraja_env.addItem('Sandbox (not connected to checkout)')
+        self.daraja_env.addItem('Production (disabled)')
+        self.daraja_env.model().item(1).setEnabled(False)
+        self.daraja_status = QLabel('')
+        self.daraja_status.setWordWrap(True)
+        self.daraja_status.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        FormRow('Gateway URL', self.daraja_gateway_url, mf)
+        FormRow('Environment', self.daraja_env, mf)
+        test_gateway = SecondaryBtn('Test gateway health', 40)
+        test_gateway.setFixedWidth(200)
+        test_gateway.clicked.connect(self._test_daraja_gateway)
+        mf.addRow(QLabel(''), test_gateway)
+        mf.addRow(self.daraja_status)
+        self.daraja_gateway_url.textChanged.connect(lambda _t: self._refresh_daraja_readiness())
+        self._refresh_daraja_readiness()
         mf_body.addWidget(mf_w)
         lay.addWidget(mg)
 
@@ -826,6 +844,9 @@ class SettingsTab(QWidget):
         self.mpesa_paybill.setText(cfg.get('mpesa_paybill', ''))
         self.mpesa_business.setText(cfg.get('mpesa_business_name', '') or cfg.get('shop_name', ''))
         self.mpesa_mode.setCurrentIndex(0)  # STK not available — always manual
+        if hasattr(self, 'daraja_gateway_url'):
+            self.daraja_gateway_url.setText(cfg.get('daraja_gateway_url', ''))
+            self._refresh_daraja_readiness()
         self.auto_report_daily.setChecked(cfg.get('auto_report_daily', '1') == '1')
         self.auto_report_weekly.setChecked(cfg.get('auto_report_weekly', '0') == '1')
         self.auto_db_backup.setChecked(cfg.get('auto_db_backup', '1') == '1')
@@ -1465,6 +1486,36 @@ class SettingsTab(QWidget):
 
     # ── Save ──────────────────────────────────────────────────────────────────
 
+    def _refresh_daraja_readiness(self):
+        url = self.daraja_gateway_url.text().strip() if hasattr(self, 'daraja_gateway_url') else ''
+        lines = [
+            'Checkout uses manual M-Pesa. STK Push is not implemented.',
+            'Production is disabled.',
+            'Consumer secrets and the passkey stay on the gateway, not in this till.',
+            'Callback reachability: not verified.',
+            'A saved URL is not a connection and not a payment.',
+        ]
+        head = 'Gateway URL: configuration incomplete.' if not url else 'Gateway URL: saved. Not verified.'
+        self.daraja_status.setText(head + '\n' + '\n'.join(lines))
+
+    def _test_daraja_gateway(self):
+        from urllib.parse import urlparse
+        from urllib.request import urlopen
+        url = self.daraja_gateway_url.text().strip().rstrip('/')
+        parsed = urlparse(url)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme not in ('http', 'https') or not host or 'safaricom' in host:
+            self.daraja_status.setText(
+                'Enter the lab gateway URL. The till must not call Safaricom directly.')
+            return
+        try:
+            with urlopen(url + '/api/v1/health', timeout=3) as response:
+                code = getattr(response, 'status', 0)
+            self.daraja_status.setText(
+                f'Gateway health HTTP {code}. Checkout is still manual. Payment is not confirmed.')
+        except Exception as exc:
+            self.daraja_status.setText(f'Gateway unavailable: {exc.__class__.__name__}')
+
     def _common_payload(self):
         payload = {
             'shop_name':           self.shop_name.text().strip(),
@@ -1481,6 +1532,8 @@ class SettingsTab(QWidget):
             'mpesa_till':          self.mpesa_till.text().strip(),
             'mpesa_paybill':       self.mpesa_paybill.text().strip(),
             'mpesa_business_name': self.mpesa_business.text().strip(),
+            'daraja_gateway_url':  self.daraja_gateway_url.text().strip(),
+            'daraja_environment':  'sandbox',
             'auto_report_daily':   '1' if self.auto_report_daily.isChecked() else '0',
             'auto_report_weekly':  '1' if self.auto_report_weekly.isChecked() else '0',
             'auto_db_backup':      '1' if self.auto_db_backup.isChecked() else '0',

@@ -92,6 +92,8 @@ INTENTIONALLY_UNUSED = {
     'sync_interval': 'forced default 30; sync interval UI not wired',
     # STK Push deferred (V05); mode combo hidden and forced to manual.
     'mpesa_mode': 'forced manual; STK/Paybill push not implemented',
+    'daraja_gateway_url': 'saved for a future gateway; checkout does not read it',
+    'daraja_environment': 'forced sandbox; production is disabled in the till',
     # Post-finalize refund checkbox hidden; always persist 0 (P11 returns).
     'variance_allow_refund_after_finalize': (
         'forced 0; post-finalize refund deferred with P11'

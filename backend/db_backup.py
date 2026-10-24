@@ -47,12 +47,25 @@ def create_db_backup_zip(db_path: str = None) -> tuple[str, int, str]:
 
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         zf.write(snap_db, arcname='mbt_pos.db')
+        image_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)), 'product-images')
+        if os.path.isdir(image_dir):
+            for name in sorted(os.listdir(image_dir)):
+                full = os.path.join(image_dir, name)
+                if os.path.isfile(full):
+                    zf.write(full, arcname=f'product-images/{os.path.basename(name)}')
         readme = (
             'MBT POS database backup\n'
             f'Created: {datetime.now().isoformat(timespec="seconds")}\n'
-            'Restore: copy mbt_pos.db to\n'
-            r'  %LOCALAPPDATA%\MugoByte\MBT POS\data\mbt_pos.db\n'
-            'Then restart MBT POS.\n'
+            'Restore on a replacement computer:\n'
+            '1. Install the same MBT POS version.\n'
+            '2. Close MBT POS.\n'
+            '3. Copy mbt_pos.db to\n'
+            r'   %LOCALAPPDATA%\MugoByte\MBT POS\data\mbt_pos.db\n'
+            '4. Copy the product-images folder, if this backup has one, to\n'
+            r'   %LOCALAPPDATA%\MugoByte\MBT POS\data\product-images\n'
+            '5. Start MBT POS and check products, stock, and a recent receipt.\n'
+            'Transactions made after this backup are not in the file.\n'
+            'Keep this zip on a disk that is not the shop computer.\n'
         )
         zf.writestr('RESTORE.txt', readme)
 

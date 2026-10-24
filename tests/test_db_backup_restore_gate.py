@@ -37,6 +37,14 @@ class DbBackupRestoreGate(unittest.TestCase):
             conn.close()
             self.assertEqual(name, 'alpha')
 
+            image_dir = os.path.join(td, 'product-images')
+            os.makedirs(image_dir, exist_ok=True)
+            with open(os.path.join(image_dir, 'product-1.jpg'), 'wb') as handle:
+                handle.write(b'\xff\xd8\xff\xd9')
+            zip_path, _size, _digest = create_db_backup_zip(src)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                self.assertIn('product-images/product-1.jpg', zf.namelist())
+
             try:
                 os.remove(zip_path)
                 os.rmdir(os.path.dirname(zip_path))

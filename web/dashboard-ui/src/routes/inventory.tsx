@@ -5,7 +5,7 @@ import { Search, RefreshCw, Package, Download } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
-import { GET, POST } from "@/lib/api";
+import { GET, POST, getToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadApi, exportQuery } from "@/lib/download";
 import { KES, todayISO } from "@/lib/format";
@@ -76,6 +76,8 @@ function Inventory() {
   const [adjReason, setAdjReason] = useState("Correction");
   const [adjMsg, setAdjMsg] = useState("");
   const [adjPin, setAdjPin] = useState("");
+  const [reviewPin, setReviewPin] = useState("");
+  const seeCost = role !== "cashier" && role !== "viewer";
   const [recvId, setRecvId] = useState("");
   const [recvQty, setRecvQty] = useState("1");
   const [recvSupplier, setRecvSupplier] = useState("");
@@ -662,6 +664,14 @@ function Inventory() {
         <Card className="mb-3">
           <div className="p-4 space-y-2">
             <div className="text-sm font-extrabold text-text">Pending adjustment requests</div>
+            <Input
+              type="password"
+              aria-label="Super-Admin PIN for this approval"
+              placeholder="Super-Admin PIN for a reduction"
+              value={reviewPin}
+              onChange={(e) => setReviewPin(e.target.value)}
+              className="h-11 max-w-xs"
+            />
             {(requestsQ.data || []).length === 0 ? (
               <div className="text-sm text-text2">No pending requests.</div>
             ) : (requestsQ.data || []).map((row) => (
@@ -680,8 +690,15 @@ function Inventory() {
                   >Reject</Button>
                   <Button
                     onClick={async () => {
-                      const res = await POST<any>(`/stock-adjustment-requests/${row.id}/review`, { decision: "approved" });
-                      setRecvMsg(res?.error || "Approved. Stock was updated.");
+                      const res = await POST<any>(`/stock-adjustment-requests/${row.id}/review`, {
+                        decision: "approved",
+                        pin: reviewPin,
+                      });
+                      if (res?.error) setRecvMsg(res.error);
+                      else {
+                        setRecvMsg("Approved. Stock was updated once.");
+                        setReviewPin("");
+                      }
                       qc.invalidateQueries({ queryKey: ["adjustment-requests", "products"] });
                     }}
                   >Approve</Button>
@@ -762,7 +779,7 @@ function Inventory() {
                 "SKU",
                 sortLabel("category", "Category"),
                 sortLabel("price", "Price"),
-                "Cost",
+                ...(seeCost ? ["Cost"] : []),
                 sortLabel("stock", "Stock"),
                 "Unit",
               ]}
@@ -798,9 +815,11 @@ function Inventory() {
                     <td className="px-4 py-2.5 tabular-nums text-gold font-semibold">
                       {KES(p.price, currency)}
                     </td>
-                    <td className="px-4 py-2.5 tabular-nums text-text2">
-                      {KES(p.cost_price ?? 0, currency)}
-                    </td>
+                    {seeCost ? (
+                      <td className="px-4 py-2.5 tabular-nums text-text2">
+                        {KES(p.cost_price ?? 0, currency)}
+                      </td>
+                    ) : null}
                     <td className="px-4 py-2.5 tabular-nums">
                       <Badge tone={oos ? "err" : low ? "warn" : "muted"}>{stock}</Badge>
                     </td>
@@ -852,6 +871,46 @@ function Inventory() {
                   Close
                 </Button>
               </div>
+              <div className="px-5 pt-4">
+                {productDetail.image_path ? (
+                  <img
+                    src={`/product-images/${productDetail.image_path.split(/[/\\\\]/).pop()}`}
+                    alt=""
+                    className="h-28 w-28 rounded-lg object-cover"
+                  />
+                ) : (
+                  <div className="text-sm text-text2">No photograph yet.</div>
+                )}
+                {seeCost ? (
+                  <label className="mt-3 block text-sm text-text2">
+                    Replace photograph
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="mt-1 block text-sm text-text"
+                      onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const body = new FormData();
+                        body.append("image", file);
+                        const response = await fetch(`/api/products/${productDetail.id}/image`, {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${getToken()}` },
+                          body,
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || data.error) {
+                          toast.error(data.error || "The photograph was not saved.");
+                          return;
+                        }
+                        setProductDetail({ ...productDetail, image_path: data.image_path });
+                        qc.invalidateQueries({ queryKey: ["products"] });
+                        toast.success("Photograph saved.");
+                      }}
+                    />
+                  </label>
+                ) : null}
+              </div>
               <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm">
                 {[
                   ["Category", productDetail.category || "General"],
@@ -859,7 +918,7 @@ function Inventory() {
                   ["Barcode", productDetail.barcode || "—"],
                   ["Unit", productDetail.unit || "pcs"],
                   ["Selling price", KES(Number(productDetail.price || 0), currency)],
-                  ["Cost", KES(Number(productDetail.cost_price || 0), currency)],
+                  ...(seeCost ? [["Cost", KES(Number(productDetail.cost_price || 0), currency)] as [string, string]] : []),
                   ["On hand", String(Number(productDetail.stock || 0))],
                   ["Low-stock alert", String(Number(productDetail.min_stock ?? 5))],
                 ].map(([label, value]) => (

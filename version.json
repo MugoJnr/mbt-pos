@@ -1,8 +1,8 @@
 {
-    "version": "3.1.66",
-    "build": "RC-2026-10-23-v3.1.66",
-    "released": "2026-10-23",
-    "release_notes": "The web dashboard can change a password, set the Super-Admin PIN, record finance, return a sale, and end a till sign-in. A stock reduction needs the PIN, and a credit sale that already has payments needs an explicit superadmin confirmation before it can be voided.",
-    "checksum_sha256": "1103d84174cde79b532ba02106dbb535c2b5d76c6e948bf9aedd2c4c1fa79d2a",
+    "version": "3.1.67",
+    "build": "RC-2026-10-24-v3.1.67",
+    "released": "2026-10-24",
+    "release_notes": "All Receipts lists sales, deliveries, consumption, debts, expenses, stock requests, and approvals. A sale keeps its product names and line totals. A stock reduction still needs the Super-Admin PIN. Product photographs are stored with the shop and included in the local backup.",
+    "checksum_sha256": "",
     "download_url": ""
 }
