@@ -11,6 +11,7 @@ from desktop.utils.widgets import (Card, H2, Caption, PrimaryBtn, SecondaryBtn,
 from desktop.utils.security import (
     ALL_DESKTOP_TABS, default_tab_permissions, can_assign_role,
     is_superadmin_role, is_shop_admin_role, role_display_name,
+    require_permission,
 )
 from desktop.utils.option_lists import USER_ROLES, USER_ROLE_LABELS
 from desktop.utils.select_controls import Select
@@ -168,6 +169,7 @@ class AdminTab(QWidget):
         lay.addWidget(H2('Audit Log'))
         self._audit=make_table(['Time','User','Action','Module','Detail'], stretch_col=4, row_height=32)
         self._audit.setMaximumHeight(160)
+        self._audit.cellDoubleClicked.connect(self._open_audit)
         lay.addWidget(wrap_table_card(self._audit))
         # Clearance so Copilot FAB never covers Deactivate / audit footer
         lay.addSpacing(72)
@@ -311,9 +313,22 @@ class AdminTab(QWidget):
             if res and res.get('success'): QMessageBox.information(self,'Done','Password reset.')
     def _toggle(self):
         if not self._uid: return
+        if not require_permission(self.user, 'users.delete', self):
+            return
         u=next((x for x in self.users if x['id']==self._uid),None)
         if not u: return
-        self.api.update_user(self._uid,{'is_active':0 if u.get('is_active',1) else 1}); self.refresh()
+        actor = (self.user.get('user') or self.user or {})
+        if int(u.get('id') or 0) == int(actor.get('id') or 0):
+            QMessageBox.warning(self, 'Not Allowed', 'You cannot deactivate your own account.')
+            return
+        turning_off = bool(u.get('is_active', 1))
+        res = self.api.update_user(self._uid, {'is_active': 0 if turning_off else 1})
+        if res and res.get('success'):
+            self.refresh()
+            return
+        QMessageBox.warning(
+            self, 'Not Allowed',
+            (res or {}).get('error') or 'This account was not changed.')
     def _add(self):
         dlg=_NewUserDlg(self)
         if dlg.exec_()==QDialog.Accepted:
@@ -328,9 +343,32 @@ class AdminTab(QWidget):
             logs=self.api.get_audit_log() or []; self._audit.setRowCount(0)
             for i,l in enumerate(logs[:50]):
                 self._audit.insertRow(i)
-                for j,v in enumerate([(l.get('created_at') or '')[:19],l.get('username',''),
-                        l.get('action',''),l.get('module',''),l.get('details','')]):
-                    self._audit.setItem(i,j,tbl_item(str(v)))
+                values = [(l.get('created_at') or '')[:19], l.get('username',''),
+                          l.get('action',''), l.get('module',''), l.get('details','')]
+                for j, v in enumerate(values):
+                    cell = tbl_item(str(v))
+                    if j == 0:
+                        cell.setData(Qt.UserRole, dict(l))
+                    self._audit.setItem(i, j, cell)
+
+    def _open_audit(self, row, _col):
+        item = self._audit.item(row, 0)
+        payload = item.data(Qt.UserRole) if item is not None else None
+        if not payload:
+            return
+        from backend.audit_detail import describe_event
+        event = describe_event(payload)
+        changes = event['changes'] or [{'field': '—', 'before': 'Not recorded', 'after': 'Not recorded'}]
+        text = "\n".join([
+            f"Event {event['id']}: {event['action']}",
+            f"User: {event['username']}",
+            f"Recorded: {event['recorded_at']}",
+            event['details'],
+            "",
+            "Before and after",
+            *[f"{c['field']}: {c['before']} -> {c['after']}" for c in changes],
+        ])
+        QMessageBox.information(self, 'Audit event', text)
         except Exception: pass
 
 class _NewUserDlg(QDialog):

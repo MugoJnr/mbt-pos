@@ -609,6 +609,21 @@ class ProductCard(QFrame):
                                  self._product.get('unit', 'pcs') or 'pcs')
 
 
+_POS_QTY_STEP = 0.25
+
+
+def set_pos_qty_step(value) -> float:
+    """Shop setting for the POS quantity wheel and plus/minus buttons."""
+    global _POS_QTY_STEP
+    try:
+        step = round(float(value), 3)
+    except (TypeError, ValueError):
+        return _POS_QTY_STEP
+    if 0 < step <= 1000:
+        _POS_QTY_STEP = step
+    return _POS_QTY_STEP
+
+
 # ── QuantityControl ───────────────────────────────────────────────────────────
 
 class QuantityControl(QWidget):
@@ -981,7 +996,7 @@ class CartLineRow(QFrame):
 
         self._qty = QuantityControl(
             value=float(self._item.get('quantity') or 1),
-            step=0.25, minimum=0.25, width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
+            step=_POS_QTY_STEP, minimum=0.01, snap=False, width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
         self._qty.valueChanged.connect(self.qtyChanged.emit)
         root.addWidget(self._qty, 0)
 

@@ -1595,9 +1595,10 @@ class APIClient:
             db.close()
 
     def update_settings(self, data: dict) -> dict:
-        from backend.settings_guard import reject_secret_settings
+        from backend.settings_guard import reject_privileged_settings, reject_secret_settings
         try:
             data = reject_secret_settings(data or {})
+            data = reject_privileged_settings(data, self._role or '')
         except ValueError as exc:
             return {'success': False, 'error': str(exc)}
         db = _db()
@@ -1670,12 +1671,29 @@ class APIClient:
             if not can_assign_role(actor_role, new_role):
                 return {'error': 'Only the shop owner (Super Admin) can assign the Super Admin role.'}
             if not is_superadmin_role(actor_role) and is_superadmin_role(target['role']):
-                if new_role != target['role']:
-                    return {'error': 'Only the shop owner can change a Super Admin account.'}
-                if 'tab_permissions' in data:
-                    return {'error': 'Only the shop owner can change a Super Admin account.'}
-                if data.get('is_active') == 0:
-                    return {'error': 'Only the shop owner can deactivate a Super Admin account.'}
+                return {'error': 'Only the shop owner can change a Super Admin account.'}
+            if 'is_active' in data:
+                from desktop.utils.security import has_permission
+                if not has_permission({'role': actor_role}, 'users.delete'):
+                    return {
+                        'error': 'Only an administrator can remove a staff account.',
+                        'status': 403,
+                    }
+                if data.get('is_active') in (0, '0', False) and int(uid) == int(self._user_id or 0):
+                    return {'error': 'You cannot deactivate your own account.', 'status': 400}
+            demoting = 'role' in data and not is_superadmin_role(data.get('role'))
+            disabling = data.get('is_active') in (0, '0', False)
+            if is_superadmin_role(target['role']) and (demoting or disabling):
+                others = db.execute(
+                    "SELECT COUNT(*) AS c FROM users "
+                    "WHERE role='superadmin' AND is_active=1 AND id!=?",
+                    (uid,),
+                ).fetchone()['c']
+                if int(others or 0) == 0:
+                    return {
+                        'error': 'The shop must keep one active Super Admin.',
+                        'status': 400,
+                    }
             fields, values = [], []
             for field in ('role','full_name','email','is_active'):
                 if field in data:
@@ -1699,12 +1717,36 @@ class APIClient:
 
     def delete_user(self, uid: int) -> dict:
         from roles import is_superadmin_role
-        if not is_superadmin_role(self._role or ''):
-            return {'error': 'Super Admin only'}
+        from desktop.utils.security import has_permission
+        actor_role = (self._role or '').lower()
+        if not has_permission({'role': actor_role}, 'users.delete'):
+            return {
+                'error': 'Only an administrator can remove a staff account.',
+                'status': 403,
+            }
         if uid == self._user_id:
-            return {'error': 'You cannot deactivate your own account.'}
+            return {'error': 'You cannot deactivate your own account.', 'status': 400}
         db = _db()
         try:
+            target = db.execute(
+                "SELECT role, is_active FROM users WHERE id=?", (uid,)
+            ).fetchone()
+            if target and is_superadmin_role(target['role']) and not is_superadmin_role(actor_role):
+                return {
+                    'error': 'Only the shop owner can change a Super Admin account.',
+                    'status': 403,
+                }
+            if target and is_superadmin_role(target['role']) and int(target['is_active'] or 0) == 1:
+                others = db.execute(
+                    "SELECT COUNT(*) AS c FROM users "
+                    "WHERE role='superadmin' AND is_active=1 AND id!=?",
+                    (uid,),
+                ).fetchone()['c']
+                if int(others or 0) == 0:
+                    return {
+                        'error': 'The shop must keep one active Super Admin.',
+                        'status': 400,
+                    }
             db.execute("UPDATE users SET is_active=0 WHERE id=?", (uid,))
             db.commit()
             return {'success': True}
@@ -2009,6 +2051,21 @@ class APIClient:
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
         """Update a product. Stock changes go through adjust_stock only."""
+        from desktop.utils.security import has_permission
+        role = (self._role or '').lower()
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.edit_info'):
+            return {'error': 'You cannot change this product.', 'status': 403}
+        if 'name' in data and not str(data.get('name') or '').strip():
+            return {'error': 'Product name is required.', 'status': 400}
+        for key in ('price', 'cost_price'):
+            if key not in data:
+                continue
+            try:
+                if float(data[key]) < 0:
+                    return {'error': 'Price and cost cannot be negative.', 'status': 400}
+            except (TypeError, ValueError):
+                return {'error': 'Enter a valid price.', 'status': 400}
         db = _db()
         try:
             if 'stock' in data:
@@ -2019,6 +2076,19 @@ class APIClient:
 
             # Get current values for audit trail
             old = db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone()
+            if not old:
+                return {'error': 'Product not found.', 'status': 404}
+            if 'is_active' in data:
+                try:
+                    new_active = 1 if int(data.get('is_active') or 0) else 0
+                except (TypeError, ValueError):
+                    return {'error': 'Enter a valid product status.', 'status': 400}
+                old_active = 1 if int(old['is_active'] or 0) else 0
+                if new_active != old_active and not has_permission({'role': role}, 'inventory.delete'):
+                    return {
+                        'error': 'Only an administrator can remove a product.',
+                        'status': 403,
+                    }
 
             fields, values = [], []
             for field in ('name','sku','category','price','cost_price',
@@ -2032,8 +2102,24 @@ class APIClient:
                 db.execute(f"UPDATE products SET {','.join(fields)} WHERE id=?", values)
                 db.commit()
 
+            changes = []
+            if old is not None:
+                for key in ('name', 'sku', 'barcode', 'category', 'price', 'cost_price', 'unit', 'min_stock', 'is_active'):
+                    if key not in data:
+                        continue
+                    before = old[key] if key in old.keys() else ''
+                    after = data[key]
+                    if key in ('price', 'cost_price', 'min_stock', 'is_active'):
+                        try:
+                            changed = float(before or 0) != float(after or 0)
+                        except (TypeError, ValueError):
+                            changed = str(before) != str(after)
+                    else:
+                        changed = str(before or '') != str(after or '')
+                    if changed:
+                        changes.append(f"{key} {before}->{after}")
             _audit(self._user_id, self._username, 'UPDATE_PRODUCT', 'inventory',
-                   f"pid={pid} fields={list(data.keys())} pin_verified={pin_verified}")
+                   f"pid={pid} " + (", ".join(changes) or f"fields={list(data.keys())}"))
             result_ok = True
         except sqlite3.IntegrityError as e:
             logger.warning(f"update_product integrity: {e}")
@@ -2643,6 +2729,64 @@ class APIClient:
         finally:
             db.close()
 
+    def _backdate_actor(self) -> dict:
+        return {
+            'id': self._user_id,
+            'username': self._username or '',
+            'full_name': self._username or '',
+            'role': (self._role or '').lower(),
+        }
+
+    def _backdate(self, func, *args):
+        from backend.backdate_requests import BackdateError
+        db = _db()
+        try:
+            return func(db, self._backdate_actor(), *args)
+        except BackdateError as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return {'error': exc.message, 'status': exc.status}
+        finally:
+            db.close()
+
+    def list_backdate_requests(self, filters=None) -> dict:
+        from backend.backdate_requests import list_requests
+        return self._backdate(list_requests, filters or {})
+
+    def create_backdate_request(self, data: dict) -> dict:
+        from backend.backdate_requests import create_request
+        return self._backdate(create_request, data or {})
+
+    def get_backdate_request(self, request_id: int) -> dict:
+        from backend.backdate_requests import get_request
+        return self._backdate(get_request, int(request_id))
+
+    def update_backdate_request(self, request_id: int, data: dict) -> dict:
+        from backend.backdate_requests import update_request
+        return self._backdate(update_request, int(request_id), data or {})
+
+    def submit_backdate_request(self, request_id: int, version=None) -> dict:
+        from backend.backdate_requests import submit_request
+        return self._backdate(submit_request, int(request_id), {'version': version})
+
+    def withdraw_backdate_request(self, request_id: int, reason: str, version=None) -> dict:
+        from backend.backdate_requests import withdraw_request
+        return self._backdate(withdraw_request, int(request_id), {'reason': reason, 'version': version})
+
+    def return_backdate_request(self, request_id: int, reason: str, version=None) -> dict:
+        from backend.backdate_requests import return_request
+        return self._backdate(return_request, int(request_id), {'reason': reason, 'version': version})
+
+    def reject_backdate_request(self, request_id: int, reason: str, version=None) -> dict:
+        from backend.backdate_requests import reject_request
+        return self._backdate(reject_request, int(request_id), {'reason': reason, 'version': version})
+
+    def approve_backdate_request(self, request_id: int, version=None, note: str = '') -> dict:
+        from backend.backdate_requests import approve_request
+        return self._backdate(approve_request, int(request_id), {'version': version, 'note': note})
+
     def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '',
                          confirm_credit_payments: bool = False) -> dict:
         """Run a pending void or stock approval once. Reject and escalate do not."""
@@ -2951,7 +3095,7 @@ class APIClient:
                                 pin: str = '') -> dict:
         """Administrator approves or rejects. Approval is the only stock write."""
         if (self._role or '').lower() != 'superadmin':
-            return {'error': 'Only Super-Admin can decide a stock adjustment.'}
+            return {'error': 'Only Super-Admin can decide a stock adjustment.', 'status': 403}
         decision = (decision or '').strip().lower()
         if decision not in ('approved', 'rejected'):
             return {'error': 'Choose approve or reject.'}
@@ -3069,10 +3213,16 @@ class APIClient:
             db.close()
 
     def delete_product(self, pid: int) -> dict:
+        from desktop.utils.security import has_permission
+        role = (self._role or '').lower()
+        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        if role not in known or not has_permission({'role': role}, 'inventory.delete'):
+            return {'error': 'Only an administrator can remove a product.', 'status': 403}
         db = _db()
         try:
             db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
             db.commit()
+            _audit(self._user_id, self._username, 'DELETE_PRODUCT', 'inventory', f'pid={pid}')
             return {'success': True}
         finally:
             db.close()
@@ -3159,6 +3309,9 @@ class APIClient:
         return sale_date_s, is_backdated, created_at
 
     def create_sale(self, data: dict) -> dict:
+        from desktop.utils.security import has_permission
+        if not has_permission({'role': (self._role or '').lower()}, 'sales.create'):
+            return {'error': 'You cannot take a payment.', 'status': 403}
         items = data.get('items') or []
         if not items:
             return {'error': 'Cart is empty — add at least one product before charging.'}
@@ -6976,12 +7129,18 @@ class APIClient:
             db.close()
 
     def accounting_expenses(self, start=None, end=None) -> list:
-        if not self._acc_perm('accounting.view'):
+        see_all = self._acc_perm('accounting.view')
+        own_only = not see_all and self._acc_perm('accounting.create_expenses')
+        if not see_all and not own_only:
             return []
         db = _db()
         try:
             from desktop.utils.accounting_engine import list_expenses
-            return list_expenses(db, start, end)
+            rows = list_expenses(db, start, end)
+            if own_only:
+                uid = int(self._user_id or 0)
+                rows = [row for row in rows if int(row.get('created_by') or 0) == uid]
+            return rows
         finally:
             db.close()
 

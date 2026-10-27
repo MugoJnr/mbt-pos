@@ -101,6 +101,17 @@ class SalesTab(QWidget):
         root.setContentsMargins(PADDING, 12, PADDING, 12)
         root.setSpacing(0)
         self._root_lay = root
+        from desktop.utils.security import has_permission
+        if has_permission(self.user, 'sales.request_backdate') or has_permission(self.user, 'sales.business_day'):
+            backdate_bar = QHBoxLayout()
+            backdate_btn = SecondaryBtn('Backdating Requests')
+            backdate_btn.setToolTip(
+                'Ask an administrator to record sales against an earlier business day.'
+            )
+            backdate_btn.clicked.connect(self._open_backdate_requests)
+            backdate_bar.addWidget(backdate_btn)
+            backdate_bar.addStretch(1)
+            root.addLayout(backdate_bar)
 
         # Prevent the Sales tab itself from scrolling — panels scroll independently.
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -114,6 +125,8 @@ class SalesTab(QWidget):
         layout_id = DEFAULT_CHECKOUT_LAYOUT
         try:
             cfg = self.api.get_settings() or {}
+            from desktop.utils.pos_components import set_pos_qty_step
+            set_pos_qty_step(cfg.get('wheel_pos_qty') or 0.25)
             layout_id = normalize_layout_id(cfg.get(CHECKOUT_LAYOUT_KEY))
         except Exception:
             layout_id = DEFAULT_CHECKOUT_LAYOUT
@@ -121,6 +134,10 @@ class SalesTab(QWidget):
         apply_layout_shell(self, layout_id)
         self._sync_layout_combo(layout_id)
         self._update_hold_buttons()
+
+    def _open_backdate_requests(self):
+        from desktop.tabs.backdate_dialog import BackdateDialog
+        BackdateDialog(self.api, self.user, self).exec_()
 
     def _sync_layout_combo(self, layout_id: str):
         """Keep POS Layout combo aligned without re-firing change handlers."""
@@ -374,10 +391,10 @@ class SalesTab(QWidget):
 
         btn = getattr(self, '_cart_max_btn', None)
         if btn is not None:
-            btn.setText('Restore' if enabled else 'Review')
+            btn.setText('Back to products' if enabled else 'View Cart')
             btn.setToolTip(
-                'Return to product picker' if enabled else
-                'Enlarge the cart to review and edit many items. Esc or Restore to add products again.')
+                'Return to the product list. The sale stays as it is.' if enabled else
+                'Open a larger cart so you can check and edit a long sale.')
             # Pro chrome hides Review in the header; show it while maximized so
             # cashiers can Restore without hunting the quick-actions pad.
             if layout_id == 'checkout_pro':
@@ -387,11 +404,7 @@ class SalesTab(QWidget):
                     if cnt is not None:
                         n = len(getattr(self, 'cart', []) or [])
                         cnt.setText(f'{n} item{"s" if n != 1 else ""}')
-                        cnt.setVisible(bool(enabled))
-                    if not enabled:
-                        btn.hide()
-                        if cnt is not None:
-                            cnt.hide()
+                        cnt.setVisible(True)
                 except Exception:
                     pass
 

@@ -136,6 +136,7 @@ class AccountFinanceGapTests(unittest.TestCase):
         self.api.change_superadmin_pin('', '246810', '246810')
         asked = self.api.request_stock_adjustment(self.product_id, 7, 'Count was short')
         self.assertTrue(asked.get('success'), asked)
+        self.api._role = 'manager'
         blocked = self.api.review_stock_adjustment(asked['id'], 'approved', 'ok', pin='')
         self.assertEqual(blocked.get('status'), 403)
         db = self.ac._db()
@@ -144,7 +145,8 @@ class AccountFinanceGapTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(float(stock), 10)
-        approved = self.api.review_stock_adjustment(asked['id'], 'approved', 'ok', pin='246810')
+        self.api._role = 'superadmin'
+        approved = self.api.review_stock_adjustment(asked['id'], 'approved', 'ok', pin='')
         self.assertTrue(approved.get('success'), approved)
         db = self.ac._db()
         try:

@@ -1,8 +1,8 @@
 {
-    "version": "3.1.67",
-    "build": "RC-2026-10-24-v3.1.67",
-    "released": "2026-10-24",
-    "release_notes": "All Receipts lists sales, deliveries, consumption, debts, expenses, stock requests, and approvals. A signed-in Super Admin can approve stock changes and restore a voided sale or consumption without entering the PIN again. A manager still enters the PIN, and a cashier sends a void request instead of voiding the sale. Product photographs can be added from the till and the dashboard and are included in the shop backup. A sale keeps its product names and line totals.",
-    "checksum_sha256": "be3ed6f406a871a83e8e1c679a1dabcae1e4e0543bafd004275ad0beb4d0e045",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.67/MBT_POS_Setup.exe"
+    "version": "3.1.71",
+    "build": "RC-2026-10-27-v3.1.71",
+    "released": "2026-10-27",
+    "release_notes": "Shops install this from the till update check. A signed-in Super Admin can void a receipt directly. Void requests can be opened, corrected, and returned. Audit records open with the details that were stored. A cashier can request a past-date sale, and a manager, admin, or Super Admin approves it once. Inventory search is by product name. Only an administrator can archive a product or deactivate staff. Dashboard sign-in accepts the shop hostname over https.",
+    "checksum_sha256": "dcea670e1b1f8422cdf680a82b7bc47dfd2070aaeeb39d27ff5090e727691e28",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.71/MBT_POS_Setup.exe"
 }

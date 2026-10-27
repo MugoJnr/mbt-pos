@@ -2,8 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
-import { Badge, Button, Card, PageHeader, Table } from "@/components/ui-kit";
+import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/users")({
   component: Users,
@@ -28,21 +29,34 @@ function Users() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newRole, setNewRole] = useState("cashier");
   const [userMsg, setUserMsg] = useState("");
+  const { user } = useAuth();
+  const role = String(user?.role || "").toLowerCase();
+  const canViewUsers = role === "manager" || role === "admin" || role === "superadmin";
+  const canManageUsers = role === "admin" || role === "superadmin";
   const usersQ = useQuery({
     queryKey: ["users"],
     queryFn: () => GET<any[]>("/users"),
+    enabled: canViewUsers,
   });
   const sessionsQ = useQuery({
     queryKey: ["sessions"],
     queryFn: () => GET<any>("/sessions"),
     refetchInterval: 15000,
+    enabled: canManageUsers,
   });
   const tillQ = useQuery({
     queryKey: ["till-signins"],
     queryFn: () => GET<any>("/till/signins"),
     refetchInterval: 3000,
+    enabled: canManageUsers,
   });
   const users = Array.isArray(usersQ.data) ? usersQ.data : [];
+  const [userQuery, setUserQuery] = useState("");
+  const shownUsers = users.filter((u: any) => {
+    const q = userQuery.trim().toLowerCase();
+    if (!q) return true;
+    return [u.full_name, u.username, u.role].some((part) => String(part || "").toLowerCase().includes(q));
+  });
   const err = usersQ.data && !Array.isArray(usersQ.data) ? (usersQ.data as any).error : null;
 
   return (
@@ -103,6 +117,8 @@ function Users() {
         </div>
       </Card>
 
+      {canManageUsers ? (
+      <>
       <Card className="mb-4">
         <div className="p-4 space-y-3">
           <div className="text-sm font-semibold text-text">Add a staff account</div>
@@ -217,15 +233,29 @@ function Users() {
           )}
         </div>
       </Card>
+      </>
+      ) : null}
 
       <Card>
-        {usersQ.isLoading ? (
+        {!canViewUsers ? (
+          <div className="py-12 text-center text-sm text-text2">
+            Account administration is limited to a manager or above. You can still change your own password.
+          </div>
+        ) : usersQ.isLoading ? (
           <div className="py-12 text-center text-sm text-text2">Loading users…</div>
         ) : err ? (
           <div className="py-12 text-center text-sm text-err">{String(err)}</div>
         ) : (
+          <>
+          <div className="flex gap-2 p-3">
+            <Input value={userQuery} onChange={(e) => setUserQuery(e.target.value)} placeholder="Search name, username, or role" />
+            <Button variant="secondary" onClick={() => setUserQuery("")}>Clear</Button>
+          </div>
           <Table head={["Name", "Username", "Role", "Status", "Last Login"]}>
-            {users.map((u: any) => {
+            {shownUsers.length === 0 ? (
+              <tr><td className="px-4 py-4 text-text2" colSpan={5}>No staff match that search.</td></tr>
+            ) : null}
+            {shownUsers.map((u: any) => {
               let tabs = 0;
               try {
                 const p = u.tab_permissions
@@ -263,6 +293,7 @@ function Users() {
               );
             })}
           </Table>
+          </>
         )}
       </Card>
     </AppShell>

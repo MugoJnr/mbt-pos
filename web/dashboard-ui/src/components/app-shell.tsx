@@ -21,6 +21,8 @@ import {
   Bell,
   Activity,
   ClipboardCheck,
+  Ban,
+  CalendarClock,
   ClipboardList,
   Receipt,
   HeartPulse,
@@ -29,6 +31,7 @@ import {
   Sparkles,
   MoreHorizontal,
   Search,
+  PanelLeft,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -47,30 +50,33 @@ type NavItem = {
   icon: typeof LayoutDashboard;
   super?: boolean;
   group?: string;
+  roles?: string[];
 };
 
 const NAV: NavItem[] = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, group: "Overview" },
-  { to: "/live", label: "Live", icon: Activity, group: "Overview" },
-  { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview" },
-  { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations" },
-  { to: "/receipts", label: "All Receipts", icon: Receipt, group: "Operations" },
-  { to: "/inventory", label: "Inventory", icon: Package, group: "Operations" },
-  { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations" },
-  { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations" },
-  { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations" },
-  { to: "/finance", label: "Finance", icon: Banknote, group: "Operations" },
-  { to: "/notifications", label: "Notifications", icon: Bell, group: "Command" },
-  { to: "/health", label: "System Health", icon: HeartPulse, group: "Command" },
-  { to: "/backup", label: "Backup", icon: HardDrive, group: "Command" },
-  { to: "/branches", label: "Branches", icon: GitBranch, group: "Command" },
-  { to: "/ai", label: "AI Center", icon: Sparkles, group: "Command" },
-  { to: "/notes", label: "Notes", icon: NotebookPen, group: "Admin" },
-  { to: "/users", label: "Users & Access", icon: Users, group: "Admin" },
-  { to: "/settings", label: "Settings", icon: Settings, group: "Admin" },
-  { to: "/security", label: "Security", icon: ShieldCheck, super: true, group: "Admin" },
-  { to: "/license", label: "License", icon: KeyRound, super: true, group: "Admin" },
-  { to: "/diagnostics", label: "Diagnostics", icon: Wrench, group: "Admin" },
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, group: "Overview", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/live", label: "Live", icon: Activity, group: "Overview", roles: ["manager", "admin", "superadmin"] },
+  { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview", roles: ["manager", "admin", "superadmin"] },
+  { to: "/void-requests", label: "Void Requests", icon: Ban, group: "Overview", roles: ["cashier", "manager", "admin", "superadmin"] },
+  { to: "/backdating", label: "Backdating Requests", icon: CalendarClock, group: "Overview", roles: ["cashier", "manager", "admin", "superadmin"] },
+  { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations", roles: ["cashier", "manager", "admin", "superadmin"] },
+  { to: "/receipts", label: "All Receipts", icon: Receipt, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/inventory", label: "Inventory", icon: Package, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
+  { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
+  { to: "/finance", label: "Finance", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/notifications", label: "Notifications", icon: Bell, group: "Command", roles: ["manager", "admin", "superadmin"] },
+  { to: "/health", label: "System Health", icon: HeartPulse, group: "Command", roles: ["admin", "superadmin"] },
+  { to: "/backup", label: "Backup", icon: HardDrive, group: "Command", roles: ["admin", "superadmin"] },
+  { to: "/branches", label: "Branches", icon: GitBranch, group: "Command", roles: ["admin", "superadmin"] },
+  { to: "/ai", label: "AI Center", icon: Sparkles, group: "Command", roles: ["manager", "admin", "superadmin"] },
+  { to: "/notes", label: "Notes", icon: NotebookPen, group: "Admin", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/users", label: "Users & Access", icon: Users, group: "Admin", roles: ["manager", "admin", "superadmin"] },
+  { to: "/settings", label: "Settings", icon: Settings, group: "Admin", roles: ["manager", "admin", "superadmin"] },
+  { to: "/security", label: "Security", icon: ShieldCheck, super: true, group: "Admin", roles: ["superadmin"] },
+  { to: "/license", label: "License", icon: KeyRound, super: true, group: "Admin", roles: ["superadmin"] },
+  { to: "/diagnostics", label: "Diagnostics", icon: Wrench, group: "Admin", roles: ["admin", "superadmin"] },
 ];
 
 const MOBILE_NAV = [
@@ -113,16 +119,19 @@ function SidebarContent({
   todayOrders = 0,
   todayProfit = 0,
   versionLabel,
+  collapsed = false,
 }: {
   onNavigate?: () => void;
   showTodaySummary?: boolean;
   todaySales?: number;
   todayOrders?: number;
   todayProfit?: number;
+  collapsed?: boolean;
   versionLabel?: string;
 }) {
   const location = useLocation();
   const { user, logout } = useAuth();
+  const qc = useQueryClient();
   const displayName = user?.full_name || user?.username || "Staff";
   const role = String(user?.role || "cashier").toUpperCase();
   const groups = ["Overview", "Operations", "Command", "Admin"] as const;
@@ -136,18 +145,16 @@ function SidebarContent({
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2.5">
         {groups.map((group) => {
           const roleKey = String(user?.role || "").toLowerCase();
-          const canConsume = roleKey === "manager" || roleKey === "admin" || roleKey === "superadmin";
-          const canFinance = canConsume || roleKey === "cashier";
           const items = NAV.filter((n) => {
             if (n.group !== group) return false;
-            if (n.to === "/consumption") return canConsume;
-            if (n.to === "/finance") return canFinance;
+            if (n.roles && !n.roles.includes(roleKey)) return false;
+            if (n.super && roleKey !== "superadmin") return false;
             return true;
           });
           if (!items.length) return null;
           return (
             <div key={group} className="mb-3">
-              <div className="px-3 pt-1.5 pb-1.5 text-eyebrow text-muted-fg">{group}</div>
+              {collapsed ? null : <div className="px-3 pt-1.5 pb-1.5 text-eyebrow text-muted-fg">{group}</div>}
               <div className="space-y-0.5">
                 {items.map((item) => {
                   const active =
@@ -185,7 +192,7 @@ function SidebarContent({
                           active && (showTodaySummary ? "text-info" : "text-gold"),
                         )}
                       />
-                      <span className="truncate">{item.label}</span>
+                      {collapsed ? <span className="sr-only">{item.label}</span> : <span className="truncate">{item.label}</span>}
                     </Link>
                   );
                 })}
@@ -208,10 +215,12 @@ function SidebarContent({
             <span className="text-text2">Orders</span>
             <span className="font-semibold text-text tabular-nums">{todayOrders}</span>
           </div>
+          {["viewer", "manager", "admin", "superadmin"].includes(String(user?.role || "").toLowerCase()) ? (
           <div className="flex justify-between text-[12px]">
             <span className="text-text2">Profit</span>
             <span className="font-semibold text-ok tabular-nums">{KES(todayProfit)}</span>
           </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -223,7 +232,10 @@ function SidebarContent({
         <div className="text-eyebrow text-gold mb-2.5 mt-0.5">{role}</div>
         <button
           type="button"
-          onClick={() => logout()}
+          onClick={() => {
+            qc.clear();
+            logout();
+          }}
           className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-sm text-text hover:bg-hover hover:border-err/40 hover:text-err transition-ui min-h-[44px]"
         >
           <LogOut className="h-3.5 w-3.5" /> Sign Out
@@ -476,6 +488,59 @@ function GlobalSearch({ wide = false }: { wide?: boolean }) {
   );
 }
 
+function UpdateNotice() {
+  const updateQ = useQuery({
+    queryKey: ["update-status"],
+    queryFn: () => GET<{
+      state?: string;
+      message?: string;
+      installed_version?: string;
+      available_version?: string;
+      summary?: string;
+      released?: string;
+      action?: string;
+      download_url?: string;
+    }>("/updates/status"),
+    staleTime: 60_000,
+    retry: 0,
+  });
+  if (updateQ.isLoading) {
+    return <div className="mb-3 text-xs text-text2">Checking for updates…</div>;
+  }
+  const data = updateQ.data;
+  if (updateQ.isError || !data) {
+    return <div className="mb-3 text-xs text-text2">The latest version could not be checked. The shop is unchanged.</div>;
+  }
+  if (data.state === "current") {
+    return <div className="mb-3 text-xs text-text2">Up to date · v{data.installed_version}</div>;
+  }
+  const tone = data.state === "available" ? "border-amber-500/40 bg-amber-500/10" : "border-border bg-card";
+  return (
+    <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${tone}`}>
+      <div className="font-semibold text-text">{data.message || "Update status"}</div>
+      <div className="mt-1 text-xs text-text2">
+        Installed {data.installed_version || "unknown"}
+        {data.available_version ? ` · Available ${data.available_version}` : ""}
+        {data.released ? ` · Released ${data.released.slice(0, 10)}` : ""}
+      </div>
+      {data.summary ? <div className="mt-1 text-xs text-text">{data.summary}</div> : null}
+      {data.state === "available" && data.action ? (
+        <div className="mt-1 text-xs text-text2">
+          {data.action}
+          {data.download_url ? (
+            <>
+              {" "}
+              <a className="text-gold underline" href={data.download_url} target="_blank" rel="noreferrer">
+                Open the till installer
+              </a>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AppShell({
   title,
   children,
@@ -492,6 +557,22 @@ export function AppShell({
   const qc = useQueryClient();
   const { user } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebar, setSidebar] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("mbt-sidebar") || "{}");
+      const width = Number(saved.width);
+      return {
+        collapsed: Boolean(saved.collapsed),
+        width: Number.isFinite(width) ? Math.min(420, Math.max(180, width)) : 240,
+      };
+    } catch {
+      return { collapsed: false, width: 240 };
+    }
+  });
+  function saveSidebar(next: { collapsed: boolean; width: number }) {
+    setSidebar(next);
+    localStorage.setItem("mbt-sidebar", JSON.stringify(next));
+  }
   const isPos = density === "pos";
 
   const versionQ = useQuery({
@@ -499,9 +580,12 @@ export function AppShell({
     queryFn: () => GET<{ version?: string; build?: string; exe?: string }>("/version"),
     staleTime: 60_000 * 10,
   });
+  const roleKey = String(user?.role || "").toLowerCase();
+  const canNotify = ["manager", "admin", "superadmin"].includes(roleKey);
   const notifQ = useQuery({
     queryKey: ["notifications-badge"],
     queryFn: () => GET<{ unread?: number }>("/notifications", { limit: "1" }),
+    enabled: canNotify,
     refetchInterval: 45_000,
   });
   const todayQ = useQuery({
@@ -522,9 +606,9 @@ export function AppShell({
     retry: 0,
   });
   const unread = Number(notifQ.data?.unread || 0);
-  const ver = versionQ.data?.version || "2.3.92";
-  const build = versionQ.data?.build || "PROD-2026-07-19-v2.3.92";
-  const exe = versionQ.data?.exe || "MBT_POS.exe";
+  const ver = versionQ.isLoading ? "…" : versionQ.data?.version || "unavailable";
+  const build = versionQ.data?.build || "";
+  const exe = versionQ.data?.exe || "";
   const displayName = user?.full_name || user?.username || "Staff";
   const initials = displayName
     .split(/\s+/)
@@ -586,8 +670,45 @@ export function AppShell({
     <div className={cn("flex flex-col bg-app text-text", isPos ? "h-dvh overflow-hidden" : "min-h-screen")}>
       <div className="flex flex-1 min-h-0">
         {/* Desktop Sidebar */}
-        <aside className="hidden lg:flex w-[240px] shrink-0 flex-col bg-sidebar border-r border-border">
+        <aside
+          className="hidden lg:flex relative shrink-0 flex-col bg-sidebar border-r border-border"
+          style={{ width: sidebar.collapsed ? 72 : sidebar.width }}
+        >
+          <button
+            type="button"
+            aria-label={sidebar.collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="absolute right-2 top-2 z-10 inline-flex h-8 w-8 items-center justify-center rounded-lg text-text2 hover:bg-hover"
+            onClick={() => saveSidebar({ ...sidebar, collapsed: !sidebar.collapsed })}
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+          {!sidebar.collapsed ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+              className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize"
+              onMouseDown={(event) => {
+                event.preventDefault();
+                const startX = event.clientX;
+                const startW = sidebar.width;
+                const move = (ev: MouseEvent) => {
+                  const width = Math.min(420, Math.max(180, startW + ev.clientX - startX));
+                  setSidebar((cur) => ({ ...cur, width }));
+                };
+                const up = (ev: MouseEvent) => {
+                  const width = Math.min(420, Math.max(180, startW + ev.clientX - startX));
+                  saveSidebar({ collapsed: false, width });
+                  window.removeEventListener("mousemove", move);
+                  window.removeEventListener("mouseup", up);
+                };
+                window.addEventListener("mousemove", move);
+                window.addEventListener("mouseup", up);
+              }}
+            />
+          ) : null}
           <SidebarContent
+            collapsed={sidebar.collapsed}
             showTodaySummary={isPos}
             todaySales={todaySales}
             todayOrders={todayOrders}
@@ -651,6 +772,7 @@ export function AppShell({
                   </span>
                 </div>
               ) : null}
+              {canNotify ? (
               <Link
                 to="/notifications"
                 className="relative inline-flex items-center justify-center h-11 w-11 sm:h-9 sm:w-9 rounded-lg border border-border bg-card text-text hover:bg-hover transition-ui"
@@ -663,6 +785,7 @@ export function AppShell({
                   </span>
                 ) : null}
               </Link>
+              ) : null}
               <button
                 type="button"
                 onClick={refresh}
@@ -693,6 +816,7 @@ export function AppShell({
                 isPos ? "h-full min-h-0 p-2 sm:p-2.5 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
               )}
             >
+              <UpdateNotice />
               {children}
             </div>
           </main>
@@ -722,7 +846,22 @@ export function AppShell({
       {/* Mobile bottom navigation */}
       <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border bg-panel/95 backdrop-blur-md safe-bottom shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.4)]">
         <div className="grid grid-cols-5">
-          {MOBILE_NAV.map((item) => {
+          {(roleKey === "viewer"
+            ? [
+                { to: "/", label: "Home", icon: LayoutDashboard },
+                { to: "/receipts", label: "Receipts", icon: Receipt },
+                { to: "/inventory", label: "Stock", icon: Package },
+                { to: "/reports", label: "Reports", icon: BarChart3 },
+              ]
+            : roleKey === "cashier"
+              ? [
+                  { to: "/", label: "Home", icon: LayoutDashboard },
+                  { to: "/pos", label: "POS", icon: ShoppingCart },
+                  { to: "/inventory", label: "Stock", icon: Package },
+                  { to: "/notes", label: "Notes", icon: NotebookPen },
+                ]
+              : MOBILE_NAV
+          ).map((item) => {
             const active =
               item.to === "/"
                 ? location.pathname === "/"

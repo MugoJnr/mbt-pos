@@ -105,9 +105,11 @@ class InventoryProductGate(unittest.TestCase):
         )
         db.commit()
         db.close()
+        self.api._role = 'cashier'
         blocked = self.api.adjust_stock(pid, 4, 'cycle count correction', pin='')
         self.assertEqual(blocked.get('status'), 403)
-        adj = self.api.adjust_stock(pid, 4, 'cycle count correction', pin='123456')
+        self.api._role = 'superadmin'
+        adj = self.api.adjust_stock(pid, 4, 'cycle count correction', pin='')
         self.assertTrue(adj.get('success'), adj)
         self.assertAlmostEqual(float(adj.get('new_stock') or 0), 4.0, places=2)
 
@@ -167,6 +169,37 @@ class InventoryProductGate(unittest.TestCase):
         ).fetchone()['stock'])
         db.close()
         self.assertEqual(stock, 8.0)
+
+    def test_price_barcode_and_stock_stay_separate(self):
+        created = self.api.create_product({
+            'name': 'Price Soap',
+            'sku': 'PRICE-1',
+            'price': 30.0,
+            'cost_price': 12.0,
+            'stock': 6,
+            'barcode': '111',
+        })
+        pid = int(created['id'])
+        self.api._role = 'cashier'
+        updated = self.api.update_product(pid, {
+            'price': 35.0,
+            'barcode': '222',
+            'name': 'Price Soap',
+        })
+        self.assertTrue(updated.get('success'), updated)
+        blocked = self.api.update_product(pid, {'stock': 100, 'price': 35.0})
+        self.assertEqual(blocked.get('status'), 403)
+        self.api._role = ''
+        denied = self.api.update_product(pid, {'price': 99})
+        self.assertEqual(denied.get('status'), 403)
+        db = self.ac._db()
+        row = db.execute(
+            "SELECT price, barcode, stock FROM products WHERE id=?", (pid,)
+        ).fetchone()
+        db.close()
+        self.assertAlmostEqual(float(row['price']), 35.0, places=2)
+        self.assertEqual(row['barcode'], '222')
+        self.assertEqual(float(row['stock']), 6.0)
 
 
 if __name__ == '__main__':

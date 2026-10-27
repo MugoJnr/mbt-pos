@@ -88,10 +88,15 @@ class NoWheelControlsFilter(QObject):
             forward_wheel_to_scroll_parent(obj, event)
             return True  # Consume: closed combobox must NOT cycle selections
 
-        # 2. Spinboxes, DoubleSpinBoxes, DateEdits, DateTimeEdits
-        if isinstance(obj, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox, QDateEdit, QDateTimeEdit)):
+        # 2. Dates never change on a wheel. A focused quantity box uses its own step.
+        if isinstance(obj, (QDateEdit, QDateTimeEdit)):
             forward_wheel_to_scroll_parent(obj, event)
-            return True  # Consume: never change numeric or date value on wheel
+            return True
+        if isinstance(obj, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)):
+            if obj.hasFocus():
+                return False
+            forward_wheel_to_scroll_parent(obj, event)
+            return True
 
         # 3. Sliders
         if isinstance(obj, QSlider):
@@ -115,6 +120,10 @@ def _patch_wheel_event(cls):
             if view is not None and view.isVisible():
                 if orig_wheel:
                     orig_wheel(self, event)
+                return
+        if isinstance(self, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)) and not isinstance(self, (QDateEdit, QDateTimeEdit)):
+            if self.hasFocus() and orig_wheel:
+                orig_wheel(self, event)
                 return
         forward_wheel_to_scroll_parent(self, event)
         event.ignore()

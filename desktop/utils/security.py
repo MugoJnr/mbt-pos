@@ -21,7 +21,7 @@ from roles import (
 # What each role can do — granular action flags
 _PERMISSIONS = {
     ROLE_CASHIER: {
-        'sales.create', 'sales.view_own', 'sales.request_void',
+        'sales.create', 'sales.view_own', 'sales.request_void', 'sales.request_backdate',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'reports.view_basic',
         'notes.own',
@@ -40,7 +40,7 @@ _PERMISSIONS = {
         'accounting.view', 'accounting.view_reports',
     },
     ROLE_MANAGER: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -56,11 +56,12 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
     },
     ROLE_ADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.delete',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
-        'users.view', 'users.create', 'users.edit',
+        'users.view', 'users.create', 'users.edit', 'users.delete',
         'settings.view', 'settings.edit',
         'audit.view',
         'debt.view', 'debt.create', 'debt.collect',
@@ -75,9 +76,10 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
     },
     ROLE_SUPERADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.edit',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.delete',
         'inventory.adjust_stock',          # ONLY superadmin can change stock directly
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -102,9 +104,12 @@ _PERMISSIONS = {
 
 
 def has_permission(user: dict, action: str) -> bool:
-    """Check if a user dict (from login response) has a given permission."""
-    role = (user.get('user') or user).get('role', ROLE_CASHIER)
-    allowed = _PERMISSIONS.get(role, _PERMISSIONS[ROLE_CASHIER])
+    """Check a known shop role. An unknown or missing role is denied."""
+    source = (user or {}).get('user') or user or {}
+    role = source.get('role') or ''
+    allowed = _PERMISSIONS.get(role)
+    if not allowed:
+        return False
     return action in allowed
 
 
@@ -422,7 +427,7 @@ class VoidSaleDialog:
     """Themed void dialog: receipt + ReasonSelect (Other → Please specify)."""
 
     @staticmethod
-    def ask(parent_widget=None, receipt_prefill: str = '') -> tuple:
+    def ask(parent_widget=None, receipt_prefill: str = '', *, direct: bool = False) -> tuple:
         """
         Returns (receipt, reason) or (None, None) if cancelled.
         Reason is the catalog label, or 'Other: <detail>' (+ optional notes).
@@ -436,19 +441,21 @@ class VoidSaleDialog:
         from desktop.utils.select_controls import ReasonSelect, CONTROL_HEIGHT
 
         dlg = QDialog(parent_widget)
-        dlg.setWindowTitle('Request a void')
+        dlg.setWindowTitle('Void receipt' if direct else 'Request a void')
         dlg.setMinimumWidth(460)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
 
-        title = QLabel('Request a void')
+        title = QLabel('Void this receipt' if direct else 'Request a void')
         title.setStyleSheet(
             f"color:{C['text']};font-size:18px;font-weight:700;background:transparent;")
         lay.addWidget(title)
 
         hint = QLabel(
+            'This voids the receipt now. No approval request is created.'
+            if direct else
             'This sends the sale to Approvals. The sale stays completed, '
             'and stock stays as it is, until a manager approves it with the Super-Admin PIN.')
         hint.setWordWrap(True)
@@ -486,7 +493,7 @@ class VoidSaleDialog:
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         ok_btn = buttons.button(QDialogButtonBox.Ok)
         if ok_btn:
-            ok_btn.setText('Send request')
+            ok_btn.setText('Void receipt' if direct else 'Send request')
         buttons.rejected.connect(dlg.reject)
 
         def _accept():
@@ -527,7 +534,9 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
             'You cannot request a void.')
         return False
 
-    receipt, reason = VoidSaleDialog.ask(parent_widget, receipt_prefill=receipt_prefill)
+    direct = (user.get('role') or '').lower() == 'superadmin'
+    receipt, reason = VoidSaleDialog.ask(
+        parent_widget, receipt_prefill=receipt_prefill, direct=direct)
     if not receipt or not reason:
         return False
 
@@ -545,9 +554,25 @@ def prompt_void_sale(api, parent_widget=None, receipt_prefill: str = '') -> bool
                             f'Sale {receipt} is already voided.')
         return False
 
-    res = api.request_sale_void(row['id'], reason.strip())
+    if direct:
+        res = api.void_sale(row['id'], reason.strip())
+    else:
+        res = api.request_sale_void(row['id'], reason.strip())
     if res and res.get('success'):
-        if res.get('duplicate'):
+        if direct:
+            try:
+                from backend.void_requests import close_open_for_sale
+                link = _db()
+                api._ensure_approval_table(link)
+                close_open_for_sale(link, int(row['id']), getattr(api, '_username', '') or 'superadmin')
+                link.commit()
+                link.close()
+            except Exception:
+                pass
+            QMessageBox.information(
+                parent_widget, 'Receipt voided',
+                f'Sale {receipt} is voided. Stock was put back once.')
+        elif res.get('duplicate'):
             QMessageBox.information(
                 parent_widget, 'Already requested',
                 f'Sale {receipt} is already waiting for approval. It is still completed.')

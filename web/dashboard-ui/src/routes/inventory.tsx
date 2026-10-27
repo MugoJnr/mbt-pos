@@ -6,10 +6,12 @@ import { ProductPhoto } from "@/components/product-photo";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
-import { GET, POST, getToken } from "@/lib/api";
+import { DEL, GET, POST, PUT, getToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadApi, exportQuery } from "@/lib/download";
 import { KES, todayISO } from "@/lib/format";
+import { nameMatches } from "@/lib/name-search";
+import { wheelStep } from "@/lib/wheel-steps";
 
 export const Route = createFileRoute("/inventory")({
   component: Inventory,
@@ -27,6 +29,7 @@ type Product = {
   min_stock?: number;
   unit?: string;
   image_path?: string;
+  is_active?: number;
 };
 
 type SortKey = "name" | "stock" | "price" | "category";
@@ -70,6 +73,8 @@ function Inventory() {
   const { user } = useAuth();
   const role = String(user?.role || "");
   const canAdjust = role === "superadmin";
+  const canEdit = ["cashier", "viewer", "manager", "admin", "superadmin"].includes(role);
+  const canRemove = role === "admin" || role === "superadmin";
   const canReceive = ["cashier", "manager", "admin", "superadmin"].includes(role);
   const [adjId, setAdjId] = useState("");
   const [adjDir, setAdjDir] = useState("add");
@@ -95,6 +100,13 @@ function Inventory() {
   >([]);
   const [recvCost, setRecvCost] = useState("");
   const [productDetail, setProductDetail] = useState<Product | null>(null);
+  const [editId, setEditId] = useState("");
+  const [editForm, setEditForm] = useState({
+    name: "", sku: "", barcode: "", category: "", price: "", cost_price: "",
+    unit: "pcs", min_stock: "5", is_active: "1",
+  });
+  const [editMsg, setEditMsg] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [newProduct, setNewProduct] = useState({
     name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "",
@@ -114,10 +126,6 @@ function Inventory() {
     queryKey: ["products"],
     queryFn: () => GET<Product[]>("/products"),
   });
-  const receiptsQ = useQuery({
-    queryKey: ["stock-receipts"],
-    queryFn: () => GET<StockReceipt[]>("/stock-receipts"),
-  });
   const requestsQ = useQuery({
     queryKey: ["adjustment-requests"],
     queryFn: () => GET<Record<string, any>[]>("/stock-adjustment-requests?status=pending"),
@@ -132,34 +140,15 @@ function Inventory() {
     queryFn: () => GET<Record<string, string>>("/settings"),
   });
   const currency = settingsQ.data?.currency_symbol || "KES";
+  const adjustStep = wheelStep(settingsQ.data, "wheel_stock_adjust");
+  const receiveStep = wheelStep(settingsQ.data, "wheel_receive_qty");
+  const qtyStep = wheelStep(settingsQ.data, "wheel_dashboard_qty");
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const suppliers = Array.isArray(suppliersQ.data) ? suppliersQ.data : [];
   const selectedProduct = products.find((p) => String(p.id) === adjId);
-  const receipts = Array.isArray(receiptsQ.data) ? receiptsQ.data : [];
-  const receiptRows = receipts.filter((row) => {
-    if (!q) return true;
-    const hay = [
-      row.supplier_name,
-      row.supplier_phone,
-      row.supplier_notes,
-      row.product_name,
-      row.sku,
-      row.reason,
-      row.username,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
 
   const list = useMemo(() => {
-    const filtered = products.filter(
-      (p) =>
-        q === "" ||
-        p.name.toLowerCase().includes(q.toLowerCase()) ||
-        (p.sku || "").toLowerCase().includes(q.toLowerCase()) ||
-        (p.category || "").toLowerCase().includes(q.toLowerCase()),
-    );
+    const filtered = products.filter((p) => nameMatches(q, p.name));
     filtered.sort((a, b) => {
       let av: string | number = a[sortKey] as any;
       let bv: string | number = b[sortKey] as any;
@@ -187,6 +176,140 @@ function Inventory() {
   const lowCount = products.filter(
     (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.min_stock ?? 5),
   ).length;
+
+  function loadEdit(p: Product) {
+    setEditId(String(p.id));
+    setEditForm({
+      name: p.name || "",
+      sku: p.sku || "",
+      barcode: p.barcode || "",
+      category: p.category || "",
+      price: String(p.price ?? ""),
+      cost_price: String(p.cost_price ?? ""),
+      unit: p.unit || "pcs",
+      min_stock: String(p.min_stock ?? 5),
+      is_active: Number(p.is_active ?? 1) === 0 ? "0" : "1",
+    });
+    setEditMsg("");
+  }
+
+  async function saveEdit() {
+    setEditMsg("");
+    if (!editId) {
+      setEditMsg("Select a product.");
+      return;
+    }
+    if (!editForm.name.trim()) {
+      setEditMsg("Product name is required.");
+      return;
+    }
+    const price = Number(editForm.price);
+    if (!Number.isFinite(price) || price < 0) {
+      setEditMsg("Enter a selling price of zero or more.");
+      return;
+    }
+    const body: Record<string, unknown> = {
+      name: editForm.name.trim(),
+      sku: editForm.sku.trim(),
+      barcode: editForm.barcode.trim(),
+      category: editForm.category.trim(),
+      price,
+      unit: editForm.unit.trim() || "pcs",
+      min_stock: Number(editForm.min_stock || 0),
+    };
+    if (canRemove) body.is_active = editForm.is_active === "0" ? 0 : 1;
+    if (seeCost) {
+      const cost = Number(editForm.cost_price || 0);
+      if (!Number.isFinite(cost) || cost < 0) {
+        setEditMsg("Enter a cost of zero or more.");
+        return;
+      }
+      body.cost_price = cost;
+    }
+    setEditBusy(true);
+    try {
+      const res = await PUT<{ success?: boolean; error?: string }>(`/products/${editId}`, body);
+      if (!res?.success) {
+        setEditMsg(res?.error || "The product was not saved.");
+        return;
+      }
+      setEditMsg("Product details saved. Stock quantity was not changed.");
+      qc.invalidateQueries({ queryKey: ["products"] });
+      if (productDetail && String(productDetail.id) === editId) {
+        setProductDetail({
+          ...productDetail,
+          ...body,
+          price,
+          cost_price: seeCost ? Number(body.cost_price) : productDetail.cost_price,
+          is_active: Number(body.is_active),
+        } as Product);
+      }
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  async function archiveProduct() {
+    const product = products.find((p) => String(p.id) === editId) || productDetail;
+    if (!product || !canRemove) return;
+    const ok = window.confirm(
+      `Archive ${product.name}?\n\nThe product leaves the selling list. Old receipts keep this product. This is not a permanent delete.`,
+    );
+    if (!ok) return;
+    const res = await DEL<{ success?: boolean; error?: string }>(`/products/${product.id}`);
+    if (!res?.success) {
+      toast.error(res?.error || "The product was not archived.");
+      return;
+    }
+    toast.success(`${product.name} was archived. Past receipts are unchanged.`);
+    setEditId("");
+    setProductDetail(null);
+    qc.invalidateQueries({ queryKey: ["products"] });
+  }
+
+  const adjustFields = (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <label className="text-xs font-semibold text-text2 md:col-span-2">Name
+        <Input aria-label="Product name" className="mt-1 h-11" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Selling price
+        <Input aria-label="Selling price" className="mt-1 h-11" type="number" min={0} step="0.01" value={editForm.price} onChange={(e) => setEditForm({ ...editForm, price: e.target.value })} />
+      </label>
+      {seeCost ? (
+        <label className="text-xs font-semibold text-text2">Cost
+          <Input aria-label="Cost price" className="mt-1 h-11" type="number" min={0} step="0.01" value={editForm.cost_price} onChange={(e) => setEditForm({ ...editForm, cost_price: e.target.value })} />
+        </label>
+      ) : null}
+      <label className="text-xs font-semibold text-text2">SKU
+        <Input aria-label="SKU" className="mt-1 h-11" value={editForm.sku} onChange={(e) => setEditForm({ ...editForm, sku: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Barcode
+        <Input aria-label="Barcode" className="mt-1 h-11" value={editForm.barcode} onChange={(e) => setEditForm({ ...editForm, barcode: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Category
+        <Input aria-label="Category" className="mt-1 h-11" value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Unit
+        <Input aria-label="Unit" className="mt-1 h-11" value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Low-stock alert
+        <Input aria-label="Low-stock alert" className="mt-1 h-11" type="number" min={0} value={editForm.min_stock} onChange={(e) => setEditForm({ ...editForm, min_stock: e.target.value })} />
+      </label>
+      {canRemove ? (
+      <label className="text-xs font-semibold text-text2">Status
+        <select
+          aria-label="Product status"
+          value={editForm.is_active}
+          onChange={(e) => setEditForm({ ...editForm, is_active: e.target.value })}
+          className="mt-1 h-11 w-full rounded-xl border border-border bg-input px-3 text-sm text-text"
+        >
+          <option value="1">Active</option>
+          <option value="0">Inactive</option>
+        </select>
+      </label>
+      ) : null}
+    </div>
+  );
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -218,6 +341,51 @@ function Inventory() {
 
   return (
     <AppShell title="Inventory">
+      {canEdit ? (
+        <Card className="mb-3" id="adjust-product">
+          <div className="space-y-3 p-4">
+            <div className="text-sm font-extrabold text-text">Adjust product</div>
+            <div className="text-xs text-text2">
+              Change the selling price, cost, name, barcode, category, unit, or low-stock alert.
+              Stock quantity is not changed here. Use Adjust stock for the quantity.
+            </div>
+            <label className="text-xs font-semibold text-text2">
+              Product
+              <select
+                aria-label="Product to adjust"
+                value={editId}
+                onChange={(e) => {
+                  const picked = products.find((p) => String(p.id) === e.target.value);
+                  if (picked) loadEdit(picked);
+                  else setEditId("");
+                }}
+                className="mt-1 h-11 w-full rounded-xl border border-border bg-input px-3 text-sm text-text"
+              >
+                <option value="">Select a product</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} — {KES(p.price, currency)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {editId ? (
+              <>
+                {adjustFields}
+                <div className="flex flex-wrap gap-2">
+                <Button onClick={saveEdit} disabled={editBusy}>
+                  {editBusy ? "Saving…" : "Save product details"}
+                </Button>
+                {canRemove ? (
+                  <Button variant="danger" onClick={archiveProduct}>Archive product</Button>
+                ) : null}
+                </div>
+                {editMsg ? <div className="text-sm text-text2">{editMsg}</div> : null}
+              </>
+            ) : null}
+          </div>
+        </Card>
+      ) : null}
       {canAdjust ? (
         <Card className="mb-3">
           <div className="p-4 space-y-3">
@@ -258,7 +426,7 @@ function Inventory() {
                   aria-label="Quantity"
                   type="number"
                   min={0}
-                  step={0.001}
+                  step={adjustStep}
                   value={adjQty}
                   onChange={(e) => setAdjQty(e.target.value)}
                   className="mt-1 h-11"
@@ -373,7 +541,7 @@ function Inventory() {
                   aria-label="Quantity received"
                   type="number"
                   min={0}
-                  step={0.001}
+                  step={receiveStep}
                   value={recvQty}
                   onChange={(e) => setRecvQty(e.target.value)}
                   className="mt-1 h-11"
@@ -596,18 +764,6 @@ function Inventory() {
         description={`${products.length} SKUs · ${KES(totalValue, currency)} stock value${lowCount ? ` · ${lowCount} low` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 min-w-[200px] max-w-md">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
-              <Input
-                placeholder="Search by name, SKU, or category…"
-                value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setPage(0);
-                }}
-                className="pl-8 min-h-[44px]"
-              />
-            </div>
             <Button
               variant="primary"
               onClick={() => setShowAdd(true)}
@@ -672,7 +828,7 @@ function Inventory() {
                   <option key={p.id} value={p.id}>{p.name} (stock {p.stock})</option>
                 ))}
               </select>
-              <Input name="requested_qty" aria-label="Target quantity" type="number" min={0} step={0.001} defaultValue="0" className="h-11" />
+              <Input name="requested_qty" aria-label="Target quantity" type="number" min={0} step={adjustStep} defaultValue="0" className="h-11" />
               <Input name="reason" aria-label="Adjustment reason" placeholder="Reason" className="h-11" required />
             </div>
             <Button type="submit">Send request</Button>
@@ -732,69 +888,30 @@ function Inventory() {
         </Card>
       ) : null}
 
-      <Card className="mb-3 overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
-          <div>
-            <div className="text-sm font-extrabold text-text">Supplier receipts</div>
-            <div className="text-xs text-text2">
-              Stock received from a supplier, with the delivery note saved on the till.
-            </div>
-          </div>
-          <Badge tone="ok">{receiptRows.length}</Badge>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="relative w-full max-w-md">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
+          <Input
+            placeholder="Search by product name…"
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setPage(0);
+            }}
+            className="pl-8 min-h-[44px]"
+          />
         </div>
-        {receiptsQ.isLoading ? (
-          <div className="py-8 text-center text-sm text-text2">Loading supplier receipts…</div>
-        ) : receiptRows.length === 0 ? (
-          <div className="py-8 text-center text-sm text-text2">
-            No supplier receipts yet. Receive stock on the till and it will show here.
-          </div>
-        ) : (
-          <Table
-            head={["When", "Supplier", "Phone", "Product", "Received", "Before", "After", "Note", "By"]}
-          >
-            {receiptRows.slice(0, 40).map((row) => (
-              <tr
-                key={`${row.grouped ? "rcv" : "mov"}-${row.id}`}
-                onClick={() => setReceipt(row)}
-                className="cursor-pointer hover:bg-panel/70"
-                title="View receipt details"
-              >
-                <td className="px-4 py-2.5 whitespace-nowrap text-text2">
-                  {String(row.created_at || "").replace("T", " ").slice(0, 16)}
-                </td>
-                <td className="px-4 py-2.5 font-semibold text-text">
-                  {row.supplier_name || "No supplier"}
-                  {row.supplier_notes ? (
-                    <div className="text-xs font-normal text-text2">{row.supplier_notes}</div>
-                  ) : null}
-                </td>
-                <td className="px-4 py-2.5 text-text2">{row.supplier_phone || "—"}</td>
-                <td className="px-4 py-2.5">
-                  <div className="font-medium text-text">{row.receipt_number || row.product_name || "—"}</div>
-                  <div className="text-xs text-text2">
-                    {row.lines && row.lines.length > 1
-                      ? row.lines.map((line) => line.product_name).join(", ")
-                      : row.product_name || row.sku || ""}
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 font-semibold text-ok">
-                  +{Number(row.qty_change || 0)} {row.unit || ""}
-                </td>
-                <td className="px-4 py-2.5 tabular-nums">{Number(row.qty_before || 0)}</td>
-                <td className="px-4 py-2.5 tabular-nums">{Number(row.qty_after || 0)}</td>
-                <td className="px-4 py-2.5 max-w-[280px] text-text2">{row.reason || "—"}</td>
-                <td className="px-4 py-2.5 text-text2">{row.username || "—"}</td>
-              </tr>
-            ))}
-          </Table>
-        )}
-      </Card>
-
+        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => setQ("")}>Clear</Button>
+        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => document.querySelector<HTMLInputElement>('input[placeholder="Search by product name…"]')?.focus()}>Search</Button>
+      </div>
       <Card className="overflow-hidden">
         {productsQ.isLoading ? (
           <div className="py-12 text-center text-sm text-text2">Loading inventory…</div>
         ) : (
           <>
+            {q.trim() && list.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-text2">No products match that name. Clear the search to see every product.</div>
+            ) : null}
             <Table
               head={[
                 "Photo",
@@ -818,7 +935,7 @@ function Inventory() {
                         type="button"
                         className="rounded-xl focus-visible:ring-2 focus-visible:ring-gold/70"
                         aria-label={p.image_path ? `Change photograph for ${p.name}` : `Add photograph for ${p.name}`}
-                        onClick={() => setProductDetail(p)}
+                        onClick={() => { setProductDetail(p); loadEdit(p); }}
                       >
                         <ProductPhoto src={p.image_path} size="sm" />
                       </button>
@@ -827,7 +944,7 @@ function Inventory() {
                       <button
                         type="button"
                         className="font-semibold text-gold hover:underline"
-                        onClick={() => setProductDetail(p)}
+                        onClick={() => { setProductDetail(p); loadEdit(p); }}
                       >
                         {p.name}
                       </button>
@@ -905,6 +1022,9 @@ function Inventory() {
                 </label>
                 <label className="text-xs text-text2">SKU
                   <Input className="mt-1 h-11" value={newProduct.sku} onChange={(e) => setNewProduct({ ...newProduct, sku: e.target.value })} />
+                </label>
+                <label className="text-xs text-text2">Barcode
+                  <Input aria-label="New product barcode" className="mt-1 h-11" value={newProduct.barcode} onChange={(e) => setNewProduct({ ...newProduct, barcode: e.target.value })} />
                 </label>
               </div>
               <div className="mt-3">
@@ -1031,22 +1151,23 @@ function Inventory() {
                   } : undefined}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm">
-                {[
-                  ["Category", productDetail.category || "General"],
-                  ["SKU", productDetail.sku || "—"],
-                  ["Barcode", productDetail.barcode || "—"],
-                  ["Unit", productDetail.unit || "pcs"],
-                  ["Selling price", KES(Number(productDetail.price || 0), currency)],
-                  ...(seeCost ? [["Cost", KES(Number(productDetail.cost_price || 0), currency)] as [string, string]] : []),
-                  ["On hand", String(Number(productDetail.stock || 0))],
-                  ["Low-stock alert", String(Number(productDetail.min_stock ?? 5))],
-                ].map(([label, value]) => (
-                  <div key={label}>
-                    <div className="text-xs text-text2">{label}</div>
-                    <div className="mt-1 font-semibold text-text">{value}</div>
+              <div className="space-y-3 px-5 py-4">
+                <div className="text-xs text-text2">
+                  On hand {Number(productDetail.stock || 0)} {productDetail.unit || "pcs"}.
+                  Change the quantity under Adjust stock. It is not changed here.
+                </div>
+                {canEdit ? adjustFields : null}
+                {canEdit ? (
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={saveEdit} disabled={editBusy}>
+                      {editBusy ? "Saving…" : "Save product details"}
+                    </Button>
+                    {canRemove ? (
+                      <Button variant="danger" onClick={archiveProduct}>Archive product</Button>
+                    ) : null}
                   </div>
-                ))}
+                ) : null}
+                {editMsg ? <div className="text-sm text-text2">{editMsg}</div> : null}
               </div>
             </Card>
           </div>

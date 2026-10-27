@@ -7,12 +7,14 @@ import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
 import { useTheme, type ThemeVariant } from "@/components/theme";
 import { GET, PUT } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import {
   DEFAULT_PREFS,
   loadPrefs,
   savePrefs,
   type DashboardPrefs,
 } from "@/lib/prefs";
+import { WHEEL_DEFAULTS } from "@/lib/wheel-steps";
 
 export const Route = createFileRoute("/settings")({
   component: Settings,
@@ -94,6 +96,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Settings() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const canSave = ["admin", "superadmin"].includes(String(user?.role || ""));
   const { theme, toggle, variant, setVariant } = useTheme();
   const settingsQ = useQuery({
     queryKey: ["settings"],
@@ -149,7 +153,7 @@ function Settings() {
         eyebrow="Admin"
         title="Settings"
         description="Configure your shop, receipts, appearance, dashboard layout, and integrations."
-        actions={
+        actions={canSave ? (
           <Button
             variant="primary"
             disabled={save.isPending || settingsQ.isLoading}
@@ -157,7 +161,7 @@ function Settings() {
           >
             <Save className="h-4 w-4" /> {save.isPending ? "Saving…" : "Save Changes"}
           </Button>
-        }
+        ) : undefined}
       />
 
       <div className="space-y-5 max-w-5xl">
@@ -295,6 +299,34 @@ function Settings() {
           </Field>
         </Section>
 
+        {!canSave ? (
+          <p className="text-sm text-text2">Shop settings can be viewed here. Only an administrator can save them.</p>
+        ) : null}
+        <fieldset disabled={!canSave} className="space-y-5 border-0 p-0 m-0 min-w-0">
+        <Section
+          icon={<SlidersHorizontal className="h-5 w-5" />}
+          title="Numeric Input & Mouse-Wheel Behavior"
+          desc="How much a focused number changes on one wheel step. Typed decimals stay allowed."
+        >
+          <Field label="POS sale quantity (default 0.25)">
+            <Input type="number" min={0.001} step="0.001" value={form.wheel_pos_qty || WHEEL_DEFAULTS.wheel_pos_qty} onChange={(e) => set("wheel_pos_qty", e.target.value)} />
+          </Field>
+          <Field label="Inventory quantity adjustment (default 1)">
+            <Input type="number" min={0.001} step="0.001" value={form.wheel_stock_adjust || WHEEL_DEFAULTS.wheel_stock_adjust} onChange={(e) => set("wheel_stock_adjust", e.target.value)} />
+          </Field>
+          <Field label="Supplier receiving quantity (default 1)">
+            <Input type="number" min={0.001} step="0.001" value={form.wheel_receive_qty || WHEEL_DEFAULTS.wheel_receive_qty} onChange={(e) => set("wheel_receive_qty", e.target.value)} />
+          </Field>
+          <Field label="General dashboard quantity (default 1)">
+            <Input type="number" min={0.001} step="0.001" value={form.wheel_dashboard_qty || WHEEL_DEFAULTS.wheel_dashboard_qty} onChange={(e) => set("wheel_dashboard_qty", e.target.value)} />
+          </Field>
+          {canSave ? (
+            <Button type="button" variant="secondary" onClick={() => {
+              Object.entries(WHEEL_DEFAULTS).forEach(([key, value]) => set(key, value));
+              toast.message("Defaults restored. Save settings to keep them.");
+            }}>Restore defaults</Button>
+          ) : null}
+        </Section>
         <Section
           icon={<Store className="h-5 w-5" />}
           title="Shop Information"
@@ -378,6 +410,7 @@ function Settings() {
             Manage inbox preferences in the MugoByte Workspace under Notifications.
           </p>
         </Section>
+        </fieldset>
       </div>
     </AppShell>
   );

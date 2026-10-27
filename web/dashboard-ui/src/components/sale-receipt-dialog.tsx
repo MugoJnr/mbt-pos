@@ -75,7 +75,13 @@ export function SaleReceiptDialog({
   const [reason, setReason] = useState("");
   const [qtyByLine, setQtyByLine] = useState<Record<number, string>>({});
   const [returnMsg, setReturnMsg] = useState("");
-  const canReturn = ["admin", "superadmin", "manager"].includes(String(user?.role || "").toLowerCase());
+  const [voidOpen, setVoidOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidMsg, setVoidMsg] = useState("");
+  const [voiding, setVoiding] = useState(false);
+  const role = String(user?.role || "").toLowerCase();
+  const canReturn = ["admin", "superadmin", "manager"].includes(role);
+  const canVoidNow = role === "superadmin";
   const detailQ = useQuery({
     queryKey: ["sale-detail", saleId],
     enabled: saleId != null,
@@ -180,6 +186,58 @@ export function SaleReceiptDialog({
                   })}
                 </div>
               )}
+              {canVoidNow && !voided ? (
+                <div className="border-t border-border px-5 py-4">
+                  <Button variant="secondary" onClick={() => { setVoidOpen(true); setVoidMsg(""); }}>
+                    Void Receipt
+                  </Button>
+                  {voidOpen ? (
+                    <div className="mt-3 rounded-lg border border-err/40 bg-err/10 p-3">
+                      <div className="text-sm font-semibold text-text">Void this receipt now</div>
+                      <p className="mt-1 text-xs text-text2">
+                        {sale.receipt_number || `Sale ${saleId}`} · {money(sale.total, currency)} · {status}. This does not send a request.
+                      </p>
+                      <Input
+                        className="mt-2"
+                        aria-label="Reason for voiding this receipt"
+                        placeholder="Reason"
+                        value={voidReason}
+                        onChange={(e) => setVoidReason(e.target.value)}
+                      />
+                      {voidMsg ? <div className="mt-2 text-sm text-text">{voidMsg}</div> : null}
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          disabled={voiding}
+                          onClick={async () => {
+                            if (voidReason.trim().length < 3) {
+                              setVoidMsg("Enter a reason before voiding this receipt.");
+                              return;
+                            }
+                            setVoiding(true);
+                            try {
+                              const data = await POST<any>(`/sales/${saleId}/void-now`, { reason: voidReason.trim() });
+                              if (!data || data.error || data.success === false) {
+                                setVoidMsg(data?.message || data?.error || "The receipt was not voided.");
+                                return;
+                              }
+                              setVoidMsg("Receipt voided.");
+                              setVoidOpen(false);
+                              qc.invalidateQueries({ queryKey: ["sale-detail", saleId] });
+                              qc.invalidateQueries({ queryKey: ["sales"] });
+                              qc.invalidateQueries({ queryKey: ["receipts"] });
+                            } finally {
+                              setVoiding(false);
+                            }
+                          }}
+                        >
+                          {voiding ? "Voiding…" : "Confirm void"}
+                        </Button>
+                        <Button variant="ghost" onClick={() => setVoidOpen(false)}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {canReturn && !voided ? (
                 <div className="border-t border-border px-5 py-4">
                   <div className="text-sm font-semibold text-text">Return items</div>

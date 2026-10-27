@@ -82,9 +82,13 @@ class InventoryTab(QWidget):
 
         # Toolbar: search + primary + secondary + ghost
         tb = QHBoxLayout(); tb.setSpacing(10)
-        self._search = SearchBar('Search by name or SKU\u2026')
+        self._search = SearchBar('Search by product name\u2026')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)
+        clear = GhostBtn('Clear', 40)
+        clear.setToolTip('Show every product')
+        clear.clicked.connect(lambda: self._search.clear())
+        tb.addWidget(clear)
 
         if has_permission(self.user, 'inventory.create'):
             add = PrimaryBtn('+ Add Product', 40)
@@ -288,12 +292,13 @@ class InventoryTab(QWidget):
             QMessageBox.critical(self, 'Export Failed', str(e))
 
     def _filter(self):
-        q = self._search.text().lower()
+        from desktop.utils.pos_search import inventory_name_matches
+        q = self._search.text()
         try:
-            self._populate([p for p in self.products
-                            if q in p.get('name','').lower()
-                            or q in (p.get('sku') or '').lower()
-                            or q in (p.get('category') or '').lower()])
+            matched = [p for p in self.products if inventory_name_matches(q, p)]
+            self._populate(matched)
+            if str(q or '').strip() and not matched and self.products:
+                self._stats.setText('  No products match that name. Clear the search to see every product.')
         except Exception as e:
             _log.exception('Inventory filter error')
             self._stats.setText(f"  Could not filter inventory: {e}")
@@ -311,7 +316,7 @@ class InventoryTab(QWidget):
         cur  = cfg.get('currency_symbol', 'KES')
         low  = 0
         can_edit   = has_permission(self.user, 'inventory.edit_info')
-        can_delete = has_permission(self.user, 'inventory.create')
+        can_delete = has_permission(self.user, 'inventory.delete')
 
         for i, p in enumerate(prods):
             try:
@@ -394,7 +399,11 @@ class InventoryTab(QWidget):
             price_item.setToolTip(price_s)
         self._tbl.setItem(i, 3, price_item)
 
-        if _safe_float(p.get('cost_price')) <= 0.009:
+        see_cost = (self._role() or '') in ('manager', 'admin', 'superadmin')
+        if not see_cost:
+            cost_item = tbl_right('—', tone='muted')
+            cost_item.setToolTip('Cost is visible to a manager or administrator')
+        elif _safe_float(p.get('cost_price')) <= 0.009:
             cost_item = tbl_right('—', tone='muted')
             cost_item.setToolTip('No cost set')
         else:
@@ -781,14 +790,19 @@ class InventoryTab(QWidget):
                 f'Could not update product:\n\n{e}')
 
     def _delete(self, pid):
-        if not require_permission(self.user, 'inventory.create', self): return
+        if not require_permission(self.user, 'inventory.delete', self): return
         p = next((x for x in self.products if x['id'] == pid), None)
         name = p.get('name', '') if p else ''
         if QMessageBox.question(self, 'Confirm Delete',
                 f"Delete '{name}'?\n\nThis cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
-            if self.api.delete_product(pid):
+            removed = self.api.delete_product(pid)
+            if removed and removed.get('success'):
                 self.refresh()
+            else:
+                QMessageBox.warning(
+                    self, 'Could Not Delete Product',
+                    (removed or {}).get('error', 'This product was not removed.'))
 
     def _show_history(self, pid):
         p = next((x for x in self.products if x['id'] == pid), None)
@@ -816,6 +830,9 @@ class _ProdDlg(QDialog):
         self._is_new = prod is None
         self._role   = role
         self._config_getter = config_getter
+        from desktop.utils.security import has_permission
+        self._can_remove = has_permission({'role': role}, 'inventory.delete')
+        self._see_cost = role in ('manager', 'admin', 'superadmin')
 
         lay = QFormLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
@@ -829,6 +846,7 @@ class _ProdDlg(QDialog):
 
         self.name  = QLineEdit(); self.name.setMinimumHeight(42); self.name.setPlaceholderText('Product name *')
         self.sku   = QLineEdit(); self.sku.setMinimumHeight(42);  self.sku.setPlaceholderText('e.g. UNG-2KG')
+        self.barcode = QLineEdit(); self.barcode.setMinimumHeight(42); self.barcode.setPlaceholderText('Scan or type the barcode')
         self.cat   = QLineEdit(); self.cat.setMinimumHeight(42);  self.cat.setPlaceholderText('e.g. Flour, Dairy')
         self.cat.textChanged.connect(self._on_cat_preview)
         self.price = QDoubleSpinBox(); self.price.setRange(0, 9999999); self.price.setDecimals(2); self.price.setMinimumHeight(42)
@@ -841,6 +859,7 @@ class _ProdDlg(QDialog):
         if prod:
             self.name.setText(prod.get('name') or '')
             self.sku.setText(prod.get('sku') or '')
+            self.barcode.setText(prod.get('barcode') or '')
             self.cat.setText(prod.get('category') or '')
             self.price.setValue(_safe_float(prod.get('price')))
             self.cost.setValue(_safe_float(prod.get('cost_price')))
@@ -866,6 +885,7 @@ class _ProdDlg(QDialog):
 
         lay.addRow(lbl('Name *'),           self.name)
         lay.addRow(lbl('SKU / Code'),        self.sku)
+        lay.addRow(lbl('Barcode'),           self.barcode)
         # Category + live visual preview (icon from offline library)
         cat_wrap = QWidget()
         cat_hl = QHBoxLayout(cat_wrap)
@@ -881,10 +901,12 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Category'),          cat_wrap)
         self._on_cat_preview(self.cat.text())
         lay.addRow(lbl('Selling Price'),     self.price)
-        lay.addRow(lbl('Cost Price'),        self.cost)
+        if self._see_cost:
+            lay.addRow(lbl('Cost Price'),    self.cost)
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
         lay.addRow(lbl('Unit'),              self.unit)
-        lay.addRow(lbl('Status'),            self.status)
+        if self._can_remove:
+            lay.addRow(lbl('Status'),        self.status)
 
         from desktop.utils.product_photo import ProductPhotoTile
         self._photo = ProductPhotoTile((prod or {}).get('image_path') or '', size=88)
@@ -993,18 +1015,21 @@ class _ProdDlg(QDialog):
         self.accept()
 
     def data(self):
-        status = self.status.current_label() or 'Active'
         d = {
             'name':       self.name.text().strip(),
             'sku':        self.sku.text().strip() or None,
+            'barcode':    self.barcode.text().strip() or None,
             'category':   self.cat.text().strip() or None,
             'price':      self.price.value(),
-            'cost_price': self.cost.value(),
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
-            'is_active':  1 if status == 'Active' else 0,
-            'product_status': status,
         }
+        if self._see_cost:
+            d['cost_price'] = self.cost.value()
+        if self._can_remove:
+            status = self.status.current_label() or 'Active'
+            d['is_active'] = 1 if status == 'Active' else 0
+            d['product_status'] = status
         if self._is_new:
             d['stock'] = self.stock.value()
         return d

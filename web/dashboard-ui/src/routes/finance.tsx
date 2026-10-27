@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/finance")({
@@ -19,6 +20,11 @@ function localToday() {
 
 function FinancePage() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const role = String(user?.role || "");
+  const canRecord = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canBooks = ["viewer", "manager", "admin", "superadmin"].includes(role);
+  const canJournal = ["manager", "admin", "superadmin"].includes(role);
   const today = localToday();
   const [start, setStart] = useState(today.slice(0, 8) + "01");
   const [end, setEnd] = useState(today);
@@ -35,6 +41,7 @@ function FinancePage() {
   const summaryQ = useQuery({
     queryKey: ["finance-summary"],
     queryFn: () => GET<any>("/finance/summary"),
+    enabled: canBooks,
   });
   const expensesQ = useQuery({
     queryKey: ["finance-expenses", start, end],
@@ -43,19 +50,29 @@ function FinancePage() {
   const journalsQ = useQuery({
     queryKey: ["finance-journals", start, end],
     queryFn: () => GET<any>("/finance/journals", { start, end }),
+    enabled: canJournal,
   });
   const pnlQ = useQuery({
     queryKey: ["finance-pnl", start, end],
     queryFn: () => GET<any>("/finance/reports/pnl", { start, end }),
+    enabled: canBooks,
   });
   const tbQ = useQuery({
     queryKey: ["finance-tb", end],
     queryFn: () => GET<any>("/finance/reports/trial-balance", { as_of: end }),
+    enabled: canBooks,
   });
 
   const summary = summaryQ.data?.summary || {};
   const currency = summaryQ.data?.currency || "KES";
   const expenses = Array.isArray(expensesQ.data) ? expensesQ.data : [];
+  const [expenseQuery, setExpenseQuery] = useState("");
+  const shownExpenses = expenses.filter((row: any) => {
+    const q = expenseQuery.trim().toLowerCase();
+    if (!q) return true;
+    return [row.expense_number, row.description, row.vendor, row.category]
+      .some((part) => String(part || "").toLowerCase().includes(q));
+  });
   const journals = Array.isArray(journalsQ.data) ? journalsQ.data : [];
   const pnl = pnlQ.data && !pnlQ.data.error ? pnlQ.data : null;
   const trial = tbQ.data && !tbQ.data.error ? tbQ.data : null;
@@ -142,8 +159,11 @@ function FinancePage() {
       <PageHeader
         eyebrow="Accounts"
         title="Finance"
-        description="Expenses, journals, and reports use the same books as the till. Amounts are in the shop currency."
+        description={canBooks
+          ? "Expenses, journals, and reports use the same books as the till. Amounts are in the shop currency."
+          : "Record a shop expense. Journals and the full accounts stay with a manager."}
       />
+      {canBooks ? (
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <Card className="p-4">
           <div className="text-xs text-text2">Month net</div>
@@ -160,8 +180,10 @@ function FinancePage() {
           </div>
         </Card>
       </div>
+      ) : null}
       {summaryQ.data?.error ? <div className="mb-3 text-sm text-err">{summaryQ.data.error}</div> : null}
 
+      {canRecord ? (
       <Card className="mb-4 p-4">
         <div className="mb-3 text-sm font-semibold text-text">Record an expense</div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -173,15 +195,21 @@ function FinancePage() {
         <Button className="mt-3" onClick={saveExpense}>Save expense</Button>
         {msg ? <div className="mt-2 text-sm text-text2">{msg}</div> : null}
       </Card>
+      ) : null}
 
       <Card className="mb-4 p-4">
         <div className="mb-3 flex flex-wrap items-end gap-2">
           <Input value={start} onChange={(e) => setStart(e.target.value)} type="date" />
           <Input value={end} onChange={(e) => setEnd(e.target.value)} type="date" />
+          <Input value={expenseQuery} onChange={(e) => setExpenseQuery(e.target.value)} placeholder="Search expense, payee, or number" />
+          <Button variant="ghost" onClick={() => setExpenseQuery("")}>Clear</Button>
           <Button variant="ghost" onClick={exportExpenses}>Export expenses</Button>
         </div>
         <Table head={["Number", "Date", "Description", "Amount", "Status", ""]}>
-          {expenses.map((row: any) => (
+          {shownExpenses.length === 0 ? (
+            <tr><td className="px-4 py-4 text-text2" colSpan={6}>No expenses match that search.</td></tr>
+          ) : null}
+          {shownExpenses.map((row: any) => (
             <tr key={row.id}>
               <td className="px-4 py-2.5 text-text">{row.expense_number}</td>
               <td className="px-4 py-2.5 text-text2">{row.expense_date}</td>
@@ -189,7 +217,7 @@ function FinancePage() {
               <td className="px-4 py-2.5 text-text">{KES(Number(row.amount || 0), currency)}</td>
               <td className="px-4 py-2.5 text-text2">{row.status}</td>
               <td className="px-4 py-2.5">
-                {row.status !== "reversed" ? (
+                {canJournal && row.status !== "reversed" ? (
                   <Button variant="ghost" onClick={() => reverseExpense(row.id)}>Reverse</Button>
                 ) : null}
               </td>
@@ -197,7 +225,7 @@ function FinancePage() {
           ))}
         </Table>
         {expenses.length === 0 ? <div className="py-6 text-sm text-text2">No expenses in this period.</div> : null}
-        {pnl ? (
+        {canBooks && pnl ? (
           <div className="mt-3 text-sm text-text2">
             Profit and loss {start} to {end}: income {KES(Number(pnl.total_income || 0), currency)}, expenses{" "}
             {KES(Number(pnl.total_expenses || 0), currency)}, net {KES(Number(pnl.net_profit || 0), currency)}.
@@ -206,6 +234,7 @@ function FinancePage() {
         ) : null}
       </Card>
 
+      {canJournal ? (
       <Card className="p-4">
         <div className="mb-3 text-sm font-semibold text-text">Post a balanced journal</div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -229,6 +258,7 @@ function FinancePage() {
           {journals.length === 0 ? <div className="py-6 text-sm text-text2">No journals in this period.</div> : null}
         </div>
       </Card>
+      ) : null}
     </AppShell>
   );
 }

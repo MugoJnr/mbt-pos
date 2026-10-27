@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { downloadApi } from "@/lib/download";
 import { KES } from "@/lib/format";
 
@@ -22,6 +23,10 @@ function localToday() {
 
 function ConsumptionPage() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const role = String(user?.role || "");
+  const canRecord = ["manager", "admin", "superadmin"].includes(role);
+  const canVoid = ["admin", "superadmin"].includes(role);
   const today = localToday();
   const [departmentId, setDepartmentId] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
@@ -181,6 +186,7 @@ function ConsumptionPage() {
         title="Internal Consumption"
         description="Stock used by the shop. This is not a sale and does not create a customer debt."
       />
+      {canRecord ? (
       <Card padded className="mb-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <label className="text-sm text-text2">
@@ -277,7 +283,9 @@ function ConsumptionPage() {
           <Button onClick={save}>Record consumption</Button>
         </div>
       </Card>
+      ) : null}
       <Card>
+        {canVoid ? (
         <div className="p-4 border-b border-border flex items-center gap-3">
           <Input
             value={voidReason}
@@ -285,6 +293,7 @@ function ConsumptionPage() {
             placeholder="Reason required before void"
           />
         </div>
+        ) : null}
         <Table head={["Ref", "Date", "Department", "Reason", "Cost", "Status", ""]}>
           {rows.slice(0, 40).map((row) => (
             <tr key={row.id}>
@@ -297,9 +306,9 @@ function ConsumptionPage() {
                 <Badge tone={row.voided ? "err" : "ok"}>{row.voided ? "voided" : "posted"}</Badge>
               </td>
               <td className="px-4 py-2.5">
-                {row.voided ? null : (
+                {canVoid && !row.voided ? (
                   <Button onClick={() => reverse(row.id)}>Void</Button>
-                )}
+                ) : null}
               </td>
             </tr>
           ))}

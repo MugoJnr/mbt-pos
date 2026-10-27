@@ -478,8 +478,39 @@ class SecurityTab(QWidget):
         for col, w2 in [(0,140),(1,110),(2,160),(3,100)]:
             self._audit_tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._audit_tbl.setColumnWidth(col, w2)
+        self._audit_tbl.cellDoubleClicked.connect(self._open_audit)
         lay.addWidget(self._audit_tbl)
         return w
+
+    def _open_audit(self, row, _col):
+        item = self._audit_tbl.item(row, 0)
+        payload = item.data(Qt.UserRole) if item is not None else None
+        if not payload:
+            return
+        from backend.audit_detail import describe_event
+        event = describe_event(payload)
+        lines = [
+            f"Event {event['id']}",
+            f"Action: {event['action']}",
+            f"Area: {event['module']}",
+            f"User: {event['username']}",
+            f"Role at the time: {event['role_at_event']}",
+            f"Outcome: {event['outcome']}",
+            f"Recorded: {event['recorded_at']}",
+            f"When it happened: {event['occurred_at']}",
+            f"Request address: {event['ip_address']}",
+            "",
+            str(event['details']),
+        ]
+        if event['changes']:
+            lines.append("")
+            lines.append("Before and after")
+            for change in event['changes']:
+                lines.append(f"{change['field']}: {change['before']} -> {change['after']}")
+        else:
+            lines.append("")
+            lines.append("This event did not record a before-and-after value.")
+        QMessageBox.information(self, 'Audit event', "\n".join(lines))
 
     def _load_audit(self):
         try:
@@ -499,8 +530,9 @@ class SecurityTab(QWidget):
                 self._audit_tbl.insertRow(i)
                 action = lg.get('action', '')
                 color  = action_colors.get(action, C['text'])
-                self._audit_tbl.setItem(i, 0, tbl_item(
-                    (lg.get('created_at','') or '')[:16]))
+                when = tbl_item((lg.get('created_at','') or '')[:16])
+                when.setData(Qt.UserRole, dict(lg))
+                self._audit_tbl.setItem(i, 0, when)
                 self._audit_tbl.setItem(i, 1, tbl_item(lg.get('username','') or 'system'))
                 self._audit_tbl.setItem(i, 2, tbl_center(action, color))
                 self._audit_tbl.setItem(i, 3, tbl_item(lg.get('module','') or ''))

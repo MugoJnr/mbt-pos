@@ -148,7 +148,7 @@ function Dashboard() {
   const rangeLabel = d === rangeEnd ? d : `${d} to ${rangeEnd}`;
   const role = String(user?.role || "").toLowerCase();
   const isAdmin = ["admin", "superadmin", "manager"].includes(role);
-  const canRequestVoid = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canRequestVoid = ["cashier", "manager", "admin"].includes(role);
 
   const summaryQ = useQuery({
     queryKey: ["reports-summary", d, rangeEnd],
@@ -203,24 +203,30 @@ function Dashboard() {
     },
     onError: (err: Error) => setVoidMsg(err.message || "The void request was not sent."),
   });
+  const canManage = ["manager", "admin", "superadmin"].includes(role);
+  const canHealth = ["admin", "superadmin"].includes(role);
   const insightsQ = useQuery({
     queryKey: ["ai-insights-dash"],
     queryFn: () => GET<any>("/ai/insights"),
+    enabled: canManage,
     refetchInterval: Math.max(refreshMs, 90_000),
   });
   const healthQ = useQuery({
     queryKey: ["health-detail-dash"],
     queryFn: () => GET<any>("/health/detail"),
+    enabled: canHealth,
     refetchInterval: refreshMs,
   });
   const notifQ = useQuery({
     queryKey: ["notifications-dash"],
     queryFn: () => GET<any>("/notifications", { limit: "8" }),
+    enabled: canManage && prefs.notificationsEnabled,
     refetchInterval: prefs.notificationsEnabled ? refreshMs : false,
   });
   const liveQ = useQuery({
     queryKey: ["live-dash"],
     queryFn: () => GET<any>("/live"),
+    enabled: canManage,
     refetchInterval: refreshMs,
   });
 
@@ -363,15 +369,15 @@ function Dashboard() {
   const dense = prefs.tableDensity === "compact" || prefs.layout === "dense";
 
   const quickActions = [
-    { to: "/pos", label: "New Sale", icon: Plus, need: ["sales", "dashboard"], show: true },
+    { to: "/pos", label: "New Sale", icon: Plus, need: ["sales", "dashboard"], show: role !== "viewer" },
     { to: "/inventory", label: "Inventory", icon: Package, need: ["inventory"], show: true },
     { to: "/debt", label: "Debts", icon: Landmark, need: ["debt"], show: true },
-    { to: "/reports", label: "Reports", icon: FileText, need: ["reports"], show: true },
-    { to: "/backup", label: "Backup", icon: HardDrive, need: ["backup", "settings"], show: isAdmin },
-    { to: "/notifications", label: "Alerts", icon: Bell, need: ["dashboard"], show: true },
-    { to: "/health", label: "Health", icon: HeartPulse, need: ["dashboard"], show: true },
+    { to: "/reports", label: "Reports", icon: FileText, need: ["reports"], show: role !== "cashier" },
+    { to: "/backup", label: "Backup", icon: HardDrive, need: ["backup", "settings"], show: canHealth },
+    { to: "/notifications", label: "Alerts", icon: Bell, need: ["dashboard"], show: canManage },
+    { to: "/health", label: "Health", icon: HeartPulse, need: ["dashboard"], show: canHealth },
     { to: "/settings", label: "Settings", icon: Settings, need: ["settings"], show: isAdmin },
-    { to: "/live", label: "Refresh Live", icon: RefreshCw, need: ["dashboard"], show: true },
+    { to: "/live", label: "Refresh Live", icon: RefreshCw, need: ["dashboard"], show: canManage },
   ].filter((a) => a.show && (isAdmin || can(perms, ...a.need)));
 
   return (
@@ -868,7 +874,15 @@ function Dashboard() {
                         {String(row.cashier_name || "—")}
                       </td>
                       <td className={cn("px-4 text-right", dense ? "py-1.5" : "py-2.5")}>
-                        {canRequestVoid && String(row.status || "completed").toLowerCase() !== "voided" ? (
+                        {role === "superadmin" && String(row.status || "completed").toLowerCase() !== "voided" ? (
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-err hover:underline"
+                            onClick={() => setOpenSaleId(Number(row.id))}
+                          >
+                            Void receipt
+                          </button>
+                        ) : canRequestVoid && String(row.status || "completed").toLowerCase() !== "voided" ? (
                           <button
                             type="button"
                             className="text-xs font-semibold text-err hover:underline"

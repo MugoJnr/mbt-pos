@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as VoidRequestsRouteImport } from './routes/void-requests'
 import { Route as UsersRouteImport } from './routes/users'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecurityRouteImport } from './routes/security'
@@ -28,10 +29,16 @@ import { Route as DebtRouteImport } from './routes/debt'
 import { Route as ConsumptionRouteImport } from './routes/consumption'
 import { Route as BranchesRouteImport } from './routes/branches'
 import { Route as BackupRouteImport } from './routes/backup'
+import { Route as BackdatingRouteImport } from './routes/backdating'
 import { Route as ApprovalsRouteImport } from './routes/approvals'
 import { Route as AiRouteImport } from './routes/ai'
 import { Route as IndexRouteImport } from './routes/index'
 
+const VoidRequestsRoute = VoidRequestsRouteImport.update({
+  id: '/void-requests',
+  path: '/void-requests',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -127,6 +134,11 @@ const BackupRoute = BackupRouteImport.update({
   path: '/backup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BackdatingRoute = BackdatingRouteImport.update({
+  id: '/backdating',
+  path: '/backdating',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApprovalsRoute = ApprovalsRouteImport.update({
   id: '/approvals',
   path: '/approvals',
@@ -147,6 +159,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/backdating': typeof BackdatingRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/consumption': typeof ConsumptionRoute
@@ -166,11 +179,13 @@ export interface FileRoutesByFullPath {
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
+  '/void-requests': typeof VoidRequestsRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/backdating': typeof BackdatingRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/consumption': typeof ConsumptionRoute
@@ -190,12 +205,14 @@ export interface FileRoutesByTo {
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
+  '/void-requests': typeof VoidRequestsRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/ai': typeof AiRoute
   '/approvals': typeof ApprovalsRoute
+  '/backdating': typeof BackdatingRoute
   '/backup': typeof BackupRoute
   '/branches': typeof BranchesRoute
   '/consumption': typeof ConsumptionRoute
@@ -215,6 +232,7 @@ export interface FileRoutesById {
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
+  '/void-requests': typeof VoidRequestsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -222,6 +240,7 @@ export interface FileRouteTypes {
     | '/'
     | '/ai'
     | '/approvals'
+    | '/backdating'
     | '/backup'
     | '/branches'
     | '/consumption'
@@ -241,11 +260,13 @@ export interface FileRouteTypes {
     | '/security'
     | '/settings'
     | '/users'
+    | '/void-requests'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/ai'
     | '/approvals'
+    | '/backdating'
     | '/backup'
     | '/branches'
     | '/consumption'
@@ -265,11 +286,13 @@ export interface FileRouteTypes {
     | '/security'
     | '/settings'
     | '/users'
+    | '/void-requests'
   id:
     | '__root__'
     | '/'
     | '/ai'
     | '/approvals'
+    | '/backdating'
     | '/backup'
     | '/branches'
     | '/consumption'
@@ -289,12 +312,14 @@ export interface FileRouteTypes {
     | '/security'
     | '/settings'
     | '/users'
+    | '/void-requests'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AiRoute: typeof AiRoute
   ApprovalsRoute: typeof ApprovalsRoute
+  BackdatingRoute: typeof BackdatingRoute
   BackupRoute: typeof BackupRoute
   BranchesRoute: typeof BranchesRoute
   ConsumptionRoute: typeof ConsumptionRoute
@@ -314,10 +339,18 @@ export interface RootRouteChildren {
   SecurityRoute: typeof SecurityRoute
   SettingsRoute: typeof SettingsRoute
   UsersRoute: typeof UsersRoute
+  VoidRequestsRoute: typeof VoidRequestsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/void-requests': {
+      id: '/void-requests'
+      path: '/void-requests'
+      fullPath: '/void-requests'
+      preLoaderRoute: typeof VoidRequestsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/users': {
       id: '/users'
       path: '/users'
@@ -451,6 +484,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BackupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/backdating': {
+      id: '/backdating'
+      path: '/backdating'
+      fullPath: '/backdating'
+      preLoaderRoute: typeof BackdatingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/approvals': {
       id: '/approvals'
       path: '/approvals'
@@ -479,6 +519,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AiRoute: AiRoute,
   ApprovalsRoute: ApprovalsRoute,
+  BackdatingRoute: BackdatingRoute,
   BackupRoute: BackupRoute,
   BranchesRoute: BranchesRoute,
   ConsumptionRoute: ConsumptionRoute,
@@ -498,6 +539,7 @@ const rootRouteChildren: RootRouteChildren = {
   SecurityRoute: SecurityRoute,
   SettingsRoute: SettingsRoute,
   UsersRoute: UsersRoute,
+  VoidRequestsRoute: VoidRequestsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

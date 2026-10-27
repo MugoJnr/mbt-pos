@@ -47,6 +47,10 @@ function ReceiptsPage() {
   const [open, setOpen] = useState<ReceiptRow | null>(null);
   const [restoreReason, setRestoreReason] = useState("");
   const [restoreMsg, setRestoreMsg] = useState("");
+  const [voidOpen, setVoidOpen] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidMsg, setVoidMsg] = useState("");
+  const [voiding, setVoiding] = useState(false);
   const { user } = useAuth();
   const qc = useQueryClient();
   const limit = 25;
@@ -77,7 +81,11 @@ function ReceiptsPage() {
   const header = detailQ.data?.header || {};
   const lines = Array.isArray(detailQ.data?.lines) ? detailQ.data.lines : [];
   const history = Array.isArray(detailQ.data?.history) ? detailQ.data.history : [];
-  const shownStatus = String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
+  const storedStatus = String(header.status || "").toLowerCase();
+  const shownStatus = storedStatus === "voided"
+    ? "voided"
+    : String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
+  const canVoidNow = user?.role === "superadmin" && open?.kind === "sale" && String(header.status || open?.status || "").toLowerCase() === "completed";
   const canRestore = user?.role === "superadmin" && open && (
     (open.kind === "sale" && String(header.status || "").toLowerCase() === "voided")
     || (open.kind === "consumption" && Number(header.voided || 0) === 1)
@@ -191,6 +199,49 @@ function ReceiptsPage() {
                       {item.edit_type || item.action} · {item.edited_by_name || item.username || "—"} · {item.reason || item.details}
                     </div>
                   ))}
+                </div>
+              ) : null}
+              {canVoidNow ? (
+                <div className="mt-4">
+                  <Button variant="secondary" onClick={() => { setVoidOpen(true); setVoidMsg(""); }}>Void Receipt</Button>
+                  {voidOpen ? (
+                    <div className="mt-3 rounded-lg border border-err/40 p-3">
+                      <div className="text-sm font-semibold text-text">Void this receipt now</div>
+                      <p className="mt-1 text-xs text-text2">
+                        {header.receipt_number || open.reference} · {KES(header.total ?? open.amount)} · {shownStatus || header.status}. No request is created.
+                      </p>
+                      <Input className="mt-2" aria-label="Reason for voiding this receipt" placeholder="Reason" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} />
+                      {voidMsg ? <div className="mt-2 text-sm text-text">{voidMsg}</div> : null}
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          disabled={voiding}
+                          onClick={async () => {
+                            if (voidReason.trim().length < 3) {
+                              setVoidMsg("Enter a reason before voiding this receipt.");
+                              return;
+                            }
+                            setVoiding(true);
+                            try {
+                              const data = await POST<any>(`/sales/${open.id}/void-now`, { reason: voidReason.trim() });
+                              if (!data || data.error || data.success === false) {
+                                setVoidMsg(data?.message || data?.error || "The receipt was not voided.");
+                                return;
+                              }
+                              setVoidMsg("Receipt voided.");
+                              setVoidOpen(false);
+                              qc.invalidateQueries({ queryKey: ["receipts"] });
+                              qc.invalidateQueries({ queryKey: ["receipt", open.kind, open.id] });
+                            } finally {
+                              setVoiding(false);
+                            }
+                          }}
+                        >
+                          {voiding ? "Voiding…" : "Confirm void"}
+                        </Button>
+                        <Button variant="ghost" onClick={() => setVoidOpen(false)}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {canRestore ? (

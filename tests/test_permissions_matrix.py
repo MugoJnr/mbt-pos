@@ -35,6 +35,8 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(has_permission(u, 'sales.void'))
         self.assertTrue(has_permission(u, 'inventory.create'))
         self.assertTrue(has_permission(u, 'inventory.edit_info'))
+        self.assertFalse(has_permission(u, 'inventory.delete'))
+        self.assertFalse(has_permission(u, 'users.delete'))
         self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
 
     def test_manager_can_void_not_edit(self):
@@ -43,12 +45,16 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(can_edit_sales(u))
         self.assertFalse(can_delete_debt(u))
         self.assertTrue(can_set_business_day(u))
+        self.assertFalse(has_permission(u, 'inventory.delete'))
+        self.assertFalse(has_permission(u, 'users.delete'))
 
     def test_admin_can_void_not_edit_stock(self):
         u = _user(ROLE_ADMIN)
         self.assertTrue(can_void_sales(u))
         self.assertFalse(can_edit_sales(u))
         self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
+        self.assertTrue(has_permission(u, 'inventory.delete'))
+        self.assertTrue(has_permission(u, 'users.delete'))
         self.assertFalse(can_delete_debt(u))
 
     def test_superadmin_full_sales_and_debt(self):

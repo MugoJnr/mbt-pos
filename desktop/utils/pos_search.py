@@ -16,6 +16,14 @@ def normalize_query(text) -> str:
     return ' '.join(str(text or '').strip().lower().split())
 
 
+def inventory_name_matches(query: str, product: dict) -> bool:
+    """Inventory lists match the product name only. Case and extra spaces do not matter."""
+    q = normalize_query(query)
+    if not q:
+        return True
+    return q in _norm_field((product or {}).get('name'))
+
+
 def _norm_field(value) -> str:
     return ' '.join(str(value or '').strip().lower().split())
 

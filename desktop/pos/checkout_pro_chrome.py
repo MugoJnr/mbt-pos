@@ -1807,7 +1807,9 @@ def apply_checkout_pro_chrome(tab) -> None:
         cnt.hide()
     rev = getattr(tab, '_cart_max_btn', None)
     if _alive(rev):
-        rev.hide()
+        review = bool(getattr(tab, '_cart_maximized', False))
+        rev.setText('Back to products' if review else 'View Cart')
+        rev.show()
 
     clist = getattr(tab, '_cart_list', None)
     if _alive(clist):

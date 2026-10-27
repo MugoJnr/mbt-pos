@@ -522,7 +522,7 @@ def build_shared_panels(tab) -> None:
     ch.addStretch()
     tab._cnt = Caption('0 items')
     ch.addWidget(tab._cnt)
-    tab._cart_max_btn = SecondaryBtn('Review', 36)
+    tab._cart_max_btn = SecondaryBtn('View Cart', 36)
     tab._cart_max_btn.setMinimumWidth(110)
     tab._cart_max_btn.setMinimumHeight(40)
     tab._cart_max_btn.setToolTip(

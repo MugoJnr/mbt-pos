@@ -2180,6 +2180,18 @@ def _user_can(module, user=None):
     return bool(tabs & need) or role == 'manager'
 
 
+def _perm(action: str) -> bool:
+    """Shop permission from the signed-in role. An unknown role is denied."""
+    from desktop.utils.security import has_permission
+    user = getattr(g, 'current_user', None) or {}
+    return has_permission({'role': (user.get('role') or '').lower()}, action)
+
+
+def _sees_cost() -> bool:
+    role = ((getattr(g, 'current_user', None) or {}).get('role') or '').lower()
+    return role in ('manager', 'admin', 'superadmin')
+
+
 class _WebPosApi:
     """API shim so desktop AI context builder can read live POS data over Flask."""
 
@@ -2187,7 +2199,8 @@ class _WebPosApi:
         db = _get_db()
         try:
             rows = db.execute("SELECT key, value FROM system_settings").fetchall()
-            return {r['key']: r['value'] for r in rows}
+            from backend.settings_guard import public_settings
+            return public_settings({r['key']: r['value'] for r in rows})
         except Exception:
             return {}
 
@@ -2243,6 +2256,8 @@ class _WebPosApi:
                 d['quantity'] = d.get('stock')
             if 'reorder_level' not in d or d.get('reorder_level') is None:
                 d['reorder_level'] = d.get('min_stock')
+            if not _sees_cost():
+                d.pop('cost_price', None)
             out.append(d)
         return out
 
@@ -2513,15 +2528,36 @@ def debt_summary():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('debt'):
+        own = _perm('debt.view_own') and not _perm('debt.view')
+        if not _perm('debt.view') and not own:
             return jsonify({'error': 'Forbidden'}), 403
         db    = _get_db()
         today = str(date.today())
-        out   = _tr(db.execute("SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices WHERE status NOT IN ('paid','cancelled')").fetchone())
-        over  = _tr(db.execute("SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices WHERE status NOT IN ('paid','cancelled') AND due_date IS NOT NULL AND due_date < date('now')").fetchone())
-        col   = _tr(db.execute("SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM debt_payments WHERE date(created_at)=?", (today,)).fetchone())
-        debtors = _trs(db.execute("SELECT customer_name, COALESCE(SUM(balance),0) as total_balance FROM debt_invoices WHERE status NOT IN ('paid','cancelled') GROUP BY customer_id ORDER BY total_balance DESC LIMIT 5").fetchall())
-        cust_count = db.execute("SELECT COUNT(DISTINCT customer_id) FROM debt_invoices WHERE status NOT IN ('paid','cancelled')").fetchone()[0]
+        scope = " AND cashier_id=?" if own else ""
+        scope_params = (g.current_user.get('id'),) if own else ()
+        out   = _tr(db.execute(
+            "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled')" + scope, scope_params
+        ).fetchone())
+        over  = _tr(db.execute(
+            "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled') AND due_date IS NOT NULL AND due_date < date('now')"
+            + scope, scope_params
+        ).fetchone())
+        col   = _tr(db.execute(
+            "SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM debt_payments "
+            "WHERE date(created_at)=?" + scope, (today,) + scope_params
+        ).fetchone())
+        debtors = _trs(db.execute(
+            "SELECT customer_name, COALESCE(SUM(balance),0) as total_balance FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled')" + scope
+            + " GROUP BY customer_id ORDER BY total_balance DESC LIMIT 5",
+            scope_params,
+        ).fetchall())
+        cust_count = db.execute(
+            "SELECT COUNT(DISTINCT customer_id) FROM debt_invoices "
+            "WHERE status NOT IN ('paid','cancelled')" + scope, scope_params
+        ).fetchone()[0]
         return jsonify({'outstanding': out, 'overdue': over, 'today_collected': col, 'top_debtors': debtors, 'customers_with_debt': cust_count})
     return _inner()
 
@@ -2531,6 +2567,9 @@ def list_debt_invoices():
     from backend.app import token_required
     @token_required
     def _inner():
+        own = _perm('debt.view_own') and not _perm('debt.view')
+        if not _perm('debt.view') and not own:
+            return jsonify({'error': 'Forbidden'}), 403
         db     = _get_db()
         status = request.args.get('status','')
         start  = request.args.get('start','')
@@ -2543,6 +2582,9 @@ def list_debt_invoices():
                 clauses.append("di.status=?"); params.append(status)
         if start: clauses.append("date(di.created_at)>=?"); params.append(start)
         if end:   clauses.append("date(di.created_at)<=?"); params.append(end)
+        if own:
+            clauses.append("di.cashier_id=?")
+            params.append(g.current_user.get('id'))
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = db.execute(
             f"SELECT di.*, c.phone as c_phone FROM debt_invoices di "
@@ -2558,6 +2600,8 @@ def create_debt_invoice():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('debt.create'):
+            return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
         if not data.get('customer_id'):
             return jsonify({'error': 'customer_id required'}), 400
@@ -2609,6 +2653,8 @@ def pay_debt_invoice(inv_id):
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('debt.collect'):
+            return jsonify({'error': 'Forbidden'}), 403
         data   = request.json or {}
         amount = round(float(data.get('amount') or 0), 2)
         if amount <= 0:
@@ -2617,6 +2663,9 @@ def pay_debt_invoice(inv_id):
         inv = _tr(db.execute("SELECT * FROM debt_invoices WHERE id=?", (inv_id,)).fetchone())
         if not inv:
             return jsonify({'error': 'Invoice not found'}), 404
+        if _perm('debt.view_own') and not _perm('debt.view'):
+            if int(inv.get('cashier_id') or 0) != int(g.current_user.get('id') or 0):
+                return jsonify({'error': 'Forbidden'}), 403
         if inv['status'] in ('paid', 'cancelled'):
             return jsonify({'error': f"Invoice is already {inv['status']}"}), 400
         ref = (data.get('payment_reference') or '').strip()
@@ -2888,7 +2937,7 @@ def list_consumptions_http():
 
     @token_required
     def _inner():
-        if not _user_can('consumption'):
+        if not (_perm('consumption.view_report') or _perm('consumption.create')):
             return jsonify({'error': 'Consumption access required'}), 403
         rows = _consumption_api().get_consumptions(
             request.args.get('start') or None,
@@ -3535,6 +3584,8 @@ def html_report():
     def _inner():
         from flask import Response
         import json as _json
+        if not _perm('reports.view_all'):
+            return jsonify({'error': 'Forbidden'}), 403
 
         rdate = request.args.get('date', str(date.today()))
         db    = _get_db()
@@ -4001,6 +4052,124 @@ def api_version():
     return jsonify(_app_version_info())
 
 
+@web.route('/api/updates/status', methods=['GET'])
+def updates_status():
+    """Tell the dashboard whether a newer till release exists. Does not install it."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.shop_update import classify_release, load_release_feed
+        installed = _app_version_info()
+        release, reachable = load_release_feed()
+        body = classify_release(installed.get('version') or '', release, reachable=reachable)
+        body['installed_build'] = installed.get('build') or ''
+        return jsonify(body)
+    return _inner()
+
+
+def _void_json(result: dict):
+    """Workflow status stays in the body. HTTP status is a separate number."""
+    code = result.pop('http_status', None)
+    if code is None:
+        code = 400 if result.get('error') else 200
+    return jsonify(result), int(code)
+
+
+def _void_user():
+    user = g.current_user or {}
+    return {
+        'id': user.get('id'),
+        'username': user.get('username') or user.get('full_name') or '',
+        'full_name': user.get('full_name') or '',
+        'role': (user.get('role') or '').lower(),
+    }
+
+
+@web.route('/api/void-requests', methods=['GET'])
+def list_void_requests_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.void_requests import list_void_requests
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        result = list_void_requests(db, _void_user(), request.args)
+        return _void_json(result)
+    return _inner()
+
+
+@web.route('/api/void-requests/<int:request_id>', methods=['GET'])
+def get_void_request_http(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.void_requests import get_void_request
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        result = get_void_request(db, _void_user(), request_id)
+        return _void_json(result)
+    return _inner()
+
+
+@web.route('/api/void-requests/<int:request_id>', methods=['PUT'])
+def correct_void_request_http(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.app import log_action
+        from backend.void_requests import correct_void_request
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        reason = ((request.json or {}).get('reason') or '').strip()
+        result = correct_void_request(db, _void_user(), request_id, reason)
+        if result.get('success'):
+            db.commit()
+            log_action('VOID_REQUEST_CORRECTED', 'sales', f'approval={request_id}')
+        return _void_json(result)
+    return _inner()
+
+
+@web.route('/api/void-requests/<int:request_id>/resubmit', methods=['POST'])
+def resubmit_void_request_http(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.app import log_action
+        from backend.void_requests import resubmit_void_request
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        result = resubmit_void_request(db, _void_user(), request_id)
+        if result.get('success'):
+            db.commit()
+            log_action('VOID_REQUEST_RESUBMITTED', 'sales', f'approval={request_id}')
+        return _void_json(result)
+    return _inner()
+
+
+@web.route('/api/void-requests/<int:request_id>/return', methods=['POST'])
+def return_void_request_http(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from backend.app import log_action
+        from backend.void_requests import return_void_request
+        db = _get_db()
+        _ensure_command_center_schema(db)
+        note = ((request.json or {}).get('note') or '').strip()
+        result = return_void_request(db, _void_user(), request_id, note)
+        if result.get('success'):
+            db.commit()
+            log_action('VOID_REQUEST_RETURNED', 'sales', f'approval={request_id}')
+        return _void_json(result)
+    return _inner()
+
+
 @web.route('/api/command-center/summary', methods=['GET'])
 def cc_summary():
     from backend.app import token_required
@@ -4257,6 +4426,8 @@ def list_notifications():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('sales.view_all'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         _seed_live_notifications(db)
@@ -4277,6 +4448,8 @@ def mark_notification_read(nid):
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('sales.view_all'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         db.execute("UPDATE cc_notifications SET is_read=1 WHERE id=?", (nid,))
@@ -4290,6 +4463,8 @@ def mark_all_notifications_read():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('sales.view_all'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         db.execute("UPDATE cc_notifications SET is_read=1 WHERE is_read=0")
@@ -4303,6 +4478,8 @@ def health_detail():
     from backend.app import token_required
     @token_required
     def _inner():
+        if (g.current_user.get('role') or '').lower() not in ('admin', 'superadmin'):
+            return jsonify({'error': 'Forbidden'}), 403
         import shutil
         import time as _time
         db = _get_db()
@@ -4577,6 +4754,8 @@ def live_monitor():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('sales.view_all'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         today = str(date.today())
@@ -4659,7 +4838,7 @@ def backup_status():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('backup'):
+        if (g.current_user.get('role') or '').lower() not in ('admin', 'superadmin'):
             return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
@@ -4693,8 +4872,8 @@ def backup_run():
     from backend.app import token_required, DB_PATH
     @token_required
     def _inner():
-        if g.current_user.get('role') not in ('admin', 'superadmin', 'manager'):
-            return jsonify({'error': 'Manager or admin access required'}), 403
+        if (g.current_user.get('role') or '').lower() not in ('admin', 'superadmin'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         reason = (request.json or {}).get('reason') or 'manual_web'
@@ -4768,6 +4947,8 @@ def list_branches():
     from backend.app import token_required
     @token_required
     def _inner():
+        if (g.current_user.get('role') or '').lower() not in ('admin', 'superadmin'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         rows = _trs(db.execute(
@@ -4798,6 +4979,8 @@ def select_branch(bid):
     from backend.app import token_required
     @token_required
     def _inner():
+        if (g.current_user.get('role') or '').lower() not in ('admin', 'superadmin'):
+            return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         row = _tr(db.execute(
@@ -4817,6 +5000,8 @@ def ai_insights():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('ai_ops.view'):
+            return jsonify({'error': 'Forbidden'}), 403
         snap = _cc_today_snapshot(g.current_user)
         cur = snap.get('currency') or 'KES'
         sales_n = snap['sales_count']
@@ -4895,6 +5080,8 @@ def ai_chat():
     from backend.app import token_required
     @token_required
     def _inner():
+        if not _perm('ai_ops.view'):
+            return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
         message = (data.get('message') or '').strip()
         if not message:
@@ -5234,7 +5421,7 @@ def reports_data():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _user_can('reports') and not _user_can('sales'):
+        if not _perm('reports.view_all'):
             return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         filt = _report_filters_from_request()
@@ -5333,7 +5520,7 @@ def reports_export():
                 mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             )
 
-        if not _user_can('reports') and not _user_can('sales'):
+        if not _perm('reports.view_all'):
             return jsonify({'error': 'Forbidden'}), 403
         filt = _report_filters_from_request()
         bundle = _query_report_bundle(db, filt)
@@ -5610,7 +5797,11 @@ def license_status():
     from backend.app import token_required
     @token_required
     def _inner():
-        if not _can_view_license_details():
+        role = (g.current_user.get('role') or '').lower()
+        if role in ('cashier', 'viewer', 'manager', 'admin', 'superadmin'):
+            if not _perm('license.manage'):
+                return jsonify({'error': 'Forbidden'}), 403
+        elif not _can_view_license_details():
             return jsonify({'error': 'Forbidden'}), 403
         info = {
             'state': 'unknown',

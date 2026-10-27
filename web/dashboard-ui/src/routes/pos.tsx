@@ -32,6 +32,7 @@ import { Button, Card, EmptyState, Input, Select, Skeleton } from "@/components/
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES, saleDayCaption, shopTodayISO } from "@/lib/format";
+import { wheelStep } from "@/lib/wheel-steps";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/pos")({
@@ -77,8 +78,9 @@ const PAGE_SIZE = 12;
 const QTY_STEP = 0.25;
 
 function snapQty(value: number) {
-  const snapped = Math.round(Math.round(value / QTY_STEP) * QTY_STEP * 100) / 100;
-  return Math.max(QTY_STEP, snapped);
+  const n = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
 }
 
 function formatQty(value: number) {
@@ -101,7 +103,8 @@ const QUICK_AMOUNTS = [500, 1000, 2000, 5000] as const;
 function POS() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const canDate = ["admin", "superadmin", "manager"].includes(String(user?.role || ""));
+  const role = String(user?.role || "");
+  const canDate = ["admin", "superadmin", "manager"].includes(role);
   const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
   const [cart, setCart] = useState<Line[]>([]);
@@ -112,6 +115,7 @@ function POS() {
   const [splitMethod, setSplitMethod] = useState("M-Pesa");
   const [splitAmount, setSplitAmount] = useState("");
   const [qtyDraft, setQtyDraft] = useState<Record<number, string>>({});
+  const [cartWide, setCartWide] = useState(false);
   const [note, setNote] = useState("");
   const [saleDate, setSaleDate] = useState(shopTodayISO);
   const [showNote, setShowNote] = useState(false);
@@ -142,6 +146,7 @@ function POS() {
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
   const currency = settingsQ.data?.currency_symbol || "KES";
+  const qtyStep = wheelStep(settingsQ.data, "wheel_pos_qty");
   const taxRate = (parseFloat(settingsQ.data?.tax_rate || "0") || 0) / 100;
 
   const selectedCustomer = useMemo(
@@ -207,7 +212,7 @@ function POS() {
     setCart((c) => {
       const ex = c.find((l) => l.product_id === p.id);
       if (ex) {
-        const quantity = snapQty(ex.quantity + QTY_STEP);
+        const quantity = snapQty(ex.quantity + qtyStep);
         if (quantity > Number(p.stock) + 0.0001) {
           toast.error(`Only ${p.stock} in stock`);
           return c;
@@ -386,6 +391,14 @@ function POS() {
   const catPills = categories.filter(Boolean);
   const visibleCats = catPills.slice(0, 5);
   const moreCats = catPills.slice(5);
+
+  if (role === "viewer") {
+    return (
+      <AppShell title="Point of Sale">
+        <div className="p-6 text-sm text-text2">You cannot take a payment.</div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell title="Point of Sale" density="pos">
@@ -570,10 +583,12 @@ function POS() {
         </Card>
 
         {/* ── RIGHT: Cart + Customer + Summary + Payment ───────── */}
-        <Card className="flex min-h-[240px] w-full flex-1 flex-col overflow-hidden md:h-full md:min-h-0 md:w-[min(420px,42%)] md:min-w-[300px] md:flex-none">
+        <Card className={cartWide
+          ? "flex min-h-[240px] w-full flex-1 flex-col overflow-hidden md:h-full md:min-h-0 md:w-[min(760px,68%)] md:min-w-[420px] md:flex-none"
+          : "flex min-h-[240px] w-full flex-1 flex-col overflow-hidden md:h-full md:min-h-0 md:w-[min(420px,42%)] md:min-w-[300px] md:flex-none"}>
           <div className="p-3 border-b border-border flex items-center justify-between gap-2 bg-panel/30">
             <div>
-              <h2 className="text-[15px] font-semibold text-text">Current Sale</h2>
+              <h2 className="text-[15px] font-semibold text-text">{cartWide ? "View Cart" : "Current Sale"}</h2>
               <div className="text-[11px] text-text2">
                 {itemCount} item{itemCount === 1 ? "" : "s"} in cart
               </div>
@@ -588,6 +603,13 @@ function POS() {
                   Resume
                 </button>
               ) : null}
+              <button
+                type="button"
+                onClick={() => setCartWide((open) => !open)}
+                className="min-h-11 px-3 rounded-xl border border-gold/50 text-[12px] font-semibold text-gold hover:bg-gold/10"
+              >
+                {cartWide ? "Back to products" : "View Cart"}
+              </button>
               <button
                 type="button"
                 onClick={holdSale}
@@ -627,28 +649,40 @@ function POS() {
                       <button
                         type="button"
                         aria-label="Decrease"
-                        onClick={() => setQty(l.product_id, l.quantity - QTY_STEP)}
+                        onClick={() => setQty(l.product_id, l.quantity - qtyStep)}
                         className="h-8 w-8 grid place-items-center text-text hover:bg-hover"
                       >
                         <Minus className="h-3.5 w-3.5" />
                       </button>
                       <input
                         type="number"
-                        min={QTY_STEP}
-                        step={QTY_STEP}
+                        min={0.01}
+                        step={qtyStep}
+                        onWheel={(e) => {
+                          if (document.activeElement !== e.currentTarget) return;
+                          e.preventDefault();
+                          const dir = e.deltaY < 0 ? 1 : -1;
+                          const stock = products.find((p) => p.id === l.product_id)?.stock;
+                          setQty(l.product_id, l.quantity + dir * qtyStep, stock);
+                        }}
                         aria-label={`Quantity for ${l.product_name}`}
                         value={qtyDraft[l.product_id] ?? formatQty(l.quantity)}
-                        onChange={(e) =>
-                          setQtyDraft((draft) => ({ ...draft, [l.product_id]: e.target.value }))
-                        }
-                        onBlur={() => {
-                          const raw = qtyDraft[l.product_id];
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setQtyDraft((draft) => ({ ...draft, [l.product_id]: raw }));
+                          const n = parseFloat(raw);
+                          if (!Number.isFinite(n)) return;
+                          const stock = products.find((p) => p.id === l.product_id)?.stock;
+                          setQty(l.product_id, n, stock);
+                        }}
+                        onBlur={(e) => {
+                          const raw = e.currentTarget.value;
                           setQtyDraft((draft) => {
                             const next = { ...draft };
                             delete next[l.product_id];
                             return next;
                           });
-                          if (raw == null) return;
+                          if (raw == null || raw.trim() === "") return;
                           const n = parseFloat(raw);
                           if (!Number.isFinite(n)) return;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
@@ -662,7 +696,7 @@ function POS() {
                         onClick={() =>
                           setQty(
                             l.product_id,
-                            l.quantity + QTY_STEP,
+                            l.quantity + qtyStep,
                             products.find((p) => p.id === l.product_id)?.stock,
                           )
                         }

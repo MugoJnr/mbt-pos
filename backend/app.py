@@ -108,12 +108,25 @@ else:
         return r
 
 
+def _origin_allowed(origin: str) -> bool:
+    """Allow the shop's own address even when the tunnel is HTTPS and Flask sees HTTP."""
+    origin = (origin or '').rstrip('/')
+    if not origin or origin in _ALLOWED_ORIGINS:
+        return True
+    host = (request.host_url or '').rstrip('/')
+    if origin == host:
+        return True
+    from urllib.parse import urlparse
+    origin_host = (urlparse(origin).hostname or '').lower()
+    request_host = (urlparse(host).hostname or '').lower()
+    return bool(origin_host) and origin_host == request_host
+
+
 @app.before_request
 def _request_context():
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
         origin = (request.headers.get('Origin') or '').rstrip('/')
-        host = (request.host_url or '').rstrip('/')
-        if origin and origin not in _ALLOWED_ORIGINS and origin != host:
+        if origin and not _origin_allowed(origin):
             return jsonify({'error': 'Origin is not allowed.'}), 403
     g.request_id = request.headers.get('X-Request-ID') or secrets.token_hex(12)
 
@@ -783,9 +796,10 @@ def token_required(f):
                 g.current_user = dict(user)
                 g.session_id = sid
                 g.auth_provider = 'local'
-                return f(*args, **kwargs)
         except Exception:
-            pass
+            g.current_user = None
+        if getattr(g, 'current_user', None) and getattr(g, 'auth_provider', '') == 'local':
+            return f(*args, **kwargs)
         # 2) Supabase JWT (MugoByte Platform cloud auth)
         try:
             from backend.cloud_backup.paths import is_cloud_configured, load_cloud_config
@@ -853,6 +867,52 @@ def _user_role_guard(target_role: str):
 def _load_user(db, uid: int):
     row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     return dict(row) if row else None
+
+
+def _known_shop_role() -> str:
+    role = (g.current_user.get('role') or '').lower()
+    if role not in ('cashier', 'viewer', 'manager', 'admin', 'superadmin'):
+        return ''
+    return role
+
+
+def _shop_can(action: str) -> bool:
+    from desktop.utils.security import has_permission
+    role = _known_shop_role()
+    if not role:
+        return False
+    return has_permission({'role': role}, action)
+
+
+def _sees_cost() -> bool:
+    return _role_is('manager', 'admin', 'superadmin')
+
+
+def _redact_cost(row: dict) -> dict:
+    if _sees_cost():
+        return row
+    for key in ('cost_price', 'unit_cost', 'cost', 'gross_profit', 'profit'):
+        row.pop(key, None)
+    return row
+
+
+def _keep_last_superadmin(db, uid: int, target: dict, data: dict | None = None) -> bool:
+    """True when this change would leave the shop with no active Super Admin."""
+    from roles import is_superadmin_role
+    if not target or not is_superadmin_role(target.get('role')):
+        return False
+    if int(target.get('is_active') or 0) != 1:
+        return False
+    data = data or {}
+    disabling = data.get('is_active') in (0, '0', False)
+    demoting = 'role' in data and not is_superadmin_role(data.get('role'))
+    if data and not disabling and not demoting:
+        return False
+    others = db.execute(
+        "SELECT COUNT(*) AS c FROM users WHERE role='superadmin' AND is_active=1 AND id!=?",
+        (uid,),
+    ).fetchone()
+    return int(others['c'] or 0) == 0
 
 
 def log_action(action, module='system', details=''):
@@ -931,7 +991,22 @@ def login():
 @app.route('/api/auth/me', methods=['GET'])
 @token_required
 def me():
-    return jsonify(g.current_user)
+    user = g.current_user or {}
+    perms = user.get('tab_permissions') or '[]'
+    if isinstance(perms, str):
+        try:
+            perms = json.loads(perms or '[]')
+        except (TypeError, ValueError):
+            perms = []
+    return jsonify({
+        'id': user.get('id'),
+        'username': user.get('username'),
+        'full_name': user.get('full_name'),
+        'email': user.get('email') or '',
+        'role': user.get('role'),
+        'is_active': user.get('is_active', 1),
+        'tab_permissions': perms,
+    })
 
 
 def _account_api():
@@ -994,7 +1069,7 @@ def list_sessions_http():
 @app.route('/api/sessions/<sid>/revoke', methods=['POST'])
 @token_required
 def revoke_session_http(sid):
-    if not _manage_users():
+    if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Forbidden'}), 403
     from desktop.utils.account_sessions import revoke_web_session
     db = get_db()
@@ -1019,7 +1094,7 @@ def list_till_signins_http():
 @app.route('/api/till/signins/<int:session_id>/end', methods=['POST'])
 @token_required
 def end_till_signin_http(session_id):
-    if not _manage_users():
+    if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Forbidden'}), 403
     from desktop.utils.account_sessions import request_till_end
     db = get_db()
@@ -1110,12 +1185,13 @@ def update_user(uid):
         return err
     actor = _actor_role()
     if not is_superadmin_role(actor) and is_superadmin_role(target['role']):
-        if new_role != target['role']:
-            return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
-        if 'tab_permissions' in data:
-            return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
-        if data.get('is_active') == 0:
-            return jsonify({'error': 'Only the shop owner can deactivate a Super Admin account.'}), 403
+        return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
+    if 'is_active' in data and not _shop_can('users.delete'):
+        return jsonify({'error': 'Only an administrator can remove a staff account.'}), 403
+    if data.get('is_active') in (0, '0', False) and target.get('id') == g.current_user.get('id'):
+        return jsonify({'error': 'You cannot deactivate your own account.'}), 400
+    if _keep_last_superadmin(db, uid, target, data):
+        return jsonify({'error': 'The shop must keep one active Super Admin.'}), 400
     fields = []
     values = []
     for field in ('role', 'full_name', 'email', 'is_active'):
@@ -1164,12 +1240,21 @@ def update_user(uid):
 @app.route('/api/users/<int:uid>', methods=['DELETE'])
 @token_required
 def delete_user(uid):
-    if not _role_is('superadmin'):
-        return jsonify({'error': 'Super Admin only'}), 403
+    if not _shop_can('users.delete'):
+        return jsonify({'error': 'Only an administrator can remove a staff account.'}), 403
+    from roles import is_superadmin_role
     db = get_db()
     target = _load_user(db, uid)
     if target and target.get('id') == g.current_user.get('id'):
         return jsonify({'error': 'You cannot deactivate your own account.'}), 400
+    if (
+        target
+        and is_superadmin_role(target.get('role') or '')
+        and not is_superadmin_role(_actor_role())
+    ):
+        return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
+    if target and _keep_last_superadmin(db, uid, target):
+        return jsonify({'error': 'The shop must keep one active Super Admin.'}), 400
     db.execute("UPDATE users SET is_active=0 WHERE id=?", (uid,))
     db.commit()
     log_action('DELETE_USER', 'admin', f"Deactivated user id={uid}")
@@ -1183,7 +1268,7 @@ def delete_user(uid):
 def list_products():
     db = get_db()
     products = db.execute("SELECT * FROM products WHERE is_active=1 ORDER BY name").fetchall()
-    return jsonify([dict(p) for p in products])
+    return jsonify([_redact_cost(dict(p)) for p in products])
 
 
 @app.route('/api/products', methods=['POST'])
@@ -1195,7 +1280,7 @@ def create_product():
     api = APIClient()
     api._user_id = user.get('id')
     api._username = user.get('username') or user.get('full_name') or 'web'
-    api._role = (user.get('role') or 'cashier').lower()
+    api._role = (user.get('role') or '').lower()
     result = api.create_product(data)
     code = 200 if result.get('success') else int(result.get('status') or 400)
     return jsonify(result), code
@@ -1205,32 +1290,29 @@ def create_product():
 @token_required
 def update_product(pid):
     data = request.json or {}
-    if 'stock' in data:
-        return jsonify({
-            'error': 'Change stock through the protected Adjust Stock action.',
-        }), 403
-    db = get_db()
-    fields = []
-    values = []
-    for field in ('name', 'sku', 'category', 'price', 'cost_price', 'min_stock', 'unit', 'barcode'):
-        if field in data:
-            fields.append(f"{field}=?")
-            values.append(data[field])
-    fields.append("updated_at=?")
-    values.append(datetime.now().isoformat())
-    values.append(pid)
-    db.execute(f"UPDATE products SET {', '.join(fields)} WHERE id=?", values)
-    db.commit()
-    return jsonify({'success': True})
+    user = g.current_user or {}
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    api._role = (user.get('role') or '').lower()
+    result = api.update_product(pid, data)
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
 
 
 @app.route('/api/products/<int:pid>', methods=['DELETE'])
 @token_required
 def delete_product(pid):
-    db = get_db()
-    db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
-    db.commit()
-    return jsonify({'success': True})
+    user = g.current_user or {}
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    api._role = (user.get('role') or '').lower()
+    result = api.delete_product(pid)
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
 
 
 # ── SALES ─────────────────────────────────────────────────────────────────────
@@ -1244,15 +1326,22 @@ def _sale_day_sql(alias: str = '') -> str:
 @app.route('/api/sales', methods=['GET'])
 @token_required
 def list_sales():
+    if not (_shop_can('sales.view_all') or _shop_can('sales.view_own')):
+        return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     start = request.args.get('start', str(date.today()))
     end = request.args.get('end', str(date.today()))
     day = _sale_day_sql('s')
+    params = [start, end]
+    own = ''
+    if not _shop_can('sales.view_all'):
+        own = ' AND s.cashier_id=?'
+        params.append(g.current_user.get('id'))
     sales = db.execute(f"""SELECT s.*, GROUP_CONCAT(si.product_name || ' x' || si.quantity) as items_summary
                           FROM sales s LEFT JOIN sale_items si ON s.id = si.sale_id
-                          WHERE {day} BETWEEN ? AND ?
+                          WHERE {day} BETWEEN ? AND ?{own}
                           GROUP BY s.id ORDER BY s.created_at DESC""",
-                       (start, end)).fetchall()
+                       params).fetchall()
     return jsonify([dict(s) for s in sales])
 
 
@@ -1290,9 +1379,48 @@ def void_sale_http(sale_id=None):
     return jsonify(result), code
 
 
+@app.route('/api/sales/<int:sale_id>/void-now', methods=['POST'])
+@token_required
+def void_sale_now(sale_id):
+    """Void one completed receipt. Signed-in Super Admin only. No request is created."""
+    user = g.current_user or {}
+    role = (user.get('role') or '').lower()
+    data = request.json or {}
+    reason = (data.get('reason') or '').strip()
+    if role != 'superadmin':
+        log_action('VOID_SALE_DENIED', 'sales', f'sale_id={sale_id} role={role}')
+        return jsonify({'error': 'Only a signed-in Super Admin can void a receipt directly.'}), 403
+    if len(reason) < 3:
+        return jsonify({'error': 'Enter a reason before voiding this receipt.'}), 400
+    from desktop.utils.api_client import APIClient
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'superadmin'
+    api._role = role
+    result = api.void_sale(
+        int(sale_id), reason,
+        force_with_payments=bool(data.get('confirm_credit_payments')),
+    )
+    if result.get('error') == 'credit_payments_exist':
+        return jsonify(result), 409
+    if not result.get('success'):
+        status = 404 if result.get('error') == 'Sale not found' else 409
+        return jsonify(result), status
+    from backend.void_requests import close_open_for_sale
+    db = get_db()
+    api._ensure_approval_table(db)
+    closed = close_open_for_sale(db, int(sale_id), api._username)
+    db.commit()
+    result['closed_requests'] = closed
+    result['sale_status'] = 'voided'
+    return jsonify(result)
+
+
 @app.route('/api/sales', methods=['POST'])
 @token_required
 def create_sale():
+    if not _shop_can('sales.create'):
+        return jsonify({'error': 'You cannot take a payment.'}), 403
     data = request.json or {}
     items = data.get('items') or []
     if not items:
@@ -1481,10 +1609,14 @@ def create_sale():
 @app.route('/api/sales/<int:sale_id>', methods=['GET'])
 @token_required
 def get_sale(sale_id):
+    if not (_shop_can('sales.view_all') or _shop_can('sales.view_own')):
+        return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     sale = db.execute("SELECT * FROM sales WHERE id=?", (sale_id,)).fetchone()
     if not sale:
         return jsonify({'error': 'Not found'}), 404
+    if not _shop_can('sales.view_all') and sale['cashier_id'] != g.current_user.get('id'):
+        return jsonify({'error': 'Forbidden'}), 403
     items = db.execute(
         """SELECT si.*,
                   p.sku AS product_sku, p.barcode, p.category, p.unit,
@@ -1495,7 +1627,7 @@ def get_sale(sale_id):
         (sale_id,),
     ).fetchall()
     result = dict(sale)
-    result['items'] = [dict(i) for i in items]
+    result['items'] = [_redact_cost(dict(i)) for i in items]
     if result.get('customer_id'):
         cust = db.execute(
             "SELECT name, phone FROM customers WHERE id=?",
@@ -1522,9 +1654,19 @@ def get_sale(sale_id):
 @app.route('/api/reports/summary', methods=['GET'])
 @token_required
 def sales_summary():
+    if not (_shop_can('reports.view_basic') or _shop_can('reports.view_all')):
+        return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     start = request.args.get('start', str(date.today()))
     end = request.args.get('end', str(date.today()))
+
+    own_sql = ""
+    own_join = ""
+    own_params = []
+    if not _shop_can('sales.view_all'):
+        own_sql = " AND cashier_id=?"
+        own_join = " AND s.cashier_id=?"
+        own_params = [g.current_user.get('id')]
 
     summary = db.execute("""
         SELECT
@@ -1534,31 +1676,31 @@ def sales_summary():
             COALESCE(SUM(discount), 0) as total_discounts,
             COALESCE(SUM(tax), 0) as total_tax
         FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
-          AND status IN ('completed','return')
-    """, (start, end)).fetchone()
+          AND status IN ('completed','return')""" + own_sql + """
+    """, (start, end, *own_params)).fetchone()
 
     top_products = db.execute("""
         SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
         FROM sale_items si
         JOIN sales s ON si.sale_id = s.id
         WHERE """ + _sale_day_sql('s') + """ BETWEEN ? AND ?
-          AND s.status IN ('completed','return')
+          AND s.status IN ('completed','return')""" + own_join + """
         GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10
-    """, (start, end)).fetchall()
+    """, (start, end, *own_params)).fetchall()
 
     by_payment = db.execute("""
         SELECT payment_method, COUNT(*) as count, SUM(total) as total
         FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
-          AND status IN ('completed','return')
+          AND status IN ('completed','return')""" + own_sql + """
         GROUP BY payment_method
-    """, (start, end)).fetchall()
+    """, (start, end, *own_params)).fetchall()
 
     hourly = db.execute("""
         SELECT strftime('%H', created_at) as hour, COUNT(*) as count, SUM(total) as total
         FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
-          AND status IN ('completed','return')
+          AND status IN ('completed','return')""" + own_sql + """
         GROUP BY hour ORDER BY hour
-    """, (start, end)).fetchall()
+    """, (start, end, *own_params)).fetchall()
 
     return jsonify({
         'summary': dict(summary),
@@ -1575,7 +1717,8 @@ def sales_summary():
 def get_settings():
     db = get_db()
     rows = db.execute("SELECT key, value FROM system_settings").fetchall()
-    return jsonify({r['key']: r['value'] for r in rows})
+    from backend.settings_guard import public_settings
+    return jsonify(public_settings({r['key']: r['value'] for r in rows}))
 
 
 @app.route('/api/settings', methods=['PUT'])
@@ -1584,9 +1727,19 @@ def update_settings():
     if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
     data = request.json or {}
-    from backend.settings_guard import reject_secret_settings
+    for key, value in data.items():
+        if not str(key).startswith('wheel_'):
+            continue
+        try:
+            step = float(value)
+        except (TypeError, ValueError):
+            return jsonify({'error': f'{key} must be a number greater than zero.'}), 400
+        if step <= 0 or step > 1000:
+            return jsonify({'error': f'{key} must be greater than zero and at most 1000.'}), 400
+    from backend.settings_guard import reject_privileged_settings, reject_secret_settings
     try:
         data = reject_secret_settings(data)
+        data = reject_privileged_settings(data, _actor_role())
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     db = get_db()
@@ -1600,14 +1753,100 @@ def update_settings():
 
 # ── AUDIT LOG ─────────────────────────────────────────────────────────────────
 
+def _audit_forbidden():
+    if not _shop_can('audit.view'):
+        return jsonify({'error': 'Forbidden'}), 403
+    return None
+
+
 @app.route('/api/audit', methods=['GET'])
 @token_required
 def get_audit():
-    if not _role_is('admin', 'superadmin', 'manager'):
-        return jsonify({'error': 'Forbidden'}), 403
+    denied = _audit_forbidden()
+    if denied:
+        return denied
+    needle = (request.args.get('q') or '').strip().lower()
+    try:
+        limit = min(200, max(1, int(request.args.get('limit') or 100)))
+        offset = max(0, int(request.args.get('offset') or 0))
+    except ValueError:
+        return jsonify({'error': 'Page values must be numbers.'}), 400
     db = get_db()
-    logs = db.execute("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500").fetchall()
-    return jsonify([dict(l) for l in logs])
+    like = f"%{needle}%"
+    logs = db.execute(
+        "SELECT * FROM audit_log "
+        "WHERE ? = '' OR lower(COALESCE(action,'')) LIKE ? "
+        "OR lower(COALESCE(username,'')) LIKE ? "
+        "OR lower(COALESCE(module,'')) LIKE ? "
+        "OR lower(COALESCE(details,'')) LIKE ? "
+        "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (needle, like, like, like, like, limit, offset),
+    ).fetchall()
+    return jsonify([dict(row) for row in logs])
+
+
+@app.route('/api/audit/<int:event_id>', methods=['GET'])
+@token_required
+def get_audit_event(event_id):
+    denied = _audit_forbidden()
+    if denied:
+        return denied
+    from backend.audit_detail import (
+        describe_event, entity_needles, product_id_from, receipt_from, redact,
+    )
+    db = get_db()
+    row = db.execute("SELECT * FROM audit_log WHERE id=?", (event_id,)).fetchone()
+    if not row:
+        return jsonify({'error': 'That audit event is not in this shop.'}), 404
+    event = dict(row)
+    related = []
+    clauses, params = [], []
+    for token in entity_needles(event.get('details') or ''):
+        clauses.append("details LIKE ?")
+        params.append(f"%{token}%")
+    if clauses:
+        params.append(event_id)
+        found = db.execute(
+            "SELECT id, action, module, username, created_at, details FROM audit_log "
+            f"WHERE ({' OR '.join(clauses)}) AND id != ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 15",
+            params,
+        ).fetchall()
+        related = [{
+            'id': item['id'],
+            'action': item['action'],
+            'module': item['module'],
+            'username': item['username'] or 'Not recorded',
+            'created_at': item['created_at'],
+            'details': redact(item['details'] or ''),
+        } for item in found]
+    linked = None
+    pid = product_id_from(event.get('details') or '')
+    if pid:
+        product = db.execute(
+            "SELECT id, name, sku, price, stock, is_active FROM products WHERE id=?",
+            (pid,),
+        ).fetchone()
+        linked = {
+            'kind': 'product',
+            'available': bool(product),
+            'note': 'This is the product as it is now. It is not a copy of the values at the time of the event.',
+            'record': dict(product) if product else None,
+        }
+    receipt = receipt_from(event.get('details') or '')
+    if receipt and linked is None:
+        sale = db.execute(
+            "SELECT id, receipt_number, total, payment_method, status, sale_date, created_at "
+            "FROM sales WHERE receipt_number=?",
+            (receipt,),
+        ).fetchone()
+        linked = {
+            'kind': 'receipt',
+            'available': bool(sale),
+            'note': 'This is the receipt as stored now. A later void is a separate event.',
+            'record': dict(sale) if sale else None,
+        }
+    return jsonify(describe_event(event, related, linked))
 
 
 # ── SYNC QUEUE ────────────────────────────────────────────────────────────────
@@ -1615,6 +1854,8 @@ def get_audit():
 @app.route('/api/sync/pending', methods=['GET'])
 @token_required
 def pending_sync():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     items = db.execute("SELECT * FROM sync_queue WHERE status='pending' ORDER BY created_at").fetchall()
     return jsonify([dict(i) for i in items])
@@ -1623,6 +1864,8 @@ def pending_sync():
 @app.route('/api/sync/mark-sent', methods=['POST'])
 @token_required
 def mark_synced():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Forbidden'}), 403
     data = request.json or {}
     ids = data.get('ids', [])
     db = get_db()
@@ -1638,16 +1881,26 @@ def mark_synced():
 @app.route('/api/notes', methods=['GET'])
 @token_required
 def list_notes():
+    if not (_shop_can('notes.view_all') or _shop_can('notes.own')):
+        return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
-    notes = db.execute(
-        "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
-    ).fetchall()
+    if _shop_can('notes.view_all'):
+        notes = db.execute(
+            "SELECT * FROM notes ORDER BY COALESCE(pinned,0) DESC, updated_at DESC"
+        ).fetchall()
+    else:
+        notes = db.execute(
+            "SELECT * FROM notes WHERE user_id=? ORDER BY COALESCE(pinned,0) DESC, updated_at DESC",
+            (g.current_user['id'],),
+        ).fetchall()
     return jsonify([dict(n) for n in notes])
 
 
 @app.route('/api/notes', methods=['POST'])
 @token_required
 def create_note():
+    if not _shop_can('notes.own'):
+        return jsonify({'error': 'Forbidden'}), 403
     data = request.json or {}
     db = get_db()
     pinned = 1 if data.get('pinned') else 0
@@ -1658,11 +1911,24 @@ def create_note():
     return jsonify({'success': True, 'id': cur.lastrowid})
 
 
+def _note_writable(row) -> bool:
+    if not row or not _shop_can('notes.own'):
+        return False
+    if int(row['user_id'] or 0) == int(g.current_user.get('id') or 0):
+        return True
+    return _shop_can('notes.view_all')
+
+
 @app.route('/api/notes/<int:nid>', methods=['PUT'])
 @token_required
 def update_note(nid):
     data = request.json or {}
     db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    if not _note_writable(row):
+        return jsonify({'error': 'Forbidden'}), 403
     if 'pinned' in data:
         db.execute(
             "UPDATE notes SET title=?, content=?, pinned=?, updated_at=? WHERE id=?",
@@ -1682,9 +1948,108 @@ def update_note(nid):
 @token_required
 def delete_note(nid):
     db = get_db()
+    row = db.execute("SELECT * FROM notes WHERE id=?", (nid,)).fetchone()
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    if not _note_writable(row):
+        return jsonify({'error': 'Forbidden'}), 403
     db.execute("DELETE FROM notes WHERE id=?", (nid,))
     db.commit()
     return jsonify({'success': True})
+
+
+# ── BACKDATING REQUESTS ───────────────────────────────────────────────────────
+
+def _backdate_actor():
+    user = g.current_user or {}
+    return {
+        'id': user.get('id'),
+        'username': user.get('username') or '',
+        'full_name': user.get('full_name') or user.get('username') or '',
+        'role': (user.get('role') or '').lower(),
+    }
+
+
+def _backdate_call(func, *args):
+    from backend.backdate_requests import BackdateError
+    db = get_db()
+    try:
+        return jsonify(func(db, _backdate_actor(), *args))
+    except BackdateError as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': exc.message}), exc.status
+
+
+@app.route('/api/backdate-requests', methods=['GET'])
+@token_required
+def list_backdate_requests_http():
+    from backend.backdate_requests import list_requests
+    filters = {
+        'status': request.args.get('status') or '',
+        'business_date': request.args.get('business_date') or '',
+        'q': request.args.get('q') or '',
+        'cashier_id': request.args.get('cashier_id') or '',
+    }
+    return _backdate_call(list_requests, filters)
+
+
+@app.route('/api/backdate-requests', methods=['POST'])
+@token_required
+def create_backdate_request_http():
+    from backend.backdate_requests import create_request
+    return _backdate_call(create_request, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>', methods=['GET'])
+@token_required
+def get_backdate_request_http(request_id):
+    from backend.backdate_requests import get_request
+    return _backdate_call(get_request, request_id)
+
+
+@app.route('/api/backdate-requests/<int:request_id>', methods=['PUT'])
+@token_required
+def update_backdate_request_http(request_id):
+    from backend.backdate_requests import update_request
+    return _backdate_call(update_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/submit', methods=['POST'])
+@token_required
+def submit_backdate_request_http(request_id):
+    from backend.backdate_requests import submit_request
+    return _backdate_call(submit_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/withdraw', methods=['POST'])
+@token_required
+def withdraw_backdate_request_http(request_id):
+    from backend.backdate_requests import withdraw_request
+    return _backdate_call(withdraw_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/return', methods=['POST'])
+@token_required
+def return_backdate_request_http(request_id):
+    from backend.backdate_requests import return_request
+    return _backdate_call(return_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/reject', methods=['POST'])
+@token_required
+def reject_backdate_request_http(request_id):
+    from backend.backdate_requests import reject_request
+    return _backdate_call(reject_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/approve', methods=['POST'])
+@token_required
+def approve_backdate_request_http(request_id):
+    from backend.backdate_requests import approve_request
+    return _backdate_call(approve_request, request_id, request.json or {})
 
 
 # ── HEALTH ────────────────────────────────────────────────────────────────────

@@ -152,10 +152,30 @@ export function Button({
 
 export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
   function Input(props, ref) {
+    const { onWheel, type, step, ...rest } = props;
     return (
       <input
         ref={ref}
-        {...props}
+        type={type}
+        step={step}
+        {...rest}
+        onWheel={(event) => {
+          onWheel?.(event);
+          if (event.defaultPrevented || type !== "number") return;
+          if (document.activeElement !== event.currentTarget) return;
+          event.preventDefault();
+          const current = Number(event.currentTarget.value);
+          const amount = Number(step);
+          const delta = Number.isFinite(amount) && amount > 0 ? amount : 1;
+          const direction = event.deltaY < 0 ? 1 : -1;
+          const next = Math.round(((Number.isFinite(current) ? current : 0) + direction * delta) * 1000) / 1000;
+          const min = event.currentTarget.min === "" ? undefined : Number(event.currentTarget.min);
+          const value = min != null && Number.isFinite(min) ? Math.max(min, next) : next;
+          const proto = window.HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          setter?.call(event.currentTarget, String(value));
+          event.currentTarget.dispatchEvent(new Event("input", { bubbles: true }));
+        }}
         className={cn(
           "h-9 w-full rounded-lg bg-input border border-border px-3 text-sm text-text placeholder:text-muted-fg transition-ui focus:outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/25",
           props.className,
