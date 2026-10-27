@@ -350,6 +350,8 @@ class AdminTab(QWidget):
                     if j == 0:
                         cell.setData(Qt.UserRole, dict(l))
                     self._audit.setItem(i, j, cell)
+        except Exception:
+            pass
 
     def _open_audit(self, row, _col):
         item = self._audit.item(row, 0)
@@ -369,7 +371,6 @@ class AdminTab(QWidget):
             *[f"{c['field']}: {c['before']} -> {c['after']}" for c in changes],
         ])
         QMessageBox.information(self, 'Audit event', text)
-        except Exception: pass
 
 class _NewUserDlg(QDialog):
     def __init__(self, parent):
