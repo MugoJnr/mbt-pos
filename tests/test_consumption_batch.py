@@ -131,20 +131,23 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertEqual(second.get('id'), first.get('id'))
         self.assertEqual(self._stock('SOAP-500'), 17)
 
-    def test_cashier_cannot_create_and_manager_cannot_void(self):
-        self.api._role = 'cashier'
+    def test_viewer_cannot_create_and_manager_cannot_void(self):
+        self.api._role = 'viewer'
         denied = self.api.create_consumption({
             'department_id': self.dept_id,
             'reason': 'Cleaning',
             'items': [{'product_id': 1, 'quantity': 1}],
         })
         self.assertEqual(denied.get('status'), 403)
-        self.api._role = 'manager'
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        self.api._role = 'cashier'
         saved = self.api.create_consumption({
             'department_id': self.dept_id,
             'reason': 'Cleaning',
             'items': [{'product_id': 1, 'quantity': 1}],
         })
+        self.assertTrue(saved.get('success'), saved)
+        self.api._role = 'manager'
         voided = self.api.void_consumption(saved['id'], 'mistake')
         self.assertIn('error', voided)
         self.assertEqual(self._stock('SOAP-500'), 19)
@@ -247,6 +250,7 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertIn("/api/consumptions/report", src)
         self.assertIn("create_consumption", src)
         self.assertIn("/void", src)
+        self.assertIn("/void-request", src)
         ui = os.path.join(ROOT, 'web', 'dashboard-ui', 'src', 'routes', 'consumption.tsx')
         with open(ui, encoding='utf-8') as handle:
             page = handle.read()
@@ -255,6 +259,60 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertIn('already on this consumption', page)
         self.assertIn('Run report', page)
         self.assertIn('Export Excel', page)
+        self.assertIn('Request void', page)
+
+    def test_cashier_void_request_restores_stock_once(self):
+        self.api._role = 'cashier'
+        self.api._user_id = 1
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'items': [
+                {'product_id': 1, 'quantity': 2},
+                {'product_id': 2, 'quantity': 1},
+            ],
+        })
+        self.assertTrue(saved.get('success'), saved)
+        self.assertEqual(self._stock('SOAP-500'), 18)
+        self.assertEqual(self._stock('SOAP-1L'), 4)
+        denied = self.api.void_consumption(saved['id'], 'cashier tries directly')
+        self.assertIn('Insufficient', denied.get('error') or '')
+        self.assertEqual(self._stock('SOAP-500'), 18)
+        requested = self.api.request_consumption_void(saved['id'], 'Entered the wrong quantities')
+        self.assertTrue(requested.get('success'), requested)
+        duplicate = self.api.request_consumption_void(saved['id'], 'again')
+        self.assertTrue(duplicate.get('duplicate'))
+        own = self.api.execute_approval(requested['id'], 'approve', note='no')
+        self.assertEqual(own.get('status'), 403)
+        self.assertEqual(self._stock('SOAP-500'), 18)
+        self.api._role = 'admin'
+        self.api._user_id = 2
+        approved = self.api.execute_approval(requested['id'], 'approve', note='Wrong quantities')
+        self.assertTrue(approved.get('success'), approved)
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        self.assertEqual(self._stock('SOAP-1L'), 5)
+        again = self.api.execute_approval(requested['id'], 'approve', note='again')
+        self.assertTrue(again.get('success') or again.get('duplicate'))
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        detail = self.api.get_consumption(saved['id'])
+        self.assertEqual(int(detail['voided']), 1)
+
+    def test_rejected_consumption_void_does_not_restore_stock(self):
+        self.api._role = 'cashier'
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Office Use',
+            'items': [{'product_id': 1, 'quantity': 3}],
+        })
+        self.assertTrue(saved.get('success'), saved)
+        requested = self.api.request_consumption_void(saved['id'], 'Not actually used')
+        self.api._role = 'admin'
+        self.api._user_id = 2
+        rejected = self.api.execute_approval(requested['id'], 'reject', note='The use was real')
+        self.assertEqual(rejected.get('status'), 'rejected')
+        self.assertEqual(self._stock('SOAP-500'), 17)
+        detail = self.api.get_consumption(saved['id'])
+        self.assertEqual(int(detail['voided'] or 0), 0)
 
 
 if __name__ == '__main__':

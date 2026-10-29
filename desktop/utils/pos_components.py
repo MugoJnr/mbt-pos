@@ -1777,9 +1777,8 @@ class PaymentSegment(QWidget):
             b = PaymentButton(key, pretty, enabled=enabled, secondary=not enabled)
             if key == 'Mixed':
                 b.setToolTip(
-                    'Split Pay — two tenders on one sale (cash + M-Pesa/card/bank). '
-                    'With Paid now, tenders must cover the total. '
-                    'With Part pay, leftover becomes customer debt.')
+                    'Split the sale across any payment methods. '
+                    'Add a line for each payment. Cash is not required.')
             if enabled:
                 b.clicked.connect(lambda _=False, k=key: self.select(k, emit=True))
             lay.addWidget(b, i // 3, i % 3)

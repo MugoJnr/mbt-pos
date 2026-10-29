@@ -166,7 +166,7 @@ class InventoryTab(QWidget):
             4: 122,   # Cost — room for KES 4,450.00
             5: 100,   # Stock — OUT / numeric pills, right-aligned
             6: 100,   # Unit — avoid "per ..." truncation
-            7: 92,    # Actions — ⋮ control + header "Actions" fully visible
+            7: 156,   # Actions — Delete button plus the other actions
         }
         for col, w in widths.items():
             mode = QHeaderView.Interactive if col == 2 else QHeaderView.Fixed
@@ -331,10 +331,11 @@ class InventoryTab(QWidget):
                 self._tbl.setItem(i, 0, tbl_item(p.get('name', '?') or '?'))
                 self._tbl.setItem(i, 5, tbl_center('\u2014', C['warn']))
 
-        tot = sum(_safe_float(p.get('price')) * _safe_float(p.get('stock')) for p in prods)
-        self._stats.setText(
-            f"  {len(prods)} products  \u00b7  {low} low stock  \u00b7  "
-            f"Stock value: {cur} {tot:,.2f}")
+        stats = f"  {len(prods)} products  \u00b7  {low} low stock"
+        if str(self._role() or '').lower() != 'cashier':
+            tot = sum(_safe_float(p.get('price')) * _safe_float(p.get('stock')) for p in prods)
+            stats += f"  \u00b7  Stock value: {cur} {tot:,.2f}"
+        self._stats.setText(stats)
         # Final pass — guarantee every visible row has theme-matched zebra roles
         apply_table_row_backgrounds(self._tbl)
         # Zero-stock tint must win over zebra (scan aid vs low-stock red text alone)
@@ -427,23 +428,35 @@ class InventoryTab(QWidget):
         unit_item.setToolTip(unit)
         self._tbl.setItem(i, 6, unit_item)
 
-        action = tbl_center('⋮', tone='text')
+        action = tbl_center('', tone='text')
         action.setData(Qt.UserRole, p.get('id'))
         action.setData(Qt.UserRole + 1, bool(can_edit))
         action.setData(Qt.UserRole + 2, bool(can_delete))
-        action.setToolTip('Product actions')
         self._tbl.setItem(i, 7, action)
+        actions = QWidget()
+        actions.setStyleSheet('background:transparent;')
+        actions_row = QHBoxLayout(actions)
+        actions_row.setContentsMargins(4, 6, 4, 6)
+        actions_row.setSpacing(4)
+        if can_delete:
+            delete = DangerBtn('Remove', 32)
+            delete.setToolTip('Remove this product')
+            delete.clicked.connect(lambda _=False, pid=p.get('id'): self._delete(pid))
+            actions_row.addWidget(delete)
+        more = GhostBtn('⋮', 32)
+        more.setFixedWidth(36)
+        more.setToolTip('Edit product and history')
+        more.clicked.connect(
+            lambda _=False, pid=p.get('id'), ce=bool(can_edit), cd=bool(can_delete), anchor=more:
+            self._open_row_menu(pid, ce, cd, anchor)
+        )
+        actions_row.addWidget(more)
+        self._tbl.setCellWidget(i, 7, actions)
         apply_table_row_backgrounds(self._tbl, row=i)
         if is_zero:
             self._apply_zero_stock_row(i)
 
-    def _on_cell_clicked(self, row: int, col: int):
-        if col != 7:
-            return
-        item = self._tbl.item(row, col)
-        if item is None:
-            return
-        pid = item.data(Qt.UserRole)
+    def _open_row_menu(self, pid, can_edit, can_delete, anchor):
         if not pid:
             return
         menu = QMenu(self)
@@ -453,13 +466,26 @@ class InventoryTab(QWidget):
             f"QMenu::item {{ padding:8px 18px; border-radius:6px; }}"
             f"QMenu::item:selected {{ background:{C['hover']}; color:{C['gold']}; }}"
         )
-        if item.data(Qt.UserRole + 1):
+        if can_edit:
             menu.addAction('Edit product', lambda pid=pid: self._edit(pid))
         menu.addAction('History', lambda pid=pid: self._show_history(pid))
-        if item.data(Qt.UserRole + 2):
+        if can_delete:
             menu.addSeparator()
-            menu.addAction('Delete', lambda pid=pid: self._delete(pid))
-        menu.exec_(self._tbl.viewport().mapToGlobal(self._tbl.visualItemRect(item).bottomLeft()))
+            menu.addAction('Remove', lambda pid=pid: self._delete(pid))
+        menu.exec_(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _on_cell_clicked(self, row: int, col: int):
+        if col != 7 or self._tbl.cellWidget(row, col) is not None:
+            return
+        item = self._tbl.item(row, col)
+        if item is None:
+            return
+        self._open_row_menu(
+            item.data(Qt.UserRole),
+            bool(item.data(Qt.UserRole + 1)),
+            bool(item.data(Qt.UserRole + 2)),
+            self._tbl.viewport(),
+        )
 
     def _apply_zero_stock_row(self, row: int):
         """OUT is badge-only — keep zebra row background (no maroon full-row tint)."""
@@ -793,8 +819,8 @@ class InventoryTab(QWidget):
         if not require_permission(self.user, 'inventory.delete', self): return
         p = next((x for x in self.products if x['id'] == pid), None)
         name = p.get('name', '') if p else ''
-        if QMessageBox.question(self, 'Confirm Delete',
-                f"Delete '{name}'?\n\nThis cannot be undone.",
+        if QMessageBox.question(self, 'Remove product',
+                f"Remove '{name}'?\n\nIf it has stock, a receipt, or a stock movement, it leaves the selling list and old receipts keep it. If it has no history, it is deleted.",
                 QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
             removed = self.api.delete_product(pid)
             if removed and removed.get('success'):
@@ -828,6 +854,7 @@ class _ProdDlg(QDialog):
         apply_themed_dialog(self)
 
         self._is_new = prod is None
+        self._pid = None if not prod else prod.get('id')
         self._role   = role
         self._config_getter = config_getter
         from desktop.utils.security import has_permission
@@ -961,6 +988,10 @@ class _ProdDlg(QDialog):
         save = PrimaryBtn('Save Product', 44)
         save.clicked.connect(self._val)
         btn_row.addWidget(cancel, 1)
+        if (not self._is_new) and self._can_remove and self._pid:
+            delete = DangerBtn('Remove product', 44)
+            delete.clicked.connect(self._request_delete)
+            btn_row.addWidget(delete, 1)
         btn_row.addWidget(save, 1)
         btn_wrap = QWidget()
         btn_wrap.setLayout(btn_row)
@@ -1007,6 +1038,13 @@ class _ProdDlg(QDialog):
     def photo_cleared(self) -> bool:
         tile = getattr(self, '_photo', None)
         return bool(tile and tile.photo_cleared())
+
+    def _request_delete(self):
+        pid = self._pid
+        parent = self.parent()
+        self.reject()
+        if parent is not None and hasattr(parent, '_delete'):
+            parent._delete(pid)
 
     def _val(self):
         if not self.name.text().strip():

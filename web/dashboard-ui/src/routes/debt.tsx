@@ -26,6 +26,7 @@ function Debt() {
   const [payMethod, setPayMethod] = useState("Cash");
   const [payDate, setPayDate] = useState(localToday());
   const [payError, setPayError] = useState("");
+  const [payNote, setPayNote] = useState("");
   const [query, setQuery] = useState("");
 
   const summaryQ = useQuery({
@@ -89,6 +90,11 @@ function Debt() {
     }
     payToken.current = "";
     setPayAmount("");
+    setPayNote(
+      res.duplicate
+        ? `Already recorded. Balance ${KES(res.balance_after, currency)}.`
+        : `Recorded. Balance ${KES(res.balance_after, currency)}.`,
+    );
     await qc.invalidateQueries({ queryKey: ["debt-invoices"] });
     await qc.invalidateQueries({ queryKey: ["debt-summary"] });
     await qc.invalidateQueries({ queryKey: ["debt-payments"] });
@@ -96,16 +102,29 @@ function Debt() {
   const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
   const payments = Array.isArray(paymentsQ.data) ? paymentsQ.data : [];
 
-  const debtCustomers = customers
-    .filter((c) => Number(c.total_outstanding || 0) > 0)
-    .sort((a, b) => Number(b.total_outstanding) - Number(a.total_outstanding));
+  const openInvoices = (Array.isArray(invoicesQ.data) ? invoicesQ.data : []).filter(
+    (inv) => Number(inv.balance) > 0 && inv.status !== "cancelled" && inv.status !== "paid",
+  );
+  const debtCustomers = [...openInvoices.reduce((map: Map<number, any>, inv: any) => {
+    const current = map.get(inv.customer_id) || {
+      id: inv.customer_id,
+      name: inv.customer_name,
+      phone: inv.c_phone || inv.phone,
+      total_outstanding: 0,
+      open_invoices: 0,
+    };
+    current.total_outstanding = Math.round((current.total_outstanding + Number(inv.balance)) * 100) / 100;
+    current.open_invoices += 1;
+    map.set(inv.customer_id, current);
+    return map;
+  }, new Map()).values()].sort((a, b) => b.total_outstanding - a.total_outstanding);
 
   return (
     <AppShell title="Debt Management">
       <PageHeader
         eyebrow="Operations"
         title="Debt Management"
-        description="Outstanding credit, overdue accounts, and collections."
+        description="A credit sale creates the debt. A repayment collects money already owed and is not a new sale. Outstanding is what remains."
       />
       <div className="flex items-center justify-between mb-4">
         <div className="flex gap-1 bg-panel/60 border border-border rounded-lg p-1">
@@ -174,7 +193,7 @@ function Debt() {
                 <td className="px-4 py-2.5 text-text font-medium">{c.name}</td>
                 <td className="px-4 py-2.5 font-mono text-xs text-text2">{c.phone || "—"}</td>
                 <td className="px-4 py-2.5 tabular-nums text-err font-semibold">
-                  {KES(c.total_outstanding || 0, currency)}
+                  {c.total_outstanding == null ? "—" : KES(c.total_outstanding || 0, currency)}
                 </td>
                 <td className="px-4 py-2.5 text-text2">{c.open_invoices ?? "—"}</td>
                 <td className="px-4 py-2.5">
@@ -199,27 +218,31 @@ function Debt() {
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customer, invoice, status" />
             <select className="h-9 rounded-lg border border-border bg-input px-3 text-sm" value={payId} onChange={(e) => setPayId(e.target.value)}>
               <option value="">Open invoice</option>
-              {invoices.filter((inv) => Number(inv.balance) > 0 && inv.status !== "cancelled").map((inv) => (
-                <option key={inv.id} value={inv.id}>{inv.invoice_number} · {inv.customer_name} · {inv.balance}</option>
+              {openInvoices.map((inv) => (
+                <option key={inv.id} value={inv.id}>{inv.invoice_number} · {inv.customer_name} · {KES(inv.balance, currency)}</option>
               ))}
             </select>
             <Input value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="Amount" />
             <select className="h-9 rounded-lg border border-border bg-input px-3 text-sm" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
               {["Cash", "M-Pesa", "Bank"].map((m) => <option key={m}>{m}</option>)}
             </select>
-            <Input type="date" max={localToday()} value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            <Input type="date" aria-label="Payment date" value={localToday()} readOnly />
             <Button onClick={collect}>Record payment</Button>
-            {payError ? <p className="md:col-span-4 text-sm text-err">{payError}</p> : null}
+            {payError ? <p className="md:col-span-5 text-sm text-err">{payError}</p> : null}
+            {payNote ? <p className="md:col-span-5 text-sm text-text">{payNote}</p> : null}
           </div>
         ) : null}
 
         {tab === "Invoices" ? (
-          <Table head={["Invoice", "Customer", "Total", "Balance", "Status", "Due"]}>
+          <Table head={["Invoice", "Receipt", "Customer", "Sale date", "Original", "Paid", "Outstanding", "Status", "Due"]}>
             {invoices.map((inv: any) => (
               <tr key={inv.id}>
                 <td className="px-4 py-2.5 font-mono text-sm text-text">{inv.invoice_number}</td>
+                <td className="px-4 py-2.5 font-mono text-xs text-text2">{inv.receipt_number || "—"}</td>
                 <td className="px-4 py-2.5 text-text">{inv.customer_name}</td>
+                <td className="px-4 py-2.5 text-text2">{inv.sale_date || (inv.created_at || "").slice(0, 10)}</td>
                 <td className="px-4 py-2.5 tabular-nums">{KES(inv.total_amount, currency)}</td>
+                <td className="px-4 py-2.5 tabular-nums">{KES(inv.amount_paid, currency)}</td>
                 <td className="px-4 py-2.5 tabular-nums text-err font-semibold">
                   {KES(inv.balance, currency)}
                 </td>
@@ -243,7 +266,7 @@ function Debt() {
         ) : null}
 
         {tab === "Payments" ? (
-          <Table head={["Receipt", "Customer", "Invoice", "Amount", "Method", "When"]}>
+          <Table head={["Receipt", "Customer", "Invoice", "Collected", "Balance after", "Method", "When"]}>
             {payments.map((p: any) => (
               <tr key={p.id}>
                 <td className="px-4 py-2.5 font-mono text-sm">{p.payment_receipt}</td>
@@ -252,6 +275,7 @@ function Debt() {
                 <td className="px-4 py-2.5 tabular-nums text-ok font-semibold">
                   {KES(p.amount, currency)}
                 </td>
+                <td className="px-4 py-2.5 tabular-nums">{KES(p.balance_after, currency)}</td>
                 <td className="px-4 py-2.5 text-text2">{p.payment_method}</td>
                 <td className="px-4 py-2.5 text-text2 text-xs">
                   {(p.created_at || "").slice(0, 16)}

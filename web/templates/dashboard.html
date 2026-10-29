@@ -900,14 +900,15 @@ function renderInv() {
         <td><div class="table-actions">
           <button class="btn btn-sm btn-secondary" onclick="prodModal(${p.id})">Edit</button>
           ${USER?.role === 'superadmin' ? `<button class="btn btn-sm btn-secondary" onclick="adjustStockModal(${p.id})">Stock</button>` : ''}
+          ${canRemoveProduct() ? `<button class="btn btn-sm btn-danger" onclick="deleteProduct(${p.id})">Remove</button>` : ''}
         </div></td>
       </tr>`;
     }).join('')
   }</tbody></table>`;
   if (st) {
-    const total = filtered.reduce((s,p)=>s+(+p.price||0)*(+p.stock||0),0);
     const low = filtered.filter(p=>+p.stock<=+p.min_stock).length;
-    st.textContent = `${filtered.length} products · ${low} low stock · Stock value: ${fmt(total)}`;
+    const valueBit = ['cashier', 'viewer'].includes(String(USER?.role || '').toLowerCase()) ? '' : ` · Stock value: ${fmt(filtered.reduce((s,p)=>s+(+p.cost_price||0)*(+p.stock||0),0))}`;
+    st.textContent = `${filtered.length} products · ${low} low stock${valueBit}`;
   }
 }
 
@@ -930,9 +931,27 @@ function prodModal(pid) {
       <div class="form-group"><label class="form-label">Min Stock Alert</label><input type="number" id="pm-min" value="${p?.min_stock||5}" min="0"></div>
       ${!p ? '<div class="form-group"><label class="form-label">Opening Stock</label><input type="number" id="pm-stock" value="0" min="0" step="0.25"></div>' : ''}
     </div>`,
-    `<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    `${p && canRemoveProduct() ? `<button class="btn btn-danger" onclick="deleteProduct(${p.id})">Remove product</button>` : ''}
+     <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
      <button class="btn btn-primary" onclick="saveProduct(${pid||0})">Save Product</button>`
   );
+}
+function canRemoveProduct() {
+  const role = String(USER?.role || '').toLowerCase();
+  return role === 'admin' || role === 'superadmin';
+}
+async function deleteProduct(pid) {
+  if (!canRemoveProduct()) return;
+  const p = PRODUCTS.find(x => x.id === pid);
+  const name = p?.name || 'this product';
+  if (!confirm(`Remove ${name}?\n\nIf it has stock, a receipt, or a stock movement, it leaves the selling list and old receipts keep it. If it has no history, it is deleted.`)) return;
+  const res = await DEL(`/products/${pid}`);
+  if (res?.success) {
+    toast(res.message || `${name} was removed.`, 'ok');
+    closeModal();
+    PRODUCTS = await GET('/products') || [];
+    renderInv();
+  } else toast(res?.error || 'The product was not deleted.', 'err');
 }
 async function saveProduct(pid) {
   const name = document.getElementById('pm-name')?.value.trim();

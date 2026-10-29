@@ -52,6 +52,108 @@ def build_tenders(
     return rows
 
 
+_CREDIT_METHODS = {'credit', 'on account', 'customer credit', 'part credit'}
+_UNCONFIRMED = {'pending', 'failed', 'cancelled', 'initiated'}
+
+
+def allocate_sale(total: float, tenders: Optional[Iterable[dict]]) -> dict:
+    """One sale, many confirmed tenders. Unconfirmed money is not collected.
+
+    The credit line is customer debt, not cash. Confirmed amounts plus that
+    debt must equal the sale total. Cash may exceed the total as change.
+    """
+    due = _r2(total)
+    if due <= 0:
+        return {'error': 'Sale total must be greater than zero'}
+    rows_in = list(tenders or [])
+    if not rows_in:
+        return {'error': 'Add at least one payment'}
+    cash = electronic = credit = 0.0
+    rows: List[dict] = []
+    for raw in rows_in:
+        if not isinstance(raw, dict):
+            return {'error': 'Each payment needs a method and an amount'}
+        method = str(raw.get('method') or '').strip()
+        if not method:
+            return {'error': 'Each payment needs a method'}
+        try:
+            amount = _r2(raw.get('amount'))
+        except (TypeError, ValueError):
+            return {'error': 'Each payment needs an amount'}
+        if amount <= 0:
+            return {'error': 'Payment amounts must be greater than zero'}
+        status = str(raw.get('status') or 'confirmed').strip().lower()
+        key = method.lower().replace('_', ' ')
+        if status in _UNCONFIRMED:
+            rows.append({'method': method, 'amount': amount, 'status': status})
+            continue
+        if key in _CREDIT_METHODS:
+            credit = _r2(credit + amount)
+            rows.append({'method': 'Credit', 'amount': amount, 'status': 'outstanding'})
+            continue
+        reference = str(raw.get('reference') or '').strip()
+        if key == 'cash':
+            cash = _r2(cash + amount)
+            saved = {'method': 'Cash', 'amount': amount, 'status': 'confirmed'}
+        else:
+            electronic = _r2(electronic + amount)
+            saved = {'method': method, 'amount': amount, 'status': 'confirmed'}
+        if reference:
+            saved['reference'] = reference
+        rows.append(saved)
+    collected = _r2(cash + electronic)
+    change = 0.0
+    if collected - due > 0.009:
+        if credit > 0.009:
+            return {'error': 'A credit balance cannot be combined with an overpayment'}
+        change = _r2(collected - due)
+        if cash + 0.009 < change:
+            return {'error': 'Change can only come from cash'}
+        net = due
+    else:
+        net = collected
+        change = 0.0
+    covered = _r2(net + credit)
+    if abs(covered - due) > 0.02:
+        return {
+            'error': (
+                f'Payments {covered:.2f} do not match the sale total {due:.2f}. '
+                'Unconfirmed amounts are not collected.'
+            )
+        }
+    return {
+        'success': True,
+        'cash': _r2(cash - change),
+        'cash_tendered': cash,
+        'electronic': electronic,
+        'credit': credit,
+        'collected': net,
+        'change': change,
+        'tenders': rows,
+    }
+
+
+_CREDIT_METHODS = {'credit', 'on account', 'customer credit', 'part credit'}
+
+
+def collected_method_label(tenders: Optional[Iterable[dict]], fallback: str = 'cash') -> str:
+    """Name the money taken. An outstanding credit line is not a payment method."""
+    names = []
+    for tender in tenders or []:
+        name = str(tender.get('method') or '').strip()
+        key = name.lower()
+        status = str(tender.get('status') or 'confirmed').lower()
+        try:
+            amount = _r2(tender.get('amount'))
+        except Exception:
+            continue
+        if amount <= 0.009 or not name or status != 'confirmed' or key in _CREDIT_METHODS:
+            continue
+        if name not in names:
+            names.append(name)
+    return ' + '.join(names) or fallback
+
+
 def format_tenders(tenders: Optional[Iterable[dict]]) -> str:
     parts = []
     for t in tenders or []:

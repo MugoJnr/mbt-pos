@@ -9,7 +9,7 @@ ROLE_ADMIN = 'admin'
 ROLE_SUPERADMIN = 'superadmin'
 
 ALL_DESKTOP_TABS = [
-    'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
+    'dashboard', 'sales', 'receipts', 'inventory', 'consumption', 'debt', 'accounting',
     'reports', 'notes', 'settings', 'admin', 'license', 'diagnostics', 'security',
     'ai_ops',
 ]
@@ -17,15 +17,15 @@ ALL_DESKTOP_TABS = [
 TAB_PERMISSIONS_BY_ROLE = {
     ROLE_SUPERADMIN: list(ALL_DESKTOP_TABS),
     ROLE_ADMIN: [
-        'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
+        'dashboard', 'sales', 'receipts', 'inventory', 'consumption', 'debt', 'accounting',
         'reports', 'notes', 'settings', 'admin', 'diagnostics', 'ai_ops',
     ],
     ROLE_MANAGER: [
-        'dashboard', 'sales', 'inventory', 'consumption', 'debt', 'accounting',
+        'dashboard', 'sales', 'receipts', 'inventory', 'consumption', 'debt', 'accounting',
         'reports', 'notes', 'settings', 'ai_ops',
     ],
-    ROLE_CASHIER: ['dashboard', 'sales', 'inventory'],
-    ROLE_VIEWER: ['dashboard', 'reports', 'accounting'],
+    ROLE_CASHIER: ['dashboard', 'sales', 'receipts', 'inventory', 'consumption'],
+    ROLE_VIEWER: ['dashboard', 'receipts', 'reports', 'accounting'],
 }
 
 ROLE_DISPLAY = {

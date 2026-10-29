@@ -397,15 +397,17 @@ def _style_combo_popup(combo: QComboBox) -> None:
         pass
 
 
-def _select_qss(object_name: str = 'mbtSelect') -> str:
+def _select_qss(object_name: str = 'mbtSelect', editable: bool = False) -> str:
     r = RADIUS['md']
     bg = C['card']
     fg = C['text']
+    # Padding on an editable combo pushes its text box to a zero-size gap.
+    pad = '0px 4px' if editable else '4px 12px'
     return (
         f"QComboBox#{object_name}{{"
         f"background:{C['input']};color:{fg};"
         f"border:1px solid {C['border']};border-radius:{r}px;"
-        f"padding:4px 12px;font-size:13px;font-weight:600;"
+        f"padding:{pad};font-size:13px;font-weight:600;"
         f"min-height:{CONTROL_HEIGHT - 8}px;}}"
         f"QComboBox#{object_name}:hover{{border-color:{C['border2']};"
         f"background:{C['hover']};}}"
@@ -418,6 +420,13 @@ def _select_qss(object_name: str = 'mbtSelect') -> str:
         f"border-right:5px solid transparent;"
         f"border-top:6px solid {C['muted']};width:0;height:0;"
         f"margin-right:10px;}}"
+        # Style the editor here. A separate stylesheet on the line edit
+        # collapses an editable combo to an empty gap.
+        f"QComboBox#{object_name} QLineEdit{{"
+        f"background:{C['input']};color:{fg};border:none;"
+        f"padding:0 8px;font-size:13px;font-weight:600;"
+        f"selection-background-color:{qss_alpha(C['gold'], 0.28)};"
+        f"selection-color:{fg};}}"
         # No border-radius on popup — avoids black corner triangles / empty white sheet
         f"QComboBox#{object_name} QAbstractItemView{{"
         f"background:{bg};color:{fg};"
@@ -602,12 +611,32 @@ class Select(QComboBox):
         super().showPopup()
 
     def refresh_theme(self):
-        self.setStyleSheet(_select_qss(self.objectName() or 'mbtSelect'))
+        self.setStyleSheet(_select_qss(
+            self.objectName() or 'mbtSelect', editable=self._searchable))
         _style_combo_popup(self)
         if self._searchable and self.lineEdit():
-            self.lineEdit().setStyleSheet(
-                f"QLineEdit{{background:transparent;color:{C['text']};"
-                f"border:none;padding:0;font-size:13px;font-weight:600;}}")
+            from PyQt5.QtGui import QColor, QPalette
+            editor = self.lineEdit()
+            palette = editor.palette()
+            palette.setColor(QPalette.Text, QColor(C['text']))
+            palette.setColor(QPalette.Base, QColor(C['input']))
+            palette.setColor(QPalette.PlaceholderText, QColor(C.get('muted', '#94A3B8')))
+            editor.setPalette(palette)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_editor()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_editor()
+
+    def _fit_editor(self):
+        """Keep the text box inside the painted field. Styled padding hides it."""
+        editor = self.lineEdit() if self._searchable else None
+        if editor is None or self.width() < 48 or self.height() < 24:
+            return
+        editor.setGeometry(8, 4, max(24, self.width() - 40), max(20, self.height() - 8))
 
 
 class SearchableSelect(Select):
@@ -619,6 +648,7 @@ class SearchableSelect(Select):
             parent, items=items, placeholder=placeholder,
             clearable=clearable, searchable=True, height=height,
             object_name='mbtSearchSelect')
+        self.setMinimumWidth(180)
         self._all_items: List[Tuple[str, object]] = []
         self._filtered_prev = None
         self._filter_timer = QTimer(self)

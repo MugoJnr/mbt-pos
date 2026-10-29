@@ -71,7 +71,7 @@ type StockReceipt = {
 function Inventory() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const role = String(user?.role || "");
+  const role = String(user?.role || "").toLowerCase();
   const canAdjust = role === "superadmin";
   const canEdit = ["cashier", "viewer", "manager", "admin", "superadmin"].includes(role);
   const canRemove = role === "admin" || role === "superadmin";
@@ -84,6 +84,7 @@ function Inventory() {
   const [adjPin, setAdjPin] = useState("");
   const [reviewPin, setReviewPin] = useState("");
   const seeCost = role !== "cashier" && role !== "viewer";
+  const showStockValue = ["manager", "admin", "superadmin"].includes(role);
   const [recvId, setRecvId] = useState("");
   const [recvQty, setRecvQty] = useState("1");
   const [recvSupplier, setRecvSupplier] = useState("");
@@ -170,7 +171,7 @@ function Inventory() {
   const pageRows = list.slice(page * pageSize, page * pageSize + pageSize);
 
   const totalValue = products.reduce(
-    (s, p) => s + Number(p.stock || 0) * Number(p.cost_price ?? p.price ?? 0),
+    (s, p) => s + Number(p.stock || 0) * Number(p.cost_price || 0),
     0,
   );
   const lowCount = products.filter(
@@ -249,11 +250,11 @@ function Inventory() {
     }
   }
 
-  async function archiveProduct() {
-    const product = products.find((p) => String(p.id) === editId) || productDetail;
+  async function archiveProduct(target?: Product | null) {
+    const product = target || products.find((p) => String(p.id) === editId) || productDetail;
     if (!product || !canRemove) return;
     const ok = window.confirm(
-      `Archive ${product.name}?\n\nThe product leaves the selling list. Old receipts keep this product. This is not a permanent delete.`,
+      `Remove ${product.name}?\n\nIf it has stock, a receipt, or a stock movement, it leaves the selling list and old receipts keep it. If it has no history, it is deleted.`,
     );
     if (!ok) return;
     const res = await DEL<{ success?: boolean; error?: string }>(`/products/${product.id}`);
@@ -261,7 +262,7 @@ function Inventory() {
       toast.error(res?.error || "The product was not archived.");
       return;
     }
-    toast.success(`${product.name} was archived. Past receipts are unchanged.`);
+    toast.success(res?.message || `${product.name} was removed.`);
     setEditId("");
     setProductDetail(null);
     qc.invalidateQueries({ queryKey: ["products"] });
@@ -344,7 +345,14 @@ function Inventory() {
       {canEdit ? (
         <Card className="mb-3" id="adjust-product">
           <div className="space-y-3 p-4">
-            <div className="text-sm font-extrabold text-text">Adjust product</div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-sm font-extrabold text-text">Adjust product</div>
+              {canRemove ? (
+                <Button variant="danger" disabled={!editId} onClick={() => archiveProduct()}>
+                  Remove product
+                </Button>
+              ) : null}
+            </div>
             <div className="text-xs text-text2">
               Change the selling price, cost, name, barcode, category, unit, or low-stock alert.
               Stock quantity is not changed here. Use Adjust stock for the quantity.
@@ -377,7 +385,7 @@ function Inventory() {
                   {editBusy ? "Saving…" : "Save product details"}
                 </Button>
                 {canRemove ? (
-                  <Button variant="danger" onClick={archiveProduct}>Archive product</Button>
+                  <Button variant="danger" onClick={() => archiveProduct()}>Remove product</Button>
                 ) : null}
                 </div>
                 {editMsg ? <div className="text-sm text-text2">{editMsg}</div> : null}
@@ -761,7 +769,9 @@ function Inventory() {
         eyebrow="Operations"
         title="Inventory"
         icon={<Package className="h-4 w-4" />}
-        description={`${products.length} SKUs · ${KES(totalValue, currency)} stock value${lowCount ? ` · ${lowCount} low` : ""}`}
+        description={showStockValue
+          ? `${products.length} SKUs · ${KES(totalValue, currency)} stock value${lowCount ? ` · ${lowCount} low` : ""}`
+          : `${products.length} SKUs${lowCount ? ` · ${lowCount} low` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -922,6 +932,7 @@ function Inventory() {
                 ...(seeCost ? ["Cost"] : []),
                 sortLabel("stock", "Stock"),
                 "Unit",
+                ...(canRemove ? [""] : []),
               ]}
             >
               {pageRows.map((p) => {
@@ -963,6 +974,13 @@ function Inventory() {
                       <Badge tone={oos ? "err" : low ? "warn" : "muted"}>{stock}</Badge>
                     </td>
                     <td className="px-4 py-2.5 text-text2">{p.unit || "pcs"}</td>
+                    {canRemove ? (
+                      <td className="px-4 py-2.5">
+                        <Button variant="danger" size="sm" onClick={() => archiveProduct(p)}>
+                          Remove
+                        </Button>
+                      </td>
+                    ) : null}
                   </tr>
                 );
               })}
@@ -1163,7 +1181,7 @@ function Inventory() {
                       {editBusy ? "Saving…" : "Save product details"}
                     </Button>
                     {canRemove ? (
-                      <Button variant="danger" onClick={archiveProduct}>Archive product</Button>
+                      <Button variant="danger" onClick={() => archiveProduct(productDetail)}>Remove product</Button>
                     ) : null}
                   </div>
                 ) : null}
@@ -1284,12 +1302,14 @@ function Inventory() {
           <span className="text-muted-fg mx-2">·</span>
           <span className="text-warn font-semibold">{lowCount}</span> low stock
         </div>
-        <div>
-          Stock value:{" "}
-          <span className="text-gold font-bold text-sm tabular-nums">
-            {KES(totalValue, currency)}
-          </span>
-        </div>
+        {showStockValue ? (
+          <div>
+            Stock value:{" "}
+            <span className="text-gold font-bold text-sm tabular-nums">
+              {KES(totalValue, currency)}
+            </span>
+          </div>
+        ) : null}
       </div>
     </AppShell>
   );

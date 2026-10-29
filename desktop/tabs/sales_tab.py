@@ -106,10 +106,26 @@ class SalesTab(QWidget):
             backdate_bar = QHBoxLayout()
             backdate_btn = SecondaryBtn('Backdating Requests')
             backdate_btn.setToolTip(
-                'Ask an administrator to record sales against an earlier business day.'
+                'Past-day sales. An admin or manager records the day directly. A cashier sends a request.'
             )
             backdate_btn.clicked.connect(self._open_backdate_requests)
+            void_btn = SecondaryBtn('Void Requests')
+            void_btn.setToolTip(
+                'Sale void requests. A new void is sent from Dashboard, Recent Sales, Request Void.'
+            )
+            void_btn.clicked.connect(lambda: self._open_requests_centre('void'))
+            centre_btn = SecondaryBtn('Requests Centre')
+            centre_btn.setToolTip(
+                'Backdated sales, voids, refunds, expenses, price changes, credit, discounts, and stock requests.'
+            )
+            centre_btn.clicked.connect(lambda: self._open_requests_centre(''))
+            debt_btn = SecondaryBtn('Debt')
+            debt_btn.setToolTip('Open debts and repayments. A debt is not an approval request.')
+            debt_btn.clicked.connect(self._open_debt)
             backdate_bar.addWidget(backdate_btn)
+            backdate_bar.addWidget(void_btn)
+            backdate_bar.addWidget(centre_btn)
+            backdate_bar.addWidget(debt_btn)
             backdate_bar.addStretch(1)
             root.addLayout(backdate_bar)
 
@@ -138,6 +154,19 @@ class SalesTab(QWidget):
     def _open_backdate_requests(self):
         from desktop.tabs.backdate_dialog import BackdateDialog
         BackdateDialog(self.api, self.user, self).exec_()
+
+    def _open_requests_centre(self, kind=''):
+        from desktop.tabs.requests_centre_dialog import RequestsCentreDialog
+        RequestsCentreDialog(self.api, self.user, self, initial_type=kind or '').exec_()
+
+    def _open_debt(self):
+        widget = self
+        while widget is not None:
+            goto = getattr(widget, '_goto', None)
+            if callable(goto):
+                goto('debt')
+                return
+            widget = widget.parent()
 
     def _sync_layout_combo(self, layout_id: str):
         """Keep POS Layout combo aligned without re-firing change handlers."""
@@ -584,7 +613,25 @@ class SalesTab(QWidget):
         info = self._compute_rounding()
         return round(float(info.get('amount_due', max(0.0, self._total - float(self._credit_to_apply or 0)))), 2)
 
+    def _using_tender_lines(self) -> bool:
+        board = getattr(self, '_tender_lines', None)
+        if board is None:
+            return False
+        method = self._pay.currentText() if hasattr(self, '_pay') else ''
+        return method == 'Mixed'
+
+    def _on_tender_lines_changed(self):
+        if not self._using_tender_lines():
+            return
+        self._update_rounding_ui()
+        self._calc_change()
+
     def _elec_portion(self) -> float:
+        if self._using_tender_lines():
+            return round(sum(
+                row['amount'] for row in self._tender_lines.rows()
+                if str(row.get('method') or '').lower() not in ('cash', 'credit')
+            ), 2)
         if not hasattr(self, '_elec_paid'):
             return 0.0
         return round(float(self._elec_paid.value() or 0), 2)
@@ -616,6 +663,16 @@ class SalesTab(QWidget):
     def _tendered_now(self, method=None) -> tuple:
         """Cash + electronic collected at till (excludes leftover debt)."""
         method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
+        if self._using_tender_lines():
+            cash = elec = 0.0
+            for row in self._tender_lines.rows():
+                name = str(row.get('method') or '').lower()
+                amount = round(float(row.get('amount') or 0), 2)
+                if name == 'cash':
+                    cash += amount
+                elif name != 'credit':
+                    elec += amount
+            return round(cash, 2), round(elec, 2), round(cash + elec, 2)
         cash = float(self._paid.value() or 0) if hasattr(self, '_paid') else 0.0
         elec = self._elec_portion() if self._is_split_method(method) else 0.0
         if elec < 0.009:
@@ -662,6 +719,8 @@ class SalesTab(QWidget):
 
     def _maybe_autofill_split_remainder(self) -> bool:
         """When Mixed and cash is typed, fill electronic with the unpaid remainder."""
+        if self._using_tender_lines():
+            return False
         if not hasattr(self, '_elec_paid'):
             return False
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
@@ -684,6 +743,13 @@ class SalesTab(QWidget):
 
     def _sync_split_mpesa_ui(self):
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
+        if self._using_tender_lines():
+            if hasattr(self, '_mpesa_frame'):
+                try:
+                    self._mpesa_frame.setVisible(False)
+                except RuntimeError:
+                    pass
+            return
         if method == 'M-Pesa':
             return
         show = method == 'Mixed' and self._elec_method_name() == 'M-Pesa'
@@ -937,9 +1003,14 @@ class SalesTab(QWidget):
                         self._split_hdr.setText('Split Pay — remainder on account')
                     else:
                         self._split_summary.setText(
-                            f'Type cash paid (e.g. 500). Remaining due is {em}. '
-                            'Or type the electronic amount first — cash fills the rest.')
-                        self._split_hdr.setText('Split Pay — cash + electronic')
+                            'Add a payment for each method. Remaining updates as you type.')
+                        self._split_hdr.setText('Split Pay')
+                if hasattr(self, '_tender_lines'):
+                    credit_left = self._tender_lines.remainder_on_credit()
+                    self._tender_lines.set_due(self._amount_due(), self._currency)
+                    self._split_hdr.setText(
+                        'Split Pay — remainder on account' if credit_left else 'Split Pay')
+                    self._split_summary.setText(self._tender_lines.summary(self._currency))
                 self._sync_split_mpesa_ui()
 
 
@@ -1173,6 +1244,9 @@ class SalesTab(QWidget):
                 self._maybe_autofill_cash_paid(focus=False)
                 if method == 'Mixed':
                     self._sync_split_mpesa_ui()
+        if hasattr(self, '_tender_lines') and method == 'Mixed':
+            self._set_cash_paid_ui_visible(False)
+            self._tender_lines.set_due(self._amount_due(), getattr(self, '_currency', 'KES'))
         self._update_rounding_ui()
         self._calc_change()
 
@@ -1756,6 +1830,184 @@ class SalesTab(QWidget):
         """Open business-day sales browser for the selected (or today) date."""
         self._open_business_day_sales()
 
+    def begin_backdated_sale(self):
+        """Stash the live cart and open a past-day sale in the normal cart.
+
+        An admin or manager records that day directly. A cashier is asked for a
+        reason and the sale stays a request until someone else approves it.
+        """
+        from datetime import timedelta
+        from PyQt5.QtWidgets import QInputDialog
+        from desktop.utils.date_controls import apply_shop_day_edit, pick_shop_day_dialog
+        from desktop.utils.quiet_ui import soft_warn
+        from desktop.utils.security import can_set_business_day
+        from desktop.utils.shop_time import shop_today
+        direct = can_set_business_day(self.user)
+        yesterday = shop_today() - timedelta(days=1)
+        day = pick_shop_day_dialog(
+            self,
+            yesterday,
+            title='Business date' if direct else 'Business date for this request',
+            max_date=yesterday,
+        )
+        if day is None:
+            return
+        reason = ''
+        if not direct:
+            reason, ok = QInputDialog.getText(
+                self,
+                'Backdating request',
+                'Why is this sale for an earlier day?',
+            )
+            reason = (reason or '').strip()
+            if not ok or len(reason) < 3:
+                soft_warn(self, 'A backdated sale needs a reason before the cart opens.')
+                return
+        self._stashed_cart = [dict(item) for item in (self.cart or [])]
+        self._clear()
+        self._backdate_request_mode = not direct
+        self._backdate_reason = reason
+        self._business_day = day
+        editor = getattr(self, '_biz_date', None)
+        if editor is not None:
+            self._business_day = apply_shop_day_edit(editor, day, today=shop_today(), block_signals=False)
+        self._sync_business_day_warn()
+
+    def _exit_backdate_mode(self, restore=True):
+        stash = [dict(item) for item in (getattr(self, '_stashed_cart', None) or [])]
+        self._backdate_request_mode = False
+        self._backdate_reason = ''
+        self._stashed_cart = None
+        self._reset_business_day_today()
+        if restore and stash:
+            self.cart = stash
+            self._refresh_cart()
+
+    def _submit_cashier_backdate(self, sale_payload: dict, cust_id) -> bool:
+        """A past date, or an explicit request, is saved for approval instead of posted."""
+        from datetime import date as date_cls
+        from desktop.utils.quiet_ui import info_toast, soft_warn
+        from desktop.utils.security import can_set_business_day, has_permission
+        from desktop.utils.shop_time import shop_today
+        day = getattr(self, '_business_day', None)
+        if not isinstance(day, date_cls):
+            try:
+                day = date_cls(day.year(), day.month(), day.day())
+            except Exception:
+                return False
+        forced = bool(getattr(self, '_backdate_request_mode', False))
+        if day >= shop_today():
+            if forced:
+                soft_warn(self, 'Choose a past business date before sending this request.')
+                return True
+            return False
+        if not forced and can_set_business_day(self.user):
+            return False
+        if not has_permission(self.user, 'sales.request_backdate'):
+            soft_warn(self, 'This till records sales for today.')
+            return True
+        if getattr(self, '_backdate_busy', False):
+            return True
+        reason = (getattr(self, '_backdate_reason', '') or '').strip()
+        if len(reason) < 3:
+            from PyQt5.QtWidgets import QInputDialog
+            typed, ok = QInputDialog.getText(
+                self,
+                'Backdating request',
+                'This sale is for an earlier day. It is not recorded until an administrator approves it.\nReason:',
+            )
+            if not ok:
+                return True
+            reason = (typed or '').strip()
+        if len(reason) < 3:
+            soft_warn(self, 'Enter a reason before sending the request.')
+            return True
+        method = str(sale_payload.get('payment_method') or 'Cash')
+        label = {
+            'part payment': 'Part Payment',
+            'credit sale': 'Credit Sale',
+            'mixed': 'Mixed',
+            'cash': 'Cash',
+            'm-pesa': 'M-Pesa',
+        }.get(method.lower(), method)
+        body = {
+            'business_date': self._business_day_iso(),
+            'reason': reason,
+            'sales': [{
+                'customer_id': cust_id,
+                'payment_method': label,
+                'amount_paid': sale_payload.get('amount_paid') or 0,
+                'cash_paid': sale_payload.get('cash_paid') or 0,
+                'electronic_paid': sale_payload.get('electronic_paid') or 0,
+                'mpesa_ref': sale_payload.get('mpesa_ref') or '',
+                'notes': sale_payload.get('notes') or '',
+                'lines': [{
+                    'product_id': item.get('product_id'),
+                    'product_name': item.get('product_name'),
+                    'quantity': item.get('quantity'),
+                    'unit_price': item.get('unit_price'),
+                    'discount': item.get('discount') or 0,
+                } for item in self.cart],
+            }],
+        }
+        from PyQt5.QtWidgets import QMessageBox
+        preview = [
+            f"Business date {body['business_date']}",
+            f"Reason: {reason}",
+            f"Payment: {label}",
+            f"Amount: {float(sale_payload.get('total') or sale_payload.get('amount_paid') or 0):,.2f}",
+        ]
+        for item in body['sales'][0]['lines']:
+            preview.append(
+                f"{item.get('product_name') or 'Product'}  "
+                f"{item.get('quantity')} × {float(item.get('unit_price') or 0):,.2f}"
+            )
+        preview.append('This does not record the sale until an administrator approves it.')
+        box = QMessageBox(self)
+        box.setWindowTitle('Review backdated sale')
+        box.setText('\n'.join(preview))
+        submit_btn = box.addButton('Submit for approval', QMessageBox.AcceptRole)
+        draft_btn = box.addButton('Save draft', QMessageBox.ActionRole)
+        box.addButton('Back to cart', QMessageBox.RejectRole)
+        box.exec_()
+        chosen = box.clickedButton()
+        if chosen not in (submit_btn, draft_btn):
+            return True
+        self._backdate_busy = True
+        try:
+            created = self.api.create_backdate_request(body) or {}
+            if created.get('error') or not created.get('id'):
+                soft_warn(self, created.get('error') or 'The request was not saved.')
+                return True
+            if chosen is submit_btn:
+                submitted = self.api.submit_backdate_request(created['id'], created.get('version')) or {}
+                if submitted.get('error'):
+                    soft_warn(self, submitted.get('error') or 'The request was saved but not submitted.')
+                    return True
+                created = submitted
+                info_toast(
+                    self,
+                    f"Request {created.get('reference')} is pending approval. The sale was not recorded.",
+                    tone='ok',
+                    ms=4500,
+                )
+            else:
+                info_toast(
+                    self,
+                    f"Draft {created.get('reference')} was saved. It is not a sale.",
+                    tone='ok',
+                    ms=4500,
+                )
+            if forced:
+                self._exit_backdate_mode(restore=True)
+            else:
+                self._reset_business_day_today()
+                self._clear()
+            self._open_backdate_requests()
+        finally:
+            self._backdate_busy = False
+        return True
+
     def _business_day_iso(self) -> str:
         from desktop.utils.shop_time import business_day_iso
         return business_day_iso(getattr(self, '_business_day', None))
@@ -1767,6 +2019,9 @@ class SalesTab(QWidget):
         from desktop.utils.shop_time import shop_today
         from desktop.utils.date_controls import apply_shop_day_edit
         today = shop_today()
+        if getattr(self, '_backdate_request_mode', False):
+            self._sync_business_day_warn()
+            return
         ed = getattr(self, '_biz_date', None)
         cur = getattr(self, '_business_day', today)
         if not isinstance(cur, date_cls):
@@ -1783,7 +2038,10 @@ class SalesTab(QWidget):
             # Max was frozen before calendar/clock moved forward → prior "today" pin
             if old_max_d < today and (not can_set_business_day(self.user) or cur >= old_max_d):
                 cur = today
-        if not can_set_business_day(self.user) or cur > today:
+        from desktop.utils.security import has_permission
+        can_keep_past = can_set_business_day(self.user) or has_permission(
+            self.user, 'sales.request_backdate')
+        if not can_keep_past or cur > today:
             cur = today
         self._business_day = cur
         if ed is not None:
@@ -1798,9 +2056,23 @@ class SalesTab(QWidget):
         from desktop.utils.theme import C
         day = getattr(self, '_business_day', shop_today())
         text, tone = sale_day_caption(day)
+        if getattr(self, '_backdate_request_mode', False):
+            reason = getattr(self, '_backdate_reason', '') or ''
+            warn.setText(
+                f'{text}. Request only — {reason}. '
+                'Complete Sale asks you to review it. Back to today cancels and restores the previous cart.'
+            )
+            warn.setStyleSheet(
+                f"color:{C.get('err', '#DC2626')};font-size:12px;font-weight:800;"
+                f"background:transparent;"
+            )
+            return
         if tone == 'today':
             warn.setText('')
         else:
+            from desktop.utils.security import can_set_business_day
+            if not can_set_business_day(self.user):
+                text = f'{text}. Approval is required before this sale is recorded.'
             warn.setText(text)
             warn.setStyleSheet(
                 f"color:{C.get('err', '#DC2626')};font-size:12px;font-weight:800;"
@@ -1814,7 +2086,8 @@ class SalesTab(QWidget):
         from datetime import date as date_cls
         today = shop_today()
         ed = getattr(self, '_biz_date', None)
-        if not can_set_business_day(self.user):
+        from desktop.utils.security import has_permission
+        if not can_set_business_day(self.user) and not has_permission(self.user, 'sales.request_backdate'):
             self._business_day = today
             if ed is not None:
                 apply_shop_day_edit(ed, today, today=today)
@@ -1846,8 +2119,13 @@ class SalesTab(QWidget):
                 pass
 
     def _reset_business_day_today(self):
+        from desktop.utils.quiet_ui import info_toast
         from desktop.utils.shop_time import shop_today
         from desktop.utils.date_controls import apply_shop_day_edit
+        if getattr(self, '_backdate_request_mode', False):
+            self._exit_backdate_mode(restore=True)
+            info_toast(self, 'Backdated sale cancelled. The previous cart is restored.', tone='ok')
+            return
         today = shop_today()
         ed = getattr(self, '_biz_date', None)
         self._business_day = today
@@ -2308,6 +2586,8 @@ class SalesTab(QWidget):
         except Exception:
             pass
         StateResetManager.reset_pos(self, cfg, force_walk_in=True)
+        if hasattr(self, '_tender_lines'):
+            self._tender_lines.reset()
 
     def _process(self):
         if getattr(self, '_processing_sale', False):
@@ -2346,11 +2626,23 @@ class SalesTab(QWidget):
         is_credit = self._is_credit_sale()
         is_debt = is_part or is_credit
         due = self._amount_due()
+        self._pending_alloc = None
+        if pay_method == 'Mixed' and self._using_tender_lines():
+            from desktop.utils.payment_tenders import allocate_sale
+            rows = self._tender_lines.rows_for_sale(due)
+            alloc = allocate_sale(due, rows)
+            if alloc.get('error'):
+                soft_warn(self, alloc['error'])
+                return
+            if float(alloc.get('credit') or 0) > 0.009:
+                is_debt = True
+                is_part = True
+            self._pending_alloc = alloc
         credit_applied = round(float(self._credit_to_apply or 0), 2)
         cfg = self.config_getter() or {}
         variance_enabled = cfg.get('variance_enabled', '1') == '1'
 
-        if pay_method in ('Cash', 'Mixed') and not is_part:
+        if pay_method in ('Cash', 'Mixed') and not is_part and not self._pending_alloc:
             elec = self._elec_portion()
             cash_due = self._cash_due_amount()
             cash_paid = float(self._paid.value() or 0)
@@ -2442,6 +2734,12 @@ class SalesTab(QWidget):
             excess = round(cash_paid_now - self._cash_due_amount(), 2) if not is_debt else 0.0
         else:
             excess = round(paid_now - due, 2) if not is_debt else 0.0
+        if self._pending_alloc:
+            excess = 0.0
+            change_amount = float(self._pending_alloc.get('change') or 0)
+            cash_paid_now = float(self._pending_alloc.get('cash_tendered') or 0)
+            elec_now = float(self._pending_alloc.get('electronic') or 0)
+            paid_now = float(self._pending_alloc.get('collected') or 0)
 
         _cash_like_excess = (
             pay_method == 'Cash'
@@ -2531,7 +2829,22 @@ class SalesTab(QWidget):
                 )
             from desktop.utils.payment_tenders import build_tenders, format_tenders
             tenders = []
-            if is_split:
+            if self._pending_alloc:
+                tenders = list(self._pending_alloc.get('tenders') or [])
+                is_split = True
+                pay_label = (
+                    'part payment' if float(self._pending_alloc.get('credit') or 0) > 0.009
+                    else 'mixed'
+                )
+                elec = float(self._pending_alloc.get('electronic') or 0)
+                named = next((
+                    row.get('method') for row in tenders
+                    if str(row.get('method') or '').lower() not in ('cash', 'credit')
+                    and str(row.get('status') or 'confirmed') == 'confirmed'
+                ), '')
+                if named:
+                    elec_method_name = str(named)
+            elif is_split:
                 tenders = build_tenders(
                     cash_paid=cash_paid_now,
                     electronic_paid=elec,
@@ -2590,6 +2903,8 @@ class SalesTab(QWidget):
                 sale_payload['customer_id'] = cust_id
             if variance_payload:
                 sale_payload['variance'] = variance_payload
+            if self._submit_cashier_backdate(sale_payload, cust_id):
+                return
             res = self.api.create_sale(sale_payload)
             if res and res.get('success'):
                 rn  = res.get('receipt_number', 'N/A')

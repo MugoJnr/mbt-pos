@@ -41,8 +41,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-10-27-v3.1.72"
-APP_VERSION   = "3.1.72"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-10-29-v3.1.75"
+APP_VERSION   = "3.1.75"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -94,6 +94,7 @@ from desktop.tabs.dashboard_tab     import DashboardTab
 from desktop.tabs.sales_tab         import SalesTab
 from desktop.tabs.inventory_tab     import InventoryTab
 from desktop.tabs.consumption_tab   import ConsumptionTab
+from desktop.tabs.receipts_tab      import ReceiptsTab
 from desktop.tabs.debt_tab          import DebtTab
 from desktop.tabs.finance_tab       import FinanceTab, AccountingTab
 from desktop.tabs.reports_tab       import ReportsTab
@@ -702,6 +703,7 @@ class MainWindow(QMainWindow):
         self._tab_cls = {
             'dashboard':   DashboardTab,
             'sales':       SalesTab,
+            'receipts':    ReceiptsTab,
             'inventory':   InventoryTab,
             'consumption': ConsumptionTab,
             'debt':        DebtTab,
@@ -1733,6 +1735,7 @@ class MainWindow(QMainWindow):
         tabs  = [
             ('dashboard',   'Dashboard'),
             ('sales',       'Point of Sale'),
+            ('receipts',    'Receipts'),
             ('inventory',   'Inventory'),
             ('consumption', 'Internal Consumption'),
             ('debt',        'Debt Management'),
@@ -2206,7 +2209,8 @@ class MainWindow(QMainWindow):
 
     # ?? Navigation ??????????????????????????????????????????????????????????????
     _TAB_LABELS = {
-        'dashboard':'Dashboard', 'sales':'Point of Sale', 'inventory':'Inventory',
+        'dashboard':'Dashboard', 'sales':'Point of Sale', 'receipts':'Receipts',
+        'inventory':'Inventory',
         'consumption':'Internal Consumption',
         'debt':'Debt Management',
         'accounting':'Finance',
@@ -3272,7 +3276,10 @@ def main():
     # Single instance ? prevent duplicate POS during update restart
     try:
         from backend.updater import acquire_single_instance
-        if not acquire_single_instance():
+        test_mutex = None
+        if os.environ.get('MBT_TEST_INSTANCE') == '1' and os.environ.get('MBT_DATA_ROOT'):
+            test_mutex = 'Global\\MBT_POS_TestInstance'
+        if not acquire_single_instance(test_mutex):
             sys.exit(0)
     except Exception:
         pass

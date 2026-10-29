@@ -129,8 +129,8 @@ def correct_void_request(db, user: dict, request_id: int, reason: str) -> dict:
     actor = user.get("username") or user.get("full_name") or ""
     meta = _stamp(meta, "corrected", actor, reason=reason)
     db.execute(
-        "UPDATE cc_approvals SET meta_json=?, updated_at=? WHERE id=? AND status IN ('pending','returned')",
-        (json.dumps(meta), datetime.now().isoformat(timespec="seconds"), int(request_id)),
+        "UPDATE cc_approvals SET details=?, meta_json=?, updated_at=? WHERE id=? AND status IN ('pending','returned')",
+        (reason, json.dumps(meta), datetime.now().isoformat(timespec="seconds"), int(request_id)),
     )
     return {"success": True, "id": int(request_id), "status": row["status"]}
 

@@ -646,6 +646,10 @@ def _migrate_columns(conn: sqlite3.Connection):
             import json as _json
             perms = _json.loads(row['tab_permissions'] or '[]')
             fixed = sanitize_tab_permissions(row['role'], perms)
+            if (row['role'] or '').lower() == 'cashier' and 'consumption' not in fixed:
+                fixed.append('consumption')
+            if 'sales' in fixed and 'receipts' not in fixed:
+                fixed.insert(fixed.index('sales') + 1, 'receipts')
             if fixed != perms:
                 conn.execute(
                     "UPDATE users SET tab_permissions=? WHERE id=?",
@@ -1947,6 +1951,14 @@ class APIClient:
                     )
                 except Exception as e:
                     logger.warning(f"Stock movement log skipped: {e}")
+                from desktop.utils.stock_layers import add_layer
+                layer = add_layer(
+                    db, pid, initial_stock, float(data.get('cost_price') or 0),
+                    'opening', str(pid),
+                )
+                if layer.get('error'):
+                    db.rollback()
+                    return {'error': layer['error']}
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
                    f"name={name} stock={initial_stock}")
@@ -2317,6 +2329,17 @@ class APIClient:
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            from desktop.utils.stock_layers import add_layer, consume_fifo
+            if signed > 0:
+                layer = add_layer(
+                    db, pid, signed, float(row['cost_price'] or 0),
+                    'adjust', str(mov_id),
+                )
+            else:
+                layer = consume_fifo(db, pid, abs(signed), reference=movement_ref)
+            if layer.get('error'):
+                db.rollback()
+                return {'error': layer['error'], 'status': 400}
             shown_direction = direction or ('remove' if decreasing else 'add')
             shown_qty = amount if direction in ('add', 'remove') else abs(signed)
             db.execute(
@@ -2416,18 +2439,20 @@ class APIClient:
 
     def receive_stock(self, product_id: int, qty_add: float, *,
                       supplier_id: int = None, notes: str = '',
-                      unit_cost: float = None) -> dict:
+                      unit_cost: float = None, client_token: str = '') -> dict:
         """One product on a supplier delivery. Authorized roles, no extra PIN."""
         result = self.receive_delivery(
             supplier_id,
             [{'product_id': product_id, 'quantity': qty_add, 'unit_cost': unit_cost}],
             notes=notes,
+            client_token=client_token,
         )
         if result.get('error'):
             return result
         line = (result.get('lines') or [{}])[0]
         return {
             'success': True,
+            'duplicate': bool(result.get('duplicate')),
             'old_stock': line.get('old_stock'),
             'new_stock': line.get('new_stock'),
             'supplier_id': result.get('supplier_id'),
@@ -2550,6 +2575,14 @@ class APIClient:
                      self._user_id, self._username or self._role),
                 )
                 mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                from desktop.utils.stock_layers import add_layer
+                layer = add_layer(
+                    db, row['id'], line['quantity'], float(unit_cost),
+                    'purchase', f'{receipt_number}:{row["id"]}',
+                )
+                if layer.get('error'):
+                    db.rollback()
+                    return {'error': layer['error']}
                 saved.append({
                     'product_id': row['id'], 'product_name': row['name'],
                     'quantity': line['quantity'], 'unit_cost': float(unit_cost),
@@ -2729,6 +2762,87 @@ class APIClient:
         finally:
             db.close()
 
+    def request_consumption_void(self, consumption_id: int, reason: str) -> dict:
+        """Ask an admin to void internal consumption. Stock stays reduced until approval."""
+        reason = (reason or '').strip()
+        if not reason:
+            return {'error': 'Enter a reason for the void request.', 'status': 400}
+        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot request this void.', 'status': 403}
+        db = _db()
+        try:
+            self._ensure_approval_table(db)
+            cons = db.execute(
+                "SELECT id, reference_no, total_cost, voided FROM stock_consumptions WHERE id=?",
+                (int(consumption_id),),
+            ).fetchone()
+            if not cons:
+                return {'error': 'Consumption was not found.', 'status': 404}
+            if int(cons['voided'] or 0) == 1:
+                return {'error': 'This consumption is already voided.', 'status': 409}
+            db.execute('BEGIN IMMEDIATE')
+            open_rows = db.execute(
+                "SELECT id, meta_json FROM cc_approvals "
+                "WHERE type='consumption_void' AND status IN ('pending','escalated','executing')"
+            ).fetchall()
+            for open_row in open_rows:
+                try:
+                    open_meta = json.loads(open_row['meta_json'] or '{}')
+                except json.JSONDecodeError:
+                    open_meta = {}
+                if not isinstance(open_meta, dict):
+                    continue
+                try:
+                    open_id = int(open_meta.get('consumption_id') or 0)
+                except (TypeError, ValueError):
+                    open_id = 0
+                if open_id == int(consumption_id):
+                    db.rollback()
+                    return {
+                        'success': True,
+                        'duplicate': True,
+                        'id': int(open_row['id']),
+                        'status': 'pending',
+                    }
+            now = datetime.now().isoformat()
+            db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, "
+                "meta_json, created_at, updated_at) "
+                "VALUES ('consumption_void', ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+                (
+                    f"Void {cons['reference_no']}",
+                    reason,
+                    float(cons['total_cost'] or 0),
+                    self._username or '',
+                    self._user_id,
+                    json.dumps({
+                        'consumption_id': int(consumption_id),
+                        'reference_no': cons['reference_no'],
+                        'reason': reason,
+                    }),
+                    now,
+                    now,
+                ),
+            )
+            request_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.commit()
+            return {
+                'success': True,
+                'id': int(request_id),
+                'reference': cons['reference_no'],
+                'status': 'pending',
+            }
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('consumption void request failed: %s', exc, exc_info=True)
+            return {'error': 'Could not save the void request.', 'status': 500}
+        finally:
+            db.close()
+
     def _backdate_actor(self) -> dict:
         return {
             'id': self._user_id,
@@ -2786,6 +2900,14 @@ class APIClient:
     def approve_backdate_request(self, request_id: int, version=None, note: str = '') -> dict:
         from backend.backdate_requests import approve_request
         return self._backdate(approve_request, int(request_id), {'version': version, 'note': note})
+
+    def list_requests_centre(self, filters=None) -> dict:
+        from backend.requests_centre import list_centre
+        return self._backdate(list_centre, filters or {})
+
+    def get_requests_centre_item(self, source: str, source_id: int) -> dict:
+        from backend.requests_centre import get_centre_item
+        return self._backdate(get_centre_item, source, int(source_id))
 
     def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '',
                          confirm_credit_payments: bool = False) -> dict:
@@ -2851,7 +2973,17 @@ class APIClient:
                 db.rollback()
                 return {'error': f'Already {row["status"]}', 'status': 400}
             atype = (row['type'] or '').lower()
-            if atype not in ('void', 'stock_adjust'):
+            if atype == 'consumption_void' and (self._role or '').lower() not in ('admin', 'superadmin'):
+                db.rollback()
+                return {'error': 'Only an admin can approve an internal-consumption void.', 'status': 403}
+            try:
+                requester_id = int(row['requested_by_id'] or 0)
+            except (TypeError, ValueError):
+                requester_id = 0
+            if atype == 'consumption_void' and requester_id and requester_id == int(self._user_id or 0):
+                db.rollback()
+                return {'error': 'You cannot approve your own consumption void.', 'status': 403}
+            if atype not in ('void', 'stock_adjust', 'consumption_void'):
                 if status not in ('pending', 'escalated'):
                     db.rollback()
                     return {'error': f'Already {row["status"]}', 'status': 400}
@@ -3036,6 +3168,21 @@ class APIClient:
             if 'already voided' in str(outcome.get('error') or '').lower():
                 return {'success': True, 'duplicate': True}
             return outcome
+        if atype == 'consumption_void':
+            try:
+                consumption_id = int(meta.get('consumption_id') or 0)
+            except (TypeError, ValueError):
+                return {'error': 'The void request has no consumption record.'}
+            if consumption_id <= 0:
+                return {'error': 'The void request has no consumption record.'}
+            outcome = self.void_consumption(
+                consumption_id, note or meta.get('reason') or 'Approved consumption void',
+            )
+            if outcome.get('success'):
+                return outcome
+            if 'already voided' in str(outcome.get('error') or '').lower():
+                return {'success': True, 'duplicate': True}
+            return outcome
         if atype == 'stock_adjust':
             try:
                 product_id = int(meta.get('product_id') or 0)
@@ -3177,6 +3324,22 @@ class APIClient:
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            from desktop.utils.stock_layers import add_layer, consume_fifo
+            if qty_change > 0:
+                layer = add_layer(
+                    db, row['id'], qty_change, float(row['cost_price'] or 0),
+                    'adjust', str(mov_id),
+                )
+            elif qty_change < 0:
+                layer = consume_fifo(
+                    db, row['id'], abs(qty_change),
+                    reference=f"ADJUST_pid={row['id']}",
+                )
+            else:
+                layer = {}
+            if layer.get('error'):
+                db.rollback()
+                return {'error': layer['error']}
             try:
                 from desktop.utils.accounting_hooks import post_stock_adjust_journal
                 posted = post_stock_adjust_journal(
@@ -3220,10 +3383,45 @@ class APIClient:
             return {'error': 'Only an administrator can remove a product.', 'status': 403}
         db = _db()
         try:
-            db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
+            row = db.execute("SELECT id, name, stock FROM products WHERE id=?", (pid,)).fetchone()
+            if not row:
+                return {'error': 'Product not found.', 'status': 404}
+            name = row['name'] if isinstance(row, dict) or hasattr(row, 'keys') else row[1]
+            stock = float((row['stock'] if hasattr(row, 'keys') else row[2]) or 0)
+            has_history = abs(stock) > 0.0001
+            if not has_history:
+                for sql in (
+                    "SELECT 1 FROM sale_items WHERE product_id=? LIMIT 1",
+                    "SELECT 1 FROM stock_movements WHERE product_id=? LIMIT 1",
+                    "SELECT 1 FROM cost_layers WHERE product_id=? LIMIT 1",
+                    "SELECT 1 FROM cost_layer_uses WHERE product_id=? LIMIT 1",
+                ):
+                    try:
+                        if db.execute(sql, (pid,)).fetchone():
+                            has_history = True
+                            break
+                    except Exception:
+                        continue
+            if has_history:
+                db.execute("UPDATE products SET is_active=0 WHERE id=?", (pid,))
+                db.commit()
+                _audit(self._user_id, self._username, 'ARCHIVE_PRODUCT', 'inventory', f'pid={pid}')
+                return {
+                    'success': True,
+                    'mode': 'archived',
+                    'message': (
+                        f'{name} left the selling list. It has stock or history, '
+                        'so old receipts still keep it.'
+                    ),
+                }
+            db.execute("DELETE FROM products WHERE id=?", (pid,))
             db.commit()
             _audit(self._user_id, self._username, 'DELETE_PRODUCT', 'inventory', f'pid={pid}')
-            return {'success': True}
+            return {
+                'success': True,
+                'mode': 'deleted',
+                'message': f'{name} had no stock or history and was deleted.',
+            }
         finally:
             db.close()
 
@@ -3445,7 +3643,7 @@ class APIClient:
                         "SELECT id, name, stock FROM products WHERE id=?", (pid,)
                     ).fetchone()
                     if prod_row:
-                        qty_requested = float(item.get('quantity') or 1)
+                        qty_requested = float(line['quantity'])
                         current_stock = float(prod_row['stock'])
                         if current_stock < qty_requested:
                             db.rollback()
@@ -3536,6 +3734,47 @@ class APIClient:
                     safe=True)
             except Exception as _je:
                 logger.error('sale accounting post: %s', _je, exc_info=True)
+
+            pay_method = (data.get('payment_method') or '').strip()
+            pay_l = pay_method.lower()
+            credit_due = 0.0
+            tender_rows = data.get('payment_tenders')
+            if isinstance(tender_rows, str) and tender_rows.strip():
+                try:
+                    tender_rows = json.loads(tender_rows)
+                except Exception:
+                    tender_rows = None
+            if isinstance(tender_rows, list):
+                for tender in tender_rows:
+                    if str((tender or {}).get('method') or '').strip().lower() in (
+                        'credit', 'on account', 'customer credit', 'part credit',
+                    ):
+                        credit_due += float((tender or {}).get('amount') or 0)
+            is_debt_sale = pay_l in (
+                'credit sale', 'credit', 'credit account', 'part payment',
+                'part-payment', 'on account',
+            ) or credit_due > 0.009
+            debt_out = None
+            if is_debt_sale:
+                if not customer_id:
+                    db.rollback()
+                    return {'error': 'Choose a customer before a credit or part payment.'}
+                from desktop.utils.payment_tenders import collected_method_label
+                paid_now = round(float(amount_paid or 0) + float(credit_applied or 0), 2)
+                debt_total = round(float(original_total if abs(cash_rounding_adj) < 0.009 else total), 2)
+                debt_out = self.create_debt_invoice({
+                    'customer_id': int(customer_id),
+                    'sale_id': int(sale_id),
+                    'receipt_number': rn,
+                    'total_amount': debt_total,
+                    'amount_paid': paid_now,
+                    'payment_method': collected_method_label(tender_rows, pay_method),
+                    'notes': f'Auto from sale {pay_method}',
+                }, conn=db)
+                if debt_out.get('error') or not (debt_out.get('success') or debt_out.get('invoice_id')):
+                    db.rollback()
+                    return {'error': debt_out.get('error') or 'Debt invoice was not created. The sale was not saved.'}
+
             db.commit()
             _audit(self._user_id, self._username or 'staff',
                    'CREATE_SALE', 'sales',
@@ -3580,40 +3819,11 @@ class APIClient:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
                 out['variance'] = variance_result
-
-            # Credit / Part Payment: create debt invoice in the same API path so
-            # web POS / API clients cannot leave orphan credit sales without debt.
-            # Desktop UI still calls create_debt_invoice; duplicate is idempotent.
-            pay_method = (data.get('payment_method') or '').strip()
-            pay_l = pay_method.lower()
-            is_debt_sale = pay_l in (
-                'credit sale', 'credit account', 'part payment', 'on account',
-            )
-            if is_debt_sale and customer_id:
-                try:
-                    # amount already applied at till (cash/electronic) + store credit
-                    paid_now = round(float(amount_paid or 0) + float(credit_applied or 0), 2)
-                    debt_total = round(float(original_total if abs(cash_rounding_adj) < 0.009 else total), 2)
-                    inv = self.create_debt_invoice({
-                        'customer_id': int(customer_id),
-                        'sale_id': int(sale_id),
-                        'receipt_number': rn,
-                        'total_amount': debt_total,
-                        'amount_paid': paid_now,
-                        'payment_method': pay_method,
-                        'notes': f'Auto from sale {pay_method}',
-                    })
-                    if inv.get('success') or inv.get('invoice_id'):
-                        out['debt_invoice_id'] = inv.get('invoice_id')
-                        out['debt_invoice_number'] = inv.get('invoice_number')
-                        out['debt_balance'] = inv.get('balance')
-                    else:
-                        out['debt_warning'] = inv.get('error') or 'Debt invoice not created'
-                        logger.error('create_sale auto-debt failed: %s', inv)
-                except Exception as _de:
-                    out['debt_warning'] = str(_de)
-                    logger.error('create_sale auto-debt exception: %s', _de, exc_info=True)
-
+            if debt_out and (debt_out.get('success') or debt_out.get('invoice_id')):
+                out['debt_invoice_id'] = debt_out.get('invoice_id')
+                out['debt_invoice_number'] = debt_out.get('invoice_number')
+                out['debt_balance'] = debt_out.get('balance')
+                out['debt'] = debt_out
             return out
 
         except Exception as e:
@@ -3785,6 +3995,54 @@ class APIClient:
             return {'rows': rows, 'summary': summary, 'start': start, 'end': end}
         finally:
             db.close()
+
+    def list_centre_receipts(self, start='', end='', kind='', status='', query='',
+                             limit=200, offset=0) -> dict:
+        """Receipts the signed-in role is allowed to open. Read only."""
+        from backend.receipts_centre import list_receipts
+        role = (self._role or '').lower()
+        staff = role in ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
+        db = _db()
+        try:
+            return list_receipts(
+                db,
+                can_sales=staff,
+                can_consumption=role in ('cashier', 'manager', 'admin', 'superadmin'),
+                can_inventory=role in ('manager', 'admin', 'superadmin'),
+                can_adjustments=role in ('manager', 'admin', 'superadmin'),
+                can_debt=role in ('cashier', 'manager', 'admin', 'superadmin'),
+                can_finance=role in ('viewer', 'manager', 'admin', 'superadmin'),
+                can_approvals=role in ('cashier', 'manager', 'admin', 'superadmin'),
+                username=self._username or '',
+                kind=kind or '',
+                status=status or '',
+                query=query or '',
+                start=start or '',
+                end=end or '',
+                limit=int(limit or 200),
+                offset=int(offset or 0),
+            )
+        except Exception as exc:
+            return {'error': str(exc), 'receipts': [], 'total': 0}
+        finally:
+            db.close()
+
+    def centre_receipt(self, kind, record_id) -> dict:
+        from backend.receipts_centre import receipt_detail
+        role = (self._role or '').lower()
+        db = _db()
+        try:
+            detail = receipt_detail(
+                db, str(kind or ''), int(record_id or 0),
+                show_cost=role in ('manager', 'admin', 'superadmin'),
+            )
+        except Exception as exc:
+            return {'error': str(exc)}
+        finally:
+            db.close()
+        if not detail:
+            return {'error': 'That receipt could not be opened.'}
+        return detail
 
     def get_sale(self, sale_id: int) -> dict:
         db = _db()
@@ -4599,11 +4857,33 @@ class APIClient:
                      f"Return from {orig_rn}: {reason}",
                      self._user_id, self._username or 'staff'),
                 )
+                from desktop.utils.stock_layers import restore_sale_product_qty
+                restored = restore_sale_product_qty(db, sale_id, pid, qty)
+                if restored.get('error'):
+                    db.rollback()
+                    return {'error': restored['error']}
                 db.execute(
                     "UPDATE sale_items SET returned_qty=? WHERE id=?",
                     (round(rl['already'] + qty, 4), rl['sale_item_id']),
                 )
 
+            debt_applied = 0.0
+            inv = db.execute(
+                "SELECT id, balance, total_amount FROM debt_invoices WHERE sale_id=? "
+                "AND COALESCE(status, '') NOT IN ('void', 'cancelled') "
+                "ORDER BY id DESC LIMIT 1",
+                (sale_id,),
+            ).fetchone()
+            if inv and float(inv['balance'] or 0) > 0.009:
+                debt_applied = round(min(float(inv['balance']), refund_total), 2)
+                new_bal = round(float(inv['balance']) - debt_applied, 2)
+                new_total = round(max(0.0, float(inv['total_amount'] or 0) - debt_applied), 2)
+                db.execute(
+                    "UPDATE debt_invoices SET balance=?, total_amount=?, status=?, "
+                    "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (new_bal, new_total, 'paid' if new_bal <= 0.009 else 'partial', inv['id']),
+                )
+            cash_refund = round(refund_total - debt_applied, 2)
             ret_rn = f"RET-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{sale_id}"
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
@@ -4612,8 +4892,9 @@ class APIClient:
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (ret_rn, self._user_id, self._username or 'staff',
                  -refund_total, 0, 0, -refund_total, method,
-                 -refund_total, 0,
-                 f"RETURN of {orig_rn}: {reason}",
+                 -cash_refund, 0,
+                 f"RETURN of {orig_rn}: {reason}"
+                 + (f" | debt reduced {debt_applied:.2f}" if debt_applied else ""),
                  'return', sale_id, sale['customer_id'] if 'customer_id' in sale.keys() else None,
                  sale_date_s, created_at_s),
             )
@@ -4647,6 +4928,8 @@ class APIClient:
                 'return_sale_id': ret_id,
                 'receipt_number': ret_rn,
                 'refund_total': refund_total,
+                'cash_refund': cash_refund,
+                'debt_reduced': debt_applied,
                 'original_receipt': orig_rn,
             }
             _save_request_receipt(db, token, 'return_sale', digest, result)
@@ -5120,17 +5403,21 @@ class APIClient:
             """, (start, end)))
 
             debt_collected_row = _row(db.execute("""
-                SELECT COALESCE(SUM(amount),0) as debt_collected
+                SELECT COALESCE(SUM(amount),0) as debt_collected,
+                       COALESCE(SUM(CASE
+                         WHEN COALESCE(notes,'') LIKE 'Initial payment%' THEN 0
+                         ELSE amount END),0) as later_collected
                 FROM debt_payments
                 WHERE date(created_at) BETWEEN ? AND ?
             """, (start, end)))
             debt_collected = float((debt_collected_row or {}).get('debt_collected') or 0)
+            later_collected = float((debt_collected_row or {}).get('later_collected') or 0)
 
             summary = dict(summary or {})
             collected_sales = float(summary.get('collected_from_sales') or 0)
-            # Today's Revenue (Collected) = tender received on sales + debt collections
+            # Opening tender is already in the sale's amount_paid. Add only later collections.
             summary['debt_collected'] = debt_collected
-            summary['collected_revenue'] = round(collected_sales + debt_collected, 2)
+            summary['collected_revenue'] = round(collected_sales + later_collected, 2)
             summary['total_sales'] = float(summary.get('total_revenue') or 0)
 
             top_products = _rows(db.execute(f"""
@@ -5423,13 +5710,17 @@ class APIClient:
         ).fetchone()[0]
         return f"PAY-{today}-{count+1:04d}"
 
-    def create_debt_invoice(self, data: dict) -> dict:
+    def create_debt_invoice(self, data: dict, conn=None) -> dict:
         """
         Create a debt invoice linked to a completed sale.
         Required: customer_id, sale_id, receipt_number, total_amount.
         Orphan debts (no sale / no invoice) are rejected.
+
+        Pass ``conn`` to write inside the caller's open transaction. The caller
+        commits or rolls back. A standalone call commits its own connection.
         """
-        db = _db()
+        own = conn is None
+        db = conn if conn is not None else _db()
         try:
             customer_id = data.get('customer_id')
             sale_id = data.get('sale_id')
@@ -5496,6 +5787,8 @@ class APIClient:
 
             inv_num = self._next_invoice_number(db)
             status = 'paid' if balance == 0 else ('partial' if paid > 0 else 'pending')
+            if getattr(APIClient, '_test_fault', None) == 'debt-insert':
+                raise RuntimeError('injected debt failure')
 
             db.execute(
                 "INSERT INTO debt_invoices (invoice_number,sale_id,receipt_number,"
@@ -5539,10 +5832,16 @@ class APIClient:
                          f"Initial payment on invoice {inv_num}")
                     )
 
-            db.commit()
-            _audit(self._user_id, self._username, 'CREATE_INVOICE', 'debt',
-                   f"inv={inv_num} sale={sale_id} receipt={receipt_number} "
-                   f"customer={cust['name']} total={total} paid={paid} balance={balance}")
+            if own:
+                db.commit()
+                _audit(self._user_id, self._username, 'CREATE_INVOICE', 'debt',
+                       f"inv={inv_num} sale={sale_id} receipt={receipt_number} "
+                       f"customer={cust['name']} total={total} paid={paid} balance={balance}")
+            else:
+                _audit(self._user_id, self._username, 'CREATE_INVOICE', 'debt',
+                       f"inv={inv_num} sale={sale_id} receipt={receipt_number} "
+                       f"customer={cust['name']} total={total} paid={paid} balance={balance}",
+                       conn=db)
             return {
                 'success': True,
                 'invoice_number': inv_num,
@@ -5552,11 +5851,14 @@ class APIClient:
                 'receipt_number': receipt_number,
             }
         except Exception as e:
-            db.rollback()
-            logger.error(f"create_debt_invoice: {e}", exc_info=True)
-            return {'error': str(e)}
+            if own:
+                db.rollback()
+                logger.error(f"create_debt_invoice: {e}", exc_info=True)
+                return {'error': str(e)}
+            raise
         finally:
-            db.close()
+            if own:
+                db.close()
 
     def get_debt_invoice(self, invoice_id: int) -> dict:
         db = _db()
@@ -5683,8 +5985,32 @@ class APIClient:
                         'customer_id': inv['customer_id'],
                     }
 
+            db.execute("BEGIN IMMEDIATE")
+            inv = _row(db.execute("SELECT * FROM debt_invoices WHERE id=?", (invoice_id,)))
+            if not inv or inv['status'] in ('paid', 'cancelled') or float(inv.get('balance') or 0) <= 0.009:
+                db.rollback()
+                return {'error': 'Invoice is already fully paid.'}
+            if ref and 'payment_reference' in dp_cols:
+                prev = db.execute(
+                    "SELECT payment_receipt, balance_before, balance_after "
+                    "FROM debt_payments WHERE invoice_id=? AND payment_reference=?",
+                    (invoice_id, ref),
+                ).fetchone()
+                if prev:
+                    db.rollback()
+                    return {
+                        'success': True,
+                        'duplicate': True,
+                        'payment_receipt': prev['payment_receipt'],
+                        'balance_before': prev['balance_before'],
+                        'balance_after': prev['balance_after'],
+                        'status': inv['status'],
+                        'invoice_number': inv['invoice_number'],
+                        'customer_id': inv['customer_id'],
+                    }
             balance_before = round(float(inv['balance']), 2)
             if amount > balance_before + 0.009:
+                db.rollback()
                 return {
                     'error': f"Payment ({amount:,.2f}) exceeds outstanding balance "
                              f"({balance_before:,.2f})"
@@ -5717,10 +6043,16 @@ class APIClient:
                      amount, payment_method, balance_before, balance_after,
                      self._user_id, self._username or 'staff', notes)
                 )
-            db.execute(
-                "UPDATE debt_invoices SET amount_paid=?, balance=?, status=?, updated_at=? WHERE id=?",
-                (new_paid, balance_after, new_status, datetime.now().isoformat(), invoice_id)
+            claimed = db.execute(
+                "UPDATE debt_invoices SET amount_paid=?, balance=?, status=?, updated_at=? "
+                "WHERE id=? AND status NOT IN ('paid','cancelled') AND balance + 0.009 >= ?",
+                (new_paid, balance_after, new_status, datetime.now().isoformat(), invoice_id, amount)
             )
+            if claimed.rowcount != 1:
+                db.rollback()
+                return {'error': 'That balance changed. Refresh and try the payment again.'}
+            if getattr(APIClient, '_test_fault', None) == 'payment-commit':
+                raise RuntimeError('injected payment failure')
             try:
                 from desktop.utils.accounting_hooks import post_debt_payment_journal
                 pay_row = db.execute(
@@ -6363,9 +6695,9 @@ class APIClient:
         items = data.get('items') or []
         if not items:
             return {'error': 'Add at least one product line.'}
-        if (self._role or '').lower() not in ('manager', 'admin', 'superadmin'):
+        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
             return {
-                'error': 'Cashiers cannot record consumption directly.',
+                'error': 'You cannot record internal consumption.',
                 'status': 403,
             }
         reason = (data.get('reason') or '').strip()

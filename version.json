@@ -1,8 +1,8 @@
 {
-    "version": "3.1.72",
-    "build": "RC-2026-10-27-v3.1.72",
-    "released": "2026-10-27",
-    "release_notes": "Fixes a startup failure in 3.1.71 where the till closed with Failed to execute script because the Users screen was missing from the package. A signed-in Super Admin can void a receipt directly. Void requests can be opened, corrected, and returned. Audit records open with the details that were stored. A cashier can request a past-date sale, and a manager, admin, or Super Admin approves it once. Inventory search is by product name. Only an administrator can archive a product or deactivate staff.",
-    "checksum_sha256": "9d2815263525483bff8b45f1cf8f8dcc58d41f03052324482618bd4a49b3d0b4",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.72/MBT_POS_Setup.exe"
+    "version": "3.1.75",
+    "build": "RC-2026-10-29-v3.1.75",
+    "released": "2026-10-29",
+    "release_notes": "The till has a Receipts tab: find a receipt, open the saved sale, copy the reference, and reprint without creating another sale. A cashier can request a void; the receipt stays completed until it is approved. A signed-in Super Admin can void directly. Split payment can use any mix of cash, M-Pesa, card, and bank transfer, including three or more methods with no cash required. A credit remainder needs a customer and is not counted as money received. A pending M-Pesa line is not collected. Includes the inventory, product-removal, debt, and startup fixes from 3.1.73 and 3.1.74.",
+    "checksum_sha256": "1a5db7c457e26c87d947c0d8fc65ae3a4efca2fbefb7c36d30ed980d8335b438",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.75/MBT_POS_Setup.exe"
 }

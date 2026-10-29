@@ -137,7 +137,12 @@ def ensure_checkout_body_order(tab) -> None:
         try:
             bl.addWidget(w)
             if name in always_show:
+                w.setAttribute(Qt.WA_DontShowOnScreen, False)
                 w.show()
+                btn = getattr(w, '_btn', None)
+                if btn is not None:
+                    btn.setAttribute(Qt.WA_DontShowOnScreen, False)
+                    btn.show()
         except Exception:
             pass
     for name in ('_pay_lbl', '_pay', '_cash_paid_lbl', '_var_frame'):
@@ -708,6 +713,15 @@ def apply_shared_checkout_chrome(tab) -> None:
     apply_secondary_action_grid(tab)
     move_secondary_actions_to_scroll(tab)
     pin_checkout_totals(tab)
+    cust = getattr(tab, '_cust_card', None)
+    scroll = getattr(tab, '_checkout_scroll', None)
+    if _alive(scroll):
+        try:
+            scroll.verticalScrollBar().setValue(0)
+            if _alive(cust):
+                scroll.ensureWidgetVisible(cust, 0, 8)
+        except Exception:
+            pass
 
 def _stash(tab, *widgets) -> None:
     stash = getattr(tab, '_layout_stash', None)
@@ -2224,6 +2238,12 @@ def _ensure_body_pro_sections(tab, bl):
         except Exception:
             pass
         pcl.insertWidget(1, cust)
+        try:
+            cust.setAttribute(Qt.WA_DontShowOnScreen, False)
+            cust.setMinimumHeight(36)
+            cust.show()
+        except Exception:
+            pass
     if _alive(row) and not getattr(tab, '_totals_pinned', False):
         if row.parent() is not pay_card:
             pcl.addWidget(row)
@@ -2242,6 +2262,15 @@ def _ensure_body_pro_sections(tab, bl):
 
     if not _in_body(pay_card):
         bl.insertWidget(0, pay_card)
+    try:
+        # The card is created off-screen so construction does not flash a window.
+        # Leave that flag set and the customer chip never appears on the till.
+        pay_card.setAttribute(Qt.WA_DontShowOnScreen, False)
+        pay_card.show()
+        if _alive(cust):
+            cust.show()
+    except Exception:
+        pass
 
     # Payment Method (header + tiles) stays in the body — immediately under Checkout.
     pay_seg = getattr(tab, '_pay_seg', None)
@@ -2438,6 +2467,15 @@ def restore_shared_chrome(tab) -> None:
 
     pay_card = getattr(tab, '_pro_pay_card', None)
     if _alive(pay_card):
+        cust = getattr(tab, '_cust_card', None)
+        if bl is not None and _alive(cust):
+            try:
+                cust.setAttribute(Qt.WA_DontShowOnScreen, False)
+            except Exception:
+                pass
+            bl.insertWidget(0, cust)
+            cust.setMinimumHeight(36)
+            cust.show()
         pay_card.hide()
         _stash(tab, pay_card)
 

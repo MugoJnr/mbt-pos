@@ -643,6 +643,15 @@ QComboBox {{
     font-size: 14px;
 }}
 QComboBox:focus {{ border-color: {p['gold']}; }}
+QComboBox:editable {{ padding: 0px 4px; }}
+QComboBox QLineEdit {{
+    background: {p['input']};
+    color: {p['text']};
+    border: none;
+    padding: 0px 8px;
+    selection-background-color: {p['selected']};
+    selection-color: {p['text']};
+}}
 QComboBox::drop-down {{ border: none; width: 28px; }}
 QComboBox QAbstractItemView {{
     background: {p['card']};

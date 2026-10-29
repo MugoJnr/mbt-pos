@@ -51,6 +51,11 @@ function ReceiptsPage() {
   const [voidReason, setVoidReason] = useState("");
   const [voidMsg, setVoidMsg] = useState("");
   const [voiding, setVoiding] = useState(false);
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [requestReason, setRequestReason] = useState("");
+  const [requestMsg, setRequestMsg] = useState("");
+  const [requesting, setRequesting] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
   const { user } = useAuth();
   const qc = useQueryClient();
   const limit = 25;
@@ -84,8 +89,20 @@ function ReceiptsPage() {
   const storedStatus = String(header.status || "").toLowerCase();
   const shownStatus = storedStatus === "voided"
     ? "voided"
-    : String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
-  const canVoidNow = user?.role === "superadmin" && open?.kind === "sale" && String(header.status || open?.status || "").toLowerCase() === "completed";
+    : storedStatus === "completed"
+      ? "completed"
+      : String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
+  const canVoidNow = user?.role === "superadmin" && open?.kind === "sale" && storedStatus === "completed";
+  const canRequestVoid = Boolean(open && open.kind === "sale" && storedStatus === "completed" && user?.role && !["superadmin", "viewer"].includes(user.role));
+  const tenders = Array.isArray(detailQ.data?.tenders) ? detailQ.data.tenders : [];
+  const paidWith = Array.from(new Set(
+    tenders
+      .filter((tender: any) => String(tender?.status || "confirmed").toLowerCase() === "confirmed")
+      .map((tender: any) => String(tender?.method || "").trim())
+      .filter((name: string) => name && !["credit", "account"].includes(name.toLowerCase()))
+  )).join(" + ");
+  const customer = detailQ.data?.customer;
+  const debt = detailQ.data?.debt;
   const canRestore = user?.role === "superadmin" && open && (
     (open.kind === "sale" && String(header.status || "").toLowerCase() === "voided")
     || (open.kind === "consumption" && Number(header.voided || 0) === 1)
@@ -135,7 +152,7 @@ function ReceiptsPage() {
         ) : (
           <Table head={["When", "Type", "Reference", "User", "Amount", "Payment", "Status", ""]}>
             {rows.map((row) => (
-              <tr key={`${row.kind}-${row.id}`}>
+              <tr key={`${row.kind}-${row.id}`} className="cursor-pointer" onClick={() => setOpen(row)}>
                 <td className="px-4 py-2.5 text-text2">{String(row.at || "").replace("T", " ").slice(0, 19)}</td>
                 <td className="px-4 py-2.5">{row.kind.replace(/_/g, " ")}</td>
                 <td className="px-4 py-2.5 font-semibold text-text">{row.reference}</td>
@@ -144,7 +161,7 @@ function ReceiptsPage() {
                 <td className="px-4 py-2.5">{row.payment || "—"}</td>
                 <td className="px-4 py-2.5"><Badge tone={(row.display_status || row.status) === "voided" ? "err" : (row.display_status || row.status) === "pending" ? "warn" : "ok"}>{row.display_status || row.status}</Badge></td>
                 <td className="px-4 py-2.5">
-                  <Button size="sm" variant="ghost" onClick={() => setOpen(row)}>Open</Button>
+                  <Button size="sm" variant="ghost" onClick={(event) => { event.stopPropagation(); setOpen(row); }}>Open</Button>
                 </td>
               </tr>
             ))}
@@ -166,9 +183,38 @@ function ReceiptsPage() {
               <div className="mb-3 flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs uppercase tracking-wide text-text2">{open.kind.replace(/_/g, " ")}</div>
-                  <div className="text-lg font-extrabold text-text">{detailQ.data?.reference || open.reference}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="select-all text-lg font-extrabold text-text">{detailQ.data?.reference || open.reference}</div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={async () => {
+                        const reference = String(detailQ.data?.reference || open.reference || "").trim();
+                        if (!reference) {
+                          setCopyMsg("There is no reference to copy.");
+                          return;
+                        }
+                        try {
+                          await navigator.clipboard.writeText(reference);
+                          setCopyMsg("Copied");
+                        } catch {
+                          const area = document.createElement("textarea");
+                          area.value = reference;
+                          area.setAttribute("readonly", "true");
+                          document.body.appendChild(area);
+                          area.select();
+                          const copied = document.execCommand("copy");
+                          area.remove();
+                          setCopyMsg(copied ? "Copied" : "Could not copy");
+                        }
+                      }}
+                    >
+                      Copy reference
+                    </Button>
+                  </div>
+                  {copyMsg ? <div className="text-xs text-text2">{copyMsg}</div> : null}
                 </div>
-                <Button variant="ghost" onClick={() => setOpen(null)}>Close</Button>
+                <Button variant="ghost" onClick={() => { setCopyMsg(""); setOpen(null); }}>Close</Button>
               </div>
               {detailQ.isLoading ? <div className="text-sm text-text2">Loading…</div> : null}
               {detailQ.data?.error ? <div className="text-sm text-err">{detailQ.data.error}</div> : null}
@@ -176,8 +222,44 @@ function ReceiptsPage() {
               <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
                 <div>Status <span className="font-semibold text-text">{shownStatus || "—"}</span></div>
                 <div>User <span className="font-semibold text-text">{header.cashier_name || header.username || header.created_by_name || open.user || "—"}</span></div>
-                <div>Payment <span className="font-semibold text-text">{header.payment_method || open.payment || "—"}</span></div>
+                <div>Payment <span className="font-semibold text-text">{paidWith || header.payment_method || open.payment || "—"}</span></div>
                 <div>Total <span className="font-semibold text-text">{header.total == null && open.amount == null ? "—" : KES(header.total ?? open.amount)}</span></div>
+              </div>
+              {customer ? (
+                <p className="mb-2 text-sm text-text">Customer {customer.name}{customer.phone ? ` · ${customer.phone}` : ""}</p>
+              ) : null}
+              {tenders.length ? (
+                <div className="mb-3 text-sm">
+                  <div className="font-semibold text-text">Tenders</div>
+                  {tenders.map((tender: any, index: number) => (
+                    <div key={index} className="text-text2">
+                      {tender.method} · {KES(tender.amount)}{tender.status ? ` · ${tender.status}` : ""}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {debt ? (
+                <p className="mb-3 text-sm text-text">
+                  Debt {debt.invoice_number} · balance {KES(debt.balance)} · {debt.status}
+                </p>
+              ) : null}
+              <div className="mb-3">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const reference = detailQ.data?.reference || open.reference;
+                    const popup = window.open("", "mbt-receipt", "noopener,width=480,height=720");
+                    if (!popup) return;
+                    const itemRows = lines.map((line: any) => `<tr><td>${line.product_name || line.name || ""}</td><td>${line.quantity}</td><td>${line.unit_price ?? ""}</td><td>${line.total ?? ""}</td></tr>`).join("");
+                    const tenderRows = tenders.map((tender: any) => `<div>${tender.method} ${tender.amount}${tender.status ? " (" + tender.status + ")" : ""}</div>`).join("");
+                    popup.document.write(`<!doctype html><html><head><title>${reference}</title><style>body{font-family:Segoe UI,sans-serif;padding:24px;color:#111}table{width:100%;border-collapse:collapse}td{padding:4px 0;border-bottom:1px solid #ddd}</style></head><body><h1>${reference}</h1><p>${shownStatus || ""} · ${header.cashier_name || header.username || open.user || ""}</p><p>${paidWith || header.payment_method || open.payment || ""}</p>${customer ? `<p>${customer.name}</p>` : ""}${tenderRows}<table>${itemRows}</table><p><strong>Total ${header.total ?? open.amount ?? ""}</strong></p>${debt ? `<p>Debt ${debt.invoice_number} balance ${debt.balance}</p>` : ""}<p>Reprint of the saved receipt. This does not create a new sale.</p></body></html>`);
+                    popup.document.close();
+                    popup.focus();
+                    popup.print();
+                  }}
+                >
+                  Print
+                </Button>
               </div>
               {lines.length ? (
                 <Table head={["Item", "Qty", "Price", "Total"]}>
@@ -199,6 +281,46 @@ function ReceiptsPage() {
                       {item.edit_type || item.action} · {item.edited_by_name || item.username || "—"} · {item.reason || item.details}
                     </div>
                   ))}
+                </div>
+              ) : null}
+              {canRequestVoid ? (
+                <div className="mt-4">
+                  <Button variant="secondary" onClick={() => { setRequestOpen(true); setRequestMsg(""); }}>Request void</Button>
+                  {requestOpen ? (
+                    <div className="mt-3 rounded-lg border border-border p-3">
+                      <div className="text-sm font-semibold text-text">Ask for this receipt to be voided</div>
+                      <p className="mt-1 text-xs text-text2">The sale stays completed until a reviewer accepts the request.</p>
+                      <Input className="mt-2" aria-label="Reason for the void request" placeholder="Reason" value={requestReason} onChange={(e) => setRequestReason(e.target.value)} />
+                      {requestMsg ? <div className="mt-2 text-sm text-text">{requestMsg}</div> : null}
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          disabled={requesting}
+                          onClick={async () => {
+                            if (requestReason.trim().length < 3) {
+                              setRequestMsg("Enter a reason before requesting a void.");
+                              return;
+                            }
+                            setRequesting(true);
+                            try {
+                              const data = await POST<any>("/sales/void-request", { sale_id: open.id, reason: requestReason.trim() });
+                              if (!data || data.error || data.success === false) {
+                                setRequestMsg(data?.error || "The request was not saved.");
+                                return;
+                              }
+                              setRequestMsg(data.duplicate ? "This request is already open." : "Request saved. The receipt is still completed.");
+                              setRequestOpen(false);
+                              qc.invalidateQueries({ queryKey: ["receipt", open.kind, open.id] });
+                            } finally {
+                              setRequesting(false);
+                            }
+                          }}
+                        >
+                          {requesting ? "Sending…" : "Send request"}
+                        </Button>
+                        <Button variant="ghost" onClick={() => setRequestOpen(false)}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {canVoidNow ? (
@@ -272,7 +394,7 @@ function ReceiptsPage() {
                 <div className="mt-3 text-sm">
                   {detailQ.data.approvals.map((item: any) => (
                     <div key={item.id} className="text-text2">
-                      Request {item.type} #{item.id} · {item.status} · {item.details || item.title}
+                      Request {item.type} #{item.id} · {item.status} · {item.current_reason || item.details || item.title}
                     </div>
                   ))}
                 </div>

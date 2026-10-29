@@ -123,6 +123,10 @@ function Settings() {
         tax_rate: form.tax_rate || "0",
         daraja_gateway_url: (form.daraja_gateway_url || "").trim(),
         daraja_environment: "sandbox",
+        wheel_pos_qty: form.wheel_pos_qty || WHEEL_DEFAULTS.wheel_pos_qty,
+        wheel_stock_adjust: form.wheel_stock_adjust || WHEEL_DEFAULTS.wheel_stock_adjust,
+        wheel_receive_qty: form.wheel_receive_qty || WHEEL_DEFAULTS.wheel_receive_qty,
+        wheel_dashboard_qty: form.wheel_dashboard_qty || WHEEL_DEFAULTS.wheel_dashboard_qty,
       };
       const res = await PUT<{ success?: boolean; error?: string }>("/settings", payload);
       if (!res?.success) throw new Error(res?.error || "Save failed");

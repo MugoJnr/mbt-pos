@@ -25,8 +25,9 @@ function ConsumptionPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const role = String(user?.role || "");
-  const canRecord = ["manager", "admin", "superadmin"].includes(role);
+  const canRecord = ["cashier", "manager", "admin", "superadmin"].includes(role);
   const canVoid = ["admin", "superadmin"].includes(role);
+  const canRequestVoid = ["cashier", "manager"].includes(role);
   const today = localToday();
   const [departmentId, setDepartmentId] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
@@ -166,6 +167,20 @@ function ConsumptionPage() {
     }
   }
 
+  async function requestVoid(id: number) {
+    setError("");
+    const why = voidReason.trim();
+    if (!why) return setError("Enter a void reason first. Stock stays reduced until an admin approves.");
+    const res = await POST<any>(`/consumptions/${id}/void-request`, { reason: why });
+    if (!res || res.error) {
+      setError(res?.error || "Could not send the void request.");
+      return;
+    }
+    setError("");
+    setSavedRef(res.duplicate ? "That void is already waiting for an admin." : "Void request sent. Stock has not been restored.");
+    await qc.invalidateQueries({ queryKey: ["consumptions"] });
+  }
+
   async function reverse(id: number) {
     setError("");
     const why = voidReason.trim();
@@ -285,12 +300,12 @@ function ConsumptionPage() {
       </Card>
       ) : null}
       <Card>
-        {canVoid ? (
+        {canVoid || canRequestVoid ? (
         <div className="p-4 border-b border-border flex items-center gap-3">
           <Input
             value={voidReason}
             onChange={(e) => setVoidReason(e.target.value)}
-            placeholder="Reason required before void"
+            placeholder={canVoid ? "Reason required before void" : "Reason required before requesting a void"}
           />
         </div>
         ) : null}
@@ -308,6 +323,9 @@ function ConsumptionPage() {
               <td className="px-4 py-2.5">
                 {canVoid && !row.voided ? (
                   <Button onClick={() => reverse(row.id)}>Void</Button>
+                ) : null}
+                {canRequestVoid && !row.voided ? (
+                  <Button onClick={() => requestVoid(row.id)}>Request void</Button>
                 ) : null}
               </td>
             </tr>

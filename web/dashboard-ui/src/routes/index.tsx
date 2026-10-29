@@ -248,7 +248,7 @@ function Dashboard() {
   const discounts = Number(s.total_discounts ?? 0);
   const tax = Number(s.total_tax ?? 0);
   const expenses = Number(cc.expenses ?? 0);
-  const invValue = Number(cc.inventory_value ?? 0);
+  const showInventoryValue = ["manager", "admin", "superadmin"].includes(role) && cc.inventory_value != null;
   const debts = Number(cc.outstanding_debts ?? 0);
   const cashFlow = revenue;
   const payRows = Array.isArray(wrap.by_payment) ? wrap.by_payment : [];
@@ -556,13 +556,15 @@ function Dashboard() {
               accent="warn"
               icon={<Wallet className="h-5 w-5" />}
             />
-            <KpiCard
-              label="Inventory Value"
-              value={KES(invValue)}
-              sub={`${products.length} SKUs`}
-              accent="info"
-              icon={<Package className="h-5 w-5" />}
-            />
+            {showInventoryValue ? (
+              <KpiCard
+                label="Inventory Value"
+                value={KES(Number(cc.inventory_value))}
+                sub={`${products.length} SKUs`}
+                accent="info"
+                icon={<Package className="h-5 w-5" />}
+              />
+            ) : null}
             <KpiCard
               label="Pending Debts"
               value={KES(debts)}

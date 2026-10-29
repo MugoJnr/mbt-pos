@@ -21,6 +21,7 @@ import {
   Bell,
   Activity,
   ClipboardCheck,
+  Inbox,
   Ban,
   CalendarClock,
   ClipboardList,
@@ -55,6 +56,7 @@ type NavItem = {
 
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, group: "Overview", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/requests", label: "Requests Centre", icon: Inbox, group: "Overview", roles: ["cashier", "manager", "admin", "superadmin"] },
   { to: "/live", label: "Live", icon: Activity, group: "Overview", roles: ["manager", "admin", "superadmin"] },
   { to: "/approvals", label: "Approvals", icon: ClipboardCheck, group: "Overview", roles: ["manager", "admin", "superadmin"] },
   { to: "/void-requests", label: "Void Requests", icon: Ban, group: "Overview", roles: ["cashier", "manager", "admin", "superadmin"] },
@@ -62,7 +64,7 @@ const NAV: NavItem[] = [
   { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations", roles: ["cashier", "manager", "admin", "superadmin"] },
   { to: "/receipts", label: "All Receipts", icon: Receipt, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/inventory", label: "Inventory", icon: Package, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
-  { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
+  { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
   { to: "/finance", label: "Finance", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
@@ -215,7 +217,7 @@ function SidebarContent({
             <span className="text-text2">Orders</span>
             <span className="font-semibold text-text tabular-nums">{todayOrders}</span>
           </div>
-          {["viewer", "manager", "admin", "superadmin"].includes(String(user?.role || "").toLowerCase()) ? (
+          {["manager", "admin", "superadmin"].includes(String(user?.role || "").toLowerCase()) ? (
           <div className="flex justify-between text-[12px]">
             <span className="text-text2">Profit</span>
             <span className="font-semibold text-ok tabular-nums">{KES(todayProfit)}</span>

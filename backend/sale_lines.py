@@ -8,7 +8,13 @@ from the product row when a product id is present.
 
 def fill_sale_line(db, item: dict) -> dict:
     pid = item.get('product_id')
-    qty = float(item.get('quantity') or 1)
+    raw_qty = item.get('quantity', None)
+    if raw_qty is None or raw_qty == '':
+        qty = 1.0
+    else:
+        qty = float(raw_qty)
+        if qty <= 0:
+            raise ValueError('Quantity must be greater than zero')
     unit_price = float(item.get('unit_price') or 0)
     discount = float(item.get('discount') or 0)
     raw_total = item.get('total')

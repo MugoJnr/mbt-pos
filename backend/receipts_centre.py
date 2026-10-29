@@ -18,6 +18,30 @@ def _like(value: str) -> str:
     return f"%{(value or '').strip()}%"
 
 
+def _paid_with(method: str, raw_tenders) -> str:
+    names = []
+    parsed = []
+    if raw_tenders:
+        try:
+            loaded = json.loads(raw_tenders) if isinstance(raw_tenders, str) else raw_tenders
+            if isinstance(loaded, list):
+                parsed = loaded
+        except (json.JSONDecodeError, TypeError):
+            parsed = []
+    for tender in parsed:
+        if not isinstance(tender, dict):
+            continue
+        name = str(tender.get("method") or "").strip()
+        status = str(tender.get("status") or "confirmed").lower()
+        if not name or status != "confirmed" or name.lower() in ("credit", "account"):
+            continue
+        if name not in names:
+            names.append(name)
+    if names:
+        return " + ".join(names)
+    return method or ""
+
+
 def _day(expr: str, start: str, end: str) -> tuple[str, list]:
     if start and end:
         return f"date({expr}) BETWEEN ? AND ?", [start, end]
@@ -103,9 +127,11 @@ def list_receipts(
 
     if can_sales and _has(tables, "sales"):
         clause, params = _day("COALESCE(s.sale_date, s.created_at)", start, end)
+        sale_cols = {item[1] for item in db.execute("PRAGMA table_info(sales)").fetchall()}
+        tender_sql = "s.payment_tenders" if "payment_tenders" in sale_cols else "NULL AS payment_tenders"
         found = db.execute(
             f"""SELECT s.id, s.receipt_number, s.created_at, s.cashier_name,
-                       s.total, s.status, s.payment_method,
+                       s.total, s.status, s.payment_method, {tender_sql},
                        GROUP_CONCAT(si.product_name, ', ') AS products
                 FROM sales s
                 LEFT JOIN sale_items si ON si.sale_id = s.id
@@ -127,7 +153,7 @@ def list_receipts(
                 "display_status": "voided" if raw_status == "voided" else (
                     "pending" if raw_status in ("pending", "held") else "active"
                 ),
-                "payment": row["payment_method"] or "",
+                "payment": _paid_with(row["payment_method"] or "", row["payment_tenders"]),
                 "summary": row["products"] or "",
             })
         if _has(tables, "sale_edits"):
@@ -327,6 +353,31 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
         body = dict(sale)
         if not show_cost:
             body.pop("cost", None)
+        customer = None
+        if sale["customer_id"] if "customer_id" in sale.keys() else None:
+            found = db.execute(
+                "SELECT id, name, phone FROM customers WHERE id=?",
+                (sale["customer_id"],),
+            ).fetchone()
+            customer = dict(found) if found else None
+        tenders = []
+        raw_tenders = sale["payment_tenders"] if "payment_tenders" in sale.keys() else None
+        if raw_tenders:
+            try:
+                parsed = json.loads(raw_tenders)
+                if isinstance(parsed, list):
+                    tenders = parsed
+            except (json.JSONDecodeError, TypeError):
+                tenders = []
+        debt = None
+        if _has(tables, "debt_invoices"):
+            invoice = db.execute(
+                "SELECT id, invoice_number, total_amount, amount_paid, balance, status "
+                "FROM debt_invoices WHERE sale_id=? AND COALESCE(status,'') != 'cancelled' "
+                "ORDER BY id DESC LIMIT 1",
+                (record_id,),
+            ).fetchone()
+            debt = dict(invoice) if invoice else None
         linked = []
         if _has(tables, "cc_approvals"):
             for approval in db.execute(
@@ -341,13 +392,18 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
                 except (json.JSONDecodeError, TypeError, KeyError):
                     meta = {}
                 if int(meta.get("sale_id") or 0) == record_id:
-                    linked.append(dict(approval))
+                    item = dict(approval)
+                    item["current_reason"] = meta.get("current_reason") or approval["details"] or ""
+                    linked.append(item)
         return {
             "kind": "sale",
             "reference": sale["receipt_number"],
             "header": body,
             "lines": [dict(item) for item in items],
             "approvals": linked,
+            "customer": customer,
+            "tenders": tenders,
+            "debt": debt,
             "history": _sale_history(db, tables, record_id) + _receipt_audit(
                 db, tables, sale["receipt_number"] or ""
             ),

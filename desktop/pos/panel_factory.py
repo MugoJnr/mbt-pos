@@ -88,6 +88,9 @@ class _BizDayButton(QPushButton):
             + f" QPushButton {{ color:{color}; border:1px solid {border}; font-weight:800; }}"
         )
         self.setMinimumWidth(self.fontMetrics().horizontalAdvance(self.text()) + 36)
+        sync = getattr(self.parent(), 'sync_today_action', None)
+        if sync:
+            sync()
 
     def set_editable(self, editable: bool) -> None:
         self.setEnabled(editable)
@@ -223,10 +226,13 @@ class BusinessDayBar(QFrame):
             "QPushButton#outlineBtn{padding:4px 8px;font-size:11px;font-weight:600;}"
         )
         for btn, short, wide in self._buttons:
+            if btn is today_btn:
+                continue
             btn.setText(short if compact else wide)
             btn.setStyleSheet(btn_ss_compact if compact else '')
             btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             btn.show()
+        self.sync_today_action()
 
         if stacked:
             self._row1.addWidget(self._picker, 1)
@@ -250,6 +256,20 @@ class BusinessDayBar(QFrame):
 
         self.setMinimumHeight(68 if stacked else 40)
         self.updateGeometry()
+
+    def sync_today_action(self) -> None:
+        """The reset control is an action, not a second date. Hide it on today."""
+        if not self._buttons or self._date is None:
+            return
+        from datetime import date as date_cls
+        from desktop.utils.shop_time import shop_today
+        btn = self._buttons[0][0]
+        qdate = self._date.date()
+        day = date_cls(qdate.year(), qdate.month(), qdate.day())
+        other_day = day != shop_today()
+        btn.setText('Back to today')
+        btn.setVisible(other_day)
+        btn.setToolTip('Return this sale to today')
 
 
 class SearchToolbar(QFrame):
@@ -365,7 +385,7 @@ def build_shared_panels(tab) -> None:
 
     # ── Business day bar (sale date) — visible on all checkout layouts ────────
     biz = BusinessDayBar(product)
-    from desktop.utils.security import can_set_business_day
+    from desktop.utils.security import can_set_business_day, has_permission
     from desktop.utils.shop_time import shop_today
     from desktop.utils.date_controls import apply_shop_day_edit
     today = shop_today()
@@ -377,17 +397,21 @@ def build_shared_panels(tab) -> None:
     # Raise maximumDate before setDate (Qt clamps otherwise — stale year bug)
     tab._business_day = apply_shop_day_edit(tab._biz_date, today, today=today)
     can_biz = can_set_business_day(tab.user)
-    tab._biz_date.setEnabled(can_biz)
+    can_request = has_permission(tab.user, 'sales.request_backdate')
+    can_pick = can_biz or can_request
+    tab._biz_date.setEnabled(can_pick)
     tab._biz_date.setToolTip(
-        'Sale / reporting date (Nairobi shop calendar). Manager+ can backdate.'
+        'Sale / reporting date. A past date is recorded on that business day.'
         if can_biz else
-        'Cashiers record sales for today only. Ask a manager to backdate.'
+        'A past date is sent for approval. The sale is not recorded until it is approved.'
+        if can_request else
+        'Sales are recorded for today.'
     )
     biz._picker.setToolTip(tab._biz_date.toolTip())
-    biz._picker.set_editable(can_biz)
+    biz._picker.set_editable(can_pick)
     tab._biz_date.dateChanged.connect(tab._on_business_day_changed)
     tab._biz_today_btn = SecondaryBtn('Today', 32)
-    tab._biz_today_btn.setEnabled(can_biz)
+    tab._biz_today_btn.setEnabled(can_pick)
     tab._biz_today_btn.clicked.connect(tab._reset_business_day_today)
     tab._biz_view_btn = SecondaryBtn('View day', 32)
     tab._biz_view_btn.setToolTip('View / adjust / copy sales for the selected business day')
@@ -808,7 +832,7 @@ def build_shared_panels(tab) -> None:
     sfl = QVBoxLayout(tab._split_frame)
     sfl.setContentsMargins(12, 8, 12, 8)
     sfl.setSpacing(6)
-    tab._split_hdr = QLabel('Split Pay — cash + M-Pesa / card / bank')
+    tab._split_hdr = QLabel('Split Pay')
     tab._split_hdr.setStyleSheet(
         f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
     sfl.addWidget(tab._split_hdr)
@@ -844,6 +868,13 @@ def build_shared_panels(tab) -> None:
     tab._split_summary.setStyleSheet(
         f"color:{C['text']};font-size:12px;font-weight:700;background:transparent;")
     sfl.addWidget(tab._split_summary)
+    from desktop.pos.tender_lines import TenderLines
+    tab._tender_lines = TenderLines(tab)
+    tab._tender_lines.changed.connect(tab._on_tender_lines_changed)
+    sfl.addWidget(tab._tender_lines)
+    tab._elec_lbl.hide()
+    tab._elec_method.hide()
+    tab._elec_paid.hide()
     tab._split_frame.hide()
     bl.addWidget(tab._split_frame)
 

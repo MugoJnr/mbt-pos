@@ -111,6 +111,7 @@ def _version_lt(a: str, b: str) -> bool:
 UPDATE_LOG = os.path.join(tempfile.gettempdir(), 'mbt_update.log')
 
 _MUTEX_HANDLE = None
+_MUTEX_HANDLES = []
 
 
 def _log_update(msg: str):
@@ -446,6 +447,8 @@ def acquire_single_instance(mutex_name: str | None = None) -> bool:
         import ctypes
         handle = ctypes.windll.kernel32.CreateMutexW(None, False, name)
         err = ctypes.windll.kernel32.GetLastError()
+        # Keep every handle alive. Dropping it releases the mutex.
+        _MUTEX_HANDLES.append(handle)
         if mutex_name is None:
             _MUTEX_HANDLE = handle
         return err != 183  # ERROR_ALREADY_EXISTS

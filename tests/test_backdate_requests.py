@@ -328,3 +328,78 @@ class BackdateRequestTests(unittest.TestCase):
             self.assertNotEqual(row["created_at"][:10], self.yesterday)
         finally:
             db.close()
+
+    def test_requester_cannot_review_even_as_manager(self):
+        manager = self._login("manager")
+        created = self._create(manager, [self._sale(self.sugar, 1, 100)])
+        submitted = self.client.post(
+            f"/api/backdate-requests/{created['id']}/submit",
+            headers=manager, json={"version": created["version"]},
+        )
+        self.assertEqual(submitted.status_code, 200, submitted.get_json())
+        denied = self.client.post(
+            f"/api/backdate-requests/{created['id']}/approve",
+            headers=manager, json={"version": submitted.get_json()["version"]},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self._counts()[0], 0)
+
+    def test_cashier_cannot_post_a_past_sale_directly(self):
+        cashier = self._login("cashier")
+        response = self.client.post("/api/sales", headers=cashier, json={
+            "items": [{"product_id": self.sugar, "quantity": 1, "unit_price": 100}],
+            "payment_method": "cash",
+            "amount_paid": 100,
+            "sale_date": self.yesterday,
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(self._counts()[0], 0)
+        self.assertEqual(self._counts()[1], 20)
+
+    def test_listing_requests_does_not_create_one(self):
+        cashier = self._login("cashier")
+        before = self.client.get("/api/backdate-requests", headers=cashier)
+        self.assertEqual(before.status_code, 200)
+        self.assertEqual(before.get_json()["requests"], [])
+        again = self.client.get("/api/backdate-requests", headers=cashier)
+        self.assertEqual(again.get_json()["requests"], [])
+
+    def test_date_dialog_does_not_keep_the_window_pinned(self):
+        import inspect
+        from desktop.utils import date_controls
+        source = inspect.getsource(date_controls.pick_shop_day_dialog)
+        self.assertIn("WindowStaysOnTopHint, False", source)
+        self.assertIn("release_window_topmost", source)
+        self.assertNotIn("WindowStaysOnTopHint |", source)
+
+    def test_receipt_preview_is_not_a_completed_sale(self):
+        from desktop.tabs.backdate_dialog import receipt_text
+        text = receipt_text({
+            "reference": "BD-1",
+            "status": "submitted",
+            "business_date": "2026-10-01",
+            "submitted_at": "2026-10-28 12:00:00",
+            "reason": "Power cut",
+            "cashier_name": "Ada",
+            "sales": [{
+                "payment_method": "Cash",
+                "amount_paid": 100,
+                "lines": [{
+                    "product_name": "Sugar",
+                    "sku": "SUG",
+                    "quantity": 1,
+                    "unit_price": 100,
+                    "discount": 0,
+                    "total": 100,
+                }],
+            }],
+            "summary": {
+                "total_sales": 100, "cash_sales": 100, "mpesa_sales": 0,
+                "bank_sales": 0, "credit_sales": 0, "outstanding_debt": 0,
+            },
+        })
+        self.assertIn("BD-1", text)
+        self.assertIn("Pending approval", text)
+        self.assertIn("2026-10-01", text)
+        self.assertIn("Power cut", text)
+        self.assertNotIn("Sale recorded", text)

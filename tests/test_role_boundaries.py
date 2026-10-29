@@ -339,5 +339,24 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertIn(blocked.status_code, (401, 403))
 
 
+class CashierInventoryValueTests(unittest.TestCase):
+    def test_a_cashier_is_not_given_the_inventory_value(self):
+        from web.web_routes import _user_can
+        cashier = {
+            "role": "cashier",
+            "tab_permissions": ["dashboard", "sales", "inventory"],
+        }
+        self.assertFalse(_user_can("inventory_value", cashier))
+        self.assertFalse(_user_can("inventory_value", {
+            "role": "viewer",
+            "tab_permissions": ["inventory", "reports"],
+        }))
+        self.assertTrue(_user_can("inventory_value", {"role": "admin"}))
+        self.assertTrue(_user_can("inventory_value", {
+            "role": "manager",
+            "tab_permissions": ["inventory"],
+        }))
+
+
 if __name__ == "__main__":
     unittest.main()

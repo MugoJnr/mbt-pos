@@ -158,6 +158,103 @@ def restore_sale_layers(db, sale_id: int) -> dict:
     return {'success': True, 'restored': restored}
 
 
+def restore_sale_product_qty(db, sale_id: int, product_id: int, qty: float) -> dict:
+    """Put back the newest FIFO uses for one product on one sale, up to qty."""
+    ensure_cost_layers(db)
+    need = round(float(qty), 4)
+    if need <= 0:
+        return {'error': 'Quantity must be greater than zero'}
+    uses = db.execute(
+        "SELECT id, layer_id, quantity FROM cost_layer_uses "
+        "WHERE sale_id=? AND product_id=? AND COALESCE(reversed,0)=0 "
+        "ORDER BY id DESC",
+        (int(sale_id), int(product_id)),
+    ).fetchall()
+    if not uses:
+        return {'skipped': True, 'restored': 0}
+    left = need
+    restored = 0.0
+    for use in uses:
+        if left <= 0.0001:
+            break
+        available = round(float(use[2]), 4)
+        take = round(min(left, available), 4)
+        if take <= 0:
+            continue
+        layer = db.execute(
+            "SELECT remaining_qty, original_qty FROM cost_layers WHERE id=?",
+            (use[1],),
+        ).fetchone()
+        if not layer:
+            continue
+        room = round(float(layer[1]) - float(layer[0]), 4)
+        put = min(take, max(room, 0))
+        if put > 0:
+            db.execute(
+                "UPDATE cost_layers SET remaining_qty=remaining_qty+? WHERE id=?",
+                (put, use[1]),
+            )
+            restored = round(restored + put, 4)
+        if take + 0.0001 >= available:
+            db.execute("UPDATE cost_layer_uses SET reversed=1 WHERE id=?", (use[0],))
+        else:
+            db.execute(
+                "UPDATE cost_layer_uses SET quantity=quantity-? WHERE id=?",
+                (take, use[0]),
+            )
+        left = round(left - take, 4)
+    return {'success': True, 'restored': restored, 'uncosted': round(max(left, 0), 4)}
+
+
+def period_profit(db, start: str, end: str) -> dict:
+    """Profit from the FIFO cost actually consumed. Sales with no layer are uncosted."""
+    ensure_cost_layers(db)
+    cols = {row[1] for row in db.execute("PRAGMA table_info(sale_items)").fetchall()}
+    if "returned_qty" not in cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
+    day = "COALESCE(NULLIF(s.sale_date,''), date(s.created_at))"
+    rows = db.execute(
+        f"""
+        SELECT CASE
+                 WHEN COALESCE(si.quantity, 0) = 0 THEN 0
+                 ELSE si.total * (
+                   COALESCE(si.quantity, 0) - COALESCE(si.returned_qty, 0)
+                 ) / si.quantity
+               END AS total,
+               (SELECT COUNT(*) FROM cost_layer_uses u
+                WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                  AND COALESCE(u.reversed,0)=0) AS uses,
+               (SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
+                WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                  AND COALESCE(u.reversed,0)=0) AS cogs
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        WHERE {day} BETWEEN ? AND ?
+          AND COALESCE(s.status,'completed')='completed'
+        """,
+        (str(start)[:10], str(end)[:10]),
+    ).fetchall()
+    revenue = cogs = uncosted = 0.0
+    costed_lines = uncosted_lines = 0
+    for total, uses, line_cogs in rows:
+        amount = float(total or 0)
+        if int(uses or 0) > 0:
+            revenue += amount
+            cogs += float(line_cogs or 0)
+            costed_lines += 1
+        else:
+            uncosted += amount
+            uncosted_lines += 1
+    return {
+        'profit': round(revenue - cogs, 2),
+        'revenue_costed': round(revenue, 2),
+        'cogs': round(cogs, 2),
+        'uncosted_revenue': round(uncosted, 2),
+        'uncosted_lines': uncosted_lines,
+        'costed_lines': costed_lines,
+    }
+
+
 def opening_backfill(db) -> list:
     """Create one opening layer per product that already has stock and a cost."""
     ensure_cost_layers(db)

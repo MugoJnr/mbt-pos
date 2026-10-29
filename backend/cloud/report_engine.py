@@ -90,29 +90,37 @@ class ReportEngine:
                   AND COALESCE(s.status, 'completed') NOT IN ('void', 'voided')
             """, (start, end)).fetchone()
 
-            # Gross profit estimate from product cost when available
-            profit_row = db.execute("""
-                SELECT
-                    COALESCE(SUM(COALESCE(si.total, si.quantity * si.unit_price)), 0) as sold_rev,
-                    COALESCE(SUM(si.quantity * COALESCE(p.cost_price, 0)), 0) as sold_cost
-                FROM sale_items si
-                LEFT JOIN products p ON p.id = si.product_id
-                JOIN sales s ON s.id = si.sale_id
-                WHERE date(s.created_at) BETWEEN ? AND ?
-                  AND COALESCE(s.status, 'completed') NOT IN ('void', 'voided')
-            """, (start, end)).fetchone()
-            sold_rev = float(profit_row['sold_rev'] or 0) if profit_row else 0.0
-            sold_cost = float(profit_row['sold_cost'] or 0) if profit_row else 0.0
-            gross_profit = sold_rev - sold_cost
+            from desktop.utils.stock_layers import period_profit
+            detail = period_profit(db, start, end)
+            sold_rev = float(detail['revenue_costed'])
+            sold_cost = float(detail['cogs'])
+            gross_profit = float(detail['profit'])
+            uncosted_revenue = float(detail['uncosted_revenue'])
+            uncosted_lines = int(detail['uncosted_lines'])
 
             top_products = db.execute("""
                 SELECT COALESCE(si.product_name, p.name) as name,
                        COALESCE(p.category, '') as category,
                        SUM(si.quantity) as qty,
                        SUM(COALESCE(si.total, si.quantity * si.unit_price)) as revenue,
-                       SUM(si.quantity * COALESCE(p.cost_price, 0)) as cost,
-                       SUM(COALESCE(si.total, si.quantity * si.unit_price))
-                         - SUM(si.quantity * COALESCE(p.cost_price, 0)) as profit
+                       SUM(CASE WHEN (
+                         SELECT COUNT(*) FROM cost_layer_uses u
+                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                           AND COALESCE(u.reversed,0)=0
+                       ) > 0 THEN (
+                         SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
+                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                           AND COALESCE(u.reversed,0)=0
+                       ) ELSE 0 END) as cost,
+                       SUM(CASE WHEN (
+                         SELECT COUNT(*) FROM cost_layer_uses u
+                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                           AND COALESCE(u.reversed,0)=0
+                       ) > 0 THEN COALESCE(si.total, si.quantity * si.unit_price) - (
+                         SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
+                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                           AND COALESCE(u.reversed,0)=0
+                       ) ELSE 0 END) as profit
                 FROM sale_items si
                 LEFT JOIN products p ON p.id = si.product_id
                 JOIN sales s ON s.id = si.sale_id
@@ -220,6 +228,8 @@ class ReportEngine:
                     'cost_of_goods': round(sold_cost, 2),
                     'gross_profit': round(gross_profit, 2),
                     'gross_margin_pct': round((gross_profit / sold_rev * 100.0), 2) if sold_rev else 0.0,
+                    'uncosted_revenue': round(uncosted_revenue, 2),
+                    'uncosted_lines': uncosted_lines,
                 },
                 'top_products': [dict(r) for r in top_products],
                 'by_category': [dict(r) for r in by_category],

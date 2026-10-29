@@ -80,6 +80,7 @@ class DateField(QWidget):
         self._edit.setDisplayFormat(_DATE_FMT)
         self._edit.setDate(initial if initial is not None else QDate.currentDate())
         self._edit.setMinimumHeight(height)
+        self._edit.setMinimumWidth(148)
         self._edit.setMaximumDate(QDate.currentDate().addYears(5))
         self._edit.setMinimumDate(QDate(2000, 1, 1))
         self._edit.setButtonSymbols(QAbstractSpinBox.NoButtons)
@@ -198,6 +199,8 @@ class DateField(QWidget):
         return self._edit.date()
 
     def setDate(self, d):
+        if not isinstance(d, QDate):
+            d = QDate(d.year, d.month, d.day)
         self._edit.setDate(d)
 
     def displayFormat(self):
@@ -236,7 +239,7 @@ def _style_table_spin(spin):
         f"QDoubleSpinBox {{"
         f"background:{C['input']}; color:{C['text']};"
         f"border:1px solid {C['border']}; border-radius:{r}px;"
-        f"padding:6px 10px; font-size:13px; min-height:36px; }}"
+        f"padding:4px 8px; font-size:13px; min-height:36px; }}"
         f"QDoubleSpinBox:focus {{ border-color:{C['gold']}; }}")
 
 
@@ -393,11 +396,13 @@ class _CreatePane(QWidget):
 
         row2 = QHBoxLayout()
         row2.setSpacing(16)
-        self._dept = SearchableSelect(placeholder='Select department…')
-        self._dept.setMinimumHeight(CONTROL_HEIGHT)
+        self._dept = Select(placeholder='Select department…', height=CONTROL_HEIGHT)
+        self._dept.setMinimumWidth(180)
         self._reason = ReasonSelect(reasons=REASONS, height=CONTROL_HEIGHT)
-        self._taken = SearchableSelect(placeholder='Search staff or type name…')
+        self._taken = QLineEdit()
+        self._taken.setPlaceholderText('Staff name')
         self._taken.setMinimumHeight(CONTROL_HEIGHT)
+        self._taken.setMinimumWidth(180)
         self._staff_mode = True
         row2.addWidget(_field('Department', self._dept), 1)
         row2.addWidget(_field('Reason', self._reason), 1)
@@ -428,9 +433,11 @@ class _CreatePane(QWidget):
         self._qty_add.setDecimals(3)
         self._qty_add.setValue(1.0)
         self._qty_add.setMinimumHeight(CONTROL_HEIGHT)
-        self._qty_add.setFixedWidth(100)
+        self._qty_add.setFixedWidth(120)
+        self._qty_add.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._qty_add.setToolTip('Quantity to add')
         _style_table_spin(self._qty_add)
+        self._qty_add.setValue(1.0)
         add_btn = SecondaryBtn('+ Add', CONTROL_HEIGHT)
         add_btn.setFixedWidth(100)
         add_btn.clicked.connect(self._add_selected)
@@ -487,6 +494,7 @@ class _CreatePane(QWidget):
         root.addWidget(foot_wrap)
         self._style_footer()
         self._style_notes()
+        self._style_taken()
 
     def _style_footer(self):
         r = RADIUS.get('xl', 12)
@@ -497,6 +505,14 @@ class _CreatePane(QWidget):
         self._total_lbl.setStyleSheet(
             f"color:{C['gold']}; font-size:16px; font-weight:800; "
             f"background:transparent; border:none;")
+
+    def _style_taken(self):
+        r = RADIUS.get('md', 8)
+        self._taken.setStyleSheet(
+            f"QLineEdit {{"
+            f"background:{C['input']}; color:{C['text']};"
+            f"border:1px solid {C['border']}; border-radius:{r}px;"
+            f"padding:0 12px; font-size:13px; }}")
 
     def _style_notes(self):
         r = RADIUS.get('md', 8)
@@ -549,38 +565,34 @@ class _CreatePane(QWidget):
         self._rebuild_table()
 
     def _load_staff(self):
-        """Populate Taken By from users when available; keep free-type via editable select."""
-        cur_text = ''
-        try:
-            if self._taken.lineEdit():
-                cur_text = self._taken.lineEdit().text().strip()
-            elif hasattr(self._taken, 'current_label'):
-                cur_text = self._taken.current_label() or ''
-        except Exception:
-            pass
-        items = []
+        """Offer staff names while typing. A typed name is always accepted."""
+        cur_text = (self._taken.text() or '').strip()
+        names = []
         try:
             users = self.p.api.get_users() or []
             for u in users:
                 if int(u.get('is_active', 1) or 1) != 1:
                     continue
                 label = (u.get('full_name') or u.get('username') or '').strip()
-                if label:
-                    items.append((label, label))
+                if label and label not in names:
+                    names.append(label)
         except Exception:
-            items = []
-        # Always include current user
+            names = []
         try:
             me = self.p.user.get('user') or self.p.user
             me_name = (me.get('full_name') or me.get('username') or '').strip()
-            if me_name and me_name not in [x[0] for x in items]:
-                items.insert(0, (me_name, me_name))
+            if me_name and me_name not in names:
+                names.insert(0, me_name)
         except Exception:
-            pass
-        self._taken.set_items(items)
+            me_name = ''
+        completer = QCompleter(names, self._taken)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self._taken.setCompleter(completer)
         if cur_text:
-            if not self._taken.set_value(cur_text) and self._taken.lineEdit():
-                self._taken.lineEdit().setText(cur_text)
+            self._taken.setText(cur_text)
+        elif me_name and not self._taken.text():
+            self._taken.setText(me_name)
 
     def _style_prod_list(self):
         r = RADIUS.get('md', 8)
@@ -622,6 +634,7 @@ class _CreatePane(QWidget):
     def apply_theme(self):
         self._style_footer()
         self._style_notes()
+        self._style_taken()
         self._style_ref_badge()
         self._style_prod_list()
         _style_table_spin(self._qty_add)
@@ -649,14 +662,7 @@ class _CreatePane(QWidget):
 
     def _taken_text(self):
         try:
-            if self._taken.lineEdit():
-                t = self._taken.lineEdit().text().strip()
-                if t:
-                    return t
-            v = self._taken.current_value()
-            if v:
-                return str(v)
-            return (self._taken.current_label() or '').strip()
+            return (self._taken.text() or '').strip()
         except Exception:
             return ''
 
@@ -939,6 +945,7 @@ class _HistoryPane(QWidget):
             return
         self._tbl.setRowCount(0)
         can_void = has_permission(self.p.user, 'consumption.void')
+        can_request = has_permission(self.p.user, 'consumption.request_void')
         for i, r in enumerate(rows):
             self._tbl.insertRow(i)
             voided = int(r.get('voided') or 0) == 1
@@ -964,6 +971,10 @@ class _HistoryPane(QWidget):
             if can_void and not voided:
                 vb = DangerBtn('Void', 32)
                 vb.clicked.connect(lambda _, cid=r.get('id'): self._void(cid))
+                self._tbl.setCellWidget(i, 9, vb)
+            elif can_request and not voided:
+                vb = SecondaryBtn('Request void', 32)
+                vb.clicked.connect(lambda _, cid=r.get('id'): self._request_void(cid))
                 self._tbl.setCellWidget(i, 9, vb)
             else:
                 self._tbl.setItem(i, 9, tbl_center('—', C['muted']))
@@ -991,6 +1002,35 @@ class _HistoryPane(QWidget):
             QMessageBox.critical(self, 'Void Failed', res['error'])
             return
         QMessageBox.information(self, 'Voided', 'Consumption voided and stock restored.')
+        self.refresh()
+
+    def _request_void(self, cid):
+        if not require_permission(self.p.user, 'consumption.request_void', self):
+            return
+        from desktop.utils.option_lists import VOID_REASONS
+        reason = prompt_reason(
+            self,
+            title='Request consumption void',
+            prompt='Why should this internal consumption be voided? Stock stays reduced until an admin approves.',
+            reasons=VOID_REASONS,
+        )
+        if not reason or not reason.strip():
+            return
+        try:
+            res = self.p.api.request_consumption_void(int(cid), reason.strip()) or {}
+        except Exception as e:
+            QMessageBox.critical(self, 'Request failed', str(e))
+            return
+        if res.get('error'):
+            QMessageBox.critical(self, 'Request failed', res['error'])
+            return
+        if res.get('duplicate'):
+            QMessageBox.information(self, 'Already requested', 'This void is already waiting for an admin.')
+        else:
+            QMessageBox.information(
+                self, 'Request sent',
+                'The void request is waiting for an admin. Stock has not been restored.',
+            )
         self.refresh()
 
 
@@ -1027,8 +1067,8 @@ class _ReportPane(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(12)
-        self._dept = SearchableSelect(placeholder='Search department…')
-        self._dept.setMinimumHeight(CONTROL_HEIGHT)
+        self._dept = Select(placeholder='All departments', height=CONTROL_HEIGHT)
+        self._dept.setMinimumWidth(180)
         row.addWidget(_field('Department', self._dept), 1)
         fl.addLayout(row)
 
@@ -1038,10 +1078,10 @@ class _ReportPane(QWidget):
         self._reason.setMinimumHeight(CONTROL_HEIGHT)
         self._reason.set_items(
             [('All reasons', '')] + [(r, r) for r in REASONS])
-        self._user = SearchableSelect(placeholder='Search user…')
-        self._user.setMinimumHeight(CONTROL_HEIGHT)
-        self._prod = SearchableSelect(placeholder='Search product…')
-        self._prod.setMinimumHeight(CONTROL_HEIGHT)
+        self._user = Select(placeholder='All users', height=CONTROL_HEIGHT)
+        self._user.setMinimumWidth(160)
+        self._prod = Select(placeholder='All products', height=CONTROL_HEIGHT)
+        self._prod.setMinimumWidth(160)
         row2.addWidget(_field('Reason', self._reason), 1)
         row2.addWidget(_field('User', self._user), 1)
         row2.addWidget(_field('Product', self._prod), 1)
@@ -1105,7 +1145,7 @@ class _ReportPane(QWidget):
 
     def _load_filter_options(self):
         cur_dept = self._dept.current_value()
-        items = [('All departments', None)]
+        items = []
         try:
             for d in (self.p.api.get_departments() or []):
                 items.append((d.get('name') or '', d.get('id')))
@@ -1116,7 +1156,7 @@ class _ReportPane(QWidget):
             self._dept.set_value(cur_dept)
 
         cur_user = self._user.current_value()
-        uitems = [('All users', None)]
+        uitems = []
         try:
             users = self.p.api.get_users() or []
             for u in users:
@@ -1129,7 +1169,7 @@ class _ReportPane(QWidget):
             self._user.set_value(cur_user)
 
         cur_prod = self._prod.current_value()
-        pitems = [('All products', None)]
+        pitems = []
         try:
             for p in (self.p.api.get_products() or []):
                 pitems.append((p.get('name') or '', p.get('id')))

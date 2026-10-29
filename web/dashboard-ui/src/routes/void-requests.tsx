@@ -34,6 +34,7 @@ type VoidRequest = {
 function VoidRequestsPage() {
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
+  const sessionSuper = role === "superadmin";
   const canReview = ["manager", "admin", "superadmin"].includes(role);
   const qc = useQueryClient();
   const [status, setStatus] = useState("all");
@@ -42,6 +43,7 @@ function VoidRequestsPage() {
   const [openId, setOpenId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
   const [note, setNote] = useState("");
+  const [pin, setPin] = useState("");
   const [msg, setMsg] = useState("");
   const limit = 25;
 
@@ -87,8 +89,17 @@ function VoidRequestsPage() {
     },
   });
   const decideM = useMutation({
-    mutationFn: (action: "approve" | "reject") =>
-      POST<any>(`/approvals/${openId}/${action}`, action === "approve" ? { pin: "" } : { note }),
+    mutationFn: (action: "approve" | "reject") => {
+      if (action === "approve" && !sessionSuper && !pin.trim()) {
+        return Promise.resolve({
+          error: "Enter the Super-Admin PIN. The receipt stays completed until the server accepts it.",
+        });
+      }
+      return POST<any>(
+        `/approvals/${openId}/${action}`,
+        action === "approve" ? { pin, note } : { note },
+      );
+    },
     onSuccess: async (data) => {
       setMsg(data?.error || data?.message || "Review saved.");
       if (!data?.error) await refresh();
@@ -206,6 +217,18 @@ function VoidRequestsPage() {
               {canReview && (event.status === "pending" || event.status === "escalated") ? (
                 <div className="space-y-2">
                   <Input aria-label="Review comment" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Review comment" />
+                  {sessionSuper ? (
+                    <div className="text-xs text-text2">Signed in as Super Admin. This approval does not ask for the PIN again.</div>
+                  ) : (
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      aria-label="Super-Admin PIN"
+                      value={pin}
+                      onChange={(e) => setPin(e.target.value)}
+                      placeholder="Super-Admin PIN"
+                    />
+                  )}
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="primary" onClick={() => decideM.mutate("approve")}>Approve and void</Button>
                     <Button size="sm" variant="secondary" onClick={() => returnM.mutate()}>Return for correction</Button>

@@ -105,6 +105,8 @@ function POS() {
   const { user } = useAuth();
   const role = String(user?.role || "");
   const canDate = ["admin", "superadmin", "manager"].includes(role);
+  const canRequestDate = canDate || role === "cashier";
+  const [backdateReason, setBackdateReason] = useState("");
   const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
   const [cart, setCart] = useState<Line[]>([]);
@@ -112,8 +114,10 @@ function POS() {
   const [discount, setDiscount] = useState(0);
   const [payment, setPayment] = useState("Cash");
   const [amount, setAmount] = useState("");
-  const [splitMethod, setSplitMethod] = useState("M-Pesa");
-  const [splitAmount, setSplitAmount] = useState("");
+  const [splitLines, setSplitLines] = useState<{ method: string; amount: string; reference: string }[]>([
+    { method: "M-Pesa", amount: "", reference: "" },
+  ]);
+  const [remainderOnCredit, setRemainderOnCredit] = useState(false);
   const [qtyDraft, setQtyDraft] = useState<Record<number, string>>({});
   const [cartWide, setCartWide] = useState(false);
   const [note, setNote] = useState("");
@@ -197,11 +201,13 @@ function POS() {
   const tax = Math.round(taxable * taxRate * 100) / 100;
   const total = Math.max(0, taxable + tax);
   const paid = parseFloat(amount) || 0;
-  const splitTyped = splitAmount.trim() === "" ? null : parseFloat(splitAmount) || 0;
-  const splitOther = payment === "Split"
-    ? (splitTyped == null ? Math.max(0, Math.round((total - paid) * 100) / 100) : splitTyped)
+  const splitLineTotal = payment === "Split"
+    ? Math.round(splitLines.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0) * 100) / 100
     : 0;
-  const tendered = payment === "Split" ? Math.round((paid + splitOther) * 100) / 100 : paid;
+  const splitRemaining = payment === "Split"
+    ? Math.round((total - splitLineTotal) * 100) / 100
+    : 0;
+  const tendered = payment === "Split" ? splitLineTotal : paid;
   const change = Math.max(0, (payment === "Split" ? tendered : paid) - total);
   const itemCount = cart.reduce((s, l) => s + l.quantity, 0);
   const showTender = payment === "Cash" || payment === "Split" || payment === "M-Pesa" || payment === "Part Pay";
@@ -307,7 +313,8 @@ function POS() {
     setCart([]);
     setDiscount(0);
     setAmount("");
-    setSplitAmount("");
+    setSplitLines([{ method: "M-Pesa", amount: "", reference: "" }]);
+    setRemainderOnCredit(false);
     setNote("");
     setCustomerId("");
   };
@@ -322,13 +329,37 @@ function POS() {
         : payment === "Credit" ? "Credit Sale"
         : payment === "Part Pay" ? "Part Payment"
         : payment;
-      if (payment === "Split" && (paid <= 0 || splitOther <= 0)) {
-        throw new Error("Enter both the cash amount and the second payment");
+      const splitTenders = payment === "Split"
+        ? splitLines
+          .map((row) => ({
+            method: row.method,
+            amount: Math.round((parseFloat(row.amount) || 0) * 100) / 100,
+            reference: row.reference.trim(),
+          }))
+          .filter((row) => row.amount > 0)
+          .map((row) => row.reference ? row : { method: row.method, amount: row.amount })
+        : [];
+      const splitCollected = Math.round(splitTenders.reduce((sum, row) => sum + row.amount, 0) * 100) / 100;
+      const creditLeft = Math.round((total - splitCollected) * 100) / 100;
+      if (payment === "Split") {
+        if (!splitTenders.length) throw new Error("Add at least one payment");
+        if (remainderOnCredit) {
+          if (!customerId) throw new Error("Choose a customer before leaving an amount on credit");
+          if (creditLeft <= 0.009) throw new Error("Those payments already cover the total");
+          splitTenders.push({ method: "Credit", amount: creditLeft });
+        } else if (creditLeft > 0.009) {
+          throw new Error("Payments do not cover the total");
+        } else if (creditLeft < -0.009) {
+          const cash = splitTenders.filter((row) => row.method === "Cash").reduce((sum, row) => sum + row.amount, 0);
+          if (cash + 0.009 < Math.abs(creditLeft)) throw new Error("Change can only come from cash");
+        }
       }
-      if (payment === "Split" && tendered + 0.009 < total) {
-        throw new Error("Split payments do not cover the total");
-      }
-      if ((payment === "Credit" || payment === "Part Pay") && !customerId) {
+      const mixedCash = splitTenders.filter((row) => row.method === "Cash").reduce((sum, row) => sum + row.amount, 0);
+      const mixedElectronic = splitTenders
+        .filter((row) => row.method !== "Cash" && row.method !== "Credit")
+        .reduce((sum, row) => sum + row.amount, 0);
+      const mixedMethod = splitTenders.find((row) => row.method !== "Cash" && row.method !== "Credit")?.method || "";
+      if ((payment === "Credit" || payment === "Part Pay" || remainderOnCredit) && !customerId) {
         throw new Error("Choose a customer before a credit or part payment");
       }
       if (payment === "Part Pay" && (!(paid > 0) || paid >= total)) {
@@ -337,7 +368,38 @@ function POS() {
       if (method !== "Credit Sale" && method !== "Part Payment" && method !== "Mixed" && paid < total && showTender) {
         throw new Error("Amount paid is less than total");
       }
-      const tender = method === "Credit Sale" ? 0 : method === "Part Payment" ? paid : method === "Mixed" ? tendered : (paid || total);
+      const tender = method === "Credit Sale" ? 0
+        : method === "Part Payment" ? paid
+        : method === "Mixed" ? (remainderOnCredit ? splitCollected : splitLineTotal)
+        : (paid || total);
+      const pastDate = saleDate && saleDate < shopTodayISO();
+      if (pastDate && !canDate) {
+        const reason = backdateReason.trim();
+        if (reason.length < 3) throw new Error("Enter a reason. A past date is sent for approval and is not recorded yet.");
+        const created = await POST<any>("/backdate-requests", {
+          business_date: saleDate,
+          reason,
+          sales: [{
+            customer_id: customerId || undefined,
+            payment_method: method,
+            amount_paid: tender,
+            cash_paid: method === "Mixed" ? mixedCash : method === "Cash" ? tender : 0,
+            electronic_paid: method === "Mixed" ? mixedElectronic : method === "M-Pesa" ? tender : 0,
+            notes: note || undefined,
+            lines: cart.map((line) => ({
+              product_id: line.product_id,
+              product_name: line.product_name,
+              quantity: line.quantity,
+              unit_price: line.unit_price,
+              discount: line.discount || 0,
+            })),
+          }],
+        });
+        if (!created || created.error || !created.id) throw new Error(created?.error || "The request was not saved.");
+        const submitted = await POST<any>(`/backdate-requests/${created.id}/submit`, { version: created.version });
+        if (!submitted || submitted.error) throw new Error(submitted?.error || "The request was saved but not submitted.");
+        return { success: true, receipt_number: submitted.reference, request: true as const };
+      }
       const res = await POST<{ success?: boolean; error?: string; receipt_number?: string; sale_id?: number }>(
         "/sales",
         {
@@ -346,27 +408,30 @@ function POS() {
           discount: disc,
           tax,
           total,
-          payment_method: method.toLowerCase() === "mixed" ? "Mixed" : method.toLowerCase(),
+          payment_method: remainderOnCredit ? "part payment" : (method.toLowerCase() === "mixed" ? "Mixed" : method.toLowerCase()),
           amount_paid: tender,
-          change_amount: method === "Credit Sale" || method === "Part Payment" ? 0 : Math.max(0, tender - total),
-          cash_paid: method === "Mixed" ? paid : method === "Cash" ? tender : 0,
-          electronic_paid: method === "Mixed" ? splitOther : 0,
-          electronic_method: method === "Mixed" ? (splitMethod === "Bank" ? "Bank Transfer" : splitMethod) : undefined,
-          payment_tenders: method === "Mixed" ? [
-            { method: splitMethod === "Bank" ? "Bank Transfer" : splitMethod, amount: splitOther },
-            { method: "Cash", amount: paid },
-          ] : undefined,
+          change_amount: method === "Credit Sale" || method === "Part Payment" || remainderOnCredit ? 0 : Math.max(0, tender - total),
+          cash_paid: method === "Mixed" ? mixedCash : method === "Cash" ? tender : 0,
+          electronic_paid: method === "Mixed" ? mixedElectronic : 0,
+          electronic_method: method === "Mixed" ? mixedMethod || undefined : undefined,
+          payment_tenders: payment === "Split" ? splitTenders : undefined,
           note: note || undefined,
           customer_id: customerId || undefined,
-          sale_date: canDate ? saleDate : undefined,
+          sale_date: canDate && saleDate !== shopTodayISO() ? saleDate : undefined,
           client_token: saleTokenRef.current || (saleTokenRef.current = crypto.randomUUID()),
         },
       );
       if (!res?.success) throw new Error(res?.error || "Sale failed");
-      return res;
+      return { ...res, request: false as const };
     },
     onSuccess: (res) => {
-      toast.success(`Sale recorded — ${res.receipt_number}`);
+      toast.success(res.request
+        ? `Request ${res.receipt_number} is waiting for approval. The sale was not recorded.`
+        : `Sale recorded — ${res.receipt_number}`);
+      if (res.request) {
+        setSaleDate(shopTodayISO());
+        setBackdateReason("");
+      }
       saleTokenRef.current = "";
       clearCart();
       searchRef.current?.focus();
@@ -749,12 +814,14 @@ function POS() {
                   </option>
                 ))}
               </Select>
-              {canDate ? (
+              {canRequestDate ? (
                 <>
                   <button
                     type="button"
                     aria-label="Sale date"
-                    title="Change the sale date. A date other than today is saved as that business day."
+                    title={canDate
+                      ? "Change the sale date. A past date is recorded on that business day."
+                      : "A past date is sent for approval. The sale is not recorded until it is approved."}
                     onClick={() => saleDateRef.current?.showPicker?.()}
                     className={cn(
                       "h-8 rounded-lg border px-2 text-xs font-extrabold",
@@ -775,10 +842,26 @@ function POS() {
                     onChange={(e) => setSaleDate(e.target.value || shopTodayISO())}
                     className="sr-only"
                   />
+                  {saleDate < shopTodayISO() ? (
+                    <button
+                      type="button"
+                      className="h-8 rounded-lg border border-border px-2 text-xs font-semibold"
+                      onClick={() => { setSaleDate(shopTodayISO()); setBackdateReason(""); }}
+                    >
+                      Back to today
+                    </button>
+                  ) : null}
+                  {!canDate && saleDate < shopTodayISO() ? (
+                    <Input
+                      aria-label="Backdating reason"
+                      placeholder="Reason for this past date"
+                      value={backdateReason}
+                      onChange={(e) => setBackdateReason(e.target.value)}
+                      className="h-8 min-h-0 w-44 text-xs"
+                    />
+                  ) : null}
                 </>
-              ) : (
-                <span className="text-xs font-extrabold text-text">Today</span>
-              )}
+              ) : null}
             </div>
 
             <div className="flex items-end justify-between gap-2">
@@ -839,42 +922,70 @@ function POS() {
 
             {payment === "Split" ? (
               <div className="space-y-1">
-                <div className="flex items-center gap-1">
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    placeholder="Cash amount"
-                    aria-label="Cash amount"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="h-8 min-h-0 text-sm font-semibold tabular-nums flex-1"
-                  />
-                  <select
-                    aria-label="Second payment"
-                    value={splitMethod}
-                    onChange={(e) => setSplitMethod(e.target.value)}
-                    className="h-8 rounded-lg border border-border bg-input px-2 text-xs font-semibold text-text"
+                {splitLines.map((row, index) => (
+                  <div key={index} className="flex items-center gap-1">
+                    <select
+                      aria-label={`Payment method ${index + 1}`}
+                      value={row.method}
+                      onChange={(e) => setSplitLines((rows) => rows.map((item, i) => i === index ? { ...item, method: e.target.value } : item))}
+                      className="h-8 rounded-lg border border-border bg-input px-2 text-xs font-semibold text-text"
+                    >
+                      <option>Cash</option>
+                      <option>M-Pesa</option>
+                      <option>Card</option>
+                      <option>Bank Transfer</option>
+                    </select>
+                    <Input
+                      type="number"
+                      min={0}
+                      step={0.01}
+                      placeholder="Amount"
+                      aria-label={`Amount ${index + 1}`}
+                      value={row.amount}
+                      onChange={(e) => setSplitLines((rows) => rows.map((item, i) => i === index ? { ...item, amount: e.target.value } : item))}
+                      className="h-8 min-h-0 text-sm font-semibold tabular-nums w-24"
+                    />
+                    {row.method !== "Cash" ? (
+                      <Input
+                        placeholder="Reference"
+                        aria-label={`Reference ${index + 1}`}
+                        value={row.reference}
+                        onChange={(e) => setSplitLines((rows) => rows.map((item, i) => i === index ? { ...item, reference: e.target.value } : item))}
+                        className="h-8 min-h-0 text-xs flex-1"
+                      />
+                    ) : null}
+                    <button
+                      type="button"
+                      className="h-8 px-2 text-[11px] font-bold text-text2"
+                      onClick={() => setSplitLines((rows) => rows.length === 1 ? [{ method: "M-Pesa", amount: "", reference: "" }] : rows.filter((_, i) => i !== index))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-text2">
+                  <button
+                    type="button"
+                    className="underline"
+                    onClick={() => setSplitLines((rows) => [...rows, { method: "Card", amount: "", reference: "" }])}
                   >
-                    <option>M-Pesa</option>
-                    <option>Card</option>
-                    <option>Bank</option>
-                  </select>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.01}
-                    placeholder={splitOther > 0 ? `Remainder ${splitOther.toFixed(2)}` : "Second amount"}
-                    aria-label="Second payment amount"
-                    value={splitAmount}
-                    onChange={(e) => setSplitAmount(e.target.value)}
-                    className="h-8 min-h-0 text-sm font-semibold tabular-nums w-28"
-                  />
-                </div>
-                <div className="text-[11px] font-semibold text-text2">
-                  Cash {KES(paid, currency)} + {splitMethod === "Bank" ? "Bank Transfer" : splitMethod}{" "}
-                  {KES(splitOther, currency)}
-                  {change > 0 ? ` · Change ${KES(change, currency)}` : ""}
+                    Add payment
+                  </button>
+                  <label className="inline-flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={remainderOnCredit}
+                      onChange={(e) => setRemainderOnCredit(e.target.checked)}
+                    />
+                    Leave the remainder on the customer account
+                  </label>
+                  <span className="font-extrabold text-text">
+                    {remainderOnCredit && splitRemaining > 0
+                      ? `On account ${KES(splitRemaining, currency)}`
+                      : splitRemaining < 0
+                        ? `Over by ${KES(Math.abs(splitRemaining), currency)}`
+                        : `Remaining ${KES(Math.max(0, splitRemaining), currency)}`}
+                  </span>
                 </div>
               </div>
             ) : showTender ? (

@@ -1147,6 +1147,7 @@ def create_user():
                    (username, pw_hash, new_role,
                     data.get('full_name'), data.get('email'), json.dumps(perms)))
         db.commit()
+        uid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
     except sqlite3.IntegrityError:
         return jsonify({'error': 'That username already exists.'}), 400
     except (KeyError, TypeError):
@@ -1165,7 +1166,7 @@ def create_user():
             )
         except Exception:
             pass
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'id': uid})
 
 
 @app.route('/api/users/<int:uid>', methods=['PUT'])
@@ -1347,6 +1348,7 @@ def list_sales():
 
 @app.route('/api/sales/void-request', methods=['POST'])
 @app.route('/api/sales/<int:sale_id>/void', methods=['POST'])
+@app.route('/api/sales/<int:sale_id>/void-request', methods=['POST'])
 @token_required
 def void_sale_http(sale_id=None):
     """Ask for a void. The sale stays completed until Approvals accepts it."""
@@ -1361,15 +1363,22 @@ def void_sale_http(sale_id=None):
     if not has_permission({'role': role}, 'sales.request_void'):
         return jsonify({'error': 'You cannot request a void.'}), 403
     if sale_id is None:
-        receipt = (data.get('receipt_number') or '').strip()
-        if not receipt:
-            return jsonify({'error': 'Enter the receipt number.'}), 400
-        row = get_db().execute(
-            "SELECT id FROM sales WHERE receipt_number=?", (receipt,)
-        ).fetchone()
-        if not row:
-            return jsonify({'error': 'Sale was not found.'}), 404
-        sale_id = row['id']
+        raw_sale = data.get('sale_id')
+        if raw_sale not in (None, ''):
+            try:
+                sale_id = int(raw_sale)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Sale was not found.'}), 404
+        else:
+            receipt = (data.get('receipt_number') or '').strip()
+            if not receipt:
+                return jsonify({'error': 'Enter the receipt number.'}), 400
+            row = get_db().execute(
+                "SELECT id FROM sales WHERE receipt_number=?", (receipt,)
+            ).fetchone()
+            if not row:
+                return jsonify({'error': 'Sale was not found.'}), 404
+            sale_id = row['id']
     api = APIClient()
     api._user_id = user.get('id')
     api._username = user.get('username') or user.get('full_name') or 'web'
@@ -1425,6 +1434,9 @@ def create_sale():
     items = data.get('items') or []
     if not items:
         return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
+    method_name = (data.get('payment_method') or 'cash').strip().lower()
+    if method_name in ('credit sale', 'credit', 'part payment', 'part-payment') and not data.get('customer_id'):
+        return jsonify({'error': 'Choose a customer before a credit or part payment.'}), 400
     db = get_db()
     user = g.current_user
     from desktop.utils.shop_time import (
@@ -1477,16 +1489,35 @@ def create_sale():
         electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
         cash_paid_col = round(float(data.get('cash_paid') or 0), 2)
         emethod = (data.get('electronic_method') or '').strip()
-        if method_name.lower() in ('mixed', 'split'):
-            method_name = 'Mixed'
-            if cash_paid_col <= 0.009 or electronic_paid <= 0.009:
+        allocation = None
+        tenders = data.get('payment_tenders')
+        if isinstance(tenders, list) and tenders:
+            from desktop.utils.payment_tenders import allocate_sale, collected_method_label
+            allocation = allocate_sale(float(data.get('total') or 0), tenders)
+            if allocation.get('error'):
                 db.rollback()
-                return jsonify({'error': 'A split sale needs both a cash amount and a second payment.'}), 400
-            if cash_paid_col + electronic_paid + 0.009 < float(data.get('total') or 0):
+                return jsonify({'error': allocation['error']}), 400
+            cash_paid_col = allocation['cash']
+            electronic_paid = allocation['electronic']
+            if allocation['credit'] > 0.009 and not data.get('customer_id'):
+                db.rollback()
+                return jsonify({'error': 'Choose a customer before leaving an amount on credit.'}), 400
+            paid_as = collected_method_label(allocation['tenders'], method_name)
+            method_name = 'Part Payment' if allocation['credit'] > 0.009 else paid_as
+            data['amount_paid'] = allocation['collected']
+            data['change_amount'] = allocation['change']
+        elif method_name.lower() in ('mixed', 'split'):
+            method_name = 'Mixed'
+            covered = cash_paid_col + electronic_paid
+            if cash_paid_col <= 0.009 and electronic_paid <= 0.009:
+                db.rollback()
+                return jsonify({'error': 'Add a payment for each method.'}), 400
+            if covered + 0.009 < float(data.get('total') or 0):
                 db.rollback()
                 return jsonify({'error': 'Split payments do not cover the total.'}), 400
-        tenders = data.get('payment_tenders')
-        if isinstance(tenders, list):
+        if allocation:
+            tenders_json = json.dumps(allocation['tenders'])
+        elif isinstance(tenders, list):
             tenders_json = json.dumps(tenders)
         else:
             tenders_json = None
@@ -1497,7 +1528,14 @@ def create_sale():
                 electronic_paid=electronic_paid,
                 electronic_method=emethod or 'M-Pesa',
             ))
-        if electronic_paid > 0.009 and 'split:' not in notes.lower():
+        if allocation and allocation['credit'] > 0.009 and 'credit' not in notes.lower():
+            notes = (notes + f" | Credit {allocation['credit']:,.2f}").strip(' |')
+        if allocation:
+            from desktop.utils.payment_tenders import format_tenders
+            paid_note = format_tenders(allocation['tenders'])
+            if paid_note and 'paid:' not in notes.lower():
+                notes = (notes + f' | Paid: {paid_note}').strip(' |')
+        elif electronic_paid > 0.009 and 'split:' not in notes.lower():
             notes = (
                 notes + f' | Split: {emethod or "M-Pesa"} {electronic_paid:,.2f} + Cash {cash_paid_col:,.2f}'
             ).strip(' |')
@@ -1531,7 +1569,7 @@ def create_sale():
                     "SELECT id, name, stock FROM products WHERE id=?", (pid,)
                 ).fetchone()
                 if prod_row:
-                    qty_requested = float(item.get('quantity') or 1)
+                    qty_requested = float(line['quantity'])
                     current_stock = float(prod_row['stock'])
                     if current_stock < qty_requested:
                         db.rollback()
@@ -1556,6 +1594,13 @@ def create_sale():
                          receipt_number, f"Sale: {receipt_number}",
                          user['id'], user['username'])
                     )
+                    from desktop.utils.stock_layers import consume_fifo
+                    layer = consume_fifo(
+                        db, pid, qty_requested, sale_id=sale_id, reference=receipt_number,
+                    )
+                    if layer.get('error'):
+                        db.rollback()
+                        return jsonify({'error': layer['error']}), 400
 
         db.execute("INSERT INTO sync_queue (action_type, payload) VALUES (?, ?)",
                    ('sale', json.dumps({
@@ -1564,27 +1609,41 @@ def create_sale():
                        'cashier': user['username'],
                        'created_at': datetime.now().isoformat()
                    })))
+        debt = None
+        method = method_name.strip().lower()
+        cust_id = data.get('customer_id')
+        credit_due = float(allocation['credit']) if allocation else 0.0
+        if credit_due > 0.009 and cust_id:
+            data['amount_paid'] = allocation['collected']
+        if method in ('credit sale', 'credit', 'part payment', 'part-payment') or credit_due > 0.009:
+            if not cust_id:
+                db.rollback()
+                return jsonify({'error': 'Choose a customer before a credit or part payment.'}), 400
+            from desktop.utils.api_client import APIClient
+            from desktop.utils.payment_tenders import collected_method_label
+            api = APIClient()
+            api._user_id = user.get('id')
+            api._username = user.get('username') or user.get('full_name') or 'web'
+            api._role = role
+            debt = api.create_debt_invoice({
+                'customer_id': cust_id,
+                'sale_id': sale_id,
+                'receipt_number': receipt_number,
+                'total_amount': data['total'],
+                'amount_paid': data.get('amount_paid') or 0,
+                'payment_method': collected_method_label(
+                    (allocation or {}).get('tenders'), method,
+                ),
+                'notes': notes,
+            }, conn=db)
+            if debt.get('error') or not (debt.get('success') or debt.get('invoice_id')):
+                db.rollback()
+                return jsonify({
+                    'error': debt.get('error') or 'Debt invoice was not created. The sale was not saved.',
+                }), 400
         db.commit()
         log_action('CREATE_SALE', 'sales',
                    f"Receipt: {receipt_number}, Total: {data['total']}")
-        debt = None
-        method = (data.get('payment_method') or 'cash').strip().lower()
-        cust_id = data.get('customer_id')
-        if method in ('credit sale', 'credit', 'part payment', 'part-payment') and cust_id:
-            try:
-                from desktop.utils.api_client import APIClient
-                debt = APIClient().create_debt_invoice({
-                    'customer_id': cust_id,
-                    'sale_id': sale_id,
-                    'receipt_number': receipt_number,
-                    'total_amount': data['total'],
-                    'amount_paid': data.get('amount_paid') or 0,
-                    'payment_method': method,
-                    'notes': notes,
-                })
-            except Exception as debt_err:
-                logger.error(f"debt invoice after sale failed: {debt_err}", exc_info=True)
-                debt = {'error': str(debt_err)}
         return jsonify({
             'success': True,
             'receipt_number': receipt_number,
@@ -1592,6 +1651,12 @@ def create_sale():
             'sale_date': sale_date_s,
             'debt': debt,
         })
+    except ValueError as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         try:
             db.rollback()
@@ -2050,6 +2115,34 @@ def reject_backdate_request_http(request_id):
 def approve_backdate_request_http(request_id):
     from backend.backdate_requests import approve_request
     return _backdate_call(approve_request, request_id, request.json or {})
+
+
+def _centre_response(body: dict):
+    if body.get('error'):
+        missing = 'not in this shop' in str(body['error']) or 'not supported' in str(body['error'])
+        return jsonify(body), 404 if missing else 403
+    return jsonify(body)
+
+
+@app.route('/api/requests-centre', methods=['GET'])
+@token_required
+def list_requests_centre_http():
+    from backend.requests_centre import list_centre
+    db = get_db()
+    return _centre_response(list_centre(db, _backdate_actor(), {
+        'queue': request.args.get('queue') or 'all',
+        'type': request.args.get('type') or '',
+        'status': request.args.get('status') or '',
+        'q': request.args.get('q') or '',
+    }))
+
+
+@app.route('/api/requests-centre/<source>/<int:source_id>', methods=['GET'])
+@token_required
+def get_requests_centre_http(source, source_id):
+    from backend.requests_centre import get_centre_item
+    db = get_db()
+    return _centre_response(get_centre_item(db, _backdate_actor(), source, source_id))
 
 
 # ── HEALTH ────────────────────────────────────────────────────────────────────

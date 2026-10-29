@@ -4,7 +4,9 @@ MugoByte Technologies | mugobyte.com
 """
 from __future__ import annotations
 
+import ctypes
 import os
+import sys
 from datetime import date as date_cls
 from typing import Optional, Union
 
@@ -37,6 +39,25 @@ def _as_qdate(value: Optional[Union[QDate, date_cls]] = None) -> QDate:
     return QDate.currentDate()
 
 
+def release_window_topmost(widget) -> None:
+    """Drop always-on-top from a window. The date dialog must not pin the till."""
+    if widget is None:
+        return
+    window = widget.window()
+    flags = window.windowFlags()
+    if flags & Qt.WindowStaysOnTopHint:
+        window.setWindowFlags(flags & ~Qt.WindowStaysOnTopHint)
+        window.show()
+    if sys.platform != 'win32' or os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+        return
+    try:
+        hwnd = int(window.winId())
+        # HWND_NOTOPMOST. Does nothing when the window was not pinned.
+        ctypes.windll.user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+    except Exception:
+        pass
+
+
 def pick_shop_day_dialog(
     parent: QWidget,
     initial: Optional[Union[QDate, date_cls]] = None,
@@ -49,6 +70,7 @@ def pick_shop_day_dialog(
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     dlg.setModal(True)
+    dlg.setWindowFlag(Qt.WindowStaysOnTopHint, False)
     dlg.setMinimumSize(380, 420)
     dlg.setStyleSheet(
         "QDialog{background:#101820;color:#f5f7fb;}"
@@ -85,7 +107,12 @@ def pick_shop_day_dialog(
     lay.addWidget(cal)
     lay.addWidget(bb)
 
-    if dlg.exec_() != QDialog.Accepted:
+    try:
+        accepted = dlg.exec_() == QDialog.Accepted
+    finally:
+        release_window_topmost(parent)
+        release_window_topmost(dlg)
+    if not accepted:
         return None
     sel = cal.selectedDate()
     if not sel.isValid():

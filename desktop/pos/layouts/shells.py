@@ -533,6 +533,25 @@ def _wire_stacked_right_rail(tab, right, sale, actions, body, foot, *, scroll_na
     except Exception:
         pass
 
+    # Customer stays at the top of the payment stack. Reparenting the body
+    # during layout used to leave this card hidden, so credit sales had no
+    # way to choose a customer.
+    cust = getattr(tab, '_cust_card', None)
+    bl = body.layout() if _alive(body) else None
+    if _alive(cust) and bl is not None:
+        try:
+            cust.setAttribute(Qt.WA_DontShowOnScreen, False)
+            btn = getattr(cust, '_btn', None)
+            if btn is not None:
+                btn.setAttribute(Qt.WA_DontShowOnScreen, False)
+                btn.show()
+        except Exception:
+            pass
+        bl.insertWidget(0, cust)
+        cust.setMinimumHeight(40)
+        cust.setMaximumHeight(16777215)
+        cust.show()
+
     # Payment-only scroll — cart stays above so tall payment never pushes it off.
     hl.addWidget(actions, 1)
     # Bias leftover height to the cart↔summary stack; payment scrolls only if window is exceptionally tiny.

@@ -256,7 +256,7 @@ def approve_request(db, actor: dict, request_id: int, data: dict | None = None) 
         if row['status'] != 'submitted':
             raise BackdateError('Only a submitted request can be approved.')
         _check_version(row, data.get('version'))
-        if int(row['cashier_id']) == int(actor['id']) and actor.get('role') == 'cashier':
+        if int(row['cashier_id']) == int(actor['id']):
             raise BackdateError('You cannot approve your own request.', 403)
         problems = _blocking_problems(db, row)
         if problems:
@@ -365,6 +365,8 @@ def _decide(db, actor, request_id, data, status, action, audit_action) -> dict:
             raise BackdateError('Request was not found.', 404)
         if row['status'] != 'submitted':
             raise BackdateError('Only a submitted request can be reviewed.')
+        if int(row['cashier_id']) == int(actor['id']):
+            raise BackdateError('You cannot review your own request.', 403)
         _check_version(row, data.get('version'))
         version = int(row['version']) + 1
         now = _now()
@@ -674,7 +676,12 @@ def _sales_for(db, request_id: int) -> list[dict]:
         sale = dict(row)
         sale['lines'] = [
             dict(line) for line in db.execute(
-                "SELECT * FROM backdate_lines WHERE backdate_sale_id=? ORDER BY id",
+                """SELECT l.id, l.backdate_sale_id, l.product_id, l.product_name,
+                          l.quantity, l.unit_price, l.discount, l.total, p.sku
+                   FROM backdate_lines l
+                   LEFT JOIN products p ON p.id = l.product_id
+                   WHERE l.backdate_sale_id=?
+                   ORDER BY l.id""",
                 (sale['id'],),
             ).fetchall()
         ]

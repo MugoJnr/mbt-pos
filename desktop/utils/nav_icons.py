@@ -498,6 +498,9 @@ def icon_receipt(size=16, accent=None) -> QIcon:
     return _paint_base(size, draw, accent=accent)
 
 
+NAV_ICON_BUILDERS['receipts'] = icon_receipt
+
+
 def icon_box(size=16, accent=None) -> QIcon:
     def draw(p, s, gold, muted):
         p.setPen(QPen(gold, max(1.3, s * 0.09), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))

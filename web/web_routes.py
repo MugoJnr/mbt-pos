@@ -2161,6 +2161,8 @@ def _user_can(module, user=None):
     role = (user.get('role') or 'cashier').lower()
     if role in ('admin', 'superadmin'):
         return True
+    if module == 'inventory_value' and role in ('cashier', 'viewer'):
+        return False
     tabs = _user_tabs(user)
     # Keep POS ops usable for cashiers (sales → product lookup) without granting
     # finance/management tabs via loose aliases (reports←dashboard, etc.).
@@ -2325,7 +2327,8 @@ def _cc_today_snapshot(user=None):
     except Exception:
         low = 0
 
-    profit = _today_profit(db, today) if _user_can('reports', user) else None
+    profit_detail = _profit_detail(db, today) if _user_can('reports', user) else None
+    profit = None if profit_detail is None else profit_detail.get('profit')
     inv_val = _inventory_value(db) if _user_can('inventory_value', user) else None
     debt_out = None
     overdue = 0
@@ -2373,6 +2376,9 @@ def _cc_today_snapshot(user=None):
         'low_stock_names': low_names,
         'currency': _cfg_currency(db),
         'profit': profit,
+        'cogs': None if profit_detail is None else profit_detail.get('cogs'),
+        'uncosted_revenue': None if profit_detail is None else profit_detail.get('uncosted_revenue'),
+        'uncosted_lines': None if profit_detail is None else profit_detail.get('uncosted_lines'),
         'inventory_value': inv_val,
         'outstanding_debt': debt_out,
         'overdue_invoices': overdue,
@@ -2587,8 +2593,9 @@ def list_debt_invoices():
             params.append(g.current_user.get('id'))
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = db.execute(
-            f"SELECT di.*, c.phone as c_phone FROM debt_invoices di "
+            f"SELECT di.*, c.phone as c_phone, s.sale_date FROM debt_invoices di "
             f"JOIN customers c ON di.customer_id=c.id "
+            f"LEFT JOIN sales s ON s.id=di.sale_id "
             f"{where} ORDER BY di.created_at DESC", params
         ).fetchall()
         return jsonify(_trs(rows))
@@ -2603,48 +2610,16 @@ def create_debt_invoice():
         if not _perm('debt.create'):
             return jsonify({'error': 'Forbidden'}), 403
         data = request.json or {}
-        if not data.get('customer_id'):
-            return jsonify({'error': 'customer_id required'}), 400
-        db     = _get_db()
-        cust   = _tr(db.execute("SELECT * FROM customers WHERE id=?", (data['customer_id'],)).fetchone())
-        if not cust:
-            return jsonify({'error': 'Customer not found'}), 404
-        total   = round(float(data.get('total_amount') or 0), 2)
-        paid    = round(float(data.get('amount_paid')  or 0), 2)
-        balance = round(total - paid, 2)
-        if total <= 0:
-            return jsonify({'error': 'Total amount must be greater than zero'}), 400
-        if balance < 0:
-            return jsonify({'error': 'Amount paid exceeds total'}), 400
-        inv_num = _next_inv_num(db)
-        status  = 'paid' if balance == 0 else ('partial' if paid > 0 else 'pending')
-        user    = g.current_user
-        db.execute(
-            "INSERT INTO debt_invoices (invoice_number,sale_id,receipt_number,"
-            "customer_id,customer_name,customer_phone,total_amount,amount_paid,"
-            "balance,status,due_date,cashier_id,cashier_name,notes) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (inv_num, data.get('sale_id'), data.get('receipt_number'),
-             data['customer_id'], cust['name'], cust.get('phone',''),
-             total, paid, balance, status,
-             data.get('due_date') or None,
-             user['id'], user.get('full_name') or user['username'],
-             data.get('notes',''))
-        )
-        inv_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        if paid > 0:
-            pay_r = _next_pay_receipt(db)
-            db.execute(
-                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (pay_r, inv_id, data['customer_id'], paid,
-                 data.get('payment_method','cash'), total, balance,
-                 user['id'], user.get('full_name') or user['username'],
-                 f"Initial payment on {inv_num}")
-            )
-        db.commit()
-        return jsonify({'success': True, 'invoice_number': inv_num, 'invoice_id': inv_id, 'balance': balance})
+        user = g.current_user or {}
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.create_debt_invoice(data)
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
     return _inner()
 
 
@@ -2655,77 +2630,33 @@ def pay_debt_invoice(inv_id):
     def _inner():
         if not _perm('debt.collect'):
             return jsonify({'error': 'Forbidden'}), 403
-        data   = request.json or {}
-        amount = round(float(data.get('amount') or 0), 2)
-        if amount <= 0:
-            return jsonify({'error': 'Amount must be greater than zero'}), 400
-        db  = _get_db()
-        inv = _tr(db.execute("SELECT * FROM debt_invoices WHERE id=?", (inv_id,)).fetchone())
+        data = request.json or {}
+        db = _get_db()
+        inv = _tr(db.execute("SELECT cashier_id FROM debt_invoices WHERE id=?", (inv_id,)).fetchone())
         if not inv:
             return jsonify({'error': 'Invoice not found'}), 404
         if _perm('debt.view_own') and not _perm('debt.view'):
             if int(inv.get('cashier_id') or 0) != int(g.current_user.get('id') or 0):
                 return jsonify({'error': 'Forbidden'}), 403
-        if inv['status'] in ('paid', 'cancelled'):
-            return jsonify({'error': f"Invoice is already {inv['status']}"}), 400
-        ref = (data.get('payment_reference') or '').strip()
-        pay_cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
-        if ref and 'payment_reference' in pay_cols:
-            prev = db.execute(
-                "SELECT payment_receipt, balance_before, balance_after "
-                "FROM debt_payments WHERE invoice_id=? AND payment_reference=?",
-                (inv_id, ref),
-            ).fetchone()
-            if prev:
-                return jsonify({
-                    'success': True,
-                    'duplicate': True,
-                    'payment_receipt': prev['payment_receipt'],
-                    'balance_before': prev['balance_before'],
-                    'balance_after': prev['balance_after'],
-                })
-        bal_before = round(float(inv['balance']), 2)
-        if amount > bal_before:
-            return jsonify({'error': f"Payment ({amount:,.2f}) exceeds balance ({bal_before:,.2f})"}), 400
-        bal_after  = round(bal_before - amount, 2)
-        new_paid   = round(float(inv['amount_paid']) + amount, 2)
-        new_status = 'paid' if bal_after == 0 else 'partial'
-        pay_r      = _next_pay_receipt(db)
-        user       = g.current_user
-        if 'payment_reference' in pay_cols:
-            db.execute(
-                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                "amount,payment_method,payment_reference,balance_before,balance_after,"
-                "cashier_id,cashier_name,notes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (pay_r, inv_id, inv['customer_id'], amount,
-                 data.get('payment_method','cash'), ref, bal_before, bal_after,
-                 user['id'], user.get('full_name') or user['username'],
-                 data.get('notes',''))
-            )
-        else:
-            db.execute(
-                "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (pay_r, inv_id, inv['customer_id'], amount,
-                 data.get('payment_method','cash'), bal_before, bal_after,
-                 user['id'], user.get('full_name') or user['username'],
-                 data.get('notes',''))
-            )
-        db.execute(
-            "UPDATE debt_invoices SET amount_paid=?,balance=?,status=?,updated_at=? WHERE id=?",
-            (new_paid, bal_after, new_status, datetime.now().isoformat(), inv_id)
+        posted = str(data.get('payment_date') or '').strip()
+        if posted and posted != str(date.today()):
+            return jsonify({'error': 'A debt payment is recorded on the day it is taken.'}), 400
+        user = g.current_user or {}
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.record_debt_payment(
+            inv_id,
+            data.get('amount') or 0,
+            str(data.get('payment_method') or 'cash'),
+            str(data.get('notes') or ''),
+            str(data.get('payment_reference') or ''),
         )
-        db.commit()
-        return jsonify({
-            'success': True,
-            'payment_receipt': pay_r,
-            'balance_before': bal_before,
-            'balance_after':  bal_after,
-            'status': new_status,
-            'invoice_number': inv['invoice_number'],
-        })
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
     return _inner()
 
 
@@ -2884,7 +2815,13 @@ def list_stock_receipts():
     def _inner():
         if not _user_can('inventory'):
             return jsonify({'error': 'Inventory access required'}), 403
-        return jsonify(stock_receipt_rows(_get_db()))
+        rows = stock_receipt_rows(_get_db())
+        if not _sees_cost():
+            for row in rows:
+                if isinstance(row, dict):
+                    row.pop('cost_price', None)
+                    row.pop('unit_cost', None)
+        return jsonify(rows)
 
     return _inner()
 
@@ -2988,6 +2925,21 @@ def void_consumption_http(cid):
     def _inner():
         data = request.json or {}
         result = _consumption_api().void_consumption(cid, data.get('reason') or '')
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:cid>/void-request', methods=['POST'])
+def request_consumption_void_http(cid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _consumption_api().request_consumption_void(cid, data.get('reason') or '')
         if result.get('error'):
             return jsonify(result), int(result.get('status') or 400)
         return jsonify(result)
@@ -3243,6 +3195,11 @@ def receive_stock_http(pid):
             supplier_id = int(supplier_id) if supplier_id not in (None, '', 0, '0') else None
         except (TypeError, ValueError):
             return jsonify({'error': 'Select a supplier'}), 400
+        unit_raw = data.get('unit_cost', data.get('cost_price'))
+        try:
+            unit_cost = None if unit_raw in (None, '') else float(unit_raw)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Enter a valid unit cost'}), 400
         from desktop.utils.api_client import APIClient
         api = APIClient()
         api._role = role
@@ -3252,6 +3209,8 @@ def receive_stock_http(pid):
             int(pid), qty,
             supplier_id=supplier_id,
             notes=str(data.get('notes') or '').strip(),
+            unit_cost=unit_cost,
+            client_token=str(data.get('client_token') or '').strip(),
         )
         if result.get('error'):
             return jsonify(result), 400
@@ -3382,7 +3341,7 @@ def list_receipts_http():
             can_finance=role in ('manager', 'admin', 'superadmin') or _user_can('reports', user),
             can_approvals=_user_can('sales', user),
             username=user.get('username') or '',
-            kind=request.args.get('type') or '',
+            kind=request.args.get('type') or request.args.get('kind') or '',
             status=request.args.get('status') or '',
             query=request.args.get('q') or '',
             start=request.args.get('start') or '',
@@ -3944,18 +3903,20 @@ def _push_notification(db, ntype, title, body='', severity='info', link=''):
     )
 
 
-def _today_profit(db, day=None):
+def _profit_detail(db, day=None):
     day = day or str(date.today())
-    row = db.execute("""
-        SELECT COALESCE(SUM(
-            si.total - (si.quantity * COALESCE(p.cost_price, 0))
-        ), 0) AS profit
-        FROM sale_items si
-        JOIN sales s ON si.sale_id = s.id
-        LEFT JOIN products p ON si.product_id = p.id
-        WHERE date(s.created_at)=? AND s.status='completed'
-    """, (day,)).fetchone()
-    return float(row[0] if row else 0)
+    from desktop.utils.stock_layers import period_profit
+    try:
+        return period_profit(db, day, day)
+    except Exception:
+        return {
+            'profit': 0.0, 'revenue_costed': 0.0, 'cogs': 0.0,
+            'uncosted_revenue': 0.0, 'uncosted_lines': 0, 'costed_lines': 0,
+        }
+
+
+def _today_profit(db, day=None):
+    return float(_profit_detail(db, day).get('profit') or 0)
 
 
 def _inventory_value(db):
@@ -4198,7 +4159,8 @@ def cc_summary():
                 "WHERE status NOT IN ('paid','cancelled')"
             ).fetchone()) or {}
             debt_total = float(debt.get('total') or 0)
-        profit = _today_profit(db, today) if _user_can('reports', user) else None
+        profit_detail = _profit_detail(db, today) if _user_can('reports', user) else None
+        profit = None if profit_detail is None else profit_detail.get('profit')
         inv_val = _inventory_value(db) if _user_can('inventory_value', user) else None
         month_rev = _month_revenue(db) if _user_can('reports', user) else None
         expenses = _month_expenses_proxy(db) if _user_can('reports', user) or _user_can('accounting', user) else None
@@ -4282,6 +4244,9 @@ def cc_summary():
                 'avg_transaction': float(sales.get('avg_txn') or 0),
                 'discounts': float(sales.get('discounts') or 0),
                 'profit': profit,
+                'cogs': None if profit_detail is None else profit_detail.get('cogs'),
+                'uncosted_revenue': None if profit_detail is None else profit_detail.get('uncosted_revenue'),
+                'uncosted_lines': None if profit_detail is None else profit_detail.get('uncosted_lines'),
                 'cash': _pay_sum('cash'),
                 'mpesa': _pay_sum('mpesa', 'm-pesa', 'm_pesa', 'mobile'),
                 'bank': _pay_sum('bank', 'card', 'transfer', 'cheque', 'check'),
@@ -5277,6 +5242,13 @@ def _query_report_bundle(db, filt):
     }
     if summary['total_transactions']:
         summary['avg_transaction'] = summary['total_revenue'] / summary['total_transactions']
+    if _user_can('reports'):
+        from desktop.utils.stock_layers import period_profit
+        detail = period_profit(db, filt['start'], filt['end'])
+        summary['profit'] = detail['profit']
+        summary['cogs'] = detail['cogs']
+        summary['uncosted_revenue'] = detail['uncosted_revenue']
+        summary['uncosted_lines'] = detail['uncosted_lines']
 
     # Rebuild aggregates from filtered sales ids when category/customer filters applied
     sale_ids = [s['id'] for s in sales]
@@ -5467,17 +5439,25 @@ def reports_export():
             except Exception:
                 pass
             cur = _cfg_currency(db)
+            see_cost = _sees_cost()
             if fmt == 'csv':
                 buf = io.StringIO()
                 import csv as _csv
                 w = _csv.writer(buf)
-                w.writerow(['Name', 'SKU', 'Category', 'Price', 'Cost', 'Stock', 'Min', 'Unit'])
+                headers = ['Name', 'SKU', 'Category', 'Price']
+                if see_cost:
+                    headers.append('Cost')
+                headers.extend(['Stock', 'Min', 'Unit'])
+                w.writerow(headers)
                 for p in products:
-                    w.writerow([
+                    row = [
                         p.get('name'), p.get('sku'), p.get('category'),
-                        p.get('price'), p.get('cost_price'), p.get('stock'),
-                        p.get('min_stock'), p.get('unit') or 'pcs',
-                    ])
+                        p.get('price'),
+                    ]
+                    if see_cost:
+                        row.append(p.get('cost_price'))
+                    row.extend([p.get('stock'), p.get('min_stock'), p.get('unit') or 'pcs'])
+                    w.writerow(row)
                 data = ('\ufeff' + buf.getvalue()).encode('utf-8')
                 return Response(
                     data, mimetype='text/csv; charset=utf-8',

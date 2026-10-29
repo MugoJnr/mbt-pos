@@ -67,6 +67,35 @@ class ReceiptsCentreTests(unittest.TestCase):
         db.close()
         self.assertEqual(detail["lines"][0]["product_name"], "Centre Soap")
         self.assertAlmostEqual(float(detail["lines"][0]["total"]), 200.0, places=2)
+        self.assertIsNone(detail["debt"])
+
+    def test_credit_receipt_shows_the_saved_tender_and_debt(self):
+        from backend.receipts_centre import receipt_detail
+        db = self.ac._db()
+        db.execute("INSERT INTO customers (name, phone, is_active) VALUES ('Ada Buyer', '0700', 1)")
+        db.commit()
+        customer_id = db.execute("SELECT id FROM customers").fetchone()["id"]
+        db.close()
+        sale = self.api.create_sale({
+            "items": [{"product_id": 1, "quantity": 1, "unit_price": 100}],
+            "subtotal": 100,
+            "total": 100,
+            "payment_method": "part payment",
+            "amount_paid": 40,
+            "customer_id": customer_id,
+            "payment_tenders": [
+                {"method": "Cash", "amount": 40},
+                {"method": "Credit", "amount": 60},
+            ],
+            "client_token": "receipts-credit",
+        })
+        self.assertTrue(sale.get("success"), sale)
+        db = self.ac._db()
+        detail = receipt_detail(db, "sale", sale["sale_id"], show_cost=False)
+        db.close()
+        self.assertEqual(detail["customer"]["name"], "Ada Buyer")
+        self.assertIn("Cash", [row["method"] for row in detail["tenders"]])
+        self.assertAlmostEqual(float(detail["debt"]["balance"]), 60.0, places=2)
 
     def test_voided_sale_stays_in_the_list(self):
         from backend.receipts_centre import list_receipts
