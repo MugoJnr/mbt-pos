@@ -257,13 +257,19 @@ def get_org_membership(user_id: str, org_id: str) -> dict | None:
         return None
     uid = quote(str(user_id), safe='')
     oid = quote(str(org_id), safe='')
-    owners = service_select(
+    def membership_rows(table: str, query: str) -> list:
+        try:
+            return service_select_strict(table, query)
+        except SupabaseError:
+            return service_select_strict(table, query)
+
+    owners = membership_rows(
         'organizations',
         f'id=eq.{oid}&owner_user_id=eq.{uid}&select=id&limit=1',
     )
     if owners:
         return {'org_id': str(org_id), 'user_id': str(user_id), 'role': 'owner'}
-    members = service_select(
+    members = membership_rows(
         'org_members',
         f'org_id=eq.{oid}&user_id=eq.{uid}&is_active=eq.true'
         '&select=org_id,user_id,role&limit=1',

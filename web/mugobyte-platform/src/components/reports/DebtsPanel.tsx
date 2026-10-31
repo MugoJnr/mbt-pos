@@ -98,8 +98,8 @@ export function DebtsPanel({ orgId, start, end, age, record }: { orgId: string; 
               className={`rounded-xl border p-3 text-left ${active ? "border-primary bg-primary/5" : "border-border"}`}
             >
               <p className="text-xs text-muted-foreground">{label}</p>
-              <p className="mt-1 text-lg font-semibold">{formatMoney(item.amount ?? ageing[key], currency)}</p>
-              <p className="text-xs text-muted-foreground">{String(item.customers ?? 0)} customers · {String(item.share ?? 0)}%</p>
+              <p className="mt-1 text-lg font-semibold">{ageingQ.isLoading ? "…" : formatMoney(item.amount ?? ageing[key], currency)}</p>
+              <p className="text-xs text-muted-foreground">{ageingQ.isLoading ? "Loading" : `${String(item.customers ?? 0)} customers · ${String(item.share ?? 0)}%`}</p>
             </button>
           );
         })}
@@ -118,7 +118,7 @@ export function DebtsPanel({ orgId, start, end, age, record }: { orgId: string; 
             <Table><TableHeader><TableRow><TableHead>Party</TableHead><TableHead>Receipt / invoice</TableHead><TableHead className="text-right">Original</TableHead><TableHead className="text-right">Paid</TableHead><TableHead className="text-right">Balance</TableHead><TableHead>Due / created</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
               <TableBody>{rows.map((row, index) => {
                 const rowStatus = value(row, "status", "debt_status") || (Number(value(row, "balance") || 0) <= 0 ? "Paid" : "Open");
-                return <TableRow key={String(value(row, "id", "source_id", "invoice_number") || index)} className="cursor-pointer" onClick={() => setSelected(row)}><TableCell><p className="font-medium">{String(value(row, "party_name", "customer_name", "name") || "Unknown")}</p><p className="text-xs text-muted-foreground">{String(value(row, "party_phone", "customer_phone", "phone") || "No phone")}</p></TableCell><TableCell>{String(value(row, "invoice_number", "receipt_number", "receipt") || "—")}</TableCell><TableCell className="text-right">{formatMoney(value(row, "original_amount", "total", "amount"), currency)}</TableCell><TableCell className="text-right">{formatMoney(value(row, "paid_amount", "amount_paid"), currency)}</TableCell><TableCell className="text-right font-semibold">{formatMoney(value(row, "balance", "outstanding"), currency)}</TableCell><TableCell><p>{formatDateTime(value(row, "due_date", "due_at"))}</p><p className="text-xs text-muted-foreground">Created {formatDateTime(value(row, "created_at", "date"))}</p></TableCell><TableCell><Badge variant={statusVariant(rowStatus)}>{String(rowStatus)}</Badge></TableCell></TableRow>;
+                return <TableRow key={String(value(row, "id", "source_id", "invoice_number") || index)} className="cursor-pointer" onClick={() => setSelected(row)}><TableCell><p className="font-medium">{String(value(row, "party_name", "customer_name", "name") || "Unknown")}</p><p className="text-xs text-muted-foreground">{String(value(row, "party_phone", "customer_phone", "phone") || "No phone")}</p></TableCell><TableCell>{String(value(row, "invoice_number", "receipt_number", "receipt") || "—")}</TableCell><TableCell className="text-right">{formatMoney(value(row, "total_amount", "original_amount", "total", "amount"), currency)}</TableCell><TableCell className="text-right">{formatMoney(value(row, "paid_amount", "amount_paid"), currency)}</TableCell><TableCell className="text-right font-semibold">{formatMoney(value(row, "balance", "outstanding"), currency)}</TableCell><TableCell><p>{formatDateTime(value(row, "due_date", "due_at"))}</p><p className="text-xs text-muted-foreground">Created {formatDateTime(value(row, "created_at", "date"))}</p></TableCell><TableCell><Badge variant={statusVariant(rowStatus)}>{String(rowStatus)}</Badge></TableCell></TableRow>;
               })}</TableBody>
             </Table>
           ) : (
@@ -143,7 +143,7 @@ export function DebtsPanel({ orgId, start, end, age, record }: { orgId: string; 
               <div className="grid gap-3 sm:grid-cols-2">
                 <p>Receipt / invoice: {String(value(selected, "invoice_number", "receipt_number", "payment_receipt") || "—")}</p>
                 <p>Status: {String(value(selected, "debt_status", "status") || "—")}</p>
-                <p>Original: {formatMoney(value(selected, "original_amount", "total_amount", "total", "amount"), currency)}</p>
+                <p>Original: {formatMoney(value(selected, "total_amount", "original_amount", "total", "amount"), currency)}</p>
                 <p>Paid: {formatMoney(value(selected, "paid_amount", "amount_paid", "amount"), currency)}</p>
                 <p>Balance: {formatMoney(value(selected, "balance", "outstanding"), currency)}</p>
                 <p>Due: {formatDateTime(value(selected, "due_date"))}</p>
