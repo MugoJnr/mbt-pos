@@ -20,6 +20,9 @@ idna>=3.4
 
 # Excel export
 openpyxl>=3.1
+pypdf>=5.0
+pyzipper>=0.3.6
+msoffcrypto-tool>=5.4
 et_xmlfile>=1.1
 
 # Optional: AES-GCM helper (Windows CNG works without it)

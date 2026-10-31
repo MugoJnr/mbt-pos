@@ -33,7 +33,7 @@ class MixedCreditTenderTests(unittest.TestCase):
         )
         db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, is_active) VALUES (?,?,?,?,?,1)",
-            ("QA Mix", "QA-MIX", 100, 40, 50),
+            ("QA Mix", "QA-MIX", 100, 40, 200),
         )
         db.execute(
             "INSERT INTO customers (name, phone, is_active) VALUES ('QA Credit', '0700', 1)"
@@ -101,7 +101,7 @@ class MixedCreditTenderTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(count, 1)
-        self.assertEqual(float(stock), 40)
+        self.assertEqual(float(stock), 190)
         self.assertEqual(debts, 1)
 
     def test_three_methods_without_cash(self):
@@ -147,6 +147,53 @@ class MixedCreditTenderTests(unittest.TestCase):
         self.assertEqual(sale.status_code, 200, sale.get_json())
         self.assertEqual(sale.get_json()["debt"]["balance"], 500)
 
+    def test_full_credit_line_is_debt_not_a_payment(self):
+        headers = self._headers()
+        sale = self._sell(headers, [
+            {"method": "Credit", "amount": 1000},
+        ], "full-credit")
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        body = sale.get_json()
+        self.assertEqual(body["debt"]["balance"], 1000)
+        detail = self.client.get(f"/api/receipts/sale/{body['sale_id']}", headers=headers)
+        header = detail.get_json()["header"]
+        self.assertEqual(float(header["amount_paid"] or 0), 0)
+        notes = header.get("notes") or ""
+        self.assertNotIn("Paid:", notes)
+        self.assertIn("Credit", notes)
+
+    def test_two_payments_plus_credit_reconcile(self):
+        headers = self._headers()
+        sale = self._sell(headers, [
+            {"method": "M-Pesa", "amount": 500, "reference": "QA-MPESA-PART"},
+            {"method": "Card", "amount": 300, "reference": "QA-CARD-PART"},
+            {"method": "Credit", "amount": 200},
+        ], "part-two")
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        body = sale.get_json()
+        self.assertEqual(body["debt"]["balance"], 200)
+        detail = self.client.get(f"/api/receipts/sale/{body['sale_id']}", headers=headers).get_json()
+        notes = detail["header"].get("notes") or ""
+        self.assertIn("Paid:", notes)
+        self.assertIn("M-Pesa 500.00", notes)
+        self.assertNotIn("Paid: M-Pesa 500.00 + Card 300.00 + Credit", notes)
+        self.assertEqual(float(detail["header"]["amount_paid"]), 800)
+
+    def test_cheque_and_airtel_are_collected(self):
+        headers = self._headers()
+        sale = self._sell(headers, [
+            {"method": "Airtel Money", "amount": 400, "reference": "QA-AIRTEL"},
+            {"method": "Cheque", "amount": 600, "reference": "QA-CHQ"},
+        ], "airtel-cheque", customer=False)
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        stored = sale.get_json()
+        self.assertFalse(stored.get("debt"))
+        detail = self.client.get(
+            f"/api/receipts/sale/{stored['sale_id']}", headers=headers,
+        ).get_json()
+        methods = [row["method"] for row in detail.get("tenders") or []]
+        self.assertEqual(methods, ["Airtel Money", "Cheque"])
+
     def test_credit_without_a_customer_is_rejected(self):
         headers = self._headers()
         sale = self._sell(headers, [
@@ -154,6 +201,100 @@ class MixedCreditTenderTests(unittest.TestCase):
             {"method": "Credit", "amount": 600},
         ], "no-customer", customer=False)
         self.assertEqual(sale.status_code, 400, sale.get_json())
+
+
+class CollectedMethodRollupTests(unittest.TestCase):
+    def test_split_lines_fill_tiles_and_credit_is_not_collected(self):
+        import json
+        from desktop.utils.payment_tenders import collected_from_sales
+
+        rows = [
+            {
+                "payment_method": "Cash",
+                "total": 55,
+                "amount_paid": 55,
+                "change_amount": 20,
+                "payment_tenders": "",
+            },
+            {
+                "payment_method": "M-Pesa + Card + Bank Transfer",
+                "total": 55,
+                "amount_paid": 55,
+                "change_amount": 0,
+                "payment_tenders": json.dumps([
+                    {"method": "M-Pesa", "amount": 18.33, "status": "confirmed"},
+                    {"method": "Card", "amount": 18.33, "status": "confirmed"},
+                    {"method": "Bank Transfer", "amount": 18.34, "status": "confirmed"},
+                ]),
+            },
+            {
+                "payment_method": "Part Payment",
+                "total": 55,
+                "amount_paid": 0,
+                "change_amount": 0,
+                "payment_tenders": json.dumps([
+                    {"method": "Credit", "amount": 55, "status": "outstanding"},
+                ]),
+            },
+        ]
+        out = collected_from_sales(rows)
+        self.assertEqual(out["cash_collected"], 55)
+        self.assertEqual(out["mpesa_collected"], 18.33)
+        self.assertEqual(out["card_collected"], 18.33)
+        self.assertEqual(out["bank_collected"], 18.34)
+        self.assertEqual(out["other_collected"], 0)
+
+    def test_mixed_cash_change_is_not_kept(self):
+        import json
+        from desktop.utils.payment_tenders import collected_from_sales
+
+        rows = [{
+            "payment_method": "Cash + M-Pesa",
+            "total": 55,
+            "amount_paid": 55,
+            "change_amount": 20,
+            "payment_tenders": json.dumps([
+                {"method": "Cash", "amount": 40, "status": "confirmed"},
+                {"method": "M-Pesa", "amount": 35, "status": "confirmed"},
+            ]),
+        }]
+        out = collected_from_sales(rows)
+        self.assertEqual(out["cash_collected"], 20)
+        self.assertEqual(out["mpesa_collected"], 35)
+
+    def test_mixed_cash_without_change_is_kept(self):
+        import json
+        from desktop.utils.payment_tenders import collected_from_sales
+
+        rows = [{
+            "payment_method": "Cash + M-Pesa",
+            "total": 55,
+            "amount_paid": 55,
+            "change_amount": 0,
+            "payment_tenders": json.dumps([
+                {"method": "Cash", "amount": 30, "status": "confirmed"},
+                {"method": "M-Pesa", "amount": 25, "status": "confirmed"},
+            ]),
+        }]
+        out = collected_from_sales(rows)
+        self.assertEqual(out["cash_collected"], 30)
+        self.assertEqual(out["mpesa_collected"], 25)
+
+    def test_unconfirmed_money_is_left_out(self):
+        import json
+        from desktop.utils.payment_tenders import collected_from_sales
+
+        rows = [{
+            "payment_method": "M-Pesa",
+            "total": 40,
+            "amount_paid": 0,
+            "change_amount": 0,
+            "payment_tenders": json.dumps([
+                {"method": "M-Pesa", "amount": 40, "status": "pending"},
+            ]),
+        }]
+        out = collected_from_sales(rows)
+        self.assertEqual(out["mpesa_collected"], 0)
 
 
 if __name__ == "__main__":

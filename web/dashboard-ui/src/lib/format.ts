@@ -69,6 +69,18 @@ export function rangeForPreset(preset: string): { start: string; end: string } {
     const finish = new Date(now.getFullYear(), now.getMonth(), 0);
     return { start: localISO(start), end: localISO(finish) };
   }
+  if (preset === "Last Week" || preset === "last_week") {
+    const start = new Date(now);
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7) - 7);
+    const finish = new Date(start);
+    finish.setDate(start.getDate() + 6);
+    return { start: localISO(start), end: localISO(finish) };
+  }
+  if (preset === "This Year" || preset === "year") {
+    const start = new Date(now.getFullYear(), 0, 1);
+    const finish = new Date(now.getFullYear(), 11, 31);
+    return { start: localISO(start), end: localISO(finish) };
+  }
   return { start: end, end };
 }
 

@@ -1,9 +1,15 @@
-export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "receipts" | "saved";
+export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "receipts" | "suppliers" | "saved" | "export";
+
+export type RecordFocus = "sale" | "debt" | "payment" | "delivery" | "product" | "supplier";
 
 export type AnalyticsSearch = {
   tab?: AnalyticsTab;
   start?: string;
   end?: string;
+  focus?: RecordFocus;
+  device?: string;
+  source?: string;
+  age?: string;
 };
 
 export type AnalyticsRow = Record<string, unknown>;

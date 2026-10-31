@@ -42,12 +42,9 @@ def _safe_float(v, default=0.0):
 
 
 def _fmt_stock(v, unit=None):
-    """Display stock — prefer whole numbers; one decimal only when truly fractional."""
-    f = _safe_float(v, 0)
-    if abs(f - round(f)) < 0.05:
-        return str(int(round(f)))
-    # Continuous units (kg, L, m): one clean decimal, never trailing noise
-    return f"{f:.1f}".rstrip('0').rstrip('.') if abs(f) >= 0.1 else f"{f:.2f}"
+    """Display stock to the stored precision, without trailing zeros."""
+    text = f"{_safe_float(v, 0):.4f}".rstrip('0').rstrip('.')
+    return text or '0'
 
 
 def _stock_item(label, tone, tooltip=''):
@@ -166,7 +163,7 @@ class InventoryTab(QWidget):
             4: 122,   # Cost — room for KES 4,450.00
             5: 100,   # Stock — OUT / numeric pills, right-aligned
             6: 100,   # Unit — avoid "per ..." truncation
-            7: 156,   # Actions — Delete button plus the other actions
+            7: 240,   # Actions — Remove and More centered as a pair
         }
         for col, w in widths.items():
             mode = QHeaderView.Interactive if col == 2 else QHeaderView.Fixed
@@ -175,6 +172,9 @@ class InventoryTab(QWidget):
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setMinimumSectionSize(72)
         hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        actions_head = self._tbl.horizontalHeaderItem(7)
+        if actions_head is not None:
+            actions_head.setTextAlignment(Qt.AlignCenter)
         align_header_right(self._tbl, 3, 4, 5)
         self._tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -332,9 +332,12 @@ class InventoryTab(QWidget):
                 self._tbl.setItem(i, 5, tbl_center('\u2014', C['warn']))
 
         stats = f"  {len(prods)} products  \u00b7  {low} low stock"
-        if str(self._role() or '').lower() != 'cashier':
-            tot = sum(_safe_float(p.get('price')) * _safe_float(p.get('stock')) for p in prods)
-            stats += f"  \u00b7  Stock value: {cur} {tot:,.2f}"
+        if has_permission(self.user, 'inventory.view_cost'):
+            try:
+                value = float((self.api.inventory_value() or {}).get('value') or 0)
+            except Exception:
+                value = 0
+            stats += f"  \u00b7  FIFO value: {cur} {value:,.2f}"
         self._stats.setText(stats)
         # Final pass — guarantee every visible row has theme-matched zebra roles
         apply_table_row_backgrounds(self._tbl)
@@ -400,7 +403,7 @@ class InventoryTab(QWidget):
             price_item.setToolTip(price_s)
         self._tbl.setItem(i, 3, price_item)
 
-        see_cost = (self._role() or '') in ('manager', 'admin', 'superadmin')
+        see_cost = has_permission(self.user, 'inventory.view_cost')
         if not see_cost:
             cost_item = tbl_right('—', tone='muted')
             cost_item.setToolTip('Cost is visible to a manager or administrator')
@@ -435,22 +438,43 @@ class InventoryTab(QWidget):
         self._tbl.setItem(i, 7, action)
         actions = QWidget()
         actions.setStyleSheet('background:transparent;')
+        actions.setMinimumWidth(self._tbl.columnWidth(7))
+        actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         actions_row = QHBoxLayout(actions)
-        actions_row.setContentsMargins(4, 6, 4, 6)
-        actions_row.setSpacing(4)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+        actions_row.setAlignment(Qt.AlignCenter)
+        pair = (
+            f"min-width:92px;max-width:92px;min-height:34px;max-height:34px;"
+            f"padding:0;font-size:13px;font-weight:700;border-radius:8px;"
+        )
         if can_delete:
-            delete = DangerBtn('Remove', 32)
+            delete = DangerBtn('Remove', 34)
+            delete.setFixedSize(92, 34)
+            delete.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             delete.setToolTip('Remove this product')
+            delete.setStyleSheet(
+                f"QPushButton{{background:{C['err']};color:#ffffff;border:none;{pair}}}"
+                f"QPushButton:hover{{background:{C['err']};}}"
+            )
             delete.clicked.connect(lambda _=False, pid=p.get('id'): self._delete(pid))
-            actions_row.addWidget(delete)
-        more = GhostBtn('⋮', 32)
-        more.setFixedWidth(36)
+            actions_row.addWidget(delete, 0, Qt.AlignCenter)
+        more = QPushButton('More')
+        more.setCursor(Qt.PointingHandCursor)
+        more.setFixedSize(92, 34)
+        more.setAccessibleName('More')
+        more.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         more.setToolTip('Edit product and history')
+        more.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{C['text']};"
+            f"border:1px solid {C['border2']};{pair}}}"
+            f"QPushButton:hover{{background:{C['hover']};border-color:{C['gold']};}}"
+        )
         more.clicked.connect(
             lambda _=False, pid=p.get('id'), ce=bool(can_edit), cd=bool(can_delete), anchor=more:
             self._open_row_menu(pid, ce, cd, anchor)
         )
-        actions_row.addWidget(more)
+        actions_row.addWidget(more, 0, Qt.AlignCenter)
         self._tbl.setCellWidget(i, 7, actions)
         apply_table_row_backgrounds(self._tbl, row=i)
         if is_zero:
@@ -762,7 +786,7 @@ class InventoryTab(QWidget):
         if not require_permission(self.user, 'inventory.create', self):
             return
         try:
-            dlg = _ProdDlg(self, role=self._role(), config_getter=self.config_getter)
+            dlg = _ProdDlg(self, role=self._role(), user=self.user, config_getter=self.config_getter)
             if dlg.exec_() != QDialog.Accepted:
                 return
             res = self.api.create_product(dlg.data())
@@ -791,7 +815,7 @@ class InventoryTab(QWidget):
         if not p:
             return
         try:
-            dlg = _ProdDlg(self, p, role=self._role())
+            dlg = _ProdDlg(self, p, role=self._role(), user=self.user)
             if dlg.exec_() != QDialog.Accepted:
                 return
             res = self.api.update_product(pid, dlg.data(), pin_verified=False)
@@ -847,7 +871,7 @@ class InventoryTab(QWidget):
 # â”€â”€ Product Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _ProdDlg(QDialog):
-    def __init__(self, parent, prod=None, role='cashier', config_getter=None):
+    def __init__(self, parent, prod=None, role='cashier', config_getter=None, user=None):
         super().__init__(parent)
         self.setWindowTitle('Add New Product' if not prod else 'Edit Product')
         self.setMinimumWidth(500)
@@ -858,8 +882,9 @@ class _ProdDlg(QDialog):
         self._role   = role
         self._config_getter = config_getter
         from desktop.utils.security import has_permission
-        self._can_remove = has_permission({'role': role}, 'inventory.delete')
-        self._see_cost = role in ('manager', 'admin', 'superadmin')
+        actor = user or {'role': role}
+        self._can_remove = has_permission(actor, 'inventory.delete')
+        self._see_cost = has_permission(actor, 'inventory.view_cost')
 
         lay = QFormLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
@@ -1108,6 +1133,19 @@ class _ProductHistoryDlg(QDialog):
         tabs = QTabWidget()
         root.addWidget(tabs, 1)
 
+        batches_w = QWidget()
+        bw = QVBoxLayout(batches_w)
+        bw.setContentsMargins(0, 8, 0, 0)
+        self._batch_meta = Caption('')
+        self._batch_meta.setWordWrap(True)
+        bw.addWidget(self._batch_meta)
+        self._batch_tbl = make_table(
+            ['Batch', 'Supplier', 'Received', 'Reference', 'In', 'Used', 'Left',
+             'Buy', 'Extra', 'Landed', 'Left value', 'Status'],
+            stretch_col=1, row_height=40)
+        bw.addWidget(self._batch_tbl)
+        tabs.addTab(batches_w, 'Batches')
+
         # Sales tab
         sales_w = QWidget()
         sw = QVBoxLayout(sales_w)
@@ -1179,6 +1217,46 @@ class _ProductHistoryDlg(QDialog):
             f"Entered inventory: {entered}  ·  SKU: {sku}  ·  Category: {cat}\n"
             f"Current stock: {stock} {unit}  ·  Price: {cur} {price:,.2f}"
         )
+
+        batches = data.get('batches') or []
+        summary = data.get('batch_summary') or {}
+        see_cost = bool(data.get('see_cost'))
+        bits = [
+            f"Batches on hand: {summary.get('active_batches') or 0}",
+            f"Oldest batch: {summary.get('oldest_batch_id') or '-'}",
+        ]
+        if see_cost:
+            bits.append(f"Stock value: {cur} {_safe_float(summary.get('inventory_value')):,.2f}")
+            bits.append(f"Average cost: {cur} {_safe_float(summary.get('average_cost')):,.2f}")
+            latest = summary.get('latest_purchase_price')
+            bits.append(
+                f"Latest buy: {cur} {_safe_float(latest):,.2f}" if latest is not None else 'Latest buy: -'
+            )
+        self._batch_meta.setText('  ·  '.join(bits))
+        self._batch_tbl.setRowCount(0)
+        for i, batch in enumerate(batches):
+            self._batch_tbl.insertRow(i)
+            self._batch_tbl.setItem(i, 0, tbl_item(str(batch.get('id') or '')))
+            supplier = batch.get('supplier_name') or ('Opening stock' if batch.get('legacy') else '-')
+            self._batch_tbl.setItem(i, 1, tbl_item(str(supplier)))
+            self._batch_tbl.setItem(i, 2, tbl_item(_fmt_dt(batch.get('created_at'))))
+            self._batch_tbl.setItem(i, 3, tbl_item(str(batch.get('reference_note') or batch.get('source_id') or '')))
+            self._batch_tbl.setItem(i, 4, tbl_center(_fmt_stock(batch.get('original_qty'))))
+            self._batch_tbl.setItem(i, 5, tbl_center(_fmt_stock(batch.get('consumed_qty'))))
+            self._batch_tbl.setItem(i, 6, tbl_center(_fmt_stock(batch.get('remaining_qty'))))
+            if see_cost:
+                self._batch_tbl.setItem(i, 7, tbl_right(f"{_safe_float(batch.get('purchase_unit_cost')):,.2f}"))
+                self._batch_tbl.setItem(i, 8, tbl_right(f"{_safe_float(batch.get('extra_unit_cost')):,.2f}"))
+                self._batch_tbl.setItem(i, 9, tbl_right(f"{_safe_float(batch.get('unit_cost')):,.2f}"))
+                self._batch_tbl.setItem(i, 10, tbl_right(f"{_safe_float(batch.get('remaining_value')):,.2f}", C['gold']))
+            else:
+                for col in (7, 8, 9, 10):
+                    self._batch_tbl.setItem(i, col, tbl_right('—', C['muted']))
+            origin = 'inherited' if batch.get('cost_origin') == 'inherited' else ''
+            status = str(batch.get('status') or '')
+            if origin:
+                status = f"{status} · {origin}"
+            self._batch_tbl.setItem(i, 11, tbl_center(status))
 
         sales = data.get('sales') or []
         self._sales_tbl.setRowCount(0)

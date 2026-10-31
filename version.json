@@ -1,8 +1,8 @@
 {
-    "version": "3.1.75",
-    "build": "RC-2026-10-29-v3.1.75",
-    "released": "2026-10-29",
-    "release_notes": "The till has a Receipts tab: find a receipt, open the saved sale, copy the reference, and reprint without creating another sale. A cashier can request a void; the receipt stays completed until it is approved. A signed-in Super Admin can void directly. Split payment can use any mix of cash, M-Pesa, card, and bank transfer, including three or more methods with no cash required. A credit remainder needs a customer and is not counted as money received. A pending M-Pesa line is not collected. Includes the inventory, product-removal, debt, and startup fixes from 3.1.73 and 3.1.74.",
-    "checksum_sha256": "1a5db7c457e26c87d947c0d8fc65ae3a4efca2fbefb7c36d30ed980d8335b438",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.75/MBT_POS_Setup.exe"
+    "version": "3.1.76",
+    "build": "RC-2026-10-30-v3.1.76",
+    "released": "2026-10-30",
+    "release_notes": "The till no longer stops responding while a sale screen is opening. Cash change is not subtracted twice from money collected. Split payments show under M-Pesa, card, and bank. A debt repayment uses today's date even when the dashboard was left open overnight. Includes the receipts list and flexible split payments from 3.1.75.",
+    "checksum_sha256": "14c14e096ea924b7cee8805be25b6f325f9f34fe55eabc76a0592d1acbd7fed5",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.76/MBT_POS_Setup.exe"
 }

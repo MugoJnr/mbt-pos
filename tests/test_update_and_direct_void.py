@@ -35,7 +35,7 @@ class DirectVoidTests(unittest.TestCase):
         db_path = os.path.join(tmp.name, "void.db")
         os.environ["MBT_DATA_ROOT"] = tmp.name
         os.environ["MBT_UPDATE_FEED_JSON"] = json.dumps({
-            "version": "3.1.71",
+            "version": "9.9.9",
             "notes": "Controlled test release",
             "released": "2026-10-28",
             "compatible": True,
@@ -122,7 +122,7 @@ class DirectVoidTests(unittest.TestCase):
             feed = client.get("/api/updates/status", headers=owner)
             self.assertEqual(feed.status_code, 200, feed.get_json())
             self.assertEqual(feed.get_json()["state"], "available")
-            self.assertEqual(feed.get_json()["available_version"], "3.1.71")
+            self.assertEqual(feed.get_json()["available_version"], "9.9.9")
             self.assertFalse(feed.get_json()["installed"])
 
             second = client.post("/api/sales/void-request", json={"receipt_number": "RCP-REQ-1", "reason": "Customer changed"}, headers=cashier)

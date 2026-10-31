@@ -61,18 +61,36 @@ def export_sales_report(
     debt_invoices=None, debt_payments=None,
     variance_rows=None, variance_summary=None,
     generated_by=None, filters=None,
+    sections=None,
 ):
     """
     Multi-sheet Excel report.
-    Sheet 1 – Sales Summary
-    Sheet 2 – Line Items
-    Sheet 3 – Top Products (+ chart)
-    Sheet 4 – Payment Methods
-    Sheet 5 – Stock / Inventory
-    Sheet 6 – Debt Management
-    Sheet 7 – Payment Variance (optional)
+    sections=None keeps the original workbook.
+    A list limits the file to those sections: sales, debt, inventory,
+    out_of_stock, low_stock, variance. 'all' includes every section.
     """
     wb = Workbook()
+    chosen = None
+    if sections:
+        chosen = {str(s).strip().lower().replace(' ', '_') for s in sections}
+        if 'all' in chosen or 'all_reports' in chosen:
+            chosen = None
+
+    def want(name):
+        if chosen is None:
+            return name not in ('out_of_stock', 'low_stock')
+        return name in chosen
+
+    made = {'n': 0}
+
+    def take_sheet(title):
+        if made['n'] == 0:
+            ws = wb.active
+            ws.title = title[:31]
+        else:
+            ws = wb.create_sheet(title[:31])
+        made['n'] += 1
+        return ws
     period = f"{start_date or '—'} to {end_date or str(date.today())}"
     filt = filters or f"Completed sales · {period}"
     who = generated_by or 'System'
@@ -114,8 +132,7 @@ def export_sales_report(
             })
 
     # ── Sheet 1 – Sales Summary ───────────────────────────────────────────────
-    ws1 = wb.active
-    ws1.title = "Sales Summary"
+    ws1 = take_sheet("Sales Summary")
     hdr1 = write_report_header(
         ws1, shop_name=shop_name, title="Sales Report", ncols=12,
         period=period, generated_by=who, filters=filt, currency=currency,
@@ -267,8 +284,8 @@ def export_sales_report(
         cats_ref = Reference(ws3, min_col=2, min_row=hdr3 + 1, max_row=hdr3 + top_n)
         chart.add_data(data_ref, titles_from_data=True)
         chart.set_categories(cats_ref)
-        chart.height = 14
-        chart.width = 24
+        chart.height = 8
+        chart.width = 15
         ws3.add_chart(chart, "I5")
         finalize_table(ws3, hdr3, hdr3 + 1, hdr3 + len(sorted_prods), 7)
     write_footer(ws3, TR3 + 2, 7, record_count=len(sorted_prods))
@@ -279,33 +296,38 @@ def export_sales_report(
         ws4, shop_name=shop_name, title="Payment Method Breakdown",
         ncols=5, period=period, generated_by=who, filters=filt, currency=currency,
     )
-    pay_stats = {}
-    for sale in sales_data:
-        pm = (sale.get('payment_method') or 'cash').upper()
-        pay_stats.setdefault(pm, {'count': 0, 'total': 0.0})
-        pay_stats[pm]['count'] += 1
-        pay_stats[pm]['total'] += float(sale.get('total', 0) or 0)
+    from desktop.utils.payment_tenders import collection_by_method
+    method_rows = collection_by_method(sales_data)
     hdrs4 = [
-        'Payment Method', 'Transactions', '% Transactions',
-        f'Revenue ({currency})', '% Revenue',
+        'Payment Method', 'Transactions', f'Amount collected ({currency})',
     ]
-    style_header_row(ws4, hdr4, hdrs4, [22, 16, 18, 22, 16])
-    grand_count = sum(v['count'] for v in pay_stats.values()) or 1
-    grand_pay = sum(v['total'] for v in pay_stats.values()) or 1
-    for idx, (pm, st) in enumerate(
-            sorted(pay_stats.items(), key=lambda x: x[1]['total'], reverse=True)):
+    style_header_row(ws4, hdr4, hdrs4, [28, 16, 28])
+    collected_rows = [row for row in method_rows if row['method'] != 'Credit issued']
+    credit_rows = [row for row in method_rows if row['method'] == 'Credit issued']
+    shown = collected_rows or [{'method': 'None', 'count': 0, 'collected': 0}]
+    for idx, row in enumerate(shown):
         r = hdr4 + 1 + idx
-        vals = [
-            pm, st['count'], st['count'] / grand_count,
-            st['total'], st['total'] / grand_pay,
-        ]
-        kinds = ['text', 'int', 'pct', 'currency', 'pct']
+        vals = [row['method'], row['count'], row['collected']]
+        kinds = ['text', 'int', 'currency']
         for col, (val, kind) in enumerate(zip(vals, kinds), 1):
             apply_data_cell(
                 ws4.cell(r, col), val, kind=kind, currency=currency, alt=idx % 2 == 1)
-    write_footer(ws4, hdr4 + 2 + len(pay_stats), 5, record_count=len(pay_stats))
-    if pay_stats:
-        finalize_table(ws4, hdr4, hdr4 + 1, hdr4 + len(pay_stats), 5)
+    note_row = hdr4 + 2 + len(shown)
+    if credit_rows:
+        apply_data_cell(ws4.cell(note_row, 1), 'Credit issued (not cash)', kind='text')
+        apply_data_cell(ws4.cell(note_row, 2), credit_rows[0]['count'], kind='int')
+        apply_data_cell(
+            ws4.cell(note_row, 3), credit_rows[0]['collected'],
+            kind='currency', currency=currency)
+        note_row += 1
+    ws4.cell(note_row, 1).value = (
+        'Each amount is the money kept for that method. A split sale is divided, not repeated. '
+        'Credit is not cash collected.'
+    )
+    ws4.cell(note_row, 1).font = _font(9, italic=True, color=M)
+    write_footer(ws4, note_row + 2, 3, record_count=len(shown))
+    if shown and shown[0]['method'] != 'None':
+        finalize_table(ws4, hdr4, hdr4 + 1, hdr4 + len(shown), 3)
 
     # ── Sheet 5 – Stock / Inventory ───────────────────────────────────────────
     ws5 = wb.create_sheet("Stock & Inventory")
@@ -316,7 +338,8 @@ def export_sales_report(
         generated_by=who, filters="Current stock levels", currency=currency,
     )
     ws5.cell(5, 1).value = (
-        "Current stock at export — RED rows = below minimum (reorder needed)"
+        "Current stock at export. Out of stock is zero. Low stock is above zero and at or under the minimum. "
+        "Stock value uses the recorded cost only. A missing cost is not estimated."
     )
     ws5.cell(5, 1).font = _font(10, italic=True, color=G)
 
@@ -359,7 +382,8 @@ def export_sales_report(
         cost = float(prod.get('cost_price', 0) or 0)
         stock = float(prod.get('stock', 0) or 0)
         min_stock = float(prod.get('min_stock', 5) or 5)
-        stk_value = cost * stock if cost else price * stock * 0.6
+        from desktop.utils.payment_tenders import stock_value_at_cost
+        stk_value = stock_value_at_cost(cost, stock)
         total_stock_value += stk_value
 
         if stock == 0:
@@ -425,7 +449,9 @@ def export_sales_report(
         (f'Collected Today ({currency})', collected, 'currency'),
         ('Customers with Debt', customers_with_debt, ''),
         ('Open Invoices', len([
-            i for i in debt_invoices if i.get('status') not in ('paid', 'cancelled')
+            i for i in debt_invoices
+            if (i.get('status') or '') not in ('paid', 'cancelled')
+            and float(i.get('balance') or 0) > 0.009
         ]), ''),
     ], start_row=5)
 
@@ -452,16 +478,24 @@ def export_sales_report(
             kind='currency', currency=currency, alt=i % 2 == 1)
 
     INV_HDR = 14
-    ws6.cell(INV_HDR - 1, 1).value = "OPEN / RECENT DEBT INVOICES"
+    ws6.cell(INV_HDR - 1, 1).value = "OPEN INVOICES THAT MAKE UP THE OUTSTANDING BALANCE"
     ws6.cell(INV_HDR - 1, 1).font = _font(12, bold=True, color=M)
-    hdrs6 = [
-        'Invoice No.', 'Customer', f'Outstanding ({currency})',
-        'Status', 'Due Date', 'Created',
-    ]
-    style_header_row(ws6, INV_HDR, hdrs6, [18, 24, 18, 12, 14, 20])
-    inv_rows = sorted(
-        debt_invoices, key=lambda x: x.get('created_at', ''), reverse=True
-    )[:200]
+    inv_rows = [
+        inv for inv in sorted(debt_invoices, key=lambda x: x.get('created_at', ''), reverse=True)
+        if (inv.get('status') or '') not in ('paid', 'cancelled')
+        and float(inv.get('balance') or 0) > 0.009
+    ][:200]
+    if not inv_rows:
+        ws6.cell(INV_HDR, 1).value = (
+            "No open invoices were included. Outstanding above is the current debt book."
+        )
+        ws6.cell(INV_HDR, 1).font = _font(10, italic=True, color=M)
+    else:
+        hdrs6 = [
+            'Invoice No.', 'Customer', f'Outstanding ({currency})',
+            'Status', 'Due Date', 'Created',
+        ]
+        style_header_row(ws6, INV_HDR, hdrs6, [18, 24, 18, 12, 14, 20])
     for i, inv in enumerate(inv_rows):
         r = INV_HDR + 1 + i
         vals = [
@@ -527,7 +561,13 @@ def export_sales_report(
         'Date', 'Sale #', 'Cashier', 'Method', 'Sale Total', 'Received',
         'Excess', 'Handling', 'Returned', 'Deposit', 'Tip', 'Transport',
     ]
-    style_header_row(ws7, VR, vh, [16, 16, 14, 10, 12, 12, 10, 14, 10, 10, 10, 12])
+    if not variance_rows:
+        ws7.cell(VR, 1).value = (
+            "No payment variance records found for the selected reporting period."
+        )
+        ws7.cell(VR, 1).font = _font(11, italic=True, color=M)
+    else:
+        style_header_row(ws7, VR, vh, [16, 16, 14, 10, 12, 12, 10, 14, 10, 10, 10, 12])
     for i, row in enumerate(variance_rows):
         r = VR + 1 + i
         vals = [
@@ -555,6 +595,91 @@ def export_sales_report(
     write_footer(ws7, VR + 2 + len(variance_rows), 12, record_count=len(variance_rows))
     if variance_rows:
         finalize_table(ws7, VR, VR + 1, VR + len(variance_rows), 12)
+
+    def _focus_rows(kind):
+        picked = []
+        for prod in products_sorted:
+            stock = float(prod.get('stock', 0) or 0)
+            minimum = float(prod.get('min_stock', 5) or 5)
+            if kind == 'out_of_stock' and stock <= 0:
+                picked.append(prod)
+            elif kind == 'low_stock' and 0 < stock <= minimum:
+                picked.append(prod)
+        return picked
+
+    def _write_focus(title, rows, empty_text):
+        ws = take_sheet(title)
+        write_report_header(
+            ws, shop_name=shop_name, title=title, ncols=6,
+            period=f"As at {datetime.now().strftime('%d %b %Y %H:%M')}",
+            generated_by=who, filters=empty_text, currency=currency,
+        )
+        headers = ['Product', 'SKU', 'Category', 'Stock', 'Min', 'Status']
+        style_header_row(ws, 8, headers, [30, 14, 16, 12, 12, 16])
+        if not rows:
+            ws.cell(9, 1).value = empty_text
+            ws.cell(9, 1).font = _font(11, italic=True, color=M)
+            return
+        for idx, prod in enumerate(rows):
+            stock = float(prod.get('stock', 0) or 0)
+            vals = [
+                prod.get('name', ''), prod.get('sku') or '', prod.get('category') or '',
+                stock, float(prod.get('min_stock', 0) or 0),
+                'OUT OF STOCK' if stock <= 0 else 'LOW STOCK',
+            ]
+            kinds = ['text', 'text', 'text', 'qty', 'qty', 'center']
+            for col, (val, kind) in enumerate(zip(vals, kinds), 1):
+                apply_data_cell(ws.cell(9 + idx, col), val, kind=kind, currency=currency, alt=idx % 2 == 1)
+        finalize_table(ws, 8, 9, 8 + len(rows), 6)
+
+    if want('out_of_stock'):
+        _write_focus(
+            'Out of Stock', _focus_rows('out_of_stock'),
+            'No products are out of stock. This list is only products with zero quantity.',
+        )
+    if want('low_stock'):
+        _write_focus(
+            'Low Stock', _focus_rows('low_stock'),
+            'No products are low on stock. This list is only products above zero and at or under the minimum.',
+        )
+
+    keep = {
+        'Sales Summary': 'sales',
+        'Line Items': 'sales',
+        'Top Products': 'sales',
+        'Payment Methods': 'sales',
+        'Stock & Inventory': 'inventory',
+        'Debt Management': 'debt',
+        'Payment Variance': 'variance',
+    }
+    removable = [
+        ws for ws in list(wb.worksheets)
+        if keep.get(ws.title) and not want(keep[ws.title])
+    ]
+    if len(wb.worksheets) - len(removable) <= 0:
+        raise ValueError('Select at least one report section.')
+    for ws in removable:
+        wb.remove(ws)
+
+    def _fit_for_print(ws):
+        ws.page_setup.orientation = 'landscape'
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_margins.left = 0.4
+        ws.page_margins.right = 0.4
+        ws.page_margins.top = 0.55
+        ws.page_margins.bottom = 0.45
+        ws.oddFooter.right.text = "Page &P of &N"
+        ws.oddFooter.right.font = "Calibri"
+        ws.oddFooter.right.size = 9
+        ws.print_title_rows = '1:4'
+        ws.page_setup.horizontalCentered = True
+        ws.sheet_view.showGridLines = False
+
+    for ws in wb.worksheets:
+        _fit_for_print(ws)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     if output_path is None:

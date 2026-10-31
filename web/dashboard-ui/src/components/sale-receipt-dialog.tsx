@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { PaymentBreakdown, type SalePayments } from "@/components/payment-breakdown";
 import { Button, Card, Input } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -38,6 +39,7 @@ type SaleDetail = {
   total?: number;
   amount_paid?: number;
   notes?: string;
+  payments?: SalePayments;
   items?: SaleLine[];
   debt?: {
     invoice_number?: string;
@@ -63,10 +65,12 @@ function field(label: string, value: string) {
 export function SaleReceiptDialog({
   saleId,
   currency = "KES",
+  banner,
   onClose,
 }: {
   saleId: number | null;
   currency?: string;
+  banner?: string;
   onClose: () => void;
 }) {
   const { user } = useAuth();
@@ -112,6 +116,7 @@ export function SaleReceiptDialog({
               <div className={voided ? "text-sm font-semibold text-err" : "text-sm text-text2"}>
                 {status.toUpperCase()} · {saleDay || "—"} · {sale.cashier_name || "—"}
               </div>
+              {banner ? <div className="mt-2 text-sm text-text">{banner}</div> : null}
             </div>
             <Button variant="ghost" onClick={onClose}>
               Close
@@ -125,13 +130,16 @@ export function SaleReceiptDialog({
             <>
               <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm sm:grid-cols-3">
                 {field("Recorded", recorded || "—")}
-                {field("Payment", String(sale.payment_method || "—"))}
+                {field("Recorded as", String(sale.payment_method || "—"))}
                 {field("Customer", customer)}
                 {field("Subtotal", money(sale.subtotal, currency))}
                 {field("Discount", money(sale.discount, currency))}
                 {field("Tax", money(sale.tax, currency))}
                 {field("Total", money(sale.total, currency))}
                 {field("Paid", money(sale.amount_paid, currency))}
+              </div>
+              <div className="border-t border-border px-5 py-4">
+                <PaymentBreakdown payments={sale.payments} />
               </div>
               {sale.notes ? (
                 <div className="border-t border-border px-5 py-3 text-sm">

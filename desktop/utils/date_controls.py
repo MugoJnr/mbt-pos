@@ -16,8 +16,10 @@ from PyQt5.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -118,6 +120,179 @@ def pick_shop_day_dialog(
     if not sel.isValid():
         return None
     return date_cls(sel.year(), sel.month(), sel.day())
+
+
+def pick_date_range(
+    parent: QWidget,
+    start: date_cls,
+    end: date_cls,
+    *,
+    title: str = 'Choose dates',
+) -> Optional[tuple]:
+    """Month grid for a from/to range. Day buttons paint reliably on the till."""
+    if end < start:
+        start, end = end, start
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setModal(True)
+    dlg.setWindowFlag(Qt.WindowStaysOnTopHint, False)
+    dlg.setMinimumSize(460, 520)
+    day_style = (
+        "QPushButton{background:#16202b;color:#f5f7fb;border:1px solid #2a3848;"
+        "min-height:36px;min-width:44px;font-size:13px;font-weight:600;border-radius:6px;}"
+        "QPushButton:hover{background:#243244;}"
+        "QPushButton:disabled{color:#5c6b7a;background:#101820;}"
+    )
+    picked_style = day_style.replace("#16202b", "#e0b15a", 1).replace("#f5f7fb", "#101820", 1)
+    between_style = day_style.replace("#16202b", "#3d3424", 1)
+    dlg.setStyleSheet(
+        "QDialog{background:#101820;color:#f5f7fb;}"
+        "QLabel{color:#f5f7fb;background:transparent;}"
+    )
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(14, 14, 14, 14)
+    lay.setSpacing(10)
+    heading = QLabel(title)
+    heading.setStyleSheet("font-size:16px;font-weight:700;")
+    lay.addWidget(heading)
+    hint = QLabel("Click the first day, then the last day.")
+    hint.setStyleSheet("color:#9aa8b8;font-size:12px;")
+    lay.addWidget(hint)
+
+    state = {
+        "y": start.year,
+        "m": start.month,
+        "start": start,
+        "end": end,
+    }
+    summary = QLabel()
+    summary.setStyleSheet("font-size:14px;font-weight:700;color:#e0b15a;")
+    lay.addWidget(summary)
+
+    presets = QHBoxLayout()
+    today = date_cls.today()
+
+    def _set_range(first, last, close=False):
+        if last < first:
+            first, last = last, first
+        if first > today:
+            first = today
+        if last > today:
+            last = today
+        state["start"], state["end"] = first, last
+        state["y"], state["m"] = last.year, last.month
+        _paint()
+        if close:
+            dlg.accept()
+
+    for label, first, last in (
+        ("Today", today, today),
+        ("Yesterday", today.fromordinal(today.toordinal() - 1), today.fromordinal(today.toordinal() - 1)),
+        ("Last 7 days", today.fromordinal(today.toordinal() - 6), today),
+        ("This month", today.replace(day=1), today),
+    ):
+        btn = QPushButton(label)
+        btn.setStyleSheet(day_style)
+        btn.clicked.connect(lambda _=False, a=first, b=last: _set_range(a, b, True))
+        presets.addWidget(btn)
+    lay.addLayout(presets)
+
+    nav = QHBoxLayout()
+    prev = QPushButton("<")
+    month_lbl = QLabel()
+    nxt = QPushButton(">")
+    for btn in (prev, nxt):
+        btn.setStyleSheet(day_style)
+        btn.setFixedSize(44, 36)
+    month_lbl.setAlignment(Qt.AlignCenter)
+    month_lbl.setStyleSheet("font-size:14px;font-weight:700;")
+    nav.addWidget(prev)
+    nav.addWidget(month_lbl, 1)
+    nav.addWidget(nxt)
+    lay.addLayout(nav)
+
+    host = QWidget(dlg)
+    grid = QGridLayout(host)
+    grid.setSpacing(4)
+    lay.addWidget(host)
+
+    def _paint():
+        while grid.count():
+            item = grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        first_of = date_cls(state["y"], state["m"], 1)
+        month_lbl.setText(first_of.strftime("%B %Y"))
+        summary.setText(
+            f"{state['start'].strftime('%d %b %Y')}  –  {state['end'].strftime('%d %b %Y')}"
+        )
+        for col, name in enumerate(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")):
+            label = QLabel(name)
+            label.setAlignment(Qt.AlignCenter)
+            label.setStyleSheet("color:#9aa8b8;font-size:11px;font-weight:700;")
+            grid.addWidget(label, 0, col)
+        offset = first_of.weekday()
+        days = (date_cls(state["y"] + (state["m"] == 12), (state["m"] % 12) + 1, 1) - first_of).days
+        for day_num in range(1, days + 1):
+            chosen = date_cls(state["y"], state["m"], day_num)
+            day_btn = QPushButton(str(day_num))
+            if chosen == state["start"] or chosen == state["end"]:
+                day_btn.setStyleSheet(picked_style)
+            elif state["start"] < chosen < state["end"]:
+                day_btn.setStyleSheet(between_style)
+            else:
+                day_btn.setStyleSheet(day_style)
+            if chosen > today:
+                day_btn.setEnabled(False)
+            day_btn.clicked.connect(lambda _=False, picked=chosen: _click(picked))
+            slot = offset + day_num - 1
+            grid.addWidget(day_btn, 1 + (slot // 7), slot % 7)
+
+    def _click(chosen):
+        if state.get("awaiting_end"):
+            _set_range(state["start"], chosen)
+            state["awaiting_end"] = False
+            hint.setText("Click the first day, then the last day.")
+        else:
+            state["start"] = chosen
+            state["end"] = chosen
+            state["awaiting_end"] = True
+            hint.setText("Now click the last day.")
+            _paint()
+
+    def _shift(delta):
+        month = state["m"] + delta
+        year = state["y"]
+        if month < 1:
+            month, year = 12, year - 1
+        elif month > 12:
+            month, year = 1, year + 1
+        state["m"], state["y"] = month, year
+        _paint()
+
+    prev.clicked.connect(lambda: _shift(-1))
+    nxt.clicked.connect(lambda: _shift(1))
+    actions = QHBoxLayout()
+    cancel = QPushButton("Cancel")
+    apply_btn = QPushButton("Use these dates")
+    cancel.setStyleSheet(day_style)
+    apply_btn.setStyleSheet(picked_style)
+    cancel.clicked.connect(dlg.reject)
+    apply_btn.clicked.connect(dlg.accept)
+    actions.addWidget(cancel)
+    actions.addWidget(apply_btn)
+    lay.addLayout(actions)
+    state["awaiting_end"] = False
+    _paint()
+    try:
+        accepted = dlg.exec_() == QDialog.Accepted
+    finally:
+        release_window_topmost(parent)
+        release_window_topmost(dlg)
+    if not accepted:
+        return None
+    return state["start"], state["end"]
 
 
 def apply_shop_day_edit(

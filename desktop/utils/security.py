@@ -29,6 +29,7 @@ _PERMISSIONS = {
         'consumption.create', 'consumption.request_void',
         'sales.variance_handle',
         'accounting.create_expenses',
+        'supplier.pay', 'supplier.request',
     },
     ROLE_VIEWER: {
         'sales.view_all',
@@ -39,6 +40,7 @@ _PERMISSIONS = {
         'consumption.view_report',
         'reports.view_variance',
         'accounting.view', 'accounting.view_reports',
+        'supplier.view',
     },
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
@@ -56,6 +58,8 @@ _PERMISSIONS = {
         'accounting.approve_expenses',
         'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
+        'inventory.view_cost',
+        'supplier.view', 'supplier.pay', 'supplier.request',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
@@ -68,7 +72,7 @@ _PERMISSIONS = {
         'audit.view',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel',
-        'consumption.create', 'consumption.void',
+        'consumption.create', 'consumption.void', 'consumption.edit',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
@@ -76,6 +80,8 @@ _PERMISSIONS = {
         'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
+        'inventory.view_cost',
+        'supplier.view', 'supplier.pay', 'supplier.request', 'supplier.manage',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
@@ -92,7 +98,7 @@ _PERMISSIONS = {
         'security.override',
         'debt.view', 'debt.create', 'debt.collect',
         'debt.customer_manage', 'debt.cancel', 'debt.delete',
-        'consumption.create', 'consumption.void',
+        'consumption.create', 'consumption.void', 'consumption.edit',
         'consumption.view_report', 'consumption.export',
         'sales.variance_handle', 'sales.variance_approve', 'reports.view_variance',
         'accounting.view', 'accounting.view_reports', 'accounting.create_journal',
@@ -101,18 +107,287 @@ _PERMISSIONS = {
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'ai_ops.developer',
+        'inventory.view_cost',
+        'supplier.view', 'supplier.pay', 'supplier.request', 'supplier.manage',
     },
 }
 
+# These stay with the role. A checkbox cannot add them to a lower role.
+NOT_GRANTABLE = {
+    'inventory.adjust_stock', 'audit.clear', 'license.manage', 'security.override',
+    'debt.delete', 'ai_ops.developer', 'sales.edit',
+    'users.view', 'users.create', 'users.edit', 'users.delete',
+    'settings.edit', 'accounting.edit_accounts', 'accounting.close_period',
+}
+
+_ACTION_LABELS = {
+    'sales.create': 'Make a sale',
+    'sales.view_own': 'View own sales',
+    'sales.view_all': 'View every sale',
+    'sales.void': 'Void a sale',
+    'sales.request_void': 'Request a sale void',
+    'sales.request_backdate': 'Request a backdated sale',
+    'sales.business_day': 'Choose a business day',
+    'sales.edit': 'Edit a posted sale',
+    'inventory.view': 'View inventory',
+    'inventory.view_cost': 'View product costs and valuation',
+    'inventory.create': 'Create products',
+    'inventory.edit_info': 'Edit product details',
+    'inventory.receive': 'Receive supplier stock',
+    'inventory.delete': 'Remove products',
+    'inventory.adjust_stock': 'Adjust stock directly',
+    'reports.view_basic': 'View the basic report',
+    'reports.view_all': 'View management reports and profit',
+    'reports.export': 'Export reports',
+    'debt.view': 'View customer debt',
+    'debt.view_own': 'View own customer debt',
+    'debt.collect': 'Collect customer payments',
+    'debt.create': 'Create customer debt',
+    'debt.customer_manage': 'Manage customers',
+    'debt.cancel': 'Resolve customer debt',
+    'supplier.view': 'View supplier balances',
+    'supplier.pay': 'Record supplier payments',
+    'supplier.request': 'Request a delivery void or backdate',
+    'supplier.manage': 'Edit, void, backdate, or return a delivery',
+    'consumption.create': 'Record internal consumption',
+    'consumption.edit': 'Correct internal consumption',
+    'consumption.void': 'Void internal consumption',
+    'consumption.request_void': 'Request a consumption void',
+    'consumption.view_report': 'View consumption reports',
+    'consumption.export': 'Export consumption',
+    'accounting.view': 'View finance',
+    'accounting.view_reports': 'View finance reports',
+    'accounting.create_expenses': 'Record expenses',
+    'accounting.approve_expenses': 'Approve expenses',
+    'accounting.export': 'Export finance',
+    'accounting.create_journal': 'Create a journal entry',
+    'accounting.reverse_journal': 'Reverse a journal entry',
+    'accounting.close_period': 'Close an accounting period',
+    'accounting.edit_accounts': 'Edit the chart of accounts',
+    'audit.view': 'View the audit log',
+    'audit.clear': 'Clear the audit log',
+    'settings.view': 'View settings',
+    'settings.edit': 'Change system settings',
+    'notes.own': 'Keep own notes',
+    'notes.view_all': 'View every note',
+    'reports.view_variance': 'View cash variance',
+    'sales.variance_handle': 'Handle a cash variance',
+    'sales.variance_approve': 'Approve a cash variance',
+    'debt.delete': 'Delete customer debt',
+    'license.manage': 'Manage the licence',
+    'security.override': 'Override security controls',
+    'users.view': 'View staff accounts',
+    'users.create': 'Create staff accounts',
+    'users.edit': 'Edit staff accounts',
+    'users.delete': 'Deactivate staff accounts',
+    'ai_ops.view': 'View shop assistant tools',
+    'ai_ops.heal_safe': 'Run safe shop repairs',
+    'ai_ops.support': 'Use shop assistant support',
+    'ai_ops.analyze': 'Analyse shop activity',
+    'ai_ops.developer': 'Use developer shop tools',
+}
+
+
+def dashboard_locked_to_today(user: dict) -> bool:
+    """Cashiers work the current shop day. They do not browse other dashboard periods."""
+    source = (user or {}).get('user') or user or {}
+    role = str(source.get('role') or '').strip().lower()
+    if source.get('id') and 'permission_grants' not in source and 'permission_denials' not in source:
+        loaded = load_user_auth(source.get('id'))
+        if loaded:
+            role = loaded['role']
+    if role != 'cashier':
+        return False
+    return 'sales.business_day' not in effective_actions(source)
+
+
+def _known_actions() -> set:
+    found = set()
+    for actions in _PERMISSIONS.values():
+        found |= set(actions)
+    return found
+
+
+def _parse_actions(value) -> set:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or '[]')
+        except (TypeError, ValueError):
+            return set()
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}
+
+
+def role_actions(role: str) -> set:
+    return set(_PERMISSIONS.get((role or '').strip().lower()) or ())
+
+
+def load_user_auth(user_id):
+    """Fresh role and individual permissions. Inactive accounts are refused."""
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        from desktop.utils.api_client import _db
+        db = _db()
+        try:
+            row = db.execute(
+                "SELECT role, is_active, permission_grants, permission_denials FROM users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+        finally:
+            db.close()
+    except Exception:
+        logger.warning('permission load failed for user %s', user_id, exc_info=True)
+        return None
+    if not row or int(row['is_active'] or 0) != 1:
+        return None
+    return {
+        'role': (row['role'] or '').strip().lower(),
+        'permission_grants': _parse_actions(row['permission_grants']),
+        'permission_denials': _parse_actions(row['permission_denials']),
+    }
+
+
+def permission_overrides(user_id):
+    """Grants and denials for an active user. False when the account cannot sign in."""
+    if not user_id:
+        return None
+    loaded = load_user_auth(user_id)
+    if not loaded:
+        return False
+    return loaded['permission_grants'], loaded['permission_denials']
+
+
+def client_actor(api) -> dict:
+    """Role from the call, plus that account's grants and denials.
+
+    The role is not replaced from the database. Tests set a role that can
+    differ from the stored user, and a grant must not turn that role into
+    another one.
+    """
+    role = (getattr(api, '_role', '') or '').lower()
+    loaded = permission_overrides(getattr(api, '_user_id', None))
+    if loaded is False:
+        return {'role': ''}
+    user = {'role': role}
+    if isinstance(loaded, tuple):
+        user['permission_grants'] = sorted(loaded[0])
+        user['permission_denials'] = sorted(loaded[1])
+    return user
+
+
+_COST_FIELDS = (
+    'unit_cost', 'line_total', 'cost_price', 'cost', 'average_cost',
+    'gross_profit', 'profit', 'valuation', 'inventory_value',
+)
+
+
+def redact_cost_fields(payload):
+    """Remove stored cost and profit figures. Invoice totals stay."""
+    if isinstance(payload, list):
+        for item in payload:
+            redact_cost_fields(item)
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    for key in _COST_FIELDS:
+        payload.pop(key, None)
+    for key in ('lines', 'items', 'products', 'receipts'):
+        rows = payload.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                redact_cost_fields(row)
+    return payload
+
+
+def _resolved(user: dict):
+    source = (user or {}).get('user') or user or {}
+    role = str(source.get('role') or '').strip().lower()
+    if source.get('id') and 'permission_grants' not in source and 'permission_denials' not in source:
+        loaded = load_user_auth(source.get('id'))
+        if not loaded:
+            return '', set(), set()
+        return loaded['role'], loaded['permission_grants'], loaded['permission_denials']
+    return role, _parse_actions(source.get('permission_grants')), _parse_actions(source.get('permission_denials'))
+
+
+def effective_actions(user: dict) -> set:
+    """Role defaults, plus explicit grants, minus explicit denials.
+
+    A Super Admin keeps the full Super Admin set. A denial beats a grant.
+    An unknown action is never included.
+    """
+    role, grants, denials = _resolved(user)
+    known = _known_actions()
+    if role == ROLE_SUPERADMIN:
+        return set(_PERMISSIONS[ROLE_SUPERADMIN])
+    base = role_actions(role)
+    if not base and role not in _PERMISSIONS:
+        return set()
+    extra = {item for item in grants if item in known and item not in NOT_GRANTABLE}
+    removed = {item for item in denials if item in known}
+    return (base - removed) | (extra - removed)
+
 
 def has_permission(user: dict, action: str) -> bool:
-    """Check a known shop role. An unknown or missing role is denied."""
-    source = (user or {}).get('user') or user or {}
-    role = source.get('role') or ''
-    allowed = _PERMISSIONS.get(role)
-    if not allowed:
+    """An unknown role, an unknown action, or a missing account is denied."""
+    action = str(action or '').strip()
+    if action not in _known_actions():
         return False
-    return action in allowed
+    return action in effective_actions(user)
+
+
+def sees_management_figures(user: dict) -> bool:
+    return has_permission(user, 'reports.view_all') or has_permission(user, 'accounting.view')
+
+
+def sees_product_cost(user: dict) -> bool:
+    return has_permission(user, 'inventory.view_cost')
+
+
+def permission_catalogue(role: str = '') -> list:
+    """Every real action, grouped for User Control."""
+    defaults = role_actions(role)
+    groups = {}
+    for action in sorted(_known_actions()):
+        group = action.split('.', 1)[0].replace('_', ' ').title()
+        groups.setdefault(group, []).append({
+            'key': action,
+            'label': _ACTION_LABELS.get(action, action.replace('.', ' · ').replace('_', ' ')),
+            'grantable': action not in NOT_GRANTABLE,
+            'inherited': action in defaults,
+        })
+    return [{'group': name, 'items': items} for name, items in groups.items()]
+
+
+def clean_permission_change(actor: dict, target_role: str, grants, denials) -> dict:
+    """Drop unknown, locked, and permissions the actor is not allowed to give."""
+    target_role = (target_role or '').strip().lower()
+    if target_role == ROLE_SUPERADMIN:
+        return {'error': 'Super Admin access follows that role. It is not a set of checkboxes.', 'status': 400}
+    if target_role not in _PERMISSIONS:
+        return {'error': 'That role is not recognised.', 'status': 400}
+    actor_set = effective_actions(actor)
+    actor_role = _resolved(actor)[0]
+    if actor_role not in (ROLE_ADMIN, ROLE_SUPERADMIN):
+        return {'error': 'Only an administrator can change individual permissions.', 'status': 403}
+    known = _known_actions()
+    role_set = role_actions(target_role)
+    clean_grants = []
+    for item in sorted(_parse_actions(grants)):
+        if item not in known or item in NOT_GRANTABLE or item in role_set:
+            continue
+        if actor_role != ROLE_SUPERADMIN and item not in actor_set:
+            continue
+        clean_grants.append(item)
+    clean_denials = []
+    for item in sorted(_parse_actions(denials)):
+        if item in role_set and item in known:
+            clean_denials.append(item)
+    return {'permission_grants': clean_grants, 'permission_denials': clean_denials}
 
 
 def require_permission(user: dict, action: str, parent_widget=None) -> bool:

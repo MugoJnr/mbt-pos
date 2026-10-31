@@ -31,6 +31,42 @@ export async function downloadApi(
   URL.revokeObjectURL(url);
 }
 
+/** POST a download so a password stays in the body and out of the address. */
+export async function downloadApiPost(
+  path: string,
+  body: Record<string, unknown>,
+  fallbackName: string,
+): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await fetch("/api" + path, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (r.status === 401) {
+    window.location.href = "/";
+    throw new Error("Unauthorized");
+  }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error((err as any).error || `Export failed (${r.status})`);
+  }
+  const cd = r.headers.get("Content-Disposition") || "";
+  const m = /filename="?([^"]+)"?/i.exec(cd);
+  const name = m?.[1] || fallbackName;
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function exportQuery(params: Record<string, string | undefined>) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {

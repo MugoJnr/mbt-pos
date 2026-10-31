@@ -64,6 +64,9 @@ export function SavedReports({ orgId }: { orgId: string }) {
   const sections = Object.entries(summary).filter(([, item]) => Array.isArray(item)) as Array<[string, Array<Record<string, unknown>>]>;
   return (
     <div className="space-y-4">
+      <p className="rounded-lg border px-3 py-2 text-sm text-muted-foreground">
+        These are the figures the till uploaded. The original PDF or Excel file is not stored here, so CSV and JSON are copies of that saved summary, not the original file.
+      </p>
       <div className="flex justify-end"><Button variant="outline" onClick={() => void query.refetch()}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button></div>
       <ReportState loading={query.isLoading} error={responseError(query.data, query.error)} empty={!reports.length} onRetry={() => void query.refetch()}>
         <div className="space-y-3">

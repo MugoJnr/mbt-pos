@@ -32,14 +32,15 @@ KEY_WIDTH = 'ui_sidebar_width'
 # still lands inside the 56-72px band that reads as a nav strip rather than a
 # stray toolbar.
 COLLAPSED_WIDTH = 64
-# Narrowest expanded sidebar that still shows a label next to the icon.
-EXPANDED_MIN = 200
+# Narrowest expanded sidebar that still shows "Internal Consumption"
+# beside the icon. 200px clipped that label to "Internal Consumpti...".
+EXPANDED_MIN = 232
 # Widest the sidebar may ever get — beyond this it starts eating the POS pane.
 EXPANDED_MAX = 340
 # Shipping default on a roomy display.
-DEFAULT_WIDTH = 240
+DEFAULT_WIDTH = 260
 # Shipping default on a cramped display (1366x768 class hardware).
-COMPACT_WIDTH = 208
+COMPACT_WIDTH = 248
 
 # A sidebar may never take more than this share of the window, whatever the
 # saved width says.  0.32 of a 960px minimum window still clears EXPANDED_MIN.

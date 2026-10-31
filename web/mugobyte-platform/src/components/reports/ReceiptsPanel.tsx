@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -14,7 +14,7 @@ import { GET } from "@/lib/api";
 import { type AnalyticsResponse, type AnalyticsRow, formatDateTime, formatMoney, rowsOf, value } from "./analytics";
 import { ReportState, responseError } from "./ReportState";
 
-export function ReceiptsPanel({ orgId }: { orgId: string }) {
+export function ReceiptsPanel({ orgId, record }: { orgId: string; record?: { device: string; source: string } }) {
   const [selected, setSelected] = useState<AnalyticsRow | null>(null);
   const query = useQuery({
     queryKey: ["cloud-analytics-stock-receipts", orgId],
@@ -22,9 +22,21 @@ export function ReceiptsPanel({ orgId }: { orgId: string }) {
     enabled: Boolean(orgId),
   });
   const rows = rowsOf(query.data, "receipts", "items", "rows");
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    if (!record?.source) return;
+    const found = rows.find((row) => String(value(row, "source_id") || "") === record.source);
+    if (found) {
+      setSelected(found);
+      setMissing(false);
+    } else if (!query.isLoading) {
+      setMissing(true);
+    }
+  }, [record?.source, query.isLoading, query.data]);
 
   return (
     <div className="space-y-4">
+      {missing ? <p className="rounded-lg border px-3 py-2 text-sm">That delivery is not in the latest synced records.</p> : null}
       <Card className="overflow-hidden">
         <ReportState
           loading={query.isLoading}

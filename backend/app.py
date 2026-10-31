@@ -14,6 +14,9 @@ from datetime import datetime, date
 from flask import Flask, request, jsonify, g
 from functools import wraps
 import jwt
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from runtime_security import get_jwt_secret
 
 try:
@@ -195,6 +198,8 @@ def get_db():
         g.db = sqlite3.connect(DB_PATH, timeout=5.0)
         g.db.row_factory = sqlite3.Row
         configure_sqlite_connection(g.db)
+        from desktop.utils.api_client import _ensure_permission_columns
+        _ensure_permission_columns(g.db)
     return g.db
 
 
@@ -878,14 +883,15 @@ def _known_shop_role() -> str:
 
 def _shop_can(action: str) -> bool:
     from desktop.utils.security import has_permission
-    role = _known_shop_role()
-    if not role:
+    user = getattr(g, 'current_user', None) or {}
+    if not user.get('role'):
         return False
-    return has_permission({'role': role}, action)
+    return has_permission(user, action)
 
 
 def _sees_cost() -> bool:
-    return _role_is('manager', 'admin', 'superadmin')
+    from desktop.utils.security import sees_product_cost
+    return sees_product_cost(getattr(g, 'current_user', None) or {})
 
 
 def _redact_cost(row: dict) -> dict:
@@ -976,6 +982,7 @@ def login():
     }, SECRET_KEY, algorithm='HS256')
 
     perms = json.loads(user['tab_permissions'] or '[]')
+    from desktop.utils.security import effective_actions
     return jsonify({
         'token': token,
         'user': {
@@ -984,6 +991,9 @@ def login():
             'full_name': user['full_name'],
             'role': user['role'],
             'tab_permissions': perms,
+            'permission_grants': user['permission_grants'] if 'permission_grants' in user.keys() else '[]',
+            'permission_denials': user['permission_denials'] if 'permission_denials' in user.keys() else '[]',
+            'effective_permissions': sorted(effective_actions(dict(user))),
         }
     })
 
@@ -998,12 +1008,16 @@ def me():
             perms = json.loads(perms or '[]')
         except (TypeError, ValueError):
             perms = []
+    from desktop.utils.security import effective_actions
     return jsonify({
         'id': user.get('id'),
         'username': user.get('username'),
         'full_name': user.get('full_name'),
         'email': user.get('email') or '',
         'role': user.get('role'),
+        'permission_grants': user.get('permission_grants') or '[]',
+        'permission_denials': user.get('permission_denials') or '[]',
+        'effective_permissions': sorted(effective_actions(user)),
         'is_active': user.get('is_active', 1),
         'tab_permissions': perms,
     })
@@ -1108,6 +1122,15 @@ def end_till_signin_http(session_id):
 
 # ── USERS ─────────────────────────────────────────────────────────────────────
 
+@app.route('/api/permission-catalogue', methods=['GET'])
+@token_required
+def permission_catalogue_http():
+    if not _shop_can('users.view'):
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.security import permission_catalogue
+    role = (request.args.get('role') or 'cashier').strip().lower()
+    return jsonify(permission_catalogue(role))
+
 @app.route('/api/users', methods=['GET'])
 @token_required
 def list_users():
@@ -1115,7 +1138,8 @@ def list_users():
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     users = db.execute("""SELECT id, username, full_name, role, email, is_active,
-                          tab_permissions, created_at, last_login FROM users""").fetchall()
+                          tab_permissions, permission_grants, permission_denials,
+                          created_at, last_login FROM users""").fetchall()
     return jsonify([dict(u) for u in users])
 
 
@@ -1187,6 +1211,18 @@ def update_user(uid):
     actor = _actor_role()
     if not is_superadmin_role(actor) and is_superadmin_role(target['role']):
         return jsonify({'error': 'Only the shop owner can change a Super Admin account.'}), 403
+    if (
+        'role' in data
+        and (data.get('role') or '') != (target.get('role') or '')
+        and int(uid) == int((g.current_user or {}).get('id') or 0)
+    ):
+        return jsonify({'error': 'You cannot change your own role.'}), 400
+    if (
+        not is_superadmin_role(actor)
+        and (target.get('role') or '').lower() == 'admin'
+        and int(uid) != int((g.current_user or {}).get('id') or 0)
+    ):
+        return jsonify({'error': 'Only the shop owner can change another administrator.'}), 403
     if 'is_active' in data and not _shop_can('users.delete'):
         return jsonify({'error': 'Only an administrator can remove a staff account.'}), 403
     if data.get('is_active') in (0, '0', False) and target.get('id') == g.current_user.get('id'):
@@ -1204,6 +1240,22 @@ def update_user(uid):
         values.append(json.dumps(
             sanitize_tab_permissions(new_role, data['tab_permissions'])
         ))
+    if 'permission_grants' in data or 'permission_denials' in data:
+        from desktop.utils.security import clean_permission_change
+        if int(uid) == int((g.current_user or {}).get('id') or 0):
+            return jsonify({'error': 'You cannot change your own permissions.'}), 400
+        if is_superadmin_role(target['role']):
+            return jsonify({'error': 'Super Admin access follows that role.'}), 400
+        cleaned = clean_permission_change(
+            g.current_user or {}, new_role,
+            data.get('permission_grants') or [], data.get('permission_denials') or [],
+        )
+        if cleaned.get('error'):
+            return jsonify(cleaned), int(cleaned.get('status') or 400)
+        fields.append("permission_grants=?")
+        values.append(json.dumps(cleaned['permission_grants']))
+        fields.append("permission_denials=?")
+        values.append(json.dumps(cleaned['permission_denials']))
     if 'password' in data:
         pw_hash = hash_pw(data['password'])
         fields.append("password_hash=?")
@@ -1324,14 +1376,40 @@ def _sale_day_sql(alias: str = '') -> str:
     return f"COALESCE(NULLIF({prefix}sale_date,''), date({prefix}created_at))"
 
 
+def _cashier_dashboard_day() -> str | None:
+    """Kept for callers that still want the shop's current day."""
+    if _shop_can('reports.view_all') or _shop_can('sales.view_all'):
+        return None
+    from desktop.utils.shop_time import shop_today
+    return shop_today().isoformat()
+
+
+def _cashier_single_day(start: str, end: str):
+    """A cashier may open one day. A range is rejected."""
+    if _shop_can('reports.view_all') or _shop_can('sales.view_all'):
+        return start, end, None
+    start = str(start or '')[:10]
+    end = str(end or start or '')[:10]
+    if not start:
+        from desktop.utils.shop_time import shop_today
+        start = end = shop_today().isoformat()
+    if start != end:
+        return None, None, 'A cashier can open one day, not a date range.'
+    return start, end, None
+
+
 @app.route('/api/sales', methods=['GET'])
 @token_required
 def list_sales():
     if not (_shop_can('sales.view_all') or _shop_can('sales.view_own')):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
-    start = request.args.get('start', str(date.today()))
-    end = request.args.get('end', str(date.today()))
+    start, end, blocked = _cashier_single_day(
+        request.args.get('start', str(date.today())),
+        request.args.get('end', str(date.today())),
+    )
+    if blocked:
+        return jsonify({'error': blocked}), 403
     day = _sale_day_sql('s')
     params = [start, end]
     own = ''
@@ -1449,7 +1527,8 @@ def create_sale():
         return jsonify({'error': 'Invalid sale date. Use YYYY-MM-DD.'}), 400
     if requested > shop_today():
         return jsonify({'error': 'Sale date cannot be in the future.'}), 400
-    if requested != shop_today() and role not in ('admin', 'superadmin', 'manager'):
+    from desktop.utils.security import has_permission
+    if requested != shop_today() and not has_permission(user, 'sales.business_day'):
         return jsonify({'error': 'Only a manager or admin can backdate a sale.'}), 403
     sale_date_s = business_day_iso(requested)
     created_at_s = sale_created_at_for_day(sale_date_s)
@@ -1532,7 +1611,11 @@ def create_sale():
             notes = (notes + f" | Credit {allocation['credit']:,.2f}").strip(' |')
         if allocation:
             from desktop.utils.payment_tenders import format_tenders
-            paid_note = format_tenders(allocation['tenders'])
+            paid_rows = [
+                row for row in allocation['tenders']
+                if str(row.get('status') or 'confirmed').lower() == 'confirmed'
+            ]
+            paid_note = format_tenders(paid_rows)
             if paid_note and 'paid:' not in notes.lower():
                 notes = (notes + f' | Paid: {paid_note}').strip(' |')
         elif electronic_paid > 0.009 and 'split:' not in notes.lower():
@@ -1693,6 +1776,9 @@ def get_sale(sale_id):
     ).fetchall()
     result = dict(sale)
     result['items'] = [_redact_cost(dict(i)) for i in items]
+    from desktop.utils.payment_tenders import explain_sale_payments, parse_tenders
+    result['payment_tenders'] = parse_tenders(result.get('payment_tenders'))
+    result['payments'] = explain_sale_payments(result)
     if result.get('customer_id'):
         cust = db.execute(
             "SELECT name, phone FROM customers WHERE id=?",
@@ -1722,8 +1808,12 @@ def sales_summary():
     if not (_shop_can('reports.view_basic') or _shop_can('reports.view_all')):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
-    start = request.args.get('start', str(date.today()))
-    end = request.args.get('end', str(date.today()))
+    start, end, blocked = _cashier_single_day(
+        request.args.get('start', str(date.today())),
+        request.args.get('end', str(date.today())),
+    )
+    if blocked:
+        return jsonify({'error': blocked}), 403
 
     own_sql = ""
     own_join = ""
@@ -1760,6 +1850,15 @@ def sales_summary():
         GROUP BY payment_method
     """, (start, end, *own_params)).fetchall()
 
+    tender_rows = db.execute("""
+        SELECT payment_method, total, amount_paid, change_amount, payment_tenders
+        FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
+          AND status IN ('completed','return')""" + own_sql + """
+    """, (start, end, *own_params)).fetchall()
+    from desktop.utils.payment_tenders import collected_from_sales
+    summary = dict(summary)
+    summary.update(collected_from_sales(dict(row) for row in tender_rows))
+
     hourly = db.execute("""
         SELECT strftime('%H', created_at) as hour, COUNT(*) as count, SUM(total) as total
         FROM sales WHERE """ + _sale_day_sql() + """ BETWEEN ? AND ?
@@ -1767,11 +1866,45 @@ def sales_summary():
         GROUP BY hour ORDER BY hour
     """, (start, end, *own_params)).fetchall()
 
+    from desktop.utils.financials import compute_financials, public_financials
+    from desktop.utils.security import sees_management_figures
+    role = (g.current_user.get('role') or '').lower()
+    figures = compute_financials(db, start, end)
+    if not sees_management_figures(g.current_user):
+        safe = public_financials(figures, role)
+        return jsonify({
+            'summary': {
+                'total_transactions': figures['completed_sale_count'],
+                'total_revenue': figures['total_sales'],
+                'total_sales': figures['total_sales'],
+            },
+            'top_products': [],
+            'by_payment': [],
+            'hourly': [],
+            'finance': safe,
+        })
+    summary['total_revenue'] = figures['total_sales']
+    summary['total_sales'] = figures['total_sales']
+    summary['paid_sales'] = figures['paid_sales']
+    summary['new_credit'] = figures['new_credit']
+    summary['collected_revenue'] = figures['total_collected']
+    summary['debt_repayments'] = figures['debt_repayments']
+    summary['gross_profit'] = figures['gross_profit']
+    summary['realized_gross_profit'] = figures['realized_gross_profit']
+    summary['unrealized_gross_profit'] = figures['unrealized_gross_profit']
+    summary['expenses'] = figures['expenses']
+    summary['net_operating_result'] = figures['net_operating_result']
+    summary['outstanding_debt'] = figures['outstanding_debt']
+    summary['inventory_cost_value'] = figures['inventory_cost_value']
+    summary['uncosted_lines'] = figures['uncosted_lines']
+    summary['profit_note'] = figures['profit_note']
+
     return jsonify({
-        'summary': dict(summary),
+        'summary': summary,
         'top_products': [dict(p) for p in top_products],
         'by_payment': [dict(p) for p in by_payment],
         'hourly': [dict(h) for h in hourly],
+        'finance': figures,
     })
 
 

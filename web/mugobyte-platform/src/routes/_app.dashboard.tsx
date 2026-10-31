@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { PageShell, PageHeader, EmptyState } from "@/components/layout/PageShell";
 import { StatCard } from "@/components/layout/StatCard";
+import { RecentActivity } from "@/components/reports/RecentActivity";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -303,6 +304,8 @@ function WorkspaceHome() {
           )}
         </CardContent>
       </Card>
+
+      {orgId ? <RecentActivity orgId={orgId} /> : null}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[

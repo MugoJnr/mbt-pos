@@ -1,6 +1,7 @@
 """D01/D07 + R01/R03: dashboard/report KPIs reflect create_sale + date filters."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -77,6 +78,63 @@ class DashboardReportGate(unittest.TestCase):
             ).fetchone()['d']
         finally:
             db.close()
+
+    def test_cash_change_is_not_subtracted_from_money_kept(self):
+        created = self._sale(55.0)
+        self.assertTrue(created.get('success'), created)
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET amount_paid=?, change_amount=? WHERE id=?",
+            (55.0, 20.0, int(created['sale_id'])),
+        )
+        db.commit()
+        db.close()
+        sale_day = self._sale_day(int(created['sale_id']))
+        summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
+        self.assertAlmostEqual(float(summary.get('collected_revenue') or 0), 55.0, places=2)
+        self.assertAlmostEqual(float(summary.get('cash_sales_collected') or 0), 55.0, places=2)
+
+    def test_split_tenders_fill_the_method_chips(self):
+        created = self._sale(55.0)
+        self.assertTrue(created.get('success'), created)
+        tenders = json.dumps([
+            {"method": "M-Pesa", "amount": 18.33, "status": "confirmed"},
+            {"method": "Card", "amount": 18.33, "status": "confirmed"},
+            {"method": "Bank Transfer", "amount": 18.34, "status": "confirmed"},
+        ])
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET payment_method=?, payment_tenders=?, amount_paid=? WHERE id=?",
+            ("M-Pesa + Card + Bank Transfer", tenders, 55.0, int(created['sale_id'])),
+        )
+        db.commit()
+        db.close()
+        sale_day = self._sale_day(int(created['sale_id']))
+        summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
+        self.assertAlmostEqual(float(summary.get('mpesa_collected') or 0), 18.33, places=2)
+        self.assertAlmostEqual(float(summary.get('card_collected') or 0), 18.33, places=2)
+        self.assertAlmostEqual(float(summary.get('bank_collected') or 0), 18.34, places=2)
+        self.assertAlmostEqual(float(summary.get('collected_revenue') or 0), 55.0, places=2)
+
+    def test_mixed_cash_is_in_the_cash_chip_without_the_change(self):
+        created = self._sale(55.0)
+        self.assertTrue(created.get('success'), created)
+        tenders = json.dumps([
+            {"method": "Cash", "amount": 40, "status": "confirmed"},
+            {"method": "M-Pesa", "amount": 35, "status": "confirmed"},
+        ])
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET payment_method=?, payment_tenders=?, amount_paid=?, change_amount=? WHERE id=?",
+            ("Cash + M-Pesa", tenders, 55.0, 20.0, int(created['sale_id'])),
+        )
+        db.commit()
+        db.close()
+        sale_day = self._sale_day(int(created['sale_id']))
+        summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
+        self.assertAlmostEqual(float(summary.get('cash_sales_collected') or 0), 20.0, places=2)
+        self.assertAlmostEqual(float(summary.get('mpesa_collected') or 0), 35.0, places=2)
+        self.assertAlmostEqual(float(summary.get('collected_revenue') or 0), 55.0, places=2)
 
     def test_d01_kpi_matches_sale_revenue(self):
         created = self._sale(250.0)

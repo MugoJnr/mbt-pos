@@ -403,20 +403,22 @@ class PaymentBars(QWidget):
                 'value': val,
                 'color': r.get('color'),
             })
-        # Fit chart card: keep top 3 by value, roll rest into Other (≤4 rows, no clip)
+        # Keep the real methods visible. Only fold a long tail into Other.
         active.sort(key=lambda x: x['value'], reverse=True)
-        if len(active) > 3:
-            head, tail = active[:3], active[3:]
+        if len(active) > 6:
+            head, tail = active[:6], active[6:]
             other_val = sum(x['value'] for x in tail)
             if other_val > 0.009:
                 head.append({'label': 'Other', 'value': other_val, 'color': None})
             active = head
-        total = sum(x['value'] for x in active) or 0.0
+        collected_base = sum(
+            x['value'] for x in active if x['label'] != 'Credit issued'
+        ) or sum(x['value'] for x in active) or 0.0
         out = []
         palette = [C['gold'], C['ok'], C['info'], C['warn'], C['err']]
         for i, r in enumerate(active):
             val = float(r['value'])
-            pct = (val / total * 100.0) if total > 0 else 0.0
+            pct = (val / collected_base * 100.0) if collected_base > 0 else 0.0
             out.append({
                 'label': r['label'],
                 'pct': pct,
@@ -502,6 +504,8 @@ class PaymentBars(QWidget):
                 amt_s = f"{amt / 1_000_000:.1f}M"
             elif amt >= 10_000:
                 amt_s = f"{amt / 1_000:.1f}K"
+            elif abs(amt - round(amt)) > 0.009:
+                amt_s = f"{amt:,.2f}"
             elif amt >= 1:
                 amt_s = f"{amt:,.0f}"
             else:

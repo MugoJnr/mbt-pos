@@ -37,7 +37,10 @@ _SENSITIVE_DEBT_KEYS = frozenset({
 _COST_KEYS = frozenset({
     'cost_price', 'unit_cost', 'cost', 'cost_of_goods', 'cogs', 'sold_cost',
     'gross_profit', 'profit', 'gross_margin_pct', 'margin_pct', 'inventory_value',
-    'inventory_cost_value',
+    'inventory_cost_value', 'stock_value',
+    'gross_profit_fully_paid', 'gross_profit_credit', 'gross_profit_part_payment',
+    'gross_profit_credit_and_part', 'gross_profit_collected', 'gross_profit_outstanding',
+    'profit_collected', 'profit_outstanding', 'profit_sales',
 })
 
 
@@ -1574,12 +1577,9 @@ def analytics_redact_payload(payload: Any, *, can_see_finance: bool, role: str =
         else:
             out[key] = value
     if manager:
-        if 'customer_phone' in out:
-            out['customer_phone'] = None
-        if 'phone' in out and ('customer_name' in out or 'name' in out):
-            # Only scrub when this looks like a customer/debt party row.
-            if any(k in out for k in ('invoice_number', 'balance', 'due_date', 'customer_id')):
-                out['phone'] = None
+        for key in ('customer_phone', 'supplier_phone', 'phone'):
+            if key in out:
+                out[key] = None
     return out
 
 
@@ -1748,6 +1748,31 @@ def analytics_sale_detail(org_id: str, device_id: str, source_id: str) -> dict:
     )
     sale['items'] = [analytics_normalize_row(i) for i in (items or [])]
     sale['line_items'] = sale['items']
+    sale['voided'] = analytics_is_void(sale)
+    try:
+        invoices = service_select(
+            'cloud_debt_invoices',
+            f'{oid}&device_id=eq.{sale_device}&sale_source_id=eq.{sid}&select=*',
+        )
+    except Exception:
+        invoices = []
+    invoice = analytics_normalize_row(invoices[0]) if invoices else None
+    payments = []
+    if invoice:
+        inv_source = quote(str(invoice.get('source_id') or ''), safe='')
+        try:
+            pay_rows = service_select(
+                'cloud_debt_payments',
+                f'{oid}&device_id=eq.{sale_device}'
+                f'&or=(invoice_source_id.eq.{inv_source},invoice_id.eq.{inv_source})'
+                f'&select=*&order=source_created_at.asc,source_id.asc',
+            )
+        except Exception:
+            pay_rows = []
+        payments = [analytics_normalize_row(p) for p in (pay_rows or [])]
+    sale['debt_invoice'] = invoice
+    sale['outstanding_balance'] = None if not invoice else invoice.get('balance')
+    sale['repayments'] = payments
     return sale
 
 
@@ -1763,6 +1788,7 @@ def analytics_list_debts(
     status: str = '',
     customer: str = '',
     q: str = '',
+    age: str = '',
     include_payments: bool = True,
 ) -> dict:
     parts = [_org_eq(org_id), 'select=*']
@@ -1782,7 +1808,9 @@ def analytics_list_debts(
         },
         default='source_created_at',
     ))
-    if status:
+    logical_status = (status or '').strip().lower()
+    logical = logical_status in ('open', 'partial', 'partly paid', 'paid', 'overdue')
+    if status and not logical:
         parts.append(f'status=eq.{quote(status, safe="")}')
     if customer:
         parts.append(
@@ -1796,7 +1824,23 @@ def analytics_list_debts(
         ))
     query = '&'.join(parts)
     offset = (page - 1) * page_size
-    rows, total = service_select_page('cloud_debt_invoices', query, limit=page_size, offset=offset)
+    age_key = (age or '').strip().lower().replace('-', '_')
+    if logical or age_key:
+        from backend.cloud.owner_profit import debt_age_key, logical_debt_status
+        wanted = 'partial' if logical_status == 'partly paid' else logical_status
+        matched = []
+        for row in analytics_fetch_all(
+            'cloud_debt_invoices', query, max_rows=ANALYTICS_EXPORT_MAX,
+        ):
+            if logical and logical_debt_status(row) != wanted:
+                continue
+            if age_key and debt_age_key(row) != age_key:
+                continue
+            matched.append(row)
+        total = len(matched)
+        rows = matched[offset:offset + page_size]
+    else:
+        rows, total = service_select_page('cloud_debt_invoices', query, limit=page_size, offset=offset)
     debts = []
     for inv in rows:
         clean = analytics_normalize_row(inv)
@@ -1807,6 +1851,9 @@ def analytics_list_debts(
             'phone': clean.get('customer_phone'),
         }
         clean['customer'] = party
+        from backend.cloud.owner_profit import debt_age_key, logical_debt_status
+        clean['debt_status'] = logical_debt_status(clean)
+        clean['age_bucket'] = debt_age_key(clean) or ''
         if include_payments:
             inv_source = quote(str(clean.get('source_id') or ''), safe='')
             inv_id = quote(str(clean.get('id') or clean.get('source_id') or ''), safe='')
@@ -1962,6 +2009,8 @@ def analytics_list_inventory(
             row['stock_status'] = 'low stock'
         else:
             row['stock_status'] = 'in stock'
+        row['stock_value'] = round(stock_qty * _fnum(row.get('cost_price')), 2)
+        row['valuation_method'] = 'latest_product_cost_times_quantity'
     pages = max(1, int(math.ceil(total / page_size))) if page_size else 1
     return {
         'org_id': org_id,
@@ -2024,7 +2073,7 @@ def analytics_filter_options(org_id: str) -> dict:
     }
 
 
-def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
+def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool = True) -> dict:
     start_s, end_s, start_iso, end_iso = analytics_day_bounds(start, end)
     sales_q = (
         f'{_org_eq(org_id)}'
@@ -2163,6 +2212,16 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
 
     top_products = sorted(prod_map.values(), key=lambda r: -r['revenue'])[:25]
     top_categories = sorted(cat_map.values(), key=lambda r: -r['revenue'])[:20]
+    from backend.cloud.owner_profit import (
+        allocate_sale_profits,
+        debt_ageing,
+        previous_window,
+        sync_freshness,
+    )
+    profit_split = allocate_sale_profits(active_sales, item_rows, debt_invoices)
+    for day, profit_value in profit_split['by_day'].items():
+        if day in by_day:
+            by_day[day]['gross_profit'] = profit_value
 
     active_products = [
         p for p in products
@@ -2177,6 +2236,7 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         _fnum(p.get('stock')) * _fnum(p.get('cost_price')) for p in active_products
     ), 2)
 
+    last_sync = analytics_last_sync_at(org_id)
     summary = {
         'currency': 'KES',
         'gross_sales': gross_sales,
@@ -2207,13 +2267,30 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
         'cost_of_goods': cost_of_goods,
         'gross_profit': gross_profit,
         'gross_margin_pct': gross_margin_pct,
+        'gross_profit_fully_paid': profit_split['gross_profit_fully_paid'],
+        'gross_profit_credit': profit_split['gross_profit_credit'],
+        'gross_profit_part_payment': profit_split['gross_profit_part_payment'],
+        'gross_profit_credit_and_part': profit_split['gross_profit_credit_and_part'],
+        'gross_profit_collected': profit_split['gross_profit_collected'],
+        'gross_profit_outstanding': profit_split['gross_profit_outstanding'],
+        'debt_ageing': debt_ageing(outstanding_invoices),
+        'sync': sync_freshness(last_sync),
         'inventory_value': inventory_value,
         'low_stock_count': len(low_stock) + len(out_stock),
         'out_of_stock_count': len(out_stock),
         'low_only_count': len(low_stock),
-        'last_sync_at': analytics_last_sync_at(org_id),
+        'last_sync_at': last_sync,
     }
-    return {
+    staff_map: dict[str, dict] = {}
+    for sale_row in active_sales:
+        cashier = str(sale_row.get('cashier_name') or '').strip() or 'Unknown'
+        staff_row = staff_map.setdefault(cashier, {
+            'cashier_name': cashier, 'transactions': 0, 'revenue': 0.0,
+        })
+        staff_row['transactions'] += 1
+        staff_row['revenue'] = round(staff_row['revenue'] + _fnum(sale_row.get('total')), 2)
+    staff = sorted(staff_map.values(), key=lambda row: -row['revenue'])
+    payload = {
         'org_id': org_id,
         'start': start_s,
         'end': end_s,
@@ -2246,7 +2323,256 @@ def analytics_overview(org_id: str, *, start: str, end: str = '') -> dict:
                 key=lambda r: (_fnum(r.get('stock')), str(r.get('name') or '')),
             )
         ],
+        'staff': staff,
         'last_sync_at': summary['last_sync_at'],
+    }
+    if compare:
+        prev_start, prev_end = previous_window(start_s, end_s)
+        previous = analytics_overview(
+            org_id, start=prev_start, end=prev_end, compare=False,
+        )
+        payload['previous'] = {
+            'start': prev_start,
+            'end': prev_end,
+            'summary': previous.get('summary') or {},
+        }
+    return payload
+
+
+def analytics_debt_ageing(org_id: str) -> dict:
+    """All open invoices, not the sales date range."""
+    from backend.cloud.owner_profit import debt_ageing
+    rows = analytics_fetch_all(
+        'cloud_debt_invoices',
+        f'{_org_eq(org_id)}&select=*&order=due_date.asc,source_id.asc',
+        max_rows=ANALYTICS_EXPORT_MAX,
+    )
+    return {'org_id': org_id, 'ageing': debt_ageing(rows)}
+
+
+def analytics_debt_detail(org_id: str, device_id: str, source_id: str) -> dict:
+    oid = _org_eq(org_id)
+    did = quote(str(device_id), safe='')
+    sid = quote(str(source_id), safe='')
+    rows = service_select_strict(
+        'cloud_debt_invoices',
+        f'{oid}&device_id=eq.{did}&source_id=eq.{sid}&select=*&limit=1',
+    )
+    if not rows:
+        raise LookupError('Debt invoice not found')
+    invoice = analytics_normalize_row(rows[0])
+    from backend.cloud.owner_profit import logical_debt_status
+    invoice['debt_status'] = logical_debt_status(invoice)
+    pay_rows = service_select(
+        'cloud_debt_payments',
+        f'{oid}&device_id=eq.{did}'
+        f'&or=(invoice_source_id.eq.{sid},invoice_id.eq.{sid})'
+        f'&select=*&order=source_created_at.asc,source_id.asc',
+    )
+    invoice['payments'] = [analytics_normalize_row(p) for p in (pay_rows or [])]
+    return invoice
+
+
+def analytics_payment_detail(org_id: str, device_id: str, source_id: str) -> dict:
+    oid = _org_eq(org_id)
+    did = quote(str(device_id), safe='')
+    sid = quote(str(source_id), safe='')
+    rows = service_select_strict(
+        'cloud_debt_payments',
+        f'{oid}&device_id=eq.{did}&source_id=eq.{sid}&select=*&limit=1',
+    )
+    if not rows:
+        raise LookupError('Repayment not found')
+    payment = analytics_normalize_row(rows[0])
+    invoice_source = quote(str(payment.get('invoice_source_id') or ''), safe='')
+    invoice = None
+    if invoice_source:
+        found = service_select(
+            'cloud_debt_invoices',
+            f'{oid}&device_id=eq.{did}&source_id=eq.{invoice_source}&select=*&limit=1',
+        )
+        if found:
+            invoice = analytics_normalize_row(found[0])
+    payment['invoice'] = invoice
+    return payment
+
+
+def analytics_product_detail(org_id: str, device_id: str, source_id: str) -> dict:
+    oid = _org_eq(org_id)
+    did = quote(str(device_id), safe='')
+    sid = quote(str(source_id), safe='')
+    rows = service_select_strict(
+        'cloud_products',
+        f'{oid}&device_id=eq.{did}&source_id=eq.{sid}&select=*&limit=1',
+    )
+    if not rows:
+        raise LookupError('Product not found')
+    product = analytics_normalize_row(rows[0])
+    stock_qty = _fnum(product.get('stock'))
+    product['stock_value'] = round(stock_qty * _fnum(product.get('cost_price')), 2)
+    product['valuation_method'] = 'latest_product_cost_times_quantity'
+    sales = service_select(
+        'cloud_sale_items',
+        f'{oid}&device_id=eq.{did}&product_source_id=eq.{sid}'
+        f'&select=*&order=source_created_at.desc,source_id.asc&limit=20',
+    )
+    moves = service_select(
+        'cloud_stock_movements',
+        f'{oid}&device_id=eq.{did}&product_source_id=eq.{sid}'
+        f'&select=*&order=source_created_at.desc,source_id.asc&limit=20',
+    )
+    product['recent_sales'] = [analytics_normalize_row(r) for r in (sales or [])]
+    product['recent_movements'] = [analytics_normalize_row(r) for r in (moves or [])]
+    return product
+
+
+def _delivery_row(row: dict) -> dict:
+    from backend.cloud.owner_profit import supplier_name_from_reason
+    clean = analytics_normalize_row(row)
+    name = str(clean.get('supplier_name') or '').strip() or supplier_name_from_reason(
+        str(clean.get('reason') or '')
+    )
+    clean['supplier_name'] = name or 'No supplier name'
+    clean['product_name'] = clean.get('product_name') or 'Product'
+    return clean
+
+
+def analytics_list_deliveries(org_id: str, *, limit: int = 200) -> dict:
+    from backend.cloud.owner_profit import movement_is_delivery
+    rows = analytics_fetch_all(
+        'cloud_stock_movements',
+        f'{_org_eq(org_id)}&select=*&order=source_created_at.desc,source_id.asc',
+        max_rows=min(max(limit, 1), ANALYTICS_EXPORT_MAX),
+    )
+    deliveries = [_delivery_row(row) for row in rows if movement_is_delivery(row)]
+    return {
+        'org_id': org_id,
+        'source': 'cloud',
+        'receipts': deliveries[:limit],
+        'items': deliveries[:limit],
+    }
+
+
+def analytics_list_suppliers(org_id: str) -> dict:
+    deliveries = analytics_list_deliveries(org_id, limit=ANALYTICS_EXPORT_MAX)['receipts']
+    grouped: dict[str, dict] = {}
+    for row in deliveries:
+        name = str(row.get('supplier_name') or 'No supplier name')
+        bucket = grouped.setdefault(name, {
+            'name': name,
+            'phone': row.get('supplier_phone') or '',
+            'deliveries': 0,
+            'products': [],
+            'recent': [],
+        })
+        bucket['deliveries'] += 1
+        product = str(row.get('product_name') or '')
+        if product and product not in bucket['products']:
+            bucket['products'].append(product)
+        if len(bucket['recent']) < 8:
+            bucket['recent'].append(row)
+    suppliers = sorted(grouped.values(), key=lambda item: (-item['deliveries'], item['name']))
+    return {'org_id': org_id, 'suppliers': suppliers, 'note': (
+        'Delivery history only. This portal does not track what the shop owes a supplier.'
+    )}
+
+
+def analytics_activity(org_id: str, *, limit: int = 8) -> dict:
+    """Recent synced records. A failed batch is not shown as a success."""
+    cap = max(1, min(int(limit or 8), 25))
+    sales = service_select(
+        'cloud_sales',
+        f'{_org_eq(org_id)}&select=device_id,source_id,receipt_number,cashier_name,'
+        f'total,status,payment_method,source_created_at,synced_at'
+        f'&order=source_created_at.desc,source_id.asc&limit={cap}',
+    )
+    payments = service_select(
+        'cloud_debt_payments',
+        f'{_org_eq(org_id)}&select=device_id,source_id,amount,payment_method,'
+        f'cashier_name,invoice_source_id,source_created_at'
+        f'&order=source_created_at.desc,source_id.asc&limit={cap}',
+    )
+    voids = [
+        row for row in (sales or [])
+        if str(row.get('status') or '').lower() in ('void', 'voided')
+    ]
+    deliveries = analytics_list_deliveries(org_id, limit=cap)['receipts']
+    batches = service_select(
+        'sync_batches',
+        f'{_org_eq(org_id)}&select=id,status,error,entity_count,started_at,completed_at'
+        f'&order=started_at.desc&limit={cap}',
+    )
+    devices = service_select(
+        'devices',
+        f'{_org_eq(org_id)}&select=id,computer_name,last_sync_at,sync_status,last_seen_at'
+        f'&order=last_sync_at.desc.nullslast&limit=5',
+    )
+    return {
+        'org_id': org_id,
+        'sales': [analytics_normalize_row(r) for r in (sales or [])],
+        'repayments': [analytics_normalize_row(r) for r in (payments or [])],
+        'voids': [analytics_normalize_row(r) for r in voids],
+        'deliveries': deliveries[:cap],
+        'sync_batches': [analytics_normalize_row(r) for r in (batches or [])],
+        'devices': [analytics_normalize_row(r) for r in (devices or [])],
+    }
+
+
+def compose_custom_report(
+    org_id: str,
+    *,
+    start: str,
+    end: str,
+    sections: list[str],
+    can_see_finance: bool,
+) -> dict:
+    from backend.cloud.owner_profit import (
+        FINANCE_SECTIONS,
+        flatten_report_text,
+        normalize_sections,
+        report_lines,
+    )
+    chosen = normalize_sections(sections)
+    if not chosen:
+        raise ValueError('Select at least one report section.')
+    blocked = [key for key in chosen if key in FINANCE_SECTIONS and not can_see_finance]
+    if blocked:
+        raise PermissionError('Gross profit and cost of goods are limited to the owner and an administrator.')
+    overview = analytics_overview(org_id, start=start, end=end, compare=False)
+    deliveries = []
+    if 'deliveries' in chosen:
+        deliveries = analytics_list_deliveries(org_id, limit=100)['receipts']
+    summary = overview.get('summary') or {}
+    if not can_see_finance:
+        summary = {
+            key: value for key, value in summary.items()
+            if key not in _COST_KEYS
+        }
+    extras = {
+        'top_products': overview.get('top_products') or [],
+        'by_category': overview.get('by_category') or [],
+        'payment_methods': overview.get('payment_methods') or [],
+        'staff': overview.get('staff') or [],
+        'low_stock': overview.get('low_stock') or [],
+        'deliveries': deliveries,
+    }
+    if not can_see_finance:
+        for row in extras['top_products']:
+            row.pop('cost', None)
+            row.pop('profit', None)
+        for row in extras['low_stock']:
+            row.pop('cost_price', None)
+    blocks = report_lines(summary, extras, chosen)
+    period = f"{overview.get('start')} to {overview.get('end')}"
+    lines = flatten_report_text(
+        blocks, title='MBT POS owner report', period=period,
+    )
+    return {
+        'sections': chosen,
+        'lines': lines,
+        'blocks': blocks,
+        'period': period,
+        'protected': False,
     }
 
 

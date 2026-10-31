@@ -52,8 +52,196 @@ def build_tenders(
     return rows
 
 
-_CREDIT_METHODS = {'credit', 'on account', 'customer credit', 'part credit'}
+_CREDIT_METHODS = {
+    'credit', 'credit sale', 'on account', 'customer credit', 'part credit',
+}
 _UNCONFIRMED = {'pending', 'failed', 'cancelled', 'initiated'}
+
+
+def is_credit_method(name: str) -> bool:
+    """Customer credit is an unpaid balance, not money taken at the till."""
+    return str(name or '').strip().lower().replace('_', ' ') in _CREDIT_METHODS
+
+
+def collected_buckets(lines: Iterable[dict]) -> dict:
+    """Confirmed money by method. Credit and unconfirmed lines are not collected."""
+    totals = {'cash': 0.0, 'mpesa': 0.0, 'card': 0.0, 'bank': 0.0, 'other': 0.0}
+    for line in lines or []:
+        if not isinstance(line, dict):
+            continue
+        status = str(line.get('status') or 'confirmed').strip().lower()
+        if status in _UNCONFIRMED:
+            continue
+        name = str(line.get('method') or '').strip().lower().replace('_', ' ')
+        if is_credit_method(name):
+            continue
+        amount = _r2(line.get('amount'))
+        if amount <= 0:
+            continue
+        if name == 'cash':
+            key = 'cash'
+        elif name in ('m-pesa', 'mpesa', 'mobile money'):
+            key = 'mpesa'
+        elif name == 'card':
+            key = 'card'
+        elif name in ('bank transfer', 'bank', 'bank payment', 'cheque', 'check'):
+            key = 'bank'
+        else:
+            key = 'other'
+        totals[key] = _r2(totals[key] + amount)
+    return totals
+
+
+def _net_cash_kept(amount_paid: Any, total: Any, change: Any) -> float:
+    paid = _r2(amount_paid)
+    if paid > _r2(total) + 0.02:
+        return _r2(paid - _r2(change))
+    return paid
+
+
+def _cash_kept_on_split(buckets: dict, sale: dict) -> float:
+    """Net cash on a mixed sale.
+
+    The cash line is what the customer handed over. Change is given from cash
+    only, and only when those lines still add up to more than the money kept.
+    """
+    cash_part = _r2(buckets.get('cash'))
+    non_cash = _r2(
+        float(buckets.get('mpesa') or 0)
+        + float(buckets.get('card') or 0)
+        + float(buckets.get('bank') or 0)
+        + float(buckets.get('other') or 0)
+    )
+    change = _r2(sale.get('change_amount'))
+    kept = sale.get('amount_paid')
+    if kept is None:
+        kept = sale.get('total')
+    if change > 0.009 and _r2(cash_part + non_cash) > _r2(kept) + 0.02:
+        cash_part = _r2(max(0.0, cash_part - change))
+    return cash_part
+
+
+def collected_from_sales(sales: Iterable[dict]) -> dict:
+    """Dashboard tiles for a list of sales.
+
+    A split sale stores one combined method name. Its M-Pesa, card, and bank
+    amounts come from the saved tender lines. A cash sale keeps the net money
+    retained, so change is not subtracted twice. Credit is not collected.
+    """
+    cash = mpesa = card = bank = other = 0.0
+    for sale in sales or []:
+        if not isinstance(sale, dict):
+            continue
+        method = str(sale.get('payment_method') or '').strip().lower()
+        raw = sale.get('payment_tenders')
+        lines: List[dict] = []
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list):
+                lines = parsed
+        elif isinstance(raw, list):
+            lines = raw
+        buckets = collected_buckets(lines) if lines else None
+        split_money = 0.0
+        if buckets:
+            split_money = (
+                buckets['mpesa'] + buckets['card'] + buckets['bank'] + buckets['other']
+            )
+        if buckets and split_money > 0.009:
+            mpesa = _r2(mpesa + buckets['mpesa'])
+            card = _r2(card + buckets['card'])
+            bank = _r2(bank + buckets['bank'])
+            other = _r2(other + buckets['other'])
+            cash = _r2(cash + _cash_kept_on_split(buckets, sale))
+            continue
+        if method == 'cash':
+            cash = _r2(cash + _net_cash_kept(
+                sale.get('amount_paid'), sale.get('total'), sale.get('change_amount'),
+            ))
+        elif method in ('m-pesa', 'mpesa', 'mobile money'):
+            mpesa = _r2(mpesa + _r2(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
+        elif method == 'card':
+            card = _r2(card + _r2(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
+        elif method in ('bank transfer', 'bank', 'bank payment'):
+            bank = _r2(bank + _r2(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
+    collected = _r2(cash + mpesa + card + bank + other)
+    return {
+        'cash_collected': cash,
+        'mpesa_collected': mpesa,
+        'card_collected': card,
+        'bank_collected': bank,
+        'other_collected': other,
+        'collected': collected,
+    }
+
+
+def credit_issued_from_sales(sales: Iterable[dict]) -> float:
+    """Unpaid part of a sale. Missing amount_paid is not treated as credit."""
+    issued = 0.0
+    for sale in sales or []:
+        if not isinstance(sale, dict):
+            continue
+        if sale.get('amount_paid') is None:
+            continue
+        gap = _r2(_r2(sale.get('total')) - _r2(sale.get('amount_paid')))
+        if gap > 0.009:
+            issued = _r2(issued + gap)
+    return issued
+
+
+def collection_by_method(sales: Iterable[dict]) -> list:
+    """Collected money by method. A split sale adds each part once, not the whole total.
+
+    Credit is listed separately and is not included in collected.
+    """
+    labels = (
+        ('cash', 'Cash'),
+        ('mpesa', 'M-Pesa'),
+        ('card', 'Card'),
+        ('bank', 'Bank'),
+        ('other', 'Other'),
+    )
+    totals = {label: 0.0 for _key, label in labels}
+    counts = {label: 0 for _key, label in labels}
+    credit_total = 0.0
+    credit_count = 0
+    for sale in sales or []:
+        if not isinstance(sale, dict):
+            continue
+        one = collected_from_sales([sale])
+        for key, label in labels:
+            amount = float(one.get(f'{key}_collected') or 0)
+            if amount > 0.009:
+                totals[label] = _r2(totals[label] + amount)
+                counts[label] += 1
+        issued = credit_issued_from_sales([sale])
+        if issued > 0.009:
+            credit_total = _r2(credit_total + issued)
+            credit_count += 1
+    rows = [
+        {'method': label, 'count': counts[label], 'collected': totals[label]}
+        for _key, label in labels
+        if counts[label] or totals[label] > 0.009
+    ]
+    if credit_count:
+        rows.append({
+            'method': 'Credit issued',
+            'count': credit_count,
+            'collected': credit_total,
+        })
+    return rows
+
+
+def stock_value_at_cost(cost, quantity) -> float:
+    """Stock value from the recorded cost. A missing cost is not estimated."""
+    cost_n = _r2(cost)
+    qty_n = float(quantity or 0)
+    if cost_n <= 0 or qty_n <= 0:
+        return 0.0
+    return _r2(cost_n * qty_n)
 
 
 def allocate_sale(total: float, tenders: Optional[Iterable[dict]]) -> dict:
@@ -87,7 +275,7 @@ def allocate_sale(total: float, tenders: Optional[Iterable[dict]]) -> dict:
         if status in _UNCONFIRMED:
             rows.append({'method': method, 'amount': amount, 'status': status})
             continue
-        if key in _CREDIT_METHODS:
+        if is_credit_method(method):
             credit = _r2(credit + amount)
             rows.append({'method': 'Credit', 'amount': amount, 'status': 'outstanding'})
             continue
@@ -133,9 +321,6 @@ def allocate_sale(total: float, tenders: Optional[Iterable[dict]]) -> dict:
     }
 
 
-_CREDIT_METHODS = {'credit', 'on account', 'customer credit', 'part credit'}
-
-
 def collected_method_label(tenders: Optional[Iterable[dict]], fallback: str = 'cash') -> str:
     """Name the money taken. An outstanding credit line is not a payment method."""
     names = []
@@ -147,7 +332,7 @@ def collected_method_label(tenders: Optional[Iterable[dict]], fallback: str = 'c
             amount = _r2(tender.get('amount'))
         except Exception:
             continue
-        if amount <= 0.009 or not name or status != 'confirmed' or key in _CREDIT_METHODS:
+        if amount <= 0.009 or not name or status != 'confirmed' or is_credit_method(name):
             continue
         if name not in names:
             names.append(name)
@@ -178,6 +363,133 @@ def parse_tenders(raw: Any) -> List[dict]:
         if isinstance(data, list):
             return [t for t in data if isinstance(t, dict)]
     return []
+
+
+def explain_sale_payments(sale: Optional[dict]) -> dict:
+    """Receipt figures from the saved sale. Tender lines are not rewritten.
+
+    A cash line is the amount handed over. ``change_amount`` is the change
+    given back, and ``amount_paid`` is the money kept. Credit is not collected.
+    """
+    sale = sale or {}
+    total = _r2(sale.get('total'))
+    change = _r2(sale.get('change_amount'))
+    paid_raw = sale.get('amount_paid')
+    collected = None if paid_raw is None else _r2(paid_raw)
+    lines = []
+    tendered = 0.0
+    credit = 0.0
+    cash_tendered = 0.0
+    for raw in parse_tenders(sale.get('payment_tenders')):
+        method = str(raw.get('method') or '').strip() or 'Payment'
+        try:
+            amount = _r2(raw.get('amount'))
+        except (TypeError, ValueError):
+            continue
+        status = str(raw.get('status') or 'confirmed').strip().lower() or 'confirmed'
+        reference = str(raw.get('reference') or '').strip()
+        if is_credit_method(method) or status == 'outstanding':
+            kind = 'credit'
+            credit = _r2(credit + amount)
+        elif status in _UNCONFIRMED:
+            kind = 'unconfirmed'
+        elif method.lower() == 'cash' and change > 0.009:
+            kind = 'tendered'
+            tendered = _r2(tendered + amount)
+            cash_tendered = _r2(cash_tendered + amount)
+        else:
+            kind = 'allocated'
+            if status == 'confirmed':
+                tendered = _r2(tendered + amount)
+        row = {
+            'method': 'Credit' if kind == 'credit' else method,
+            'amount': amount,
+            'status': 'outstanding' if kind == 'credit' else status,
+            'kind': kind,
+        }
+        if reference:
+            row['reference'] = reference
+        lines.append(row)
+    if collected is None:
+        outstanding = None
+    elif credit > 0.009:
+        outstanding = credit
+    else:
+        outstanding = _r2(max(0.0, total - collected))
+    issues = []
+    if lines and collected is not None:
+        expected = _r2(tendered - change)
+        if abs(expected - collected) > 0.02:
+            issues.append(
+                f'Saved payments of {tendered:.2f} less change of {change:.2f} '
+                f'equal {expected:.2f}, but the amount collected is {collected:.2f}.'
+            )
+    if collected is not None and _r2(collected + credit) > total + 0.02:
+        issues.append(
+            f'Amount collected {collected:.2f} plus credit {credit:.2f} '
+            f'is more than the sale total {total:.2f}.'
+        )
+    if change > 0.009 and cash_tendered + 0.009 < change:
+        issues.append(
+            f'Change of {change:.2f} is larger than the cash tendered, {cash_tendered:.2f}.'
+        )
+    note = ''
+    if change > 0.009 and not issues:
+        note = (
+            f'KES {change:,.2f} was returned as change. '
+            f'The amount collected is KES {collected if collected is not None else 0:,.2f}, '
+            f'not the sum of the tendered lines.'
+        )
+    return {
+        'lines': lines,
+        'sale_total': total,
+        'amount_tendered': tendered,
+        'amount_collected': collected,
+        'change': change,
+        'credit': credit,
+        'outstanding': outstanding,
+        'cash_kept': None if sale.get('cash_paid') is None else _r2(sale.get('cash_paid')),
+        'consistent': not issues,
+        'warning': ' '.join(issues),
+        'note': note,
+    }
+
+
+def payment_slip_text(slip: Optional[dict]) -> str:
+    """Same words on the till and on a printed copy."""
+    slip = slip or {}
+    rows = ['Payment breakdown']
+    lines = slip.get('lines') or []
+    if not lines:
+        rows.append('  No separate payment lines are stored on this sale.')
+    for line in lines:
+        ref = f"  ref {line.get('reference')}" if line.get('reference') else ''
+        kind = {
+            'tendered': 'tendered',
+            'allocated': 'allocated',
+            'credit': 'credit',
+            'unconfirmed': 'not collected',
+        }.get(str(line.get('kind') or ''), '')
+        rows.append(
+            f"  {line.get('method') or 'Payment'}  "
+            f"{_r2(line.get('amount')):,.2f}  "
+            f"{line.get('status') or ''}  {kind}{ref}".rstrip()
+        )
+    collected = slip.get('amount_collected')
+    outstanding = slip.get('outstanding')
+    rows.extend([
+        f"Sale total: {_r2(slip.get('sale_total')):,.2f}",
+        f"Amount tendered: {_r2(slip.get('amount_tendered')):,.2f}",
+        'Amount collected: —' if collected is None else f"Amount collected: {_r2(collected):,.2f}",
+        f"Change: {_r2(slip.get('change')):,.2f}",
+        f"Credit: {_r2(slip.get('credit')):,.2f}",
+        'Outstanding: —' if outstanding is None else f"Outstanding: {_r2(outstanding):,.2f}",
+    ])
+    if slip.get('note'):
+        rows.append(str(slip['note']))
+    if slip.get('warning'):
+        rows.append(str(slip['warning']))
+    return '\n'.join(rows)
 
 
 def format_sale_payment(sale: Optional[dict]) -> str:

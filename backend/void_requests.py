@@ -92,10 +92,30 @@ def get_void_request(db, user: dict, request_id: int) -> dict:
             "receipt_number": sale["receipt_number"],
             "status": sale["status"],
             "total": sale["total"],
+            "subtotal": sale["subtotal"] if "subtotal" in sale.keys() else sale["total"],
+            "discount": sale["discount"] if "discount" in sale.keys() else 0,
+            "tax": sale["tax"] if "tax" in sale.keys() else 0,
+            "amount_paid": sale["amount_paid"] if "amount_paid" in sale.keys() else sale["total"],
+            "change_amount": sale["change_amount"] if "change_amount" in sale.keys() else 0,
             "payment_method": sale["payment_method"] if "payment_method" in sale.keys() else "",
             "cashier_name": sale["cashier_name"] if "cashier_name" in sale.keys() else "",
+            "customer_name": sale["customer_name"] if "customer_name" in sale.keys() else "",
+            "customer_phone": sale["customer_phone"] if "customer_phone" in sale.keys() else "",
+            "sale_date": sale["sale_date"] if "sale_date" in sale.keys() else "",
+            "created_at": sale["created_at"] if "created_at" in sale.keys() else "",
             "notes": sale["notes"] if "notes" in sale.keys() else "",
         }
+        from desktop.utils.payment_tenders import explain_sale_payments
+        body["payments"] = explain_sale_payments(dict(sale))
+        body["receipt"]["payments"] = body["payments"]
+        if not body["receipt"]["customer_name"] and "customer_id" in sale.keys() and sale["customer_id"]:
+            customer = db.execute(
+                "SELECT name, phone FROM customers WHERE id=?",
+                (sale["customer_id"],),
+            ).fetchone()
+            if customer:
+                body["receipt"]["customer_name"] = customer["name"] or ""
+                body["receipt"]["customer_phone"] = customer["phone"] or ""
         body["receipt_note"] = ""
         lines = db.execute(
             "SELECT product_name, quantity, unit_price, total FROM sale_items WHERE sale_id=?",

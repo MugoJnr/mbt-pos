@@ -95,6 +95,8 @@ class AdminTab(QWidget):
         rw=QWidget(); rw.setMinimumWidth(280); rw.setMaximumWidth(340)
         rl=QVBoxLayout(rw); rl.setContentsMargins(12,0,0,0); rl.setSpacing(12)
         rl.addWidget(H2('Permissions'))
+        self._cap_btn=SecondaryBtn('Capabilities', 40); self._cap_btn.setEnabled(False); self._cap_btn.clicked.connect(self._capabilities)
+        rl.addWidget(self._cap_btn)
         pc=Card(); pl=pc.layout_v()
         self._perms_card = pc
         self._sel_lbl=Caption('Select a user')
@@ -231,6 +233,8 @@ class AdminTab(QWidget):
         # Keep Save Permissions disabled until a row is chosen
         elif not self._uid and hasattr(self, '_save_btn'):
             self._save_btn.setEnabled(False)
+            if hasattr(self, '_cap_btn'):
+                self._cap_btn.setEnabled(False)
             self._sel_lbl.setText('Select a user')
             self._role_cb.setEnabled(False)
             for cb in self._chks.values():
@@ -251,7 +255,7 @@ class AdminTab(QWidget):
                 cb.setEnabled(is_superadmin_role(sel_role))
             else:
                 cb.setEnabled(True)
-        for b in (self._save_btn,self._pw_btn,self._tog_btn): b.setEnabled(True)
+        for b in (self._save_btn,self._cap_btn,self._pw_btn,self._tog_btn): b.setEnabled(True)
         self._tog_btn.setText('Deactivate' if u.get('is_active',1) else 'Activate')
         self._set_perms_dimmed(False)
         if hasattr(self, '_perms_hint'):
@@ -305,6 +309,33 @@ class AdminTab(QWidget):
         res=self.api.update_user(self._uid,{'role':new_role,'tab_permissions':perms})
         if res and res.get('success'):
             QMessageBox.information(self,'Saved','Permissions updated.'); self.refresh()
+
+    def _capabilities(self):
+        if not self._uid:
+            return
+        user = next((item for item in self.users if item.get('id') == self._uid), None)
+        if not user:
+            return
+        actor = (self.user.get('user') or self.user or {})
+        if int(user.get('id') or 0) == int(actor.get('id') or 0):
+            QMessageBox.warning(self, 'Capabilities', 'You cannot change your own permissions.')
+            return
+        if is_superadmin_role(user.get('role')):
+            QMessageBox.information(
+                self, 'Capabilities',
+                'Super Admin keeps full management access. Change the role if this person should have less.',
+            )
+            return
+        dlg = _CapabilityDialog(self, user)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        res = self.api.update_user(self._uid, dlg.payload())
+        if res and res.get('success'):
+            QMessageBox.information(self, 'Saved', 'Capabilities updated. They apply on the next action.')
+            self.refresh()
+            return
+        QMessageBox.warning(self, 'Capabilities', (res or {}).get('error') or 'The permissions were not saved.')
+
     def _reset_pw(self):
         if not self._uid: return
         pw,ok=QInputDialog.getText(self,'Reset Password','New password:',QLineEdit.Password)
@@ -371,6 +402,99 @@ class AdminTab(QWidget):
             *[f"{c['field']}: {c['before']} -> {c['after']}" for c in changes],
         ])
         QMessageBox.information(self, 'Audit event', text)
+
+class _CapabilityDialog(QDialog):
+    def __init__(self, parent, user):
+        super().__init__(parent)
+        from desktop.utils.security import permission_catalogue, role_actions, _parse_actions
+        self.setWindowTitle('Capabilities')
+        self.resize(720, 640)
+        self.setMinimumSize(560, 480)
+        from desktop.utils.theme import apply_themed_dialog
+        apply_themed_dialog(self)
+        self._role = user.get('role') or 'cashier'
+        self._defaults = role_actions(self._role)
+        grants = _parse_actions(user.get('permission_grants'))
+        denials = _parse_actions(user.get('permission_denials'))
+        self._boxes = {}
+        lay = QVBoxLayout(self)
+        title = QLabel(f"{user.get('full_name') or user.get('username')} · {role_display_name(self._role)}")
+        title.setStyleSheet('font-size:16px; font-weight:800;')
+        title.setWordWrap(True)
+        lay.addWidget(title)
+        note = QLabel(
+            'A ticked box is allowed. Unticking a role default removes it. '
+            'Ticking something outside the role adds only that capability. '
+            'Locked items stay with the role. An administrator cannot give those away, '
+            'change their own access, or edit another administrator.'
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        search = QLineEdit()
+        search.setPlaceholderText('Search capabilities')
+        lay.addWidget(search)
+        host = QWidget()
+        form = QVBoxLayout(host)
+        form.setContentsMargins(0, 0, 0, 0)
+        for group in permission_catalogue():
+            heading = QLabel(group['group'].upper())
+            heading.setStyleSheet('font-size:11px; font-weight:800;')
+            form.addWidget(heading)
+            for item in group['items']:
+                key = item['key']
+                allowed = key in (self._defaults - denials) or (key in grants and item['grantable'])
+                box = QCheckBox(item['label'])
+                box.setChecked(allowed)
+                if not item['grantable'] and key not in self._defaults:
+                    box.setEnabled(False)
+                    box.setToolTip('This stays with the role. It cannot be added from here.')
+                self._boxes[key] = (box, heading)
+                form.addWidget(box)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(host)
+        lay.addWidget(scroll, 1)
+        search.textChanged.connect(self._filter)
+        row = QHBoxLayout()
+        cancel = QPushButton('Cancel')
+        cancel.clicked.connect(self.reject)
+        save = QPushButton('Save capabilities')
+        save.clicked.connect(self._save)
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(save)
+        lay.addLayout(row)
+
+    def _filter(self, text):
+        needle = (text or '').strip().lower()
+        for key, (box, heading) in self._boxes.items():
+            show = not needle or needle in box.text().lower() or needle in key
+            box.setVisible(show)
+        for group_boxes in {id(heading): heading for _key, (_box, heading) in self._boxes.items()}.values():
+            group_boxes.setVisible(True)
+
+    def _save(self):
+        grants, denials = [], []
+        for key, (box, _heading) in self._boxes.items():
+            if not box.isEnabled() and key not in self._defaults:
+                continue
+            if box.isChecked() and key not in self._defaults:
+                grants.append(key)
+            if not box.isChecked() and key in self._defaults:
+                denials.append(key)
+        if denials:
+            answer = QMessageBox.question(
+                self, 'Remove capabilities',
+                'This removes access the role normally has. Save anyway?',
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._payload = {'permission_grants': grants, 'permission_denials': denials}
+        self.accept()
+
+    def payload(self):
+        return getattr(self, '_payload', {'permission_grants': [], 'permission_denials': []})
+
 
 class _NewUserDlg(QDialog):
     def __init__(self, parent):

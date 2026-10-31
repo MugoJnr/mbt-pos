@@ -12,7 +12,11 @@ import tempfile
 import logging
 from datetime import datetime
 
-# ?? Path setup (single source: mbt_paths) ?????????????????????????????????????
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+# Path setup (single source: mbt_paths)
 from mbt_paths import get_project_root, get_db_path, ensure_data_dirs
 
 if getattr(sys, 'frozen', False):
@@ -41,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-10-29-v3.1.75"
-APP_VERSION   = "3.1.75"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-10-30-v3.1.76"
+APP_VERSION   = "3.1.76"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -973,6 +977,20 @@ class MainWindow(QMainWindow):
                     sales.sale_completed.connect(w.refresh)
                 except Exception:
                     pass
+        if tid == 'receipts' and 'sales' in self._tabs:
+            sales = self._tabs['sales']
+            if hasattr(sales, 'sale_completed') and hasattr(w, 'refresh'):
+                try:
+                    sales.sale_completed.connect(w.refresh)
+                except Exception:
+                    pass
+        if tid == 'sales' and 'receipts' in self._tabs:
+            receipts = self._tabs['receipts']
+            if hasattr(w, 'sale_completed') and hasattr(receipts, 'refresh'):
+                try:
+                    w.sale_completed.connect(receipts.refresh)
+                except Exception:
+                    pass
         return w
 
     def _warm_remaining_tabs(self):
@@ -1141,6 +1159,7 @@ class MainWindow(QMainWindow):
             self._updater.on_force_required   = self._on_force_update
             self._updater.on_install_failed   = self._on_install_failed
             self._updater.on_download_failed  = self._on_download_failed
+            self._updater.on_download_progress = self._on_download_progress
             self._updater.start()
         except Exception as e:
             log.warning(f"UpdateChecker: {e}")
@@ -1454,9 +1473,14 @@ class MainWindow(QMainWindow):
         self._pending_update_notes = notes
         btn = getattr(self, '_update_btn', None)
         if btn:
-            btn.setText(f"  Downloading v{version}...  ")
+            btn.setText(f"  Update available v{version}  ")
             btn.show()
             btn.raise_()
+        bar = getattr(self, '_update_bar', None)
+        if bar:
+            bar.hide()
+            bar.setRange(0, 100)
+            bar.setValue(0)
 
     def _ui_update_ready(self, installer_path, version):
         self._pending_installer_path = installer_path
@@ -1466,6 +1490,11 @@ class MainWindow(QMainWindow):
             btn.setText(f"  Update v{version}  ")
             btn.show()
             btn.raise_()
+        bar = getattr(self, '_update_bar', None)
+        if bar:
+            bar.hide()
+            bar.setRange(0, 100)
+            bar.setValue(0)
         self._schedule_unattended_install()
 
     def _ui_force_update(self, version, reason):
@@ -1546,6 +1575,35 @@ class MainWindow(QMainWindow):
             log.info(f"Restored pending update: v{best_ver} at {best}")
             self._ui_update_ready(best, best_ver)
 
+
+    def _on_download_progress(self, version, percent, message):
+        from desktop.utils.qt_dispatch import run_on_ui_thread
+
+        def _show():
+            btn = getattr(self, '_update_btn', None)
+            bar = getattr(self, '_update_bar', None)
+            text = message or 'Downloading update...'
+            if btn:
+                btn.setText(f"  {text}  ")
+                btn.show()
+                btn.raise_()
+            if bar is None:
+                return
+            failed = text.lower().startswith('download failed') or text.lower().startswith('install failed')
+            if failed or percent is None and text in ('Download complete',):
+                bar.hide()
+                bar.setRange(0, 100)
+                bar.setValue(0)
+                return
+            if percent is None:
+                bar.setRange(0, 0)
+                bar.show()
+                return
+            bar.setRange(0, 100)
+            bar.setValue(max(0, min(100, int(percent))))
+            bar.show()
+
+        run_on_ui_thread(_show)
 
     def _on_update_btn_clicked(self):
         version = getattr(self, '_pending_update_version', None) or '?'
@@ -2104,6 +2162,14 @@ class MainWindow(QMainWindow):
         self._update_btn.clicked.connect(self._on_update_btn_clicked)
         self._update_btn.hide()
         lay.addWidget(self._update_btn)
+        self._update_bar = QProgressBar()
+        self._update_bar.setObjectName('updateBar')
+        self._update_bar.setFixedSize(120, 8)
+        self._update_bar.setTextVisible(False)
+        self._update_bar.setRange(0, 100)
+        self._update_bar.setValue(0)
+        self._update_bar.hide()
+        lay.addWidget(self._update_bar)
 
         web_btn = QPushButton("Live Dashboard")
         web_btn.setObjectName("refreshBtn")
@@ -2410,7 +2476,7 @@ class MainWindow(QMainWindow):
             # on top of them. AI stays one click away via the sidebar (AI
             # Operations) — quiet-POS wins over an overlay during checkout.
             active = getattr(self, '_active_tab_id', None) or ''
-            if active in ('dashboard', 'sales'):
+            if active in ('dashboard', 'sales', 'consumption'):
                 fab.hide()
             else:
                 fab.show()

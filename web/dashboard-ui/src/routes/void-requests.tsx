@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Select } from "@/components/ui-kit";
+import { RequestReceiptDialog } from "@/components/request-receipt-dialog";
 import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
@@ -15,6 +16,7 @@ export const Route = createFileRoute("/void-requests")({
 type VoidRequest = {
   id: number;
   receipt_number?: string;
+  sale_id?: number;
   requested_by?: string;
   created_at?: string;
   updated_at?: string;
@@ -25,7 +27,7 @@ type VoidRequest = {
   reviewed_by?: string;
   review_note?: string;
   history?: { at?: string; action?: string; by?: string; reason?: string; note?: string }[];
-  receipt?: { receipt_number?: string; status?: string; total?: number; cashier_name?: string } | null;
+  receipt?: { id?: number; receipt_number?: string; status?: string; total?: number; cashier_name?: string; payment_method?: string; amount_paid?: number; customer_name?: string; sale_date?: string; created_at?: string } | null;
   receipt_note?: string;
   lines?: { product_name?: string; quantity?: number; unit_price?: number; total?: number }[];
   error?: string;
@@ -110,6 +112,7 @@ function VoidRequestsPage() {
   const total = Number(listQ.data?.total || 0);
   const pages = Math.max(1, Math.ceil(total / limit));
   const event = detailQ.data;
+  const opened = rows.find((row) => row.id === openId);
   const locked = ["approved", "rejected", "cancelled", "expired"].includes(String(event?.status || ""));
   const tone = (value?: string) =>
     value === "approved" ? "ok" : value === "rejected" || value === "cancelled" ? "err" : value === "returned" ? "warn" : "muted";
@@ -149,13 +152,18 @@ function VoidRequestsPage() {
               <button
                 key={row.id}
                 type="button"
-                className="grid w-full grid-cols-1 gap-1 px-4 py-3 text-left hover:bg-hover sm:grid-cols-4"
+                className={`flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-hover ${openId === row.id ? "bg-gold/10" : ""}`}
                 onClick={() => { setOpenId(row.id); setDraft(row.current_reason || ""); setMsg(""); }}
               >
-                <span className="font-semibold text-text">#{row.id} · {row.receipt_number || "Receipt"}</span>
-                <span className="text-sm text-text2">{row.requested_by || "—"} · {String(row.created_at || "").replace("T", " ").slice(0, 19)}</span>
-                <span className="text-sm text-text2">{KES(row.amount)}</span>
-                <Badge tone={tone(row.status) as any}>{row.status}</Badge>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-semibold text-text">{row.receipt_number || `Request #${row.id}`}</span>
+                  <span className="block text-xs text-text2">{row.requested_by || "—"} · {String(row.created_at || "").replace("T", " ").slice(0, 19)}</span>
+                  <span className="block text-xs font-semibold text-gold">View receipt</span>
+                </span>
+                <span className="shrink-0 text-right">
+                  <span className="block font-semibold text-gold">{KES(row.amount)}</span>
+                  <Badge tone={tone(row.status) as any}>{row.status}</Badge>
+                </span>
               </button>
             ))}
           </div>
@@ -167,79 +175,55 @@ function VoidRequestsPage() {
         </div>
       </Card>
       {openId != null ? (
-        <Card className="mt-4 p-4">
-          <div className="mb-3 flex items-start justify-between gap-3">
+        <RequestReceiptDialog
+          title={event?.receipt?.receipt_number || event?.receipt_number || `Request #${openId}`}
+          status={event?.status}
+          reason={event?.current_reason || event?.original_reason}
+          requester={event?.requested_by}
+          submittedAt={event?.created_at}
+          receipt={event?.receipt || (opened?.sale_id ? { id: opened.sale_id, receipt_number: opened.receipt_number, total: opened.amount } : null)}
+          lines={event?.lines}
+          note={event?.receipt_note}
+          onClose={() => setOpenId(null)}
+        >
+          {detailQ.isLoading ? <div className="text-text2">Loading the receipt…</div> : null}
+          {event?.error ? <div className="text-err">{event.error}</div> : null}
+          {(event?.history || []).length ? (
             <div>
-              <div className="text-lg font-extrabold text-text">Request #{openId}</div>
-              <div className="text-sm text-text2">{event?.status || "Loading…"}</div>
-            </div>
-            <Button variant="ghost" onClick={() => setOpenId(null)}>Close</Button>
-          </div>
-          {detailQ.isLoading ? <div className="text-sm text-text2">Loading request…</div> : null}
-          {event?.error ? <div className="text-sm text-err">{event.error}</div> : null}
-          {event && !event.error ? (
-            <div className="space-y-3 text-sm">
-              <div>Receipt <span className="font-semibold text-text">{event.receipt?.receipt_number || event.receipt_number || "—"}</span></div>
-              <div>Receipt status <span className="font-semibold text-text">{event.receipt?.status || "—"}</span></div>
-              <div>Total <span className="font-semibold text-text">{KES(event.receipt?.total ?? event.amount)}</span></div>
-              <div>Requested by <span className="font-semibold text-text">{event.requested_by || "—"}</span> at {String(event.created_at || "").replace("T", " ").slice(0, 19)}</div>
-              <div>Original reason <span className="text-text">{event.original_reason || "—"}</span></div>
-              <div>Current reason <span className="text-text">{event.current_reason || "—"}</span></div>
-              <div>Reviewer <span className="text-text">{event.reviewed_by || "Not reviewed"}</span></div>
-              <div>Review comment <span className="text-text">{event.review_note || "None"}</span></div>
-              {event.receipt_note ? <div className="text-err">{event.receipt_note}</div> : null}
-              {(event.lines || []).length ? (
-                <div>
-                  {event.lines!.map((line, index) => (
-                    <div key={index} className="text-text2">{line.product_name} · {line.quantity} · {KES(line.total)}</div>
-                  ))}
-                </div>
-              ) : null}
-              {(event.history || []).length ? (
-                <div>
-                  <div className="font-semibold text-text">History</div>
-                  {event.history!.map((item, index) => (
-                    <div key={index} className="text-text2">{item.action} · {item.by || "—"} · {item.note || item.reason || ""}</div>
-                  ))}
-                </div>
-              ) : null}
-              {!locked ? (
-                <div className="space-y-2">
-                  <Input aria-label="Corrected reason" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Corrected reason" />
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" onClick={() => correctM.mutate()} disabled={correctM.isPending}>Save correction</Button>
-                    {event.status === "returned" ? (
-                      <Button size="sm" variant="primary" onClick={() => resubmitM.mutate()}>Resubmit</Button>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
-              {canReview && (event.status === "pending" || event.status === "escalated") ? (
-                <div className="space-y-2">
-                  <Input aria-label="Review comment" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Review comment" />
-                  {sessionSuper ? (
-                    <div className="text-xs text-text2">Signed in as Super Admin. This approval does not ask for the PIN again.</div>
-                  ) : (
-                    <Input
-                      type="password"
-                      autoComplete="off"
-                      aria-label="Super-Admin PIN"
-                      value={pin}
-                      onChange={(e) => setPin(e.target.value)}
-                      placeholder="Super-Admin PIN"
-                    />
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="primary" onClick={() => decideM.mutate("approve")}>Approve and void</Button>
-                    <Button size="sm" variant="secondary" onClick={() => returnM.mutate()}>Return for correction</Button>
-                    <Button size="sm" variant="ghost" onClick={() => decideM.mutate("reject")}>Reject</Button>
-                  </div>
-                </div>
-              ) : null}
-              {msg ? <div className="text-text">{msg}</div> : null}
+              <div className="font-semibold text-text">History</div>
+              {event!.history!.map((item, index) => (
+                <div key={index} className="text-text2">{item.action} · {item.by || "—"} · {item.note || item.reason || ""}</div>
+              ))}
             </div>
           ) : null}
-        </Card>
+          {event && !event.error && !locked ? (
+            <div className="space-y-2">
+              <Input aria-label="Corrected reason" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Corrected reason" />
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => correctM.mutate()} disabled={correctM.isPending}>Save correction</Button>
+                {event.status === "returned" ? (
+                  <Button size="sm" variant="primary" onClick={() => resubmitM.mutate()}>Resubmit</Button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+          {canReview && (event?.status === "pending" || event?.status === "escalated") ? (
+            <div className="space-y-2">
+              <Input aria-label="Review comment" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Review comment" />
+              {sessionSuper ? (
+                <div className="text-xs text-text2">Signed in as Super Admin. This approval does not ask for the PIN again.</div>
+              ) : (
+                <Input type="password" autoComplete="off" aria-label="Super-Admin PIN" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Super-Admin PIN" />
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="primary" onClick={() => decideM.mutate("approve")}>Approve and void</Button>
+                <Button size="sm" variant="secondary" onClick={() => returnM.mutate()}>Return for correction</Button>
+                <Button size="sm" variant="ghost" onClick={() => decideM.mutate("reject")}>Reject</Button>
+              </div>
+            </div>
+          ) : null}
+          {msg ? <div className="text-text">{msg}</div> : null}
+        </RequestReceiptDialog>
       ) : null}
     </AppShell>
   );

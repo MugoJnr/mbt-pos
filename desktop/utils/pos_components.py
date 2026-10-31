@@ -2188,9 +2188,84 @@ class CustomerCard(QFrame):
         self._btn.clicked.connect(self._open_picker)
         lay.addWidget(self._btn)
 
+        self._new_section = QFrame()
+        self._new_section.setObjectName('posNewCustomerSection')
+        self._new_section.setAttribute(Qt.WA_StyledBackground, True)
+        section = QVBoxLayout(self._new_section)
+        section.setContentsMargins(10, 8, 10, 8)
+        section.setSpacing(6)
+        title = QLabel('New customer')
+        title.setObjectName('posNewCustomerTitle')
+        section.addWidget(title)
+        hint = QLabel('This credit stays on their account. Name is required. Phone is optional.')
+        hint.setWordWrap(True)
+        hint.setObjectName('posNewCustomerHint')
+        section.addWidget(hint)
+        self._new_name = QLineEdit()
+        self._new_name.setPlaceholderText('Customer name')
+        self._new_name.setMinimumHeight(36)
+        self._new_phone = QLineEdit()
+        self._new_phone.setPlaceholderText('Phone (optional)')
+        self._new_phone.setMinimumHeight(36)
+        section.addWidget(self._new_name)
+        section.addWidget(self._new_phone)
+        self._new_save = PrimaryBtn('Save and use this customer', 36)
+        self._new_save.clicked.connect(self.save_new_customer)
+        section.addWidget(self._new_save)
+        self._new_section.hide()
+        lay.addWidget(self._new_section)
+
         self._pro_row = None
         self._new_btn_slot = None
         self.refresh_theme()
+
+    def show_new_customer_section(self, show: bool):
+        """Credit and part-payment sales get a place to add the customer."""
+        self._new_section.setVisible(bool(show))
+
+    def has_typed_new_customer(self) -> bool:
+        return bool(self._new_name.text().strip())
+
+    def save_new_customer(self):
+        """Create the typed customer and select them for this sale. Returns the id."""
+        name = self._new_name.text().strip()
+        phone = self._new_phone.text().strip()
+        if not name:
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, 'Enter the customer name. Phone can be left blank.')
+            return None
+        api = self._api
+        if api is None:
+            window = self.window()
+            api = getattr(window, 'api', None)
+        if api is None:
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, 'Cannot add a customer yet.')
+            return None
+        try:
+            result = api.create_customer({'name': name, 'phone': phone}) or {}
+        except Exception as exc:
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, str(exc))
+            return None
+        if not result.get('success') or not result.get('customer_id'):
+            from desktop.utils.quiet_ui import soft_warn
+            soft_warn(self, result.get('error') or 'Could not save the customer.')
+            return None
+        cid = int(result['customer_id'])
+        try:
+            customers = api.get_customers() or []
+            self.set_customers_cache(customers)
+            self.selector.load_customers(customers)
+            self.selector.select_customer(cid)
+            cust = next((row for row in customers if int(row.get('id') or 0) == cid), None)
+            self.set_customer(cust, walk_in=False)
+            self.selector.currentIndexChanged.emit(self.selector.currentIndex())
+        except Exception:
+            pass
+        self._new_name.clear()
+        self._new_phone.clear()
+        return cid
 
     def set_pro_row(self, enabled: bool = True, new_btn=None):
         """Checkout Pro: Walk-in chip + New Customer on one compact row."""
@@ -2435,6 +2510,12 @@ class CustomerCard(QFrame):
         bg = qss_alpha(C['gold'], 0.12) if not walk_in else C['card2']
         self.setStyleSheet(
             f"QFrame#posCustomerCard{{background:transparent;border:none;}}"
+            f"QFrame#posNewCustomerSection{{background:{C['card2']};"
+            f"border:1px solid {C['gold']};border-radius:10px;}}"
+            f"QLabel#posNewCustomerTitle{{color:{C['gold']};font-size:12px;"
+            f"font-weight:800;background:transparent;}}"
+            f"QLabel#posNewCustomerHint{{color:{C['text2']};font-size:11px;"
+            f"background:transparent;}}"
             f"QPushButton#posCustChip{{background:{bg};color:{C['text']};"
             f"border:1.5px solid {border};border-radius:{RADIUS['md']}px;"
             f"font-size:13px;font-weight:800;text-align:left;padding:0 14px;"
@@ -2466,6 +2547,7 @@ class CustomerSelector(QComboBox):
         if le:
             le.setPlaceholderText('Search customer…')
             le.textEdited.connect(self._filter)
+            le.installEventFilter(self)
             # Leading search + trailing chevron (QSS often hides native arrow)
             self._search_act = QAction('>', self)
             self._search_act.setToolTip('Type to search customers')
@@ -2474,6 +2556,7 @@ class CustomerSelector(QComboBox):
             self._drop_act.setToolTip('Browse customers')
             self._drop_act.triggered.connect(self.showPopup)
             le.addAction(self._drop_act, QLineEdit.TrailingPosition)
+        self._suppress_browse_until = 0
         self.refresh_theme()
 
     def load_customers(self, customers: list):
@@ -2491,6 +2574,8 @@ class CustomerSelector(QComboBox):
 
     def _rebuild(self, keep=None, query=''):
         q = (query or '').strip().lower()
+        editor = self.lineEdit()
+        typed = editor.text() if editor is not None else ''
         self.blockSignals(True)
         self.clear()
         # Always keep Walk-in at top
@@ -2506,10 +2591,19 @@ class CustomerSelector(QComboBox):
             self.addItem('No matches', None)
         if keep is not None:
             idx = self.findData(keep)
-            self.setCurrentIndex(idx if idx >= 0 else 0)
+            if idx >= 0:
+                self.setCurrentIndex(idx)
+            elif not q:
+                self.setCurrentIndex(0)
+            else:
+                self.setCurrentIndex(-1)
         elif not q:
             self.setCurrentIndex(0)
         self.blockSignals(False)
+        if q and editor is not None:
+            editor.blockSignals(True)
+            editor.setText(typed if typed else query)
+            editor.blockSignals(False)
         # Only auto-open dropdown while the cashier is typing in this field
         le = self.lineEdit()
         if (q and matched > 1 and not self.view().isVisible()
@@ -2594,7 +2688,39 @@ class CustomerSelector(QComboBox):
                 return
         super().mousePressEvent(event)
 
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        if (obj is self.lineEdit() and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton):
+            panel = getattr(self, '_mbt_row_popup', None)
+            open_now = False
+            try:
+                open_now = panel is not None and panel.isVisible()
+            except RuntimeError:
+                open_now = False
+            if open_now:
+                self.hidePopup()
+                return True
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, self._browse_from_click)
+        return super().eventFilter(obj, event)
+
+    def _browse_from_click(self):
+        from PyQt5.QtCore import QDateTime
+        if QDateTime.currentMSecsSinceEpoch() < getattr(self, '_suppress_browse_until', 0):
+            return
+        editor = self.lineEdit()
+        if editor is None or not editor.hasFocus() or not self.isVisible():
+            return
+        self.showPopup()
+
+    def hidePopup(self):
+        from PyQt5.QtCore import QDateTime
+        self._suppress_browse_until = QDateTime.currentMSecsSinceEpoch() + 200
+        super().hidePopup()
+
     def showPopup(self):
+        self._expand_chosen_row()
         self.refresh_theme()
         super().showPopup()
         try:
@@ -2608,6 +2734,22 @@ class CustomerSelector(QComboBox):
                     max_items=12))
         except Exception:
             pass
+
+    def _expand_chosen_row(self):
+        from desktop.utils.select_controls import search_click_lists_everything
+        editor = self.lineEdit()
+        typed = editor.text() if editor is not None else ''
+        labels = [label for label, _cid in self._all]
+        if not search_click_lists_everything(typed, labels):
+            return
+        shown = [self.itemText(i) for i in range(self.count())]
+        if shown == labels:
+            return
+        self._rebuild(keep=self.currentData(), query='')
+        if editor is not None and typed and editor.text() != typed:
+            editor.blockSignals(True)
+            editor.setText(typed)
+            editor.blockSignals(False)
 
     def refresh_theme(self):
         bg = C['card']

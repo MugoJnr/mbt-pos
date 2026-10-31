@@ -427,6 +427,17 @@ def icon_gear(size=16, accent=None) -> QIcon:
     return _paint_base(size, draw, accent=accent)
 
 
+def icon_more(size=16, accent=None) -> QIcon:
+    """Three painted dots. The vertical-ellipsis character renders as a colon."""
+    def draw(p, s, gold, muted):
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(muted))
+        radius = max(1.4, s * 0.09)
+        for y in (0.28, 0.50, 0.72):
+            p.drawEllipse(QPointF(s * 0.50, s * y), radius, radius)
+    return _paint_base(size, draw, accent=accent)
+
+
 def icon_plus(size=16, accent=None) -> QIcon:
     def draw(p, s, gold, muted):
         p.setPen(QPen(gold, max(1.6, s * 0.12), Qt.SolidLine, Qt.RoundCap))
@@ -638,6 +649,7 @@ ACTION_ICON_BUILDERS = {
     'settings': icon_settings,
     'gear': icon_settings,
     'plus': icon_plus,
+    'more': icon_more,
     'warning': icon_warning,
     'ai': icon_ai,
     'sparkle': icon_ai,

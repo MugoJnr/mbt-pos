@@ -53,7 +53,7 @@ import {
 } from "@/components/ui-kit";
 import { useAuth } from "@/lib/auth";
 import { GET, POST } from "@/lib/api";
-import { KES, localISO, rangeForPreset } from "@/lib/format";
+import { KES, localISO, rangeForPreset, shopTodayISO } from "@/lib/format";
 import { loadPrefs, prefsRefreshMs, type DashboardPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -135,14 +135,21 @@ function Dashboard() {
   const [preset, setPreset] = useState("Today");
   const [customStart, setCustomStart] = useState(localISO());
   const [customEnd, setCustomEnd] = useState(localISO());
+  const roleEarly = String(user?.role || "").toLowerCase();
+  const cashierDay = roleEarly === "cashier";
+  const lockedToToday = false;
   const range = useMemo(() => {
+    if (cashierDay) {
+      if (preset === "Choose a day") return { start: customStart, end: customStart };
+      return { start: shopTodayISO(), end: shopTodayISO() };
+    }
     if (preset === "Choose a day") return { start: customStart, end: customStart };
     if (preset === "Custom") {
       const end = customEnd < customStart ? customStart : customEnd;
       return { start: customStart, end };
     }
     return rangeForPreset(preset);
-  }, [preset, customStart, customEnd]);
+  }, [cashierDay, preset, customStart, customEnd]);
   const d = range.start;
   const rangeEnd = range.end;
   const rangeLabel = d === rangeEnd ? d : `${d} to ${rangeEnd}`;
@@ -242,7 +249,23 @@ function Dashboard() {
     Number(cc.low_stock ?? 0) ||
     products.filter((p: any) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)).length;
 
-  const revenue = Number(s.total_revenue ?? 0);
+  const finance = wrap.finance || {};
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canFinance = actions
+    ? actions.includes("reports.view_all") || actions.includes("accounting.view")
+    : ["viewer", "manager", "admin", "superadmin"].includes(role);
+  const revenue = Number(finance.total_sales ?? s.total_revenue ?? 0);
+  const paidSales = Number(finance.paid_sales ?? s.paid_sales ?? 0);
+  const grossProfit = Number(finance.gross_profit ?? s.gross_profit ?? 0);
+  const realized = Number(finance.realized_gross_profit ?? s.realized_gross_profit ?? 0);
+  const unrealized = Number(finance.unrealized_gross_profit ?? s.unrealized_gross_profit ?? 0);
+  const newCredit = Number(finance.new_credit ?? s.new_credit ?? 0);
+  const collected = Number(finance.total_collected ?? s.collected_revenue ?? 0);
+  const repayments = Number(finance.debt_repayments ?? s.debt_repayments ?? 0);
+  const outstanding = Number(finance.outstanding_debt ?? s.outstanding_debt ?? 0);
+  const inventoryCost = Number(finance.inventory_cost_value ?? 0);
+  const operatingExpenses = finance.expenses == null ? null : Number(finance.expenses);
+  const netResult = finance.net_operating_result;
   const txns = Number(s.total_transactions ?? sales.length ?? 0);
   const avgSale = Number(s.avg_transaction ?? 0);
   const discounts = Number(s.total_discounts ?? 0);
@@ -256,9 +279,12 @@ function Dashboard() {
     payRows
       .filter((p: any) => names.includes(String(p.payment_method || "").toLowerCase().replace(/\s+/g, "")))
       .reduce((sum: number, p: any) => sum + Number(p.total || 0), 0);
-  const cash = payOf(["cash"]);
-  const mpesa = payOf(["mpesa", "m-pesa"]);
-  const bank = payOf(["bank", "card", "bank/card"]);
+  const hasTenderRollup = s.cash_collected != null || s.mpesa_collected != null;
+  const cash = hasTenderRollup ? Number(s.cash_collected || 0) : payOf(["cash"]);
+  const mpesa = hasTenderRollup ? Number(s.mpesa_collected || 0) : payOf(["mpesa", "m-pesa"]);
+  const bank = hasTenderRollup
+    ? Number(s.card_collected || 0) + Number(s.bank_collected || 0)
+    : payOf(["bank", "card", "bank/card"]);
   const businessHealth = Number(cc.business_health ?? healthQ.data?.score ?? 0);
   const topProducts = Array.isArray(wrap.top_products) && wrap.top_products.length
     ? wrap.top_products
@@ -327,6 +353,18 @@ function Dashboard() {
   }, [wrap.hourly, sales]);
 
   const byPayment = useMemo(() => {
+    const summary = wrap.summary || {};
+    if (summary.cash_collected != null || summary.mpesa_collected != null) {
+      return [
+        ["Cash", summary.cash_collected],
+        ["M-Pesa", summary.mpesa_collected],
+        ["Card", summary.card_collected],
+        ["Bank", summary.bank_collected],
+        ["Other", summary.other_collected],
+      ]
+        .map(([name, total]) => ({ name: String(name), total: Number(total || 0) }))
+        .filter((row) => row.total > 0.009);
+    }
     const raw = Array.isArray(wrap.by_payment)
       ? wrap.by_payment
       : Array.isArray(cc.by_payment)
@@ -358,7 +396,7 @@ function Dashboard() {
       }
     }
     return order.map((name) => ({ name, total: map[name] }));
-  }, [cc.by_payment, wrap.by_payment, sales]);
+  }, [cc.by_payment, wrap.by_payment, wrap.summary, sales]);
 
   const peakHour = useMemo(() => {
     if (!hourly.length) return null;
@@ -407,18 +445,21 @@ function Dashboard() {
               onChange={(e) => setPreset(e.target.value)}
               className="mt-1 min-h-[44px] min-w-[160px]"
             >
-              {["Today", "Yesterday", "Choose a day", "This Week", "This Month", "Last Month", "Custom"].map((p) => (
+              {(cashierDay
+                ? ["Today", "Choose a day"]
+                : ["Today", "Yesterday", "Choose a day", "This Week", "This Month", "Last Month", "Custom"]
+              ).map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </Select>
           </label>
-          {preset === "Choose a day" || preset === "Custom" ? (
+          {(preset === "Choose a day" || (!cashierDay && preset === "Custom")) ? (
             <label className="block text-xs font-semibold text-text2">
               {preset === "Choose a day" ? "Day" : "From"}
               <Input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 min-h-[44px]" />
             </label>
           ) : null}
-          {preset === "Custom" ? (
+          {!cashierDay && preset === "Custom" ? (
             <label className="block text-xs font-semibold text-text2">
               To
               <Input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 min-h-[44px]" />
@@ -459,13 +500,15 @@ function Dashboard() {
         ) : (
           <Badge tone="ok">Inventory healthy</Badge>
         )}
-        {debts > 0 ? (
-          <Link to="/debt">
-            <Badge tone="warn">Outstanding credit {KES(debts)}</Badge>
-          </Link>
-        ) : ccQ.isError ? null : (
-          <Badge tone="ok">No open credit</Badge>
-        )}
+        {canFinance ? (
+          outstanding > 0 ? (
+            <Link to="/debt">
+              <Badge tone="warn">Customer outstanding {KES(outstanding)}</Badge>
+            </Link>
+          ) : (
+            <Badge tone="ok">No open credit</Badge>
+          )
+        ) : null}
         {syncPending > 0 ? (
           <Badge tone="info">{syncPending} sync pending</Badge>
         ) : (
@@ -495,35 +538,72 @@ function Dashboard() {
             )}
           >
             <KpiCard
-              label="Sales"
+              label="Total sales"
               value={KES(revenue)}
-              sub={`${txns} transactions · ${rangeLabel}`}
+              sub={`Including credit sales · ${txns} receipts · ${rangeLabel}`}
               accent="gold"
               icon={<ShoppingCart className="h-5 w-5" />}
             />
-            <KpiCard
-              label="Avg sale"
-              value={KES(avgSale)}
-              sub={discounts ? `Discounts ${KES(discounts)}` : rangeLabel}
-              accent="ok"
-              icon={<DollarSign className="h-5 w-5" />}
-            />
-            <KpiCard
-              label="Tax"
-              value={KES(tax)}
-              sub={rangeLabel}
-              accent="info"
-              icon={<LineChart className="h-5 w-5" />}
-            />
-            <KpiCard
-              label="Low Stock"
-              value={String(lowStock)}
-              sub="Products at/below min"
-              accent={lowStock ? "warn" : "ok"}
-              icon={<AlertTriangle className="h-5 w-5" />}
-            />
+            {canFinance ? (
+              <KpiCard
+                label="Paid sales"
+                value={KES(paidSales)}
+                sub="Paid against these sales. Unpaid credit is excluded."
+                accent="ok"
+                icon={<DollarSign className="h-5 w-5" />}
+              />
+            ) : null}
+            {canFinance ? (
+              <KpiCard
+                label="Gross profit"
+                value={KES(grossProfit)}
+                sub={finance.profit_note || "Net sales less the cost recorded on the sale."}
+                accent="info"
+                icon={<LineChart className="h-5 w-5" />}
+              />
+            ) : null}
+            {canFinance ? (
+              <KpiCard
+                label="Customer outstanding"
+                value={KES(outstanding)}
+                sub="Money customers owe the shop. Not supplier bills."
+                accent={outstanding > 0 ? "warn" : "ok"}
+                icon={<Landmark className="h-5 w-5" />}
+              />
+            ) : (
+              <KpiCard
+                label="Low stock"
+                value={String(lowStock)}
+                sub="Products at or below the minimum"
+                accent={lowStock ? "warn" : "ok"}
+                icon={<AlertTriangle className="h-5 w-5" />}
+              />
+            )}
           </div>
 
+          {canFinance ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+            <KpiCard label="Realized gross profit" value={KES(realized)} sub="Profit on the paid portion. Not cash profit." accent="ok" icon={<TrendingUp className="h-5 w-5" />} />
+            <KpiCard label="Unrealized gross profit" value={KES(unrealized)} sub="Profit on unpaid credit. It has not been collected." accent="warn" icon={<LineChart className="h-5 w-5" />} />
+            <KpiCard label="New credit" value={KES(newCredit)} sub="Unpaid portion of sales in this period." accent="gold" icon={<Landmark className="h-5 w-5" />} />
+            <KpiCard label="Money collected" value={KES(collected)} sub={`Includes debt repayments ${KES(repayments)}. Not sales.`} accent="ok" icon={<Banknote className="h-5 w-5" />} />
+          </div>
+          ) : null}
+
+          {canFinance ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+            <Link to="/debt">
+              <KpiCard label="Supplier outstanding" value={KES(Number(finance.supplier_outstanding || 0))} sub="Money the shop owes suppliers." accent={Number(finance.supplier_outstanding || 0) > 0 ? "warn" : "ok"} icon={<Landmark className="h-5 w-5" />} />
+            </Link>
+            <KpiCard label="Supplier invoices" value={KES(Number(finance.supplier_invoiced || 0))} sub="Deliveries recorded in this period. Not sales." accent="info" icon={<ShoppingCart className="h-5 w-5" />} />
+            <KpiCard label="Supplier payments" value={KES(Number(finance.supplier_paid || 0))} sub="Paid to suppliers in this period. Not collections." accent="ok" icon={<Banknote className="h-5 w-5" />} />
+            <Link to="/debt">
+              <KpiCard label="Overdue supplier invoices" value={KES(Number(finance.supplier_overdue || 0))} sub="Outstanding past the due date." accent={Number(finance.supplier_overdue || 0) > 0 ? "warn" : "ok"} icon={<AlertTriangle className="h-5 w-5" />} />
+            </Link>
+          </div>
+          ) : null}
+
+          {canFinance ? (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
             <KpiCard
               label="Cash"
@@ -547,39 +627,40 @@ function Dashboard() {
               icon={<Building2 className="h-5 w-5" />}
             />
           </div>
+          ) : null}
 
+          {canFinance ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
             <KpiCard
-              label="Expenses"
-              value={KES(expenses)}
-              sub="Month to date"
+              label="Operating expenses"
+              value={operatingExpenses == null ? "—" : KES(operatingExpenses)}
+              sub={rangeLabel}
               accent="warn"
               icon={<Wallet className="h-5 w-5" />}
             />
-            {showInventoryValue ? (
-              <KpiCard
-                label="Inventory Value"
-                value={KES(Number(cc.inventory_value))}
-                sub={`${products.length} SKUs`}
-                accent="info"
-                icon={<Package className="h-5 w-5" />}
-              />
-            ) : null}
             <KpiCard
-              label="Pending Debts"
-              value={KES(debts)}
-              sub="Open invoices"
-              accent={debts > 0 ? "warn" : "ok"}
-              icon={<Landmark className="h-5 w-5" />}
-            />
-            <KpiCard
-              label="Completed sales"
-              value={KES(cashFlow)}
-              sub={rangeLabel}
-              accent="gold"
+              label="Net operating result"
+              value={netResult == null ? "—" : KES(Number(netResult))}
+              sub={netResult == null ? "Shown when every sale has a recorded cost." : "Gross profit less operating expenses."}
+              accent="info"
               icon={<TrendingUp className="h-5 w-5" />}
             />
+            <KpiCard
+              label="Inventory cost"
+              value={KES(inventoryCost)}
+              sub={`${finance.product_count ?? products.length} products · cost, not selling price`}
+              accent="info"
+              icon={<Package className="h-5 w-5" />}
+            />
+            <KpiCard
+              label="Low stock"
+              value={String(finance.low_stock ?? lowStock)}
+              sub={`${finance.out_of_stock ?? 0} out of stock`}
+              accent={lowStock ? "warn" : "ok"}
+              icon={<AlertTriangle className="h-5 w-5" />}
+            />
           </div>
+          ) : null}
         </>
       )}
 
@@ -662,7 +743,7 @@ function Dashboard() {
             </div>
           </Card>
 
-          {prefs.widgets.paymentMix ? (
+          {canFinance && prefs.widgets.paymentMix ? (
             <Card className="p-4">
               <SectionTitle>By payment</SectionTitle>
               <div className="h-[200px] w-full mt-1">
@@ -692,7 +773,7 @@ function Dashboard() {
 
       {prefs.showWidgets ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
-          {prefs.widgets.bestSellers ? (
+          {canFinance && prefs.widgets.bestSellers ? (
             <Card className="p-4">
               <SectionTitle>Best sellers · {rangeLabel}</SectionTitle>
               {topProducts.length === 0 ? (
@@ -718,7 +799,7 @@ function Dashboard() {
             </Card>
           ) : null}
 
-          {prefs.widgets.topCategories ? (
+          {canFinance && prefs.widgets.topCategories ? (
             <Card className="p-4">
               <SectionTitle>Top categories</SectionTitle>
               {topCategories.length === 0 ? (
@@ -791,9 +872,11 @@ function Dashboard() {
           <div className="p-4 border-b border-border">
             <SectionTitle
               action={
+                lockedToToday ? null : (
                 <Link to="/reports" className="text-sm text-gold font-semibold">
                   Reports
                 </Link>
+                )
               }
             >
               Sales · {rangeLabel}

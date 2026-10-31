@@ -19,6 +19,8 @@ _TYPE_LABELS = {
     "credit": "Credit",
     "stock_adjust": "Stock adjustment",
     "stock_adjustment": "Stock adjustment",
+    "supplier_void": "Supplier delivery void",
+    "supplier_backdate": "Supplier delivery backdate",
 }
 _STATUS_LABELS = {
     "submitted": "Pending approval",
@@ -45,11 +47,17 @@ def _label(status: str) -> str:
     return _STATUS_LABELS.get(key, key.replace("_", " ").title() or "Unknown")
 
 
-def _next_action(actor: dict, requester_id, status: str) -> str:
+def _reviewers_for(kind: str) -> set[str]:
+    if kind in ("supplier_void", "supplier_backdate"):
+        return {"admin", "superadmin"}
+    return _REVIEW_ROLES
+
+
+def _next_action(actor: dict, requester_id, status: str, kind: str = "") -> str:
     key = (status or "").strip().lower()
     own = requester_id is not None and int(requester_id or 0) == int((actor or {}).get("id") or 0)
     if key in _AWAITING:
-        if _role(actor) in _REVIEW_ROLES and not own:
+        if _role(actor) in _reviewers_for(kind) and not own:
             return "Awaiting your review"
         if own:
             return "Waiting for another reviewer"
@@ -84,7 +92,7 @@ def _row(**fields) -> dict:
         "reason": fields.get("reason") or "",
         "status": status,
         "status_label": _label(status),
-        "next_action": _next_action(fields.get("actor") or {}, fields.get("requester_id"), status),
+        "next_action": _next_action(fields.get("actor") or {}, fields.get("requester_id"), status, kind),
         "updated_at": fields.get("updated_at") or fields.get("submitted_at") or "",
     }
 
@@ -102,7 +110,7 @@ def _matches(item: dict, filters: dict, actor: dict) -> bool:
     if queue == "mine" and not own:
         return False
     if queue == "action":
-        if _role(actor) in _REVIEW_ROLES:
+        if _role(actor) in _reviewers_for(item.get("type") or ""):
             if item["status"] not in _AWAITING or own:
                 return False
         elif item["status"] not in {"returned", "draft"} or not own:
@@ -215,6 +223,44 @@ def _stock(db, actor) -> list[dict]:
     return items
 
 
+def _deliveries(db, actor) -> list[dict]:
+    if "supplier_delivery_requests" not in _tables(db):
+        return []
+    own = "" if _role(actor) in _REVIEW_ROLES else "WHERE q.user_id=?"
+    params = () if not own else (actor.get("id"),)
+    rows = db.execute(
+        "SELECT q.*, r.receipt_number, r.grand_total, s.name AS supplier_name "
+        "FROM supplier_delivery_requests q "
+        "JOIN stock_receipts r ON r.id=q.receipt_id "
+        "LEFT JOIN suppliers s ON s.id=r.supplier_id "
+        f"{own} ORDER BY q.id DESC",
+        params,
+    ).fetchall()
+    items = []
+    for row in rows:
+        record = dict(row)
+        kind = "supplier_void" if record.get("kind") == "void" else "supplier_backdate"
+        total = record.get("grand_total")
+        items.append(_row(
+            actor=actor,
+            source="delivery",
+            source_id=record["id"],
+            reference=record.get("request_number") or f"SDR-{record['id']}",
+            type=kind,
+            subject=f"{record.get('receipt_number') or ''} · {record.get('supplier_name') or ''}".strip(" ·"),
+            requester=record.get("username"),
+            requester_id=record.get("user_id"),
+            submitted_at=record.get("created_at"),
+            business_date=record.get("requested_date") or "",
+            amount=total,
+            impact="" if total in (None, "") else f"KES {float(total):,.2f}",
+            reason=record.get("reason"),
+            status=record.get("status"),
+            updated_at=record.get("reviewed_at") or record.get("created_at"),
+        ))
+    return items
+
+
 def list_centre(db, actor: dict, filters: dict | None = None) -> dict:
     filters = filters or {}
     if _role(actor) not in _STAFF_ROLES:
@@ -227,6 +273,8 @@ def list_centre(db, actor: dict, filters: dict | None = None) -> dict:
         items.extend(_approvals(db, actor))
     if "stock_adjustment_requests" in tables:
         items.extend(_stock(db, actor))
+    if "supplier_delivery_requests" in tables:
+        items.extend(_deliveries(db, actor))
     visible = [item for item in items if _matches(item, {**filters, "queue": "all", "status": ""}, actor)]
     queued = [item for item in visible if _matches(item, filters, actor)]
     queued.sort(key=lambda item: str(item.get("updated_at") or item.get("submitted_at") or ""), reverse=True)
@@ -268,6 +316,35 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
             detail["source"] = "approval"
             detail["type_label"] = "Sale void"
             return detail
+        if record.get("type") == "consumption_void":
+            import json
+            try:
+                meta = json.loads(record.get("meta_json") or "{}")
+            except json.JSONDecodeError:
+                meta = {}
+            try:
+                consumption_id = int((meta or {}).get("consumption_id") or 0)
+            except (TypeError, ValueError):
+                consumption_id = 0
+            record["consumption_id"] = consumption_id
+            record["kind"] = "consumption"
+            if consumption_id:
+                header = db.execute(
+                    "SELECT c.*, d.name AS department_name FROM stock_consumptions c "
+                    "LEFT JOIN departments d ON d.id=c.department_id WHERE c.id=?",
+                    (consumption_id,),
+                ).fetchone()
+                lines = db.execute(
+                    "SELECT sci.product_name, sci.quantity, sci.unit_cost, sci.total_cost, "
+                    "p.sku, p.unit FROM stock_consumption_items sci "
+                    "LEFT JOIN products p ON p.id=sci.product_id "
+                    "WHERE sci.consumption_id=? ORDER BY sci.id",
+                    (consumption_id,),
+                ).fetchall()
+                if header:
+                    record["consumption"] = dict(header)
+                    record["lines"] = [dict(line) for line in lines]
+                    record["receipt_note"] = "INTERNAL CONSUMPTION. This is not a customer sale."
         record["source"] = "approval"
         record["type_label"] = _TYPE_LABELS.get(record.get("type"), "Request")
         record["status_label"] = _label(record.get("status"))
@@ -282,5 +359,27 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
         record["source"] = "stock"
         record["type_label"] = "Stock adjustment"
         record["status_label"] = _label(record.get("status"))
+        return record
+    if source == "delivery":
+        row = db.execute(
+            "SELECT q.*, r.receipt_number, r.grand_total, r.status AS receipt_status, "
+            "s.name AS supplier_name FROM supplier_delivery_requests q "
+            "JOIN stock_receipts r ON r.id=q.receipt_id "
+            "LEFT JOIN suppliers s ON s.id=r.supplier_id WHERE q.id=?",
+            (int(source_id),),
+        ).fetchone()
+        if not row:
+            return {"error": "That request is not in this shop."}
+        record = dict(row)
+        if _role(actor) not in _REVIEW_ROLES and int(record.get("user_id") or 0) != int(actor.get("id") or 0):
+            return {"error": "You cannot view this request."}
+        kind = "supplier_void" if record.get("kind") == "void" else "supplier_backdate"
+        record["source"] = "delivery"
+        record["type"] = kind
+        record["type_label"] = _TYPE_LABELS.get(kind, "Supplier delivery")
+        record["status_label"] = _label(record.get("status"))
+        record["reference"] = record.get("request_number") or ""
+        record["requester"] = record.get("username") or ""
+        record["requester_id"] = record.get("user_id")
         return record
     return {"error": "That request type is not supported."}

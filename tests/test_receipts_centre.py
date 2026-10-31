@@ -56,6 +56,26 @@ class ReceiptsCentreTests(unittest.TestCase):
         self._tmpdir.cleanup()
         self.ac._SCHEMA_READY = False
 
+    def test_same_day_sale_sorts_above_an_earlier_iso_timestamp(self):
+        from backend.receipts_centre import list_receipts
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET created_at=?, sale_date=? WHERE id=1",
+            ("2026-10-30 09:37:57", "2026-10-30"),
+        )
+        db.execute(
+            """INSERT INTO stock_consumptions
+               (reference_no, date, reason, total_cost, created_by_name, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            ("AUTO-SORT", "2026-10-30", "Shop use", 30, "qa-cashier", "2026-10-30T02:24:29"),
+        )
+        db.commit()
+        listed = list_receipts(db, can_sales=True, can_consumption=True)
+        db.close()
+        refs = [item["reference"] for item in listed["receipts"]]
+        self.assertGreater(refs.index("AUTO-SORT"), refs.index(listed["receipts"][0]["reference"]))
+        self.assertTrue(str(listed["receipts"][0]["reference"]).startswith("RCP-"))
+
     def test_sale_is_listed_with_name_and_line_total(self):
         from backend.receipts_centre import list_receipts, receipt_detail
         db = self.ac._db()

@@ -52,6 +52,16 @@ class _KPI(AnimatedKPI):
         self._is_light = is_light
         self.refresh_theme()
 
+    def refresh_theme(self):
+        super().refresh_theme()
+        self._val.setStyleSheet(
+            f"color:{self._accent or C['gold']}; font-size:18px; font-weight:800; "
+            f"background:transparent; border:none;"
+        )
+        self._sub.setStyleSheet(
+            f"color:{C['text2']}; font-size:11px; background:transparent; border:none;"
+        )
+
 
 # ---
 # SECTION CARD
@@ -303,11 +313,21 @@ class DashboardTab(QWidget):
         right_row = QHBoxLayout(); right_row.setSpacing(10)
 
         self._theme_btn = None
-        self._period = DatePresetSelect(include_last_month=True)
-        self._period.setMinimumWidth(150)
-        self._period.setFixedHeight(38)
-        self._period.presetChanged.connect(self._on_period)
-        right_row.addWidget(self._period)
+        from desktop.utils.security import dashboard_locked_to_today
+        if dashboard_locked_to_today(self.user):
+            self._period = None
+            self._period_key = 'today'
+            day_btn = QPushButton('Choose a day')
+            day_btn.setMinimumHeight(38)
+            day_btn.setCursor(Qt.PointingHandCursor)
+            day_btn.clicked.connect(self._cashier_pick_day)
+            right_row.addWidget(day_btn)
+        else:
+            self._period = DatePresetSelect(include_last_month=True)
+            self._period.setMinimumWidth(150)
+            self._period.setFixedHeight(38)
+            self._period.presetChanged.connect(self._on_period)
+            right_row.addWidget(self._period)
 
         ns_btn = QPushButton('+  New Sale')
         ns_btn.setObjectName('primaryBtn')
@@ -334,10 +354,12 @@ class DashboardTab(QWidget):
             kr1.addWidget(k)
         self._k_sales.set_actionable(True, 'Open Point of Sale', "Today's Sales")
         self._k_sales.clicked.connect(lambda: self.navigate.emit('sales'))
-        self._k_rev.set_actionable(True, 'Open sales reports', "Today's Revenue")
-        self._k_rev.clicked.connect(lambda: self.navigate.emit('reports'))
-        self._k_avg.set_actionable(True, 'Open sales reports', 'Average Transaction')
-        self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
+        from desktop.utils.security import dashboard_locked_to_today as _rev_locked
+        if not _rev_locked(self.user):
+            self._k_rev.set_actionable(True, 'Open sales reports', "Today's Revenue")
+            self._k_rev.clicked.connect(lambda: self.navigate.emit('reports'))
+            self._k_avg.set_actionable(True, 'Open sales reports', 'Average Transaction')
+            self._k_avg.clicked.connect(lambda: self.navigate.emit('reports'))
         self._k_low.set_actionable(True, 'Open Inventory low-stock items', 'Low Stock')
         self._k_low.clicked.connect(lambda: self.navigate.emit('inventory'))
         self._sticky_lay.addLayout(kr1)
@@ -409,14 +431,16 @@ class DashboardTab(QWidget):
         # -- CHARTS ROW (above Quick Actions so By Payment stays in fold) ---
         charts = QHBoxLayout(); charts.setSpacing(14)
         self._trend_chart = GoldLineChart(height=132)
+        from desktop.utils.security import dashboard_locked_to_today as _locked_today
+        _chart_span = 'Today' if _locked_today(self.user) else 'Last 7 Days'
         self._trend_card = ChartCard(
-            'Sales | Last 7 Days', self._trend_chart, expandable=True)
+            f'Sales | {_chart_span}', self._trend_chart, expandable=True)
         self._trend_card.activated.connect(
             lambda: self._open_chart_detail('trend'))
         apply_card_shadow(self._trend_card)
         self._pay_chart = PaymentBars()
         self._pay_card = ChartCard(
-            'By Payment | 7 Days', self._pay_chart, expandable=True)
+            f'By Payment | {_chart_span}', self._pay_chart, expandable=True)
         self._pay_card.activated.connect(
             lambda: self._open_chart_detail('payment'))
         apply_card_shadow(self._pay_card)
@@ -438,8 +462,10 @@ class DashboardTab(QWidget):
             ('sales',     'New Sale',  'gold', 'sales'),
             ('inventory', 'Inventory', 'ok',   'inventory'),
             ('debt',      'Debt',      'info', 'debt'),
-            ('reports',   'Reports',   'warn', 'reports'),
         ]
+        from desktop.utils.security import dashboard_locked_to_today as _qa_locked
+        if not _qa_locked(self.user):
+            actions.append(('reports', 'Reports', 'warn', 'reports'))
         self._qa_btns = []
         for icon, lbl, acc_key, tid in actions:
             acc = p[acc_key]
@@ -1047,7 +1073,20 @@ class DashboardTab(QWidget):
             start, end = end, start
         return start, end
 
+    def _cashier_pick_day(self):
+        picked = self._ask_range(single=True)
+        if not picked:
+            return
+        self._custom_start = self._custom_end = picked[0]
+        self._period_key = 'day'
+        self._load()
+
     def _on_period(self, key):
+        from desktop.utils.security import dashboard_locked_to_today
+        if dashboard_locked_to_today(self.user):
+            self._period_key = 'today'
+            self._load()
+            return
         key = key or 'today'
         if key in ('day', 'custom'):
             picked = self._ask_range(single=(key == 'day'))
@@ -1064,13 +1103,22 @@ class DashboardTab(QWidget):
     def _load(self):
         if not is_alive(self) or not is_alive(getattr(self, '_k_sales', None)):
             return
-        key = getattr(self, '_period_key', None) or (
-            self._period.current_key() if hasattr(self, '_period') else 'today')
-        if key in ('day', 'custom'):
-            start_d = getattr(self, '_custom_start', None) or date.today()
-            end_d = getattr(self, '_custom_end', None) or start_d
+        from desktop.utils.security import dashboard_locked_to_today
+        from desktop.utils.shop_time import shop_today
+        if dashboard_locked_to_today(self.user):
+            if getattr(self, '_period_key', 'today') == 'day' and getattr(self, '_custom_start', None):
+                start_d = end_d = self._custom_start
+            else:
+                start_d = end_d = shop_today()
+            key = 'today' if start_d == end_d == shop_today() else 'day'
         else:
-            start_d, end_d = date_range_for_preset(key)
+            key = getattr(self, '_period_key', None) or (
+                self._period.current_key() if getattr(self, '_period', None) else 'today')
+            if key in ('day', 'custom'):
+                start_d = getattr(self, '_custom_start', None) or date.today()
+                end_d = getattr(self, '_custom_end', None) or start_d
+            else:
+                start_d, end_d = date_range_for_preset(key)
         start = start_d.isoformat()
         end = end_d.isoformat()
         try:
@@ -1102,27 +1150,39 @@ class DashboardTab(QWidget):
                 today_rev = float(s.get('total_revenue', 0) or 0)
                 today_collected = float(
                     s.get('collected_revenue', s.get('collected_from_sales', 0)) or 0)
-                avg = float(s.get('avg_transaction', 0))
-                self._k_sales.set_value(str(today_tx))
-                # Primary revenue = total_revenue so Dashboard/Reports/Finance agree
-                self._k_rev.set_value(f"{cur} {today_rev:,.2f}")
-                self._k_rev.set_sub(f"Collected {cur} {today_collected:,.2f}")
-                self._k_avg.set_value(f"{cur} {avg:,.2f}")
+                from desktop.utils.financials import management_view
+                source = (self.user or {}).get('user') or self.user or {}
+                if management_view(source.get('role') or ''):
+                    self._k_sales.set_label('Total sales')
+                    self._k_sales.set_value(f"{cur} {today_rev:,.2f}")
+                    self._k_sales.set_sub(f"Includes credit · {today_tx}")
+                    self._k_rev.set_label('Paid sales')
+                    self._k_rev.set_value(f"{cur} {float(s.get('paid_sales') or 0):,.2f}")
+                    self._k_rev.set_sub('Credit excluded')
+                    self._k_avg.set_label('Gross profit')
+                    self._k_avg.set_value(f"{cur} {float(s.get('gross_profit') or 0):,.2f}")
+                    self._k_avg.set_sub('Sales minus recorded cost')
+                    self._k_rev.show()
+                    self._k_avg.show()
+                else:
+                    self._k_sales.set_label('Total sales')
+                    self._k_sales.set_value(f"{cur} {today_rev:,.2f}")
+                    self._k_sales.set_sub(f"This day · {today_tx} receipts")
+                    self._k_rev.hide()
+                    self._k_avg.hide()
                 if start_d == end_d:
                     period_lbl = start_d.strftime('%d %b %Y')
                 else:
                     period_lbl = f"{start_d.strftime('%d %b %Y')} – {end_d.strftime('%d %b %Y')}"
-                self._k_sales.set_label('Sales')
-                self._k_rev.set_label('Revenue')
-                self._k_sales.set_sub(period_lbl or 'Transactions')
                 if hasattr(self, '_shop_lbl'):
                     self._shop_lbl.setText(f"Showing {period_lbl}.")
                 cash_c = float(s.get('cash_sales_collected') or s.get('cash_received') or 0)
                 mpesa_c = float(s.get('mpesa_collected') or 0)
                 card_c = float(s.get('card_collected') or 0)
                 bank_c = float(s.get('bank_collected') or 0)
-                debt_c = float(s.get('debt_collected') or 0)
-                credit_out = float(s.get('credit_sales_outstanding') or 0)
+                other_c = float(s.get('other_collected') or 0)
+                debt_c = float(s.get('debt_repayments') or 0)
+                credit_out = float(s.get('new_credit') or 0)
                 if hasattr(self, '_k_credit_out'):
                     self._k_credit_out.set_value(f"{cur} {credit_out:,.2f}")
                     self._k_credit_out.set_sub('in revenue, not yet cash')
@@ -1132,23 +1192,48 @@ class DashboardTab(QWidget):
                         w = item.widget()
                         if w is not None:
                             w.deleteLater()
-                    chips = [
-                        ('Collected', today_collected, p.get('ok', C['ok'])),
-                        ('Cash', cash_c, p.get('ok', C['ok'])),
-                        ('Mobile Money', mpesa_c, p.get('info', C['info'])),
-                        ('Card', card_c, p.get('gold', C['gold'])),
-                        ('Bank', bank_c, p.get('text2', C['text2'])),
-                        ('Debt in', debt_c, p.get('ok', C['ok'])),
-                        ('Credit out', credit_out, p.get('warn', C['warn'])),
-                    ]
-                    for label, amt, tone in chips:
-                        chip = QLabel(f"{label}  {cur} {amt:,.0f}")
-                        chip.setStyleSheet(
-                            f"color:{tone}; font-size:11px; font-weight:700; "
-                            f"background:{qss_alpha(tone, 0.12)}; border:1px solid {qss_alpha(tone, 0.28)}; "
-                            f"border-radius:8px; padding:5px 10px;")
-                        self._rev_break_lay.addWidget(chip)
-                    self._rev_break_lay.addStretch(1)
+                    chips = []
+                    if management_view(source.get('role') or ''):
+                        chips.extend([
+                            ('Realized profit', float(s.get('realized_gross_profit') or 0), p.get('ok', C['ok'])),
+                            ('Unrealized profit', float(s.get('unrealized_gross_profit') or 0), p.get('warn', C['warn'])),
+                            ('New credit', credit_out, p.get('warn', C['warn'])),
+                            ('Collected', today_collected, p.get('ok', C['ok'])),
+                            ('Repayments', debt_c, p.get('info', C['info'])),
+                        ])
+                        if s.get('expenses') is not None:
+                            chips.append(('Expenses', float(s.get('expenses') or 0), p.get('text2', C['text2'])))
+                        if s.get('net_operating_result') is not None:
+                            chips.append(('Net result', float(s.get('net_operating_result') or 0), p.get('ok', C['ok'])))
+                        chips.append(('Inventory cost', float(s.get('inventory_cost_value') or 0), p.get('text2', C['text2'])))
+                    if hasattr(self, '_rev_break_host'):
+                        self._rev_break_host.setVisible(bool(chips))
+                    if not hasattr(self, '_rev_break_lay2'):
+                        host2 = QWidget()
+                        host2.setObjectName('dashRevBreak2')
+                        lay2 = QHBoxLayout(host2)
+                        lay2.setContentsMargins(4, 0, 4, 2)
+                        lay2.setSpacing(8)
+                        self._rev_break_host2 = host2
+                        self._rev_break_lay2 = lay2
+                        index = self._sticky_lay.indexOf(self._rev_break_host)
+                        self._sticky_lay.insertWidget(index + 1, host2)
+                    while self._rev_break_lay2.count():
+                        item = self._rev_break_lay2.takeAt(0)
+                        w = item.widget()
+                        if w is not None:
+                            w.deleteLater()
+                    self._rev_break_host2.setVisible(bool(chips))
+                    rows = (chips[:4], chips[4:])
+                    for lay, row in ((self._rev_break_lay, rows[0]), (self._rev_break_lay2, rows[1])):
+                        for label, amt, tone in row:
+                            chip = QLabel(f"{label}  {cur} {amt:,.0f}")
+                            chip.setStyleSheet(
+                                f"color:{tone}; font-size:11px; font-weight:700; "
+                                f"background:{qss_alpha(tone, 0.12)}; border:1px solid {qss_alpha(tone, 0.28)}; "
+                                f"border-radius:8px; padding:5px 10px;")
+                            lay.addWidget(chip)
+                        lay.addStretch(1)
                 elif hasattr(self, '_rev_break') and isinstance(self._rev_break, QLabel):
                     self._rev_break.setText(
                         f"Cash {cur} {cash_c:,.0f}  ·  Mobile Money {cur} {mpesa_c:,.0f}  ·  "
@@ -1176,28 +1261,42 @@ class DashboardTab(QWidget):
                 return ((cur_v - prev_v) / prev_v) * 100.0
 
             if key == 'today':
-                self._k_sales.set_trend(_pct(today_tx, y_tx))
-                self._k_rev.set_trend(_pct(today_rev, y_rev))
-                self._k_rev.set_sub(f"Collected {cur} {today_collected:,.2f} · vs yesterday")
-            else:
-                self._k_rev.set_sub(
-                    f"Collected {cur} {today_collected:,.2f} · "
-                    + (self._period.current_label() if hasattr(self, '_period') else 'period')
-                )
+                self._k_sales.set_trend(None)
+                self._k_rev.set_trend(None)
         except Exception as e:
             log.warning(f"Dashboard trends: {e}")
-        # -- Low stock ---
+        # -- Low stock, or outstanding debt for a manager ---
         try:
-            prods = self.api.get_products() or []
-            low   = sum(1 for p2 in prods if float(p2.get('stock', 0)) <= float(p2.get('min_stock', 5)))
-            self._k_low.set_value(str(low), p['warn'] if low > 0 else p['ok'])
-            self._k_low.set_sub('Items to restock' if low else 'All stocked')
+            from desktop.utils.financials import management_view
+            source = (self.user or {}).get('user') or self.user or {}
+            if management_view(source.get('role') or ''):
+                summary = (d.get('summary') or {}) if d else {}
+                owed = float(summary.get('outstanding_debt') or 0)
+                supplier_owed = float(summary.get('supplier_outstanding') or 0)
+                self._k_low.set_label('Customer outstanding')
+                self._k_low.set_value(f"{cur} {owed:,.2f}", p['warn'] if owed > 0 else p['ok'])
+                self._k_low.set_sub(f"Supplier outstanding {cur} {supplier_owed:,.2f}")
+            else:
+                prods = self.api.get_products() or []
+                low   = sum(1 for p2 in prods if float(p2.get('stock', 0)) <= float(p2.get('min_stock', 5)))
+                self._k_low.set_label('Low stock')
+                self._k_low.set_value(str(low), p['warn'] if low > 0 else p['ok'])
+                self._k_low.set_sub('Items to restock' if low else 'All stocked')
         except Exception as e:
             log.warning(f"Dashboard low stock: {e}")
 
         # -- Debt KPIs ---
         try:
-            ds = self.api.get_debt_summary(start, end)
+            from desktop.utils.financials import management_view
+            source = (self.user or {}).get('user') or self.user or {}
+            if not management_view(source.get('role') or ''):
+                if hasattr(self, '_debt_chip_host'):
+                    self._debt_chip_host.hide()
+                ds = None
+            else:
+                if hasattr(self, '_debt_chip_host'):
+                    self._debt_chip_host.show()
+                ds = self.api.get_debt_summary(start, end)
             if ds:
                 out  = ds.get('outstanding', {})
                 col  = ds.get('today_collected', {})
@@ -1334,29 +1433,22 @@ class DashboardTab(QWidget):
             log.warning(f"Dashboard sales trend: {e}")
 
         try:
-            pay_data = self.api.get_report_summary(start, end) or {}
-            by_pay = pay_data.get('by_payment') or []
-            # Merge duplicate methods (cash/Cash/CASH → one Cash row)
-            merged: dict[str, float] = {}
-            labels: dict[str, str] = {}
-            order: list[str] = []
-            for r in by_pay:
-                raw = (r.get('payment_method') or 'Other').strip() or 'Other'
-                key = raw.lower().replace(' ', '')
-                if key in ('mpesa', 'm-pesa'):
-                    key = 'm-pesa'
-                    pretty = 'M-Pesa'
-                else:
-                    pretty = raw.title()
-                if key not in merged:
-                    merged[key] = 0.0
-                    labels[key] = pretty
-                    order.append(key)
-                merged[key] += float(r.get('total') or 0)
+            from desktop.utils.payment_tenders import collection_by_method
+            sales_for_pay = [
+                s for s in (self.api.get_sales(start, end) or [])
+                if (s.get('status') or 'completed') != 'voided'
+            ]
+            from desktop.utils.financials import management_view
+            pay_source = (self.user or {}).get('user') or self.user or {}
+            show_pay = management_view(pay_source.get('role') or '')
+            if hasattr(self, '_pay_card'):
+                self._pay_card.setVisible(show_pay)
             self._pay_chart.set_data([
-                {'label': labels[k], 'value': merged[k]}
-                for k in order
-            ])
+                {'label': row['method'], 'value': row['collected']}
+                for row in collection_by_method(sales_for_pay)
+                if float(row.get('collected') or 0) > 0.009
+            ] if show_pay else [])
+            self._pay_card.set_title(f"Money collected | {span}")
         except Exception as e:
             log.warning(f"Dashboard payment chart: {e}")
 

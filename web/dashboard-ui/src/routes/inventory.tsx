@@ -8,7 +8,9 @@ import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { DEL, GET, POST, PUT, getToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { downloadApi, exportQuery } from "@/lib/download";
+import { downloadApiPost } from "@/lib/download";
+import { ExportLockDialog } from "@/components/export-lock-dialog";
+import { DeliveryActions } from "@/components/delivery-actions";
 import { KES, todayISO } from "@/lib/format";
 import { nameMatches } from "@/lib/name-search";
 import { wheelStep } from "@/lib/wheel-steps";
@@ -57,14 +59,28 @@ type StockReceipt = {
   supplier_notes?: string;
   receipt_number?: string;
   grand_total?: number;
+  reference?: string;
+  notes?: string;
+  status?: string;
+  supplier_id?: number;
+  amount_paid?: number;
+  outstanding?: number;
+  payment_status?: string;
+  reference_note?: string;
+  due_date?: string;
+  payments?: { payment_number?: string; method?: string; reference?: string; allocated?: number; amount?: number }[];
   grouped?: boolean;
   lines?: {
+    product_id?: number;
     product_name?: string;
     quantity?: number;
     unit_cost?: number;
     line_total?: number;
     unit?: string;
     sku?: string;
+    old_stock?: number;
+    new_stock?: number;
+    returned_qty?: number;
   }[];
 };
 
@@ -72,10 +88,13 @@ function Inventory() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
-  const canAdjust = role === "superadmin";
-  const canEdit = ["cashier", "viewer", "manager", "admin", "superadmin"].includes(role);
-  const canRemove = role === "admin" || role === "superadmin";
-  const canReceive = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canAdjust = actions ? actions.includes("inventory.adjust_stock") : role === "superadmin";
+  const canEdit = actions ? actions.includes("inventory.edit_info") : ["cashier", "viewer", "manager", "admin", "superadmin"].includes(role);
+  const canRemove = actions ? actions.includes("inventory.delete") : role === "admin" || role === "superadmin";
+  const canReceive = actions
+    ? actions.includes("inventory.receive")
+    : ["cashier", "manager", "admin", "superadmin"].includes(role);
   const [adjId, setAdjId] = useState("");
   const [adjDir, setAdjDir] = useState("add");
   const [adjQty, setAdjQty] = useState("1");
@@ -83,7 +102,9 @@ function Inventory() {
   const [adjMsg, setAdjMsg] = useState("");
   const [adjPin, setAdjPin] = useState("");
   const [reviewPin, setReviewPin] = useState("");
-  const seeCost = role !== "cashier" && role !== "viewer";
+  const seeCost = actions
+    ? actions.includes("inventory.view_cost")
+    : role !== "cashier" && role !== "viewer";
   const showStockValue = ["manager", "admin", "superadmin"].includes(role);
   const [recvId, setRecvId] = useState("");
   const [recvQty, setRecvQty] = useState("1");
@@ -92,15 +113,27 @@ function Inventory() {
   const [recvPhone, setRecvPhone] = useState("");
   const [recvSupplierNotes, setRecvSupplierNotes] = useState("");
   const [recvNotes, setRecvNotes] = useState("");
+  const [recvReference, setRecvReference] = useState("");
+  const [recvSearch, setRecvSearch] = useState("");
   const [recvPin, setRecvPin] = useState("");
   const [recvMsg, setRecvMsg] = useState("");
   const [recvBusy, setRecvBusy] = useState(false);
   const recvTokenRef = useRef("");
   const [recvLines, setRecvLines] = useState<
-    { product_id: number; name: string; quantity: number; unit_cost: number | null }[]
+    { product_id: number; name: string; sku?: string; unit?: string; quantity: number; unit_cost: number | null }[]
   >([]);
   const [recvCost, setRecvCost] = useState("");
+  const [recvExtra, setRecvExtra] = useState("");
+  const [recvPaid, setRecvPaid] = useState("");
+  const [recvPayMethod, setRecvPayMethod] = useState("cash");
+  const [recvPayRef, setRecvPayRef] = useState("");
+  const [recvDue, setRecvDue] = useState("");
   const [productDetail, setProductDetail] = useState<Product | null>(null);
+  const historyQ = useQuery({
+    queryKey: ["product-history", productDetail?.id],
+    queryFn: () => GET<any>(`/products/${productDetail?.id}/history`),
+    enabled: Boolean(productDetail?.id),
+  });
   const [editId, setEditId] = useState("");
   const [editForm, setEditForm] = useState({
     name: "", sku: "", barcode: "", category: "", price: "", cost_price: "",
@@ -120,6 +153,8 @@ function Inventory() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [invLock, setInvLock] = useState<"xlsx" | "csv" | null>(null);
+  const [invLockError, setInvLockError] = useState("");
   const [receipt, setReceipt] = useState<StockReceipt | null>(null);
   const pageSize = 40;
 
@@ -136,13 +171,17 @@ function Inventory() {
     queryKey: ["suppliers"],
     queryFn: () => GET<{ id: number; name?: string; phone?: string; notes?: string }[]>("/suppliers"),
   });
+  const receiptsQ = useQuery({
+    queryKey: ["stock-receipts"],
+    queryFn: () => GET<StockReceipt[]>("/stock-receipts"),
+    enabled: canReceive,
+  });
   const settingsQ = useQuery({
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
   });
   const currency = settingsQ.data?.currency_symbol || "KES";
   const adjustStep = wheelStep(settingsQ.data, "wheel_stock_adjust");
-  const receiveStep = wheelStep(settingsQ.data, "wheel_receive_qty");
   const qtyStep = wheelStep(settingsQ.data, "wheel_dashboard_qty");
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const suppliers = Array.isArray(suppliersQ.data) ? suppliersQ.data : [];
@@ -170,10 +209,14 @@ function Inventory() {
   const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
   const pageRows = list.slice(page * pageSize, page * pageSize + pageSize);
 
-  const totalValue = products.reduce(
-    (s, p) => s + Number(p.stock || 0) * Number(p.cost_price || 0),
-    0,
-  );
+  const valuationQ = useQuery({
+    queryKey: ["inventory-valuation"],
+    queryFn: () => GET<{ value?: number; quantity?: number }>("/inventory-valuation"),
+    enabled: seeCost,
+  });
+  const totalValue = seeCost && valuationQ.data && typeof valuationQ.data.value === "number"
+    ? valuationQ.data.value
+    : products.reduce((s, p) => s + Number(p.stock || 0) * Number(p.cost_price || 0), 0);
   const lowCount = products.filter(
     (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.min_stock ?? 5),
   ).length;
@@ -321,14 +364,20 @@ function Inventory() {
     setPage(0);
   }
 
-  async function exportInv(format: "xlsx" | "csv") {
+  async function exportInv(format: "xlsx" | "csv", password: string) {
     try {
       setExporting(true);
-      const qs = exportQuery({ format, inventory: "1" });
-      await downloadApi(`/reports/export?${qs}`, `MBT_Inventory_${todayISO()}.${format}`);
-      toast.success(`${format.toUpperCase()} downloaded`);
+      setInvLockError("");
+      const ext = format === "csv" ? "zip" : format;
+      await downloadApiPost(
+        "/reports/export",
+        { format, inventory: "1", password, confirm: password },
+        `MBT_Inventory_${todayISO()}.${ext}`,
+      );
+      setInvLock(null);
+      toast.success(format === "csv" ? "Encrypted ZIP downloaded" : "Encrypted Excel downloaded");
     } catch (e: any) {
-      toast.error(e?.message || "Export failed");
+      setInvLockError(e?.message || "Export failed");
     } finally {
       setExporting(false);
     }
@@ -342,6 +391,18 @@ function Inventory() {
 
   return (
     <AppShell title="Inventory">
+      <ExportLockDialog
+        open={invLock != null}
+        kind={invLock === "csv" ? "CSV" : "Excel workbook"}
+        busy={exporting}
+        error={invLockError}
+        onCancel={() => {
+          if (!exporting) setInvLock(null);
+        }}
+        onConfirm={(password) => {
+          if (invLock) void exportInv(invLock, password);
+        }}
+      />
       {canEdit ? (
         <Card className="mb-3" id="adjust-product">
           <div className="space-y-3 p-4">
@@ -522,23 +583,44 @@ function Inventory() {
       {canReceive ? (
         <Card className="mb-3">
           <div className="p-4 space-y-3">
-            <div className="text-sm font-extrabold text-text">Receive from supplier</div>
+            <div className="text-sm font-extrabold text-text">Receive stock</div>
             <div className="text-xs text-text2">
               Add every product on this delivery, then save once. No extra PIN. One receipt covers all of the lines.
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="text-xs font-semibold text-text2 md:col-span-2">
+                Search products
+                <Input
+                  aria-label="Search products to receive"
+                  value={recvSearch}
+                  onChange={(e) => setRecvSearch(e.target.value)}
+                  className="mt-1 h-11"
+                  placeholder="Name or SKU"
+                />
+              </label>
               <label className="text-xs font-semibold text-text2">
                 Product
                 <select
                   aria-label="Receive product"
                   value={recvId}
+                  onMouseDown={() => {
+                    const chosen = products.find((p) => String(p.id) === recvId);
+                    const typed = recvSearch.trim().toLowerCase();
+                    const name = String(chosen?.name || "").trim().toLowerCase();
+                    const sku = String(chosen?.sku || "").trim().toLowerCase();
+                    if (!typed || typed === name || typed === sku) setRecvSearch("");
+                  }}
                   onChange={(e) => setRecvId(e.target.value)}
                   className="mt-1 h-11 w-full rounded-xl border border-border bg-input px-3 text-sm text-text"
                 >
                   <option value="">Select a product</option>
-                  {products.map((p) => (
+                  {products.filter((p) => {
+                    const needle = recvSearch.trim().toLowerCase();
+                    if (!needle) return true;
+                    return `${p.name || ""} ${p.sku || ""}`.toLowerCase().includes(needle);
+                  }).map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.name} — stock {p.stock}
+                      {p.name} · {p.sku || "no SKU"} · {p.unit || "pcs"} · stock {p.stock}
                     </option>
                   ))}
                 </select>
@@ -549,7 +631,7 @@ function Inventory() {
                   aria-label="Quantity received"
                   type="number"
                   min={0}
-                  step={receiveStep}
+                  step="any"
                   value={recvQty}
                   onChange={(e) => setRecvQty(e.target.value)}
                   className="mt-1 h-11"
@@ -572,13 +654,23 @@ function Inventory() {
                 </select>
               </label>
               <label className="text-xs font-semibold text-text2">
-                Delivery note
+                Invoice or delivery reference
+                <Input
+                  aria-label="Delivery reference"
+                  value={recvReference}
+                  onChange={(e) => setRecvReference(e.target.value)}
+                  className="mt-1 h-11"
+                  placeholder="Supplier invoice number"
+                />
+              </label>
+              <label className="text-xs font-semibold text-text2 md:col-span-2">
+                Notes
                 <Input
                   aria-label="Delivery note"
                   value={recvNotes}
                   onChange={(e) => setRecvNotes(e.target.value)}
                   className="mt-1 h-11"
-                  placeholder="Invoice or delivery note"
+                  placeholder="Optional note"
                 />
               </label>
               {!recvSupplier ? (
@@ -613,6 +705,7 @@ function Inventory() {
                 </>
               ) : null}
             </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <label className="text-xs font-semibold text-text2">
                 Purchase cost
                 <Input
@@ -625,6 +718,38 @@ function Inventory() {
                   className="mt-1 h-11"
                 />
               </label>
+              <label className="text-xs font-semibold text-text2">
+                Additional delivery cost
+                <Input
+                  aria-label="Additional delivery cost"
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={recvExtra}
+                  onChange={(e) => setRecvExtra(e.target.value)}
+                  className="mt-1 h-11"
+                  placeholder="0 if none. Split by buy value."
+                />
+              </label>
+              </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="text-xs font-semibold text-text2">
+                Paid now
+                <Input aria-label="Paid now" type="number" min={0} step={0.01} value={recvPaid} onChange={(e) => setRecvPaid(e.target.value)} className="mt-1 h-11" placeholder="0 if unpaid" />
+              </label>
+              <label className="text-xs font-semibold text-text2">
+                Pay method
+                <Input aria-label="Pay method" value={recvPayMethod} onChange={(e) => setRecvPayMethod(e.target.value)} className="mt-1 h-11" />
+              </label>
+              <label className="text-xs font-semibold text-text2">
+                Pay reference
+                <Input aria-label="Pay reference" value={recvPayRef} onChange={(e) => setRecvPayRef(e.target.value)} className="mt-1 h-11" />
+              </label>
+              <label className="text-xs font-semibold text-text2">
+                Due date
+                <Input aria-label="Due date" value={recvDue} onChange={(e) => setRecvDue(e.target.value)} className="mt-1 h-11" placeholder="YYYY-MM-DD" />
+              </label>
+            </div>
             <Button
               variant="secondary"
               onClick={() => {
@@ -645,7 +770,14 @@ function Inventory() {
                 const product = products.find((p) => p.id === Number(recvId));
                 setRecvLines((lines) => [
                   ...lines,
-                  { product_id: Number(recvId), name: product?.name || "Product", quantity: qty, unit_cost: cost },
+                  {
+                    product_id: Number(recvId),
+                    name: product?.name || "Product",
+                    sku: product?.sku || "",
+                    unit: product?.unit || "pcs",
+                    quantity: qty,
+                    unit_cost: cost,
+                  },
                 ]);
                 setRecvMsg("");
               }}
@@ -653,24 +785,94 @@ function Inventory() {
               Add product to this delivery
             </Button>
             {recvLines.length ? (
-              <div className="text-sm text-text">
-                {recvLines.map((line) => (
-                  <div key={line.product_id} className="flex items-center justify-between gap-2 py-1">
-                    <span>
-                      {line.name} · {line.quantity} × {line.unit_cost == null ? "current cost" : line.unit_cost}
-                      {line.unit_cost == null ? "" : ` = ${(line.quantity * line.unit_cost).toFixed(2)}`}
-                    </span>
-                    <button
-                      type="button"
-                      className="text-xs font-semibold text-err"
-                      onClick={() => setRecvLines((lines) => lines.filter((item) => item.product_id !== line.product_id))}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-                <div className="font-extrabold">
-                  Grand total {recvLines.reduce((sum, line) => sum + line.quantity * (line.unit_cost || 0), 0).toFixed(2)}
+              <div className="overflow-x-auto rounded-xl border border-border">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead className="bg-card text-left text-xs uppercase tracking-wide text-text2">
+                    <tr>
+                      <th className="px-3 py-2">#</th>
+                      <th className="px-3 py-2">Product</th>
+                      <th className="px-3 py-2">Qty received</th>
+                      <th className="px-3 py-2">Unit cost</th>
+                      <th className="px-3 py-2 text-right">Line total</th>
+                      <th className="px-3 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recvLines.map((line, index) => {
+                      const product = products.find((p) => p.id === line.product_id);
+                      const cost = line.unit_cost == null ? Number(product?.cost_price || 0) : line.unit_cost;
+                      return (
+                        <tr key={line.product_id} className="border-t border-border">
+                          <td className="px-3 py-2 text-text2">{index + 1}</td>
+                          <td className="px-3 py-2">
+                            <div className="font-semibold text-text">{line.name}</div>
+                            <div className="text-xs text-text2">{line.sku || "—"} · {line.unit || "pcs"}</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <Input
+                              aria-label={`Quantity for ${line.name}`}
+                              type="number"
+                              min={0}
+                              step="any"
+                              value={line.quantity}
+                              onChange={(e) => {
+                                const next = Number(e.target.value);
+                                setRecvLines((lines) => lines.map((item) => (
+                                  item.product_id === line.product_id
+                                    ? { ...item, quantity: Number.isFinite(next) ? next : item.quantity }
+                                    : item
+                                )));
+                              }}
+                              className="h-10 w-28"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <Input
+                              aria-label={`Unit cost for ${line.name}`}
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={line.unit_cost ?? ""}
+                              placeholder="Current cost"
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setRecvLines((lines) => lines.map((item) => (
+                                  item.product_id === line.product_id
+                                    ? { ...item, unit_cost: raw.trim() === "" ? null : Number(raw) }
+                                    : item
+                                )));
+                              }}
+                              className="h-10 w-32"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-text">
+                            {(line.quantity * cost).toFixed(2)}
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              className="text-xs font-semibold text-err"
+                              onClick={() => setRecvLines((lines) => lines.filter((item) => item.product_id !== line.product_id))}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="border-t border-border px-3 py-3 text-right font-extrabold text-text">
+                  {(() => {
+                    const goods = recvLines.reduce((sum, line) => {
+                      const product = products.find((p) => p.id === line.product_id);
+                      const cost = line.unit_cost == null ? Number(product?.cost_price || 0) : line.unit_cost;
+                      return sum + line.quantity * (Number.isFinite(cost) ? cost : 0);
+                    }, 0);
+                    const extra = recvExtra.trim() === "" ? 0 : Number(recvExtra);
+                    const extraSafe = Number.isFinite(extra) && extra > 0 ? extra : 0;
+                    return `Goods ${goods.toFixed(2)} · Additional ${extraSafe.toFixed(2)} · Delivery total ${(goods + extraSafe).toFixed(2)}`;
+                  })()}
                 </div>
               </div>
             ) : null}
@@ -731,8 +933,13 @@ function Inventory() {
                   const res = await POST<any>("/stock-receipts", {
                     supplier_id: supplierId,
                     notes: recvNotes.trim(),
-                    reference: recvNotes.trim(),
+                    reference: recvReference.trim(),
                     client_token: recvTokenRef.current,
+                    payment_amount: recvPaid.trim() === "" ? 0 : Number(recvPaid),
+                    payment_method: recvPayMethod,
+                    payment_reference: recvPayRef.trim(),
+                    due_date: recvDue.trim(),
+                    delivery_extra: recvExtra.trim() === "" ? 0 : Number(recvExtra),
                     lines,
                   });
                   if (!res?.success) {
@@ -746,14 +953,43 @@ function Inventory() {
                       : `${res.receipt_number || "Delivery"} saved${res.supplier_name ? ` from ${res.supplier_name}` : ""}. Total ${res.grand_total ?? ""}.`,
                   );
                   setRecvPin("");
+                  const savedReference = recvReference.trim();
+                  const savedNotes = recvNotes.trim();
                   setRecvLines([]);
+                  setRecvReference("");
+                  setRecvNotes("");
                   await qc.invalidateQueries({ queryKey: ["products"] });
                   await qc.invalidateQueries({ queryKey: ["stock-receipts"] });
-                  const fresh = await GET<StockReceipt[]>("/stock-receipts");
-                  const opened = (Array.isArray(fresh) ? fresh : []).find(
-                    (row) => Number(row.product_id) === Number(recvId),
-                  );
-                  if (opened) setReceipt(opened);
+                  if (res.duplicate || !(res.lines || []).length) {
+                    const fresh = await GET<StockReceipt[]>("/stock-receipts");
+                    const opened = (Array.isArray(fresh) ? fresh : []).find(
+                      (row) => row.receipt_number === res.receipt_number,
+                    );
+                    if (opened) setReceipt(opened);
+                  } else {
+                    setReceipt({
+                      id: Number(res.receipt_id || 0),
+                      receipt_number: res.receipt_number,
+                      supplier_name: res.supplier_name,
+                      grand_total: res.grand_total,
+                      reference: savedReference,
+                      notes: savedNotes,
+                      status: "posted",
+                      grouped: true,
+                      username: user?.username || user?.full_name,
+                      lines: (res.lines || []).map((line: any) => ({
+                        product_id: line.product_id,
+                        product_name: line.product_name || line.name,
+                        sku: line.sku,
+                        unit: line.unit,
+                        quantity: line.quantity,
+                        unit_cost: line.unit_cost,
+                        line_total: line.line_total,
+                        old_stock: line.old_stock,
+                        new_stock: line.new_stock,
+                      })),
+                    });
+                  }
                 } finally {
                   setRecvBusy(false);
                 }
@@ -762,6 +998,28 @@ function Inventory() {
               {recvBusy ? "Saving delivery…" : "Save supplier delivery"}
             </Button>
             {recvMsg ? <div className="text-sm text-text2">{recvMsg}</div> : null}
+            {(receiptsQ.data || []).slice(0, 6).length ? (
+              <div className="border-t border-border pt-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text2">Recent deliveries</div>
+                <div className="mt-2 space-y-1">
+                  {(receiptsQ.data || []).slice(0, 6).map((row) => (
+                    <button
+                      key={`${row.receipt_number}-${row.id}`}
+                      type="button"
+                      className="flex w-full items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm hover:bg-card"
+                      onClick={async () => {
+                        const full = row.id ? await GET<StockReceipt>(`/stock-receipts/${row.id}`) : row;
+                        setReceipt(full && !("error" in (full as object)) ? full : row);
+                        setPayAmount("");
+                      }}
+                    >
+                      <span className="min-w-0 truncate font-semibold text-text">{row.receipt_number || "Delivery"} · {row.supplier_name || "Supplier"}</span>
+                      <span className="shrink-0 tabular-nums text-text2">{row.payment_status || (row.status === "reversed" ? "VOIDED" : Number(row.grand_total || 0).toFixed(2))}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </Card>
       ) : null}
@@ -770,7 +1028,7 @@ function Inventory() {
         title="Inventory"
         icon={<Package className="h-4 w-4" />}
         description={showStockValue
-          ? `${products.length} SKUs · ${KES(totalValue, currency)} stock value${lowCount ? ` · ${lowCount} low` : ""}`
+          ? `${products.length} SKUs · ${KES(totalValue, currency)} FIFO value${lowCount ? ` · ${lowCount} low` : ""}`
           : `${products.length} SKUs${lowCount ? ` · ${lowCount} low` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -784,7 +1042,10 @@ function Inventory() {
             <Button
               variant="secondary"
               disabled={exporting}
-              onClick={() => exportInv("csv")}
+              onClick={() => {
+                setInvLockError("");
+                setInvLock("csv");
+              }}
               className="min-h-[44px]"
             >
               <Download className="h-4 w-4" /> CSV
@@ -792,7 +1053,10 @@ function Inventory() {
             <Button
               variant="secondary"
               disabled={exporting}
-              onClick={() => exportInv("xlsx")}
+              onClick={() => {
+                setInvLockError("");
+                setInvLock("xlsx");
+              }}
               className="min-h-[44px]"
             >
               <Download className="h-4 w-4" /> Excel
@@ -1174,6 +1438,38 @@ function Inventory() {
                   On hand {Number(productDetail.stock || 0)} {productDetail.unit || "pcs"}.
                   Change the quantity under Adjust stock. It is not changed here.
                 </div>
+                <div className="rounded-xl border border-border p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-text2">Purchase batches</div>
+                  {historyQ.data?.batch_summary ? (
+                    <p className="mt-1 text-sm text-text">
+                      {historyQ.data.batch_summary.active_batches || 0} open
+                      {historyQ.data.see_cost
+                        ? ` · value ${KES(historyQ.data.batch_summary.inventory_value || 0)} · average ${KES(historyQ.data.batch_summary.average_cost || 0)}`
+                        : ""}
+                    </p>
+                  ) : null}
+                  <div className="mt-2 space-y-1 text-sm">
+                    {(historyQ.data?.batches || []).map((batch: any) => (
+                      <div key={batch.id} className="flex justify-between gap-3 text-text2">
+                        <span>
+                          #{batch.id} {batch.supplier_name || (batch.legacy ? "Opening stock" : "Batch")}
+                          {batch.cost_origin === "inherited" ? " · inherited" : ""}
+                          {batch.reference_note ? ` · ${batch.reference_note}` : ""} · left {batch.remaining_qty}
+                        </span>
+                        {historyQ.data?.see_cost ? (
+                          <span>
+                            buy {KES(batch.purchase_unit_cost || batch.unit_cost || 0)}
+                            {Number(batch.extra_unit_cost) ? ` + ${KES(batch.extra_unit_cost)}` : ""}
+                            {" · landed "}{KES(batch.unit_cost || 0)}
+                          </span>
+                        ) : null}
+                      </div>
+                    ))}
+                    {historyQ.data && !(historyQ.data.batches || []).length ? (
+                      <div className="text-text2">No purchase batch is recorded for this product.</div>
+                    ) : null}
+                  </div>
+                </div>
                 {canEdit ? adjustFields : null}
                 {canEdit ? (
                   <div className="flex flex-wrap gap-2">
@@ -1194,12 +1490,105 @@ function Inventory() {
 
       {receipt ? (
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4"
+          className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4"
           onClick={() => setReceipt(null)}
         >
-          <div className="w-full max-w-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="mx-auto my-4 w-full max-w-3xl" onClick={(e) => e.stopPropagation()}>
           <Card className="overflow-hidden">
-            {(() => {
+            {receipt.lines && receipt.lines.length ? (
+              <>
+                <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-text2">
+                      Supplier delivery
+                    </div>
+                    <div className="mt-1 text-lg font-extrabold text-text">
+                      {receipt.receipt_number || "Delivery"}
+                    </div>
+                    <div className="text-sm text-text2">
+                      {receipt.supplier_name || "Supplier"}
+                      {" · "}
+                      {receipt.status === "reversed" ? "Reversed" : "Posted"}
+                      {" · "}
+                      {String(receipt.created_at || "").replace("T", " ").slice(0, 19)}
+                    </div>
+                  </div>
+                  <Button variant="ghost" onClick={() => setReceipt(null)}>
+                    Close
+                  </Button>
+                </div>
+                <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm">
+                  {[
+                    ["Supplier", receipt.supplier_name || "No supplier"],
+                    ["Invoice reference", receipt.reference || "—"],
+                    ["Delivery note", receipt.notes || "—"],
+                    ["Received by", receipt.username || "—"],
+                  ].map(([label, value]) => (
+                    <div key={label}>
+                      <div className="text-xs text-text2">{label}</div>
+                      <div className="mt-1 font-semibold text-text">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="overflow-x-auto border-t border-border">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead className="bg-card text-left text-xs uppercase tracking-wide text-text2">
+                      <tr>
+                        <th className="px-3 py-2">#</th>
+                        <th className="px-3 py-2">Product</th>
+                        <th className="px-3 py-2 text-right">Qty</th>
+                        <th className="px-3 py-2 text-right">Unit cost</th>
+                        <th className="px-3 py-2 text-right">Line total</th>
+                        <th className="px-3 py-2 text-right">Stock</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {receipt.lines.map((line, index) => (
+                        <tr key={`${line.product_name}-${index}`} className="border-t border-border">
+                          <td className="px-3 py-2 text-text2">{index + 1}</td>
+                          <td className="px-3 py-2">
+                            <div className="font-semibold text-text">{line.product_name}</div>
+                            <div className="text-xs text-text2">{line.sku || "—"} · {line.unit || "pcs"}</div>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-text">
+                            {Number(line.quantity || 0)}
+                            {Number(line.returned_qty || 0) > 0 ? ` · returned ${Number(line.returned_qty)}` : ""}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-text">{Number(line.unit_cost || 0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-semibold text-text">{Number(line.line_total || 0).toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-text2">
+                            {line.old_stock != null && line.new_stock != null
+                              ? `${Number(line.old_stock)} → ${Number(line.new_stock)}`
+                              : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="border-t border-border px-5 py-4 text-sm text-text">
+                  <div className="text-base font-extrabold">
+                    Invoice {Number(receipt.grand_total || 0).toFixed(2)} · Paid {Number(receipt.amount_paid || 0).toFixed(2)} · Outstanding {Number(receipt.outstanding || 0).toFixed(2)} · {receipt.payment_status || "UNPAID"}
+                  </div>
+                  {(receipt.payments || []).length ? (
+                    <div className="mt-2 space-y-1 text-text2">
+                      {receipt.payments?.map((payment) => (
+                        <div key={payment.payment_number}>
+                          {payment.payment_number} · {payment.method} · {Number(payment.allocated || payment.amount || 0).toFixed(2)} {payment.reference || ""}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <DeliveryActions
+                    receipt={receipt}
+                    onChanged={(next) => {
+                      setReceipt(next as StockReceipt);
+                      qc.invalidateQueries({ queryKey: ["stock-receipts"] });
+                    }}
+                  />
+                </div>
+              </>
+            ) : (() => {
               const product = products.find((p) => p.id === receipt.product_id);
               const name = receipt.product_name || product?.name || "Product";
               const sku = receipt.sku || product?.sku || "—";
@@ -1226,9 +1615,6 @@ function Inventory() {
                 Close
               </Button>
             </div>
-            <div className="px-5 pt-4 text-xs font-semibold uppercase tracking-wide text-text2">
-              Product
-            </div>
             <div className="grid grid-cols-2 gap-3 px-5 py-3 text-sm">
               {[
                 ["Name", name],
@@ -1240,53 +1626,18 @@ function Inventory() {
                 ["Unit", unit],
                 ["On hand now", onHand == null ? "—" : String(Number(onHand))],
                 ["Low-stock alert", minStock == null ? "—" : String(Number(minStock))],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <div className="text-xs text-text2">{label}</div>
-                  <div className="mt-1 font-semibold text-text">{value}</div>
-                </div>
-              ))}
-            </div>
-            <div className="border-t border-border px-5 pt-4 text-xs font-semibold uppercase tracking-wide text-text2">
-              This delivery
-            </div>
-            <div className="grid grid-cols-2 gap-3 px-5 py-3 text-sm">
-              {[
                 ["Supplier", receipt.supplier_name || "No supplier"],
-                ["Phone", receipt.supplier_phone || "—"],
-                ["Supplier note", receipt.supplier_notes || "—"],
                 ["Quantity received", `+${Number(receipt.qty_change || 0)} ${unit}`],
                 ["Stock before", String(Number(receipt.qty_before || 0))],
                 ["Stock after", String(Number(receipt.qty_after || 0))],
                 ["Received by", receipt.username || "—"],
+                ["Delivery note", receipt.notes || receipt.reason || "—"],
               ].map(([label, value]) => (
                 <div key={label}>
                   <div className="text-xs text-text2">{label}</div>
                   <div className="mt-1 font-semibold text-text">{value}</div>
                 </div>
               ))}
-            </div>
-            {receipt.lines && receipt.lines.length ? (
-              <div className="border-t border-border px-5 py-4 text-sm">
-                <div className="text-xs font-semibold uppercase tracking-wide text-text2">
-                  {receipt.receipt_number || "Products on this delivery"}
-                </div>
-                {receipt.lines.map((line, index) => (
-                  <div key={`${line.product_name}-${index}`} className="mt-2 flex justify-between gap-3">
-                    <span className="text-text">{line.product_name}</span>
-                    <span className="tabular-nums text-text2">
-                      {Number(line.quantity || 0)} × {Number(line.unit_cost || 0).toFixed(2)} = {Number(line.line_total || 0).toFixed(2)}
-                    </span>
-                  </div>
-                ))}
-                <div className="mt-3 font-extrabold text-text">
-                  Grand total {Number(receipt.grand_total || 0).toFixed(2)}
-                </div>
-              </div>
-            ) : null}
-            <div className="border-t border-border px-5 py-4 text-sm">
-              <div className="text-xs text-text2">Delivery note</div>
-              <div className="mt-1 text-text">{receipt.reason || "—"}</div>
             </div>
                 </>
               );

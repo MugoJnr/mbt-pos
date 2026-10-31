@@ -42,6 +42,12 @@ def _paid_with(method: str, raw_tenders) -> str:
     return method or ""
 
 
+def _sort_stamp(value) -> str:
+    """One clock string so '2026-10-30T02:24' does not sort above '2026-10-30 09:37'."""
+    text = str(value or "").strip().replace("T", " ").replace("Z", "")
+    return text[:19]
+
+
 def _day(expr: str, start: str, end: str) -> tuple[str, list]:
     if start and end:
         return f"date({expr}) BETWEEN ? AND ?", [start, end]
@@ -329,7 +335,10 @@ def list_receipts(
             })
 
     kept = [item for item in rows if keep(item)]
-    kept.sort(key=lambda item: (item.get("at") or "", item.get("id") or 0), reverse=True)
+    kept.sort(
+        key=lambda item: (_sort_stamp(item.get("at")), int(item.get("id") or 0)),
+        reverse=True,
+    )
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
     return {"total": len(kept), "receipts": kept[offset:offset + limit]}
@@ -395,10 +404,13 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
                     item = dict(approval)
                     item["current_reason"] = meta.get("current_reason") or approval["details"] or ""
                     linked.append(item)
+        from desktop.utils.payment_tenders import explain_sale_payments
+        payments = explain_sale_payments(body)
         return {
             "kind": "sale",
             "reference": sale["receipt_number"],
             "header": body,
+            "payments": payments,
             "lines": [dict(item) for item in items],
             "approvals": linked,
             "customer": customer,

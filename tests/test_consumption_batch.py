@@ -315,5 +315,110 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertEqual(int(detail['voided'] or 0), 0)
 
 
+    def test_edit_applies_only_the_quantity_difference(self):
+        db = self.ac._db()
+        db.execute("UPDATE products SET stock=20 WHERE sku='SOAP-500'")
+        db.execute("UPDATE products SET stock=10 WHERE sku='SOAP-1L'")
+        db.execute("UPDATE products SET unit='pcs' WHERE sku IN ('SOAP-500','SOAP-1L')")
+        sales_before = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        db.commit()
+        db.close()
+        self.api._role = 'admin'
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Staff Consumption',
+            'taken_by': 'QA',
+            'items': [
+                {'product_id': 1, 'quantity': 2},
+                {'product_id': 2, 'quantity': 3},
+            ],
+        })
+        self.assertTrue(saved.get('success'), saved)
+        self.assertEqual(self._stock('SOAP-500'), 18)
+        self.assertEqual(self._stock('SOAP-1L'), 7)
+        self.api._role = 'cashier'
+        denied = self.api.edit_consumption(saved['id'], {
+            'edit_reason': 'Cashier must not correct this',
+            'items': [{'product_id': 1, 'quantity': 3}],
+        })
+        self.assertEqual(denied.get('status'), 403)
+        self.assertEqual(self._stock('SOAP-500'), 18)
+        self.api._role = 'admin'
+        edited = self.api.edit_consumption(saved['id'], {
+            'edit_reason': 'Soap was 3 and oil was 1',
+            'items': [
+                {'product_id': 1, 'quantity': 3},
+                {'product_id': 2, 'quantity': 1},
+            ],
+            'client_token': 'edit-once',
+        })
+        self.assertTrue(edited.get('success'), edited)
+        self.assertEqual(self._stock('SOAP-500'), 17)
+        self.assertEqual(self._stock('SOAP-1L'), 9)
+        again = self.api.edit_consumption(saved['id'], {
+            'edit_reason': 'Soap was 3 and oil was 1',
+            'items': [
+                {'product_id': 1, 'quantity': 3},
+                {'product_id': 2, 'quantity': 1},
+            ],
+            'client_token': 'edit-once',
+        })
+        self.assertTrue(again.get('duplicate'))
+        self.assertEqual(self._stock('SOAP-500'), 17)
+        detail = self.api.get_consumption(saved['id'])
+        self.assertEqual(len(detail.get('revisions') or []), 1)
+        self.api._role = 'cashier'
+        self.api._user_id = 1
+        requested = self.api.request_consumption_void(saved['id'], 'Put the goods back')
+        self.api._role = 'admin'
+        self.api._user_id = 2
+        approved = self.api.execute_approval(requested['id'], 'approve', note='Put the goods back')
+        self.assertTrue(approved.get('success'), approved)
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        self.assertEqual(self._stock('SOAP-1L'), 10)
+        repeat = self.api.execute_approval(requested['id'], 'approve', note='again')
+        self.assertTrue(repeat.get('success') or repeat.get('duplicate'))
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        db = self.ac._db()
+        try:
+            sales_after = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(sales_after, sales_before)
+
+    def test_decimal_quantity_keeps_the_original_stock_snapshot(self):
+        db = self.ac._db()
+        db.execute("UPDATE products SET unit='kg' WHERE id=1")
+        db.commit()
+        db.close()
+        self.api._role = 'admin'
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'items': [{'product_id': 1, 'quantity': 0.25}],
+            'client_token': 'decimal-create',
+        })
+        self.assertTrue(saved.get('success'), saved)
+        self.assertAlmostEqual(self._stock('SOAP-500'), 19.75, places=3)
+        detail = self.api.get_consumption(saved['id'])
+        item = detail['items'][0]
+        self.assertEqual(item['unit'], 'kg')
+        self.assertAlmostEqual(float(item['quantity']), 0.25, places=3)
+        self.assertAlmostEqual(float(item['stock_before']), 20, places=3)
+        self.assertAlmostEqual(float(item['stock_after']), 19.75, places=3)
+        edited = self.api.edit_consumption(saved['id'], {
+            'edit_reason': 'Used a little more',
+            'items': [{'product_id': 1, 'quantity': 0.5}],
+            'client_token': 'decimal-edit',
+        })
+        self.assertTrue(edited.get('success'), edited)
+        self.assertAlmostEqual(self._stock('SOAP-500'), 19.5, places=3)
+        detail = self.api.get_consumption(saved['id'])
+        item = detail['items'][0]
+        self.assertAlmostEqual(float(item['quantity']), 0.5, places=3)
+        self.assertAlmostEqual(float(item['stock_before']), 20, places=3)
+        self.assertAlmostEqual(float(item['stock_after']), 19.5, places=3)
+
+
 if __name__ == '__main__':
     unittest.main()

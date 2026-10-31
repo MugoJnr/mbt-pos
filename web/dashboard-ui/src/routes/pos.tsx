@@ -24,6 +24,7 @@ import {
   Plus,
   Wallet,
   Receipt,
+  UserPlus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
@@ -93,11 +94,19 @@ const PAY_METHODS = [
   { k: "M-Pesa", i: Smartphone, accent: "ok" as const, enabled: true },
   { k: "Card", i: CreditCard, accent: "info" as const, enabled: true },
   { k: "Bank", i: Building2, accent: "info" as const, enabled: true },
+  { k: "Airtel Money", i: Smartphone, accent: "ok" as const, enabled: true },
+  { k: "Cheque", i: Receipt, accent: "info" as const, enabled: true },
   { k: "Split", i: SplitSquareVertical, accent: "gold" as const, enabled: true },
   { k: "Credit", i: Wallet, accent: "gold" as const, enabled: true },
   { k: "Part Pay", i: Receipt, accent: "gold" as const, enabled: true },
   { k: "Gift Card", i: Gift, accent: "muted" as const, enabled: false },
 ];
+const SPLIT_METHODS = ["Cash", "M-Pesa", "Airtel Money", "Card", "Bank Transfer", "Cheque", "Credit"];
+
+function isCreditMethod(name: string) {
+  const key = name.trim().toLowerCase().replace(/_/g, " ");
+  return key === "credit" || key === "credit sale" || key === "on account" || key === "customer credit";
+}
 const QUICK_AMOUNTS = [500, 1000, 2000, 5000] as const;
 
 function POS() {
@@ -130,6 +139,9 @@ function POS() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [page, setPage] = useState(1);
   const [customerId, setCustomerId] = useState<number | "">("");
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newSaving, setNewSaving] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const saleDateRef = useRef<HTMLInputElement>(null);
   const saleTokenRef = useRef("");
@@ -157,6 +169,8 @@ function POS() {
     () => (customerId === "" ? null : customers.find((c) => c.id === customerId) || null),
     [customers, customerId],
   );
+  const showNewCustomer = payment === "Credit" || payment === "Part Pay"
+    || (payment === "Split" && (remainderOnCredit || splitLines.some((row) => isCreditMethod(row.method))));
 
   const categories = useMemo(() => {
     const set = new Set(products.map((p) => p.category || "General").filter(Boolean));
@@ -201,16 +215,27 @@ function POS() {
   const tax = Math.round(taxable * taxRate * 100) / 100;
   const total = Math.max(0, taxable + tax);
   const paid = parseFloat(amount) || 0;
-  const splitLineTotal = payment === "Split"
-    ? Math.round(splitLines.reduce((sum, row) => sum + (parseFloat(row.amount) || 0), 0) * 100) / 100
+  const splitMoney = payment === "Split"
+    ? Math.round(splitLines.reduce((sum, row) => sum + (isCreditMethod(row.method) ? 0 : (parseFloat(row.amount) || 0)), 0) * 100) / 100
     : 0;
-  const splitRemaining = payment === "Split"
-    ? Math.round((total - splitLineTotal) * 100) / 100
+  const splitCreditLines = payment === "Split"
+    ? Math.round(splitLines.reduce((sum, row) => sum + (isCreditMethod(row.method) ? (parseFloat(row.amount) || 0) : 0), 0) * 100) / 100
     : 0;
+  const splitUnallocated = payment === "Split"
+    ? Math.round((total - splitMoney - splitCreditLines) * 100) / 100
+    : 0;
+  const splitCredit = splitCreditLines + (remainderOnCredit && splitUnallocated > 0.009 ? splitUnallocated : 0);
+  const splitLineTotal = Math.round((splitMoney + splitCreditLines) * 100) / 100;
+  const splitRemaining = splitUnallocated;
   const tendered = payment === "Split" ? splitLineTotal : paid;
   const change = Math.max(0, (payment === "Split" ? tendered : paid) - total);
   const itemCount = cart.reduce((s, l) => s + l.quantity, 0);
   const showTender = payment === "Cash" || payment === "Split" || payment === "M-Pesa" || payment === "Part Pay";
+
+  useEffect(() => {
+    const dirty = cart.length > 0 || splitLines.some((row) => (parseFloat(row.amount) || 0) > 0);
+    window.dispatchEvent(new CustomEvent("mbt-unsaved", { detail: dirty }));
+  }, [cart, splitLines]);
 
   const add = (p: Product) => {
     if (Number(p.stock) <= 0) return;
@@ -331,27 +356,52 @@ function POS() {
         : payment;
       const splitTenders = payment === "Split"
         ? splitLines
-          .map((row) => ({
-            method: row.method,
-            amount: Math.round((parseFloat(row.amount) || 0) * 100) / 100,
-            reference: row.reference.trim(),
-          }))
+          .map((row) => {
+            const amount = Math.round((parseFloat(row.amount) || 0) * 100) / 100;
+            const creditLine = isCreditMethod(row.method);
+            const item: { method: string; amount: number; reference?: string; status?: string } = {
+              method: creditLine ? "Credit" : row.method,
+              amount,
+            };
+            if (creditLine) item.status = "outstanding";
+            else if (row.reference.trim() && row.method !== "Cash") item.reference = row.reference.trim();
+            return item;
+          })
           .filter((row) => row.amount > 0)
-          .map((row) => row.reference ? row : { method: row.method, amount: row.amount })
         : [];
-      const splitCollected = Math.round(splitTenders.reduce((sum, row) => sum + row.amount, 0) * 100) / 100;
-      const creditLeft = Math.round((total - splitCollected) * 100) / 100;
+      let activeCustomer: number | "" = customerId;
+      const namedCredit = payment === "Split" && splitLines.some((row) => isCreditMethod(row.method) && (parseFloat(row.amount) || 0) > 0);
+      const creditSale = payment === "Credit" || payment === "Part Pay" || remainderOnCredit || namedCredit;
+      if (creditSale && !activeCustomer && newName.trim()) {
+        const phone = newPhone.trim();
+        const digits = phone.replace(/\D/g, "");
+        if (phone && (digits.length < 9 || digits.length > 15)) {
+          throw new Error("Enter a valid phone number or leave it blank.");
+        }
+        const created = await POST<{ success?: boolean; customer_id?: number; error?: string }>("/customers", {
+          name: newName.trim(),
+          phone,
+        });
+        if (!created?.success || !created.customer_id) throw new Error(created?.error || "Could not save the customer.");
+        activeCustomer = created.customer_id;
+      }
+      const splitCollected = Math.round(splitTenders.reduce((sum, row) => sum + (isCreditMethod(row.method) ? 0 : row.amount), 0) * 100) / 100;
+      const explicitCredit = Math.round(splitTenders.reduce((sum, row) => sum + (isCreditMethod(row.method) ? row.amount : 0), 0) * 100) / 100;
+      const creditLeft = Math.round((total - splitCollected - explicitCredit) * 100) / 100;
       if (payment === "Split") {
-        if (!splitTenders.length) throw new Error("Add at least one payment");
         if (remainderOnCredit) {
-          if (!customerId) throw new Error("Choose a customer before leaving an amount on credit");
           if (creditLeft <= 0.009) throw new Error("Those payments already cover the total");
-          splitTenders.push({ method: "Credit", amount: creditLeft });
+          splitTenders.push({ method: "Credit", amount: creditLeft, status: "outstanding" });
         } else if (creditLeft > 0.009) {
-          throw new Error("Payments do not cover the total");
+          throw new Error("Payments do not cover the total. Choose Credit for the unpaid amount, or tick On account.");
         } else if (creditLeft < -0.009) {
           const cash = splitTenders.filter((row) => row.method === "Cash").reduce((sum, row) => sum + row.amount, 0);
           if (cash + 0.009 < Math.abs(creditLeft)) throw new Error("Change can only come from cash");
+        }
+        if (!splitTenders.length) throw new Error("Add at least one payment");
+        const owes = splitTenders.filter((row) => isCreditMethod(row.method)).reduce((sum, row) => sum + row.amount, 0);
+        if (owes > 0.009 && !activeCustomer) {
+          throw new Error("Choose a customer, or enter a new customer name. Customer credit is the amount still owed, not money received.");
         }
       }
       const mixedCash = splitTenders.filter((row) => row.method === "Cash").reduce((sum, row) => sum + row.amount, 0);
@@ -359,8 +409,8 @@ function POS() {
         .filter((row) => row.method !== "Cash" && row.method !== "Credit")
         .reduce((sum, row) => sum + row.amount, 0);
       const mixedMethod = splitTenders.find((row) => row.method !== "Cash" && row.method !== "Credit")?.method || "";
-      if ((payment === "Credit" || payment === "Part Pay" || remainderOnCredit) && !customerId) {
-        throw new Error("Choose a customer before a credit or part payment");
+      if ((payment === "Credit" || payment === "Part Pay" || remainderOnCredit) && !activeCustomer) {
+        throw new Error("Choose a customer before a credit or part payment, or enter a new customer name.");
       }
       if (payment === "Part Pay" && (!(paid > 0) || paid >= total)) {
         throw new Error("Part payment must be more than zero and less than the total");
@@ -380,7 +430,7 @@ function POS() {
           business_date: saleDate,
           reason,
           sales: [{
-            customer_id: customerId || undefined,
+            customer_id: activeCustomer || undefined,
             payment_method: method,
             amount_paid: tender,
             cash_paid: method === "Mixed" ? mixedCash : method === "Cash" ? tender : 0,
@@ -416,7 +466,7 @@ function POS() {
           electronic_method: method === "Mixed" ? mixedMethod || undefined : undefined,
           payment_tenders: payment === "Split" ? splitTenders : undefined,
           note: note || undefined,
-          customer_id: customerId || undefined,
+          customer_id: activeCustomer || undefined,
           sale_date: canDate && saleDate !== shopTodayISO() ? saleDate : undefined,
           client_token: saleTokenRef.current || (saleTokenRef.current = crypto.randomUUID()),
         },
@@ -433,6 +483,8 @@ function POS() {
         setBackdateReason("");
       }
       saleTokenRef.current = "";
+      setNewName("");
+      setNewPhone("");
       clearCart();
       searchRef.current?.focus();
       qc.invalidateQueries({ queryKey: ["products"] });
@@ -864,6 +916,67 @@ function POS() {
               ) : null}
             </div>
 
+            {showNewCustomer ? (
+              <div className="rounded-lg border border-gold/50 bg-gold/10 p-2 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide text-gold">
+                  <UserPlus className="h-3.5 w-3.5" />
+                  New customer
+                </div>
+                <p className="text-[11px] leading-snug text-text2">
+                  This credit stays on their account. Enter a name, or choose a saved customer above.
+                </p>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Input
+                    aria-label="New customer name"
+                    placeholder="Customer name"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    className="h-8 min-h-0 flex-1 text-xs"
+                  />
+                  <Input
+                    aria-label="New customer phone"
+                    placeholder="Phone (optional)"
+                    value={newPhone}
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    className="h-8 min-h-0 w-36 text-xs"
+                  />
+                  <Button
+                    type="button"
+                    className="h-8 min-h-0 px-3 text-xs"
+                    disabled={newSaving || !newName.trim()}
+                    onClick={async () => {
+                      const phone = newPhone.trim();
+                      const digits = phone.replace(/\D/g, "");
+                      if (phone && (digits.length < 9 || digits.length > 15)) {
+                        toast.error("Enter a valid phone number or leave it blank.");
+                        return;
+                      }
+                      setNewSaving(true);
+                      try {
+                        const created = await POST<{ success?: boolean; customer_id?: number; error?: string }>("/customers", {
+                          name: newName.trim(),
+                          phone,
+                        });
+                        if (!created?.success || !created.customer_id) {
+                          toast.error(created?.error || "Could not save the customer.");
+                          return;
+                        }
+                        setCustomerId(created.customer_id);
+                        setNewName("");
+                        setNewPhone("");
+                        await qc.invalidateQueries({ queryKey: ["customers"] });
+                        toast.success("Customer saved. This credit sale will use them.");
+                      } finally {
+                        setNewSaving(false);
+                      }
+                    }}
+                  >
+                    {newSaving ? "Saving…" : "Save and use"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             <div className="flex items-end justify-between gap-2">
               <div className="min-w-0 text-[11px] leading-tight text-text2">
                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -930,10 +1043,9 @@ function POS() {
                       onChange={(e) => setSplitLines((rows) => rows.map((item, i) => i === index ? { ...item, method: e.target.value } : item))}
                       className="h-8 rounded-lg border border-border bg-input px-2 text-xs font-semibold text-text"
                     >
-                      <option>Cash</option>
-                      <option>M-Pesa</option>
-                      <option>Card</option>
-                      <option>Bank Transfer</option>
+                      {SPLIT_METHODS.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
                     </select>
                     <Input
                       type="number"
@@ -945,7 +1057,7 @@ function POS() {
                       onChange={(e) => setSplitLines((rows) => rows.map((item, i) => i === index ? { ...item, amount: e.target.value } : item))}
                       className="h-8 min-h-0 text-sm font-semibold tabular-nums w-24"
                     />
-                    {row.method !== "Cash" ? (
+                    {row.method !== "Cash" && !isCreditMethod(row.method) ? (
                       <Input
                         placeholder="Reference"
                         aria-label={`Reference ${index + 1}`}
@@ -977,16 +1089,24 @@ function POS() {
                       checked={remainderOnCredit}
                       onChange={(e) => setRemainderOnCredit(e.target.checked)}
                     />
-                    Leave the remainder on the customer account
+                    On account
                   </label>
                   <span className="font-extrabold text-text">
-                    {remainderOnCredit && splitRemaining > 0
-                      ? `On account ${KES(splitRemaining, currency)}`
-                      : splitRemaining < 0
-                        ? `Over by ${KES(Math.abs(splitRemaining), currency)}`
-                        : `Remaining ${KES(Math.max(0, splitRemaining), currency)}`}
+                    {`Sale ${KES(total, currency)} · Paid ${KES(splitMoney, currency)} · Customer credit ${KES(splitCredit, currency)}`}
+                    {splitRemaining > 0.009 && !remainderOnCredit
+                      ? ` · Still due ${KES(splitRemaining, currency)}`
+                      : splitRemaining < -0.009
+                        ? ` · Over by ${KES(Math.abs(splitRemaining), currency)}`
+                        : ""}
                   </span>
                 </div>
+                {splitCredit > 0.009 ? (
+                  <div className="text-[11px] font-bold text-gold">
+                    {customerId
+                      ? "Customer credit is the amount still owed. It is not money received."
+                      : "Select a customer. Customer credit is the amount still owed, not money received."}
+                  </div>
+                ) : null}
               </div>
             ) : showTender ? (
               <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
@@ -1026,11 +1146,11 @@ function POS() {
               </div>
             ) : (
               <div className="text-[11px] text-text2 px-0.5">
-                {payment === "Card" || payment === "Bank"
-                  ? "No cash tender for this method."
+                {payment === "Card" || payment === "Bank" || payment === "Airtel Money" || payment === "Cheque"
+                  ? "No cash tender. The sale total is collected by this method."
                   : payment === "Credit"
-                    ? "Full amount stays on the customer account."
-                    : "Choose a customer, then enter the amount paid now."}
+                    ? "Full amount stays on the customer account. Choose a saved customer or enter a new one above."
+                    : "Choose a saved customer or enter a new one above, then enter the amount paid now."}
               </div>
             )}
 

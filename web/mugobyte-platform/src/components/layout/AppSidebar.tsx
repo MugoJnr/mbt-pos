@@ -47,6 +47,7 @@ type NavItem = {
   icon: ComponentType<{ className?: string }>;
   badge?: string;
   hash?: string;
+  tab?: string;
 };
 type NavGroup = { label: string; items: NavItem[]; markActive?: boolean };
 
@@ -60,6 +61,10 @@ const workspaceNav: NavGroup[] = [
       { title: "Businesses", url: "/businesses", icon: Building2 },
       { title: "Devices", url: "/devices", icon: MonitorSmartphone },
       { title: "Reports", url: "/reports", icon: BarChart3 },
+      { title: "Sales", url: "/reports", tab: "sales", icon: BarChart3 },
+      { title: "Debts", url: "/reports", tab: "debts", icon: CreditCard },
+      { title: "Inventory", url: "/reports", tab: "inventory", icon: Package },
+      { title: "Suppliers", url: "/reports", tab: "suppliers", icon: Store },
       { title: "Licenses", url: "/license", icon: KeyRound },
       { title: "Notifications", url: "/notifications", icon: Bell },
       { title: "Downloads", url: "/downloads", icon: Download },
@@ -112,6 +117,9 @@ export function AppSidebar({ variant = "customer" }: { variant?: "customer" | "a
   const collapsed = state === "collapsed";
   const pathname = useRouterState({ select: (r) => r.location.pathname });
   const hash = useRouterState({ select: (r) => r.location.hash.replace(/^#/, "") });
+  const searchTab = useRouterState({
+    select: (r) => String((r.location.search as { tab?: string })?.tab || ""),
+  });
   const { user } = useAuth();
   const showAdmin = variant === "admin" || isPlatformAdmin(user?.role);
 
@@ -124,6 +132,10 @@ export function AppSidebar({ variant = "customer" }: { variant?: "customer" | "a
     if (item.url === "/dashboard") {
       if (item.hash) return pathname === "/dashboard" && hash === item.hash;
       return pathname === "/dashboard" && !hash;
+    }
+    if (item.url === "/reports") {
+      const current = searchTab || "overview";
+      return pathname === "/reports" && (item.tab || "overview") === current;
     }
     if (item.url === "/pos") return pathname === "/pos" || pathname.startsWith("/pos/");
     return pathname === item.url || pathname.startsWith(item.url + "/");
@@ -160,6 +172,7 @@ export function AppSidebar({ variant = "customer" }: { variant?: "customer" | "a
                       >
                         <Link
                           to={item.url as "/dashboard"}
+                          search={item.tab ? { tab: item.tab } : undefined}
                           hash={item.hash}
                           className="flex min-h-10 items-center gap-2"
                           aria-label={item.title}

@@ -11,6 +11,7 @@ Adds to the existing Flask backend:
 """
 import os
 import json
+import re
 import sqlite3
 from datetime import datetime, date, timedelta
 from flask import Blueprint, send_from_directory, jsonify, request, g, current_app, abort, redirect
@@ -95,7 +96,7 @@ def _spa_app_name():
 @web.route('/')
 def index():
     if _dist_ready():
-        return send_from_directory(_active_dist_dir(), 'index.html')
+        return _mark_uncached(send_from_directory(_active_dist_dir(), 'index.html'))
     # Fallback to legacy single-file SPA if React dist not built yet
     if os.path.isfile(_LEGACY):
         return send_from_directory(_TMPL_DIR, 'dashboard.legacy.html')
@@ -112,7 +113,7 @@ def spa_assets(filename):
     for dist in (_active_dist_dir(), _PLATFORM_DIST, _LEGACY_DIST):
         assets = os.path.join(dist, 'assets')
         if os.path.isfile(os.path.join(assets, filename)):
-            return send_from_directory(assets, filename)
+            return _mark_hashed_asset(send_from_directory(assets, filename), filename)
     abort(404)
 
 
@@ -156,9 +157,12 @@ def spa_fallback(spa_path):
     dist_dir = _active_dist_dir()
     candidate = os.path.join(dist_dir, spa_path)
     if _dist_ready() and os.path.isfile(candidate):
-        return send_from_directory(dist_dir, spa_path)
+        response = send_from_directory(dist_dir, spa_path)
+        if spa_path.startswith('assets/'):
+            return _mark_hashed_asset(response, os.path.basename(spa_path))
+        return _mark_uncached(response)
     if _dist_ready():
-        return send_from_directory(_active_dist_dir(), 'index.html')
+        return _mark_uncached(send_from_directory(_active_dist_dir(), 'index.html'))
     abort(404)
 
 
@@ -833,6 +837,7 @@ def _analytics_common_args():
             or request.args.get('stock_status')
             or ''
         ).strip(),
+        'age': (request.args.get('age') or '').strip().lower(),
         'format': (request.args.get('format') or 'json').strip().lower(),
         'report': (request.args.get('report') or 'sales').strip().lower(),
     }
@@ -1895,6 +1900,7 @@ def cloud_analytics_debts():
                 status=args['status'],
                 customer=args['customer'],
                 q=args['q'],
+                age=args.get('age') or '',
             )
             return jsonify(analytics_redact_payload(
                 payload, can_see_finance=can_see_finance, role=role,
@@ -2060,6 +2066,181 @@ def cloud_analytics_export():
     return _inner()
 
 
+def _analytics_detail_response(loader):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            from backend.cloud.platform_service import analytics_redact_payload
+            payload = loader(org_id)
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
+@web.route('/api/cloud/analytics/debt-ageing', methods=['GET'])
+def cloud_analytics_debt_ageing():
+    from backend.cloud.platform_service import analytics_debt_ageing
+    return _analytics_detail_response(analytics_debt_ageing)
+
+
+@web.route('/api/cloud/analytics/debts/<device_id>/<source_id>', methods=['GET'])
+def cloud_analytics_debt_detail(device_id, source_id):
+    from backend.cloud.platform_service import analytics_debt_detail
+    return _analytics_detail_response(
+        lambda org_id: {'debt': analytics_debt_detail(org_id, device_id, source_id)}
+    )
+
+
+@web.route('/api/cloud/analytics/debt-payments/<device_id>/<source_id>', methods=['GET'])
+def cloud_analytics_payment_detail(device_id, source_id):
+    from backend.cloud.platform_service import analytics_payment_detail
+    return _analytics_detail_response(
+        lambda org_id: {'payment': analytics_payment_detail(org_id, device_id, source_id)}
+    )
+
+
+@web.route('/api/cloud/analytics/products/<device_id>/<source_id>', methods=['GET'])
+def cloud_analytics_product_detail(device_id, source_id):
+    from backend.cloud.platform_service import analytics_product_detail
+    return _analytics_detail_response(
+        lambda org_id: {'product': analytics_product_detail(org_id, device_id, source_id)}
+    )
+
+
+@web.route('/api/cloud/analytics/suppliers', methods=['GET'])
+def cloud_analytics_suppliers():
+    from backend.cloud.platform_service import analytics_list_suppliers
+    return _analytics_detail_response(analytics_list_suppliers)
+
+
+@web.route('/api/cloud/analytics/activity', methods=['GET'])
+def cloud_analytics_activity():
+    from backend.cloud.platform_service import analytics_activity
+    return _analytics_detail_response(analytics_activity)
+
+
+@web.route('/api/cloud/analytics/custom-report', methods=['POST'])
+def cloud_analytics_custom_report():
+    """Selected sections only. A password encrypts PDF or Excel, never a plain CSV."""
+    from backend.app import token_required
+    from flask import Response
+
+    @token_required
+    def _inner():
+        try:
+            org_id = (request.args.get('org_id') or (request.json or {}).get('org_id') or '').strip()
+            if not org_id:
+                raise ValueError('org_id is required')
+            from backend.cloud.platform_service import analytics_require_role, require_org_access
+            uid = _cloud_user_id()
+            platform_role = str((getattr(g, 'current_user', {}) or {}).get('role') or '')
+            membership = require_org_access(uid, org_id, platform_role=platform_role)
+            role, can_see_finance = analytics_require_role(membership)
+            body = request.json or {}
+            sections = body.get('sections') or []
+            fmt = str(body.get('format') or 'pdf').strip().lower()
+            start = str(body.get('start') or '')[:10]
+            end = str(body.get('end') or '')[:10]
+            password = body.get('password') or ''
+            confirm = body.get('confirm')
+            if fmt not in ('pdf', 'xlsx', 'csv'):
+                raise ValueError('Choose PDF, Excel, or CSV.')
+            if password and fmt == 'csv':
+                raise ValueError(
+                    'A CSV file cannot be password-protected. It is plain text. '
+                    'Choose PDF or Excel to lock the report.'
+                )
+            if password and confirm is None:
+                raise ValueError('Confirm the report password before downloading.')
+            from backend.cloud.platform_service import compose_custom_report
+            from backend.cloud.owner_profit import build_text_pdf
+            report = compose_custom_report(
+                org_id, start=start or _analytics_default_range()[0],
+                end=end or _analytics_default_range()[1],
+                sections=sections, can_see_finance=can_see_finance,
+            )
+            if role == 'manager' and not can_see_finance:
+                report['lines'] = [
+                    line for line in report['lines']
+                    if 'profit' not in line.lower() and 'cost of goods' not in line.lower()
+                ]
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            period = report['period'].replace(' ', '_')
+            if fmt == 'csv':
+                body_text = '\n'.join(report['lines'])
+                note = 'This CSV is not encrypted.\n'
+                return Response(
+                    (note + body_text).encode('utf-8'),
+                    mimetype='text/csv; charset=utf-8',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="mbt-owner-{stamp}.csv"',
+                        'X-Report-Protected': '0',
+                    },
+                )
+            if fmt == 'pdf':
+                raw = build_text_pdf(report['lines'])
+                filename = f'mbt-owner-{stamp}.pdf'
+                if password:
+                    from backend.report_file_encryption import check_export_password, seal_pdf
+                    sealed = seal_pdf(raw, check_export_password(str(password), None if confirm is None else str(confirm)))
+                    payload, protected = sealed, '1'
+                else:
+                    payload, protected = raw, '0'
+                return Response(
+                    payload,
+                    mimetype='application/pdf',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'X-Report-Protected': protected,
+                    },
+                )
+            import tempfile
+            from openpyxl import Workbook
+            book = Workbook()
+            sheet = book.active
+            sheet.title = 'Owner report'
+            for line in report['lines']:
+                sheet.append([line])
+            tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+            tmp.close()
+            book.save(tmp.name)
+            filename = f'mbt-owner-{stamp}.xlsx'
+            if password:
+                from backend.report_file_encryption import check_export_password, seal_xlsx_file
+                payload = seal_xlsx_file(
+                    tmp.name,
+                    check_export_password(str(password), None if confirm is None else str(confirm)),
+                )
+                protected = '1'
+            else:
+                with open(tmp.name, 'rb') as handle:
+                    payload = handle.read()
+                protected = '0'
+            try:
+                os.remove(tmp.name)
+            except OSError:
+                pass
+            return Response(
+                payload,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'X-Report-Protected': protected,
+                },
+            )
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
 # ── Mobile-ready cloud API surface (no mobile UI yet) ─────────────────────────
 
 @web.route('/api/cloud/v1/health', methods=['GET'])
@@ -2147,11 +2328,15 @@ def _user_tabs(user=None):
     if not isinstance(raw, list):
         raw = []
     role = (user.get('role') or 'cashier').lower()
+    extra = set()
     if role in ('admin', 'superadmin', 'manager'):
-        return set(raw) | {
-            'dashboard', 'sales', 'inventory', 'reports', 'debt', 'users',
-            'settings', 'security', 'accounting', 'backup',
-        }
+        extra = {'dashboard', 'sales', 'inventory', 'reports', 'debt', 'users', 'accounting'}
+    if role in ('admin', 'superadmin'):
+        extra |= {'settings', 'backup'}
+    if role == 'superadmin':
+        extra |= {'security'}
+    if extra:
+        return set(raw) | extra
     return set(raw or ['dashboard', 'sales'])
 
 
@@ -2159,10 +2344,11 @@ def _user_can(module, user=None):
     """Permission gate for AI / search surfaces (mirrors desktop tab access)."""
     user = user or getattr(g, 'current_user', None) or {}
     role = (user.get('role') or 'cashier').lower()
+    if module == 'inventory_value':
+        from desktop.utils.security import sees_product_cost
+        return sees_product_cost(user)
     if role in ('admin', 'superadmin'):
         return True
-    if module == 'inventory_value' and role in ('cashier', 'viewer'):
-        return False
     tabs = _user_tabs(user)
     # Keep POS ops usable for cashiers (sales → product lookup) without granting
     # finance/management tabs via loose aliases (reports←dashboard, etc.).
@@ -2183,15 +2369,14 @@ def _user_can(module, user=None):
 
 
 def _perm(action: str) -> bool:
-    """Shop permission from the signed-in role. An unknown role is denied."""
+    """Shop permission for the signed-in account. An unknown action is denied."""
     from desktop.utils.security import has_permission
-    user = getattr(g, 'current_user', None) or {}
-    return has_permission({'role': (user.get('role') or '').lower()}, action)
+    return has_permission(getattr(g, 'current_user', None) or {}, action)
 
 
 def _sees_cost() -> bool:
-    role = ((getattr(g, 'current_user', None) or {}).get('role') or '').lower()
-    return role in ('manager', 'admin', 'superadmin')
+    from desktop.utils.security import sees_product_cost
+    return sees_product_cost(getattr(g, 'current_user', None) or {})
 
 
 class _WebPosApi:
@@ -2332,7 +2517,8 @@ def _cc_today_snapshot(user=None):
     inv_val = _inventory_value(db) if _user_can('inventory_value', user) else None
     debt_out = None
     overdue = 0
-    if _user_can('debt', user):
+    from desktop.utils.financials import management_view
+    if management_view(role) and _user_can('debt', user):
         debt_out = float((db.execute(
             "SELECT COALESCE(SUM(balance),0) FROM debt_invoices "
             "WHERE status NOT IN ('paid','cancelled')"
@@ -2343,7 +2529,7 @@ def _cc_today_snapshot(user=None):
         ).fetchone()[0])
 
     by_pay = []
-    if _user_can('payments', user) or _user_can('sales', user):
+    if management_view(role) and (_user_can('payments', user) or _user_can('sales', user)):
         by_pay = _trs(db.execute(
             f"SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total),0) as total "
             f"FROM sales WHERE {sales_clause} GROUP BY payment_method ORDER BY total DESC",
@@ -2351,7 +2537,7 @@ def _cc_today_snapshot(user=None):
         ).fetchall())
 
     top = []
-    if _user_can('reports', user) or _user_can('sales', user):
+    if management_view(role) and (_user_can('reports', user) or _user_can('sales', user)):
         top = _trs(db.execute("""
             SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
             FROM sale_items si JOIN sales s ON si.sale_id=s.id
@@ -2438,7 +2624,8 @@ def list_customers():
             like = f'%{q}%'
             rows = db.execute(
                 "SELECT c.*, COALESCE(SUM(di.balance),0) as total_outstanding, "
-                "COUNT(di.id) as open_invoices "
+                "COUNT(di.id) as open_invoices, "
+                "COALESCE((SELECT balance FROM customer_wallet cw WHERE cw.customer_id=c.id),0) as wallet_balance "
                 "FROM customers c "
                 "LEFT JOIN debt_invoices di ON c.id=di.customer_id "
                 "AND di.status NOT IN ('paid','cancelled') "
@@ -2449,7 +2636,8 @@ def list_customers():
         else:
             rows = db.execute(
                 "SELECT c.*, COALESCE(SUM(di.balance),0) as total_outstanding, "
-                "COUNT(di.id) as open_invoices "
+                "COUNT(di.id) as open_invoices, "
+                "COALESCE((SELECT balance FROM customer_wallet cw WHERE cw.customer_id=c.id),0) as wallet_balance "
                 "FROM customers c "
                 "LEFT JOIN debt_invoices di ON c.id=di.customer_id "
                 "AND di.status NOT IN ('paid','cancelled') "
@@ -2461,6 +2649,7 @@ def list_customers():
             for row in out:
                 row.pop('total_outstanding', None)
                 row.pop('open_invoices', None)
+                row.pop('wallet_balance', None)
         return jsonify(out)
     return _inner()
 
@@ -2543,26 +2732,26 @@ def debt_summary():
         scope_params = (g.current_user.get('id'),) if own else ()
         out   = _tr(db.execute(
             "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices "
-            "WHERE status NOT IN ('paid','cancelled')" + scope, scope_params
+            "WHERE status NOT IN ('paid','cancelled','written_off')" + scope, scope_params
         ).fetchone())
         over  = _tr(db.execute(
             "SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as count FROM debt_invoices "
-            "WHERE status NOT IN ('paid','cancelled') AND due_date IS NOT NULL AND due_date < date('now')"
+            "WHERE status NOT IN ('paid','cancelled','written_off') AND due_date IS NOT NULL AND due_date < date('now')"
             + scope, scope_params
         ).fetchone())
         col   = _tr(db.execute(
             "SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as count FROM debt_payments "
-            "WHERE date(created_at)=?" + scope, (today,) + scope_params
+            "WHERE date(created_at)=? AND COALESCE(reversed,0)=0" + scope, (today,) + scope_params
         ).fetchone())
         debtors = _trs(db.execute(
             "SELECT customer_name, COALESCE(SUM(balance),0) as total_balance FROM debt_invoices "
-            "WHERE status NOT IN ('paid','cancelled')" + scope
+            "WHERE status NOT IN ('paid','cancelled','written_off')" + scope
             + " GROUP BY customer_id ORDER BY total_balance DESC LIMIT 5",
             scope_params,
         ).fetchall())
         cust_count = db.execute(
             "SELECT COUNT(DISTINCT customer_id) FROM debt_invoices "
-            "WHERE status NOT IN ('paid','cancelled')" + scope, scope_params
+            "WHERE status NOT IN ('paid','cancelled','written_off')" + scope, scope_params
         ).fetchone()[0]
         return jsonify({'outstanding': out, 'overdue': over, 'today_collected': col, 'top_debtors': debtors, 'customers_with_debt': cust_count})
     return _inner()
@@ -2660,6 +2849,92 @@ def pay_debt_invoice(inv_id):
     return _inner()
 
 
+def _debt_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = (user.get('role') or '').lower()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    return api
+
+
+@web.route('/api/debt/customers/<int:customer_id>/preview', methods=['POST'])
+def preview_customer_debt_payment(customer_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _perm('debt.collect') and not _perm('debt.view'):
+            return jsonify({'error': 'Forbidden'}), 403
+        data = request.json or {}
+        result = _debt_api().preview_customer_payment(
+            customer_id,
+            data.get('amount') or 0,
+            str(data.get('mode') or 'auto'),
+            data.get('allocations') or [],
+            data.get('methods') or [],
+        )
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+    return _inner()
+
+
+@web.route('/api/debt/customers/<int:customer_id>/collect', methods=['POST'])
+def collect_customer_debt_payment(customer_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _perm('debt.collect'):
+            return jsonify({'error': 'Forbidden'}), 403
+        data = request.json or {}
+        result = _debt_api().collect_customer_payment(
+            customer_id,
+            data.get('amount') or 0,
+            mode=str(data.get('mode') or 'auto'),
+            allocations=data.get('allocations') or [],
+            methods=data.get('methods') or [],
+            notes=str(data.get('notes') or ''),
+            client_token=str(data.get('client_token') or ''),
+            from_credit=bool(data.get('from_credit')),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+    return _inner()
+
+
+@web.route('/api/debt/collections/<int:collection_id>/reverse', methods=['POST'])
+def reverse_customer_debt_collection(collection_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _debt_api().reverse_debt_collection(
+            collection_id,
+            str(data.get('reason') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+    return _inner()
+
+
+@web.route('/api/debt/customers/<int:customer_id>/statement', methods=['GET'])
+def customer_debt_statement(customer_id):
+    from backend.app import token_required
+    @token_required
+    def _inner():
+        if not _perm('debt.view') and not _perm('debt.view_own'):
+            return jsonify({'error': 'Forbidden'}), 403
+        result = _debt_api().get_customer_statement(customer_id)
+        if result.get('error'):
+            return jsonify(result), 404
+        return jsonify(result)
+    return _inner()
+
+
 @web.route('/api/debt/payments', methods=['GET'])
 def list_debt_payments():
     from backend.app import token_required
@@ -2686,6 +2961,11 @@ def list_debt_payments():
 
 def stock_receipt_rows(db, limit=300):
     """Supplier deliveries stored as PURCHASE stock movements."""
+    try:
+        from desktop.utils.supplier_payables import ensure_schema
+        ensure_schema(db)
+    except Exception:
+        pass
     try:
         rows = db.execute(
             """
@@ -2723,7 +3003,9 @@ def stock_receipt_rows(db, limit=300):
         headers = db.execute(
             """
             SELECT id, receipt_number, supplier_id, reference_note, notes,
-                   grand_total, username, created_at
+                   grand_total, username, created_at,
+                   COALESCE(status, 'posted') AS status,
+                   due_date, effective_date
             FROM stock_receipts
             ORDER BY id DESC
             LIMIT ?
@@ -2736,10 +3018,13 @@ def stock_receipt_rows(db, limit=300):
                 dict(line) for line in db.execute(
                     """
                     SELECT l.product_id, l.product_name, l.quantity, l.unit_cost,
-                           l.line_total, p.sku, p.unit, p.price, p.cost_price,
-                           p.stock AS current_stock
+                           l.line_total, COALESCE(l.returned_qty,0) AS returned_qty,
+                           p.sku, p.unit, p.price, p.cost_price,
+                           p.stock AS current_stock,
+                           m.qty_before AS old_stock, m.qty_after AS new_stock
                     FROM stock_receipt_lines l
                     LEFT JOIN products p ON p.id = l.product_id
+                    LEFT JOIN stock_movements m ON m.id = l.movement_id
                     WHERE l.receipt_id=?
                     ORDER BY l.id
                     """,
@@ -2756,13 +3041,21 @@ def stock_receipt_rows(db, limit=300):
                 'reason': header.get('reference_note') or header.get('notes') or '',
                 'username': header.get('username') or '',
                 'created_at': header.get('created_at'),
+                'supplier_id': header.get('supplier_id'),
                 'supplier_name': (supplier.get('name') or '').strip(),
                 'supplier_phone': supplier.get('phone') or '',
                 'supplier_notes': supplier.get('notes') or '',
                 'grand_total': header.get('grand_total') or 0,
+                'reference': header.get('reference_note') or '',
+                'notes': header.get('notes') or '',
+                'status': header.get('status') or 'posted',
                 'lines': lines,
                 'grouped': True,
+                'due_date': header.get('due_date'),
+                'effective_date': header.get('effective_date'),
             })
+        from desktop.utils.supplier_payables import annotate_receipts
+        grouped = annotate_receipts(db, grouped)
     except sqlite3.OperationalError:
         grouped = []
     seen = {
@@ -2797,6 +3090,20 @@ def cloud_analytics_stock_receipts():
 
     @token_required
     def _inner():
+        org_id = (request.args.get('org_id') or '').strip()
+        if org_id:
+            try:
+                org_id, role, can_see_finance = _analytics_authorize()
+                from backend.cloud.platform_service import (
+                    analytics_list_deliveries,
+                    analytics_redact_payload,
+                )
+                payload = analytics_list_deliveries(org_id)
+                return jsonify(analytics_redact_payload(
+                    payload, can_see_finance=can_see_finance, role=role,
+                ))
+            except Exception as e:
+                return _cloud_exception(e, 502)
         if not _user_can('inventory'):
             return jsonify({'error': 'Inventory access required'}), 403
         return jsonify({
@@ -2817,10 +3124,8 @@ def list_stock_receipts():
             return jsonify({'error': 'Inventory access required'}), 403
         rows = stock_receipt_rows(_get_db())
         if not _sees_cost():
-            for row in rows:
-                if isinstance(row, dict):
-                    row.pop('cost_price', None)
-                    row.pop('unit_cost', None)
+            from desktop.utils.security import redact_cost_fields
+            redact_cost_fields(rows)
         return jsonify(rows)
 
     return _inner()
@@ -2876,9 +3181,12 @@ def list_consumptions_http():
     def _inner():
         if not (_perm('consumption.view_report') or _perm('consumption.create')):
             return jsonify({'error': 'Consumption access required'}), 403
+        filters = _report_filters()
         rows = _consumption_api().get_consumptions(
-            request.args.get('start') or None,
-            request.args.get('end') or None,
+            filters['start'],
+            filters['end'],
+            department_id=filters['department_id'],
+            reason=filters['reason'],
             include_voided=True,
         )
         return jsonify(rows or [])
@@ -2894,6 +3202,21 @@ def create_consumption_http():
     def _inner():
         data = request.json or {}
         result = _consumption_api().create_consumption(data)
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/consumptions/<int:cid>', methods=['PUT'])
+def edit_consumption_http(cid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _consumption_api().edit_consumption(cid, data)
         if result.get('error'):
             return jsonify(result), int(result.get('status') or 400)
         return jsonify(result)
@@ -2986,7 +3309,7 @@ def consumption_report_http():
     return _inner()
 
 
-@web.route('/api/consumptions/report/export', methods=['GET'])
+@web.route('/api/consumptions/report/export', methods=['GET', 'POST'])
 def consumption_report_export_http():
     from backend.app import token_required
     from desktop.utils.security import has_permission
@@ -2997,6 +3320,9 @@ def consumption_report_export_http():
         api = _consumption_api()
         if not has_permission({'role': api._role}, 'consumption.export'):
             return jsonify({'error': 'You cannot export the consumption report.'}), 403
+        export_password, password_error = _take_export_password()
+        if password_error:
+            return password_error
         filters = _report_filters()
         start = filters['start'] or str(date.today())
         end = filters['end'] or start
@@ -3010,6 +3336,9 @@ def consumption_report_export_http():
         )
         from backend.report_export_service import export_consumption_report
         user = g.current_user or {}
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+        tmp.close()
         path = export_consumption_report(
             data.get('rows') or [],
             shop_name='Shop',
@@ -3018,11 +3347,11 @@ def consumption_report_export_http():
             generated_by=user.get('full_name') or user.get('username') or 'web',
             filters=f'Date range {start} to {end}',
             totals=data.get('totals') or {},
+            output_path=tmp.name,
         )
-        return send_file(
-            path,
-            as_attachment=True,
-            download_name=f'consumption-{start}-to-{end}.xlsx',
+        return _sealed_attachment(
+            'xlsx', f'consumption-{start}-to-{end}.xlsx', export_password,
+            path=path, report='consumption', period=f'{start} to {end}',
         )
 
     return _inner()
@@ -3032,12 +3361,40 @@ def consumption_report_export_http():
 # STOCK ADJUSTMENT (web-accessible)
 # ══════════════════════════════════════════════════════════════════════════
 
+@web.route('/api/inventory-valuation', methods=['GET'])
+def inventory_valuation_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _sees_cost():
+            return jsonify({'error': 'Inventory valuation is not available for this login.'}), 403
+        from desktop.utils.stock_layers import inventory_valuation
+        return jsonify(inventory_valuation(_get_db()))
+
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/history', methods=['GET'])
+def product_history_http(pid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required'}), 403
+        return jsonify(_inventory_api().get_product_history(int(pid)))
+
+    return _inner()
+
+
 @web.route('/api/products/<int:pid>/adjust', methods=['POST'])
 def adjust_stock(pid):
     from backend.app import token_required
     @token_required
     def _inner():
-        if g.current_user.get('role') != 'superadmin':
+        from desktop.utils.security import has_permission
+        if not has_permission(g.current_user, 'inventory.adjust_stock'):
             return jsonify({'error': 'Super-Admin access required'}), 403
         data    = request.json or {}
         try:
@@ -3093,6 +3450,26 @@ def adjust_stock(pid):
              user.get('full_name') or user['username'])
         )
         movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        from desktop.utils.stock_layers import add_layer, consume_fifo
+        if qty_change > 0.0001:
+            layer = add_layer(
+                db, pid, qty_change, float(row['cost_price'] or 0),
+                'adjust', str(movement_id),
+                product_name=row['name'],
+                purchase_unit_cost=float(row['cost_price'] or 0),
+                extra_unit_cost=0,
+                supplier_name='Stock adjustment',
+                reference_note=reason,
+            )
+        elif qty_change < -0.0001:
+            layer = consume_fifo(
+                db, pid, abs(qty_change), reference=f"WEB_pid={pid}",
+            )
+        else:
+            layer = {'success': True}
+        if layer.get('error'):
+            db.rollback()
+            return jsonify({'error': layer['error']}), 400
         try:
             from desktop.utils.accounting_hooks import post_stock_adjust_journal
             posted = post_stock_adjust_journal(
@@ -3183,8 +3560,8 @@ def receive_stock_http(pid):
     def _inner():
         data = request.json or {}
         user = g.current_user or {}
-        role = (user.get('role') or '').lower()
-        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
+        from desktop.utils.security import has_permission
+        if not has_permission(user, 'inventory.receive'):
             return jsonify({'error': 'You cannot receive supplier stock.'}), 403
         try:
             qty = float(data.get('quantity') if data.get('quantity') is not None else data.get('qty'))
@@ -3248,6 +3625,109 @@ def return_sale_http(sale_id):
     return _inner()
 
 
+@web.route('/api/debts/<int:invoice_id>/resolution', methods=['GET'])
+def debt_resolution_preview_http(invoice_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from desktop.utils.api_client import APIClient
+        user = g.current_user or {}
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or 'web'
+        result = api.debt_resolution_preview(int(invoice_id))
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/debts/<int:invoice_id>/cancel-sale', methods=['POST'])
+def cancel_sale_resolve_debt_http(invoice_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        from desktop.utils.api_client import APIClient
+        user = g.current_user or {}
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or 'web'
+        restore = data.get('restore')
+        result = api.cancel_sale_resolve_debt(
+            int(invoice_id),
+            str(data.get('reason') or ''),
+            refund_status=str(data.get('refund_status') or 'none'),
+            refund_method=str(data.get('refund_method') or ''),
+            refund_reference=str(data.get('refund_reference') or ''),
+            refund_amount=data.get('refund_amount'),
+            restore=restore if isinstance(restore, list) else None,
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/debt-payments/<int:payment_id>/reverse', methods=['POST'])
+def reverse_debt_payment_http(payment_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        from desktop.utils.api_client import APIClient
+        user = g.current_user or {}
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or 'web'
+        result = api.reverse_debt_payment(
+            int(payment_id),
+            str(data.get('reason') or ''),
+            money_outcome=str(data.get('money_outcome') or 'never_received'),
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/debt-payments/<int:payment_id>/reallocate', methods=['POST'])
+def reallocate_debt_payment_http(payment_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        from desktop.utils.api_client import APIClient
+        user = g.current_user or {}
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or 'web'
+        result = api.reallocate_debt_payment(
+            int(payment_id),
+            int(data.get('target_invoice_id') or 0),
+            str(data.get('reason') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
 @web.route('/api/debts/<int:invoice_id>/write-off', methods=['POST'])
 def write_off_debt_http(invoice_id):
     """Write off a debt. No cash receipt is created."""
@@ -3286,22 +3766,251 @@ def create_stock_receipt():
     def _inner():
         data = request.json or {}
         user = g.current_user or {}
-        role = (user.get('role') or '').lower()
-        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
+        from desktop.utils.security import has_permission
+        if not has_permission(user, 'inventory.receive'):
             return jsonify({'error': 'You cannot receive supplier stock.'}), 403
         from desktop.utils.api_client import APIClient
         api = APIClient()
-        api._role = role
+        api._role = (user.get('role') or '').lower()
         api._user_id = user.get('id')
         api._username = user.get('username') or user.get('full_name') or 'web'
         result = api.receive_delivery(
             data.get('supplier_id'),
             data.get('lines') or [],
-            reference=str(data.get('reference') or data.get('notes') or ''),
+            reference=str(data.get('reference') or ''),
             notes=str(data.get('notes') or ''),
             client_token=str(data.get('client_token') or ''),
+            payment_amount=data.get('payment_amount') or 0,
+            payment_method=str(data.get('payment_method') or ''),
+            payment_reference=str(data.get('payment_reference') or ''),
+            due_date=str(data.get('due_date') or ''),
+            effective_date=str(data.get('effective_date') or ''),
+            delivery_extra=data.get('delivery_extra'),
         )
         code = 200 if result.get('success') else 400
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/reverse', methods=['POST'])
+def reverse_stock_receipt_http(rid):
+    """Reverse one supplier delivery once. Stock moves back by the received quantities."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.reverse_stock_receipt(
+            int(rid),
+            reason=str(data.get('reason') or ''),
+            pin=str(data.get('pin') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/lines/<int:pid>', methods=['POST'])
+def correct_stock_receipt_line_http(rid, pid):
+    """Correct one line. Stock changes by the difference, not the full quantity."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.correct_stock_receipt_line(
+            int(rid), int(pid), data.get('quantity'),
+            unit_cost=data.get('unit_cost'),
+            pin=str(data.get('pin') or ''),
+            reason=str(data.get('reason') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>', methods=['GET'])
+def get_stock_receipt_http(rid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _inventory_api()
+        result = api.get_stock_receipt(int(rid))
+        code = 200 if not result.get('error') else int(result.get('status') or 404)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/supplier-payables', methods=['GET'])
+def supplier_payables_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        from desktop.utils.security import has_permission
+        if not has_permission(user, 'supplier.view'):
+            return jsonify({'error': 'Supplier balances are not available for this login.'}), 403
+        api = _inventory_api()
+        return jsonify(api.supplier_payable_summary(
+            request.args.get('start') or '',
+            request.args.get('end') or '',
+        ))
+
+    return _inner()
+
+
+@web.route('/api/supplier-payments', methods=['POST'])
+def supplier_payment_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.record_supplier_payment(
+            data.get('supplier_id'),
+            data.get('amount'),
+            method=str(data.get('method') or 'cash'),
+            reference=str(data.get('reference') or ''),
+            notes=str(data.get('notes') or ''),
+            mode=str(data.get('mode') or 'oldest'),
+            allocations=data.get('allocations') or [],
+            client_token=str(data.get('client_token') or ''),
+            paid_at=str(data.get('paid_at') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/suppliers/<int:sid>/statement', methods=['GET'])
+def supplier_statement_http(sid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        user = g.current_user or {}
+        from desktop.utils.security import has_permission
+        if not has_permission(user, 'supplier.view'):
+            return jsonify({'error': 'Supplier balances are not available for this login.'}), 403
+        api = _inventory_api()
+        result = api.supplier_statement(int(sid))
+        code = 200 if not result.get('error') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/backdate', methods=['POST'])
+def backdate_stock_receipt_http(rid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.backdate_stock_receipt(
+            int(rid), str(data.get('effective_date') or ''), str(data.get('reason') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/header', methods=['POST'])
+def update_stock_receipt_header_http(rid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.update_stock_receipt_header(
+            int(rid),
+            reference=data.get('reference') if 'reference' in data else None,
+            notes=data.get('notes') if 'notes' in data else None,
+            due_date=data.get('due_date') if 'due_date' in data else None,
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/requests', methods=['POST'])
+def request_delivery_action_http(rid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.request_delivery_action(
+            int(rid), str(data.get('kind') or ''), str(data.get('reason') or ''),
+            str(data.get('requested_date') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/supplier-delivery-requests', methods=['GET'])
+def list_delivery_requests_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _inventory_api()
+        return jsonify(api.list_delivery_requests(request.args.get('status') or 'pending'))
+
+    return _inner()
+
+
+@web.route('/api/supplier-delivery-requests/<int:request_id>', methods=['POST'])
+def review_delivery_request_http(request_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.review_delivery_request(
+            int(request_id), str(data.get('decision') or ''),
+            str(data.get('note') or ''), str(data.get('pin') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stock-receipts/<int:rid>/lines/<int:pid>/return', methods=['POST'])
+def return_receipt_line_http(rid, pid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        api = _inventory_api()
+        result = api.return_receipt_line(
+            int(rid), int(pid), data.get('quantity'),
+            reason=str(data.get('reason') or ''),
+            pin=str(data.get('pin') or ''),
+            client_token=str(data.get('client_token') or ''),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
         return jsonify(result), code
 
     return _inner()
@@ -3896,6 +4605,56 @@ def _app_version_info():
     return info
 
 
+_HASHED_ASSET = re.compile(r'-[A-Za-z0-9_-]{8,}\.(?:js|css)$', re.IGNORECASE)
+
+
+def _mark_uncached(response):
+    """HTML and version checks must revalidate. A long cache hides a new dashboard."""
+    response.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    return response
+
+
+def _mark_fresh(response):
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+def _mark_hashed_asset(response, filename: str):
+    if _HASHED_ASSET.search(filename or ''):
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    else:
+        _mark_uncached(response)
+    return response
+
+
+def _dashboard_entry_script(dist_dir: str) -> str:
+    index = os.path.join(dist_dir, 'index.html')
+    if not os.path.isfile(index):
+        return ''
+    try:
+        with open(index, 'r', encoding='utf-8') as handle:
+            text = handle.read()
+    except OSError:
+        return ''
+    match = re.search(r'src="(/assets/[^"]+\.js)"', text)
+    return match.group(1) if match else ''
+
+
+def _dashboard_release() -> dict:
+    """Identity of the dashboard this process is serving, not the page already open."""
+    info = _app_version_info()
+    dist = _active_dist_dir() if _dist_ready() else ''
+    entry = _dashboard_entry_script(dist) if dist else ''
+    asset_path = ''
+    if entry.startswith('/assets/'):
+        asset_path = os.path.join(dist, 'assets', os.path.basename(entry))
+    info['entry_script'] = entry
+    info['asset_ready'] = bool(entry) and os.path.isfile(asset_path)
+    info['dashboard'] = _spa_app_name() if dist else ''
+    return info
+
+
 def _push_notification(db, ntype, title, body='', severity='info', link=''):
     db.execute(
         "INSERT INTO cc_notifications (type, title, body, severity, link) VALUES (?,?,?,?,?)",
@@ -3920,11 +4679,14 @@ def _today_profit(db, day=None):
 
 
 def _inventory_value(db):
-    row = db.execute("""
-        SELECT COALESCE(SUM(stock * COALESCE(NULLIF(cost_price,0), price, 0)), 0)
-        FROM products WHERE is_active=1
-    """).fetchone()
-    return float(row[0] if row else 0)
+    """Cost value of stock on hand. Selling price is not used as a cost."""
+    from desktop.utils.financials import compute_financials
+    from datetime import date as _date
+    today = str(_date.today())
+    try:
+        return float(compute_financials(db, today, today).get('inventory_cost_value') or 0)
+    except Exception:
+        return 0.0
 
 
 def _month_revenue(db):
@@ -4010,7 +4772,13 @@ def _seed_live_notifications(db):
 
 @web.route('/api/version', methods=['GET'])
 def api_version():
-    return jsonify(_app_version_info())
+    return _mark_fresh(jsonify(_app_version_info()))
+
+
+@web.route('/api/dashboard-version', methods=['GET'])
+def dashboard_version():
+    """The release this server is serving. Browsers must not cache the answer."""
+    return _mark_fresh(jsonify(_dashboard_release()))
 
 
 @web.route('/api/updates/status', methods=['GET'])
@@ -4025,6 +4793,25 @@ def updates_status():
         release, reachable = load_release_feed()
         body = classify_release(installed.get('version') or '', release, reachable=reachable)
         body['installed_build'] = installed.get('build') or ''
+        from backend.update_progress import read_update_progress
+        from backend.shop_update import parse_version
+        progress = read_update_progress()
+        installed_v = parse_version(installed.get('version'))
+        progress_v = parse_version(progress.get('version'))
+        if (
+            progress.get('state') in ('complete', 'available', 'installing')
+            and installed_v and progress_v and progress_v <= installed_v
+        ):
+            progress = {
+                'kind': 'till', 'state': 'idle', 'percent': None,
+                'version': '', 'message': '',
+            }
+        body['till_download'] = {
+            'state': progress.get('state') or 'idle',
+            'percent': progress.get('percent'),
+            'version': progress.get('version') or '',
+            'message': progress.get('message') or '',
+        }
         return jsonify(body)
     return _inner()
 
@@ -4153,10 +4940,13 @@ def cc_summary():
             FROM sales WHERE {sales_clause}
         """, params).fetchone()) or {}
         debt_total = None
-        if _user_can('debt', user):
+        if _perm('debt.view') or _perm('debt.view_own'):
+            own = _perm('debt.view_own') and not _perm('debt.view')
+            scope = " AND cashier_id=?" if own else ""
+            scope_params = (user.get('id'),) if own else ()
             debt = _tr(db.execute(
                 "SELECT COALESCE(SUM(balance),0) as total FROM debt_invoices "
-                "WHERE status NOT IN ('paid','cancelled')"
+                "WHERE status NOT IN ('paid','cancelled')" + scope, scope_params
             ).fetchone()) or {}
             debt_total = float(debt.get('total') or 0)
         profit_detail = _profit_detail(db, today) if _user_can('reports', user) else None
@@ -4168,8 +4958,10 @@ def cc_summary():
         if expenses is not None:
             cash_flow = float(sales.get('revenue') or 0) - float(expenses) / max(date.today().day, 1)
 
+        from desktop.utils.security import sees_management_figures
+        sees_finance = sees_management_figures(user)
         by_payment = []
-        if _user_can('payments', user) or _user_can('sales', user):
+        if sees_finance and (_user_can('payments', user) or _user_can('sales', user)):
             by_payment = _trs(db.execute(f"""
                 SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total),0) as total
                 FROM sales WHERE {sales_clause}
@@ -4178,7 +4970,7 @@ def cc_summary():
 
         top_products = []
         top_categories = []
-        if _user_can('reports', user) or _user_can('sales', user):
+        if sees_finance and (_user_can('reports', user) or _user_can('sales', user)):
             top_products = _trs(db.execute("""
                 SELECT si.product_name as name, SUM(si.quantity) as qty,
                        COALESCE(SUM(si.total),0) as revenue
@@ -4227,6 +5019,14 @@ def cc_summary():
             health_bits.append(10)
         business_health = int(min(100, sum(health_bits)))
 
+        if not sees_finance:
+            profit = None
+            profit_detail = None
+            inv_val = None
+            month_rev = None
+            expenses = None
+            cash_flow = None
+            debt_total = None
         pay_map = {str(p.get('payment_method') or '').lower(): float(p.get('total') or 0)
                    for p in by_payment}
 
@@ -5156,16 +5956,26 @@ def ai_chat():
 # ══════════════════════════════════════════════════════════════════════════
 
 def _report_filters_from_request():
-    start = (request.args.get('start') or str(date.today()))[:10]
-    end = (request.args.get('end') or start)[:10]
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        body = {}
+
+    def pick(key, default=''):
+        raw = request.args.get(key)
+        if raw is None or raw == '':
+            raw = body.get(key, default)
+        return raw
+
+    start = str(pick('start', str(date.today())) or date.today())[:10]
+    end = str(pick('end', start) or start)[:10]
     return {
         'start': start,
         'end': end,
-        'employee': (request.args.get('employee') or '').strip(),
-        'payment': (request.args.get('payment') or '').strip(),
-        'category': (request.args.get('category') or '').strip(),
-        'customer': (request.args.get('customer') or '').strip(),
-        'q': (request.args.get('q') or '').strip(),
+        'employee': str(pick('employee') or '').strip(),
+        'payment': str(pick('payment') or '').strip(),
+        'category': str(pick('category') or '').strip(),
+        'customer': str(pick('customer') or '').strip(),
+        'q': str(pick('q') or '').strip(),
     }
 
 
@@ -5204,7 +6014,8 @@ def _query_report_bundle(db, filt):
     where, params = _sales_where(filt, 's')
     sales = _trs(db.execute(f"""
         SELECT s.id, s.receipt_number, s.cashier_id, s.cashier_name, s.total, s.discount,
-               s.tax, s.payment_method, s.status, s.created_at, s.customer_id
+               s.tax, s.payment_method, s.status, s.created_at, s.customer_id,
+               s.amount_paid, s.change_amount, s.payment_tenders
         FROM sales s WHERE {where}
         ORDER BY s.created_at DESC LIMIT 5000
     """, params).fetchall())
@@ -5242,6 +6053,12 @@ def _query_report_bundle(db, filt):
     }
     if summary['total_transactions']:
         summary['avg_transaction'] = summary['total_revenue'] / summary['total_transactions']
+    from desktop.utils.payment_tenders import (
+        collected_from_sales, collection_by_method, credit_issued_from_sales,
+    )
+    summary.update(collected_from_sales(sales))
+    summary['credit_issued'] = credit_issued_from_sales(sales)
+    summary['sales_value'] = summary['total_revenue']
     if _user_can('reports'):
         from desktop.utils.stock_layers import period_profit
         detail = period_profit(db, filt['start'], filt['end'])
@@ -5319,6 +6136,7 @@ def _query_report_bundle(db, filt):
         'sales': sales,
         'top_products': top_products,
         'by_payment': by_payment,
+        'collected_methods': collection_by_method(sales),
         'hourly': hourly,
         'cashiers': cashiers,
         'meta': {
@@ -5327,6 +6145,67 @@ def _query_report_bundle(db, filt):
             'categories': categories,
         },
     }
+
+
+def _take_export_password():
+    """Password from the JSON body only. A password in the URL is refused."""
+    from backend.report_file_encryption import ExportPasswordError, check_export_password
+    if request.args.get('password') or request.args.get('confirm') or request.args.get('pin'):
+        return None, (jsonify({
+            'error': 'Send the export password in the request body, not the address.',
+        }), 400)
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        return check_export_password(body.get('password'), body.get('confirm', body.get('password'))), None
+    except ExportPasswordError as exc:
+        return None, (jsonify({'error': str(exc)}), 400)
+
+
+def _sealed_attachment(fmt, download_name, password, *, raw=None, path=None, report='sales', period=''):
+    """Encrypt, delete any plaintext workbook, and return the download."""
+    import hashlib
+    from flask import Response
+    from backend.report_file_encryption import export_audit_text, seal_csv, seal_pdf, seal_xlsx_file
+    body = b''
+    name = download_name
+    mime = 'application/octet-stream'
+    try:
+        if fmt == 'pdf':
+            body = seal_pdf(raw or b'', password)
+            mime = 'application/pdf'
+        elif fmt == 'csv':
+            inner = download_name if str(download_name).lower().endswith('.csv') else f'{download_name}.csv'
+            body = seal_csv(raw or b'', inner, password)
+            mime = 'application/zip'
+            name = inner[:-4] + '.zip' if inner.lower().endswith('.csv') else inner + '.zip'
+        else:
+            body = seal_xlsx_file(path, password)
+            mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    digest = hashlib.sha256(body).hexdigest()
+    try:
+        from backend.app import log_action
+        log_action(
+            'report_export', 'reports',
+            export_audit_text(report=report, fmt=fmt, period=period, ok=True, sha256=digest),
+        )
+    except Exception:
+        pass
+    return Response(
+        body, mimetype=mime,
+        headers={
+            'Content-Disposition': f'attachment; filename="{name}"',
+            'Cache-Control': 'no-store',
+            'X-Report-Encrypted': 'aes-256',
+        },
+    )
 
 
 def _build_simple_pdf(title, shop, period, lines, currency='KES'):
@@ -5409,7 +6288,7 @@ def reports_data():
     return _inner()
 
 
-@web.route('/api/reports/export', methods=['GET'])
+@web.route('/api/reports/export', methods=['GET', 'POST'])
 def reports_export():
     from backend.app import token_required
     from flask import Response, send_file
@@ -5418,14 +6297,21 @@ def reports_export():
 
     @token_required
     def _inner():
-        fmt = (request.args.get('format') or 'xlsx').lower().strip()
+        fmt = (request.args.get('format') or (request.get_json(silent=True) or {}).get('format') or 'xlsx').lower().strip()
         if fmt not in ('xlsx', 'csv', 'pdf', 'html'):
             return jsonify({'error': 'format must be xlsx, csv, pdf, or html'}), 400
+        export_password = None
+        if fmt != 'html':
+            export_password, password_error = _take_export_password()
+            if password_error:
+                return password_error
         db = _get_db()
         who = (g.current_user or {}).get('full_name') or (g.current_user or {}).get('username') or 'Web'
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-        if (request.args.get('inventory') or '') in ('1', 'true', 'yes'):
+        body = request.get_json(silent=True) or {}
+        inventory_flag = str(request.args.get('inventory') or (body.get('inventory') if isinstance(body, dict) else '') or '')
+        if inventory_flag in ('1', 'true', 'yes'):
             if not _user_can('inventory'):
                 return jsonify({'error': 'Forbidden'}), 403
             products = _WebPosApi().get_products()
@@ -5459,12 +6345,9 @@ def reports_export():
                     row.extend([p.get('stock'), p.get('min_stock'), p.get('unit') or 'pcs'])
                     w.writerow(row)
                 data = ('\ufeff' + buf.getvalue()).encode('utf-8')
-                return Response(
-                    data, mimetype='text/csv; charset=utf-8',
-                    headers={
-                        'Content-Disposition':
-                            f'attachment; filename="MBT_Inventory_{stamp}.csv"'
-                    },
+                return _sealed_attachment(
+                    'csv', f'MBT_Inventory_{stamp}.csv', export_password,
+                    raw=data, report='inventory', period=stamp,
                 )
             try:
                 from backend.report_export_service import export_inventory_snapshot
@@ -5494,10 +6377,9 @@ def reports_export():
                     kinds=['text', 'text', 'text', 'currency', 'currency', 'qty', 'qty', 'text'],
                     shop_name=shop, generated_by=who, currency=cur, output_path=tmp.name,
                 )
-            return send_file(
-                path, as_attachment=True,
-                download_name=f'MBT_Inventory_{stamp}.xlsx',
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            return _sealed_attachment(
+                'xlsx', f'MBT_Inventory_{stamp}.xlsx', export_password,
+                path=path, report='inventory', period=stamp,
             )
 
         if not _perm('reports.view_all'):
@@ -5532,6 +6414,10 @@ th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
 @media print{{body{{background:#fff;color:#111}} th,td{{border-color:#ccc}}}}
 </style></head><body>
 <h1>{shop}</h1>
+<div style="margin:12px 0;padding:10px 12px;border:1px solid #b45309;background:#451a03;color:#fde68a">
+This printout is not encrypted. Anyone who can see the paper or this page can read it.
+Sale value is not the same as money collected. Credit is not cash.
+</div>
 <div>Sales Report · {period} · {filt_desc}</div>
 <div class="kpi"><span>Revenue</span><b>{cur} {summary['total_revenue']:,.2f}</b></div>
 <div class="kpi"><span>Transactions</span><b>{summary['total_transactions']}</b></div>
@@ -5563,9 +6449,9 @@ th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
             w.writerow(['TOTAL', '', '', '', summary['total_discounts'], summary['total_tax'],
                         summary['total_revenue'], f"{summary['total_transactions']} txns"])
             data = ('\ufeff' + buf.getvalue()).encode('utf-8')
-            return Response(
-                data, mimetype='text/csv; charset=utf-8',
-                headers={'Content-Disposition': f'attachment; filename="MBT_Sales_{stamp}.csv"'},
+            return _sealed_attachment(
+                'csv', f'MBT_Sales_{stamp}.csv', export_password,
+                raw=data, report='sales', period=period,
             )
 
         if fmt == 'pdf':
@@ -5593,9 +6479,9 @@ th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
             lines.append('')
             lines.append(f'Generated by {who} · MBT POS')
             pdf = _build_simple_pdf('Sales Report', shop, period, lines, cur)
-            return Response(
-                pdf, mimetype='application/pdf',
-                headers={'Content-Disposition': f'attachment; filename="MBT_Sales_{stamp}.pdf"'},
+            return _sealed_attachment(
+                'pdf', f'MBT_Sales_{stamp}.pdf', export_password,
+                raw=pdf, report='sales', period=period,
             )
 
         # xlsx — prefer shared export engine when possible
@@ -5615,17 +6501,41 @@ th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
                         items_by_sale.setdefault(d['sale_id'], []).append(d)
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
             tmp.close()
+            sections = (request.get_json(silent=True) or {}).get('sections')
+            open_invoices = []
+            try:
+                open_invoices = [
+                    dict(row) for row in db.execute(
+                        """SELECT di.invoice_number, di.balance, di.status, di.due_date,
+                                  di.created_at, c.name AS customer_name
+                           FROM debt_invoices di
+                           LEFT JOIN customers c ON c.id = di.customer_id
+                           WHERE COALESCE(di.status,'') NOT IN ('paid','cancelled')
+                             AND COALESCE(di.balance,0) > 0.009"""
+                    ).fetchall()
+                ]
+            except Exception:
+                open_invoices = []
+            outstanding = sum(float(row.get('balance') or 0) for row in open_invoices)
+            names = {row.get('customer_name') for row in open_invoices if row.get('customer_name')}
             path = export_sales_report(
                 sales, items_by_sale, shop_name=shop,
                 start_date=filt['start'], end_date=filt['end'],
                 output_path=tmp.name, currency=cur,
                 products_data=_WebPosApi().get_products() if _user_can('inventory') else None,
+                debt_summary={
+                    'outstanding': {'total': outstanding},
+                    'overdue': {'total': 0},
+                    'today_collected': {'total': 0},
+                    'customers_with_debt': len(names),
+                },
+                debt_invoices=open_invoices,
                 generated_by=who, filters=filt_desc,
+                sections=sections,
             )
-            return send_file(
-                path, as_attachment=True,
-                download_name=f'MBT_Sales_{stamp}.xlsx',
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            return _sealed_attachment(
+                'xlsx', f'MBT_Sales_{stamp}.xlsx', export_password,
+                path=path, report='sales', period=period,
             )
         except Exception:
             from backend.report_export_service import export_tabular_xlsx
@@ -5651,10 +6561,9 @@ th{{text-align:left;color:#94a3b8;font-size:11px;text-transform:uppercase}}
                             6: (summary['total_tax'], 'currency'),
                             7: (summary['total_revenue'], 'currency')},
             )
-            return send_file(
-                path, as_attachment=True,
-                download_name=f'MBT_Sales_{stamp}.xlsx',
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            return _sealed_attachment(
+                'xlsx', f'MBT_Sales_{stamp}.xlsx', export_password,
+                path=path, report='sales', period=period,
             )
     return _inner()
 

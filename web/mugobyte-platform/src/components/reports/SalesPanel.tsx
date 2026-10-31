@@ -21,7 +21,7 @@ const optionRows = (data: AnalyticsResponse | null | undefined, key: string) => 
   } : { value: String(item), label: String(item) });
 };
 
-export function SalesPanel({ orgId, start, end, filters }: { orgId: string; start: string; end: string; filters?: AnalyticsResponse | null }) {
+export function SalesPanel({ orgId, start, end, filters, record }: { orgId: string; start: string; end: string; filters?: AnalyticsResponse | null; record?: { device: string; source: string } }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [payment, setPayment] = useState("");
@@ -30,6 +30,9 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
   const [selected, setSelected] = useState<AnalyticsRow | null>(null);
   const [exporting, setExporting] = useState(false);
   useEffect(() => setPage(1), [search, status, payment, cashier, start, end]);
+  useEffect(() => {
+    if (record?.device && record.source) setSelected({ device_id: record.device, source_id: record.source });
+  }, [record?.device, record?.source]);
   const params = { org_id: orgId, start, end, page: String(page), page_size: "25", search, status, payment_method: payment, cashier };
   const query = useQuery({
     queryKey: ["cloud-analytics-sales", params],
@@ -95,7 +98,7 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
         <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Sale {String(value(detail, "receipt_number", "receipt", "invoice_number") || "")}</DialogTitle>
-            <DialogDescription>{formatDateTime(value(detail, "sold_at", "created_at", "date"))} · {String(value(detail, "status") || "Completed")}</DialogDescription>
+            <DialogDescription>{detailQ.data?.error ? "This sale is not in the synced records." : `${formatDateTime(value(detail, "sold_at", "created_at", "date"))} · ${String(value(detail, "status") || "Completed")}`}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 rounded-lg bg-muted/40 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
             {[["Cashier", value(detail, "cashier_name", "cashier")], ["Customer", value(detail, "customer_name", "customer") || "Walk-in"], ["Phone", value(detail, "customer_phone", "phone")], ["Payment", value(detail, "payment_method", "payment")], ["Subtotal", formatMoney(value(detail, "subtotal"), currency)], ["Discount", formatMoney(value(detail, "discount", "discount_total"), currency)], ["Tax", formatMoney(value(detail, "tax", "tax_total"), currency)], ["Total", formatMoney(value(detail, "total", "grand_total", "amount"), currency)]].map(([label, item]) => <div key={String(label)}><p className="text-xs text-muted-foreground">{String(label)}</p><p className="mt-1 font-medium">{String(item || "—")}</p></div>)}
@@ -105,6 +108,29 @@ export function SalesPanel({ orgId, start, end, filters }: { orgId: string; star
               <TableBody>{lineItems.length ? lineItems.map((line, index) => <TableRow key={String(value(line, "id", "product_id") || index)}><TableCell><p className="font-medium">{String(value(line, "product_name", "name", "description") || "Item")}</p><p className="text-xs text-muted-foreground">{String(value(line, "sku", "barcode") || "")}</p></TableCell><TableCell className="text-right">{formatNumber(value(line, "quantity", "qty"), 2)}</TableCell><TableCell className="text-right">{formatMoney(value(line, "unit_price", "price"), currency)}</TableCell><TableCell className="text-right">{formatMoney(value(line, "discount", "discount_amount"), currency)}</TableCell><TableCell className="text-right font-medium">{formatMoney(value(line, "total", "line_total", "amount"), currency)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="py-8 text-center text-muted-foreground">{detailQ.isLoading ? "Loading line items…" : "No line items supplied."}</TableCell></TableRow>}</TableBody>
             </Table>
           </div>
+          {String(value(detail, "status") || "").toLowerCase().includes("void") ? (
+            <p className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm font-semibold">VOID — kept for history, excluded from sales totals.</p>
+          ) : null}
+          {value(detail, "outstanding_balance") != null ? (
+            <p className="text-sm">Outstanding balance: {formatMoney(value(detail, "outstanding_balance"), currency)}</p>
+          ) : null}
+          {Array.isArray(detail.repayments) && (detail.repayments as AnalyticsRow[]).length ? (
+            <div>
+              <p className="mb-2 text-sm font-semibold">Repayments</p>
+              <Table>
+                <TableHeader><TableRow><TableHead>When</TableHead><TableHead>Method</TableHead><TableHead>Cashier</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
+                <TableBody>{(detail.repayments as AnalyticsRow[]).map((pay, index) => (
+                  <TableRow key={String(value(pay, "source_id") || index)}>
+                    <TableCell>{formatDateTime(value(pay, "source_created_at", "created_at"))}</TableCell>
+                    <TableCell>{String(value(pay, "payment_method") || "—")}</TableCell>
+                    <TableCell>{String(value(pay, "cashier_name") || "—")}</TableCell>
+                    <TableCell className="text-right">{formatMoney(value(pay, "amount"), currency)}</TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+              <p className="mt-2 text-xs text-muted-foreground">A repayment is not a new sale and does not add gross profit again.</p>
+            </div>
+          ) : null}
           {value(detail, "notes", "note") ? <p className="text-sm"><span className="text-muted-foreground">Notes: </span>{String(value(detail, "notes", "note"))}</p> : null}
         </DialogContent>
       </Dialog>

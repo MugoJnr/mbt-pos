@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from desktop.utils.date_controls import pick_date_range
 from desktop.utils.shop_time import shop_today
 from desktop.utils.theme import C
 from desktop.utils.widgets import H2, PrimaryBtn, SecondaryBtn, page_layout
@@ -46,6 +47,43 @@ def _money(value) -> str:
         return "—"
 
 
+def _receipt_column_widths(viewport: int) -> list:
+    """Eight widths that end at the viewport. Status and Open are never the columns that shrink away."""
+    viewport = max(int(viewport or 0), 640)
+    status_w, open_w = 96, 84
+    rest = viewport - status_w - open_w
+    weights = (16, 11, 24, 13, 12, 18)
+    body = [max(64, int(rest * weight / sum(weights))) for weight in weights]
+    drift = rest - sum(body)
+    body[2] += drift
+    return body + [status_w, open_w]
+
+
+def _fit_receipt_columns(table):
+    """Status and Open stay fully visible. A stretched last column, or a button
+    narrower than the global button style, painted as a broken sliver."""
+    from PyQt5.QtWidgets import QHeaderView
+    if getattr(table, "_fitting", False):
+        return
+    table._fitting = True
+    try:
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(64)
+        viewport = table.viewport().width()
+        if viewport < 640:
+            viewport = 1100
+        widths = _receipt_column_widths(viewport)
+        for col, width in enumerate(widths):
+            header.setSectionResizeMode(col, QHeaderView.Fixed)
+            table.setColumnWidth(col, int(width))
+        table.setTextElideMode(Qt.ElideRight)
+        table.setWordWrap(False)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    finally:
+        table._fitting = False
+
+
 class _ReceiptTable(QTableWidget):
     def __init__(self, rows, cols, opener):
         super().__init__(rows, cols)
@@ -54,12 +92,16 @@ class _ReceiptTable(QTableWidget):
     def mousePressEvent(self, event):
         index = self.indexAt(event.pos())
         super().mousePressEvent(event)
-        if event.button() != Qt.LeftButton or not index.isValid() or index.column() == 7:
+        if event.button() != Qt.LeftButton or not index.isValid():
             return
         row = index.row()
         # Open after this click finishes. A modal dialog opened inside the
         # press handler would receive the mouse release as a click.
         QTimer.singleShot(0, lambda: self._opener(row, 0))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        _fit_receipt_columns(self)
 
 
 class ReceiptsTab(QWidget):
@@ -80,21 +122,32 @@ class ReceiptsTab(QWidget):
         root.addWidget(note)
 
         bar = QHBoxLayout()
-        today = shop_today().isoformat()
-        self._start = QLineEdit(today)
-        self._end = QLineEdit(today)
+        today = shop_today()
+        self._range_start = today
+        self._range_end = today
+        self._range_btn = QPushButton()
+        self._range_btn.setMinimumHeight(34)
+        self._range_btn.setMinimumWidth(250)
+        self._range_btn.setCursor(Qt.PointingHandCursor)
+        self._range_btn.setAccessibleName("Date range")
+        self._range_btn.setToolTip("Open the calendar and choose the dates")
+        self._range_btn.setStyleSheet(
+            f"QPushButton{{background:{C['input']};color:{C['text']};"
+            f"border:1px solid {C['border2']};border-radius:8px;padding:6px 12px;"
+            f"text-align:left;font-size:13px;font-weight:600;}}"
+            f"QPushButton:hover{{border-color:{C['gold']};}}"
+        )
+        self._range_btn.clicked.connect(self._choose_range)
+        self._paint_range()
         self._type = QLineEdit()
         self._type.setPlaceholderText("Type: sale, consumption, …")
         self._status = QLineEdit()
         self._status.setPlaceholderText("Status")
         self._query = QLineEdit()
         self._query.setPlaceholderText("Receipt, customer, or product")
-        for box in (self._start, self._end, self._type, self._status, self._query):
+        for box in (self._type, self._status, self._query):
             box.setMinimumHeight(34)
-        self._start.setAccessibleName("From")
-        self._end.setAccessibleName("To")
-        bar.addWidget(self._start)
-        bar.addWidget(self._end)
+        bar.addWidget(self._range_btn)
         bar.addWidget(self._type, 1)
         bar.addWidget(self._status)
         bar.addWidget(self._query, 2)
@@ -109,11 +162,11 @@ class ReceiptsTab(QWidget):
 
         self._table = _ReceiptTable(0, 8, self._open_row)
         self._table.setHorizontalHeaderLabels(
-            ["When", "Type", "Reference", "Who", "Amount", "Payment", "Status", ""])
+            ["When", "Type", "Reference", "Who", "Amount", "Payment", "Status", "Open"])
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setStretchLastSection(True)
+        _fit_receipt_columns(self._table)
         self._table.cellClicked.connect(self._open_row)
         self._table.itemClicked.connect(lambda item: self._open_row(item.row(), item.column()))
         self._table.setMinimumHeight(360)
@@ -123,10 +176,26 @@ class ReceiptsTab(QWidget):
     def refresh(self, force: bool = False):
         self.reload()
 
+    def on_show(self):
+        """The list is built once. Opening the tab must load sales made since then."""
+        self.reload()
+
+    def _paint_range(self):
+        start = self._range_start.strftime("%d %b %Y")
+        end = self._range_end.strftime("%d %b %Y")
+        self._range_btn.setText(f"{start}  –  {end}")
+
+    def _choose_range(self):
+        picked = pick_date_range(self, self._range_start, self._range_end)
+        if not picked:
+            return
+        self._range_start, self._range_end = picked
+        self._paint_range()
+
     def reload(self):
         self._filters = {
-            "start": self._start.text().strip(),
-            "end": self._end.text().strip(),
+            "start": self._range_start.isoformat(),
+            "end": self._range_end.isoformat(),
             "kind": self._type.text().strip().lower().replace(" ", "_"),
             "status": self._status.text().strip(),
             "query": self._query.text().strip(),
@@ -149,17 +218,30 @@ class ReceiptsTab(QWidget):
                 str(row.get("payment") or "—"),
                 str(row.get("display_status") or row.get("status") or ""),
             ]
+            from PyQt5.QtGui import QBrush, QColor
             from PyQt5.QtWidgets import QTableWidgetItem
+            status_text = values[-1].strip().lower()
+            status_color = {
+                "pending": C.get("warn", C["text"]),
+                "voided": C.get("err", C["text"]),
+                "active": C.get("ok", C["text"]),
+                "restored": C.get("info", C["text"]),
+            }.get(status_text, C["text"])
             for col, text in enumerate(values):
                 cell = QTableWidgetItem(text)
                 cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                if col == 6:
+                    cell.setForeground(QBrush(QColor(status_color)))
                 self._table.setItem(index, col, cell)
-            open_btn = QPushButton("Open")
-            open_btn.setCursor(Qt.PointingHandCursor)
-            open_btn.clicked.connect(lambda _=False, row_index=index: self._open_row(row_index, 0))
-            self._table.setCellWidget(index, 7, open_btn)
-            self._table.setRowHeight(index, 36)
-        self._table.resizeColumnsToContents()
+            # Text, not a QPushButton. The global button style is taller than
+            # the row, so the button was clipped to a stray mark beside Status.
+            open_cell = QTableWidgetItem("Open")
+            open_cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            open_cell.setForeground(QBrush(QColor(C["gold"])))
+            open_cell.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            self._table.setItem(index, 7, open_cell)
+            self._table.setRowHeight(index, 40)
+        _fit_receipt_columns(self._table)
 
     def _open_row(self, index: int, _column: int = 0):
         if index < 0 or index >= len(self._rows):
@@ -208,15 +290,13 @@ class ReceiptDetailDialog(QDialog):
         kind = str(row.get("kind") or "")
         status = str(header.get("status") or row.get("status") or "")
         who = header.get("cashier_name") or header.get("username") or header.get("created_by_name") or row.get("user") or "—"
-        paid_with = _payment_names(detail.get("tenders") or []) or header.get("payment_method") or row.get("payment") or "—"
+        from desktop.utils.payment_tenders import payment_slip_text
         lines = [
             f"Type: {kind.replace('_', ' ')}",
-            f"Status: {status}",
+            f"Sale status: {status}",
             f"When: {header.get('created_at') or row.get('at') or '—'}",
             f"Business date: {header.get('sale_date') or header.get('date') or '—'}",
             f"Who: {who}",
-            f"Payment: {paid_with}",
-            f"Total: {_money(header.get('total') if header.get('total') is not None else row.get('amount'))}",
         ]
         customer = detail.get("customer") or {}
         if customer.get("name"):
@@ -224,16 +304,20 @@ class ReceiptDetailDialog(QDialog):
             lines.append(f"Customer: {customer['name']}{phone}")
         body = QTextEdit()
         body.setReadOnly(True)
-        chunks = ["\n".join(lines), ""]
+        chunks = ["\n".join(lines), "", payment_slip_text(detail.get("payments") or {})]
         if kind == "consumption":
-            chunks.append("Internal consumption. This is not a customer sale.")
-        tenders = detail.get("tenders") or []
-        if tenders:
-            chunks.append("Payments")
-            for tender in tenders:
-                ref = f" · {tender.get('reference')}" if tender.get("reference") else ""
-                state = f" · {tender.get('status')}" if tender.get("status") else ""
-                chunks.append(f"  {tender.get('method')} {_money(tender.get('amount'))}{state}{ref}")
+            chunks = [
+                "INTERNAL CONSUMPTION",
+                "This is not a customer sale and has no payment.",
+                f"Reference: {detail.get('reference') or row.get('reference') or ''}",
+                f"Status: {'voided' if int((header.get('voided') or 0)) == 1 else 'recorded'}",
+                f"When: {header.get('created_at') or row.get('at') or '—'}",
+                f"Business date: {header.get('date') or '—'}",
+                f"Recorded by: {header.get('created_by_name') or who}",
+                f"Reason: {header.get('reason') or '—'}",
+                f"Taken by: {header.get('taken_by') or '—'}",
+                f"Notes: {header.get('notes') or '—'}",
+            ]
         debt = detail.get("debt") or {}
         if debt:
             chunks.append(
@@ -244,9 +328,15 @@ class ReceiptDetailDialog(QDialog):
             chunks.append("Lines")
             for item in item_rows:
                 name = item.get("product_name") or item.get("name") or "Item"
-                chunks.append(
-                    f"  {name}  × {item.get('quantity')}  @ {_money(item.get('unit_price'))}  = {_money(item.get('total'))}"
-                )
+                if kind == "consumption":
+                    chunks.append(
+                        f"  {name}  × {item.get('quantity')} {item.get('unit') or ''}"
+                        f"  cost {_money(item.get('unit_cost'))}  = {_money(item.get('total_cost'))}"
+                    )
+                else:
+                    chunks.append(
+                        f"  {name}  × {item.get('quantity')}  @ {_money(item.get('unit_price'))}  = {_money(item.get('total'))}"
+                    )
         history = detail.get("history") or []
         if history:
             chunks.append("History")
@@ -265,7 +355,8 @@ class ReceiptDetailDialog(QDialog):
                     f" · {item.get('status') or ''}"
                     f" · {item.get('current_reason') or item.get('details') or ''}"
                 )
-        body.setPlainText("\n".join(chunks))
+        self._slip_text = "\n".join(chunks)
+        body.setPlainText(self._slip_text)
         lay.addWidget(body, 1)
         role = str(((user.get("user") or user) if isinstance(user, dict) else {}).get("role") or "").lower()
         stored = str(header.get("status") or "").lower()
@@ -303,7 +394,10 @@ class ReceiptDetailDialog(QDialog):
         if dialog.exec_() != QDialog.Accepted:
             return
         doc = QTextDocument()
-        doc.setPlainText(f"{reference}\nReprint of the saved receipt. This does not create a new sale.\n")
+        doc.setPlainText(
+            f"{getattr(self, '_slip_text', reference)}\n\n"
+            "Reprint of the saved receipt. This does not create a new sale.\n"
+        )
         doc.print_(printer)
         self._copy_state.setText("Reprint sent. No new sale was created.")
 

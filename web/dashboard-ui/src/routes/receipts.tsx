@@ -3,10 +3,12 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Receipt } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
+import { PaymentBreakdown } from "@/components/payment-breakdown";
+import { DateRangeField } from "@/components/date-range";
 import { Badge, Button, Card, Input, PageHeader, Select, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { KES, todayISO } from "@/lib/format";
+import { KES, shopTodayISO } from "@/lib/format";
 
 export const Route = createFileRoute("/receipts")({
   component: ReceiptsPage,
@@ -37,7 +39,7 @@ const TYPES = [
 ];
 
 function ReceiptsPage() {
-  const today = todayISO();
+  const today = shopTodayISO();
   const [start, setStart] = useState(today);
   const [end, setEnd] = useState(today);
   const [type, setType] = useState("");
@@ -95,6 +97,7 @@ function ReceiptsPage() {
   const canVoidNow = user?.role === "superadmin" && open?.kind === "sale" && storedStatus === "completed";
   const canRequestVoid = Boolean(open && open.kind === "sale" && storedStatus === "completed" && user?.role && !["superadmin", "viewer"].includes(user.role));
   const tenders = Array.isArray(detailQ.data?.tenders) ? detailQ.data.tenders : [];
+  const payments = detailQ.data?.payments;
   const paidWith = Array.from(new Set(
     tenders
       .filter((tender: any) => String(tender?.status || "confirmed").toLowerCase() === "confirmed")
@@ -131,8 +134,11 @@ function ReceiptsPage() {
       />
       <Card className="mb-4 p-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-          <Input type="date" aria-label="From" value={start} onChange={(e) => { setPage(0); setStart(e.target.value); }} />
-          <Input type="date" aria-label="To" value={end} onChange={(e) => { setPage(0); setEnd(e.target.value); }} />
+          <DateRangeField
+            start={start}
+            end={end}
+            onChange={(from, to) => { setPage(0); setStart(from); setEnd(to); }}
+          />
           <Select aria-label="Type" value={type} onChange={(e) => { setPage(0); setType(e.target.value); }}>
             {TYPES.map(([value, label]) => (
               <option key={value || "all"} value={value}>{label}</option>
@@ -222,13 +228,24 @@ function ReceiptsPage() {
               <div className="mb-3 grid grid-cols-2 gap-2 text-sm">
                 <div>Status <span className="font-semibold text-text">{shownStatus || "—"}</span></div>
                 <div>User <span className="font-semibold text-text">{header.cashier_name || header.username || header.created_by_name || open.user || "—"}</span></div>
-                <div>Payment <span className="font-semibold text-text">{paidWith || header.payment_method || open.payment || "—"}</span></div>
-                <div>Total <span className="font-semibold text-text">{header.total == null && open.amount == null ? "—" : KES(header.total ?? open.amount)}</span></div>
+                {open.kind === "consumption" ? (
+                  <div className="col-span-2">Internal consumption. This is not a customer sale and has no payment.</div>
+                ) : (
+                  <div>Payment <span className="font-semibold text-text">{paidWith || header.payment_method || open.payment || "—"}</span></div>
+                )}
+                <div>{open.kind === "consumption" ? "Stock cost" : "Total"} <span className="font-semibold text-text">{header.total == null && header.total_cost == null && open.amount == null ? "—" : KES(header.total ?? header.total_cost ?? open.amount)}</span></div>
               </div>
+              {open.kind === "consumption" ? (
+                <div className="mb-3 text-sm">
+                  <div>Reason {header.reason || open.summary || "—"}</div>
+                  <div>Taken by {header.taken_by || "—"}</div>
+                  {header.notes ? <div>Notes {header.notes}</div> : null}
+                </div>
+              ) : null}
               {customer ? (
                 <p className="mb-2 text-sm text-text">Customer {customer.name}{customer.phone ? ` · ${customer.phone}` : ""}</p>
               ) : null}
-              {tenders.length ? (
+              {payments ? <div className="mb-3"><PaymentBreakdown payments={payments} /></div> : tenders.length ? (
                 <div className="mb-3 text-sm">
                   <div className="font-semibold text-text">Tenders</div>
                   {tenders.map((tender: any, index: number) => (
@@ -250,9 +267,16 @@ function ReceiptsPage() {
                     const reference = detailQ.data?.reference || open.reference;
                     const popup = window.open("", "mbt-receipt", "noopener,width=480,height=720");
                     if (!popup) return;
-                    const itemRows = lines.map((line: any) => `<tr><td>${line.product_name || line.name || ""}</td><td>${line.quantity}</td><td>${line.unit_price ?? ""}</td><td>${line.total ?? ""}</td></tr>`).join("");
-                    const tenderRows = tenders.map((tender: any) => `<div>${tender.method} ${tender.amount}${tender.status ? " (" + tender.status + ")" : ""}</div>`).join("");
-                    popup.document.write(`<!doctype html><html><head><title>${reference}</title><style>body{font-family:Segoe UI,sans-serif;padding:24px;color:#111}table{width:100%;border-collapse:collapse}td{padding:4px 0;border-bottom:1px solid #ddd}</style></head><body><h1>${reference}</h1><p>${shownStatus || ""} · ${header.cashier_name || header.username || open.user || ""}</p><p>${paidWith || header.payment_method || open.payment || ""}</p>${customer ? `<p>${customer.name}</p>` : ""}${tenderRows}<table>${itemRows}</table><p><strong>Total ${header.total ?? open.amount ?? ""}</strong></p>${debt ? `<p>Debt ${debt.invoice_number} balance ${debt.balance}</p>` : ""}<p>Reprint of the saved receipt. This does not create a new sale.</p></body></html>`);
+                    const consumptionPrint = open.kind === "consumption";
+                    const itemRows = lines.map((line: any) => `<tr><td>${line.product_name || line.name || ""}</td><td>${line.quantity} ${line.unit || ""}</td><td>${consumptionPrint ? (line.unit_cost ?? "") : (line.unit_price ?? "")}</td><td>${consumptionPrint ? (line.total_cost ?? "") : (line.total ?? "")}</td></tr>`).join("");
+                    const pay = payments || {};
+                    const payLines = (pay.lines || tenders).map((tender: any) => `<tr><td>${tender.method || ""}</td><td>${tender.amount ?? ""}</td><td>${tender.status || ""}</td><td>${tender.kind || ""}</td></tr>`).join("");
+                    const tenderRows = `<table><tr><th>Method</th><th>Amount</th><th>Status</th><th>Recorded as</th></tr>${payLines}</table><p>Sale total ${pay.sale_total ?? header.total ?? ""} · Tendered ${pay.amount_tendered ?? ""} · Collected ${pay.amount_collected ?? ""} · Change ${pay.change ?? header.change_amount ?? 0} · Outstanding ${pay.outstanding ?? ""}</p>${pay.note ? `<p>${pay.note}</p>` : ""}${pay.warning ? `<p>${pay.warning}</p>` : ""}`;
+                    const heading = consumptionPrint ? "INTERNAL CONSUMPTION" : reference;
+                    const intro = consumptionPrint
+                      ? `<p>INTERNAL CONSUMPTION. This is not a customer sale and has no payment.</p><p>${header.reason || ""} · ${header.taken_by || ""}</p>`
+                      : `<p>${paidWith || header.payment_method || open.payment || ""}</p>${customer ? `<p>${customer.name}</p>` : ""}${tenderRows}`;
+                    popup.document.write(`<!doctype html><html><head><title>${reference}</title><style>body{font-family:Segoe UI,sans-serif;padding:24px;color:#111}table{width:100%;border-collapse:collapse}td{padding:4px 0;border-bottom:1px solid #ddd}</style></head><body><h1>${heading}</h1><p>${reference}</p><p>${shownStatus || ""} · ${header.cashier_name || header.username || header.created_by_name || open.user || ""}</p>${intro}<table>${itemRows}</table><p><strong>${consumptionPrint ? "Stock cost" : "Total"} ${header.total ?? header.total_cost ?? open.amount ?? ""}</strong></p>${debt ? `<p>Debt ${debt.invoice_number} balance ${debt.balance}</p>` : ""}<p>Reprint of the saved receipt. This does not create a new sale.</p></body></html>`);
                     popup.document.close();
                     popup.focus();
                     popup.print();
@@ -262,13 +286,13 @@ function ReceiptsPage() {
                 </Button>
               </div>
               {lines.length ? (
-                <Table head={["Item", "Qty", "Price", "Total"]}>
+                <Table head={open.kind === "consumption" ? ["Item", "Qty", "Unit cost", "Stock cost"] : ["Item", "Qty", "Price", "Total"]}>
                   {lines.map((line: any, index: number) => (
                     <tr key={index}>
                       <td className="px-4 py-2">{line.product_name || line.name || "—"}</td>
-                      <td className="px-4 py-2 tabular-nums">{line.quantity}</td>
-                      <td className="px-4 py-2 tabular-nums">{line.unit_price == null ? "—" : KES(line.unit_price)}</td>
-                      <td className="px-4 py-2 tabular-nums">{line.total == null ? "—" : KES(line.total)}</td>
+                      <td className="px-4 py-2 tabular-nums">{line.quantity} {open.kind === "consumption" ? (line.unit || "") : ""}</td>
+                      <td className="px-4 py-2 tabular-nums">{open.kind === "consumption" ? (line.unit_cost == null ? "—" : KES(line.unit_cost)) : (line.unit_price == null ? "—" : KES(line.unit_price))}</td>
+                      <td className="px-4 py-2 tabular-nums">{open.kind === "consumption" ? (line.total_cost == null ? "—" : KES(line.total_cost)) : (line.total == null ? "—" : KES(line.total))}</td>
                     </tr>
                   ))}
                 </Table>

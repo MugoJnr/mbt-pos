@@ -419,10 +419,22 @@ def _is_orphan_flash_candidate(w) -> bool:
     return False
 
 
-# Ring buffer of flash events for QA (ms timestamps)
+# Ring buffer of flash events for QA (ms timestamps). Capped so a long
+# shop day cannot grow this list without limit.
 FLASH_EVENTS: list = []
+_FLASH_EVENT_CAP = 40
 _FLASH_GRAB_DIR = None
 _FLASH_GRAB_CB = None
+_FLASH_LOG_AT: dict = {}
+_KILLED_ORPHANS = None
+
+
+def _killed_orphans():
+    global _KILLED_ORPHANS
+    if _KILLED_ORPHANS is None:
+        import weakref
+        _KILLED_ORPHANS = weakref.WeakSet()
+    return _KILLED_ORPHANS
 
 
 def set_flash_grab_dir(path) -> None:
@@ -473,6 +485,20 @@ def _record_flash(kind: str, w, killed) -> None:
             "killed": bool(killed),
         }
         FLASH_EVENTS.append(row)
+        if len(FLASH_EVENTS) > _FLASH_EVENT_CAP:
+            del FLASH_EVENTS[:-_FLASH_EVENT_CAP]
+        # A sale screen rebuilds dozens of widgets. Logging each one at
+        # warning level stalls the till thread and Windows marks it
+        # Not Responding. Keep the evidence, but only log a repeated
+        # widget once every few seconds.
+        log_key = (kind, cls, name)
+        now = time.monotonic()
+        last = _FLASH_LOG_AT.get(log_key, 0.0)
+        if now - last < 5.0:
+            return
+        if len(_FLASH_LOG_AT) > 200:
+            _FLASH_LOG_AT.clear()
+        _FLASH_LOG_AT[log_key] = now
         log.warning(
             "FLASH %s: %s name=%r title=%r geom=%s parent=%s",
             kind, cls, name, title, geom, parent,
@@ -513,6 +539,10 @@ def _kill_orphan(w) -> tuple | None:
                 w.setWindowOpacity(0.0)
             except Exception:
                 pass
+            try:
+                _killed_orphans().add(w)
+            except Exception:
+                pass
         except Exception:
             pass
         return (cls, name, title)
@@ -520,6 +550,32 @@ def _kill_orphan(w) -> tuple | None:
         return None
     except Exception:
         return None
+
+
+def _restore_reparented(w) -> None:
+    """A widget killed while briefly parentless must work once it has a parent.
+
+    Style polish and window creation both happen before setParent. Marking
+    those widgets DontShowOnScreen left sale controls hidden and made the
+    till rebuild them until Windows reported Not Responding.
+    """
+    try:
+        killed = _killed_orphans()
+        if w not in killed:
+            return
+        if w.parent() is None or w.isWindow():
+            return
+        from PyQt5.QtCore import Qt
+        w.setAttribute(Qt.WA_DontShowOnScreen, False)
+        try:
+            w.setWindowOpacity(1.0)
+        except Exception:
+            pass
+        killed.discard(w)
+    except RuntimeError:
+        return
+    except Exception:
+        return
 
 
 class _OrphanFlashFilter:
@@ -551,14 +607,11 @@ class _OrphanFlashFilter:
                     if not isinstance(obj, QWidget):
                         return False
                     et = event.type()
-                    # WinIdChange: HWND born — kill parentless before first paint
-                    if et == QEvent.WinIdChange:
-                        if _is_orphan_flash_candidate(obj):
-                            killed = _kill_orphan(obj)
-                            _record_flash("WinIdChange", obj, killed)
-                            if killed:
-                                _OrphanFlashFilter._blocked.append(killed)
-                            return False  # don't eat WinIdChange
+                    # Parent arrives after construction. Undo a kill that
+                    # happened while the widget was still parentless.
+                    if et == QEvent.ParentChange:
+                        _restore_reparented(obj)
+                        return False
                     if et in (QEvent.Show, QEvent.ShowToParent):
                         # Fast path: any parentless non-intentional widget Show
                         # is a flash — kill before paint (StockBadge etc.).
@@ -583,16 +636,7 @@ class _OrphanFlashFilter:
                             _record_flash("Show", obj, killed)
                             if killed:
                                 _OrphanFlashFilter._blocked.append(killed)
-                                log.warning(
-                                    "Blocked orphan Show: %s name=%r title=%r",
-                                    killed[0], killed[1], killed[2],
-                                )
                             return True
-                        if _OrphanFlashFilter._depth > 0:
-                            hide_orphan_pos_flashes()
-                    if et == QEvent.Polish and _is_orphan_flash_candidate(obj):
-                        _kill_orphan(obj)
-                        _record_flash("Polish", obj, True)
                 except RuntimeError:
                     pass
                 except Exception as e:

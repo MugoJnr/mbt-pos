@@ -42,6 +42,7 @@ import { GET } from "@/lib/api";
 import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { BrandLogo } from "@/components/brand/BrandLogo";
+import { DashboardRefreshControl } from "@/components/dashboard-release";
 import { useDocumentTitle } from "@/hooks/use-document-title";
 import { LIVE_PRODUCT, pageTitle } from "@/lib/brand";
 
@@ -147,8 +148,18 @@ function SidebarContent({
       <nav className="flex-1 overflow-y-auto scrollbar-thin py-3 px-2.5">
         {groups.map((group) => {
           const roleKey = String(user?.role || "").toLowerCase();
+          const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
           const items = NAV.filter((n) => {
             if (n.group !== group) return false;
+            if (actions) {
+              if (n.to === "/reports") return actions.includes("reports.view_all");
+              if (n.to === "/users") return actions.includes("users.view");
+              if (n.to === "/finance") {
+                return actions.includes("accounting.view") || actions.includes("accounting.create_expenses") || actions.includes("reports.view_all");
+              }
+              if (n.to === "/security") return actions.includes("security.override");
+              if (n.to === "/license") return actions.includes("license.manage");
+            }
             if (n.roles && !n.roles.includes(roleKey)) return false;
             if (n.super && roleKey !== "superadmin") return false;
             return true;
@@ -490,7 +501,7 @@ function GlobalSearch({ wide = false }: { wide?: boolean }) {
   );
 }
 
-function UpdateNotice() {
+function TillUpdateNotice() {
   const updateQ = useQuery({
     queryKey: ["update-status"],
     queryFn: () => GET<{
@@ -498,42 +509,62 @@ function UpdateNotice() {
       message?: string;
       installed_version?: string;
       available_version?: string;
-      summary?: string;
-      released?: string;
       action?: string;
       download_url?: string;
+      download_url?: string;
+      till_download?: {
+        state?: string;
+        percent?: number | null;
+        message?: string;
+        version?: string;
+      };
     }>("/updates/status"),
-    staleTime: 60_000,
+    staleTime: 3_000,
+    refetchInterval: 3_000,
     retry: 0,
   });
-  if (updateQ.isLoading) {
-    return <div className="mb-3 text-xs text-text2">Checking for updates…</div>;
-  }
   const data = updateQ.data;
-  if (updateQ.isError || !data) {
-    return <div className="mb-3 text-xs text-text2">The latest version could not be checked. The shop is unchanged.</div>;
+  const download = data?.till_download;
+  const downloading = download?.state === "downloading" || download?.state === "verifying";
+  const failed = download?.state === "failed";
+  const ready = download?.state === "complete" || download?.state === "installing";
+  const available = data?.state === "available";
+  if (!downloading && !failed && !ready && !available) return null;
+  const percent = typeof download?.percent === "number" ? download.percent : null;
+  let title = "Main Till update";
+  if (downloading) {
+    title = percent == null
+      ? "Downloading Main Till update…"
+      : `Downloading Main Till update… ${percent}%`;
+  } else if (download?.state === "verifying") {
+    title = "Verifying Main Till download";
+  } else if (failed) {
+    title = download?.message || "Main Till download failed";
+  } else if (download?.state === "installing") {
+    title = "Installing on the Main Till";
+  } else if (download?.state === "complete") {
+    title = `Main Till update v${download.version || data?.available_version || ""} downloaded. Install it on the till.`;
+  } else if (available) {
+    title = `Main Till update v${data?.available_version} is available`;
   }
-  if (data.state === "current") {
-    return <div className="mb-3 text-xs text-text2">Up to date · v{data.installed_version}</div>;
-  }
-  const tone = data.state === "available" ? "border-amber-500/40 bg-amber-500/10" : "border-border bg-card";
   return (
-    <div className={`mb-3 rounded-lg border px-3 py-2 text-sm ${tone}`}>
-      <div className="font-semibold text-text">{data.message || "Update status"}</div>
-      <div className="mt-1 text-xs text-text2">
-        Installed {data.installed_version || "unknown"}
-        {data.available_version ? ` · Available ${data.available_version}` : ""}
-        {data.released ? ` · Released ${data.released.slice(0, 10)}` : ""}
+    <div className="flex max-w-[320px] flex-col gap-1">
+      <div className="rounded-lg border border-gold/40 bg-gold/10 px-2.5 py-1.5 text-xs font-semibold text-text">
+        {title}
       </div>
-      {data.summary ? <div className="mt-1 text-xs text-text">{data.summary}</div> : null}
-      {data.state === "available" && data.action ? (
-        <div className="mt-1 text-xs text-text2">
-          {data.action}
-          {data.download_url ? (
+      {downloading && percent != null ? (
+        <div className="h-1.5 overflow-hidden rounded-full bg-panel">
+          <div className="h-full bg-gold" style={{ width: `${Math.min(100, percent)}%` }} />
+        </div>
+      ) : null}
+      {available && !downloading && !ready ? (
+        <div className="text-[11px] leading-snug text-text2">
+          {data?.action || "Install this on the Main Till. The dashboard does not install it."}
+          {data?.download_url ? (
             <>
               {" "}
               <a className="text-gold underline" href={data.download_url} target="_blank" rel="noreferrer">
-                Open the till installer
+                Download the installer
               </a>
             </>
           ) : null}
@@ -788,6 +819,8 @@ export function AppShell({
                 ) : null}
               </Link>
               ) : null}
+              <TillUpdateNotice />
+              <DashboardRefreshControl />
               <button
                 type="button"
                 onClick={refresh}
@@ -815,11 +848,12 @@ export function AppShell({
               key={location.pathname}
               className={cn(
                 "page-enter",
-                isPos ? "h-full min-h-0 p-2 sm:p-2.5 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
+                isPos ? "flex h-full min-h-0 flex-col p-2 sm:p-2.5 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
               )}
             >
-              <UpdateNotice />
-              {children}
+              <div className={isPos ? "min-h-0 flex-1" : undefined}>
+                {children}
+              </div>
             </div>
           </main>
 

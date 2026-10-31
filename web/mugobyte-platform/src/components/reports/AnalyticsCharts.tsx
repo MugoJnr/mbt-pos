@@ -4,6 +4,7 @@ import {
   AreaChart,
   Bar,
   BarChart,
+  Line,
   CartesianGrid,
   Cell,
   Pie,
@@ -45,7 +46,13 @@ const CHART_COLORS = [
   "var(--chart-3)",
 ] as const;
 
-type TrendPoint = { date: string; label: string; gross: number; transactions: number };
+type TrendPoint = {
+  date: string;
+  label: string;
+  gross: number;
+  transactions: number;
+  profit?: number;
+};
 type MixPoint = { method: string; total: number; count: number; fill: string; key: string };
 
 function prefersMotion() {
@@ -68,6 +75,7 @@ function normalizeTrend(rows: AnalyticsRow[]): TrendPoint[] {
         }),
         gross: Number(value(row, "gross_sales", "revenue", "total") || 0),
         transactions: Number(value(row, "transactions", "count", "txns") || 0),
+        profit: value(row, "gross_profit") == null ? undefined : Number(value(row, "gross_profit") || 0),
       };
     })
     .filter((row): row is TrendPoint => Boolean(row));
@@ -171,8 +179,10 @@ function SalesTrendChart({
   currency: string;
   compact?: boolean;
 }) {
+  const showProfit = data.some((point) => point.profit != null);
   const config = {
     gross: { label: "Gross sales", color: "var(--chart-1)" },
+    ...(showProfit ? { profit: { label: "Gross profit", color: "var(--chart-2)" } } : {}),
   } satisfies ChartConfig;
   const step = tickStep(data.length);
   const height = compact ? "h-[240px] sm:h-[280px]" : "h-[280px] sm:h-[360px]";
@@ -238,6 +248,9 @@ function SalesTrendChart({
             maxBarSize={data.length === 1 ? 96 : 64}
             isAnimationActive={prefersMotion()}
           />
+          {showProfit ? (
+            <Bar dataKey="profit" fill="var(--color-profit)" radius={[10, 10, 4, 4]} maxBarSize={48} />
+          ) : null}
         </BarChart>
       </ChartContainer>
     );
@@ -263,6 +276,16 @@ function SalesTrendChart({
           activeDot={{ r: 5 }}
           isAnimationActive={prefersMotion()}
         />
+        {showProfit ? (
+          <Line
+            type="monotone"
+            dataKey="profit"
+            stroke="var(--color-profit)"
+            strokeWidth={2}
+            dot={false}
+            isAnimationActive={prefersMotion()}
+          />
+        ) : null}
       </AreaChart>
     </ChartContainer>
   );

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QStringListModel
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QStringListModel, QEvent, QDateTime
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QComboBox, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
@@ -22,6 +22,15 @@ from desktop.utils.theme import apply_themed_dialog,  C, RADIUS, TOUCH_MIN, qss_
 
 CONTROL_HEIGHT = max(40, TOUCH_MIN - 4)
 OTHER_TOKEN = 'Other'
+
+
+def search_click_lists_everything(query: str, labels) -> bool:
+    """Clicking a search field browses every choice when it is empty or already
+    holds one chosen row. A half-typed query stays filtered."""
+    text = (query or '').strip()
+    if not text:
+        return True
+    return any((label or '').strip() == text for label in labels)
 
 
 def _popup_view_qss() -> str:
@@ -211,18 +220,24 @@ def install_combo_popup_fix() -> None:
             return original_show(self)
 
     def _action_panel(menu, global_pos, result=None):
+        bg = C.get("card") or "#121C30"
+        fg = C.get("text") or "#F5F7FA"
+        hover = C.get("hover") or "#162A44"
+        border = C.get("border2") or C.get("border") or "#18283E"
+        gold = C.get("gold") or "#F2A800"
         popup = QFrame(None, Qt.Popup | Qt.FramelessWindowHint)
         popup.setObjectName("mbtMenuPopup")
         popup.setAttribute(Qt.WA_StyledBackground, True)
         popup.setStyleSheet(
-            "QFrame#mbtMenuPopup{background-color:#F7F9FC;border:1px solid #C5D0DE;}"
-            "QWidget#mbtMenuHost{background-color:#F7F9FC;}"
-            "QScrollArea{background-color:#F7F9FC;border:none;}"
+            f"QFrame#mbtMenuPopup{{background-color:{bg};border:1px solid {border};border-radius:8px;}}"
+            f"QWidget#mbtMenuHost{{background-color:{bg};}}"
+            f"QScrollArea{{background-color:{bg};border:none;}}"
         )
         outer = QVBoxLayout(popup)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(4, 4, 4, 4)
         scroll = QScrollArea(popup)
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
         host = QWidget()
         host.setObjectName("mbtMenuHost")
         lay = QVBoxLayout(host)
@@ -236,10 +251,10 @@ def install_combo_popup_fix() -> None:
             btn = QPushButton(label, host)
             btn.setEnabled(act.isEnabled())
             btn.setStyleSheet(
-                "QPushButton{background-color:#F7F9FC;color:#121820;border:none;"
-                "text-align:left;padding:6px 12px;min-height:28px;font-size:13px;}"
-                "QPushButton:hover{background-color:#E7EEF6;}"
-                "QPushButton:disabled{color:#6B7280;}"
+                f"QPushButton{{background-color:{bg};color:{fg};border:none;"
+                f"text-align:left;padding:8px 14px;min-height:32px;font-size:13px;font-weight:600;}}"
+                f"QPushButton:hover{{background-color:{hover};color:{gold};}}"
+                f"QPushButton:disabled{{color:{C.get('muted') or '#8B9BB0'};background-color:{bg};}}"
             )
 
             def _fire(a=act, panel=popup, parent_menu=menu):
@@ -402,7 +417,7 @@ def _select_qss(object_name: str = 'mbtSelect', editable: bool = False) -> str:
     bg = C['card']
     fg = C['text']
     # Padding on an editable combo pushes its text box to a zero-size gap.
-    pad = '0px 4px' if editable else '4px 12px'
+    pad = '0px 4px' if editable else '4px 36px 4px 14px'
     return (
         f"QComboBox#{object_name}{{"
         f"background:{C['input']};color:{fg};"
@@ -655,10 +670,77 @@ class SearchableSelect(Select):
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(80)
         self._filter_timer.timeout.connect(self._apply_filter)
+        # The stock completer pops a second list and, once a row is chosen,
+        # that list contains only the chosen text. Filtering lives in
+        # _apply_filter. A click opens the real list instead.
+        self.setCompleter(None)
+        self._suppress_browse_until = 0
         if self.lineEdit():
             self.lineEdit().textEdited.connect(self._on_edit)
+            self.lineEdit().installEventFilter(self)
         if items is not None:
             self.set_items(items)
+
+    def eventFilter(self, obj, event):
+        if (obj is self.lineEdit() and event.type() == QEvent.MouseButtonPress
+                and event.button() == Qt.LeftButton):
+            if self._popup_open():
+                self.hidePopup()
+                return True
+            QTimer.singleShot(0, self._browse_from_click)
+        return super().eventFilter(obj, event)
+
+    def _popup_open(self) -> bool:
+        panel = getattr(self, '_mbt_row_popup', None)
+        if panel is None:
+            return False
+        try:
+            return bool(panel.isVisible())
+        except RuntimeError:
+            return False
+
+    def _browse_from_click(self):
+        if QDateTime.currentMSecsSinceEpoch() < self._suppress_browse_until:
+            return
+        editor = self.lineEdit()
+        if (self._popup_open() or not self.isVisible()
+                or editor is None or not editor.hasFocus()):
+            return
+        self.showPopup()
+
+    def hidePopup(self):
+        # A click that dismisses the list must not immediately open it again.
+        self._suppress_browse_until = QDateTime.currentMSecsSinceEpoch() + 200
+        super().hidePopup()
+
+    def showPopup(self):
+        self._expand_chosen_row()
+        super().showPopup()
+
+    def _expand_chosen_row(self):
+        editor = self.lineEdit()
+        typed = editor.text() if editor is not None else ''
+        labels = [label for label, _data in self._all_items]
+        if not search_click_lists_everything(typed, labels):
+            return
+        if labels == self._current_labels():
+            return
+        chosen = None
+        for label, data in self._all_items:
+            if label.strip() == typed.strip():
+                chosen = data
+                break
+        self.blockSignals(True)
+        self.clear()
+        for label, data in self._all_items:
+            self.addItem(label, data)
+        if chosen is not None:
+            self.set_value(chosen)
+        else:
+            self.setCurrentIndex(-1)
+        self.blockSignals(False)
+        if editor is not None and typed and editor.text() != typed:
+            editor.setText(typed)
 
     def set_items(self, items: Iterable, *, data_from_item: bool = False,
                   keep_selection: bool = False):

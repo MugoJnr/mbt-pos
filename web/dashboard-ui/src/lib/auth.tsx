@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -28,6 +29,28 @@ const Ctx = createContext<AuthCtx | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState(getToken);
   const [user, setUser] = useState<MbtUser | null>(getUser);
+
+  useEffect(() => {
+    if (!token) return;
+    let live = true;
+    const refresh = () => {
+      void fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((me) => {
+          if (!live || !me || me.error || !me.id) return;
+          const next = { ...(getUser() || {}), ...me };
+          setSession(token, next);
+          setUser(next);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [token]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);

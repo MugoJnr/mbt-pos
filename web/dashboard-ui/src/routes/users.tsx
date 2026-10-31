@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { UserCapabilities } from "@/components/user-capabilities";
 
 export const Route = createFileRoute("/users")({
   component: Users,
@@ -29,10 +30,12 @@ function Users() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newRole, setNewRole] = useState("cashier");
   const [userMsg, setUserMsg] = useState("");
+  const [capabilities, setCapabilities] = useState<any>(null);
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
-  const canViewUsers = role === "manager" || role === "admin" || role === "superadmin";
-  const canManageUsers = role === "admin" || role === "superadmin";
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canViewUsers = actions ? actions.includes("users.view") : role === "manager" || role === "admin" || role === "superadmin";
+  const canManageUsers = actions ? actions.includes("users.edit") : role === "admin" || role === "superadmin";
   const usersQ = useQuery({
     queryKey: ["users"],
     queryFn: () => GET<any[]>("/users"),
@@ -251,9 +254,9 @@ function Users() {
             <Input value={userQuery} onChange={(e) => setUserQuery(e.target.value)} placeholder="Search name, username, or role" />
             <Button variant="secondary" onClick={() => setUserQuery("")}>Clear</Button>
           </div>
-          <Table head={["Name", "Username", "Role", "Status", "Last Login"]}>
+          <Table head={["Name", "Username", "Role", "Status", "Last Login", ""]}>
             {shownUsers.length === 0 ? (
-              <tr><td className="px-4 py-4 text-text2" colSpan={5}>No staff match that search.</td></tr>
+              <tr><td className="px-4 py-4 text-text2" colSpan={6}>No staff match that search.</td></tr>
             ) : null}
             {shownUsers.map((u: any) => {
               let tabs = 0;
@@ -289,10 +292,23 @@ function Users() {
                   <td className="px-4 py-2.5 text-xs text-text2">
                     {(u.last_login || "Never").toString().slice(0, 16)}
                   </td>
+                  <td className="px-4 py-2.5">
+                    {canManageUsers ? (
+                      <Button variant="ghost" onClick={() => setCapabilities(u)}>Capabilities</Button>
+                    ) : null}
+                  </td>
                 </tr>
               );
             })}
           </Table>
+          {capabilities ? (
+            <div className="border-t border-border p-4">
+              <div className="mb-2 text-sm font-semibold text-text">
+                Capabilities · {capabilities.full_name || capabilities.username}
+              </div>
+              <UserCapabilities account={capabilities} onClose={() => setCapabilities(null)} />
+            </div>
+          ) : null}
           </>
         )}
       </Card>

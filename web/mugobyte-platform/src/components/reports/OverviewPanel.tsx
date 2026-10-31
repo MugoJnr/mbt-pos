@@ -39,6 +39,10 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
   const trend = rowsOf(data, "trend", "sales_trend", "by_day");
   const methods = rowsOf(data, "payment_methods", "payment_mix");
   const lastSync = value(summary, "last_sync_at", "last_sync") || data.last_sync_at;
+  const sync = (summary.sync || {}) as Record<string, unknown>;
+  const showProfit = Object.prototype.hasOwnProperty.call(summary, "gross_profit");
+  const previous = (data.previous || {}) as { summary?: Record<string, unknown>; start?: string; end?: string };
+  const previousGross = Number(value(previous.summary || {}, "gross_sales", "revenue") || 0);
   const hasActivity =
     Number(gross || 0) > 0 ||
     Number(collected || 0) > 0 ||
@@ -52,14 +56,22 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
   const emptyHint = lastSync
     ? "No sales in this date range (default is today). Use Last 7 / 30 Days if you need older activity — cloud sync last ran as shown below."
     : "Sign in on the shop PC, open Cloud Backup, and keep the device approved so sales sync to the portal.";
-  const cards = [
+  const cards: Array<[string, string, typeof Receipt, string]> = [
     ["Gross sales", formatMoney(gross, currency), Receipt, "primary"],
     ["Collected revenue", formatMoney(collected, currency), Banknote, "success"],
     ["Debt issued", formatMoney(issued, currency), CreditCard, "info"],
     ["Debt collected", formatMoney(debtCollected, currency), ArrowDownRight, "success"],
     ["Outstanding debt", formatMoney(outstanding, currency), WalletCards, "warning"],
     ["Transactions", formatNumber(transactions), ArrowUpRight, "primary"],
-  ] as const;
+  ];
+  if (showProfit) {
+    cards.push(
+      ["Gross profit", formatMoney(value(summary, "gross_profit"), currency), Banknote, "success"],
+      ["Profit on credit and part-payment", formatMoney(value(summary, "gross_profit_credit_and_part"), currency), CreditCard, "info"],
+      ["Profit on fully paid sales", formatMoney(value(summary, "gross_profit_fully_paid"), currency), Banknote, "primary"],
+      ["Profit still on outstanding debt", formatMoney(value(summary, "gross_profit_outstanding"), currency), WalletCards, "warning"],
+    );
+  }
 
   return (
     <ReportState
@@ -71,10 +83,21 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
       onRetry={() => void query.refetch()}
     >
       <div className="space-y-5">
-        <div className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground">
-          <Clock3 className="h-3.5 w-3.5" />
-          Cloud last sync: {lastSync ? formatDateTime(lastSync) : "Not reported"}
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+          <p>
+            {String(sync.label || (lastSync ? "Last sync succeeded." : "No successful sync has been reported"))}
+            {previous.start ? ` Compared with ${previous.start} to ${previous.end}: gross sales were ${formatMoney(previousGross, currency)}.` : ""}
+          </p>
+          <span className="inline-flex items-center gap-1.5">
+            <Clock3 className="h-3.5 w-3.5" />
+            Cloud last sync: {lastSync ? formatDateTime(lastSync) : "Not reported"}
+          </span>
         </div>
+        {sync.stale ? (
+          <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
+            These figures may be behind the till. A failed or missing sync is not treated as a new update.
+          </p>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {cards.map(([label, amount, Icon, accent]) => (
             <Card key={label} className="border-border/70">

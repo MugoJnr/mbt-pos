@@ -251,10 +251,10 @@ class SidebarPersistenceTests(_IsolatedSettings):
         self.assertTrue(loaded['collapsed'])
         self.assertEqual(loaded['width'], 312)
 
-        prefs.save_sidebar_prefs(False, 208)
+        prefs.save_sidebar_prefs(False, prefs.EXPANDED_MIN)
         loaded = prefs.load_sidebar_prefs(available_width=1920, window_width=1920)
         self.assertFalse(loaded['collapsed'])
-        self.assertEqual(loaded['width'], 208)
+        self.assertEqual(loaded['width'], prefs.EXPANDED_MIN)
 
     def test_missing_preference_uses_screen_default(self):
         loaded = prefs.load_sidebar_prefs(available_width=1920, window_width=1920)

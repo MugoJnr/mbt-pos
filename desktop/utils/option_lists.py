@@ -118,6 +118,17 @@ POS_PAYMENT_METHODS = (
     'Mixed',
 )
 
+# Money the cashier can take on one split line. Credit is the unpaid balance.
+SPLIT_MONEY_METHODS = (
+    'Cash',
+    'M-Pesa',
+    'Airtel Money',
+    'Card',
+    'Bank Transfer',
+    'Cheque',
+)
+SPLIT_LINE_METHODS = SPLIT_MONEY_METHODS + ('Credit',)
+
 DEBT_PAYMENT_METHODS = (
     'Cash',
     'M-Pesa',
@@ -215,6 +226,8 @@ DATE_PRESETS = (
     ('This Week', 'week'),
     ('This Month', 'month'),
     ('Last Month', 'last_month'),
+    ('Last Week', 'last_week'),
+    ('This Year', 'year'),
     ('Custom Range', 'custom'),
 )
 
@@ -256,6 +269,12 @@ def date_range_for_preset(preset_key: str,
         first_this = today.replace(day=1)
         last_end = first_this - timedelta(days=1)
         return last_end.replace(day=1), last_end
+    if key == 'last_week':
+        this_monday = today - timedelta(days=today.weekday())
+        start = this_monday - timedelta(days=7)
+        return start, start + timedelta(days=6)
+    if key in ('year', 'this_year'):
+        return today.replace(month=1, day=1), today.replace(month=12, day=31)
     # today / custom / unknown
     return today, today
 

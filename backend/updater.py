@@ -990,6 +990,55 @@ class UpdateChecker:
         self.on_error            = None   # (msg) optional
         self.on_install_failed   = None   # (version, reason)
         self.on_download_failed  = None   # (version, title, reason)
+        self.on_download_progress = None  # (version, percent or None, message)
+        self._progress_state = ''
+        self._progress_pct = None
+        self._progress_at = 0.0
+
+    def _report_download_progress(self, written, *, complete=False, state='downloading', message=''):
+        """Record real bytes. 100% is sent only after the file is complete."""
+        from backend.update_progress import percent_for_bytes, write_update_progress
+        version = self._pending_version or ''
+        pct = percent_for_bytes(written, self._expected_bytes, complete=complete)
+        if state in ('failed', 'idle', 'installing'):
+            pct = None
+        now = time.time()
+        if (
+            not complete
+            and state == self._progress_state
+            and pct == self._progress_pct
+            and now - self._progress_at < 0.35
+        ):
+            return
+        self._progress_state = state
+        self._progress_pct = pct
+        self._progress_at = now
+        if not message:
+            if state == 'downloading' and pct is not None:
+                message = f'Downloading update... {pct}%'
+            elif state == 'downloading':
+                message = 'Downloading update...'
+            elif state == 'verifying':
+                message = 'Verifying download'
+            elif state == 'complete':
+                message = 'Download complete'
+            elif state == 'failed':
+                message = 'Download failed'
+            elif state == 'installing':
+                message = 'Installing'
+        try:
+            write_update_progress(
+                state=state, version=version, percent=pct,
+                written=int(written or 0), expected=int(self._expected_bytes or 0),
+                message=message,
+            )
+        except Exception:
+            logger.debug('Could not record update progress', exc_info=True)
+        if self.on_download_progress:
+            try:
+                self.on_download_progress(version, pct, message)
+            except Exception:
+                pass
 
     def start(self):
         self._has_updater_lock = acquire_updater_lock()
@@ -1355,6 +1404,9 @@ class UpdateChecker:
         if self._download_warned_version == version:
             return
         self._download_warned_version = version
+        self._report_download_progress(
+            0, state='failed', message=title or 'Download failed',
+        )
         if self.on_download_failed:
             try:
                 self.on_download_failed(version, title, message)
@@ -1366,7 +1418,7 @@ class UpdateChecker:
             except Exception:
                 pass
 
-    def _write_download_stream(self, resp, dest: str, append: bool = False) -> int:
+    def _write_download_stream(self, resp, dest: str, append: bool = False, already: int = 0) -> int:
         """Stream response body to dest. Returns bytes written."""
         mode = 'ab' if append else 'wb'
         written = 0
@@ -1377,6 +1429,7 @@ class UpdateChecker:
                     break
                 f.write(chunk)
                 written += len(chunk)
+                self._report_download_progress(already + written)
         return written
 
     def _http_download_file(self, url: str, dest: str, headers: dict) -> int:
@@ -1434,11 +1487,13 @@ class UpdateChecker:
                     existing = 0
                 written = 0
                 mode = 'ab' if append else 'wb'
+                base = existing if append else 0
                 with open(dest, mode) as f:
                     for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK):
                         if chunk:
                             f.write(chunk)
                             written += len(chunk)
+                            self._report_download_progress(base + written)
                 return (existing + written) if append else written
         except Exception as req_err:
             logger.debug(f'requests download failed, trying urllib: {req_err}')
@@ -1455,7 +1510,9 @@ class UpdateChecker:
             append = code == 206 and can_resume
             if not append and os.path.isfile(dest):
                 existing = 0
-            written = self._write_download_stream(resp, dest, append=append)
+            written = self._write_download_stream(
+                resp, dest, append=append, already=existing if append else 0,
+            )
             return (existing + written) if append else written
 
     def _download_complete_enough(self, size: int) -> bool:
@@ -1565,6 +1622,7 @@ class UpdateChecker:
                     time.sleep(min(attempt * 3, 15))
                     continue
 
+                self._report_download_progress(size, state='verifying', message='Verifying download')
                 if self._pending_checksum:
                     ok, detail = verify_installer_checksum(dest, self._pending_checksum)
                     if not ok:
@@ -1587,6 +1645,9 @@ class UpdateChecker:
                 self._download_warned_version = ''
                 _unblock_windows_file(dest)
                 self._installer_path = dest
+                self._report_download_progress(
+                    size, complete=True, state='complete', message='Download complete',
+                )
                 if self.on_download_ready:
                     self.on_download_ready(dest, version)
                 return
@@ -1636,8 +1697,12 @@ class UpdateChecker:
                 'An update install is already in progress.\n\n'
                 'Wait for it to finish before trying again.')
 
+        self._report_download_progress(0, state='installing', message='Installing')
         try:
-            return self._install_and_restart_locked(installer_path, unattended)
+            ok, err = self._install_and_restart_locked(installer_path, unattended)
+            if not ok:
+                self._report_download_progress(0, state='failed', message='Install failed')
+            return ok, err
         finally:
             try:
                 self._install_lock.release()

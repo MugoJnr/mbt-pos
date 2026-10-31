@@ -232,6 +232,61 @@ class RoleBoundaryTests(unittest.TestCase):
         admin_backup = self.client.get("/api/backup/status", headers=admin)
         self.assertNotEqual(admin_backup.status_code, 403, admin_backup.get_json())
 
+    def test_cashier_dashboard_stays_on_today(self):
+        from datetime import timedelta
+        from desktop.utils.security import dashboard_locked_to_today
+        from desktop.utils.shop_time import shop_today
+        self.assertTrue(dashboard_locked_to_today({"role": "cashier"}))
+        self.assertTrue(dashboard_locked_to_today({"user": {"role": "cashier"}}))
+        self.assertFalse(dashboard_locked_to_today({"role": "admin"}))
+        self.assertFalse(dashboard_locked_to_today({"role": "manager"}))
+        today = shop_today().isoformat()
+        yesterday = (shop_today() - timedelta(days=1)).isoformat()
+        db = self.ac._db()
+        cashier_id = db.execute("SELECT id FROM users WHERE username='cashier'").fetchone()["id"]
+        db.execute(
+            "INSERT INTO sales (receipt_number, cashier_id, cashier_name, total, sale_date, status) "
+            "VALUES ('RCP-YDAY', ?, 'cashier', 40, ?, 'completed')",
+            (cashier_id, yesterday),
+        )
+        db.execute(
+            "INSERT INTO sales (receipt_number, cashier_id, cashier_name, total, sale_date, status) "
+            "VALUES ('RCP-TODAY', ?, 'cashier', 15, ?, 'completed')",
+            (cashier_id, today),
+        )
+        db.commit()
+        db.close()
+        headers = self._login("cashier", "cashier-pass")
+        asked = self.client.get(
+            f"/api/reports/summary?start={yesterday}&end={yesterday}", headers=headers,
+        )
+        self.assertEqual(asked.status_code, 200, asked.get_json())
+        summary = asked.get_json()["summary"]
+        self.assertEqual(int(summary["total_transactions"]), 1)
+        self.assertAlmostEqual(float(summary["total_revenue"]), 40.0, places=2)
+        self.assertNotIn("gross_profit", summary)
+        self.assertNotIn("inventory_cost_value", summary)
+        span = self.client.get(
+            f"/api/reports/summary?start={yesterday}&end={today}", headers=headers,
+        )
+        self.assertEqual(span.status_code, 403, span.get_json())
+        listed = self.client.get(
+            f"/api/sales?start={yesterday}&end={yesterday}", headers=headers,
+        )
+        self.assertEqual(listed.status_code, 200, listed.get_json())
+        refs = [row["receipt_number"] for row in listed.get_json()]
+        self.assertEqual(refs, ["RCP-YDAY"])
+        ranged = self.client.get(
+            f"/api/sales?start={yesterday}&end={today}", headers=headers,
+        )
+        self.assertEqual(ranged.status_code, 403, ranged.get_json())
+        admin = self._login("shop-admin", "admin-pass")
+        older = self.client.get(
+            f"/api/reports/summary?start={yesterday}&end={yesterday}", headers=admin,
+        )
+        self.assertEqual(int(older.get_json()["summary"]["total_transactions"]), 1)
+        self.assertAlmostEqual(float(older.get_json()["summary"]["total_revenue"]), 40.0, places=2)
+
     def test_unknown_role_is_denied(self):
         from desktop.utils.security import has_permission
         self.assertFalse(has_permission({}, 'sales.create'))

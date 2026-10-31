@@ -123,6 +123,197 @@ class DebtLedgerTests(unittest.TestCase):
         self.assertEqual(row["status"], "paid")
         self.assertEqual(pays, 4)
 
+    def test_reversing_one_repayment_restores_only_that_amount(self):
+        cashier = self._headers("cashier", "cashier-pass")
+        admin = self._headers("admin", "admin-pass")
+        sale = self._credit(cashier, "debt-reverse", [
+            {"method": "Credit", "amount": 1000},
+        ])
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        body = sale.get_json()
+        invoice = body["debt"]["invoice_id"]
+        sale_id = body["sale_id"]
+        first = self.client.post(f"/api/debt/invoices/{invoice}/pay", headers=cashier, json={
+            "amount": 250, "payment_method": "cash", "payment_reference": "KEEP",
+        })
+        second = self.client.post(f"/api/debt/invoices/{invoice}/pay", headers=cashier, json={
+            "amount": 250, "payment_method": "M-Pesa", "payment_reference": "UNDO",
+        })
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(second.status_code, 200, second.get_json())
+        self.assertEqual(second.get_json()["balance_after"], 500)
+        db = self.ac._db()
+        try:
+            payment_id = db.execute(
+                "SELECT id FROM debt_payments WHERE invoice_id=? AND payment_reference='UNDO'",
+                (invoice,),
+            ).fetchone()["id"]
+            stock_before = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+        finally:
+            db.close()
+        denied = self.client.post(f"/api/debt-payments/{payment_id}/reverse", headers=cashier, json={
+            "reason": "Cashier must not reverse this",
+        })
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        reversed_pay = self.client.post(f"/api/debt-payments/{payment_id}/reverse", headers=admin, json={
+            "reason": "The M-Pesa entry was never received",
+            "money_outcome": "never_received",
+            "client_token": "reverse-once",
+        })
+        self.assertEqual(reversed_pay.status_code, 200, reversed_pay.get_json())
+        self.assertEqual(reversed_pay.get_json()["balance"], 750)
+        again = self.client.post(f"/api/debt-payments/{payment_id}/reverse", headers=admin, json={
+            "reason": "The M-Pesa entry was never received",
+            "client_token": "reverse-once",
+        })
+        self.assertEqual(again.status_code, 200, again.get_json())
+        self.assertTrue(again.get_json().get("duplicate"))
+        db = self.ac._db()
+        try:
+            row = db.execute(
+                "SELECT balance, status FROM debt_invoices WHERE id=?", (invoice,),
+            ).fetchone()
+            sale_row = db.execute("SELECT status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            kept = db.execute(
+                "SELECT COALESCE(reversed,0) AS reversed FROM debt_payments WHERE payment_reference='KEEP'",
+            ).fetchone()
+            undone = db.execute(
+                "SELECT COALESCE(reversed,0) AS reversed FROM debt_payments WHERE id=?",
+                (payment_id,),
+            ).fetchone()
+            stock_after = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+            refunds = db.execute("SELECT COUNT(*) AS c FROM debt_refunds").fetchone()["c"]
+        finally:
+            db.close()
+        self.assertEqual(float(row["balance"]), 750)
+        self.assertEqual(sale_row["status"], "completed")
+        self.assertEqual(int(kept["reversed"]), 0)
+        self.assertEqual(int(undone["reversed"]), 1)
+        self.assertEqual(stock_after, stock_before)
+        self.assertEqual(refunds, 0)
+
+    def test_cancelling_a_partly_paid_sale_clears_the_debt_and_restores_only_the_chosen_stock(self):
+        cashier = self._headers("cashier", "cashier-pass")
+        admin = self._headers("admin", "admin-pass")
+        sale = self._credit(cashier, "debt-cancel", [
+            {"method": "Cash", "amount": 400},
+            {"method": "Credit", "amount": 600},
+        ])
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        body = sale.get_json()
+        invoice = body["debt"]["invoice_id"]
+        sale_id = body["sale_id"]
+        db = self.ac._db()
+        try:
+            stock_before = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+        finally:
+            db.close()
+        denied = self.client.post(f"/api/debts/{invoice}/cancel-sale", headers=cashier, json={
+            "reason": "Cashier must not cancel this",
+            "refund_status": "pending",
+        })
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        missing = self.client.post(f"/api/debts/{invoice}/cancel-sale", headers=admin, json={
+            "reason": "Wrong sale, goods not all back",
+            "refund_status": "none",
+            "restore": [{"product_id": self.product, "quantity": 0}],
+        })
+        self.assertEqual(missing.status_code, 400, missing.get_json())
+        cancelled = self.client.post(f"/api/debts/{invoice}/cancel-sale", headers=admin, json={
+            "reason": "Wrong sale, goods not all back",
+            "refund_status": "pending",
+            "restore": [{"product_id": self.product, "quantity": 4}],
+            "client_token": "cancel-once",
+        })
+        self.assertEqual(cancelled.status_code, 200, cancelled.get_json())
+        self.assertEqual(cancelled.get_json()["outstanding"], 0)
+        self.assertEqual(cancelled.get_json()["money_received"], 400)
+        self.assertEqual(cancelled.get_json()["stock_restored"], [
+            {"product_id": self.product, "quantity": 4, "stock_after": stock_before + 4},
+        ])
+        again = self.client.post(f"/api/debts/{invoice}/cancel-sale", headers=admin, json={
+            "reason": "Wrong sale, goods not all back",
+            "refund_status": "pending",
+            "client_token": "cancel-once",
+        })
+        self.assertEqual(again.status_code, 200, again.get_json())
+        self.assertTrue(again.get_json().get("duplicate"))
+        db = self.ac._db()
+        try:
+            sale_row = db.execute("SELECT status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            debt = db.execute("SELECT balance, status FROM debt_invoices WHERE id=?", (invoice,)).fetchone()
+            stock_after = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+            pending = db.execute(
+                "SELECT amount, status FROM debt_refunds WHERE invoice_id=?", (invoice,),
+            ).fetchone()
+            payments = db.execute("SELECT COUNT(*) AS c FROM debt_payments WHERE invoice_id=?", (invoice,)).fetchone()["c"]
+        finally:
+            db.close()
+        self.assertEqual(sale_row["status"], "voided")
+        self.assertEqual(float(debt["balance"]), 0)
+        self.assertEqual(debt["status"], "cancelled")
+        self.assertEqual(stock_after, stock_before + 4)
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(float(pending["amount"]), 400)
+        self.assertEqual(payments, 1)
+
+    def test_write_off_reduces_the_debt_and_leaves_the_sale(self):
+        from desktop.utils.security import _pin_hash
+        cashier = self._headers("cashier", "cashier-pass")
+        admin = self._headers("admin", "admin-pass")
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
+            ("super", self.ac._hash_pw("super-pass"), "superadmin", "Super"),
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('superadmin_pin_hash', ?)",
+            (_pin_hash("246810"),),
+        )
+        db.commit()
+        db.close()
+        super_headers = self._headers("super", "super-pass")
+        sale = self._credit(cashier, "debt-writeoff", [{"method": "Credit", "amount": 1000}])
+        self.assertEqual(sale.status_code, 200, sale.get_json())
+        invoice = sale.get_json()["debt"]["invoice_id"]
+        sale_id = sale.get_json()["sale_id"]
+        db = self.ac._db()
+        try:
+            stock_before = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+            payments_before = db.execute("SELECT COUNT(*) AS c FROM debt_payments").fetchone()["c"]
+        finally:
+            db.close()
+        denied = self.client.post(f"/api/debts/{invoice}/write-off", headers=admin, json={
+            "amount": 300, "reason": "Admin cannot write this off", "pin": "246810",
+        })
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        partial = self.client.post(f"/api/debts/{invoice}/write-off", headers=super_headers, json={
+            "amount": 300, "reason": "Approved partial waiver", "pin": "246810",
+            "client_token": "write-300",
+        })
+        self.assertEqual(partial.status_code, 200, partial.get_json())
+        self.assertEqual(partial.get_json()["balance"], 700)
+        self.assertFalse(partial.get_json().get("cash_receipt"))
+        full = self.client.post(f"/api/debts/{invoice}/write-off", headers=super_headers, json={
+            "amount": 700, "reason": "Forgive the rest", "pin": "246810",
+            "client_token": "write-700",
+        })
+        self.assertEqual(full.status_code, 200, full.get_json())
+        self.assertEqual(full.get_json()["balance"], 0)
+        self.assertEqual(full.get_json()["status"], "written_off")
+        db = self.ac._db()
+        try:
+            sale_row = db.execute("SELECT status FROM sales WHERE id=?", (sale_id,)).fetchone()
+            stock_after = db.execute("SELECT stock FROM products WHERE id=?", (self.product,)).fetchone()["stock"]
+            payments_after = db.execute("SELECT COUNT(*) AS c FROM debt_payments").fetchone()["c"]
+            written = db.execute("SELECT SUM(amount) AS total FROM debt_write_offs WHERE invoice_id=?", (invoice,)).fetchone()
+        finally:
+            db.close()
+        self.assertEqual(sale_row["status"], "completed")
+        self.assertEqual(stock_after, stock_before)
+        self.assertEqual(payments_after, payments_before)
+        self.assertEqual(float(written["total"]), 1000)
+
     def test_return_keeps_the_invoice_arithmetic(self):
         admin = self._headers("admin", "admin-pass")
         sale = self._credit(admin, "debt-return", [

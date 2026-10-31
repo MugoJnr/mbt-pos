@@ -48,10 +48,35 @@ def _safe_float(v, default=0.0):
 
 
 def _fmt_qty(v):
-    f = _safe_float(v, 0)
+    f = round(_safe_float(v, 0), 4)
     if abs(f - round(f)) < 1e-9:
         return str(int(round(f)))
-    return f"{f:g}"
+    text = f"{f:.3f}".rstrip('0').rstrip('.')
+    if '.' in text and len(text.split('.')[1]) < 2:
+        text = f"{f:.2f}"
+    return text
+
+
+def _unit_bucket(unit):
+    raw = (unit or 'pcs').strip()
+    key = raw.lower()
+    aliases = {
+        'kg': 'kg', 'kilogram': 'kg', 'kilograms': 'kg',
+        'g': 'g', 'gram': 'g', 'grams': 'g',
+        'l': 'L', 'ltr': 'L', 'litre': 'L', 'liter': 'L', 'litres': 'L', 'liters': 'L',
+        'ml': 'ml', 'millilitre': 'ml', 'milliliter': 'ml',
+        'm': 'm', 'metre': 'm', 'meter': 'm',
+        'pcs': 'pcs', 'pc': 'pcs', 'piece': 'pcs', 'pieces': 'pcs',
+    }
+    return aliases.get(key, raw or 'pcs')
+
+
+def _qty_by_unit(lines):
+    totals = {}
+    for line in lines:
+        unit = _unit_bucket(line.get('unit'))
+        totals[unit] = totals.get(unit, 0.0) + _safe_float(line.get('quantity'))
+    return totals
 
 
 def _currency(cfg):
@@ -230,17 +255,46 @@ def _make_date_edit(initial=None, height=40):
     return DateField(initial=initial, height=height)
 
 
+def _table_entry(text):
+    """Plain field. Spin boxes clip the last digit inside a styled table cell."""
+    edit = QLineEdit(text)
+    edit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    edit.setMinimumHeight(36)
+    edit.setTextMargins(8, 0, 14, 0)
+    edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    r = RADIUS.get('md', 8)
+    edit.setStyleSheet(
+        f"QLineEdit {{"
+        f"background:{C['input']}; color:{C['text']};"
+        f"border:1px solid {C['border']}; border-radius:{r}px;"
+        f"padding:2px 12px; font-size:13px; }}"
+        f"QLineEdit:focus {{ border-color:{C['gold']}; }}")
+    return edit
+
+
+def _parse_decimal(text):
+    raw = ''.join(ch for ch in str(text) if ch.isdigit() or ch in '.-')
+    if raw in ('', '-', '.', '-.'):
+        raise ValueError(text)
+    return float(raw)
+
+
 def _style_table_spin(spin):
     """Theme-safe spin for table cells — no up/down chrome (avoids light-mode gray blocks)."""
     r = RADIUS.get('md', 8)
     spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+    spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     spin.setMinimumHeight(36)
     spin.setStyleSheet(
         f"QDoubleSpinBox {{"
         f"background:{C['input']}; color:{C['text']};"
         f"border:1px solid {C['border']}; border-radius:{r}px;"
-        f"padding:4px 8px; font-size:13px; min-height:36px; }}"
-        f"QDoubleSpinBox:focus {{ border-color:{C['gold']}; }}")
+        f"padding:2px 10px; font-size:13px; min-height:36px; }}"
+        f"QDoubleSpinBox:focus {{ border-color:{C['gold']}; }}"
+        f"QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{"
+        f"width:0px; height:0px; border:none; padding:0; margin:0; }}"
+        f"QDoubleSpinBox::up-arrow, QDoubleSpinBox::down-arrow {{"
+        f"width:0px; height:0px; image:none; }}")
 
 
 def _cell_wrap(widget, *, h_margin=4, v_margin=4):
@@ -358,25 +412,20 @@ class _CreatePane(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet('QScrollArea{border:none;background:transparent;}')
-        body = QWidget()
-        body.setStyleSheet('background:transparent; border:none;')
-        lay, _ = page_layout(body, margins=(20, 18, 20, 12), spacing=16)
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        head = QHBoxLayout()
+        head.setContentsMargins(20, 12, 20, 0)
+        head.addWidget(H2('New internal consumption'))
+        root.addLayout(head)
 
-        # Header
-        lay.addWidget(H2('Internal Consumption'))
-        lay.addWidget(Caption(
-            'Remove stock for production, staff use, cleaning, and other internal needs. '
-            'No sale receipt is created.'))
+        work = QVBoxLayout()
+        work.setContentsMargins(20, 8, 20, 8)
+        work.setSpacing(12)
+        top = QHBoxLayout()
+        top.setSpacing(12)
 
         # ── Details section (clean spacing, no cell grid) ──
         details = Card()
-        fl = details.layout_v((22, 18, 22, 18), 16)
+        fl = details.layout_v((16, 10, 16, 10), 8)
         fl.addWidget(H3('Details'))
 
         row1 = QHBoxLayout()
@@ -394,34 +443,48 @@ class _CreatePane(QWidget):
         row1.addWidget(_field('Reference', self._ref_badge), 1)
         fl.addLayout(row1)
 
+        self._dept = Select(placeholder='Select department', height=CONTROL_HEIGHT)
+        self._dept.setMinimumWidth(220)
+        self._add_dept = SecondaryBtn('Add department', CONTROL_HEIGHT)
+        self._add_dept.setToolTip('Save a department, then choose it here')
+        self._add_dept.clicked.connect(self._add_department)
+        dept_box = QWidget()
+        dept_box.setStyleSheet('background:transparent; border:none;')
+        dept_col = QVBoxLayout(dept_box)
+        dept_col.setContentsMargins(0, 0, 0, 0)
+        dept_col.setSpacing(6)
+        dept_col.addWidget(_field_label('Department'))
+        dept_line = QHBoxLayout()
+        dept_line.setSpacing(8)
+        dept_line.addWidget(self._dept, 1)
+        dept_line.addWidget(self._add_dept)
+        dept_col.addLayout(dept_line)
+        fl.addWidget(dept_box)
+
         row2 = QHBoxLayout()
         row2.setSpacing(16)
-        self._dept = Select(placeholder='Select department…', height=CONTROL_HEIGHT)
-        self._dept.setMinimumWidth(180)
         self._reason = ReasonSelect(reasons=REASONS, height=CONTROL_HEIGHT)
         self._taken = QLineEdit()
         self._taken.setPlaceholderText('Staff name')
         self._taken.setMinimumHeight(CONTROL_HEIGHT)
-        self._taken.setMinimumWidth(180)
+        self._taken.setMinimumWidth(160)
         self._staff_mode = True
-        row2.addWidget(_field('Department', self._dept), 1)
         row2.addWidget(_field('Reason', self._reason), 1)
-        row2.addWidget(_field('Taken By', self._taken), 1)
+        row2.addWidget(_field('Taken by', self._taken), 1)
         fl.addLayout(row2)
 
-        self._notes = QPlainTextEdit()
+        self._notes = QLineEdit()
         self._notes.setObjectName('mbtNotes')
-        self._notes.setPlaceholderText('Optional notes…')
-        self._notes.setMinimumHeight(72)
-        self._notes.setMaximumHeight(96)
-        fl.addWidget(_field('Notes', self._notes))
-        lay.addWidget(details)
+        self._notes.setPlaceholderText('Optional notes')
+        self._notes.setMinimumHeight(CONTROL_HEIGHT)
+        self._notes.setMaximumHeight(CONTROL_HEIGHT)
+        fl.addWidget(self._notes)
+        details.setMinimumWidth(520)
+        details.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
 
-        # ── Line items ──
-        lines_card = Card()
-        ll = lines_card.layout_v((22, 18, 22, 18), 12)
-        ll.addWidget(H3('Line Items'))
-
+        picker = Card()
+        pl = picker.layout_v((14, 12, 14, 12), 8)
+        pl.addWidget(H3('Products'))
         add_row = QHBoxLayout()
         add_row.setSpacing(10)
         self._search = SearchBar('Search product by name or SKU…')
@@ -444,32 +507,58 @@ class _CreatePane(QWidget):
         add_row.addWidget(self._search, 1)
         add_row.addWidget(self._qty_add)
         add_row.addWidget(add_btn)
-        ll.addLayout(add_row)
+        add_row.addSpacing(8)
+        pl.addLayout(add_row)
 
         self._prod_list = QListWidget()
         self._prod_list.setObjectName('mbtConsProdList')
-        self._prod_list.setMaximumHeight(PROD_LIST_ITEM_H * 3 + 24)
-        self._prod_list.setMinimumHeight(PROD_LIST_ITEM_H * 2 + 16)
+        self._prod_list.setMinimumHeight(PROD_LIST_ITEM_H * 3)
+        self._prod_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._prod_list.setTextElideMode(Qt.ElideRight)
+        self._prod_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._prod_list.setUniformItemSizes(True)
         self._prod_list.itemDoubleClicked.connect(self._add_from_list)
         self._prod_list.itemActivated.connect(self._add_from_list)
-        ll.addWidget(self._prod_list)
+        pl.addWidget(self._prod_list, 1)
         self._style_prod_list()
+        pl.addWidget(Caption('Search by name, SKU, or barcode. Double-click or Add keeps earlier lines.'))
+        picker.setMinimumWidth(360)
+        picker.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        top.addWidget(picker, 3)
+        top.addWidget(details, 2)
 
-        hint = Caption(
-            'Search, select a product, set qty, then Add — Enter adds the top/selected result.')
-        ll.addWidget(hint)
-
+        lines_card = Card()
+        ll = lines_card.layout_v((14, 12, 14, 12), 8)
+        ll.addWidget(H3('Selected lines'))
         self._tbl = make_table(
-            ['Product', 'Stock', 'Qty', 'Unit Cost', 'Total Cost', ''],
+            ['Product', 'Stock', 'Unit', 'Qty', 'Unit cost', 'Line cost', ''],
             stretch_col=0, row_height=LINE_ROW_H)
         self._tbl.verticalHeader().setMinimumSectionSize(LINE_ROW_H)
-        for col, w in ((1, 70), (2, 100), (3, 120), (4, 120), (5, 56)):
-            self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
-            self._tbl.setColumnWidth(col, w)
-        ll.addWidget(self._tbl)
-        lay.addWidget(lines_card)
-        lay.addStretch()
+        line_header = self._tbl.horizontalHeader()
+        line_header.setStretchLastSection(False)
+        line_header.setMinimumSectionSize(44)
+        line_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 72), (2, 64), (3, 132), (4, 180), (5, 132), (6, 108)):
+            line_header.setSectionResizeMode(col, QHeaderView.Fixed)
+            self._tbl.setColumnWidth(col, width)
+        self._tbl.setMinimumHeight(196)
+        self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        ll.addWidget(self._tbl, 1)
+        top_host = QWidget()
+        top_host.setLayout(top)
+        split = QSplitter(Qt.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(top_host)
+        split.addWidget(lines_card)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 2)
+        split.setSizes([240, 300])
+        self._split = split
+        QTimer.singleShot(0, self._balance_split)
+        work.addWidget(split, 1)
+        root.addLayout(work, 1)
 
         # ── Sticky footer ──
         foot_wrap = QFrame()
@@ -517,11 +606,11 @@ class _CreatePane(QWidget):
     def _style_notes(self):
         r = RADIUS.get('md', 8)
         self._notes.setStyleSheet(
-            f"QPlainTextEdit#mbtNotes {{"
+            f"QLineEdit#mbtNotes {{"
             f"background:{C['input']}; color:{C['text']};"
             f"border:1px solid {C['border2']}; border-radius:{r}px;"
-            f"padding:8px 10px; font-size:13px; }}"
-            f"QPlainTextEdit#mbtNotes:focus {{ border-color:{C['gold']}; }}")
+            f"padding:0 10px; font-size:13px; }}"
+            f"QLineEdit#mbtNotes:focus {{ border-color:{C['gold']}; }}")
 
     def _style_ref_badge(self):
         text = self._ref.text() or 'AUTO-######'
@@ -563,6 +652,17 @@ class _CreatePane(QWidget):
             self._products = []
         self._filter_products()
         self._rebuild_table()
+        self._balance_split()
+
+    def _balance_split(self):
+        split = getattr(self, '_split', None)
+        if split is None:
+            return
+        total = split.height()
+        if total < 200:
+            return
+        top = max(200, int(total * 0.42))
+        split.setSizes([top, max(180, total - top)])
 
     def _load_staff(self):
         """Offer staff names while typing. A typed name is always accepted."""
@@ -617,7 +717,8 @@ class _CreatePane(QWidget):
         for p in self._products:
             name = p.get('name') or ''
             sku = p.get('sku') or ''
-            if q and q not in name.lower() and q not in sku.lower():
+            barcode = str(p.get('barcode') or '')
+            if q and q not in name.lower() and q not in sku.lower() and q not in barcode.lower():
                 continue
             stock = _fmt_qty(p.get('stock'))
             item = QListWidgetItem(f"{name}  ·  stock {stock}" + (f"  ·  {sku}" if sku else ''))
@@ -659,6 +760,48 @@ class _CreatePane(QWidget):
                     _style_table_spin(spin)
         retint_table_items(self._tbl)
         apply_table_row_backgrounds(self._tbl)
+
+    def _add_department(self):
+        from desktop.utils.theme import apply_themed_dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Add department')
+        dlg.setMinimumWidth(420)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        title = QLabel('Add a department')
+        title.setStyleSheet('font-size:16px; font-weight:700;')
+        lay.addWidget(title)
+        hint = QLabel('Kitchen, shop floor, office, or any place that uses stock.')
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        name = QLineEdit()
+        name.setPlaceholderText('Department name')
+        name.setMinimumHeight(CONTROL_HEIGHT)
+        lay.addWidget(name)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = GhostBtn('Cancel', 36)
+        save = PrimaryBtn('Add department', 36)
+        cancel.clicked.connect(dlg.reject)
+        save.clicked.connect(dlg.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        label = name.text().strip()
+        if not label:
+            QMessageBox.warning(self, 'Department', 'Enter a department name.')
+            return
+        res = self.p.api.save_department(label) or {}
+        if res.get('error'):
+            QMessageBox.warning(self, 'Department', res['error'])
+            return
+        self.refresh()
+        if res.get('id') is not None:
+            self._dept.set_value(res.get('id'))
 
     def _taken_text(self):
         try:
@@ -716,6 +859,7 @@ class _CreatePane(QWidget):
             'product_id': pid,
             'product_name': prod.get('name') or '',
             'quantity': qty,
+            'unit': prod.get('unit') or 'pcs',
             'unit_cost': cost,
             'stock': stock,
         })
@@ -729,40 +873,91 @@ class _CreatePane(QWidget):
             self._tbl.insertRow(i)
             self._tbl.setItem(i, 0, tbl_item(line['product_name']))
             self._tbl.setItem(i, 1, tbl_center(_fmt_qty(line.get('stock')), C['muted']))
+            self._tbl.setItem(i, 2, tbl_center(line.get('unit') or 'pcs'))
 
-            qty_spin = QDoubleSpinBox()
             max_stock = max(0.001, float(line.get('stock') or 0))
-            qty_spin.setRange(0.001, max_stock)
-            qty_spin.setDecimals(3)
-            qty_spin.setValue(min(float(line['quantity']), max_stock))
-            qty_spin.setToolTip(f"Max {_fmt_qty(max_stock)} (on hand)")
-            _style_table_spin(qty_spin)
-            qty_spin.valueChanged.connect(lambda v, idx=i: self._on_qty(idx, v))
-            self._tbl.setCellWidget(i, 2, _cell_wrap(qty_spin))
+            qty_edit = _table_entry(f"{float(line['quantity']):.3f}")
+            qty_edit.setToolTip(f"Max {_fmt_qty(max_stock)} {line.get('unit') or 'pcs'} on hand")
+            qty_edit.editingFinished.connect(lambda idx=i, box=qty_edit: self._commit_qty(idx, box))
+            self._tbl.setCellWidget(i, 3, qty_edit)
 
-            cost_spin = QDoubleSpinBox()
-            cost_spin.setRange(0, 1_000_000_000)
-            cost_spin.setDecimals(2)
-            cost_spin.setPrefix(f'{cur} ')
-            cost_spin.setValue(float(line['unit_cost']))
-            _style_table_spin(cost_spin)
-            cost_spin.valueChanged.connect(lambda v, idx=i: self._on_cost(idx, v))
-            self._tbl.setCellWidget(i, 3, _cell_wrap(cost_spin))
+            cost_edit = _table_entry(f"{cur} {float(line['unit_cost']):,.2f}")
+            cost_edit.editingFinished.connect(lambda idx=i, box=cost_edit: self._commit_cost(idx, box))
+            self._tbl.setCellWidget(i, 4, cost_edit)
 
             line_tot = float(line['quantity']) * float(line['unit_cost'])
             total += line_tot
-            self._tbl.setItem(i, 4, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
+            self._tbl.setItem(i, 5, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
 
-            rm = GhostBtn('✕', 36)
-            rm.setFixedWidth(44)
+            rm = QPushButton('Remove')
+            rm.setCursor(Qt.PointingHandCursor)
+            rm.setMinimumSize(84, 32)
+            rm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             rm.setToolTip('Remove line')
+            rm.setStyleSheet(
+                f"QPushButton {{ background:{C['card2']}; color:{C['text']}; "
+                f"border:1px solid {C['border2']}; border-radius:8px; "
+                f"font-size:12px; font-weight:700; padding:0 8px; }}"
+                f"QPushButton:hover {{ border-color:{C['gold']}; color:{C['gold']}; }}"
+            )
             rm.clicked.connect(lambda _, idx=i: self._remove_line(idx))
-            self._tbl.setCellWidget(i, 5, _cell_wrap(rm, h_margin=2, v_margin=4))
+            self._tbl.setCellWidget(i, 6, rm)
             # Cell widgets can shrink Fusion rows below defaultSectionSize — lock height
             self._tbl.setRowHeight(i, LINE_ROW_H)
 
-        self._total_lbl.setText(f'Total Cost Used: {cur} {total:,.2f}')
+        groups = _qty_by_unit(self._lines)
+        grouped = '  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items())
+        self._total_lbl.setText(
+            f"{len(self._lines)} products"
+            + (f"  ·  {grouped}" if grouped else "")
+            + f"  ·  Stock cost {cur} {total:,.2f}"
+        )
         apply_table_row_backgrounds(self._tbl)
+
+    def _commit_qty(self, idx, edit):
+        if not (0 <= idx < len(self._lines)):
+            return
+        line = self._lines[idx]
+        previous = float(line['quantity'])
+        try:
+            val = _parse_decimal(edit.text())
+        except ValueError:
+            edit.setText(f"{previous:.3f}")
+            return
+        stock = float(line.get('stock') or 0)
+        if val <= 0:
+            edit.setText(f"{previous:.3f}")
+            return
+        if val > stock + 1e-9:
+            QMessageBox.warning(
+                self, 'Insufficient Stock',
+                f"{line['product_name']}: only {_fmt_qty(stock)} available.")
+            val = stock
+        line['quantity'] = float(val)
+        shown = f"{val:.3f}"
+        if edit.text() != shown:
+            edit.setText(shown)
+        self._refresh_totals_only()
+
+    def _commit_cost(self, idx, edit):
+        if not (0 <= idx < len(self._lines)):
+            return
+        line = self._lines[idx]
+        cur = _currency(self.p._cfg())
+        previous = float(line['unit_cost'])
+        try:
+            val = _parse_decimal(edit.text())
+        except ValueError:
+            edit.setText(f"{cur} {previous:,.2f}")
+            return
+        if val < 0:
+            edit.setText(f"{cur} {previous:,.2f}")
+            return
+        line['unit_cost'] = float(val)
+        shown = f"{cur} {val:,.2f}"
+        if edit.text() != shown:
+            edit.setText(shown)
+        self._refresh_totals_only()
 
     def _on_qty(self, idx, val):
         if 0 <= idx < len(self._lines):
@@ -787,8 +982,14 @@ class _CreatePane(QWidget):
         for i, line in enumerate(self._lines):
             line_tot = float(line['quantity']) * float(line['unit_cost'])
             total += line_tot
-            self._tbl.setItem(i, 4, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
-        self._total_lbl.setText(f'Total Cost Used: {cur} {total:,.2f}')
+            self._tbl.setItem(i, 5, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
+        groups = _qty_by_unit(self._lines)
+        grouped = '  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items())
+        self._total_lbl.setText(
+            f"{len(self._lines)} products"
+            + (f"  ·  {grouped}" if grouped else "")
+            + f"  ·  Stock cost {cur} {total:,.2f}"
+        )
 
     def _remove_line(self, idx):
         if 0 <= idx < len(self._lines):
@@ -832,7 +1033,7 @@ class _CreatePane(QWidget):
             'date': self._date.date().toString('yyyy-MM-dd'),
             'department_id': dept_id,
             'reason': self._reason.value(),
-            'notes': self._notes.toPlainText().strip(),
+            'notes': self._notes.text().strip(),
             'taken_by': self._taken_text(),
             'client_token': self._client_token,
             'items': [
@@ -880,7 +1081,9 @@ class _HistoryPane(QWidget):
     def _build(self):
         lay, _ = page_layout(self, margins=(20, 18, 20, 18), spacing=16)
         lay.addWidget(H2('Consumption History'))
-        lay.addWidget(Caption('Posted consumptions — void to restore stock.'))
+        lay.addWidget(Caption(
+            'Click a row to open the receipt. Void, request void, and edit are on that receipt.'
+        ))
 
         filters = Card()
         fl = filters.layout_h((16, 12, 16, 12), 10)
@@ -889,9 +1092,16 @@ class _HistoryPane(QWidget):
         self._preset.presetChanged.connect(self._on_preset)
         self._s = _make_date_edit(QDate.currentDate())
         self._e = _make_date_edit(QDate.currentDate())
+        self._dept = Select(placeholder='All departments', height=CONTROL_HEIGHT)
+        self._dept.setMinimumWidth(180)
+        self._reason = Select(placeholder='All reasons', height=CONTROL_HEIGHT)
+        self._reason.setMinimumWidth(160)
+        self._reason.set_items([(r, r) for r in REASONS])
         add_labeled(fl, 'Period', self._preset, spacing=14)
         add_labeled(fl, 'From', self._s, spacing=14)
         add_labeled(fl, 'To', self._e, spacing=10)
+        add_labeled(fl, 'Department', self._dept, spacing=10)
+        add_labeled(fl, 'Reason', self._reason, spacing=10)
         fl.addStretch()
         run = SecondaryBtn('Refresh', CONTROL_HEIGHT)
         run.clicked.connect(self.refresh)
@@ -899,13 +1109,24 @@ class _HistoryPane(QWidget):
         lay.addWidget(filters)
 
         self._tbl = make_table(
-            ['Date', 'Reference', 'Department', 'Reason', 'Taken By',
-             'Lines', 'Total Cost', 'By', 'Status', ''],
-            stretch_col=2, row_height=44)
-        for col, w in ((0, 110), (1, 148), (3, 180), (4, 120), (5, 60),
-                       (6, 110), (7, 100), (8, 80), (9, 90)):
-            self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
-            self._tbl.setColumnWidth(col, w)
+            ['Date', 'Reference', 'Department', 'Reason', 'Cost', 'Status'],
+            stretch_col=3, row_height=44)
+        header = self._tbl.horizontalHeader()
+        header.setMinimumSectionSize(56)
+        for col in range(6):
+            header.setSectionResizeMode(col, QHeaderView.Stretch)
+        self._tbl.setTextElideMode(Qt.ElideRight)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tbl.setMinimumWidth(0)
+        self._tbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self._preset.setMinimumWidth(0)
+        self._s.setMinimumWidth(0)
+        self._e.setMinimumWidth(0)
+        self._s._edit.setMinimumWidth(120)
+        self._e._edit.setMinimumWidth(120)
+        self._tbl.setCursor(Qt.PointingHandCursor)
+        self._tbl.setToolTip('Click a row to open the consumption receipt')
+        self._tbl.cellClicked.connect(self._open_from_row)
         lay.addWidget(wrap_table_card(self._tbl), 1)
         self._stats = Caption('')
         lay.addWidget(self._stats)
@@ -939,13 +1160,25 @@ class _HistoryPane(QWidget):
         start = self._s.date().toString('yyyy-MM-dd')
         end = self._e.date().toString('yyyy-MM-dd')
         try:
-            rows = self.p.api.get_consumptions(start, end, include_voided=True) or []
+            depts = self.p.api.get_departments() or []
+            self._dept.set_items(
+                [(d.get('name') or '', d.get('id')) for d in depts],
+                keep_selection=True,
+            )
+        except Exception:
+            depts = []
+        try:
+            rows = self.p.api.get_consumptions(
+                start, end,
+                department_id=self._dept.current_value(),
+                reason=self._reason.current_value(),
+                include_voided=True,
+            ) or []
         except Exception as e:
             self._stats.setText(f'  Could not load: {e}')
             return
         self._tbl.setRowCount(0)
-        can_void = has_permission(self.p.user, 'consumption.void')
-        can_request = has_permission(self.p.user, 'consumption.request_void')
+        self._history_rows = list(rows)
         for i, r in enumerate(rows):
             self._tbl.insertRow(i)
             voided = int(r.get('voided') or 0) == 1
@@ -956,30 +1189,294 @@ class _HistoryPane(QWidget):
             except Exception:
                 pass
             self._tbl.setItem(i, 0, tbl_item(dstr))
-            self._tbl.setItem(i, 1, tbl_item(str(r.get('reference_no') or '')))
-            self._tbl.setItem(i, 2, tbl_item(str(r.get('department_name') or '')))
-            self._tbl.setItem(i, 3, tbl_item(str(r.get('reason') or '')))
-            self._tbl.setItem(i, 4, tbl_item(str(r.get('taken_by') or '—')))
-            self._tbl.setItem(i, 5, tbl_center(str(r.get('item_count') or 0)))
-            self._tbl.setItem(i, 6, tbl_right(
+            ref = tbl_item(str(r.get('reference_no') or ''))
+            ref.setToolTip(f"{r.get('item_count') or 0} lines · taken by {r.get('taken_by') or '—'}")
+            self._tbl.setItem(i, 1, ref)
+            self._tbl.setItem(i, 2, tbl_item(str(r.get('department_name') or '—')))
+            self._tbl.setItem(i, 3, tbl_item(str(r.get('reason') or '—')))
+            self._tbl.setItem(i, 4, tbl_right(
                 f"{cur} {_safe_float(r.get('total_cost')):,.2f}",
                 C['muted'] if voided else C['gold']))
-            self._tbl.setItem(i, 7, tbl_item(str(r.get('created_by_name') or '')))
-            self._tbl.setItem(i, 8, tbl_center(
-                'Voided' if voided else 'Posted',
-                C['err'] if voided else C['ok']))
-            if can_void and not voided:
-                vb = DangerBtn('Void', 32)
-                vb.clicked.connect(lambda _, cid=r.get('id'): self._void(cid))
-                self._tbl.setCellWidget(i, 9, vb)
-            elif can_request and not voided:
-                vb = SecondaryBtn('Request void', 32)
-                vb.clicked.connect(lambda _, cid=r.get('id'): self._request_void(cid))
-                self._tbl.setCellWidget(i, 9, vb)
+            if voided:
+                status, tone = 'Voided', C['err']
+            elif r.get('void_requested'):
+                status, tone = 'Requested', C['warn']
             else:
-                self._tbl.setItem(i, 9, tbl_center('—', C['muted']))
+                status, tone = 'Posted', C['ok']
+            self._tbl.setItem(i, 5, tbl_center(status, tone))
         apply_table_row_backgrounds(self._tbl)
         self._stats.setText(f'  {len(rows)} consumption record(s)')
+
+    def _open_from_row(self, row, _column):
+        rows = getattr(self, '_history_rows', [])
+        if 0 <= row < len(rows):
+            self._view(rows[row].get('id'))
+
+    def _view(self, cid):
+        detail = self.p.api.get_consumption(int(cid)) or {}
+        if not detail:
+            QMessageBox.warning(self, 'Receipt', 'That consumption receipt was not found.')
+            return
+        from desktop.utils.theme import apply_themed_dialog
+        voided = int(detail.get('voided') or 0) == 1
+        requested = bool(detail.get('void_requested'))
+        cur = _currency(self.p._cfg())
+        dlg = QDialog(self)
+        dlg.setWindowTitle(str(detail.get('reference_no') or 'Internal consumption'))
+        dlg.resize(980, 720)
+        dlg.setMinimumSize(860, 560)
+        apply_themed_dialog(dlg)
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(10)
+        shop = str((self.p._cfg() or {}).get('shop_name') or '').strip()
+        if shop:
+            shop_lbl = QLabel(shop)
+            shop_lbl.setStyleSheet('font-size:16px; font-weight:800;')
+            layout.addWidget(shop_lbl)
+        kicker = QLabel('INTERNAL CONSUMPTION')
+        kicker.setStyleSheet(f"color:{C['gold']}; font-size:11px; font-weight:700; letter-spacing:0.6px;")
+        layout.addWidget(kicker)
+        title = QLabel(str(detail.get('reference_no') or 'Receipt'))
+        title.setStyleSheet('font-size:20px; font-weight:800;')
+        layout.addWidget(title)
+        if voided:
+            status = 'Voided'
+        elif requested:
+            status = 'Void requested'
+        else:
+            status = 'Posted'
+        meta = QLabel(
+            f"{status}   ·   {str(detail.get('created_at') or detail.get('date') or '—').replace('T', ' ')[:19]}\n"
+            f"{detail.get('created_by_name') or '—'}   ·   {detail.get('department_name') or '—'}\n"
+            f"Taken by {detail.get('taken_by') or '—'}   ·   {detail.get('reason') or '—'}"
+        )
+        meta.setWordWrap(True)
+        layout.addWidget(meta)
+        note = QLabel('This is stock used by the business. It is not a customer sale and has no payment.')
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{C['text2']};")
+        layout.addWidget(note)
+        items = list(detail.get('items') or [])
+        table = QTableWidget(len(items), 8)
+        table.setHorizontalHeaderLabels([
+            'Product', 'SKU', 'Qty', 'Unit', 'Unit cost', 'Line cost', 'Before', 'After',
+        ])
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(40)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        table.setFocusPolicy(Qt.NoFocus)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.setShowGrid(False)
+        table.setWordWrap(False)
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setMinimumSectionSize(72)
+        for column, width in ((1, 110), (2, 80), (3, 70), (4, 120), (5, 120), (6, 90), (7, 90)):
+            header.setSectionResizeMode(column, QHeaderView.Fixed)
+            table.setColumnWidth(column, width)
+        cost_total = 0.0
+        for index, item in enumerate(items):
+            try:
+                cost_total += float(item.get('total_cost') or 0)
+            except (TypeError, ValueError):
+                pass
+            before = item.get('stock_before')
+            after = item.get('stock_after')
+            values = [
+                item.get('product_name') or 'Product',
+                item.get('sku') or '—',
+                _fmt_qty(item.get('quantity')),
+                item.get('unit') or 'pcs',
+                f"{cur} {_safe_float(item.get('unit_cost')):,.2f}",
+                f"{cur} {_safe_float(item.get('total_cost')):,.2f}",
+                _fmt_qty(before) if before is not None else '—',
+                _fmt_qty(after) if after is not None else '—',
+            ]
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value))
+                if column >= 2 and column != 3:
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(index, column, cell)
+            table.setRowHeight(index, 40)
+        visible_rows = min(max(len(items), 2), 8)
+        table.setMinimumHeight(48 + 40 * visible_rows)
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout.addWidget(table, 1)
+        groups = _qty_by_unit(items)
+        grouped = '  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items()) or '—'
+        measures = QLabel(f"{len(items)} products    ·    {grouped}")
+        measures.setWordWrap(True)
+        layout.addWidget(measures)
+        total = QLabel(f"Stock cost    {cur} {_safe_float(detail.get('total_cost') or cost_total):,.2f}")
+        total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        total.setStyleSheet(
+            f"color:{C['gold']}; font-size:18px; font-weight:800; "
+            f"background:{C['card2']}; border:1px solid {C['border']}; "
+            f"border-radius:10px; padding:10px 14px;"
+        )
+        layout.addWidget(total)
+        if detail.get('notes'):
+            notes = QLabel(f"Notes: {detail.get('notes')}")
+            notes.setWordWrap(True)
+            layout.addWidget(notes)
+        if detail.get('void_reason'):
+            why = QLabel(f"Void reason: {detail.get('void_reason')}")
+            why.setWordWrap(True)
+            layout.addWidget(why)
+        for revision in detail.get('revisions') or []:
+            changed = QLabel(
+                f"Correction: {revision.get('reason') or '—'} · {revision.get('edited_by_name') or '—'}"
+            )
+            changed.setWordWrap(True)
+            layout.addWidget(changed)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        can_edit = has_permission(self.p.user, 'consumption.edit')
+        can_void = has_permission(self.p.user, 'consumption.void')
+        can_request = has_permission(self.p.user, 'consumption.request_void')
+        if can_edit and not voided:
+            edit = SecondaryBtn('Edit', 40)
+            edit.clicked.connect(lambda _checked=False, i=cid: (dlg.accept(), self._edit(i)))
+            actions.addWidget(edit)
+        if can_void and not voided:
+            void = DangerBtn('Void', 40)
+            void.clicked.connect(lambda _checked=False, i=cid: (dlg.accept(), self._void(i)))
+            actions.addWidget(void)
+        elif can_request and not voided:
+            ask = SecondaryBtn('Void requested' if requested else 'Request void', 40)
+            ask.setEnabled(not requested)
+            if not requested:
+                ask.clicked.connect(lambda _checked=False, i=cid: (dlg.accept(), self._request_void(i)))
+            actions.addWidget(ask)
+        actions.addStretch(1)
+        print_btn = SecondaryBtn('Print', 40)
+        print_btn.clicked.connect(lambda _checked=False, payload=detail: self._print_receipt(payload))
+        actions.addWidget(print_btn)
+        close = SecondaryBtn('Close', 40)
+        close.clicked.connect(dlg.accept)
+        actions.addWidget(close)
+        layout.addLayout(actions)
+        dlg.exec_()
+
+    def _print_receipt(self, detail):
+        """Open the print dialog. Printing does not change stock."""
+        try:
+            from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
+        except Exception:
+            QMessageBox.information(self, 'Print', 'Printing is not available on this till.')
+            return
+        cur = _currency(self.p._cfg())
+        shop = str((self.p._cfg() or {}).get('shop_name') or 'Shop')
+        lines = [
+            shop,
+            'INTERNAL CONSUMPTION',
+            str(detail.get('reference_no') or ''),
+            str(detail.get('created_at') or detail.get('date') or ''),
+            f"Recorded by {detail.get('created_by_name') or '—'}",
+            f"Department {detail.get('department_name') or '—'}",
+            f"Taken by {detail.get('taken_by') or '—'}",
+            f"Purpose {detail.get('reason') or '—'}",
+            'Voided' if int(detail.get('voided') or 0) == 1 else 'Posted',
+            '',
+        ]
+        if detail.get('notes'):
+            lines.append(f"Notes {detail.get('notes')}")
+            lines.append('')
+        for item in detail.get('items') or []:
+            lines.append(
+                f"{item.get('product_name')}  {item.get('sku') or ''}  "
+                f"{_fmt_qty(item.get('quantity'))} {item.get('unit') or 'pcs'}  "
+                f"@ {cur} {_safe_float(item.get('unit_cost')):,.2f}  "
+                f"= {cur} {_safe_float(item.get('total_cost')):,.2f}  "
+                f"stock {_fmt_qty(item.get('stock_before')) if item.get('stock_before') is not None else '—'} "
+                f"-> {_fmt_qty(item.get('stock_after')) if item.get('stock_after') is not None else '—'}"
+            )
+        groups = _qty_by_unit(detail.get('items') or [])
+        lines.append('')
+        lines.append('  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items()))
+        lines.append(f"Stock cost {cur} {_safe_float(detail.get('total_cost')):,.2f}")
+        lines.append('This is not a customer sale.')
+        printer = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        document = QTextDocument()
+        document.setPlainText('\n'.join(lines))
+        document.print_(printer)
+
+    def _edit(self, cid):
+        if not require_permission(self.p.user, 'consumption.edit', self):
+            return
+        detail = self.p.api.get_consumption(int(cid)) or {}
+        if not detail or int(detail.get('voided') or 0) == 1:
+            QMessageBox.warning(self, 'Edit', 'A voided consumption cannot be corrected.')
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Correct {detail.get('reference_no')}")
+        dlg.resize(560, 420)
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(QLabel(
+            'Only the quantity difference changes stock. Enter why this correction is needed.'
+        ))
+        spins = []
+        for item in detail.get('items') or []:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"{item.get('product_name')} ({item.get('unit') or 'pcs'})"))
+            spin = QDoubleSpinBox()
+            spin.setDecimals(3)
+            spin.setSingleStep(0.25)
+            spin.setRange(0.001, 1000000)
+            spin.setValue(float(item.get('quantity') or 0))
+            spin.setProperty('product_id', int(item.get('product_id') or 0))
+            row.addWidget(spin)
+            remove = SecondaryBtn('Remove', 32)
+            remove.clicked.connect(lambda _, box=spin: box.setProperty('removed', True) or box.hide())
+            row.addWidget(remove)
+            layout.addLayout(row)
+            spins.append(spin)
+        reason = QLineEdit()
+        reason.setPlaceholderText('Why this correction is needed')
+        layout.addWidget(reason)
+        buttons = QHBoxLayout()
+        save = PrimaryBtn('Save correction', 36)
+        cancel = SecondaryBtn('Cancel', 36)
+        cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(save)
+        buttons.addWidget(cancel)
+        layout.addLayout(buttons)
+
+        def _save():
+            why = reason.text().strip()
+            if len(why) < 3:
+                QMessageBox.warning(dlg, 'Correction', 'Enter why this consumption is being corrected.')
+                return
+            items = []
+            for spin in spins:
+                if spin.property('removed'):
+                    continue
+                items.append({
+                    'product_id': int(spin.property('product_id') or 0),
+                    'quantity': float(spin.value()),
+                })
+            if not items:
+                QMessageBox.warning(dlg, 'Correction', 'Keep at least one product, or void the consumption.')
+                return
+            result = self.p.api.edit_consumption(int(cid), {
+                'edit_reason': why,
+                'reason': detail.get('reason') or 'Other',
+                'items': items,
+            }) or {}
+            if result.get('error'):
+                QMessageBox.critical(dlg, 'Correction', result['error'])
+                return
+            dlg.accept()
+            QMessageBox.information(self, 'Corrected', 'Only the quantity difference was applied to stock.')
+            self.refresh()
+
+        save.clicked.connect(_save)
+        dlg.exec_()
 
     def _void(self, cid):
         if not require_permission(self.p.user, 'consumption.void', self):
@@ -1047,7 +1544,9 @@ class _ReportPane(QWidget):
     def _build(self):
         lay, _ = page_layout(self, margins=(20, 18, 20, 18), spacing=16)
         lay.addWidget(H2('Internal Consumption Report'))
-        lay.addWidget(Caption('Filter, review, and export consumption cost by period.'))
+        lay.addWidget(Caption(
+            'Click a line to open that consumption receipt. Voided lines stay visible and are marked.'
+        ))
 
         filters = Card()
         fl = filters.layout_v((16, 14, 16, 14), 12)
@@ -1098,17 +1597,24 @@ class _ReportPane(QWidget):
             self._exp.setEnabled(False)
         actions.addWidget(run)
         actions.addWidget(self._exp)
+        actions.addSpacing(72)
         fl.addLayout(actions)
         lay.addWidget(filters)
 
         self._tbl = make_table(
-            ['Date', 'Reference', 'Department', 'Taken By', 'Reason',
-             'Product', 'Qty', 'Unit Cost', 'Total Cost', 'User', 'Status'],
-            stretch_col=5, row_height=40)
-        for col, w in ((0, 110), (1, 100), (2, 110), (3, 100), (4, 120),
-                       (6, 70), (7, 100), (8, 110), (9, 100), (10, 70)):
-            self._tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
-            self._tbl.setColumnWidth(col, w)
+            ['Date', 'Reference', 'Product', 'Qty', 'Cost', 'Status'],
+            stretch_col=2, row_height=40)
+        header = self._tbl.horizontalHeader()
+        header.setMinimumSectionSize(56)
+        for col in range(6):
+            header.setSectionResizeMode(col, QHeaderView.Stretch)
+        self._tbl.setTextElideMode(Qt.ElideRight)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._tbl.setMinimumWidth(0)
+        self._tbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self._tbl.setCursor(Qt.PointingHandCursor)
+        self._tbl.setToolTip('Click a line to open the consumption receipt')
+        self._tbl.cellClicked.connect(self._open_line)
         lay.addWidget(wrap_table_card(self._tbl), 1)
 
         self._footer = Caption('')
@@ -1217,26 +1723,38 @@ class _ReportPane(QWidget):
                 pass
             self._tbl.setItem(i, 0, tbl_item(dstr))
             self._tbl.setItem(i, 1, tbl_item(str(r.get('reference_no') or '')))
-            self._tbl.setItem(i, 2, tbl_item(str(r.get('department_name') or '')))
-            self._tbl.setItem(i, 3, tbl_item(str(r.get('taken_by') or '—')))
-            self._tbl.setItem(i, 4, tbl_item(str(r.get('reason') or '')))
-            self._tbl.setItem(i, 5, tbl_item(str(r.get('product_name') or '')))
-            self._tbl.setItem(i, 6, tbl_center(_fmt_qty(r.get('quantity'))))
-            self._tbl.setItem(i, 7, tbl_right(f"{_safe_float(r.get('unit_cost')):,.2f}"))
-            self._tbl.setItem(i, 8, tbl_right(
+            product = tbl_item(str(r.get('product_name') or ''))
+            product.setToolTip(
+                f"{r.get('department_name') or '—'}\n"
+                f"{r.get('reason') or '—'}\n"
+                f"Taken by {r.get('taken_by') or '—'}\n"
+                f"{r.get('created_by_name') or '—'}"
+            )
+            self._tbl.setItem(i, 2, product)
+            self._tbl.setItem(i, 3, tbl_center(_fmt_qty(r.get('quantity'))))
+            self._tbl.setItem(i, 4, tbl_right(
                 f"{cur} {_safe_float(r.get('total_cost')):,.2f}",
                 C['muted'] if voided else C['gold']))
-            self._tbl.setItem(i, 9, tbl_item(str(r.get('created_by_name') or '')))
-            self._tbl.setItem(i, 10, tbl_center(
-                'Voided' if voided else 'OK',
+            self._tbl.setItem(i, 5, tbl_center(
+                'Voided' if voided else 'Posted',
                 C['err'] if voided else C['ok']))
         apply_table_row_backgrounds(self._tbl)
+        posted_cost = sum(
+            _safe_float(r.get('total_cost')) for r in rows
+            if int(r.get('voided') or 0) != 1
+        )
         self._footer.setText(
             f"  {int(totals.get('line_count') or 0)} lines  ·  "
             f"{int(totals.get('consumption_count') or 0)} consumptions  ·  "
             f"Qty {_fmt_qty(totals.get('total_qty'))}  ·  "
-            f"Total Cost {cur} {_safe_float(totals.get('total_cost')):,.2f}"
+            f"Posted cost {cur} {posted_cost:,.2f}  ·  "
+            f"Including voided {cur} {_safe_float(totals.get('total_cost')):,.2f}"
         )
+
+    def _open_line(self, row, _column):
+        rows = getattr(self, '_last_rows', [])
+        if 0 <= row < len(rows):
+            self.p._history._view(rows[row].get('consumption_id'))
 
     def _export(self):
         if not require_permission(self.p.user, 'consumption.export', self):

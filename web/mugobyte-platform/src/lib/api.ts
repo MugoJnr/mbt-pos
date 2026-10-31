@@ -255,6 +255,45 @@ export async function downloadAnalyticsExport(
   URL.revokeObjectURL(url);
 }
 
+export async function downloadCustomReport(body: {
+  org_id: string;
+  start: string;
+  end: string;
+  sections: string[];
+  format: "pdf" | "xlsx" | "csv";
+  password?: string;
+  confirm?: string;
+}): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`/api/cloud/analytics/custom-report?org_id=${encodeURIComponent(body.org_id)}`, {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || `Export failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const protectedFlag = response.headers.get("x-report-protected") === "1";
+  const filename =
+    disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i)?.[1] ||
+    `mbt-owner-report.${body.format}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = decodeURIComponent(filename);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  void protectedFlag;
+}
+
 type LoginResult = {
   token?: string;
   user?: MbtUser;

@@ -27,6 +27,7 @@ from desktop.utils.option_lists import (
     DEBT_PAYMENT_METHODS, CUSTOMER_TYPES, INVOICE_STATUSES,
 )
 from desktop.utils.select_controls import Select, SearchableSelect
+from desktop.utils.security import has_permission
 
 _log = logging.getLogger(__name__)
 
@@ -127,6 +128,10 @@ class DebtTab(QWidget):
         self._tabs.addTab(self._customers_tab, 'Customers')
         self._tabs.addTab(self._payments_tab,  'Payments')
         self._tabs.addTab(self._aging_tab,     'Aging Report')
+        if has_permission(self.user, 'debt.view'):
+            from desktop.tabs.supplier_debt_panel import SupplierDebtPanel
+            self._supplier_tab = SupplierDebtPanel(self)
+            self._tabs.addTab(self._supplier_tab, 'Supplier debts')
 
         self._tabs.currentChanged.connect(self._on_tab_change)
         lay.addWidget(self._tabs)
@@ -580,6 +585,15 @@ class _InvoicesTab(QWidget):
             view_btn.clicked.connect(
                 lambda _, inv_id=inv['id']: self._view_history(inv_id))
             cl.addWidget(view_btn)
+            if (self.p._role() or '').lower() in ('admin', 'superadmin'):
+                resolve_btn = QPushButton('Resolve')
+                resolve_btn.setMinimumHeight(40)
+                resolve_btn.setMinimumWidth(78)
+                resolve_btn.setCursor(Qt.PointingHandCursor)
+                resolve_btn.setToolTip('Reverse a repayment. The sale stays.')
+                resolve_btn.clicked.connect(
+                    lambda _, inv_id=inv['id']: self._resolve(inv_id))
+                cl.addWidget(resolve_btn)
 
             # Delete / write-off for open debts with remaining balance (superadmin + PIN)
             bal_amt = float(inv.get('balance') or 0)
@@ -664,6 +678,11 @@ class _InvoicesTab(QWidget):
         dlg = _InvoiceHistoryDialog(self.p, invoice_id)
         dlg.exec_()
 
+    def _resolve(self, invoice_id):
+        dlg = _DebtResolutionDialog(self.p, invoice_id)
+        if dlg.exec_() == QDialog.Accepted:
+            self.refresh()
+
     def _can_delete_debt(self) -> bool:
         try:
             from desktop.utils.security import can_delete_debt
@@ -720,22 +739,23 @@ class _CustomersTab(QWidget):
         lay, _ = page_layout(self)
 
         tb = QHBoxLayout(); tb.setSpacing(10)
-        self._search = SearchBar('Search customers?')
+        self._search = SearchBar('Search customers')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)
         add_btn = PrimaryBtn('+ New Customer', 42)
         add_btn.clicked.connect(self._add_customer)
         tb.addWidget(add_btn)
-        ref_btn = SecondaryBtn('?', 42)
+        ref_btn = SecondaryBtn('Refresh', 42)
         ref_btn.clicked.connect(self.refresh)
         tb.addWidget(ref_btn)
         lay.addLayout(tb)
 
         self._tbl = make_table(
-            ['Name', 'Phone', 'Email', 'Outstanding', 'Open Inv.', 'Actions'],
+            ['Name', 'Outstanding', 'Open', 'Phone', 'Actions'],
             stretch_col=0, row_height=52)
-        for ci, w in [(1, 120), (2, 160), (3, 130), (4, 90), (5, 220)]:
+        for ci, w in [(1, 130), (2, 70), (3, 130), (4, 250)]:
             self._tbl.setColumnWidth(ci, w)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         lay.addWidget(self._tbl)
 
     def refresh(self):
@@ -759,12 +779,11 @@ class _CustomersTab(QWidget):
         for i, c in enumerate(custs):
             self._tbl.insertRow(i)
             self._tbl.setItem(i, 0, tbl_item(c.get('name', '')))
-            self._tbl.setItem(i, 1, tbl_item(c.get('phone', '') or ''))
-            self._tbl.setItem(i, 2, tbl_item(c.get('email', '') or ''))
             bal = float(c.get('total_outstanding', 0))
-            self._tbl.setItem(i, 3, tbl_right(_fmt(bal, cur),
+            self._tbl.setItem(i, 1, tbl_right(_fmt(bal, cur),
                                                C['err'] if bal > 0 else C['text']))
-            self._tbl.setItem(i, 4, tbl_center(str(c.get('open_invoices', 0))))
+            self._tbl.setItem(i, 2, tbl_center(str(c.get('open_invoices', 0))))
+            self._tbl.setItem(i, 3, tbl_item(c.get('phone', '') or ''))
 
             # Actions
             cell = QWidget(); cell.setStyleSheet('background:transparent;')
@@ -784,6 +803,19 @@ class _CustomersTab(QWidget):
                 lambda _, cid=c['id']: self._open_ledger(cid))
             cl.addWidget(ledger_btn)
 
+            if float(c.get('total_outstanding') or 0) > 0.009 and has_permission(self.p.user, 'debt.collect'):
+                pay_btn = QPushButton('Receive')
+                pay_btn.setMinimumHeight(34)
+                pay_btn.setMinimumWidth(78)
+                pay_btn.setCursor(Qt.PointingHandCursor)
+                pay_btn.setToolTip('Receive one payment across this customer\'s open debts')
+                pay_btn.setStyleSheet(
+                    f"QPushButton{{background:{C['gold']};color:#1a1408;"
+                    f"border:none;border-radius:6px;font-size:12px;font-weight:700;padding:4px 12px;}}"
+                    f"QPushButton:hover{{background:{C['gold_lt']};}}")
+                pay_btn.clicked.connect(lambda _, cid=c['id'], name=c.get('name', ''): self._receive(cid, name))
+                cl.addWidget(pay_btn)
+
             edit_btn = QPushButton('Edit')
             edit_btn.setMinimumHeight(34)
             edit_btn.setMinimumWidth(64)
@@ -799,7 +831,7 @@ class _CustomersTab(QWidget):
             cl.addWidget(edit_btn)
 
             cl.addStretch()
-            self._tbl.setCellWidget(i, 5, cell)
+            self._tbl.setCellWidget(i, 4, cell)
 
     def _add_customer(self):
         dlg = _CustomerDialog(self.p, self)
@@ -819,6 +851,11 @@ class _CustomersTab(QWidget):
     def _open_ledger(self, cid):
         dlg = _CustomerLedgerDialog(self.p, cid)
         dlg.exec_()
+
+    def _receive(self, cid, name):
+        dlg = _CustomerCollectDialog(self.p, self, cid, name)
+        if dlg.exec_() == QDialog.Accepted:
+            self.refresh()
 
 
 # ?????????????????????????????????????????????????????????????????????????????
@@ -1350,6 +1387,255 @@ class _InvoiceHistoryDialog(QDialog):
             _log.warning(f"InvoiceHistory: {e}")
 
 
+def _money(widget) -> float:
+    text = str(widget.text() if hasattr(widget, 'text') else widget.value()).replace(',', '').strip()
+    try:
+        return round(float(text or 0), 2)
+    except ValueError:
+        return 0.0
+
+
+class _CustomerCollectDialog(QDialog):
+    """One payment, allocated across the customer's open receipts."""
+
+    def __init__(self, parent_tab, parent_widget, customer_id, customer_name):
+        super().__init__(parent_widget)
+        self.p = parent_tab
+        self.customer_id = int(customer_id)
+        self.customer_name = customer_name or 'Customer'
+        self.setWindowTitle(f'Receive payment — {self.customer_name}')
+        self.setMinimumSize(920, 640)
+        apply_themed_dialog(self)
+        self._lines = []
+        self._spins = []
+        self._busy = False
+        self._token = f"till-{int(customer_id)}-{QDateTime.currentMSecsSinceEpoch()}"
+        self._build()
+        self._reload()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+        cur = self.p._currency
+        self._summary = QLabel(self.customer_name)
+        self._summary.setWordWrap(True)
+        self._summary.setStyleSheet(
+            f"color:{C['text']};font-size:14px;background:{C['card']};"
+            f"border:1px solid {C['border']};border-radius:8px;padding:12px;")
+        lay.addWidget(self._summary)
+
+        controls = QHBoxLayout()
+        self.amount = QDoubleSpinBox()
+        self.amount.setRange(0.01, 9999999)
+        self.amount.setDecimals(2)
+        self.amount.setPrefix(f'{cur} ')
+        self.amount.setMinimumHeight(40)
+        self.amount.setMinimumWidth(160)
+        self.amount.valueChanged.connect(lambda *_: self._preview())
+        self.mode = QComboBox()
+        self.mode.addItem('Oldest debt first', 'auto')
+        self.mode.addItem('Choose receipts', 'manual')
+        self.mode.setMinimumHeight(40)
+        self.mode.currentIndexChanged.connect(self._on_mode)
+        self.method = QComboBox()
+        for name in DEBT_PAYMENT_METHODS:
+            if name != 'Mixed':
+                self.method.addItem(name)
+        self.method.setMinimumHeight(40)
+        self.method2 = QComboBox()
+        self.method2.addItem('No second method')
+        for name in DEBT_PAYMENT_METHODS:
+            if name != 'Mixed':
+                self.method2.addItem(name)
+        self.method2.setMinimumHeight(40)
+        self.method2_amount = QDoubleSpinBox()
+        self.method2_amount.setRange(0, 9999999)
+        self.method2_amount.setDecimals(2)
+        self.method2_amount.setPrefix(f'{cur} ')
+        self.method2_amount.setMinimumHeight(40)
+        self.method2_amount.valueChanged.connect(lambda *_: self._preview())
+        controls.addWidget(QLabel('Amount'))
+        controls.addWidget(self.amount)
+        controls.addWidget(self.mode)
+        controls.addWidget(self.method)
+        controls.addWidget(self.method2)
+        controls.addWidget(self.method2_amount)
+        lay.addLayout(controls)
+
+        self._tbl = make_table(
+            ['Receipt', 'Date', 'Original', 'Paid', 'Owed', 'Allocate', 'After'],
+            stretch_col=0, row_height=52)
+        for col, width in ((1, 118), (2, 100), (3, 100), (4, 110), (5, 110), (6, 100)):
+            self._tbl.setColumnWidth(col, width)
+        self._tbl.setMinimumHeight(240)
+        lay.addWidget(self._tbl, 1)
+
+        self._preview_lbl = QLabel('Enter the amount received.')
+        self._preview_lbl.setWordWrap(True)
+        self._preview_lbl.setStyleSheet(f"color:{C['gold']};font-size:14px;font-weight:700;")
+        lay.addWidget(self._preview_lbl)
+
+        buttons = QHBoxLayout()
+        cancel = SecondaryBtn('Cancel', 40)
+        cancel.clicked.connect(self.reject)
+        self._save = PrimaryBtn('Record payment', 40)
+        self._save.clicked.connect(self._save_payment)
+        buttons.addWidget(cancel)
+        buttons.addWidget(self._save)
+        lay.addLayout(buttons)
+
+    def _reload(self):
+        customer = self.p.api.get_customer(self.customer_id) or {}
+        cur = self.p._currency
+        invoices = [
+            inv for inv in (customer.get('invoices') or [])
+            if inv.get('status') not in ('paid', 'cancelled') and float(inv.get('balance') or 0) > 0.009
+        ]
+        invoices.sort(key=lambda inv: (str(inv.get('created_at') or ''), int(inv.get('id') or 0)))
+        self._lines = invoices
+        outstanding = float(customer.get('total_outstanding') or 0)
+        self.amount.setValue(outstanding if outstanding > 0 else 0.01)
+        self._summary.setText(
+            f"{customer.get('name') or self.customer_name}"
+            f"    {customer.get('phone') or ''}\n"
+            f"Outstanding {_fmt(outstanding, cur)}"
+            f"    Paid {_fmt(customer.get('total_paid') or 0, cur)}"
+            f"    Customer credit {_fmt(customer.get('unapplied_credit') or 0, cur)}"
+            f"    {len(invoices)} open receipt(s)"
+        )
+        self._tbl.setRowCount(0)
+        self._spins = []
+        for row, inv in enumerate(invoices):
+            self._tbl.insertRow(row)
+            self._tbl.setItem(row, 0, tbl_item(
+                f"{inv.get('receipt_number') or ''}\n{inv.get('invoice_number') or ''}"))
+            self._tbl.setItem(row, 1, tbl_item(str(inv.get('created_at') or '')[:16]))
+            self._tbl.setItem(row, 2, tbl_right(_fmt(inv.get('total_amount') or 0, cur)))
+            self._tbl.setItem(row, 3, tbl_right(_fmt(inv.get('amount_paid') or 0, cur)))
+            self._tbl.setItem(row, 4, tbl_right(_fmt(inv.get('balance') or 0, cur)))
+            edit = QLineEdit('0.00')
+            edit.setAlignment(Qt.AlignRight)
+            edit.setMinimumHeight(32)
+            edit.setStyleSheet(
+                f"QLineEdit{{background:{C['input']};color:{C['text']};border:1px solid {C['border']};"
+                f"border-radius:6px;padding:4px 8px;font-size:13px;}}")
+            edit.textChanged.connect(lambda *_: self._preview())
+            self._tbl.setCellWidget(row, 5, edit)
+            self._spins.append(edit)
+            self._tbl.setItem(row, 6, tbl_right(_fmt(inv.get('balance') or 0, cur)))
+        self._on_mode()
+
+    def _on_mode(self):
+        manual = self.mode.currentData() == 'manual'
+        for spin in self._spins:
+            spin.setEnabled(manual)
+        self._preview()
+
+    def _methods(self):
+        amount = round(float(self.amount.value()), 2)
+        second = round(float(self.method2_amount.value()), 2)
+        first_name = self.method.currentText().strip().lower()
+        if second > 0.009 and self.method2.currentIndex() > 0:
+            if second > amount + 0.009:
+                return None
+            return [
+                {'method': first_name, 'amount': round(amount - second, 2)},
+                {'method': self.method2.currentText().strip().lower(), 'amount': second},
+            ]
+        return [{'method': first_name, 'amount': amount}]
+
+    def _preview(self):
+        if not self._lines:
+            self._preview_lbl.setText('This customer has no open debts.')
+            return
+        methods = self._methods()
+        if methods is None:
+            self._preview_lbl.setText('The second method cannot be more than the amount received.')
+            return
+        mode = self.mode.currentData() or 'auto'
+        allocations = []
+        if mode == 'manual':
+            allocations = [
+                {'invoice_id': inv['id'], 'amount': _money(spin)}
+                for inv, spin in zip(self._lines, self._spins)
+                if _money(spin) > 0
+            ]
+        try:
+            preview = self.p.api.preview_customer_payment(
+                self.customer_id, float(self.amount.value()), mode, allocations, methods,
+            ) or {}
+        except Exception as exc:
+            self._preview_lbl.setText(str(exc))
+            return
+        if preview.get('error'):
+            self._preview_lbl.setText(preview['error'])
+            return
+        cur = self.p._currency
+        by_id = {int(line['invoice_id']): line for line in preview.get('lines') or []}
+        if mode == 'auto':
+            for inv, spin in zip(self._lines, self._spins):
+                line = by_id.get(int(inv['id'])) or {}
+                spin.blockSignals(True)
+                spin.setText(f"{float(line.get('allocate') or 0):.2f}")
+                spin.blockSignals(False)
+        for row, inv in enumerate(self._lines):
+            line = by_id.get(int(inv['id'])) or {}
+            self._tbl.setItem(row, 6, tbl_right(_fmt(line.get('remaining', inv.get('balance')), cur)))
+        parts = ' + '.join(f"{item['method']} {_fmt(item['amount'], cur)}" for item in methods)
+        self._preview_lbl.setText(
+            f"Receive {_fmt(preview.get('amount'), cur)} ({parts}). "
+            f"Allocated {_fmt(preview.get('allocated'), cur)}. "
+            f"Still owed {_fmt(preview.get('outstanding_after'), cur)}. "
+            f"Customer credit from this payment {_fmt(preview.get('unapplied'), cur)}."
+        )
+
+    def _save_payment(self):
+        if self._busy:
+            return
+        methods = self._methods()
+        if methods is None:
+            QMessageBox.warning(self, 'Payment', 'The second method cannot be more than the amount received.')
+            return
+        mode = self.mode.currentData() or 'auto'
+        allocations = []
+        if mode == 'manual':
+            allocations = [
+                {'invoice_id': inv['id'], 'amount': _money(spin)}
+                for inv, spin in zip(self._lines, self._spins)
+                if _money(spin) > 0
+            ]
+        self._busy = True
+        self._save.setEnabled(False)
+        try:
+            result = self.p.api.collect_customer_payment(
+                self.customer_id,
+                float(self.amount.value()),
+                mode=mode,
+                allocations=allocations,
+                methods=methods,
+                client_token=self._token,
+            ) or {}
+        except Exception as exc:
+            result = {'error': str(exc)}
+        self._busy = False
+        self._save.setEnabled(True)
+        if result.get('error'):
+            QMessageBox.warning(self, 'Payment', result['error'])
+            return
+        cur = self.p._currency
+        lines = '\n'.join(
+            f"{item.get('invoice_number')}  {_fmt(item.get('amount'), cur)}  remaining {_fmt(item.get('balance_after'), cur)}"
+            for item in (result.get('allocations') or [])
+        )
+        QMessageBox.information(
+            self, 'Payment recorded',
+            f"{result.get('collection_receipt')}\n{lines}\n"
+            f"Customer credit {_fmt(result.get('unapplied') or 0, cur)}",
+        )
+        self.accept()
+
+
 class _CustomerLedgerDialog(QDialog):
     def __init__(self, parent_tab: DebtTab, customer_id: int):
         super().__init__()
@@ -1398,11 +1684,12 @@ class _CustomerLedgerDialog(QDialog):
             c = self.p.api.get_customer(self.cid)
             if c:
                 self._header.setText(
-                    f"<b>{c.get('name','')}</b>   "
-                    f"?? {c.get('phone','') or '?'}   "
-                    f"? {c.get('email','') or '?'}<br>"
+                    f"<b>{c.get('name','')}</b> &nbsp; "
+                    f"Phone: {c.get('phone','') or '—'} &nbsp; "
+                    f"Email: {c.get('email','') or '—'}<br>"
                     f"Outstanding: <b style='color:{C['err']};'>{_fmt(c.get('total_outstanding',0), cur)}</b>   "
                     f"Total Paid: <b style='color:{C['ok']};'>{_fmt(c.get('total_paid',0), cur)}</b>   "
+                    f"Customer credit: <b>{_fmt(c.get('unapplied_credit',0), cur)}</b>   "
                     f"Open Invoices: <b>{len([i for i in (c.get('invoices') or []) if i.get('status') not in ('paid','cancelled')])}</b>")
 
                 # Invoices
@@ -1648,3 +1935,227 @@ class _SaleDebtDetailDialog(QDialog):
                     dash._load()
             except Exception:
                 pass
+
+
+class _DebtResolutionDialog(QDialog):
+    """Reverse one repayment. The original sale is not cancelled."""
+
+    def __init__(self, parent_tab, invoice_id):
+        super().__init__(parent_tab)
+        self.p = parent_tab
+        self.invoice_id = int(invoice_id)
+        self.setWindowTitle('Debt Resolution Centre')
+        self.setMinimumWidth(560)
+        self._detail = {}
+        apply_themed_dialog(self)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 18, 22, 18)
+        lay.setSpacing(10)
+        lay.addWidget(H2('Debt Resolution Centre'))
+        self._operation = QComboBox()
+        self._operation.addItem('Reverse Payment / Restore Debt', 'reverse')
+        self._operation.addItem('Cancel Sale & Reverse Debt', 'cancel')
+        self._operation.addItem('Debt Adjustment / Write-Off', 'writeoff')
+        self._operation.setMinimumHeight(36)
+        self._operation.currentIndexChanged.connect(self._show_preview)
+        lay.addWidget(self._operation)
+        self._summary = QLabel('Loading…')
+        self._summary.setWordWrap(True)
+        lay.addWidget(self._summary)
+        self._payments = QComboBox()
+        self._payments.setMinimumHeight(36)
+        lay.addWidget(self._payments)
+        self._reason = QLineEdit()
+        self._reason.setPlaceholderText('Why this payment is being reversed')
+        self._reason.setMinimumHeight(36)
+        lay.addWidget(self._reason)
+        self._outcome = QComboBox()
+        self._outcome.addItem('Money was never received', 'never_received')
+        self._outcome.addItem('Money was received and has been refunded', 'refunded')
+        self._outcome.setMinimumHeight(36)
+        lay.addWidget(self._outcome)
+        self._amount = QLineEdit()
+        self._amount.setPlaceholderText('Amount to write off')
+        self._amount.setMinimumHeight(36)
+        lay.addWidget(self._amount)
+        self._pin = QLineEdit()
+        self._pin.setEchoMode(QLineEdit.Password)
+        self._pin.setPlaceholderText('Super Admin PIN')
+        self._pin.setMinimumHeight(36)
+        lay.addWidget(self._pin)
+        self._preview = QLabel('')
+        self._preview.setWordWrap(True)
+        lay.addWidget(self._preview)
+        row = QHBoxLayout()
+        cancel = SecondaryBtn('Close', 40)
+        cancel.clicked.connect(self.reject)
+        self._go = PrimaryBtn('Reverse payment', 40)
+        self._go.clicked.connect(self._reverse)
+        row.addWidget(cancel)
+        row.addWidget(self._go)
+        lay.addLayout(row)
+        self._load()
+        self._payments.currentIndexChanged.connect(self._show_preview)
+
+    def _load(self):
+        detail = self.p.api.debt_resolution_preview(self.invoice_id) or {}
+        self._detail = detail
+        if detail.get('error'):
+            self._summary.setText(detail['error'])
+            return
+        inv = detail.get('invoice') or {}
+        sale = detail.get('sale') or {}
+        self._summary.setText(
+            f"{inv.get('customer_name') or 'Customer'} · {inv.get('invoice_number')}\n"
+            f"Outstanding {_fmt(detail.get('outstanding') or 0, self.p._currency)}. "
+            f"Sale {sale.get('receipt_number') or '—'} stays {sale.get('status') or 'unchanged'}. "
+            f"Stock is not restored."
+        )
+        self._payments.clear()
+        for pay in detail.get('payments') or []:
+            if int(pay.get('reversed') or 0) == 1:
+                continue
+            self._payments.addItem(
+                f"{pay.get('payment_receipt')} · {_fmt(pay.get('amount') or 0, self.p._currency)}",
+                pay,
+            )
+        self._show_preview()
+
+    def _show_preview(self):
+        op = str(self._operation.currentData() or 'reverse')
+        self._payments.setVisible(op == 'reverse')
+        self._outcome.setVisible(op == 'reverse')
+        self._amount.setVisible(op == 'writeoff')
+        self._pin.setVisible(op == 'writeoff')
+        labels = {
+            'reverse': 'Reverse payment',
+            'cancel': 'Cancel sale',
+            'writeoff': 'Write off',
+        }
+        self._go.setText(labels[op])
+        detail = self._detail or {}
+        now = float(detail.get('outstanding') or 0)
+        money = float(detail.get('money_received') or 0)
+        if op == 'cancel':
+            lines = detail.get('lines') or []
+            stock = ', '.join(
+                f"{line.get('product_name')} {line.get('eligible')}" for line in lines
+            ) or 'no stock lines'
+            self._preview.setText(
+                f"Outstanding {_fmt(now, self.p._currency)} will be cleared. "
+                f"Money received {_fmt(money, self.p._currency)}. "
+                f"Eligible stock: {stock}."
+            )
+            return
+        if op == 'writeoff':
+            self._preview.setText(
+                f"Current debt {_fmt(now, self.p._currency)}. "
+                f"The sale stays valid. Stock is not restored. A write-off is not a repayment."
+            )
+            return
+        pay = self._payments.currentData()
+        if not pay:
+            self._preview.setText('There is no repayment to reverse.')
+            return
+        nxt = round(now + float(pay.get('amount') or 0), 2)
+        self._preview.setText(
+            f"Current debt {_fmt(now, self.p._currency)}. "
+            f"This reversal {_fmt(pay.get('amount') or 0, self.p._currency)}. "
+            f"New debt {_fmt(nxt, self.p._currency)}."
+        )
+
+    def _reverse(self):
+        op = str(self._operation.currentData() or 'reverse')
+        if op == 'cancel':
+            self._cancel()
+            return
+        if op == 'writeoff':
+            self._write_off()
+            return
+        pay = self._payments.currentData()
+        reason = self._reason.text().strip()
+        if not pay:
+            QMessageBox.warning(self, 'Resolution', 'Choose a repayment.')
+            return
+        if len(reason) < 3:
+            QMessageBox.warning(self, 'Resolution', 'Enter why this payment is being reversed.')
+            return
+        if QMessageBox.question(
+            self, 'Reverse payment',
+            self._preview.text() + '\n\nThe original sale stays valid.',
+        ) != QMessageBox.Yes:
+            return
+        result = self.p.api.reverse_debt_payment(
+            int(pay['id']), reason,
+            money_outcome=str(self._outcome.currentData() or 'never_received'),
+        )
+        if result.get('error'):
+            QMessageBox.warning(self, 'Resolution', result['error'])
+            return
+        QMessageBox.information(
+            self, 'Reversed',
+            f"Outstanding is now {_fmt(result.get('balance') or 0, self.p._currency)}. "
+            f"The sale was not cancelled.",
+        )
+        self.accept()
+
+    def _cancel(self):
+        reason = self._reason.text().strip()
+        if len(reason) < 3:
+            QMessageBox.warning(self, 'Resolution', 'Enter why this sale is being cancelled.')
+            return
+        detail = self._detail or {}
+        money = float(detail.get('money_received') or 0)
+        refund_status = 'pending' if money > 0.009 else 'none'
+        restore = [
+            {'product_id': line.get('product_id'), 'quantity': line.get('eligible') or 0}
+            for line in (detail.get('lines') or []) if line.get('product_id')
+        ]
+        if QMessageBox.question(
+            self, 'Cancel sale',
+            self._preview.text() + '\n\nThis cancels the original sale. It does not invent a cash refund.',
+        ) != QMessageBox.Yes:
+            return
+        result = self.p.api.cancel_sale_resolve_debt(
+            self.invoice_id, reason,
+            refund_status=refund_status,
+            restore=restore,
+        )
+        if result.get('error'):
+            QMessageBox.warning(self, 'Resolution', result['error'])
+            return
+        QMessageBox.information(
+            self, 'Sale cancelled',
+            f"The debt is cleared. Refund status: {result.get('refund_status')}.",
+        )
+        self.accept()
+
+    def _write_off(self):
+        reason = self._reason.text().strip()
+        try:
+            amount = round(float(self._amount.text().strip() or 0), 2)
+        except ValueError:
+            amount = 0
+        if amount <= 0:
+            QMessageBox.warning(self, 'Resolution', 'Enter the amount to write off.')
+            return
+        if len(reason) < 3:
+            QMessageBox.warning(self, 'Resolution', 'Enter why this balance is being reduced.')
+            return
+        if QMessageBox.question(
+            self, 'Write off',
+            self._preview.text() + f"\n\nWrite off {_fmt(amount, self.p._currency)}.",
+        ) != QMessageBox.Yes:
+            return
+        result = self.p.api.write_off_debt(
+            self.invoice_id, amount, reason, pin=self._pin.text().strip(),
+        )
+        if result.get('error'):
+            QMessageBox.warning(self, 'Resolution', result['error'])
+            return
+        QMessageBox.information(
+            self, 'Written off',
+            f"Outstanding is now {_fmt(result.get('balance') or 0, self.p._currency)}. "
+            f"The sale was not cancelled.",
+        )
+        self.accept()

@@ -147,6 +147,46 @@ class SearchableSelectTests(unittest.TestCase):
         self.assertIsNone(widget.current_value())
         widget.close()
 
+    def test_clicking_a_chosen_product_lists_the_others(self):
+        widget = self._select()
+        widget.show()
+        self.app.processEvents()
+        widget.set_value(1)
+        chosen = widget.lineEdit().text()
+        widget.blockSignals(True)
+        widget.clear()
+        widget.addItem(chosen, 1)
+        widget.blockSignals(False)
+        widget.lineEdit().setText(chosen)
+        self.assertEqual(widget.count(), 1)
+
+        widget.showPopup()
+        self.app.processEvents()
+
+        labels = [widget.itemText(i) for i in range(widget.count())]
+        self.assertEqual(len(labels), len(PRODUCTS))
+        self.assertEqual(widget.current_value(), 1)
+        self.assertEqual(widget.lineEdit().text(), chosen)
+        widget.hidePopup()
+        widget.close()
+
+    def test_a_partial_search_stays_filtered_when_opened(self):
+        widget = self._select()
+        widget.show()
+        self.app.processEvents()
+        widget.lineEdit().setText('sa')
+        widget._apply_filter()
+
+        widget.showPopup()
+        self.app.processEvents()
+
+        self.assertEqual(
+            [widget.itemText(i) for i in range(widget.count())],
+            ['Salt 500g  (stock: 30)'],
+        )
+        widget.hidePopup()
+        widget.close()
+
 
 if __name__ == '__main__':
     unittest.main()

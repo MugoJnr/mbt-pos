@@ -6,6 +6,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { RequestReceiptDialog } from "@/components/request-receipt-dialog";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/approvals")({
@@ -33,7 +34,22 @@ type Approval = {
   reviewed_by?: string;
   review_note?: string;
   created_at?: string;
+  meta_json?: string;
 };
+
+function linkedMeta(row: Approval): { saleId: number | null; consumptionId: number | null } {
+  try {
+    const meta = JSON.parse(row.meta_json || "{}");
+    const saleId = Number(meta.sale_id || 0);
+    const consumptionId = Number(meta.consumption_id || 0);
+    return {
+      saleId: saleId > 0 ? saleId : null,
+      consumptionId: consumptionId > 0 ? consumptionId : null,
+    };
+  } catch {
+    return { saleId: null, consumptionId: null };
+  }
+}
 
 function ApprovalsPage() {
   const qc = useQueryClient();
@@ -47,6 +63,7 @@ function ApprovalsPage() {
   });
   const [pin, setPin] = useState("");
   const [actionError, setActionError] = useState("");
+  const [receiptFor, setReceiptFor] = useState<Approval | null>(null);
   const [voidReceipt, setVoidReceipt] = useState("");
   const [voidReason, setVoidReason] = useState("");
   const [voidNote, setVoidNote] = useState("");
@@ -355,10 +372,13 @@ function ApprovalsPage() {
                         {a.type.replace(/_/g, " ")}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="font-medium text-text">{a.title}</div>
-                        {a.details ? (
-                          <div className="text-xs text-text2 truncate max-w-xs">{a.details}</div>
-                        ) : null}
+                        <button type="button" className="text-left" onClick={() => setReceiptFor(a)}>
+                          <div className="font-medium text-text">{a.title}</div>
+                          {a.details ? (
+                            <div className="text-xs text-text2 truncate max-w-xs">{a.details}</div>
+                          ) : null}
+                          <div className="text-xs font-semibold text-gold">View receipt</div>
+                        </button>
                       </td>
                       <td className="px-4 py-3 tabular-nums text-gold font-semibold">
                         {KES(Number(a.amount || 0))}
@@ -418,12 +438,14 @@ function ApprovalsPage() {
           <div className="md:hidden space-y-3">
             {rows.map((a) => (
               <Card key={a.id} className="p-4">
+                <button type="button" className="w-full text-left" onClick={() => setReceiptFor(a)}>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
                     <div className="text-[10px] tracking-[0.16em] uppercase text-text2 font-semibold">
                       {a.type.replace(/_/g, " ")}
                     </div>
                     <div className="font-semibold text-text">{a.title}</div>
+                    <div className="text-xs font-semibold text-gold">View receipt</div>
                   </div>
                   <Badge tone={tone(a.status) as any}>{a.status}</Badge>
                 </div>
@@ -434,6 +456,7 @@ function ApprovalsPage() {
                   </span>
                   <span className="text-text2 text-xs">{a.requested_by || "—"}</span>
                 </div>
+                </button>
                 {(a.status === "pending" || a.status === "escalated") && canReview ? (
                   <div className="flex gap-2">
                     <Button
@@ -457,6 +480,18 @@ function ApprovalsPage() {
           </div>
         </>
       )}
+      {receiptFor ? (
+        <RequestReceiptDialog
+          title={receiptFor.title || "Request"}
+          status={receiptFor.status}
+          reason={receiptFor.details}
+          requester={receiptFor.requested_by}
+          submittedAt={receiptFor.created_at}
+          receipt={linkedMeta(receiptFor).saleId ? { id: linkedMeta(receiptFor).saleId || undefined, receipt_number: receiptFor.title, total: receiptFor.amount } : null}
+          consumptionId={linkedMeta(receiptFor).consumptionId}
+          onClose={() => setReceiptFor(null)}
+        />
+      ) : null}
     </AppShell>
   );
 }

@@ -628,9 +628,11 @@ class SalesTab(QWidget):
 
     def _elec_portion(self) -> float:
         if self._using_tender_lines():
+            from desktop.utils.payment_tenders import is_credit_method
             return round(sum(
                 row['amount'] for row in self._tender_lines.rows()
-                if str(row.get('method') or '').lower() not in ('cash', 'credit')
+                if str(row.get('method') or '').lower() != 'cash'
+                and not is_credit_method(row.get('method') or '')
             ), 2)
         if not hasattr(self, '_elec_paid'):
             return 0.0
@@ -665,12 +667,13 @@ class SalesTab(QWidget):
         method = method or (self._pay.currentText() if hasattr(self, '_pay') else 'Cash')
         if self._using_tender_lines():
             cash = elec = 0.0
+            from desktop.utils.payment_tenders import is_credit_method
             for row in self._tender_lines.rows():
-                name = str(row.get('method') or '').lower()
+                name = str(row.get('method') or '')
                 amount = round(float(row.get('amount') or 0), 2)
-                if name == 'cash':
+                if name.lower() == 'cash':
                     cash += amount
-                elif name != 'credit':
+                elif not is_credit_method(name):
                     elec += amount
             return round(cash, 2), round(elec, 2), round(cash + elec, 2)
         cash = float(self._paid.value() or 0) if hasattr(self, '_paid') else 0.0
@@ -1247,8 +1250,17 @@ class SalesTab(QWidget):
         if hasattr(self, '_tender_lines') and method == 'Mixed':
             self._set_cash_paid_ui_visible(False)
             self._tender_lines.set_due(self._amount_due(), getattr(self, '_currency', 'KES'))
+        self._sync_new_customer_section(method)
         self._update_rounding_ui()
         self._calc_change()
+
+    def _sync_new_customer_section(self, method: str = ''):
+        card = getattr(self, '_cust_card', None)
+        if card is None or not hasattr(card, 'show_new_customer_section'):
+            return
+        method = method or (self._pay.currentText() if hasattr(self, '_pay') else '')
+        show = method in ('Credit Sale', 'Credit Account', 'Part Payment') or self._is_part_sale()
+        card.show_new_customer_section(show)
 
     def refresh(self, force: bool = False, defer_grid: bool = False):
         """Reload catalog from DB and repaint the product grid.
@@ -2669,7 +2681,7 @@ class SalesTab(QWidget):
                     self,
                     'Cash Paid is less than Amount Due — pay remainder, Split, or Part Payment.')
                 return
-        if is_part:
+        if is_part and not self._pending_alloc:
             _c, _e, _paid_chk = self._tendered_now(pay_method)
             if _paid_chk < 0.01:
                 soft_warn(self, 'Enter the amount paid now — leftover becomes customer debt.')
@@ -2699,6 +2711,12 @@ class SalesTab(QWidget):
         cust_id = None
         if hasattr(self, '_customer'):
             cust_id = self._customer.selected_id()
+        if is_debt and not cust_id:
+            card = getattr(self, '_cust_card', None)
+            if card is not None and hasattr(card, 'has_typed_new_customer') and card.has_typed_new_customer():
+                cust_id = card.save_new_customer()
+                if not cust_id:
+                    return
         if is_debt and not cust_id:
             from desktop.dialogs.credit_customer_dialogs import ensure_credit_customer
             cust_id = ensure_credit_customer(self, self.api)
@@ -2869,8 +2887,26 @@ class SalesTab(QWidget):
                     elec_method_name = pay_method
                     cash_paid_now = 0.0
             note_bits = [self._note.text().strip()]
-            if is_split:
-                note_bits.append('Split: ' + format_tenders(tenders))
+            if is_split and tenders:
+                money = [
+                    row for row in tenders
+                    if str(row.get('status') or 'confirmed').lower() == 'confirmed'
+                ]
+                credit_rows = [
+                    row for row in tenders
+                    if str(row.get('status') or '').lower() == 'outstanding'
+                ]
+                paid_note = format_tenders(money)
+                if paid_note:
+                    note_bits.append('Paid: ' + paid_note)
+                credit_total = 0.0
+                for row in credit_rows:
+                    try:
+                        credit_total += float(row.get('amount') or 0)
+                    except (TypeError, ValueError):
+                        pass
+                if credit_total > 0.009:
+                    note_bits.append(f'Credit {credit_total:,.2f}')
             notes_joined = ' | '.join(b for b in note_bits if b)
             sale_payload = {
                 'items':          self.cart,

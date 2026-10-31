@@ -203,20 +203,13 @@ class CustomerPickerDialog(QDialog):
         self.search.textChanged.connect(self._filter)
         lay.addWidget(self.search)
 
-        try:
-            from desktop.utils.select_controls import SearchableSelect
-            self._use_select = True
-            self.picker = SearchableSelect(placeholder='Search customers…')
-            lay.addWidget(self.picker)
-            self._list = None
-        except Exception:
-            self._use_select = False
-            from PyQt5.QtWidgets import QListWidget, QListWidgetItem
-            self.picker = None
-            self._list = QListWidget()
-            self._list.setMinimumHeight(280)
-            self._list.itemDoubleClicked.connect(lambda *_: self._accept())
-            lay.addWidget(self._list)
+        from PyQt5.QtWidgets import QListWidget, QListWidgetItem
+        self._use_select = False
+        self.picker = None
+        self._list = QListWidget()
+        self._list.setMinimumHeight(280)
+        self._list.itemDoubleClicked.connect(lambda *_: self._accept())
+        lay.addWidget(self._list, 1)
 
         br = QHBoxLayout()
         cancel = SecondaryBtn('Cancel', 42)

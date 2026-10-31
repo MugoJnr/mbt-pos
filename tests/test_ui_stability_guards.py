@@ -71,6 +71,61 @@ class UIStabilityGuardTests(unittest.TestCase):
         self.assertEqual(execute.call_count, 2)
         parent.close()
 
+    def test_style_polish_does_not_freeze_or_hide_sale_widgets(self):
+        import logging
+        from desktop.utils import quiet_ui
+
+        quiet_ui.install_orphan_flash_guard()
+        quiet_ui.FLASH_EVENTS.clear()
+        quiet_ui._FLASH_LOG_AT.clear()
+        warnings = []
+        handler = logging.Handler()
+        handler.emit = lambda record: warnings.append(record.getMessage())
+        logger = logging.getLogger('mbt.quiet_ui')
+        logger.addHandler(handler)
+        try:
+            built = [QWidget() for _ in range(30)]
+            APP.processEvents()
+            self.assertFalse(any(item.startswith('FLASH Polish') for item in warnings))
+            self.assertFalse(any(item.startswith('FLASH WinId') for item in warnings))
+            for item in built:
+                self.assertFalse(item.testAttribute(Qt.WA_DontShowOnScreen))
+
+            flash = QFrame()
+            flash.show()
+            APP.processEvents()
+            self.assertFalse(flash.isVisible())
+            self.assertTrue(flash.testAttribute(Qt.WA_DontShowOnScreen))
+
+            host = QWidget()
+            flash.setParent(host)
+            APP.processEvents()
+            self.assertFalse(flash.testAttribute(Qt.WA_DontShowOnScreen))
+
+            class _Widget:
+                def objectName(self):
+                    return 'amount'
+                def windowTitle(self):
+                    return ''
+                def x(self):
+                    return 0
+                def y(self):
+                    return 0
+                def width(self):
+                    return 10
+                def height(self):
+                    return 10
+                def parent(self):
+                    return None
+
+            before = len(warnings)
+            for _ in range(60):
+                quiet_ui._record_flash('Show', _Widget(), True)
+            self.assertLessEqual(len(quiet_ui.FLASH_EVENTS), 40)
+            self.assertLessEqual(len(warnings) - before, 2)
+        finally:
+            logger.removeHandler(handler)
+
     def test_production_does_not_install_sixty_hz_toplevel_logger(self):
         from desktop.utils import quiet_ui
 
@@ -144,6 +199,41 @@ class UIStabilityGuardTests(unittest.TestCase):
             MainWindow._replay_deferred_license_alert(window)
         critical.assert_called_once_with(window, 'MBT POS - License', 'Renew now')
         self.assertIsNone(window._pending_license_alert)
+
+    def test_opening_receipts_reloads_sales_made_after_login(self):
+        from desktop.tabs.receipts_tab import ReceiptsTab
+
+        calls = []
+        tab = ReceiptsTab.__new__(ReceiptsTab)
+        tab.reload = lambda: calls.append("reload")
+        ReceiptsTab.on_show(tab)
+        self.assertEqual(calls, ["reload"])
+
+    def test_receipt_open_column_stays_inside_the_table(self):
+        from PyQt5.QtWidgets import QHeaderView, QTableWidget
+        from desktop.tabs.receipts_tab import _fit_receipt_columns
+
+        from desktop.tabs.receipts_tab import _receipt_column_widths
+        for viewport in (900, 1100, 1400):
+            widths = _receipt_column_widths(viewport)
+            self.assertEqual(len(widths), 8)
+            self.assertEqual(sum(widths), viewport)
+            self.assertGreaterEqual(widths[6], 96)
+            self.assertGreaterEqual(widths[7], 84)
+        table = QTableWidget(1, 8)
+        table.resize(1200, 480)
+        _fit_receipt_columns(table)
+        header = table.horizontalHeader()
+        self.assertFalse(header.stretchLastSection())
+        self.assertEqual(header.sectionResizeMode(7), QHeaderView.Fixed)
+        self.assertGreaterEqual(table.columnWidth(6), 96)
+        self.assertGreaterEqual(table.columnWidth(7), 84)
+        used = sum(table.columnWidth(col) for col in range(8))
+        self.assertLessEqual(used, max(table.viewport().width(), 1100))
+        src_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "desktop", "tabs", "receipts_tab.py")
+        with open(src_path, encoding="utf-8") as handle:
+            src = handle.read()
+        self.assertNotIn("setCellWidget", src)
 
     def test_window_type_mask_uses_exact_type_not_overlapping_bits(self):
         flags = int(QFrame().windowFlags())

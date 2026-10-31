@@ -22,7 +22,8 @@ import {
   Table,
 } from "@/components/ui-kit";
 import { GET } from "@/lib/api";
-import { downloadApi, exportQuery } from "@/lib/download";
+import { downloadApiPost, exportQuery } from "@/lib/download";
+import { ExportLockDialog } from "@/components/export-lock-dialog";
 import { KES, localISO, rangeForPreset } from "@/lib/format";
 
 export const Route = createFileRoute("/reports")({
@@ -48,6 +49,17 @@ function Reports() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(0);
   const [openSaleId, setOpenSaleId] = useState<number | null>(null);
+  const [lockFormat, setLockFormat] = useState<string | null>(null);
+  const [lockError, setLockError] = useState("");
+  const sectionOptions = [
+    ["sales", "Sales"],
+    ["debt", "Debt"],
+    ["inventory", "Inventory"],
+    ["out_of_stock", "Out of stock"],
+    ["low_stock", "Low stock"],
+    ["variance", "Payment variance"],
+  ] as const;
+  const [sections, setSections] = useState<string[]>(sectionOptions.map((item) => item[0]));
   const pageSize = 25;
 
   const range = useMemo(() => {
@@ -89,13 +101,16 @@ function Reports() {
   const summary = data.summary || {};
   const topProducts = Array.isArray(data.top_products) ? data.top_products : [];
   const byPayment = Array.isArray(data.by_payment) ? data.by_payment : [];
+  const collectedMethods = Array.isArray(data.collected_methods) ? data.collected_methods : [];
   const hourly = Array.isArray(data.hourly) ? data.hourly : [];
   const cashiers = Array.isArray(data.cashiers) ? data.cashiers : [];
   const sales = Array.isArray(data.sales) ? data.sales : [];
   const meta = data.meta || {};
   const currency = data.currency || "KES";
 
-  const payTotal = byPayment.reduce((s: number, p: any) => s + Number(p.total || 0), 0) || 1;
+  const payTotal = collectedMethods
+    .filter((p: any) => p.method !== "Credit issued")
+    .reduce((s: number, p: any) => s + Number(p.collected || 0), 0) || 1;
   const maxHourly = Math.max(1, ...hourly.map((h: any) => Number(h.total || 0)));
 
   const sortedSales = useMemo(() => {
@@ -120,21 +135,36 @@ function Reports() {
   const pageCount = Math.max(1, Math.ceil(sortedSales.length / pageSize));
   const pageRows = sortedSales.slice(page * pageSize, page * pageSize + pageSize);
 
-  async function doExport(format: string, openPrint = false) {
+  async function doExport(format: string, password: string) {
     try {
       setExporting(format);
-      const qs = exportQuery({ ...filterParams, format, ...(openPrint ? { print: "1" } : {}) });
-      if (format === "html" && openPrint) {
-        window.open(`/api/reports/export?${qs}`, "_blank");
+      setLockError("");
+      const ext = format === "csv" ? "zip" : format;
+      if (!sections.length) {
+        setLockError("Select at least one section.");
         return;
       }
-      await downloadApi(`/reports/export?${qs}`, `MBT_Sales.${format}`);
-      toast.success(`${format.toUpperCase()} downloaded`);
+      await downloadApiPost(
+        "/reports/export",
+        { ...filterParams, format, password, confirm: password, sections },
+        `MBT_Sales.${ext}`,
+      );
+      setLockFormat(null);
+      toast.success(format === "csv" ? "Encrypted ZIP downloaded" : `${format.toUpperCase()} encrypted and downloaded`);
     } catch (e: any) {
-      toast.error(e?.message || "Export failed");
+      setLockError(e?.message || "Export failed");
     } finally {
       setExporting(null);
     }
+  }
+
+  function printReport() {
+    const ok = window.confirm(
+      "A printed page is not encrypted. Anyone who can see the paper can read the report. Continue?",
+    );
+    if (!ok) return;
+    const qs = exportQuery({ ...filterParams, format: "html", print: "1" });
+    window.open(`/api/reports/export?${qs}`, "_blank");
   }
 
   function toggleSort(key: typeof sortKey) {
@@ -148,6 +178,18 @@ function Reports() {
 
   return (
     <AppShell title="Reports">
+      <ExportLockDialog
+        open={lockFormat != null}
+        kind={lockFormat === "csv" ? "CSV" : lockFormat === "pdf" ? "PDF" : "Excel workbook"}
+        busy={!!exporting}
+        error={lockError}
+        onCancel={() => {
+          if (!exporting) setLockFormat(null);
+        }}
+        onConfirm={(password) => {
+          if (lockFormat) void doExport(lockFormat, password);
+        }}
+      />
       <PageHeader
         eyebrow="Operations"
         title="Reports"
@@ -159,7 +201,10 @@ function Reports() {
               variant="secondary"
               className="min-h-[44px]"
               disabled={!!exporting}
-              onClick={() => doExport("xlsx")}
+              onClick={() => {
+                setLockError("");
+                setLockFormat("xlsx");
+              }}
             >
               <FileSpreadsheet className="h-4 w-4" /> Excel
             </Button>
@@ -167,7 +212,10 @@ function Reports() {
               variant="secondary"
               className="min-h-[44px]"
               disabled={!!exporting}
-              onClick={() => doExport("csv")}
+              onClick={() => {
+                setLockError("");
+                setLockFormat("csv");
+              }}
             >
               <Download className="h-4 w-4" /> CSV
             </Button>
@@ -175,7 +223,10 @@ function Reports() {
               variant="secondary"
               className="min-h-[44px]"
               disabled={!!exporting}
-              onClick={() => doExport("pdf")}
+              onClick={() => {
+                setLockError("");
+                setLockFormat("pdf");
+              }}
             >
               <FileText className="h-4 w-4" /> PDF
             </Button>
@@ -183,7 +234,7 @@ function Reports() {
               variant="primary"
               className="min-h-[44px]"
               disabled={!!exporting}
-              onClick={() => doExport("html", true)}
+              onClick={printReport}
             >
               <Printer className="h-4 w-4" /> Print
             </Button>
@@ -203,7 +254,7 @@ function Reports() {
               }}
               className="mt-1 min-h-[44px]"
             >
-              {["Today", "Yesterday", "Choose a day", "This Week", "This Month", "Last Month", "Custom"].map((p) => (
+              {["Today", "Yesterday", "Choose a day", "This Week", "Last Week", "This Month", "Last Month", "This Year", "Custom"].map((p) => (
                 <option key={p}>{p}</option>
               ))}
             </Select>
@@ -318,6 +369,76 @@ function Reports() {
         </div>
       </Card>
 
+      <Card className="mb-4 p-4">
+        <div className="mb-2 text-xs font-semibold text-text2">
+          Include in the file · {sections.length} selected
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {sectionOptions.map(([key, label]) => (
+            <label key={key} className="flex min-h-[36px] items-center gap-2 text-sm text-text">
+              <input
+                type="checkbox"
+                checked={sections.includes(key)}
+                onChange={(e) => {
+                  setSections((current) =>
+                    e.target.checked ? [...current, key] : current.filter((item) => item !== key),
+                  );
+                }}
+              />
+              {label}
+            </label>
+          ))}
+          <button
+            type="button"
+            className="text-sm font-semibold text-gold"
+            onClick={() => setSections(sectionOptions.map((item) => item[0]))}
+          >
+            All
+          </button>
+          <button
+            type="button"
+            className="text-sm font-semibold text-text2"
+            onClick={() => setSections([])}
+          >
+            Clear
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-text2">
+          Excel and PDF use this choice. Out of stock is only products with zero quantity. It is not the full inventory list.
+        </p>
+      </Card>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <Card className="p-4">
+          <div className="text-xs font-semibold text-text2">Sale value</div>
+          <div className="mt-1 text-xl font-bold">{KES(summary.sales_value ?? summary.total_revenue ?? 0, currency)}</div>
+          <div className="mt-1 text-xs text-text2">What was sold. This is not cash in the drawer.</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-semibold text-text2">Money collected</div>
+          <div className="mt-1 text-xl font-bold">{KES(summary.collected ?? 0, currency)}</div>
+          <div className="mt-1 text-xs text-text2">
+            Cash {KES(summary.cash_collected ?? 0, currency)} · M-Pesa {KES(summary.mpesa_collected ?? 0, currency)} · Card {KES(summary.card_collected ?? 0, currency)} · Bank {KES(summary.bank_collected ?? 0, currency)}
+          </div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-semibold text-text2">Credit issued</div>
+          <div className="mt-1 text-xl font-bold">{KES(summary.credit_issued ?? 0, currency)}</div>
+          <div className="mt-1 text-xs text-text2">Left unpaid on these sales. A later repayment is not a new sale.</div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-xs font-semibold text-text2">Gross profit</div>
+          <div className="mt-1 text-xl font-bold">
+            {summary.profit == null ? "—" : KES(summary.profit, currency)}
+          </div>
+          <div className="mt-1 text-xs text-text2">
+            {Number(summary.uncosted_lines || 0) > 0
+              ? `${summary.uncosted_lines} lines have no cost, so this profit is incomplete.`
+              : "Sale value minus the cost recorded on the lines. This is not net profit."}
+          </div>
+        </Card>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <Card className="p-5 lg:col-span-2">
           <SectionTitle>
@@ -346,19 +467,22 @@ function Reports() {
           </div>
         </Card>
         <Card className="p-5">
-          <SectionTitle>By Payment</SectionTitle>
+          <SectionTitle>Money collected by method</SectionTitle>
+          <p className="mb-2 text-xs text-text2">
+            A split sale is divided across the methods used. Credit issued is shown separately and is not cash.
+          </p>
           <ul className="space-y-3 text-sm">
-            {byPayment.length === 0 ? (
+            {collectedMethods.length === 0 ? (
               <li className="text-text2">No sales in range</li>
             ) : (
-              byPayment.map((r: any) => {
-                const pct = Math.round((Number(r.total || 0) / payTotal) * 100);
+              collectedMethods.map((r: any) => {
+                const pct = Math.min(100, Math.round((Number(r.collected || 0) / payTotal) * 100));
                 return (
-                  <li key={r.payment_method}>
+                  <li key={r.method}>
                     <div className="flex justify-between text-text2 mb-1">
-                      <span className="capitalize">{r.payment_method || "cash"}</span>
+                      <span>{r.method}</span>
                       <span className="text-text font-semibold">
-                        {pct}% · {KES(r.total, currency)}
+                        {pct}% · {KES(r.collected, currency)}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full bg-panel overflow-hidden">

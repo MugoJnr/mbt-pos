@@ -59,13 +59,20 @@ class ReportsTab(QWidget):
         # Lovable-style top actions
         actions = QWidget()
         ar = QHBoxLayout(actions); ar.setContentsMargins(0, 0, 0, 0); ar.setSpacing(8)
-        self._exp_btn = PrimaryBtn('Export Excel', 40)
+        self._exp_btn = PrimaryBtn('Save Excel', 40)
+        self._pdf_btn = SecondaryBtn('Save PDF', 40)
         try:
             from desktop.utils.nav_icons import apply_button_icon
             apply_button_icon(self._exp_btn, 'export', 15)
+            apply_button_icon(self._pdf_btn, 'export', 15)
         except Exception:
             pass
-        self._exp_btn.clicked.connect(self._export)
+        self._exp_btn.setToolTip(
+            'Saves a locked Excel file. Excel asks for the password when you open it.')
+        self._pdf_btn.setToolTip(
+            'Saves a locked PDF. The PDF reader asks for the password when you open it. No ZIP.')
+        self._exp_btn.clicked.connect(lambda: self._export('xlsx'))
+        self._pdf_btn.clicked.connect(lambda: self._export('pdf'))
         self._email_btn = SecondaryBtn('Email Report', 40)
         try:
             from desktop.utils.nav_icons import apply_button_icon
@@ -74,7 +81,7 @@ class ReportsTab(QWidget):
             pass
         self._email_btn.setToolTip('Send via cloud notification / email (Telegram permanently removed)')
         self._email_btn.clicked.connect(self._send_cloud_report)
-        ar.addWidget(self._email_btn); ar.addWidget(self._exp_btn)
+        ar.addWidget(self._email_btn); ar.addWidget(self._pdf_btn); ar.addWidget(self._exp_btn)
         intro, _ = page_intro('Reports', 'Sales, cash rounding, payment variance, products and payment breakdown.', actions)
         lay.addLayout(intro)
 
@@ -106,7 +113,7 @@ class ReportsTab(QWidget):
         # ── KPIs ──────────────────────────────────────────────────────────────
         kr = QHBoxLayout(); kr.setSpacing(12)
         self._k_txn  = KPICard('Transactions', '0',  '', C['gold'], icon='count')
-        self._k_rev  = KPICard("Today's Revenue", '—',  'gross sales', C['ok'], icon='revenue')
+        self._k_rev  = KPICard("Sale value", '—',  'not cash collected', C['ok'], icon='revenue')
         self._k_avg  = KPICard('Avg Sale',     '—',  '', C['gold'], icon='avg')
         self._k_disc = KPICard('Discounts',    '—',  '', C['warn'], icon='alert')
         for k in (self._k_txn,self._k_rev,self._k_avg,self._k_disc): kr.addWidget(k)
@@ -352,7 +359,12 @@ class ReportsTab(QWidget):
         if hasattr(self, '_rk_orig'):
             orig = float(s.get('original_total') or s.get('total_revenue') or 0)
             rnd = float(s.get('total_cash_rounding') or 0)
-            cash_rx = float(s.get('cash_received') or 0)
+            cash_rx = float(
+                s.get('cash_sales_collected')
+                or s.get('cash_collected')
+                or s.get('cash_received')
+                or 0
+            )
             self._rk_orig.set_value(f"{cur} {orig:,.2f}")
             self._rk_round.set_value(f"{cur} {rnd:+,.2f}" if rnd else f"{cur} 0.00")
             self._rk_cash.set_value(f"{cur} {cash_rx:,.2f}")
@@ -371,28 +383,17 @@ class ReportsTab(QWidget):
             _log.warning(f"Reports trend chart: {e}")
 
         try:
-            by_pay = data.get('by_payment') or []
-            merged: dict[str, float] = {}
-            labels: dict[str, str] = {}
-            order: list[str] = []
-            for r in by_pay:
-                raw = (r.get('payment_method') or 'Other').strip() or 'Other'
-                key = raw.lower().replace(' ', '')
-                if key in ('mpesa', 'm-pesa'):
-                    key = 'm-pesa'
-                    pretty = 'M-Pesa'
-                else:
-                    pretty = raw.title()
-                if key not in merged:
-                    merged[key] = 0.0
-                    labels[key] = pretty
-                    order.append(key)
-                merged[key] += float(r.get('total') or 0)
+            from desktop.utils.payment_tenders import collection_by_method
+            sales_for_pay = [
+                s for s in (self.api.get_sales(start, end) or [])
+                if (s.get('status') or 'completed') != 'voided'
+            ]
             self._pay_chart.set_data([
-                {'label': labels[k], 'value': merged[k]}
-                for k in order
+                {'label': row['method'], 'value': row['collected']}
+                for row in collection_by_method(sales_for_pay)
+                if float(row.get('collected') or 0) > 0.009
             ])
-            self._pay_card.set_title(f'By Payment  ·  {start} → {end}')
+            self._pay_card.set_title(f'Money collected by method  ·  {start} → {end}')
         except Exception as e:
             _log.warning(f"Reports payment chart: {e}")
 
@@ -544,10 +545,12 @@ class ReportsTab(QWidget):
 
     # ── Export ────────────────────────────────────────────────────────────────
 
-    def _do_export(self):
+    def _do_export(self, password: str, sections=None):
         sys.path.insert(0, _PR)
-        from backend.export_engine import export_sales_report, export_sales_report_html
+        from backend.export_engine import export_sales_report
         from backend.report_export_service import get_export_dir as _shared_export_dir
+        from backend.report_file_encryption import seal_xlsx_file
+        import tempfile
         start = self._s.date().toString(DATE_API_FMT)
         end   = self._e.date().toString(DATE_API_FMT)
         cfg   = self.config_getter() or {}
@@ -592,7 +595,11 @@ class ReportsTab(QWidget):
         except Exception:
             aging_report = {}
         try:
-            debt_invoices = self.api.get_debt_invoices(start=start, end=end) or []
+            debt_invoices = [
+                i for i in (self.api.get_debt_invoices() or [])
+                if (i.get('status') or '') not in ('paid', 'cancelled')
+                and float(i.get('balance') or 0) > 0.009
+            ]
         except Exception:
             debt_invoices = []
         try:
@@ -608,63 +615,311 @@ class ReportsTab(QWidget):
         fname = f"MBT_Sales_{start}_to_{end}.xlsx"
         out = os.path.join(_shared_export_dir(), fname)
         filt = f"Date {start} → {end} · completed sales only"
-        xlsx_path = export_sales_report(
-            sales, ibs, shop_name=shop, start_date=start,
-            end_date=end, output_path=out, currency=cur,
-            products_data=products,
-            debt_summary=debt_summary,
-            aging_report=aging_report,
-            debt_invoices=debt_invoices,
-            debt_payments=debt_payments,
-            variance_rows=variance_rows,
-            variance_summary=variance_summary,
-            generated_by=user_name,
-            filters=filt,
-        )
-        # Companion printable HTML (browser Print → PDF) — R02 printable export
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+        tmp.close()
         try:
-            html_out = os.path.join(
-                _shared_export_dir(), f"MBT_Sales_{start}_to_{end}.html")
-            self._last_html_export_path = export_sales_report_html(
+            export_sales_report(
                 sales, ibs, shop_name=shop, start_date=start,
-                end_date=end, output_path=html_out, currency=cur,
-                generated_by=user_name, filters=filt,
+                end_date=end, output_path=tmp.name, currency=cur,
+                products_data=products,
+                debt_summary=debt_summary,
+                aging_report=aging_report,
+                debt_invoices=debt_invoices,
+                debt_payments=debt_payments,
+                variance_rows=variance_rows,
+                variance_summary=variance_summary,
+                generated_by=user_name,
+                filters=filt,
+                sections=sections,
             )
-        except Exception as e:
-            _log.warning(f"HTML report export skipped: {e}")
-            self._last_html_export_path = None
-        return xlsx_path
+            sealed = seal_xlsx_file(tmp.name, password)
+        finally:
+            try:
+                os.remove(tmp.name)
+            except OSError:
+                pass
+        with open(out, 'wb') as handle:
+            handle.write(sealed)
+        self._last_html_export_path = None
+        self._last_export_sha = __import__('hashlib').sha256(sealed).hexdigest()
+        return out
 
-    def _export(self):
+    def _ask_export_password(self, kind: str):
+        from backend.report_file_encryption import (
+            ExportPasswordError, check_export_password, generate_export_password,
+        )
+        excel = kind == 'xlsx'
+        app_name = 'Excel' if excel else 'the PDF reader'
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Save Excel' if excel else 'Save PDF')
+        dlg.setModal(True)
+        dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+        note = QLabel(
+            f'Choose a password, then the file opens. {app_name} asks for that same password. '
+            'There is no ZIP. This is not your login and not the Super-Admin PIN.'
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        pw = QLineEdit()
+        pw.setEchoMode(QLineEdit.Password)
+        pw.setPlaceholderText('At least 10 characters')
+        confirm = QLineEdit()
+        confirm.setEchoMode(QLineEdit.Password)
+        show = QCheckBox('Show password')
+
+        def toggle(on):
+            mode = QLineEdit.Normal if on else QLineEdit.Password
+            pw.setEchoMode(mode)
+            confirm.setEchoMode(mode)
+
+        show.toggled.connect(toggle)
+        err = QLabel('')
+        err.setWordWrap(True)
+        err.setStyleSheet('color:#E53935;')
+
+        def generate():
+            value = generate_export_password()
+            pw.setText(value)
+            confirm.setText(value)
+            show.setChecked(True)
+
+        def copy_pw():
+            QApplication.clipboard().setText(pw.text())
+
+        gen = QPushButton('Generate a password')
+        gen.clicked.connect(generate)
+        copy_btn = QPushButton('Copy password')
+        copy_btn.clicked.connect(copy_pw)
+        method = QLabel(
+            'Excel file lock.' if excel else 'PDF file lock. A phone can open this PDF. There is no ZIP.'
+        )
+        method.setWordWrap(True)
+        lay.addWidget(QLabel('Password'))
+        lay.addWidget(pw)
+        lay.addWidget(QLabel('Confirm password'))
+        lay.addWidget(confirm)
+        row = QHBoxLayout()
+        row.addWidget(show)
+        row.addWidget(gen)
+        row.addWidget(copy_btn)
+        lay.addLayout(row)
+        lay.addWidget(method)
+        lay.addWidget(err)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText('Save and open')
+        lay.addWidget(buttons)
+        chosen = {'value': None}
+
+        def accept():
+            try:
+                chosen['value'] = check_export_password(pw.text(), confirm.text())
+            except ExportPasswordError as exc:
+                err.setText(str(exc))
+                return
+            dlg.accept()
+
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        return chosen['value']
+
+    def _ask_sections(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Generate report')
+        dlg.setModal(True)
+        dlg.setMinimumWidth(420)
+        lay = QVBoxLayout(dlg)
+        note = QLabel(
+            'Choose what to include. Sales and Out of stock can be saved together. '
+            'The Excel file and the PDF use the same choice.'
+        )
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        options = [
+            ('sales', 'Sales'),
+            ('debt', 'Debt'),
+            ('inventory', 'Inventory'),
+            ('out_of_stock', 'Out of stock'),
+            ('low_stock', 'Low stock'),
+            ('variance', 'Payment variance'),
+        ]
+        boxes = []
+        count = QLabel('')
+        for key, label in options:
+            box = QCheckBox(label)
+            box.setChecked(True)
+            box.setProperty('sectionKey', key)
+            boxes.append(box)
+            lay.addWidget(box)
+        lay.addWidget(count)
+        row = QHBoxLayout()
+        all_btn = QPushButton('All')
+        clear_btn = QPushButton('Clear')
+
+        def set_all(on):
+            for box in boxes:
+                box.setChecked(on)
+
+        all_btn.clicked.connect(lambda: set_all(True))
+        clear_btn.clicked.connect(lambda: set_all(False))
+        row.addWidget(all_btn)
+        row.addWidget(clear_btn)
+        lay.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_btn = buttons.button(QDialogButtonBox.Ok)
+        ok_btn.setText('Continue')
+        lay.addWidget(buttons)
+
+        def refresh_count():
+            n = sum(1 for box in boxes if box.isChecked())
+            count.setText(f'{n} section(s) selected')
+            ok_btn.setEnabled(n > 0)
+
+        for box in boxes:
+            box.toggled.connect(lambda _on: refresh_count())
+        refresh_count()
+        chosen = {'value': None}
+
+        def accept():
+            picked = [box.property('sectionKey') for box in boxes if box.isChecked()]
+            if not picked:
+                return
+            chosen['value'] = picked
+            dlg.accept()
+
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        return chosen['value']
+
+    def _export(self, kind='xlsx'):
+        sections = self._ask_sections()
+        if not sections:
+            return
+        password = self._ask_export_password(kind)
+        if not password:
+            return
+        button = self._exp_btn if kind == 'xlsx' else self._pdf_btn
+        label = 'Save Excel' if kind == 'xlsx' else 'Save PDF'
+        opener = 'Excel' if kind == 'xlsx' else 'The PDF reader'
         try:
-            self._exp_btn.setEnabled(False); self._exp_btn.setText('Exporting…')
+            button.setEnabled(False)
+            button.setText('Saving…')
             QApplication.processEvents()
-            path = self._do_export()
+            path = self._do_export(password, sections) if kind == 'xlsx' else self._do_export_pdf(password, sections)
+            digest = getattr(self, '_last_export_sha', '')
+            password = None
             self._last_export_path = path
-            self._set_status(f"✓ Saved: {path}", ok=True)
-            html_note = ''
-            html_path = getattr(self, '_last_html_export_path', None)
-            if html_path:
-                html_note = (
-                    f'\n\nPrintable HTML (Print → PDF):\n{html_path}'
-                )
-            QMessageBox.information(self, 'Exported ✓',
-                f'Report saved to:\n{path}\n\n'
-                f'Contains 7 sheets:\n'
-                f'  • Sales Summary\n'
-                f'  • Line Items (with Product Names)\n'
-                f'  • Top Products\n'
-                f'  • Payment Methods\n'
-                f'  • Stock & Inventory\n'
-                f'  • Debt Management\n'
-                f'  • Payment Variance'
-                f'{html_note}')
+            self._audit_till_export(path, digest, True, kind)
+            self._set_status(f"✓ Saved. {opener} will ask for the password. {path}", ok=True)
+            QMessageBox.information(
+                self, 'Report saved',
+                f'Saved to:\n{path}\n\n'
+                f'{opener} will open it. Type the password you just chose.',
+            )
+            try:
+                if sys.platform == 'win32':
+                    os.startfile(path)
+            except Exception as open_error:
+                _log.warning('Could not open the saved report: %s', open_error)
         except Exception as e:
-            _log.error(f"Export error: {e}", exc_info=True)
+            password = None
+            _log.error('Export error', exc_info=True)
             QMessageBox.critical(self, 'Export Error', str(e))
             self._set_status(f"✗ Export failed: {e}", ok=False)
         finally:
-            self._exp_btn.setEnabled(True); self._exp_btn.setText('Export Excel')
+            button.setEnabled(True)
+            button.setText(label)
+
+    def _do_export_pdf(self, password: str, sections=None):
+        import hashlib
+        from backend.report_export_service import get_export_dir as _shared_export_dir
+        from backend.report_file_encryption import seal_pdf
+        from desktop.utils.payment_tenders import collected_from_sales, credit_issued_from_sales
+        from web.web_routes import _build_simple_pdf
+        start = self._s.date().toString(DATE_API_FMT)
+        end = self._e.date().toString(DATE_API_FMT)
+        cfg = self.config_getter() or {}
+        shop = cfg.get('shop_name', 'My Shop')
+        cur = cfg.get('currency_symbol', 'KES')
+        sales = [s for s in (self.api.get_sales(start, end) or [])
+                 if (s.get('status') or 'completed') != 'voided']
+        collected = collected_from_sales(sales)
+        credit = credit_issued_from_sales(sales)
+        sale_value = sum(float(s.get('total') or 0) for s in sales)
+        picked = set(sections or ['sales'])
+        try:
+            products = self.api.get_products() or []
+        except Exception:
+            products = []
+        lines = [f"Included: {', '.join(sections or ['sales'])}", '']
+        if 'sales' in picked:
+            lines.extend([
+                f"Sale value: {cur} {sale_value:,.2f}  ({len(sales)} sales)",
+                f"Money collected: {cur} {float(collected.get('collected') or 0):,.2f}",
+                f"  Cash {cur} {float(collected.get('cash_collected') or 0):,.2f}",
+                f"  M-Pesa {cur} {float(collected.get('mpesa_collected') or 0):,.2f}",
+                f"  Card {cur} {float(collected.get('card_collected') or 0):,.2f}",
+                f"  Bank {cur} {float(collected.get('bank_collected') or 0):,.2f}",
+                f"Credit issued: {cur} {credit:,.2f}",
+                'Sale value is not cash. Credit is not cash. A repayment is not a new sale.',
+                '',
+                'Receipts:',
+            ])
+            for sale in sales[:40]:
+                lines.append(
+                    f"{sale.get('receipt_number') or ''}  "
+                    f"{str(sale.get('created_at') or '')[:16]}  "
+                    f"{sale.get('cashier_name') or ''}  "
+                    f"{cur} {float(sale.get('total') or 0):,.2f}"
+                )
+            if len(sales) > 40:
+                lines.append(f"... {len(sales) - 40} more receipts are in the Excel file.")
+        if 'out_of_stock' in picked:
+            lines.extend(['', 'Out of stock (zero quantity only):'])
+            zeros = [p for p in products if float(p.get('stock') or 0) <= 0]
+            if not zeros:
+                lines.append('No products are out of stock.')
+            for prod in zeros[:30]:
+                lines.append(f"{prod.get('name') or ''}  SKU {prod.get('sku') or ''}")
+        if 'debt' in picked:
+            lines.extend(['', 'Debt is the amount still owed. It is not sales for this period.'])
+        if 'inventory' not in picked and 'sales' not in picked and 'out_of_stock' not in picked:
+            lines.append('This PDF contains only the sections you selected.')
+        pdf = _build_simple_pdf('Sales report', shop, f'{start} to {end}', lines, cur)
+        sealed = seal_pdf(pdf, password)
+        out = os.path.join(_shared_export_dir(), f'MBT_Sales_{start}_to_{end}.pdf')
+        with open(out, 'wb') as handle:
+            handle.write(sealed)
+        self._last_export_sha = hashlib.sha256(sealed).hexdigest()
+        return out
+
+    def _audit_till_export(self, path, digest, ok, kind='xlsx'):
+        import sqlite3
+        start = self._s.date().toString(DATE_API_FMT)
+        end = self._e.date().toString(DATE_API_FMT)
+        user = (self.user or {}).get('user') or self.user or {}
+        details = (
+            f'report=sales format={kind} period={start}..{end} '
+            f'encrypted=aes-256 ok={1 if ok else 0} sha256={digest}'
+        )
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute(
+                """INSERT INTO audit_log
+                   (user_id, username, action, module, details, ip_address)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user.get('id'), user.get('username') or '',
+                 'report_export', 'reports', details, 'till'),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            _log.warning('Report export audit was not recorded')
 
     # ── Cloud / email report (Telegram permanently removed) ───────────────────
 
