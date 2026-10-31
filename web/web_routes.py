@@ -679,9 +679,9 @@ def cloud_auth_refresh():
             )
         return response
     except Exception:
-        response = jsonify({'error': 'Session expired'})
-        response.delete_cookie(_REFRESH_COOKIE, path='/api/cloud/auth')
-        return response, 401
+        # A parallel refresh can fail after another request already rotated the
+        # cookie. Deleting it here would sign the browser out of that new session.
+        return jsonify({'error': 'Session expired'}), 401
 
 
 @web.route('/api/cloud/auth/me', methods=['GET'])

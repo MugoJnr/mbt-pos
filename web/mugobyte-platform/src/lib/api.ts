@@ -190,7 +190,7 @@ export async function api<T = unknown>(
   if (r.status === 401 && !noAuth) {
     if (allowRefresh && shouldAttemptRefresh(path)) {
       const refreshed = await refreshCloudSession();
-      if (refreshed) return api<T>(method, path, body, noAuth, false, clearOnUnauthorized);
+      if (refreshed || getToken()) return api<T>(method, path, body, noAuth, false, clearOnUnauthorized);
     }
     if (clearOnUnauthorized) {
       clearSession();
@@ -347,7 +347,9 @@ export async function resendVerification(email: string) {
   );
 }
 
-export async function refreshCloudSession(): Promise<boolean> {
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function refreshCloudSessionOnce(): Promise<boolean> {
   const r = await fetch("/api/cloud/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -371,6 +373,16 @@ export async function refreshCloudSession(): Promise<boolean> {
     if (prefersRemember()) localStorage.setItem(TOKEN_KEY, data.token);
   }
   return true;
+}
+
+/** One refresh at a time. A second copy would invalidate the rotated cookie. */
+export function refreshCloudSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshCloudSessionOnce().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
 }
 
 export async function logoutCloud(): Promise<void> {
