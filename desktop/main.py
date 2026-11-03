@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-10-30-v3.1.76"
-APP_VERSION   = "3.1.76"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-03-v3.1.77"
+APP_VERSION   = "3.1.77"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -2288,6 +2288,18 @@ class MainWindow(QMainWindow):
 
     def _goto(self, tid: str):
         prev = getattr(self, '_active_tab_id', None)
+        if prev == 'settings' and tid != 'settings':
+            settings = (getattr(self, '_tabs', {}) or {}).get('settings')
+            if settings is not None and hasattr(settings, 'has_unsaved') and settings.has_unsaved():
+                answer = QMessageBox.question(
+                    self, 'Unsaved settings',
+                    'Settings has changes that are not saved. Leave without saving?',
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes:
+                    nav = getattr(self, '_nav', {}) or {}
+                    for bid, btn in nav.items():
+                        btn.setChecked(bid == 'settings')
+                    return
         # Leaving sales while maximized ? restore shell chrome + cart split
         if prev == 'sales' and tid != 'sales':
             sales = self._tabs.get('sales')

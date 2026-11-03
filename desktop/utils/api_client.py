@@ -1214,6 +1214,14 @@ class APIClient:
             # Settings
             if path == '/api/settings' and method == 'GET':
                 return self.get_settings()
+            if path == '/api/settings/meta' and method == 'GET':
+                return self.get_settings_meta()
+            if path == '/api/settings/history' and method == 'GET':
+                return self.get_settings_history()
+            if path == '/api/settings/category-visuals' and method == 'GET':
+                return self.get_category_visuals()
+            if path == '/api/settings/category-visuals' and method == 'PUT':
+                return self.update_category_visuals(data or {})
             if path == '/api/settings' and method == 'PUT':
                 return self.update_settings(data or {})
             if path == '/api/health':
@@ -1637,24 +1645,73 @@ class APIClient:
         finally:
             db.close()
 
-    def update_settings(self, data: dict) -> dict:
-        from backend.settings_guard import reject_privileged_settings, reject_secret_settings
-        try:
-            data = reject_secret_settings(data or {})
-            data = reject_privileged_settings(data, self._role or '')
-        except ValueError as exc:
-            return {'success': False, 'error': str(exc)}
+    def get_settings_meta(self) -> dict:
         db = _db()
         try:
-            for k, v in data.items():
-                db.execute(
-                    "INSERT OR REPLACE INTO system_settings (key,value,updated_at) VALUES (?,?,?)",
-                    (k, str(v), datetime.now().isoformat())
-                )
-            db.commit()
-            _audit(self._user_id, self._username, 'UPDATE_SETTINGS', 'settings',
-                   f"keys={list(data.keys())}")
-            return {'success': True}
+            from backend.settings_service import read_meta
+            return read_meta(db)
+        finally:
+            db.close()
+
+    def get_settings_history(self) -> list:
+        if (self._role or '') and (self._role or '').lower() not in ('admin', 'superadmin'):
+            return []
+        db = _db()
+        try:
+            from backend.settings_service import read_history
+            return read_history(db)
+        finally:
+            db.close()
+
+    def get_category_visuals(self) -> dict:
+        from backend.category_visual_store import load_prefs
+        return load_prefs()
+
+    def update_category_visuals(self, data: dict) -> dict:
+        if (self._role or '') and (self._role or '').lower() not in ('admin', 'superadmin'):
+            return {'success': False, 'error': 'Admin only'}
+        from backend.category_visual_store import save_prefs
+        try:
+            saved = save_prefs(data or {})
+        except ValueError as exc:
+            return {'success': False, 'error': str(exc)}
+        return {'success': True, 'prefs': saved}
+
+    def claim_print_test(self) -> dict | None:
+        if (self._role or '').lower() in ('cashier', 'manager', 'viewer'):
+            return None
+        db = _db()
+        try:
+            from backend.device_commands import claim_next_print_test
+            return claim_next_print_test(db, self._username or '')
+        finally:
+            db.close()
+
+    def finish_print_test(self, command_id: int, result: str, detail: str = '') -> dict | None:
+        db = _db()
+        try:
+            from backend.device_commands import finish
+            return finish(db, command_id, result, detail)
+        finally:
+            db.close()
+
+    def update_settings(self, data: dict) -> dict:
+        db = _db()
+        try:
+            from backend.settings_service import apply_changes
+            payload = dict(data or {})
+            payload.setdefault('source', 'desktop')
+            result = apply_changes(
+                db, payload,
+                role=self._role or '',
+                username=self._username or '',
+                source='desktop',
+                device_id=str(payload.get('device_id') or ''),
+            )
+            if result.get('success'):
+                _audit(self._user_id, self._username, 'UPDATE_SETTINGS', 'settings',
+                       f"keys={result.get('changed') or []}")
+            return result
         finally:
             db.close()
 

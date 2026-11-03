@@ -16,6 +16,9 @@ class SettingsTab(QWidget):
         super().__init__()
         self.api = api; self.user = user
         self.db_path = db_path; self.config_getter = config_getter
+        self._config_version = 0
+        self._dirty = False
+        self._suspend_dirty = False
         self._polling = False
         self._cf_setup_running = False
         self._jump_scroll_lock = False
@@ -164,6 +167,11 @@ class SettingsTab(QWidget):
             self._jump_btns['shop'].setChecked(True)
         self._paint_jump_nav()
         head_lay.addWidget(jump)
+        self._save_status = QLabel('Loading saved settings…')
+        self._save_status.setWordWrap(True)
+        self._save_status.setStyleSheet(
+            f"color:{C['text2']}; font-size:12px; background:transparent;")
+        head_lay.addWidget(self._save_status)
         outer.addWidget(head)
 
         self._scroll = QScrollArea()
@@ -805,6 +813,10 @@ class SettingsTab(QWidget):
         # ── Save ──────────────────────────────────────────────────────────────
         save = PrimaryBtn('Save All Settings', 50)
         save.clicked.connect(self._save); lay.addWidget(save)
+        history_btn = SecondaryBtn('Settings change history', 40)
+        history_btn.clicked.connect(self._show_history)
+        lay.addWidget(history_btn)
+        self._arm_dirty_watch()
 
         rst = QPushButton('Reset Setup Wizard')
         rst.setStyleSheet(
@@ -823,7 +835,92 @@ class SettingsTab(QWidget):
 
     def on_show(self): self.refresh()
 
+    def has_unsaved(self) -> bool:
+        return bool(getattr(self, '_dirty', False))
+
+    def _mark_dirty(self, *_args):
+        if getattr(self, '_suspend_dirty', False):
+            return
+        self._dirty = True
+        self._paint_save_status()
+
+    def _arm_dirty_watch(self):
+        if getattr(self, '_dirty_armed', False):
+            return
+        self._dirty_armed = True
+
+        def _independent(widget) -> bool:
+            parent = widget
+            while parent is not None:
+                name = parent.__class__.__name__
+                if name in ('SecuritySettingsTab', 'CloudBackupPanel', 'AudioSettingsPanel'):
+                    return True
+                parent = parent.parent()
+            return False
+
+        for widget in self.findChildren((QLineEdit, QComboBox, QCheckBox, QSpinBox, QDoubleSpinBox, QRadioButton)):
+            if _independent(widget):
+                continue
+            if isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._mark_dirty)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._mark_dirty)
+            elif isinstance(widget, (QCheckBox, QRadioButton)):
+                widget.toggled.connect(self._mark_dirty)
+            else:
+                widget.valueChanged.connect(self._mark_dirty)
+
+    def _paint_save_status(self, meta=None):
+        label = getattr(self, '_save_status', None)
+        if label is None:
+            return
+        meta = meta or {}
+        when = meta.get('updated_at') or 'not saved yet'
+        who = meta.get('updated_by') or ''
+        version = meta.get('config_version', getattr(self, '_config_version', 0))
+        dirty = 'Unsaved changes. ' if self.has_unsaved() else ''
+        who_bit = f' by {who}' if who else ''
+        label.setText(f'{dirty}Version {version}. Last saved {when}{who_bit}.')
+
+    def _show_history(self):
+        rows = []
+        try:
+            rows = self.api.get('/api/settings/history') or []
+        except Exception as exc:
+            QMessageBox.warning(self, 'History', str(exc))
+            return
+        if isinstance(rows, dict):
+            QMessageBox.warning(self, 'History', rows.get('error') or 'History is not available.')
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Settings change history')
+        dlg.resize(760, 420)
+        layout = QVBoxLayout(dlg)
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(['When', 'Setting', 'From', 'To', 'User', 'Result'])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        for item in rows:
+            row = table.rowCount()
+            table.insertRow(row)
+            values = [
+                str(item.get('created_at') or ''),
+                str(item.get('setting_key') or ''),
+                str(item.get('old_value') or ''),
+                str(item.get('new_value') or ''),
+                str(item.get('username') or ''),
+                str(item.get('result') or ''),
+            ]
+            for col, text in enumerate(values):
+                table.setItem(row, col, QTableWidgetItem(text))
+        layout.addWidget(table)
+        close = SecondaryBtn('Close', 36)
+        close.clicked.connect(dlg.accept)
+        layout.addWidget(close)
+        dlg.exec_()
+
     def refresh(self):
+        self._suspend_dirty = True
         cfg = self.api.get_settings() or {}
         try:
             from config.deploy import load_deploy_config
@@ -942,10 +1039,40 @@ class SettingsTab(QWidget):
             lid = normalize_layout_id(cfg.get('pos_checkout_layout'))
             lidx = self.pos_checkout_layout.findData(lid)
             self.pos_checkout_layout.setCurrentIndex(lidx if lidx >= 0 else 1)
+        if hasattr(self, 'cv_tile_size'):
+            try:
+                from backend.category_visual_store import load_prefs
+                prefs = load_prefs()
+                self.cv_tile_size.setValue(int(prefs.get('tile_size') or 48))
+                self.cv_corner.setValue(int(prefs.get('corner_radius') or 12))
+                fit = self.cv_fit.findData(prefs.get('image_fit') or 'cover')
+                if fit >= 0:
+                    self.cv_fit.setCurrentIndex(fit)
+                self.cv_show_labels.setChecked(bool(prefs.get('show_labels', True)))
+                self.cv_show_accent.setChecked(bool(prefs.get('show_accent', True)))
+                self.cv_compact.setChecked(bool(prefs.get('compact_mode', False)))
+                self.cv_placeholder.setText(prefs.get('default_placeholder') or 'generic/_placeholder.svg')
+            except Exception:
+                pass
         self._refresh_tg_status()
         self._refresh_report_health()
         self._refresh_cf_status()
         self._refresh_cf_health_panel()
+        try:
+            meta = self.api.get('/api/settings/meta') or {}
+        except Exception:
+            meta = {}
+        if isinstance(meta, dict):
+            try:
+                self._config_version = int(meta.get('config_version') or 0)
+            except (TypeError, ValueError):
+                self._config_version = 0
+        else:
+            meta = {}
+        self._dirty = False
+        self._suspend_dirty = False
+        self._paint_save_status(meta)
+        self._drain_print_commands()
         panel = getattr(self, '_cloud_panel', None)
         if panel is not None:
             try:
@@ -1632,13 +1759,33 @@ class SettingsTab(QWidget):
     def _save(self):
         if not self.shop_name.text().strip():
             QMessageBox.warning(self, 'Required', 'Shop name is required.'); return
-        res = self.api.update_settings(self._common_payload())
+        payload = self._common_payload()
+        payload['config_version'] = getattr(self, '_config_version', 0)
+        payload['source'] = 'desktop'
+        res = self.api.update_settings(payload)
+        if res and res.get('conflict'):
+            QMessageBox.warning(
+                self, 'Settings changed elsewhere',
+                res.get('error') or 'Reload settings before saving again. Your entries are still on this form.')
+            return
         if res and res.get('success'):
+            try:
+                self._config_version = int(res.get('config_version') or self._config_version)
+            except (TypeError, ValueError):
+                pass
+            self._suspend_dirty = True
             self._save_web_remote_config()
             self._save_category_visual_prefs()
             self._save_audio_settings()
             self._refresh_cf_status()
             self._apply_checkout_layout_live()
+            self._suspend_dirty = False
+            self._dirty = False
+            self._paint_save_status({
+                'config_version': self._config_version,
+                'updated_at': 'just now',
+                'updated_by': (self.user.get('user') or {}).get('username') or '',
+            })
             try:
                 from desktop.utils.audio_manager import play as _audio_play
                 _audio_play('save')
@@ -1651,7 +1798,9 @@ class SettingsTab(QWidget):
                 _audio_play('error')
             except Exception:
                 pass
-            QMessageBox.critical(self, 'Error', 'Failed to save settings.')
+            QMessageBox.critical(
+                self, 'Error',
+                (res or {}).get('error') or 'Failed to save settings. Your entries are still on this form.')
 
     def _apply_checkout_layout_live(self):
         """Push Checkout Layout to Sales tab immediately (no restart)."""
@@ -1699,8 +1848,8 @@ class SettingsTab(QWidget):
 
     def _save_category_visual_prefs(self):
         try:
-            from desktop.utils.category_visuals import save_visual_prefs
-            save_visual_prefs({
+            from backend.category_visual_store import save_prefs
+            save_prefs({
                 'tile_size': int(self.cv_tile_size.value()),
                 'corner_radius': int(self.cv_corner.value()),
                 'image_fit': self.cv_fit.currentData() or 'cover',
@@ -1726,6 +1875,28 @@ class SettingsTab(QWidget):
             pass
 
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _drain_print_commands(self):
+        """Run a dashboard test-page request on this till. Do not claim the paper printed."""
+        claim = getattr(self.api, 'claim_print_test', None)
+        finish = getattr(self.api, 'finish_print_test', None)
+        if claim is None or finish is None:
+            return
+        try:
+            job = claim()
+        except Exception:
+            return
+        if not job:
+            return
+        try:
+            from printing.printer_engine import PrinterManager
+            PrinterManager(lambda: self.api.get_settings() or {}).test_print()
+            finish(job.get('id'), 'queued', 'Test page was queued. The printer has not confirmed paper.')
+        except Exception:
+            try:
+                finish(job.get('id'), 'failed', 'The till could not queue the test page.')
+            except Exception:
+                pass
 
     def _test_print(self):
         try:

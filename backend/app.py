@@ -1924,7 +1924,7 @@ def get_settings():
 def update_settings():
     if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
-    data = request.json or {}
+    data = dict(request.json or {})
     for key, value in data.items():
         if not str(key).startswith('wheel_'):
             continue
@@ -1934,19 +1934,87 @@ def update_settings():
             return jsonify({'error': f'{key} must be a number greater than zero.'}), 400
         if step <= 0 or step > 1000:
             return jsonify({'error': f'{key} must be greater than zero and at most 1000.'}), 400
-    from backend.settings_guard import reject_privileged_settings, reject_secret_settings
-    try:
-        data = reject_secret_settings(data)
-        data = reject_privileged_settings(data, _actor_role())
-    except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+    from backend.settings_service import apply_changes
+    user = getattr(g, 'current_user', {}) or {}
     db = get_db()
-    for k, v in data.items():
-        db.execute("INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)",
-                   (k, str(v), datetime.now().isoformat()))
-    db.commit()
-    log_action('UPDATE_SETTINGS', 'settings', f"Keys: {list(data.keys())}")
-    return jsonify({'success': True})
+    result = apply_changes(
+        db, data,
+        role=_actor_role(),
+        username=user.get('username') or '',
+        source='dashboard',
+        device_id=str(data.get('device_id') or ''),
+    )
+    if not result.get('success'):
+        code = 409 if result.get('conflict') else 400
+        return jsonify(result), code
+    log_action('UPDATE_SETTINGS', 'settings', f"Keys: {result.get('changed') or []}")
+    return jsonify(result)
+
+
+@app.route('/api/settings/meta', methods=['GET'])
+@token_required
+def settings_meta():
+    from backend.settings_service import read_meta
+    return jsonify(read_meta(get_db()))
+
+
+@app.route('/api/settings/history', methods=['GET'])
+@token_required
+def settings_history():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Admin only'}), 403
+    from backend.settings_service import read_history
+    try:
+        limit = int(request.args.get('limit') or 80)
+    except ValueError:
+        return jsonify({'error': 'Limit must be a number.'}), 400
+    return jsonify(read_history(get_db(), limit))
+
+
+@app.route('/api/settings/category-visuals', methods=['GET'])
+@token_required
+def category_visuals_get():
+    from backend.category_visual_store import load_prefs
+    return jsonify(load_prefs())
+
+
+@app.route('/api/settings/category-visuals', methods=['PUT'])
+@token_required
+def category_visuals_put():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Admin only'}), 403
+    from backend.category_visual_store import save_prefs
+    try:
+        saved = save_prefs(request.json or {})
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    log_action('UPDATE_CATEGORY_VISUALS', 'settings', 'tile preferences')
+    return jsonify({'success': True, 'prefs': saved})
+
+
+@app.route('/api/settings/device-commands', methods=['POST'])
+@token_required
+def device_command_create():
+    if not _role_is('admin', 'superadmin'):
+        return jsonify({'error': 'Admin only'}), 403
+    from backend.device_commands import enqueue
+    data = request.json or {}
+    user = getattr(g, 'current_user', {}) or {}
+    try:
+        job = enqueue(get_db(), data.get('command') or '', user.get('username') or '')
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    return jsonify({'success': True, 'command': job})
+
+
+@app.route('/api/settings/device-commands/<int:command_id>', methods=['GET'])
+@token_required
+def device_command_get(command_id):
+    from backend.device_commands import get_command
+    job = get_command(get_db(), command_id)
+    if not job:
+        return jsonify({'error': 'That device request is not on this shop.'}), 404
+    return jsonify(job)
 
 
 # ── AUDIT LOG ─────────────────────────────────────────────────────────────────
