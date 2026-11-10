@@ -17,8 +17,8 @@ function useRelease() {
 export function DashboardRefreshControl() {
   const snap = useRelease();
   useEffect(() => {
-    if (snap.verified) toast.success(snap.verified);
-  }, [snap.verified]);
+    if (snap.verified && !snap.mismatch) toast.success(snap.verified);
+  }, [snap.verified, snap.mismatch]);
   const show = snap.mismatch || snap.phase === "working" || snap.phase === "failed";
   if (!show) return null;
   const percent = snap.percent;

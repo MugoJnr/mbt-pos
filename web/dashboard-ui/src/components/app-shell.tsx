@@ -69,6 +69,7 @@ const NAV: NavItem[] = [
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
   { to: "/finance", label: "Finance", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/mpesa", label: "M-Pesa", icon: Banknote, group: "Operations", roles: ["cashier", "manager", "admin", "superadmin"] },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Command", roles: ["manager", "admin", "superadmin"] },
   { to: "/health", label: "System Health", icon: HeartPulse, group: "Command", roles: ["admin", "superadmin"] },
   { to: "/backup", label: "Backup", icon: HardDrive, group: "Command", roles: ["admin", "superadmin"] },
@@ -77,7 +78,7 @@ const NAV: NavItem[] = [
   { to: "/notes", label: "Notes", icon: NotebookPen, group: "Admin", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/users", label: "Users & Access", icon: Users, group: "Admin", roles: ["manager", "admin", "superadmin"] },
   { to: "/settings", label: "Settings", icon: Settings, group: "Admin", roles: ["manager", "admin", "superadmin"] },
-  { to: "/security", label: "Security", icon: ShieldCheck, super: true, group: "Admin", roles: ["superadmin"] },
+  { to: "/security", label: "Security", icon: ShieldCheck, group: "Admin", roles: ["admin", "superadmin"] },
   { to: "/license", label: "License", icon: KeyRound, super: true, group: "Admin", roles: ["superadmin"] },
   { to: "/diagnostics", label: "Diagnostics", icon: Wrench, group: "Admin", roles: ["admin", "superadmin"] },
 ];
@@ -157,7 +158,7 @@ function SidebarContent({
               if (n.to === "/finance") {
                 return actions.includes("accounting.view") || actions.includes("accounting.create_expenses") || actions.includes("reports.view_all");
               }
-              if (n.to === "/security") return actions.includes("security.override");
+              if (n.to === "/security") return actions.includes("audit.view");
               if (n.to === "/license") return actions.includes("license.manage");
             }
             if (n.roles && !n.roles.includes(roleKey)) return false;
@@ -632,6 +633,7 @@ export function AppShell({
         total?: number;
         count?: number;
         revenue?: number;
+        summary?: { total_revenue?: number; total_sales?: number; total_transactions?: number; profit?: number };
       }>("/reports/summary", { start: d, end: d });
     },
     enabled: isPos,
@@ -649,11 +651,15 @@ export function AppShell({
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase() || "")
     .join("") || "MB";
+  const todaySummary = todayQ.data?.summary;
   const todaySales = Number(
-    todayQ.data?.sales_total ?? todayQ.data?.total ?? todayQ.data?.revenue ?? 0,
+    todayQ.data?.sales_total ?? todayQ.data?.total ?? todayQ.data?.revenue
+      ?? todaySummary?.total_revenue ?? todaySummary?.total_sales ?? 0,
   );
-  const todayOrders = Number(todayQ.data?.orders ?? todayQ.data?.count ?? 0);
-  const todayProfit = Number(todayQ.data?.profit ?? 0);
+  const todayOrders = Number(
+    todayQ.data?.orders ?? todayQ.data?.count ?? todaySummary?.total_transactions ?? 0,
+  );
+  const todayProfit = Number(todayQ.data?.profit ?? todaySummary?.profit ?? 0);
 
   useDocumentTitle(pageTitle(LIVE_PRODUCT, title));
 

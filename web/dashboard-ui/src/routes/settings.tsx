@@ -115,14 +115,16 @@ function Check({
   label,
   checked,
   onChange,
+  disabled,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <label className="inline-flex items-center gap-2 min-h-11 text-sm text-text sm:col-span-2">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
       {label}
     </label>
   );
@@ -284,6 +286,16 @@ function Settings() {
         receipt_footer: form.receipt_footer || "Thank you for shopping with us!",
         auto_print: form.auto_print || "0",
         printer_port: form.printer_port || "",
+        printer_name: form.printer_name || "",
+        printer_connection: form.printer_connection || "USB",
+        printer_host: form.printer_host || "",
+        paper_size: form.paper_size || "80",
+        document_policy: form.document_policy || "C",
+        print_customer_copy: form.print_customer_copy || "1",
+        print_duplicate_copy: form.print_duplicate_copy || "0",
+        show_document_preview: form.show_document_preview || "0",
+        allow_cashier_doc_override: form.allow_cashier_doc_override || "0",
+        allow_reprint: "1",
         mpesa_mode: "manual",
         mpesa_till: form.mpesa_till || "",
         mpesa_paybill: form.mpesa_paybill || "",
@@ -489,17 +501,80 @@ function Settings() {
             </Field>
           </Section>
 
-          <Section id="receipts" icon={<Store className="h-5 w-5" />} title="Receipt Printing" desc="The printer port belongs to this shop computer">
+          <Section id="receipts" icon={<Store className="h-5 w-5" />} title="Receipts and invoices" desc="The till and this portal use these same shop settings. A printer problem never cancels the sale.">
             <Field label="Receipt footer">
               <Input value={form.receipt_footer || ""} placeholder="Thank you for shopping with us!"
                 onChange={(e) => set("receipt_footer", e.target.value)} />
+            </Field>
+            <Field label="Document for each sale">
+              <Select
+                value={form.document_policy || "C"}
+                onChange={(v) => set("document_policy", v)}
+                options={[
+                  { value: "A", label: "A · Always receipt" },
+                  { value: "B", label: "B · Always invoice" },
+                  { value: "C", label: "C · Automatic by payment status" },
+                  { value: "D", label: "D · Invoice for credit sales" },
+                  { value: "E", label: "E · Cashier chooses" },
+                  { value: "F", label: "F · Automatic, with override" },
+                ]}
+              />
+            </Field>
+            <p className="text-sm text-text2 sm:col-span-2">
+              {form.document_policy === "A" && "Every sale is a receipt. A receipt is evidence of payment received."}
+              {form.document_policy === "B" && "Every sale is an invoice, including a sale that is fully paid."}
+              {(form.document_policy || "C") === "C" && "A fully paid sale is a receipt. A partially paid sale is an invoice. An unpaid credit sale is an invoice."}
+              {form.document_policy === "D" && "Credit and part-paid sales are invoices showing the original amount, amount paid, payment breakdown, outstanding balance, customer, and due date when one is set. Other sales follow the automatic rule."}
+              {form.document_policy === "E" && "The cashier chooses a receipt or an invoice on each sale."}
+              {form.document_policy === "F" && "The till chooses automatically. An authorised cashier can change that choice."}
+            </p>
+            <Field label="Printer name">
+              <Input value={form.printer_name || ""} placeholder="Optional Windows printer name"
+                onChange={(e) => set("printer_name", e.target.value)} />
+            </Field>
+            <Field label="Connection">
+              <Select
+                value={form.printer_connection || "USB"}
+                onChange={(v) => set("printer_connection", v)}
+                options={[
+                  { value: "USB", label: "USB" },
+                  { value: "LAN", label: "LAN" },
+                  { value: "Windows", label: "Windows" },
+                ]}
+              />
+            </Field>
+            <Field label="LAN address">
+              <Input value={form.printer_host || ""} placeholder="192.168.1.50"
+                onChange={(e) => set("printer_host", e.target.value)} />
+            </Field>
+            <Field label="Paper">
+              <Select
+                value={form.paper_size || "80"}
+                onChange={(v) => set("paper_size", v)}
+                options={[
+                  { value: "80", label: "80mm" },
+                  { value: "58", label: "58mm" },
+                ]}
+              />
             </Field>
             <Field label="Printer port">
               <Input value={form.printer_port || ""} placeholder="USB, COM3, or /dev/usb/lp0"
                 onChange={(e) => set("printer_port", e.target.value)} />
             </Field>
-            <Check label="Auto-print receipt after each sale" checked={flag(form, "auto_print")}
+            <Check label="Print automatically after each sale" checked={flag(form, "auto_print")}
               onChange={(v) => setFlag("auto_print", v)} />
+            <Check label="Print a customer copy" checked={flag(form, "print_customer_copy", true)}
+              onChange={(v) => setFlag("print_customer_copy", v)} />
+            <Check label="Print a duplicate copy" checked={flag(form, "print_duplicate_copy")}
+              onChange={(v) => setFlag("print_duplicate_copy", v)} />
+            <Check label="Show the document before printing" checked={flag(form, "show_document_preview")}
+              onChange={(v) => setFlag("show_document_preview", v)} />
+            <Check label="Allow an authorised cashier to change the document" checked={flag(form, "allow_cashier_doc_override")}
+              onChange={(v) => setFlag("allow_cashier_doc_override", v)} />
+            <Check label="Allow later reprinting" checked disabled onChange={() => undefined} />
+            <p className="text-sm text-text2 sm:col-span-2">
+              This portal opens the browser print dialog and downloads a PDF. It does not silently drive a USB or network printer. The till uses a connected printer when one is available.
+            </p>
             <p className="text-sm text-text2 sm:col-span-2">
               A test page is queued on the till. The printer does not confirm that paper came out.
               {printJob ? ` ${printMessage(printJob)}` : ""}
@@ -533,6 +608,7 @@ function Settings() {
               <Input value="Sandbox (production disabled)" readOnly />
             </Field>
             <p className="text-sm text-text2 whitespace-pre-line sm:col-span-2">{darajaReadiness(form.daraja_gateway_url || "")}</p>
+            <p className="text-sm sm:col-span-2"><Link to="/mpesa" className="text-gold font-semibold">Open M-Pesa profiles, prompts, and incoming payments</Link></p>
             <Button type="button" variant="secondary" onClick={() => void testDaraja(form.daraja_gateway_url || "")}>
               Test gateway health
             </Button>

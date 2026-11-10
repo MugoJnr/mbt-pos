@@ -91,8 +91,11 @@ class SecurityTab(QWidget):
         tabs = QTabWidget()
         tabs.setProperty('mbtLovableTabs', True)
         tabs.setStyleSheet(lovable_tab_qss())
-        tabs.addTab(self._build_pin_tab(),        'PIN Setup')
-        tabs.addTab(self._build_stock_adj_tab(),  'Stock Adjust')
+        source = (self.user or {}).get('user') or self.user or {}
+        role = str(source.get('role') or '').lower()
+        if role == 'superadmin':
+            tabs.addTab(self._build_pin_tab(),        'PIN Setup')
+            tabs.addTab(self._build_stock_adj_tab(),  'Stock Adjust')
         tabs.addTab(self._build_stock_log_tab(),  'Stock Log')
         tabs.addTab(self._build_sales_edit_tab(), 'Sale Edits / Voids')
         tabs.addTab(self._build_audit_tab(),      'Full Audit Log')
@@ -467,11 +470,25 @@ class SecurityTab(QWidget):
     def _build_audit_tab(self):
         w = QWidget(); lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16); lay.setSpacing(12)
+        self._audit_page = 0
         top = QHBoxLayout()
         top.addWidget(H2('Full Audit Log'))
         top.addStretch()
+        self._audit_query = QLineEdit()
+        self._audit_query.setPlaceholderText('Search action, user, receipt')
+        self._audit_query.setFixedWidth(260)
+        self._audit_query.returnPressed.connect(self._search_audit)
+        top.addWidget(self._audit_query)
+        find = SecondaryBtn('Search', 38); find.clicked.connect(self._search_audit)
+        prev = SecondaryBtn('Previous', 38); prev.clicked.connect(self._audit_prev)
+        nxt = SecondaryBtn('Next', 38); nxt.clicked.connect(self._audit_next)
         ref = SecondaryBtn('Refresh', 38); ref.clicked.connect(self._load_audit)
-        top.addWidget(ref); lay.addLayout(top)
+        exp = SecondaryBtn('Export', 38); exp.clicked.connect(self._export_audit)
+        for btn in (find, prev, nxt, ref, exp):
+            top.addWidget(btn)
+        lay.addLayout(top)
+        self._audit_status = Caption('The newest events are shown first.')
+        lay.addWidget(self._audit_status)
         self._audit_tbl = make_table(
             ['Time', 'User', 'Action', 'Module', 'Details'],
             stretch_col=4, row_height=36)
@@ -512,9 +529,58 @@ class SecurityTab(QWidget):
             lines.append("This event did not record a before-and-after value.")
         QMessageBox.information(self, 'Audit event', "\n".join(lines))
 
+    def _export_audit(self):
+        if not self.api.can_view_audit():
+            QMessageBox.warning(self, 'Audit history', 'You cannot export the audit history.')
+            return
+        import os
+        folder = os.environ.get('MBT_AUDIT_EXPORT_DIR') or os.path.expanduser('~')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export audit history',
+            os.path.join(folder, 'audit-history.csv'),
+            'CSV (*.csv)',
+        )
+        if not path:
+            return
+        query = self._audit_query.text() if hasattr(self, '_audit_query') else ''
+        try:
+            count = self.api.export_audit_csv(path, q=query)
+        except Exception as exc:
+            QMessageBox.critical(self, 'Audit history', str(exc))
+            return
+        QMessageBox.information(
+            self, 'Audit history',
+            f'Wrote {count} events.\n{path}',
+        )
+
+    def _search_audit(self):
+        self._audit_page = 0
+        self._load_audit()
+
+    def _audit_prev(self):
+        self._audit_page = max(0, self._audit_page - 1)
+        self._load_audit()
+
+    def _audit_next(self):
+        self._audit_page += 1
+        self._load_audit()
+
     def _load_audit(self):
         try:
-            logs = self.api.get_audit_log()
+            if not self.api.can_view_audit():
+                self._audit_tbl.setRowCount(0)
+                self._audit_status.setText('You cannot view the audit history.')
+                return
+            query = self._audit_query.text() if hasattr(self, '_audit_query') else ''
+            page = getattr(self, '_audit_page', 0)
+            logs = self.api.get_audit_log(q=query, limit=50, offset=page * 50)
+            if page and not logs:
+                self._audit_page = max(0, page - 1)
+                self._audit_status.setText('There is no further page.')
+                return
+            self._audit_status.setText(
+                f'Page {page + 1}. {len(logs)} event(s) on this page. History is read-only.'
+            )
             self._audit_tbl.setRowCount(0)
             action_colors = {
                 'VOID_SALE': C['warn'], 'STOCK_ADJUSTED': C['gold'],

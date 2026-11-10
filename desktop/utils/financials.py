@@ -16,6 +16,31 @@ def money(value) -> float:
     return round(float(value or 0), 2)
 
 
+def repayment_method_totals(db, start: str, end: str) -> dict:
+    """Later debt payments in the period, by method. The opening tender is excluded."""
+    start = str(start or "")[:10]
+    end = str(end or start)[:10]
+    totals = {"cash": 0.0, "mpesa": 0.0, "card": 0.0, "bank": 0.0, "other": 0.0}
+    try:
+        rows = db.execute(
+            """SELECT dp.amount, dp.payment_method
+               FROM debt_payments dp
+               WHERE COALESCE(dp.reversed,0)=0
+                 AND COALESCE(dp.notes,'') NOT LIKE 'Initial payment%'
+                 AND date(dp.created_at) BETWEEN ? AND ?""",
+            (start, end),
+        ).fetchall()
+    except Exception:
+        return totals
+    from desktop.utils.payment_tenders import method_bucket
+    for row in rows:
+        amount = float((row["amount"] if hasattr(row, "keys") else row[0]) or 0)
+        method = (row["payment_method"] if hasattr(row, "keys") else row[1]) or ""
+        key = method_bucket(method)
+        totals[key] = money(totals[key] + amount)
+    return totals
+
+
 def sale_day_sql(alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
     return f"COALESCE(NULLIF({prefix}sale_date,''), date({prefix}created_at))"
@@ -80,6 +105,11 @@ def compute_financials(db, start: str, end: str) -> dict:
 
     repayments = money(sum(amount for amount, _method in later_in_period))
     collections = money(float(tender.get("collected") or 0) + repayments)
+    extra = repayment_method_totals(db, start, end)
+    for key, amount in extra.items():
+        field = f"{key}_collected"
+        tender[field] = money(float(tender.get(field) or 0) + amount)
+    tender["collected"] = collections
 
     profit = _profit_allocation(db, start, end, sale_paid)
     expenses, expenses_known = _expenses(db, start, end)
@@ -105,6 +135,7 @@ def compute_financials(db, start: str, end: str) -> dict:
         "mpesa_collected": money(tender.get("mpesa_collected")),
         "card_collected": money(tender.get("card_collected")),
         "bank_collected": money(tender.get("bank_collected")),
+        "other_collected": money(tender.get("other_collected")),
         "gross_profit": profit["gross_profit"],
         "realized_gross_profit": profit["realized_gross_profit"],
         "unrealized_gross_profit": profit["unrealized_gross_profit"],

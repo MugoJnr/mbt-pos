@@ -68,6 +68,7 @@ function ApprovalsPage() {
   const [voidReason, setVoidReason] = useState("");
   const [voidNote, setVoidNote] = useState("");
   const [sendingVoid, setSendingVoid] = useState(false);
+  const [creditConfirm, setCreditConfirm] = useState<{ id: number; type: string } | null>(null);
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
   const sessionSuper = role === "superadmin";
@@ -90,24 +91,35 @@ function ApprovalsPage() {
   });
 
   const approveM = useMutation({
-    mutationFn: (item: { id: number; type: string }) => {
+    mutationFn: (item: { id: number; type: string; confirm?: boolean }) => {
       if (EXECUTABLE.has(item.type) && !sessionSuper && !pin.trim()) {
         return Promise.resolve({
           error: "Enter the Super-Admin PIN. The server checks it before anything changes.",
         });
       }
-      return POST<{ success?: boolean; error?: string }>(
+      return POST<{ success?: boolean; error?: string; message?: string; credit_payments_exist?: boolean }>(
         `/approvals/${item.id}/approve`,
-        EXECUTABLE.has(item.type) ? { pin } : {},
+        {
+          ...(EXECUTABLE.has(item.type) ? { pin } : {}),
+          ...(item.confirm ? { confirm_credit_payments: true } : {}),
+        },
       );
     },
-    onSuccess: (data) => {
+    onSuccess: (data, item) => {
+      if (data?.credit_payments_exist) {
+        setCreditConfirm({ id: item.id, type: item.type });
+        setActionError(data.message || data.error || "This sale already has money collected.");
+        return;
+      }
+      setCreditConfirm(null);
       if (!data || data.error || data.success === false) {
         setActionError(data?.error || "The approval was not completed.");
         return;
       }
       setActionError("");
       qc.invalidateQueries({ queryKey: ["approvals"] });
+      qc.invalidateQueries({ queryKey: ["sale-detail"] });
+      qc.invalidateQueries({ queryKey: ["products"] });
     },
   });
   const rejectM = useMutation({
@@ -160,7 +172,7 @@ function ApprovalsPage() {
       <PageHeader
         eyebrow="Overview"
         title="Approvals Queue"
-        description="A signed-in Super Admin approves a void or stock change without entering the PIN again. A manager still enters the Super-Admin PIN, and the action runs once. Refund, discount, expense, credit, and price-override requests only record the decision. Rejected and expired requests do not change the sale or the stock."
+        description="A signed-in Super Admin approves a void or stock change without entering the PIN again. A manager still enters the Super-Admin PIN, and the action runs once. An approved expense is recorded and paid from cash. An approved refund is recorded as cash leaving the shop. A discount, price change, or credit request records the decision until it names a receipt. Rejected and expired requests do not change the sale or the stock."
         actions={
         <div className="flex flex-wrap items-center gap-2">
           <div className="inline-flex items-center gap-1.5">
@@ -254,6 +266,20 @@ function ApprovalsPage() {
       {actionError ? (
         <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-text">
           {actionError}
+          {creditConfirm && sessionSuper ? (
+            <div className="mt-3">
+              <Button
+                variant="primary"
+                disabled={approveM.isPending}
+                onClick={() => approveM.mutate({ ...creditConfirm, confirm: true })}
+              >
+                Void anyway. The collected money stays collected.
+              </Button>
+            </div>
+          ) : null}
+          {creditConfirm && !sessionSuper ? (
+            <p className="mt-2">A Super Admin has to confirm this void. The sale is still completed.</p>
+          ) : null}
         </div>
       ) : null}
       {q.isError ? (

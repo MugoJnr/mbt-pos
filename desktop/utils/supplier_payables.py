@@ -318,6 +318,17 @@ def record_payment(api, supplier_id, amount, *, method="cash", reference="", not
             (None, "payment", f"{saved['payment_number']} {amount}",
              getattr(api, "_user_id", None), getattr(api, "_username", "") or role, _now()),
         )
+        from desktop.utils.accounting_hooks import post_supplier_payment_journal
+        posted = post_supplier_payment_journal(
+            db, saved["payment_id"],
+            amount=amount, method=method, number=saved["payment_number"],
+            user_id=getattr(api, "_user_id", None),
+            username=getattr(api, "_username", "") or role,
+            safe=False,
+        )
+        if posted.get("error"):
+            db.rollback()
+            return {"error": posted["error"], "status": 400}
         db.commit()
         _audit(getattr(api, "_user_id", None), getattr(api, "_username", ""),
                "SUPPLIER_PAYMENT", "inventory",
@@ -358,13 +369,24 @@ def apply_receipt_payment(conn, api, receipt_id, supplier_id, amount, method, re
     total = money(header["grand_total"] if header else 0)
     applied = money(min(amount, total))
     allocations = [(int(receipt_id), applied)] if applied > 0 else []
-    return _insert_payment(
+    saved = _insert_payment(
         conn, supplier_id=supplier_id, amount=amount, method=method or "cash",
         reference=reference, notes="Paid when the delivery was recorded",
         user_id=getattr(api, "_user_id", None),
         username=getattr(api, "_username", ""), allocations=allocations,
         client_token="", paid_at=_now(),
     )
+    from desktop.utils.accounting_hooks import post_supplier_payment_journal
+    posted = post_supplier_payment_journal(
+        conn, saved["payment_id"],
+        amount=amount, method=method or "cash", number=saved.get("payment_number") or "",
+        user_id=getattr(api, "_user_id", None),
+        username=getattr(api, "_username", ""),
+        safe=False,
+    )
+    if posted.get("error"):
+        raise RuntimeError(posted["error"])
+    return saved
 
 
 def release_allocations(conn, receipt_id: int) -> float:

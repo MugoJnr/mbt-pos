@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-03-v3.1.77"
-APP_VERSION   = "3.1.77"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-10-v3.1.79"
+APP_VERSION   = "3.1.79"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1824,8 +1824,12 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(0, 6, 0, 6)
         nv.setSpacing(2)
         for tid, lbl in tabs:
-            if tid in ('security', 'license') and role != 'superadmin':
+            if tid == 'license' and role != 'superadmin':
                 continue
+            if tid == 'security' and role != 'superadmin':
+                from desktop.utils.security import has_permission
+                if not has_permission({'role': role}, 'audit.view'):
+                    continue
             # AI Operations: manager / admin / superadmin (even if legacy tab_permissions omit it)
             if tid == 'ai_ops' and role not in ('manager', 'admin', 'superadmin'):
                 continue
@@ -2915,14 +2919,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(80, self._do_refresh)
 
     def _do_refresh(self):
-        ok = False
+        # The probe opens sockets. Running it here froze the till for several
+        # seconds whenever the shop was offline. The monitor thread owns it.
         if self._svc_net:
-            ok = self._svc_net.force_sync()
+            self._svc_net.request_probe()
+            ok = bool(self._svc_net.is_connected)
         else:
-            import socket
-            try:
-                s = socket.create_connection(("8.8.8.8", 53), timeout=3); s.close(); ok = True
-            except Exception: pass
+            ok = False
         self._on_conn(ok)
         cur = self._stack.currentWidget()
         if cur and hasattr(cur, 'refresh'):

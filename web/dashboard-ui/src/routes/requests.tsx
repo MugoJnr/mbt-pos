@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader, Select } from "@/components/ui-kit";
@@ -88,21 +88,33 @@ function decisionCopy(row: CentreRow | null, detail: any) {
           ? "Approve asks for the Super-Admin PIN, then voids the delivery once."
           : open
             ? "Approve applies this supplier request once. Reject leaves the delivery unchanged."
-            : "An admin uses Approve or Reject. A manager cannot change a supplier delivery.",
+            : !awaiting
+              ? `This request is ${status || "closed"}. The buttons stay visible.`
+              : "An admin uses Approve or Reject. A manager cannot change a supplier delivery.",
     };
   }
   if (source === "stock") {
     const open = role === "superadmin" && status === "pending";
     return {
       approve: open, reject: open, back: false,
-      note: open ? "Only Super Admin can decide a stock adjustment." : "Only Super Admin can approve or reject a stock adjustment.",
+      note: open
+        ? "Only Super Admin can decide a stock adjustment."
+        : status && status !== "pending"
+          ? `This request is ${status}. The buttons stay visible.`
+          : "Only Super Admin can approve or reject a stock adjustment.",
     };
   }
   if (kind === "consumption_void") {
     const open = ["admin", "superadmin"].includes(role) && awaiting && !own;
     return {
       approve: open, reject: reviewer && awaiting && !own, back: false,
-      note: own ? "You cannot approve your own consumption void." : open ? "Approve restores the stock once." : "An admin uses Approve or Reject.",
+      note: own && awaiting
+        ? "You cannot approve your own consumption void."
+        : open
+          ? "Approve restores the stock once."
+          : !awaiting
+            ? `This request is ${status || "closed"}. The buttons stay visible.`
+            : "An admin uses Approve or Reject.",
     };
   }
   if (kind === "void" || kind === "stock_adjust") {
@@ -135,7 +147,12 @@ function RequestsCentrePage() {
   const [pin, setPin] = useState("");
   const [reason, setReason] = useState("");
   const [decisionError, setDecisionError] = useState("");
+  const [confirmCredit, setConfirmCredit] = useState(false);
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setDecisionError("");
+    setConfirmCredit(false);
+  }, [selected?.source, selected?.source_id]);
   const qc = useQueryClient();
   const role = String(getUser()?.role || "").toLowerCase();
 
@@ -171,7 +188,7 @@ function RequestsCentrePage() {
     }
     setBusy(true);
     try {
-      let result: { error?: string; success?: boolean } = {};
+      let result: { error?: string; success?: boolean; message?: string; credit_payments_exist?: boolean } = {};
       if (selected.source === "backdate") {
         result = await POST(`/backdate-requests/${selected.source_id}/${action}`, action === "approve" ? {} : { reason });
       } else if (selected.source === "delivery") {
@@ -187,16 +204,25 @@ function RequestsCentrePage() {
           note: reason,
         });
       } else {
-        result = await POST(`/approvals/${selected.source_id}/${action}`, action === "approve" ? { pin } : { note: reason });
+        result = await POST(`/approvals/${selected.source_id}/${action}`, action === "approve" ? { pin, confirm_credit_payments: confirmCredit } : { note: reason });
       }
-      if (!result || result.error || result.success === false) {
-        setDecisionError(result?.error || "The request was not changed.");
+      if (result?.credit_payments_exist && !confirmCredit) {
+        setConfirmCredit(true);
+        setDecisionError(result.message || result.error || "This sale already has money collected.");
         return;
       }
+      if (!result || result.error || result.success === false) {
+        setDecisionError(result?.error || result?.message || "The request was not changed.");
+        return;
+      }
+      setConfirmCredit(false);
       setPin("");
       setReason("");
       await qc.invalidateQueries({ queryKey: ["requests-centre"] });
       await qc.invalidateQueries({ queryKey: ["requests-centre-item", selected.source, selected.source_id] });
+      await qc.invalidateQueries({ queryKey: ["sale-detail"] });
+      await qc.invalidateQueries({ queryKey: ["consumption-detail"] });
+      await qc.invalidateQueries({ queryKey: ["products"] });
     } finally {
       setBusy(false);
     }
@@ -221,7 +247,7 @@ function RequestsCentrePage() {
           <Button variant="ghost" disabled={busy} onClick={() => decide("return")}>Return</Button>
         ) : null}
         <Button variant="secondary" disabled={!decision.reject || busy} onClick={() => decide("reject")}>Reject</Button>
-        <Button variant="primary" disabled={!decision.approve || busy} onClick={() => decide("approve")}>Approve</Button>
+        <Button variant="primary" disabled={!decision.approve || busy} onClick={() => decide("approve")}>{confirmCredit ? "Void anyway. Collected money stays collected." : "Approve"}</Button>
       </div>
     </div>
   );
@@ -352,7 +378,8 @@ function RequestsCentrePage() {
       {openReceipt && selected ? (
         <RequestReceiptDialog
           title={detail?.receipt?.receipt_number || selected.reference}
-          status={detail?.receipt?.status || selected.status_label}
+          documentLabel={detail?.kind === "delivery" ? "Supplier delivery" : "Sale"}
+          status={detail?.status_label || detail?.receipt?.status || selected.status_label}
           reason={detail?.reason || detail?.current_reason || detail?.details || selected.reason}
           requester={selected.requester}
           submittedAt={selected.submitted_at}

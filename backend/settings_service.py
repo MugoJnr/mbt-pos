@@ -233,6 +233,8 @@ def _prepare(data: dict) -> tuple[dict, str]:
             allowed = {FORCED[key].lower(), ''}
             if key == 'variance_allow_refund_after_finalize':
                 allowed.update({'0', 'false', 'no', 'off'})
+            if key == 'allow_reprint':
+                allowed.update({'0', '1', 'false', 'true', 'no', 'yes', 'off', 'on'})
             if sent not in allowed:
                 return {}, f'{key} cannot be changed from the ordinary settings save.'
             cleaned[key] = FORCED[key]
@@ -275,6 +277,25 @@ def _coerce(key: str, value) -> str:
     if key == 'printer_port':
         if len(text) > 120:
             raise ValueError('Printer port is too long.')
+        return text
+    if key == 'document_policy':
+        code = (text or 'C').strip().upper()[:1]
+        if code not in 'ABCDEF':
+            raise ValueError('Document policy must be A, B, C, D, E, or F.')
+        return code
+    if key == 'printer_connection':
+        value = (text or 'USB').strip().upper()
+        if value not in ('USB', 'LAN', 'WINDOWS'):
+            raise ValueError('Printer connection must be USB, LAN, or Windows.')
+        return 'Windows' if value == 'WINDOWS' else value
+    if key == 'paper_size':
+        digits = ''.join(ch for ch in (text or '80') if ch.isdigit()) or '80'
+        if digits not in ('58', '80'):
+            raise ValueError('Paper size must be 58mm or 80mm.')
+        return digits
+    if key in ('printer_name', 'printer_host'):
+        if len(text) > 120 or any(ch in text for ch in '\r\n'):
+            raise ValueError(f'{key} is too long.')
         return text
     if key == 'daraja_gateway_url':
         if not text:

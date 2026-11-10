@@ -142,6 +142,11 @@ function Inventory() {
   const [editMsg, setEditMsg] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [stocktakeName, setStocktakeName] = useState("");
+  const [stocktakeId, setStocktakeId] = useState<number | null>(null);
+  const [stocktakeProduct, setStocktakeProduct] = useState("");
+  const [stocktakeQty, setStocktakeQty] = useState("");
+  const [stocktakeMsg, setStocktakeMsg] = useState("");
   const [newProduct, setNewProduct] = useState({
     name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "",
   });
@@ -161,6 +166,10 @@ function Inventory() {
   const productsQ = useQuery({
     queryKey: ["products"],
     queryFn: () => GET<Product[]>("/products"),
+  });
+  const stocktakesQ = useQuery({
+    queryKey: ["stocktakes"],
+    queryFn: () => GET<{ stocktakes?: { id: number; name?: string; status?: string; created_at?: string }[] }>("/stocktakes"),
   });
   const requestsQ = useQuery({
     queryKey: ["adjustment-requests"],
@@ -1074,6 +1083,95 @@ function Inventory() {
           </div>
         }
       />
+
+      <Card className="mb-3">
+        <form
+          className="space-y-3 p-4"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setStocktakeMsg("");
+            let id = stocktakeId;
+            if (!id) {
+              const opened = await POST<any>("/stocktakes", { name: stocktakeName });
+              if (!opened?.success) {
+                setStocktakeMsg(opened?.error || "Could not start the count");
+                return;
+              }
+              id = Number(opened.id);
+              setStocktakeId(id);
+            }
+            const saved = await POST<any>(`/stocktakes/${id}/counts`, {
+              product_id: Number(stocktakeProduct),
+              counted_qty: Number(stocktakeQty),
+            });
+            setStocktakeMsg(saved?.success
+              ? "Count saved. Stock is unchanged until a Super-Admin applies it."
+              : (saved?.error || "Could not save the count"));
+            if (saved?.success) qc.invalidateQueries({ queryKey: ["stocktakes"] });
+          }}
+        >
+          <div className="text-sm font-extrabold text-text">Stocktake</div>
+          <div className="text-xs text-text2">
+            Count first. Sales during the count stay. Applying adds the difference to the stock that exists then.
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <Input aria-label="Stocktake name" value={stocktakeName} placeholder="Monday morning"
+              onChange={(e) => setStocktakeName(e.target.value)} className="h-11" />
+            <select aria-label="Product to count" value={stocktakeProduct}
+              onChange={(e) => setStocktakeProduct(e.target.value)}
+              className="h-11 rounded-xl border border-border bg-panel px-3 text-sm">
+              <option value="">Product</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <Input aria-label="Counted quantity" type="number" min={0} step="0.01" value={stocktakeQty}
+              onChange={(e) => setStocktakeQty(e.target.value)} className="h-11" placeholder="Counted" />
+            <Button type="submit" variant="secondary" className="min-h-[44px]">Save count</Button>
+          </div>
+          {canAdjust && stocktakeId ? (
+            <Button
+              type="button"
+              variant="primary"
+              className="min-h-[44px]"
+              onClick={async () => {
+                const applied = await POST<any>(`/stocktakes/${stocktakeId}/apply`, {});
+                setStocktakeMsg(applied?.success
+                  ? "Count applied."
+                  : (applied?.error || "Could not apply the count"));
+                if (applied?.success) {
+                  setStocktakeId(null);
+                  qc.invalidateQueries({ queryKey: ["products"] });
+                  qc.invalidateQueries({ queryKey: ["stocktakes"] });
+                }
+              }}
+            >
+              Apply count
+            </Button>
+          ) : null}
+          {stocktakeMsg ? <div className="text-sm text-text2">{stocktakeMsg}</div> : null}
+          <div className="grid gap-2">
+            {(stocktakesQ.data?.stocktakes || []).slice(0, 8).map((row) => (
+              <button
+                key={row.id}
+                type="button"
+                className="rounded-xl border border-border px-3 py-2 text-left text-sm"
+                onClick={async () => {
+                  const detail = await GET<any>(`/stocktakes/${row.id}`);
+                  const line = detail?.lines?.[0];
+                  setStocktakeId(detail?.status === "open" ? Number(detail.id) : null);
+                  setStocktakeName(detail?.name || "");
+                  setStocktakeMsg(line
+                    ? `${detail.name} is ${detail.status}. ${line.name}: counted ${line.counted_qty}, snapshot ${line.snapshot_qty}.`
+                    : `${detail?.name || "Count"} is ${detail?.status || "unknown"}.`);
+                }}
+              >
+                {row.name || "Count"} · {row.status}
+              </button>
+            ))}
+          </div>
+        </form>
+      </Card>
 
       {canReceive && !canAdjust ? (
         <Card className="mb-3">

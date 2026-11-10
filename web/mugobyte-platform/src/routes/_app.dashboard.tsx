@@ -156,6 +156,18 @@ function WorkspaceHome() {
     value(summary, "last_sync_at", "last_sync") ||
     overview.last_sync_at ||
     null;
+  const activityQ = useQuery({
+    queryKey: ["cloud-activity", orgId],
+    queryFn: () => GET<AnalyticsResponse>("/cloud/analytics/activity", { org_id: orgId }),
+    enabled: Boolean(orgId),
+    retry: false,
+  });
+  const activity = activityQ.data || {};
+  const hasActivity = ["sales", "repayments", "deliveries", "sync_batches"].some((key) => {
+    const rows = activity[key];
+    return Array.isArray(rows) && rows.length > 0;
+  });
+  const synced = Boolean(lastSync) || hasActivity;
 
   const liveUrl =
     (typeof window !== "undefined" && localStorage.getItem("mbt_live_dashboard_url")) || "";
@@ -195,7 +207,7 @@ function WorkspaceHome() {
             <CardTitle className="font-display text-xl">Cloud performance</CardTitle>
             <CardDescription>
               Synced cloud analytics for {activeOrg?.name || "your business"} ·{" "}
-              {lastSync ? `Last sync ${formatDateTime(lastSync)}` : "Waiting for first sync"}
+              {lastSync ? `Last sync ${formatDateTime(lastSync)}` : hasActivity ? "Shop records are on the cloud" : "Waiting for first sync"}
             </CardDescription>
           </div>
           <Button asChild variant="outline" size="sm">
@@ -208,7 +220,7 @@ function WorkspaceHome() {
         <CardContent className="p-4 sm:p-5">
           {!orgId ? (
             <p className="text-sm text-muted-foreground">Select a business to load synced KPIs.</p>
-          ) : analyticsQ.isLoading ? (
+          ) : analyticsQ.isLoading || (activityQ.isLoading && !synced) ? (
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="status" aria-live="polite">
               {(
                 [
@@ -243,7 +255,7 @@ function WorkspaceHome() {
                 Try again
               </Button>
             </div>
-          ) : !lastSync && gross === 0 && collected === 0 && outstanding === 0 && transactions === 0 ? (
+          ) : !synced && gross === 0 && collected === 0 && outstanding === 0 && transactions === 0 ? (
             <div className="flex min-h-28 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-primary/30 bg-primary/[0.04] px-4 py-7 text-center">
               <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/15">
                 <CloudUpload className="h-5 w-5 text-primary" />

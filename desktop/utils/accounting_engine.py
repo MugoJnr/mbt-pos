@@ -1069,6 +1069,8 @@ def reverse_expense(conn, expense_id: int, reason: str, *, user_id=None, usernam
         return {'error': 'Expense was not found'}
     if (row['status'] or '') == 'reversed':
         return {'success': True, 'duplicate': True, 'id': row['id']}
+    if (row['status'] or '') == 'reversal' or str(row['expense_number'] or '').startswith('REV-'):
+        return {'error': 'A reversal cannot be reversed. The original expense is already corrected.', 'status': 400}
     amount = D(row['amount'] or 0)
     if amount <= 0:
         return {'error': 'This expense cannot be reversed'}

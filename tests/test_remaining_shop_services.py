@@ -176,7 +176,7 @@ class RemainingShopServices(unittest.TestCase):
         self.assertIn('once', created.get('error', ''))
         self.assertEqual(self._stock(), 30)
 
-        self.api._role = 'cashier'
+        self.api._role = 'viewer'
         denied = self.api.create_consumption({
             'department_id': saved['id'],
             'reason': 'Staff tea',
@@ -352,6 +352,122 @@ class RemainingShopServices(unittest.TestCase):
         self.assertTrue(second.get('duplicate'))
         self.assertEqual(stock_again, 12)
 
+    def test_stocktake_keeps_sales_made_during_the_count(self):
+        from desktop.utils.stocktake import apply_stocktake, record_count, start_stocktake
+        db = self.ac._db()
+        try:
+            started = start_stocktake(db, 'During trade')
+            record_count(db, started['id'], 1, 28)
+            db.execute("UPDATE products SET stock=? WHERE id=1", (29,))
+            db.commit()
+            applied = apply_stocktake(db, started['id'], username='counter')
+            self.assertTrue(applied.get('success'), applied)
+            stock = float(db.execute("SELECT stock FROM products WHERE id=1").fetchone()['stock'])
+            movement = db.execute(
+                "SELECT qty_before, qty_change, qty_after, movement_type FROM stock_movements "
+                "WHERE reference=?",
+                (f"STK:{started['id']}:1",),
+            ).fetchone()
+        finally:
+            db.close()
+        self.assertEqual(stock, 27.0)
+        self.assertEqual(movement['movement_type'], 'STOCKTAKE')
+        self.assertEqual(float(movement['qty_before']), 29.0)
+        self.assertEqual(float(movement['qty_after']), 27.0)
+
+    def test_recount_keeps_the_first_snapshot_and_a_delivery(self):
+        supplier = self.api.create_supplier({'name': 'Mill'})
+        self.assertTrue(supplier.get('success'), supplier)
+        started = self.api.start_stocktake('Delivery day')
+        self.assertTrue(started.get('success'), started)
+        first = self.api.record_stocktake_count(started['id'], 1, 28)
+        self.assertTrue(first.get('success'), first)
+        received = self.api.receive_stock(1, 5, supplier_id=supplier['id'], unit_cost=60)
+        self.assertTrue(received.get('success'), received)
+        self.assertEqual(self._stock(), 35)
+        again = self.api.record_stocktake_count(started['id'], 1, 27)
+        self.assertTrue(again.get('success'), again)
+        detail = self.api.get_stocktake(started['id'])
+        self.assertEqual(float(detail['lines'][0]['snapshot_qty']), 30.0)
+        self.assertEqual(float(detail['lines'][0]['counted_qty']), 27.0)
+        applied = self.api.apply_stocktake(started['id'])
+        self.assertTrue(applied.get('success'), applied)
+        self.assertEqual(self._stock(), 32.0)
+        listed = self.api.list_stocktakes()
+        self.assertEqual(listed['stocktakes'][0]['status'], 'applied')
+
+    def test_cashier_cannot_apply_stocktake(self):
+        started = self.api.start_stocktake('Cashier count')
+        self.assertTrue(started.get('success'), started)
+        saved = self.api.record_stocktake_count(started['id'], 1, 30)
+        self.assertTrue(saved.get('success'), saved)
+        self.assertEqual(self._stock(), 30)
+        self.api._role = 'cashier'
+        blocked = self.api.apply_stocktake(started['id'])
+        self.assertEqual(blocked.get('status'), 403)
+        self.assertEqual(self._stock(), 30)
+        self.api._role = 'superadmin'
+        applied = self.api.apply_stocktake(started['id'])
+        self.assertTrue(applied.get('success'), applied)
+        self.assertEqual(self._stock(), 30)
+
+    def test_web_stocktake_keeps_a_sale_and_reports_the_upload_queue(self):
+        db = self.ac._db()
+        try:
+            db.execute(
+                "UPDATE users SET password_hash=? WHERE id=1",
+                (self.ac._hash_pw('owner-pass'),),
+            )
+            db.execute(
+                "INSERT INTO users (username,password_hash,role,is_active) VALUES (?,?,?,1)",
+                ('till', self.ac._hash_pw('till-pass'), 'cashier'),
+            )
+            db.commit()
+        finally:
+            db.close()
+        os.environ['MBT_DATA_ROOT'] = self._tmpdir.name
+        os.environ['APPDATA'] = self._tmpdir.name
+        os.environ['LOCALAPPDATA'] = self._tmpdir.name
+        os.environ['PROGRAMDATA'] = self._tmpdir.name
+        import backend.app as appmod
+        appmod.DB_PATH = self._db_path
+        appmod.init_db()
+        client = appmod.app.test_client()
+        owner = client.post('/api/auth/login', json={'username': 'owner', 'password': 'owner-pass'})
+        self.assertEqual(owner.status_code, 200, owner.get_json())
+        headers = {'Authorization': 'Bearer ' + owner.get_json()['token']}
+        opened = client.post('/api/stocktakes', json={'name': 'Web count'}, headers=headers)
+        self.assertEqual(opened.status_code, 200, opened.get_json())
+        stocktake_id = opened.get_json()['id']
+        counted = client.post(
+            f'/api/stocktakes/{stocktake_id}/counts',
+            json={'product_id': 1, 'counted_qty': 28},
+            headers=headers,
+        )
+        self.assertEqual(counted.status_code, 200, counted.get_json())
+        self.assertTrue(counted.get_json().get('stock_unchanged'))
+        sale = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'Cash', 'amount_paid': 200,
+            'client_token': 'web-during-count',
+        })
+        self.assertTrue(sale.get('success'), sale)
+        cashier = client.post('/api/auth/login', json={'username': 'till', 'password': 'till-pass'})
+        self.assertEqual(cashier.status_code, 200, cashier.get_json())
+        denied = client.post(
+            f'/api/stocktakes/{stocktake_id}/apply',
+            json={},
+            headers={'Authorization': 'Bearer ' + cashier.get_json()['token']},
+        )
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        applied = client.post(f'/api/stocktakes/{stocktake_id}/apply', json={}, headers=headers)
+        self.assertEqual(applied.status_code, 200, applied.get_json())
+        self.assertEqual(self._stock(), 27.0)
+        status = client.get('/api/sync/status', headers=headers)
+        self.assertEqual(status.status_code, 200, status.get_json())
+        self.assertGreaterEqual(int(status.get_json().get('outbox_pending') or 0), 1)
+
     def test_remote_shop_commands_apply_once_and_do_not_start_an_installer(self):
         from backend.cloud.command_center import CommandCenter, dispatch_remote_command
         import backend.cloud.command_center as commands
@@ -461,6 +577,89 @@ class RemainingShopServices(unittest.TestCase):
         self.assertEqual(raised, [42])
         self.assertEqual(resolve_second_launch(True, lambda: 0, raised.append), 'quiet')
         self.assertEqual(resolve_second_launch(False, lambda: 42, raised.append), 'start')
+
+    def test_shop_day_uses_one_set_of_records(self):
+        from desktop.utils.stock_layers import add_layer
+        db = self.ac._db()
+        try:
+            add_layer(db, 1, 30, 50, 'opening', 'open-sugar')
+            db.execute("INSERT INTO departments (name,active) VALUES ('Shop',1)")
+            db.commit()
+        finally:
+            db.close()
+        customer = self.api.create_customer({'name': 'Amina', 'phone': '0700000000'})
+        self.assertTrue(customer.get('success'), customer)
+        cash = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'Cash', 'amount_paid': 200, 'client_token': 'day-cash',
+        })
+        mpesa = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'M-Pesa', 'amount_paid': 200, 'client_token': 'day-mpesa',
+        })
+        split = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'Cash', 'amount_paid': 200,
+            'cash_paid': 80, 'electronic_paid': 120, 'electronic_method': 'M-Pesa',
+            'payment_tenders': [
+                {'method': 'Cash', 'amount': 80},
+                {'method': 'M-Pesa', 'amount': 120},
+            ],
+            'client_token': 'day-split',
+        })
+        credit = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'Credit Sale', 'amount_paid': 0,
+            'customer_id': customer['customer_id'], 'client_token': 'day-credit',
+        })
+        for sale in (cash, mpesa, split, credit):
+            self.assertTrue(sale.get('success'), sale)
+        paid = self.api.record_debt_payment(credit['debt_invoice_id'], 50, 'Cash', 'Part payment')
+        self.assertTrue(paid.get('success'), paid)
+        expense = self.api.accounting_create_expense({
+            'amount': 80, 'description': 'Transport',
+            'account_code': '6000', 'pay_from_code': '1000',
+        })
+        self.assertTrue(expense.get('success'), expense)
+        used = self.api.create_consumption({
+            'department_id': 1, 'reason': 'Staff tea',
+            'items': [{'product_id': 1, 'quantity': 0.5}],
+            'client_token': 'day-use',
+        })
+        self.assertTrue(used.get('success'), used)
+        supplier = self.api.create_supplier({'name': 'Mill'})
+        received = self.api.receive_stock(1, 4, supplier_id=supplier['id'], unit_cost=80)
+        self.assertTrue(received.get('success'), received)
+        db = self.ac._db()
+        try:
+            sales = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            cogs = db.execute(
+                "SELECT unit_cost FROM cost_layer_uses WHERE sale_id=? AND reversed=0",
+                (cash['sale_id'],),
+            ).fetchone()[0]
+            balance = db.execute(
+                "SELECT balance FROM debt_invoices WHERE id=?",
+                (credit['debt_invoice_id'],),
+            ).fetchone()[0]
+            product_cost = db.execute("SELECT cost_price FROM products WHERE id=1").fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(sales, 4)
+        self.assertAlmostEqual(float(cogs), 50.0, places=2)
+        self.assertAlmostEqual(float(balance), 150.0, places=2)
+        self.assertNotAlmostEqual(float(product_cost or 0), 50.0, places=2)
+        self.assertAlmostEqual(self._stock(), 29.5, places=2)
+        replay = self.api.create_sale({
+            'items': [{'product_id': 1, 'quantity': 1, 'unit_price': 200, 'discount': 0}],
+            'subtotal': 200, 'discount': 0, 'tax': 0, 'total': 200,
+            'payment_method': 'Cash', 'amount_paid': 200, 'client_token': 'day-cash',
+        })
+        self.assertTrue(replay.get('duplicate'))
+        self.assertEqual(self._stock(), 29.5)
 
     def test_web_exposes_return_and_write_off(self):
         path = os.path.join(ROOT, 'web', 'web_routes.py')

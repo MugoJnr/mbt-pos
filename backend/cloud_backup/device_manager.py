@@ -61,7 +61,8 @@ def get_or_create_device_id() -> str:
     ident['device_id'] = did
     if not ident.get('created_at'):
         ident['created_at'] = _utc_now()
-    ident['hostname'] = platform.node() or ''
+    from backend.cloud.net_gate import local_computer_name
+    ident['hostname'] = local_computer_name()
     ident['platform'] = platform.platform()
     try:
         from licensing.license_engine import _get_device_fingerprint
@@ -78,7 +79,7 @@ def get_device_info() -> dict:
     did = get_or_create_device_id()
     return {
         'device_id': did,
-        'hostname': ident.get('hostname') or platform.node() or '',
+        'hostname': ident.get('hostname') or '',
         'platform': ident.get('platform') or platform.platform(),
         'business_id': ident.get('business_id') or '',
         'business_name': ident.get('business_name') or '',
@@ -120,7 +121,8 @@ def update_business_identity(
     if refresh_token:
         ident['refresh_token'] = refresh_token
     ident['cloud_skipped'] = False
-    ident['hostname'] = platform.node() or ''
+    from backend.cloud.net_gate import local_computer_name
+    ident['hostname'] = local_computer_name()
     ident['platform'] = platform.platform()
     save_identity(ident)
     return ident

@@ -47,7 +47,7 @@ function License() {
       />
       {forbidden ? (
         <Card className="p-6 text-sm text-text2">
-          Manager or admin access is required to view license details.
+          Only the shop owner can view licence details.
         </Card>
       ) : licQ.isLoading ? (
         <Card className="p-6 space-y-3">

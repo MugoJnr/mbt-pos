@@ -257,15 +257,16 @@ def restore_sale_product_qty(db, sale_id: int, product_id: int, qty: float) -> d
     if need <= 0:
         return {'error': 'Quantity must be greater than zero'}
     uses = db.execute(
-        "SELECT id, layer_id, quantity FROM cost_layer_uses "
+        "SELECT id, layer_id, quantity, unit_cost FROM cost_layer_uses "
         "WHERE sale_id=? AND product_id=? AND COALESCE(reversed,0)=0 "
         "ORDER BY id DESC",
         (int(sale_id), int(product_id)),
     ).fetchall()
     if not uses:
-        return {'skipped': True, 'restored': 0}
+        return {'skipped': True, 'restored': 0, 'cost': 0}
     left = need
     restored = 0.0
+    restored_cost = 0.0
     for use in uses:
         if left <= 0.0001:
             break
@@ -287,6 +288,7 @@ def restore_sale_product_qty(db, sale_id: int, product_id: int, qty: float) -> d
                 (put, use[1]),
             )
             restored = round(restored + put, 4)
+            restored_cost = round(restored_cost + put * float(use[3] or 0), 2)
         if take + 0.0001 >= available:
             db.execute("UPDATE cost_layer_uses SET reversed=1 WHERE id=?", (use[0],))
         else:
@@ -295,7 +297,12 @@ def restore_sale_product_qty(db, sale_id: int, product_id: int, qty: float) -> d
                 (take, use[0]),
             )
         left = round(left - take, 4)
-    return {'success': True, 'restored': restored, 'uncosted': round(max(left, 0), 4)}
+    return {
+        'success': True,
+        'restored': restored,
+        'cost': restored_cost,
+        'uncosted': round(max(left, 0), 4),
+    }
 
 
 def period_profit(db, start: str, end: str) -> dict:

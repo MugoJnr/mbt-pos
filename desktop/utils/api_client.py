@@ -578,6 +578,10 @@ def _ensure_schema(conn: sqlite3.Connection):
                 'receipt_footer': 'Thank you for shopping with us!',
                 'theme': 'dark', 'sync_interval': '30',
                 'printer_name': '', 'printer_port': 'USB', 'auto_print': '1',
+                'printer_connection': 'USB', 'printer_host': '', 'paper_size': '80',
+                'document_policy': 'C', 'print_customer_copy': '1',
+                'print_duplicate_copy': '0', 'show_document_preview': '0',
+                'allow_cashier_doc_override': '0', 'allow_reprint': '1',
                 'auto_report_daily': '1', 'auto_report_weekly': '0',
                 'auto_report_interval_hours': '4', 'auto_report_weekday': '0',
                 'auto_db_backup': '1', 'auto_db_backup_interval_hours': '24',
@@ -627,6 +631,15 @@ def _ensure_schema(conn: sqlite3.Connection):
         ('after_sale_reset_discounts', '1'),
         ('after_sale_reset_notes', '1'),
         ('pos_checkout_layout', 'product_explorer'),
+        ('document_policy', 'C'),
+        ('printer_connection', 'USB'),
+        ('printer_host', ''),
+        ('paper_size', '80'),
+        ('print_customer_copy', '1'),
+        ('print_duplicate_copy', '0'),
+        ('show_document_preview', '0'),
+        ('allow_cashier_doc_override', '0'),
+        ('allow_reprint', '1'),
     ):
         conn.execute("INSERT OR IGNORE INTO system_settings (key,value) VALUES (?,?)", (k, v))
     for k, v in defaults.items():
@@ -647,6 +660,10 @@ def _migrate_columns(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE sales ADD COLUMN mpesa_ref TEXT")
     if 'status' not in cols:
         conn.execute("ALTER TABLE sales ADD COLUMN status TEXT DEFAULT 'completed'")
+    if 'issued_document_kind' not in cols:
+        conn.execute("ALTER TABLE sales ADD COLUMN issued_document_kind TEXT")
+    if 'issued_document_number' not in cols:
+        conn.execute("ALTER TABLE sales ADD COLUMN issued_document_number TEXT")
         conn.execute(
             "UPDATE sales SET status='completed' WHERE status IS NULL OR status=''"
         )
@@ -674,26 +691,6 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
-    # Unused default departments are archived only when they have no history.
-    # A new shop starts with an empty department list.
-    for dept_name in (
-        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
-        'Workshop', 'Manufacturing', 'Maintenance',
-    ):
-        row = conn.execute(
-            "SELECT id FROM departments WHERE name=?", (dept_name,)
-        ).fetchone()
-        if not row:
-            continue
-        used = conn.execute(
-            "SELECT COUNT(*) FROM stock_consumptions WHERE department_id=?",
-            (row['id'],),
-        ).fetchone()[0]
-        if int(used or 0) == 0:
-            conn.execute(
-                "UPDATE departments SET active=0 WHERE id=?",
-                (row['id'],),
-            )
     # Ensure consumption void / taken_by columns on upgrades
     try:
         sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumptions)").fetchall()}
@@ -1122,9 +1119,32 @@ def _ensure_categories_table(conn: sqlite3.Connection):
             )
         except sqlite3.IntegrityError:
             pass
+    _protect_audit_log(conn)
 
 
-# ── Receipt number generator ────────────────────────────────────────────────────
+def _protect_audit_log(conn: sqlite3.Connection):
+    """History is insert-only. A correction is a new row, not an edit."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_log)").fetchall()}
+    for name, decl in (
+        ("role_at_event", "TEXT"),
+        ("source", "TEXT"),
+        ("outcome", "TEXT"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE audit_log ADD COLUMN {name} {decl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at, id)"
+    )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS audit_log_no_update "
+        "BEFORE UPDATE ON audit_log BEGIN "
+        "SELECT RAISE(ABORT, 'audit history cannot be changed'); END"
+    )
+    conn.execute(
+        "CREATE TRIGGER IF NOT EXISTS audit_log_no_delete "
+        "BEFORE DELETE ON audit_log BEGIN "
+        "SELECT RAISE(ABORT, 'audit history cannot be deleted'); END"
+    )
 def _sale_day_expr(alias: str = '') -> str:
     """SQL: business/reporting day for a sale (sale_date or date(created_at))."""
     from desktop.utils.shop_time import sale_day_sql
@@ -1155,13 +1175,43 @@ def _next_receipt(conn=None, business_day=None) -> str:
 
 
 # ── Audit logger ────────────────────────────────────────────────────────────────
-def _audit(user_id, username, action, module='system', details='', conn=None):
+import contextvars
+_audit_source = contextvars.ContextVar('mbt_audit_source', default='till')
+
+
+def set_audit_source(source: str) -> None:
+    _audit_source.set(source or 'till')
+
+
+def _audit(user_id, username, action, module='system', details='', conn=None, source=None, ip_address=None):
     try:
         own = conn is None
         db = conn if conn is not None else _db_light()
+        cols = {r[1] for r in db.execute("PRAGMA table_info(audit_log)").fetchall()}
+        role = ''
+        if user_id and 'role_at_event' in cols:
+            found = db.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
+            role = (found[0] if found else '') or ''
+        name = (action or '').upper()
+        outcome = 'denied' if any(word in name for word in ('FAIL', 'DENIED', 'BLOCKED')) else 'recorded'
+        fields = ['user_id', 'username', 'action', 'module', 'details']
+        values = [user_id, username, action, module, details]
+        if 'role_at_event' in cols:
+            fields.append('role_at_event')
+            values.append(role)
+        if 'source' in cols:
+            fields.append('source')
+            values.append(source or _audit_source.get() or 'till')
+        if 'outcome' in cols:
+            fields.append('outcome')
+            values.append(outcome)
+        if ip_address and 'ip_address' in cols:
+            fields.append('ip_address')
+            values.append(ip_address)
+        placeholders = ','.join('?' for _ in fields)
         db.execute(
-            "INSERT INTO audit_log (user_id,username,action,module,details) VALUES (?,?,?,?,?)",
-            (user_id, username, action, module, details)
+            f"INSERT INTO audit_log ({','.join(fields)}) VALUES ({placeholders})",
+            values,
         )
         if own:
             db.commit()
@@ -1718,12 +1768,19 @@ class APIClient:
     # ── USERS ────────────────────────────────────────────────────────────────────
 
     def get_users(self) -> list:
+        from desktop.utils.security import client_actor, has_permission
+        role = (self._role or '').lower()
+        full = (not role) or has_permission(client_actor(self), 'users.view')
         db = _db()
         try:
-            return _rows(db.execute(
-                "SELECT id,username,full_name,role,email,is_active,"
-                "tab_permissions,permission_grants,permission_denials,created_at,last_login FROM users"
-            ))
+            if full:
+                sql = (
+                    "SELECT id,username,full_name,role,email,is_active,"
+                    "tab_permissions,permission_grants,permission_denials,created_at,last_login FROM users"
+                )
+            else:
+                sql = "SELECT id,username,full_name,is_active FROM users WHERE is_active=1"
+            return _rows(db.execute(sql))
         finally:
             db.close()
 
@@ -2550,13 +2607,29 @@ class APIClient:
             db.close()
 
     def update_supplier(self, sid: int, data: dict) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        actor = client_actor(self)
+        if actor.get('role') and not has_permission(actor, 'supplier.manage'):
+            return {'error': 'You cannot edit a supplier.', 'status': 403}
         db = _db()
         try:
+            before = _row(db.execute(
+                "SELECT name, phone, email, address, notes FROM suppliers WHERE id=?",
+                (sid,),
+            ))
+            if not before:
+                return {'error': 'Supplier not found.', 'status': 404}
             fields, vals = [], []
-            for f in ('name', 'phone', 'email', 'address', 'notes', 'is_active'):
-                if f in data:
-                    fields.append(f"{f}=?")
-                    vals.append(data[f])
+            changes = []
+            for field in ('name', 'phone', 'email', 'address', 'notes', 'is_active'):
+                if field not in data or data[field] is None:
+                    continue
+                fields.append(f"{field}=?")
+                vals.append(data[field])
+                old = '' if before.get(field) is None else str(before.get(field))
+                new = '' if data[field] is None else str(data[field])
+                if old != new:
+                    changes.append(f"{field} {old}->{new}")
             if not fields:
                 return {'error': 'No fields to update.'}
             fields.append("updated_at=?")
@@ -2565,6 +2638,10 @@ class APIClient:
             db.execute(
                 f"UPDATE suppliers SET {', '.join(fields)} WHERE id=?", vals)
             db.commit()
+            _audit(
+                self._user_id, self._username, 'UPDATE_SUPPLIER', 'inventory',
+                f"id={sid} " + (", ".join(changes) if changes else "no visible change"),
+            )
             return {'success': True}
         finally:
             db.close()
@@ -2955,6 +3032,10 @@ class APIClient:
             db.close()
 
     def supplier_statement(self, supplier_id: int) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        role = (self._role or '').lower()
+        if role and not has_permission(client_actor(self), 'supplier.view'):
+            return {'error': 'Supplier balances are not available for this login.', 'status': 403}
         db = _db()
         try:
             from desktop.utils.supplier_payables import statement
@@ -3393,6 +3474,96 @@ class APIClient:
         finally:
             db.close()
 
+    def start_stocktake(self, name: str) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stocktake import start_stocktake
+        if not has_permission(client_actor(self), 'inventory.view'):
+            return {'error': 'You cannot open a stocktake.', 'status': 403}
+        db = _db()
+        try:
+            result = start_stocktake(db, name)
+            if result.get('success'):
+                db.commit()
+                _audit(
+                    self._user_id, self._username, 'START_STOCKTAKE', 'inventory',
+                    f"id={result.get('id')} name={name}",
+                )
+            return result
+        finally:
+            db.close()
+
+    def record_stocktake_count(self, stocktake_id: int, product_id: int, counted_qty) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stocktake import record_count
+        if not has_permission(client_actor(self), 'inventory.view'):
+            return {'error': 'You cannot record a count.', 'status': 403}
+        db = _db()
+        try:
+            result = record_count(db, stocktake_id, product_id, counted_qty)
+            if result.get('success'):
+                db.commit()
+            return result
+        finally:
+            db.close()
+
+    def apply_stocktake(self, stocktake_id: int) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stocktake import apply_stocktake
+        if not has_permission(client_actor(self), 'inventory.adjust_stock'):
+            return {'error': 'Only Super-Admin can apply a stocktake.', 'status': 403}
+        db = _db()
+        try:
+            return apply_stocktake(
+                db, stocktake_id, username=self._username or '', user_id=self._user_id,
+            )
+        finally:
+            db.close()
+
+    def list_stocktakes(self) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stocktake import list_stocktakes
+        if not has_permission(client_actor(self), 'inventory.view'):
+            return {'error': 'You cannot view stocktakes.', 'status': 403}
+        db = _db()
+        try:
+            return {'stocktakes': list_stocktakes(db)}
+        finally:
+            db.close()
+
+    def get_stocktake(self, stocktake_id: int) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stocktake import stocktake_detail
+        if not has_permission(client_actor(self), 'inventory.view'):
+            return {'error': 'You cannot view stocktakes.', 'status': 403}
+        db = _db()
+        try:
+            return stocktake_detail(db, stocktake_id)
+        finally:
+            db.close()
+
+    def sync_status(self) -> dict:
+        """Local queue state. Pending means not yet accepted by the portal."""
+        db = _db()
+        try:
+            queue = db.execute(
+                "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+            ).fetchone()[0]
+            try:
+                rows = db.execute(
+                    "SELECT entity_type, COUNT(*) FROM sync_outbox "
+                    "WHERE processed_at IS NULL GROUP BY entity_type"
+                ).fetchall()
+                pending = {row[0]: int(row[1]) for row in rows}
+            except Exception:
+                pending = {}
+            return {
+                'notification_queue': int(queue or 0),
+                'outbox': pending,
+                'outbox_pending': int(sum(pending.values())),
+            }
+        finally:
+            db.close()
+
     def list_stock_adjustment_requests(self, status: str = '') -> list:
         db = _db()
         try:
@@ -3416,7 +3587,8 @@ class APIClient:
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Enter a reason for the void request.', 'status': 400}
-        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+        from desktop.utils.security import client_actor, has_permission
+        if not has_permission(client_actor(self), 'sales.request_void'):
             return {'error': 'You cannot request a void.', 'status': 403}
         db = _db()
         try:
@@ -3711,17 +3883,26 @@ class APIClient:
                 if status not in ('pending', 'escalated'):
                     db.rollback()
                     return {'error': f'Already {row["status"]}', 'status': 400}
+                outcome = self._post_recorded_approval(db, row, atype)
+                if outcome.get('error'):
+                    db.rollback()
+                    return outcome
                 decided = db.execute(
                     "UPDATE cc_approvals SET status='approved', reviewed_by=?, "
-                    "reviewed_by_id=?, review_note=?, updated_at=? "
+                    "reviewed_by_id=?, review_note=?, updated_at=?, execution_json=? "
                     "WHERE id=? AND status IN ('pending','escalated')",
                     (self._username or '', self._user_id, note,
-                     datetime.now().isoformat(), int(approval_id)),
+                     datetime.now().isoformat(), json.dumps(outcome), int(approval_id)),
                 )
                 db.commit()
                 if decided.rowcount != 1:
                     return {'error': 'Approval is already being processed.', 'status': 409}
-                return {'success': True, 'status': 'approved', 'executed': False}
+                return {
+                    'success': True,
+                    'status': 'approved',
+                    'executed': bool(outcome.get('executed')),
+                    'result': outcome,
+                }
             if atype == 'stock_adjust' and (self._role or '').lower() != 'superadmin':
                 db.rollback()
                 return {'error': 'Only Super-Admin can apply a stock adjustment.', 'status': 403}
@@ -3780,6 +3961,69 @@ class APIClient:
                 'duplicate': bool(result.get('duplicate')),
             }
         return finished
+
+    def _post_recorded_approval(self, db, row, atype: str) -> dict:
+        """Turn an approved expense or refund into a shop record. Other requests stay a decision."""
+        try:
+            amount = round(float(row['amount'] or 0), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+        title = str(row['title'] or row['details'] or atype).strip() or atype
+        if atype == 'expense':
+            if amount <= 0:
+                return {'error': 'Enter an expense amount before approving it.', 'status': 400}
+            from desktop.utils.accounting_engine import create_expense
+            posted = create_expense(
+                db,
+                {
+                    'amount': amount,
+                    'description': title,
+                    'account_code': '6000',
+                    'pay_from_code': '1000',
+                },
+                user_id=self._user_id,
+                username=self._username or '',
+            )
+            if posted.get('error'):
+                return {'error': posted['error'], 'status': 400}
+            return {
+                'executed': True,
+                'expense_number': posted.get('expense_number'),
+                'amount': amount,
+            }
+        if atype == 'refund':
+            if amount <= 0:
+                return {'error': 'Enter a refund amount before approving it.', 'status': 400}
+            from desktop.utils.accounting_hooks import post_return_journal
+            from desktop.utils.shop_time import business_day_iso, sale_created_at_for_day
+            sale_date_s = business_day_iso(None)
+            created_at_s = sale_created_at_for_day(sale_date_s)
+            ret_rn = f"RFD-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{int(row['id'])}"
+            db.execute(
+                "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
+                "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
+                "status,sale_date,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ret_rn, self._user_id, self._username or 'staff',
+                 -amount, 0, 0, -amount, 'cash', -amount, 0,
+                 f"Approved refund: {title}", 'return', sale_date_s, created_at_s),
+            )
+            ret_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            posted = post_return_journal(
+                db, ret_id,
+                refund_total=amount, cash_refund=amount, method='cash',
+                receipt=ret_rn, entry_date=sale_date_s,
+                user_id=self._user_id, username=self._username or 'staff', safe=False,
+            )
+            if posted.get('error'):
+                return {'error': posted['error'], 'status': 400}
+            return {
+                'executed': True,
+                'receipt_number': ret_rn,
+                'return_sale_id': ret_id,
+                'amount': amount,
+            }
+        return {'executed': False}
 
     def _ensure_approval_table(self, db) -> None:
         db.execute(
@@ -4315,6 +4559,14 @@ class APIClient:
                 ).strip(' |')
             if is_backdated and 'business day' not in notes.lower():
                 notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
+            from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa
+            mpesa_prepared = prepare_sale_mpesa(
+                db, data, data.get('payment_method', 'cash'), electronic_paid,
+            )
+            if mpesa_prepared.get('mpesa_ref'):
+                mpesa_ref = mpesa_prepared['mpesa_ref']
+            if mpesa_prepared.get('note') and mpesa_prepared['note'] not in notes:
+                notes = (notes + ' | ' + mpesa_prepared['note']).strip(' |')
 
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
@@ -4350,6 +4602,7 @@ class APIClient:
                  sale_token or None)
             )
             sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            attach_sale_mpesa(db, sale_id, mpesa_prepared)
 
             for item in data.get('items', []):
                 from backend.sale_lines import fill_sale_line
@@ -4540,6 +4793,21 @@ class APIClient:
                    'total': total,
                    'sale_date': sale_date_s,
                    'created_at': created_at_s}
+            try:
+                from printing.sale_documents import stamp_sale_document
+                from desktop.utils.security import client_actor, has_permission
+                actor = client_actor(self)
+                stamped = stamp_sale_document(
+                    db, sale_id, (data or {}).get('document_kind') or '',
+                    can_edit_settings=has_permission(actor, 'settings.edit'),
+                    can_sell=has_permission(actor, 'sales.create') or not self._role,
+                    commit=True,
+                )
+                if stamped.get('kind'):
+                    out['document_kind'] = stamped.get('kind')
+                    out['document_number'] = stamped.get('number')
+            except Exception as stamp_error:
+                logger.warning('Sale %s saved; document type was not frozen: %s', sale_id, stamp_error)
             if wallet_balance_after is not None:
                 out['wallet_balance'] = wallet_balance_after
             if variance_result:
@@ -4823,6 +5091,68 @@ class APIClient:
             except Exception:
                 pass
             return sale
+        finally:
+            db.close()
+
+    def _document_permissions(self):
+        from desktop.utils.security import client_actor, has_permission
+        actor = client_actor(self)
+        can_edit = has_permission(actor, 'settings.edit') if self._role else True
+        can_sell = has_permission(actor, 'sales.create') if self._role else True
+        return can_edit, can_sell
+
+    def sale_document(self, sale_id: int, kind: str = '', reprint: bool = False) -> dict:
+        db = _db()
+        try:
+            from printing.sale_documents import build_sale_document, load_settings, override_allowed
+            doc = build_sale_document(db, int(sale_id), kind=kind or '', reprint=reprint)
+            if doc.get('error'):
+                return doc
+            cfg = load_settings(db)
+            can_edit, can_sell = self._document_permissions()
+            doc['can_override'] = override_allowed(cfg, can_edit_settings=can_edit, can_sell=can_sell)
+            return doc
+        finally:
+            db.close()
+
+    def print_sale_document(self, sale_id: int, automatic: bool = False, reprint: bool = False) -> dict:
+        """Reprint or print the saved document. Does not create a sale."""
+        db = _db()
+        try:
+            from printing.sale_documents import print_existing_sale
+            before = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            outcome = print_existing_sale(db, int(sale_id), automatic=automatic, reprint=reprint)
+            after = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            outcome['sales_unchanged'] = before == after
+            return outcome
+        finally:
+            db.close()
+
+    def set_sale_document_kind(self, sale_id: int, kind: str) -> dict:
+        db = _db()
+        try:
+            from printing.sale_documents import change_document_kind, load_settings, override_allowed
+            cfg = load_settings(db)
+            can_edit, can_sell = self._document_permissions()
+            result = change_document_kind(
+                db, int(sale_id), kind,
+                allowed=override_allowed(cfg, can_edit_settings=can_edit, can_sell=can_sell),
+            )
+            if result.get('changed'):
+                _audit(
+                    self._user_id, self._username, 'DOCUMENT_TYPE', 'sales',
+                    f"sale={sale_id} {result.get('old_kind')} -> {result.get('kind')} "
+                    f"number={result.get('number')}",
+                )
+            return result
+        finally:
+            db.close()
+
+    def payment_document(self, payment_receipt: str, reprint: bool = False) -> dict:
+        db = _db()
+        try:
+            from printing.sale_documents import build_payment_document
+            return build_payment_document(db, payment_receipt, reprint=reprint)
         finally:
             db.close()
 
@@ -5555,6 +5885,7 @@ class APIClient:
                 return {'error': 'No valid return quantities.'}
 
             # Restock
+            restored_cost = 0.0
             for rl in restock_lines:
                 pid = rl['product_id']
                 qty = rl['quantity']
@@ -5587,6 +5918,7 @@ class APIClient:
                 if restored.get('error'):
                     db.rollback()
                     return {'error': restored['error']}
+                restored_cost = round(restored_cost + float(restored.get('cost') or 0), 2)
                 db.execute(
                     "UPDATE sale_items SET returned_qty=? WHERE id=?",
                     (round(rl['already'] + qty, 4), rl['sale_item_id']),
@@ -5640,13 +5972,23 @@ class APIClient:
                 (sale_id, self._user_id, self._username or 'staff',
                  'RETURN', 'return', orig_rn, ret_rn, reason),
             )
-            try:
-                from desktop.utils.accounting_hooks import reverse_sale_journal
-                # Soft: reverse journal against original is wrong for partial —
-                # log only; full journal optional
-                pass
-            except Exception:
-                pass
+            from desktop.utils.accounting_hooks import post_return_journal
+            posted = post_return_journal(
+                db, ret_id,
+                refund_total=refund_total,
+                cash_refund=cash_refund,
+                debt_reduced=debt_applied,
+                cost=restored_cost,
+                method=method,
+                receipt=ret_rn,
+                entry_date=sale_date_s,
+                user_id=self._user_id,
+                username=self._username or 'staff',
+                safe=False,
+            )
+            if posted.get('error'):
+                db.rollback()
+                return {'error': posted['error'], 'status': 400}
 
             result = {
                 'success': True,
@@ -6177,6 +6519,7 @@ class APIClient:
             """, (start, end)))
             rolled = collected_from_sales(rolled_rows)
             summary['cash_sales_collected'] = rolled['cash_collected']
+            summary['cash_collected'] = rolled['cash_collected']
             summary['mpesa_collected'] = rolled['mpesa_collected']
             summary['card_collected'] = rolled['card_collected']
             summary['bank_collected'] = rolled['bank_collected']
@@ -6198,6 +6541,12 @@ class APIClient:
             summary['cogs'] = figures['cogs']
             summary['uncosted_lines'] = figures['uncosted_lines']
             summary['profit_note'] = figures['profit_note']
+            for key in (
+                'cash_collected', 'mpesa_collected', 'card_collected',
+                'bank_collected', 'other_collected',
+            ):
+                summary[key] = figures.get(key) or 0
+            summary['collected'] = figures['total_collected']
             summary['expenses'] = figures['expenses']
             summary['net_operating_result'] = figures['net_operating_result']
             summary['outstanding_debt'] = figures['outstanding_debt']
@@ -6237,11 +6586,23 @@ class APIClient:
                 GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
             """, (start, end)))
 
-            by_payment = _rows(db.execute(f"""
-                SELECT payment_method,COUNT(*) as count,SUM(total) as total
-                FROM sales WHERE {_sale_day_expr()} BETWEEN ? AND ?
-                AND status IN ('completed','return') GROUP BY payment_method
-            """, (start, end)))
+            from desktop.utils.payment_tenders import add_collected_amounts, collection_by_method
+            extra = {
+                key: round(
+                    float(figures.get(f'{key}_collected') or 0)
+                    - float(rolled.get(f'{key}_collected') or 0),
+                    2,
+                )
+                for key in ('cash', 'mpesa', 'card', 'bank', 'other')
+            }
+            by_payment = [
+                {
+                    'payment_method': row['method'],
+                    'count': row['count'],
+                    'total': row['collected'],
+                }
+                for row in add_collected_amounts(collection_by_method(rolled_rows), extra)
+            ]
 
             return {
                 'summary':      summary or {},
@@ -6353,14 +6714,73 @@ class APIClient:
 
     # ── AUDIT LOG ─────────────────────────────────────────────────────────────────
 
-    def get_audit_log(self) -> list:
+    def can_view_audit(self) -> bool:
+        from desktop.utils.security import client_actor, has_permission
+        actor = client_actor(self)
+        return (not actor.get('role')) or has_permission(actor, 'audit.view')
+
+    def get_audit_log(self, q: str = '', limit: int = 500, offset: int = 0) -> list:
+        from desktop.utils.security import client_actor, has_permission
+        from backend.audit_detail import like_pattern, redact
+        actor = client_actor(self)
+        if actor.get('role') and not has_permission(actor, 'audit.view'):
+            return []
+        needle = (q or '').strip().lower()
+        try:
+            limit = min(20000, max(1, int(limit)))
+            offset = max(0, int(offset))
+        except (TypeError, ValueError):
+            limit, offset = 50, 0
         db = _db()
         try:
-            return _rows(db.execute(
-                "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 500"
-            ))
+            if needle:
+                like = like_pattern(needle)
+                rows = _rows(db.execute(
+                    "SELECT * FROM audit_log "
+                    "WHERE lower(COALESCE(action,'')) LIKE ? ESCAPE '\\' "
+                    "OR lower(COALESCE(username,'')) LIKE ? ESCAPE '\\' "
+                    "OR lower(COALESCE(module,'')) LIKE ? ESCAPE '\\' "
+                    "OR lower(COALESCE(details,'')) LIKE ? ESCAPE '\\' "
+                    "OR lower(COALESCE(outcome,'')) LIKE ? ESCAPE '\\' "
+                    "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (like, like, like, like, like, limit, offset),
+                ))
+            else:
+                rows = _rows(db.execute(
+                    "SELECT * FROM audit_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ))
         finally:
             db.close()
+        for row in rows:
+            row['details'] = redact(row.get('details') or '')
+        return rows
+
+    def export_audit_csv(self, path: str, q: str = '') -> int:
+        """Write every matching event, not only the page on screen."""
+        import csv
+        page_size = 1000
+        offset = 0
+        written = 0
+        with open(path, 'w', newline='', encoding='utf-8-sig') as handle:
+            writer = csv.writer(handle)
+            writer.writerow([
+                'id', 'created_at', 'username', 'role_at_event', 'action',
+                'module', 'outcome', 'source', 'details',
+            ])
+            while True:
+                rows = self.get_audit_log(q=q, limit=page_size, offset=offset)
+                for item in rows:
+                    writer.writerow([
+                        item.get('id'), item.get('created_at'), item.get('username'),
+                        item.get('role_at_event'), item.get('action'), item.get('module'),
+                        item.get('outcome'), item.get('source'), item.get('details'),
+                    ])
+                written += len(rows)
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+        return written
 
     # ── CUSTOMERS ─────────────────────────────────────────────────────────────
 
@@ -6513,17 +6933,30 @@ class APIClient:
 
     def _next_invoice_number(self, db) -> str:
         today = datetime.now().strftime('%Y%m%d')
-        count = db.execute(
-            "SELECT COUNT(*) FROM debt_invoices WHERE date(created_at)=date('now')"
-        ).fetchone()[0]
-        return f"INV-{today}-{count+1:04d}"
+        return self._next_day_number(db, "INV", today, "invoice_number", "debt_invoices")
 
     def _next_payment_receipt(self, db) -> str:
-        today = datetime.now().strftime('%Y%m%d')
-        count = db.execute(
-            "SELECT COUNT(*) FROM debt_payments WHERE date(created_at)=date('now')"
-        ).fetchone()[0]
-        return f"PAY-{today}-{count+1:04d}"
+        from desktop.utils.shop_time import shop_now
+        today = shop_now().strftime('%Y%m%d')
+        return self._next_day_number(db, "PAY", today, "payment_receipt", "debt_payments")
+
+    def _next_day_number(self, db, prefix: str, today: str, column: str, table: str) -> str:
+        """Next number is one past the highest suffix already used today.
+
+        A count is wrong when an earlier number was skipped. Reusing that
+        suffix hits the unique constraint and the sale is rolled back.
+        """
+        rows = db.execute(
+            f"SELECT {column} FROM {table} WHERE {column} LIKE ?",
+            (f"{prefix}-{today}-%",),
+        ).fetchall()
+        highest = 0
+        for row in rows:
+            value = row[column] if hasattr(row, "keys") else row[0]
+            suffix = str(value or "").rsplit("-", 1)[-1]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+        return f"{prefix}-{today}-{highest + 1:04d}"
 
     def create_debt_invoice(self, data: dict, conn=None) -> dict:
         """
@@ -6744,6 +7177,10 @@ class APIClient:
                             payment_method: str = 'cash', notes: str = '',
                             payment_reference: str = '') -> dict:
         """Collect a payment against an existing invoice. Rejects invalid / orphan debts."""
+        from desktop.utils.security import client_actor, has_permission
+        role = (self._role or '').lower()
+        if role and not has_permission(client_actor(self), 'debt.collect'):
+            return {'error': 'You cannot collect a debt payment.', 'status': 403}
         db = _db()
         try:
             if not invoice_id:
@@ -6838,25 +7275,27 @@ class APIClient:
                 balance_after = 0.0
 
             pay_receipt = self._next_payment_receipt(db)
+            from desktop.utils.shop_time import shop_now
+            paid_at = shop_now().strftime('%Y-%m-%d %H:%M:%S')
 
             if 'payment_reference' in dp_cols:
                 db.execute(
                     "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
                     "amount,payment_method,payment_reference,balance_before,balance_after,"
-                    "cashier_id,cashier_name,notes) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "cashier_id,cashier_name,notes,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (pay_receipt, invoice_id, inv['customer_id'],
                      amount, payment_method, ref, balance_before, balance_after,
-                     self._user_id, self._username or 'staff', notes)
+                     self._user_id, self._username or 'staff', notes, paid_at)
                 )
             else:
                 db.execute(
                     "INSERT INTO debt_payments (payment_receipt,invoice_id,customer_id,"
-                    "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "amount,payment_method,balance_before,balance_after,cashier_id,cashier_name,notes,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (pay_receipt, invoice_id, inv['customer_id'],
                      amount, payment_method, balance_before, balance_after,
-                     self._user_id, self._username or 'staff', notes)
+                     self._user_id, self._username or 'staff', notes, paid_at)
                 )
             claimed = db.execute(
                 "UPDATE debt_invoices SET amount_paid=?, balance=?, status=?, updated_at=? "
@@ -7227,15 +7666,18 @@ class APIClient:
         new_paid = round(float(fresh['amount_paid'] or 0) + amount, 2)
         new_status = 'paid' if balance_after <= 0.009 else 'partial'
         pay_receipt = self._next_payment_receipt(db)
+        from desktop.utils.shop_time import shop_now
+        paid_at = shop_now().strftime('%Y-%m-%d %H:%M:%S')
         cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
         fields = [
             "payment_receipt", "invoice_id", "customer_id", "amount", "payment_method",
             "balance_before", "balance_after", "cashier_id", "cashier_name", "notes",
+            "created_at",
         ]
         values = [
             pay_receipt, invoice_id, fresh['customer_id'], amount, payment_method,
             balance_before, balance_after, self._user_id, self._username or 'staff',
-            notes or '',
+            notes or '', paid_at,
         ]
         if 'payment_reference' in cols:
             fields.append("payment_reference")
@@ -8528,12 +8970,8 @@ class APIClient:
     def _device_name(self) -> str:
         try:
             # Prefer env — socket.gethostname() can stall on broken DNS/NetBIOS
-            name = (os.environ.get('COMPUTERNAME') or os.environ.get('HOSTNAME') or '').strip()
-            if name:
-                return name
-            import socket
-            socket.setdefaulttimeout(2.0)
-            return socket.gethostname() or 'unknown'
+            from backend.cloud.net_gate import local_computer_name
+            return local_computer_name()
         except Exception:
             return 'unknown'
 
@@ -8595,14 +9033,15 @@ class APIClient:
         ledger rows, and full audit. No customer / payment / receipt.
         data: date, department_id, reason, notes, taken_by, items[{product_id, quantity, unit_cost?}]
         """
-        items = data.get('items') or []
-        if not items:
-            return {'error': 'Add at least one product line.'}
-        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+        from desktop.utils.security import client_actor, has_permission
+        if not has_permission(client_actor(self), 'consumption.create'):
             return {
                 'error': 'You cannot record internal consumption.',
                 'status': 403,
             }
+        items = data.get('items') or []
+        if not items:
+            return {'error': 'Add at least one product line.'}
         reason = (data.get('reason') or '').strip()
         if not reason:
             return {'error': 'Reason is required.'}

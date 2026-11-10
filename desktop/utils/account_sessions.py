@@ -129,6 +129,16 @@ def open_web_session(conn, user: dict, ip: str = '') -> str:
     return sid
 
 
+def revoke_web_session(conn, sid: str) -> None:
+    if not sid:
+        return
+    ensure(conn)
+    conn.execute(
+        "UPDATE web_sessions SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+        (datetime.now().isoformat(timespec='seconds'), sid),
+    )
+
+
 def web_session_active(conn, sid: str) -> bool:
     if not sid:
         return True

@@ -63,6 +63,20 @@ def is_credit_method(name: str) -> bool:
     return str(name or '').strip().lower().replace('_', ' ') in _CREDIT_METHODS
 
 
+def method_bucket(name: str) -> str:
+    """Which collection total a payment method belongs in."""
+    label = str(name or '').strip().lower().replace('_', ' ')
+    if label == 'cash':
+        return 'cash'
+    if label in ('m-pesa', 'mpesa', 'mobile money'):
+        return 'mpesa'
+    if label == 'card':
+        return 'card'
+    if label in ('bank transfer', 'bank', 'bank payment', 'cheque', 'check'):
+        return 'bank'
+    return 'other'
+
+
 def collected_buckets(lines: Iterable[dict]) -> dict:
     """Confirmed money by method. Credit and unconfirmed lines are not collected."""
     totals = {'cash': 0.0, 'mpesa': 0.0, 'card': 0.0, 'bank': 0.0, 'other': 0.0}
@@ -78,17 +92,7 @@ def collected_buckets(lines: Iterable[dict]) -> dict:
         amount = _r2(line.get('amount'))
         if amount <= 0:
             continue
-        if name == 'cash':
-            key = 'cash'
-        elif name in ('m-pesa', 'mpesa', 'mobile money'):
-            key = 'mpesa'
-        elif name == 'card':
-            key = 'card'
-        elif name in ('bank transfer', 'bank', 'bank payment', 'cheque', 'check'):
-            key = 'bank'
-        else:
-            key = 'other'
-        totals[key] = _r2(totals[key] + amount)
+        totals[method_bucket(name)] = _r2(totals[method_bucket(name)] + amount)
     return totals
 
 
@@ -146,16 +150,24 @@ def collected_from_sales(sales: Iterable[dict]) -> dict:
             lines = raw
         buckets = collected_buckets(lines) if lines else None
         split_money = 0.0
+        confirmed_money = 0.0
         if buckets:
             split_money = (
                 buckets['mpesa'] + buckets['card'] + buckets['bank'] + buckets['other']
             )
-        if buckets and split_money > 0.009:
+            confirmed_money = _r2(split_money + buckets['cash'])
+        # A part payment often stores only a cash line. That cash is collected.
+        if buckets and confirmed_money > 0.009:
             mpesa = _r2(mpesa + buckets['mpesa'])
             card = _r2(card + buckets['card'])
             bank = _r2(bank + buckets['bank'])
             other = _r2(other + buckets['other'])
             cash = _r2(cash + _cash_kept_on_split(buckets, sale))
+            continue
+        if method in ('part payment', 'part-payment', 'part pay'):
+            cash = _r2(cash + _net_cash_kept(
+                sale.get('amount_paid'), sale.get('total'), sale.get('change_amount'),
+            ))
             continue
         if method == 'cash':
             cash = _r2(cash + _net_cash_kept(
@@ -214,7 +226,7 @@ def collection_by_method(sales: Iterable[dict]) -> list:
         one = collected_from_sales([sale])
         for key, label in labels:
             amount = float(one.get(f'{key}_collected') or 0)
-            if amount > 0.009:
+            if abs(amount) > 0.009:
                 totals[label] = _r2(totals[label] + amount)
                 counts[label] += 1
         issued = credit_issued_from_sales([sale])
@@ -224,7 +236,7 @@ def collection_by_method(sales: Iterable[dict]) -> list:
     rows = [
         {'method': label, 'count': counts[label], 'collected': totals[label]}
         for _key, label in labels
-        if counts[label] or totals[label] > 0.009
+        if counts[label] or abs(totals[label]) > 0.009
     ]
     if credit_count:
         rows.append({
@@ -233,6 +245,31 @@ def collection_by_method(sales: Iterable[dict]) -> list:
             'collected': credit_total,
         })
     return rows
+
+
+def add_collected_amounts(rows: list, extra: dict) -> list:
+    """Add later repayments onto the method totals. Credit issued is left alone."""
+    labels = (
+        ('cash', 'Cash'),
+        ('mpesa', 'M-Pesa'),
+        ('card', 'Card'),
+        ('bank', 'Bank'),
+        ('other', 'Other'),
+    )
+    out = [dict(row) for row in rows or []]
+    by_method = {row.get('method'): row for row in out}
+    for key, label in labels:
+        amount = _r2(extra.get(key) if extra.get(key) is not None else extra.get(f'{key}_collected'))
+        if amount <= 0.009:
+            continue
+        row = by_method.get(label)
+        if row is None:
+            row = {'method': label, 'count': 0, 'collected': 0.0}
+            out.append(row)
+            by_method[label] = row
+        row['collected'] = _r2(float(row.get('collected') or 0) + amount)
+        row['count'] = int(row.get('count') or 0) + 1
+    return out
 
 
 def stock_value_at_cost(cost, quantity) -> float:

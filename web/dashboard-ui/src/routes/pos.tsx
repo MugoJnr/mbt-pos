@@ -30,6 +30,7 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { ProductPhoto, productPhotoSrc } from "@/components/product-photo";
 import { Button, Card, EmptyState, Input, Select, Skeleton } from "@/components/ui-kit";
+import { SaleDocumentPanel } from "@/components/sale-document-panel";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES, saleDayCaption, shopTodayISO } from "@/lib/format";
@@ -69,11 +70,29 @@ type Line = {
   product_id: number;
   product_name: string;
   sku: string;
+  unit?: string;
   quantity: number;
   unit_price: number;
   discount: number;
   total: number;
 };
+
+const HELD_KEY = "mbt-pos-held-sale";
+const MEASURED_UNITS = new Set(["kg", "kgs", "g", "gram", "grams", "l", "lt", "ltr", "litre", "liter", "ml", "m"]);
+
+function saleQtyStep(unit: string | undefined, wheel: number) {
+  return MEASURED_UNITS.has(String(unit || "").trim().toLowerCase()) ? wheel : 1;
+}
+
+function readHeldSale(): Line[] | null {
+  try {
+    const raw = localStorage.getItem(HELD_KEY);
+    const data = raw ? JSON.parse(raw) : null;
+    return Array.isArray(data) && data.length ? data : null;
+  } catch {
+    return null;
+  }
+}
 
 const PAGE_SIZE = 12;
 const QTY_STEP = 0.25;
@@ -119,9 +138,14 @@ function POS() {
   const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
   const [cart, setCart] = useState<Line[]>([]);
-  const [held, setHeld] = useState<Line[] | null>(null);
+  const [held, setHeld] = useState<Line[] | null>(readHeldSale);
   const [discount, setDiscount] = useState(0);
   const [payment, setPayment] = useState("Cash");
+  const [mpesaPhone, setMpesaPhone] = useState("");
+  const [mpesaProfile, setMpesaProfile] = useState("");
+  const [mpesaCode, setMpesaCode] = useState("");
+  const [mpesaPayment, setMpesaPayment] = useState<Record<string, any> | null>(null);
+  const mpesaKey = useRef("");
   const [amount, setAmount] = useState("");
   const [splitLines, setSplitLines] = useState<{ method: string; amount: string; reference: string }[]>([
     { method: "M-Pesa", amount: "", reference: "" },
@@ -130,6 +154,9 @@ function POS() {
   const [qtyDraft, setQtyDraft] = useState<Record<number, string>>({});
   const [cartWide, setCartWide] = useState(false);
   const [note, setNote] = useState("");
+  const [lastSaleId, setLastSaleId] = useState<number | null>(null);
+  const [docOpen, setDocOpen] = useState(false);
+  const [docNotice, setDocNotice] = useState("");
   const [saleDate, setSaleDate] = useState(shopTodayISO);
   const [showNote, setShowNote] = useState(false);
   const [favorites, setFavorites] = useState<Set<number>>(() => new Set());
@@ -154,6 +181,28 @@ function POS() {
     queryKey: ["settings"],
     queryFn: () => GET<Record<string, string>>("/settings"),
   });
+  const mpesaProfilesQ = useQuery({
+    queryKey: ["mpesa-profiles"],
+    queryFn: () => GET<{ profiles?: Array<Record<string, string>> }>("/mpesa/profiles"),
+    enabled: payment === "M-Pesa" || payment === "Split",
+  });
+  useEffect(() => {
+    if (mpesaProfile) return;
+    const rows = mpesaProfilesQ.data?.profiles || [];
+    const active = rows.filter((row) => row.status === "active");
+    const chosen = active.find((row) => row.is_default === true || row.is_default === "true" || row.is_default === "1") || active[0];
+    if (chosen?.id) setMpesaProfile(String(chosen.id));
+  }, [mpesaProfilesQ.data, mpesaProfile]);
+  useEffect(() => {
+    const id = mpesaPayment?.id;
+    const state = String(mpesaPayment?.state || "");
+    if (!id || ["verified", "failed", "cancelled", "timeout", "rejected", "recorded"].includes(state)) return;
+    const timer = window.setInterval(async () => {
+      const next = await POST<Record<string, any>>(`/mpesa/payments/${id}/poll`, {});
+      if (next && !next.error) setMpesaPayment(next);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [mpesaPayment?.id, mpesaPayment?.state]);
   const customersQ = useQuery({
     queryKey: ["customers"],
     queryFn: () => GET<Customer[]>("/customers"),
@@ -243,7 +292,7 @@ function POS() {
     setCart((c) => {
       const ex = c.find((l) => l.product_id === p.id);
       if (ex) {
-        const quantity = snapQty(ex.quantity + qtyStep);
+        const quantity = snapQty(ex.quantity + saleQtyStep(p.unit, qtyStep));
         if (quantity > Number(p.stock) + 0.0001) {
           toast.error(`Only ${p.stock} in stock`);
           return c;
@@ -264,6 +313,7 @@ function POS() {
           product_id: p.id,
           product_name: p.name,
           sku: p.sku || "",
+          unit: p.unit || "pcs",
           quantity: 1,
           unit_price: Number(p.price) || 0,
           discount: 0,
@@ -323,6 +373,7 @@ function POS() {
       return;
     }
     setHeld(cart);
+    localStorage.setItem(HELD_KEY, JSON.stringify(cart));
     setCart([]);
     toast.success("Sale held");
   };
@@ -331,6 +382,7 @@ function POS() {
     if (!held?.length) return;
     setCart(held);
     setHeld(null);
+    localStorage.removeItem(HELD_KEY);
     toast.success("Held sale restored");
   };
 
@@ -347,6 +399,10 @@ function POS() {
   const checkout = useMutation({
     mutationFn: async () => {
       if (!cart.length) throw new Error("Add items first");
+      const promptState = String(mpesaPayment?.state || "");
+      if (["sending", "prompt_sent", "waiting", "unknown", "preparing"].includes(promptState)) {
+        throw new Error("The phone prompt is not verified yet. The sale was not completed.");
+      }
       if (payment === "Gift Card") throw new Error("Gift Card is not available yet");
       const method =
         payment === "Split" ? "Mixed"
@@ -464,8 +520,14 @@ function POS() {
           cash_paid: method === "Mixed" ? mixedCash : method === "Cash" ? tender : 0,
           electronic_paid: method === "Mixed" ? mixedElectronic : 0,
           electronic_method: method === "Mixed" ? mixedMethod || undefined : undefined,
-          payment_tenders: payment === "Split" ? splitTenders : undefined,
+          payment_tenders: payment === "Split" ? splitTenders
+            : payment === "Part Pay" ? [
+              { method: "Cash", amount: paid, status: "confirmed" },
+              { method: "Credit", amount: Math.round((total - paid) * 100) / 100, status: "outstanding" },
+            ] : undefined,
           note: note || undefined,
+          mpesa_ref: mpesaCode || (mpesaPayment?.state === "verified" ? mpesaPayment.receipt_code : undefined),
+          mpesa_payment_id: mpesaPayment?.state === "verified" ? mpesaPayment.id : undefined,
           customer_id: activeCustomer || undefined,
           sale_date: canDate && saleDate !== shopTodayISO() ? saleDate : undefined,
           client_token: saleTokenRef.current || (saleTokenRef.current = crypto.randomUUID()),
@@ -482,6 +544,14 @@ function POS() {
         setSaleDate(shopTodayISO());
         setBackdateReason("");
       }
+      if (!res.request && res.sale_id) {
+        setLastSaleId(res.sale_id);
+        void POST<any>(`/sales/${res.sale_id}/document/print`, { automatic: true, reprint: false }).then((printed) => {
+          const failed = printed && !printed.printed && !printed.skipped && printed.message;
+          setDocNotice(failed ? printed.message : "");
+          setDocOpen(true);
+        });
+      }
       saleTokenRef.current = "";
       setNewName("");
       setNewPhone("");
@@ -493,6 +563,21 @@ function POS() {
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  async function openLastReceipt(print: boolean) {
+    if (!lastSaleId) {
+      toast.message("Complete a sale on this screen first. Older receipts open from All Receipts.");
+      return;
+    }
+    if (!print) {
+      setDocNotice("");
+      setDocOpen(true);
+      return;
+    }
+    const printed = await POST<any>(`/sales/${lastSaleId}/document/print`, { automatic: false, reprint: true });
+    setDocNotice(printed?.printed ? "" : (printed?.message || "Sale saved successfully. Printer unavailable. You can view, download or print the document later."));
+    setDocOpen(true);
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -766,7 +851,7 @@ function POS() {
                       <button
                         type="button"
                         aria-label="Decrease"
-                        onClick={() => setQty(l.product_id, l.quantity - qtyStep)}
+                        onClick={() => setQty(l.product_id, l.quantity - saleQtyStep(l.unit, qtyStep))}
                         className="h-8 w-8 grid place-items-center text-text hover:bg-hover"
                       >
                         <Minus className="h-3.5 w-3.5" />
@@ -774,13 +859,13 @@ function POS() {
                       <input
                         type="number"
                         min={0.01}
-                        step={qtyStep}
+                        step={saleQtyStep(l.unit, qtyStep)}
                         onWheel={(e) => {
                           if (document.activeElement !== e.currentTarget) return;
                           e.preventDefault();
                           const dir = e.deltaY < 0 ? 1 : -1;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
-                          setQty(l.product_id, l.quantity + dir * qtyStep, stock);
+                          setQty(l.product_id, l.quantity + dir * saleQtyStep(l.unit, qtyStep), stock);
                         }}
                         aria-label={`Quantity for ${l.product_name}`}
                         value={qtyDraft[l.product_id] ?? formatQty(l.quantity)}
@@ -813,7 +898,7 @@ function POS() {
                         onClick={() =>
                           setQty(
                             l.product_id,
-                            l.quantity + qtyStep,
+                            l.quantity + saleQtyStep(l.unit, qtyStep),
                             products.find((p) => p.id === l.product_id)?.stock,
                           )
                         }
@@ -1033,6 +1118,80 @@ function POS() {
               })}
             </div>
 
+            {payment === "M-Pesa" || payment === "Split" ? (
+              <div className="rounded-lg border border-border bg-card2 p-2 space-y-1">
+                <div className="text-[11px] font-semibold text-text2">
+                  {settingsQ.data?.mpesa_business_name || settingsQ.data?.shop_name || "This shop"}
+                  {settingsQ.data?.mpesa_till ? ` · Till ${settingsQ.data.mpesa_till}` : ""}
+                  {settingsQ.data?.mpesa_paybill ? ` · Paybill ${settingsQ.data.mpesa_paybill}` : ""}
+                  {!settingsQ.data?.mpesa_till && !settingsQ.data?.mpesa_paybill ? " · Set the till or paybill in Settings" : ""}
+                </div>
+                <div className="grid gap-1">
+                  <select
+                    aria-label="M-Pesa profile"
+                    value={mpesaProfile}
+                    onChange={(e) => setMpesaProfile(e.target.value)}
+                    className="h-8 w-full rounded-lg border border-border bg-input px-2 text-xs font-semibold text-text"
+                  >
+                    <option value="">Manual only</option>
+                    {(mpesaProfilesQ.data?.profiles || []).filter((row) => row.status === "active").map((row) => (
+                      <option key={row.id} value={row.id}>{row.name}</option>
+                    ))}
+                  </select>
+                  <div className="flex items-center gap-1">
+                    <Input
+                      value={mpesaPhone}
+                      onChange={(e) => setMpesaPhone(e.target.value)}
+                      placeholder="Customer phone"
+                      aria-label="Customer phone for M-Pesa prompt"
+                      className="h-8 min-h-0 min-w-0 flex-1 text-xs"
+                    />
+                    <button
+                      type="button"
+                      className="h-8 shrink-0 px-2 rounded-lg border border-border text-[11px] font-bold"
+                      onClick={() => {
+                      if (!mpesaKey.current) mpesaKey.current = crypto.randomUUID();
+                      const mpesaDue = payment === "Split"
+                        ? splitLines.reduce((sum, row) => (
+                          String(row.method || "").toLowerCase().replace(/[-\s]/g, "").includes("mpesa")
+                            ? sum + (parseFloat(row.amount) || 0)
+                            : sum
+                        ), 0)
+                        : Number(amount || total);
+                      void POST<Record<string, any>>("/mpesa/stk", {
+                        phone: mpesaPhone,
+                        amount: mpesaDue,
+                        profile_id: mpesaProfile,
+                        sale_reference: "",
+                        idempotency_key: mpesaKey.current,
+                      }).then((result) => {
+                        if (!result || result.error) {
+                          toast.error(result?.error || "The prompt was not sent");
+                          return;
+                        }
+                        setMpesaPayment(result);
+                        toast.success(result.customer_message || "Prompt sent. This is not payment yet.");
+                      });
+                    }}
+                  >
+                    Send phone prompt
+                  </button>
+                  </div>
+                </div>
+                <Input
+                  value={mpesaCode}
+                  onChange={(e) => setMpesaCode(e.target.value)}
+                  placeholder="Manual M-Pesa code, if the customer already paid"
+                  aria-label="Manual M-Pesa code"
+                  className="h-8 min-h-0 text-xs"
+                />
+                <p className="text-[11px] text-text2">
+                  {mpesaPayment?.customer_message
+                    || "A phone prompt is not payment. Manual codes stay unverified until they are matched."}
+                </p>
+              </div>
+            ) : null}
+
             {payment === "Split" ? (
               <div className="space-y-1">
                 {splitLines.map((row, index) => (
@@ -1140,8 +1299,13 @@ function POS() {
                 >
                   Exact
                 </button>
-                <span className="text-[11px] font-extrabold text-ok tabular-nums whitespace-nowrap pl-1">
-                  Change {KES(change, currency)}
+                <span className={cn(
+                  "text-[11px] font-extrabold tabular-nums whitespace-nowrap pl-1",
+                  payment === "Part Pay" ? "text-gold" : "text-ok",
+                )}>
+                  {payment === "Part Pay"
+                    ? `Paid ${KES(paid, currency)} · Still owed ${KES(Math.max(0, Math.round((total - paid) * 100) / 100), currency)}`
+                    : `Change ${KES(change, currency)}`}
                 </span>
               </div>
             ) : (
@@ -1177,15 +1341,15 @@ function POS() {
               <button
                 type="button"
                 title="Receipt preview"
-                onClick={() => toast.message("Receipt preview — use desktop POS for full print")}
+                onClick={() => void openLastReceipt(false)}
                 className="h-10 w-10 shrink-0 rounded-lg border border-border bg-card2 text-text2 grid place-items-center"
               >
                 <Eye className="h-4 w-4" />
               </button>
               <button
                 type="button"
-                title="Reprint"
-                onClick={() => toast.message("Reprint — use desktop POS for hardware printer")}
+                title="Print receipt"
+                onClick={() => void openLastReceipt(true)}
                 className="h-10 w-10 shrink-0 rounded-lg border border-border bg-card2 text-text2 grid place-items-center"
               >
                 <Printer className="h-4 w-4" />
@@ -1208,6 +1372,14 @@ function POS() {
           </div>
         </Card>
       </div>
+      {docOpen && lastSaleId ? (
+        <SaleDocumentPanel
+          saleId={lastSaleId}
+          notice={docNotice}
+          currency={currency}
+          onClose={() => setDocOpen(false)}
+        />
+      ) : null}
     </AppShell>
   );
 }

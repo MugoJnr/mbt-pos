@@ -236,6 +236,11 @@ function Dashboard() {
     enabled: canManage,
     refetchInterval: refreshMs,
   });
+  const syncQ = useQuery({
+    queryKey: ["sync-status"],
+    queryFn: () => GET<any>("/sync/status"),
+    refetchInterval: refreshMs,
+  });
 
   const wrap = summaryQ.data || {};
   const s = wrap.summary || wrap;
@@ -435,6 +440,11 @@ function Dashboard() {
           ) : null}
           <div className="text-sm text-text2 mt-0.5">
             Welcome back, {name} · Live Dashboard · refreshes every {prefs.refreshIntervalSec}s
+            {syncQ.data
+              ? ` · ${Number(syncQ.data.outbox_pending || 0) === 0
+                ? "nothing waiting to upload"
+                : `${Number(syncQ.data.outbox_pending || 0)} record${Number(syncQ.data.outbox_pending || 0) === 1 ? "" : "s"} waiting for the portal`}`
+              : ""}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">

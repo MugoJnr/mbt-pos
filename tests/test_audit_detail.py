@@ -21,6 +21,12 @@ class AuditDetailTests(unittest.TestCase):
         self.assertEqual(event["role_at_event"], "Not recorded")
         self.assertEqual(event["changes"][0]["after"], "180")
 
+    def test_a_stored_denial_is_shown_and_wildcards_stay_literal(self):
+        event = describe_event({"action": "CREATE_SALE", "outcome": "denied", "details": "receipt=1"})
+        self.assertEqual(event["outcome"], "Denied or failed")
+        from backend.audit_detail import like_pattern
+        self.assertEqual(like_pattern("%"), "%\\%%")
+
     def test_secrets_in_the_text_are_masked(self):
         self.assertIn("[masked]", redact("password=hunter2 token=abc.def"))
         self.assertNotIn("hunter2", redact("password=hunter2"))
@@ -60,6 +66,14 @@ class AuditDetailTests(unittest.TestCase):
                 (1, "owner", "UPDATE_PRODUCT", "inventory", f"pid={pid} stock 5->4"),
             )
             db.commit()
+            with self.assertRaises(ac.sqlite3.IntegrityError):
+                db.execute("UPDATE audit_log SET details='erased' WHERE id=1")
+            db.rollback()
+            with self.assertRaises(ac.sqlite3.IntegrityError):
+                db.execute("DELETE FROM audit_log WHERE id=1")
+            db.rollback()
+            kept = db.execute("SELECT details FROM audit_log WHERE id=1").fetchone()["details"]
+            self.assertIn("price 100->125", kept)
             db.close()
             import backend.app as appmod
             appmod.DB_PATH = db_path
@@ -73,6 +87,8 @@ class AuditDetailTests(unittest.TestCase):
             cashier = login("cashier", "cashier-pass")
             denied = client.get("/api/audit/1", headers=cashier)
             self.assertEqual(denied.status_code, 403)
+            denied_list = client.get("/api/audit", headers=cashier)
+            self.assertEqual(denied_list.status_code, 403)
             owner = login("owner", "owner-pass")
             detail = client.get("/api/audit/1", headers=owner)
             self.assertEqual(detail.status_code, 200, detail.get_json())
@@ -87,10 +103,76 @@ class AuditDetailTests(unittest.TestCase):
             edited = client.put("/api/audit/1", headers=owner, json={"details": "changed"})
             self.assertEqual(edited.status_code, 405)
             ac._SCHEMA_READY = False
+            weird = client.get("/api/audit", headers=owner, query_string={"q": "' OR 1=1 --"})
+            self.assertEqual(weird.status_code, 200)
+            self.assertEqual(weird.get_json(), [])
+            percent = client.get("/api/audit", headers=owner, query_string={"q": "%"})
+            self.assertEqual(percent.status_code, 200)
+            self.assertEqual(percent.get_json(), [])
+            exported = client.get("/api/audit/export", headers=cashier)
+            self.assertEqual(exported.status_code, 403)
+            allowed = client.get("/api/audit/export", headers=owner)
+            self.assertEqual(allowed.status_code, 200)
+            self.assertIn(b"price 100->125", allowed.data)
+            self.assertNotIn(b"secret", allowed.data)
+            ended = client.post("/api/auth/logout", headers=owner)
+            self.assertEqual(ended.status_code, 200)
+            reused = client.get("/api/audit", headers=owner)
+            self.assertEqual(reused.status_code, 401)
         finally:
             for item in patches:
                 item.stop()
             tmp.cleanup()
+
+
+class ShopTokenTests(unittest.TestCase):
+    def test_a_token_from_another_shop_is_refused(self):
+        first = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        second = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        db1 = os.path.join(first.name, "a.db")
+        db2 = os.path.join(second.name, "b.db")
+        os.environ["MBT_DATA_ROOT"] = first.name
+        patch_a = patch("desktop.utils.api_client.get_db_path", return_value=db1)
+        patch_a.start()
+        try:
+            import desktop.utils.api_client as ac
+            import backend.app as appmod
+            ac._SCHEMA_READY = False
+            db = ac._db()
+            db.execute(
+                "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
+                ("ownerA", ac._hash_pw("shop-a-pass"), "superadmin", "Owner A"),
+            )
+            db.commit()
+            db.close()
+            appmod.DB_PATH = db1
+            client = appmod.app.test_client()
+            left = client.post("/api/auth/login", json={"username": "ownerA", "password": "shop-a-pass"})
+            self.assertEqual(left.status_code, 200, left.get_json())
+            token = left.get_json()["token"]
+            ac._SCHEMA_READY = False
+            patch_a.stop()
+            patch_b = patch("desktop.utils.api_client.get_db_path", return_value=db2)
+            patch_b.start()
+            os.environ["MBT_DATA_ROOT"] = second.name
+            other = ac._db()
+            other.execute(
+                "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
+                ("ownerB", ac._hash_pw("shop-b-pass"), "superadmin", "Owner B"),
+            )
+            other.execute(
+                "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('shop_instance_id', 'shop-b')"
+            )
+            other.commit()
+            other.close()
+            appmod.DB_PATH = db2
+            crossed = client.get("/api/audit", headers={"Authorization": f"Bearer {token}"})
+            self.assertEqual(crossed.status_code, 401)
+            patch_b.stop()
+            ac._SCHEMA_READY = False
+        finally:
+            first.cleanup()
+            second.cleanup()
 
 
 if __name__ == "__main__":

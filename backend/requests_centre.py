@@ -381,5 +381,26 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
         record["reference"] = record.get("request_number") or ""
         record["requester"] = record.get("username") or ""
         record["requester_id"] = record.get("user_id")
+        record["kind"] = "delivery"
+        lines = db.execute(
+            "SELECT product_name, quantity, unit_cost, line_total "
+            "FROM stock_receipt_lines WHERE receipt_id=? ORDER BY id",
+            (record.get("receipt_id"),),
+        ).fetchall()
+        record["lines"] = [
+            {
+                "product_name": line["product_name"],
+                "quantity": line["quantity"],
+                "unit_price": line["unit_cost"],
+                "total": line["line_total"],
+            }
+            for line in lines
+        ]
+        record["receipt"] = {
+            "receipt_number": record.get("receipt_number") or record.get("reference"),
+            "total": record.get("grand_total"),
+            "status": record.get("receipt_status") or record.get("status"),
+            "cashier_name": record.get("supplier_name") or "",
+        }
         return record
     return {"error": "That request type is not supported."}

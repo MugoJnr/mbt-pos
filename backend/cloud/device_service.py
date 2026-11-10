@@ -103,7 +103,9 @@ class DeviceService:
 
         return {
             'device_id': device_id,
-            'computer_name': socket.gethostname(),
+            'computer_name': __import__(
+                'backend.cloud.net_gate', fromlist=['local_computer_name']
+            ).local_computer_name(),
             'hardware_fingerprint': fingerprint,
             'operating_system': f'{platform.system()} {platform.release()}',
             'platform': platform.system(),

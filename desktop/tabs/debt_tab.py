@@ -1310,9 +1310,11 @@ class _CollectPaymentDialog(QDialog):
                 receipt   = res.get('payment_receipt', '')
                 status    = res.get('status', '')
                 msg = (f"Payment Receipt: {receipt}\n"
+                       f"This is a payment on an existing sale, not a new sale.\n"
+                       f"Previous outstanding: {_fmt(res.get('balance_before', 0), cur)}\n"
                        f"Amount Paid: {_fmt(amt, cur)}\n"
                        f"Balance After: {_fmt(bal_after, cur)}\n\n"
-                       f"{'? PAID IN FULL' if status == 'paid' else f'Remaining: {_fmt(bal_after, cur)}'}")
+                       f"{'PAID IN FULL' if status == 'paid' else f'Remaining: {_fmt(bal_after, cur)}'}")
                 QMessageBox.information(self, 'Payment Recorded ?', msg)
                 try:
                     from desktop.utils.state_reset import StateResetManager

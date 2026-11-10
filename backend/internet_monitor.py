@@ -5,7 +5,6 @@ via the centralized Notification Engine (replaces Telegram).
 """
 import threading
 import time
-import socket
 import json
 import sqlite3
 import logging
@@ -13,7 +12,6 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-CHECK_HOSTS = [("8.8.8.8", 53), ("1.1.1.1", 53), ("8.8.4.4", 53)]
 CHECK_INTERVAL = 10
 
 
@@ -33,40 +31,44 @@ class InternetMonitor(threading.Thread):
         self.last_checked = None
         self.sync_status = "idle"
         self._stop_event = threading.Event()
+        self._wake = threading.Event()
         self._sync_lock = threading.Lock()
 
     def stop(self):
         self._stop_event.set()
+        self._wake.set()
 
     def check_connection(self):
-        for host, port in CHECK_HOSTS:
-            try:
-                s = socket.create_connection((host, port), timeout=3)
-                s.close()
-                return True
-            except OSError:
-                continue
-        return False
+        """Short IP probe. Does not resolve hostnames."""
+        from backend.cloud.net_gate import network_up
+        return network_up(1.0)
+
+    def request_probe(self):
+        """Ask the monitor thread to recheck. Returns immediately."""
+        self._wake.set()
 
     def run(self):
         while not self._stop_event.is_set():
-            connected = self.check_connection()
-            self.last_checked = datetime.now()
+            self._cycle()
+            self._wake.wait(CHECK_INTERVAL)
+            self._wake.clear()
 
-            if connected != self.is_connected:
-                self.is_connected = connected
-                logger.info(f"Connection status changed: {'ONLINE' if connected else 'OFFLINE'}")
-                if self.status_callback:
-                    try:
-                        self.status_callback(connected)
-                    except Exception as e:
-                        logger.error(f"Status callback error: {e}")
-                if connected:
-                    self._do_sync()
-            elif connected:
+    def _cycle(self):
+        connected = self.check_connection()
+        self.last_checked = datetime.now()
+
+        if connected != self.is_connected:
+            self.is_connected = connected
+            logger.info(f"Connection status changed: {'ONLINE' if connected else 'OFFLINE'}")
+            if self.status_callback:
+                try:
+                    self.status_callback(connected)
+                except Exception as e:
+                    logger.error(f"Status callback error: {e}")
+            if connected:
                 self._do_sync()
-
-            self._stop_event.wait(CHECK_INTERVAL)
+        elif connected:
+            self._do_sync()
 
     def force_sync(self):
         connected = self.check_connection()

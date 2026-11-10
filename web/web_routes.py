@@ -3293,7 +3293,7 @@ def consumption_report_http():
     @token_required
     def _inner():
         api = _consumption_api()
-        if not has_permission({'role': api._role}, 'consumption.view_report'):
+        if not has_permission(g.current_user, 'consumption.view_report'):
             return jsonify({'error': 'You cannot view the consumption report.'}), 403
         filters = _report_filters()
         return jsonify(api.get_consumption_report(
@@ -3318,7 +3318,7 @@ def consumption_report_export_http():
     @token_required
     def _inner():
         api = _consumption_api()
-        if not has_permission({'role': api._role}, 'consumption.export'):
+        if not has_permission(g.current_user, 'consumption.export'):
             return jsonify({'error': 'You cannot export the consumption report.'}), 403
         export_password, password_error = _take_export_password()
         if password_error:
@@ -3410,12 +3410,6 @@ def adjust_stock(pid):
         if not reason:
             return jsonify({'error': 'Reason is required for stock adjustments'}), 400
         db  = _get_db()
-        from desktop.utils.api_client import _audit
-        _audit(
-            g.current_user.get('id'), g.current_user.get('username'),
-            'SUPERADMIN_SESSION_AUTH', 'security',
-            f'stock_adjust pid={pid} pin_skipped=session',
-        )
         row = _tr(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
         if not row:
             return jsonify({'error': 'Product not found'}), 404
@@ -3491,6 +3485,13 @@ def adjust_stock(pid):
             db.rollback()
             return jsonify({'error': 'Could not post the stock adjustment.'}), 500
         db.commit()
+        from desktop.utils.api_client import _audit
+        _audit(
+            user.get('id'), user.get('username'),
+            'STOCK_ADJUSTED', 'inventory',
+            f'pid={pid} stock {old_qty}->{new_qty} reason={reason}',
+            source='web',
+        )
         return jsonify({'success': True, 'old_stock': old_qty, 'new_stock': new_qty})
     return _inner()
 
@@ -3551,6 +3552,34 @@ def create_supplier_http():
     return _inner()
 
 
+@web.route('/api/suppliers/<int:sid>', methods=['PUT'])
+def update_supplier_http(sid):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        user = g.current_user or {}
+        from desktop.utils.security import has_permission
+        if not has_permission(user, 'supplier.manage'):
+            return jsonify({'error': 'You cannot edit a supplier.'}), 403
+        from desktop.utils.api_client import APIClient
+        api = APIClient()
+        api._role = (user.get('role') or '').lower()
+        api._user_id = user.get('id')
+        api._username = user.get('username') or user.get('full_name') or 'web'
+        result = api.update_supplier(int(sid), {
+            'name': data.get('name'),
+            'phone': data.get('phone'),
+            'notes': data.get('notes'),
+        } if any(key in data for key in ('name', 'phone', 'notes')) else data)
+        if result.get('error'):
+            return jsonify(result), int(result.get('status') or 400)
+        return jsonify(result)
+
+    return _inner()
+
+
 @web.route('/api/products/<int:pid>/receive', methods=['POST'])
 def receive_stock_http(pid):
     """Receive a supplier delivery. Same movement the till writes."""
@@ -3560,6 +3589,7 @@ def receive_stock_http(pid):
     def _inner():
         data = request.json or {}
         user = g.current_user or {}
+        role = (user.get('role') or '').lower()
         from desktop.utils.security import has_permission
         if not has_permission(user, 'inventory.receive'):
             return jsonify({'error': 'You cannot receive supplier stock.'}), 403
@@ -4140,7 +4170,7 @@ def upload_product_image(pid):
         role = (user.get('role') or '').lower()
         from desktop.utils.security import has_permission
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
-        if role not in known or not has_permission({'role': role}, 'inventory.edit_info'):
+        if role not in known or not has_permission(user, 'inventory.edit_info'):
             return jsonify({'error': 'You cannot change a product photograph.'}), 403
         from desktop.utils.product_photo import MAX_IMAGE_BYTES, image_error, sniff_image
         upload = request.files.get('image')
@@ -4217,6 +4247,77 @@ def stock_adjustment_requests():
         )
         code = 200 if result.get('success') else 400
         return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stocktakes', methods=['GET', 'POST'])
+def stocktakes_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        api = _inventory_api()
+        if request.method == 'GET':
+            result = api.list_stocktakes()
+            code = 200 if 'stocktakes' in result else int(result.get('status') or 400)
+            return jsonify(result), code
+        result = api.start_stocktake((request.json or {}).get('name') or '')
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>', methods=['GET'])
+def stocktake_detail_http(stocktake_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        result = _inventory_api().get_stocktake(stocktake_id)
+        code = 200 if result.get('id') else int(result.get('status') or 404)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/counts', methods=['POST'])
+def stocktake_count_http(stocktake_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _inventory_api().record_stocktake_count(
+            stocktake_id, data.get('product_id'), data.get('counted_qty'),
+        )
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/stocktakes/<int:stocktake_id>/apply', methods=['POST'])
+def stocktake_apply_http(stocktake_id):
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        result = _inventory_api().apply_stocktake(stocktake_id)
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
+
+    return _inner()
+
+
+@web.route('/api/sync/status', methods=['GET'])
+def sync_status_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        return jsonify(_inventory_api().sync_status())
 
     return _inner()
 
@@ -6053,11 +6154,22 @@ def _query_report_bundle(db, filt):
     }
     if summary['total_transactions']:
         summary['avg_transaction'] = summary['total_revenue'] / summary['total_transactions']
+    from desktop.utils.financials import repayment_method_totals
     from desktop.utils.payment_tenders import (
-        collected_from_sales, collection_by_method, credit_issued_from_sales,
+        add_collected_amounts, collected_from_sales, collection_by_method,
+        credit_issued_from_sales,
     )
-    summary.update(collected_from_sales(sales))
+    rolled = collected_from_sales(sales)
+    extra = repayment_method_totals(db, filt['start'], filt['end'])
+    for key, amount in extra.items():
+        rolled[f'{key}_collected'] = round(float(rolled.get(f'{key}_collected') or 0) + amount, 2)
+    rolled['collected'] = round(sum(
+        float(rolled.get(f'{key}_collected') or 0)
+        for key in ('cash', 'mpesa', 'card', 'bank', 'other')
+    ), 2)
+    summary.update(rolled)
     summary['credit_issued'] = credit_issued_from_sales(sales)
+    summary['outstanding_on_sales'] = 0.0
     summary['sales_value'] = summary['total_revenue']
     if _user_can('reports'):
         from desktop.utils.stock_layers import period_profit
@@ -6091,7 +6203,22 @@ def _query_report_bundle(db, filt):
             cash_map.setdefault(cn, {'cashier_name': cn, 'count': 0, 'total': 0.0})
             cash_map[cn]['count'] += 1
             cash_map[cn]['total'] += float(s.get('total') or 0)
-        by_payment = sorted(pay_map.values(), key=lambda x: -x['total'])
+        owed = db.execute(
+            f"""SELECT COALESCE(SUM(balance),0) FROM debt_invoices
+                WHERE sale_id IN ({placeholders})
+                  AND status NOT IN ('cancelled')""",
+            sale_ids,
+        ).fetchone()
+        summary['outstanding_on_sales'] = round(float(owed[0] or 0), 2)
+        method_rows = add_collected_amounts(collection_by_method(sales), extra)
+        by_payment = [
+            {
+                'payment_method': row['method'],
+                'count': row['count'],
+                'total': row['collected'],
+            }
+            for row in method_rows
+        ]
         hourly = [hour_map[k] for k in sorted(hour_map.keys())]
         cashiers = sorted(cash_map.values(), key=lambda x: -x['total'])
     else:
@@ -6136,7 +6263,7 @@ def _query_report_bundle(db, filt):
         'sales': sales,
         'top_products': top_products,
         'by_payment': by_payment,
-        'collected_methods': collection_by_method(sales),
+        'collected_methods': add_collected_amounts(collection_by_method(sales), extra),
         'hourly': hourly,
         'cashiers': cashiers,
         'meta': {

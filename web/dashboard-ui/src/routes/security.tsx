@@ -4,13 +4,21 @@ import { useQuery } from "@tanstack/react-query";
 import { ShieldCheck, Lock, KeyRound, ScrollText } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
-import { GET, POST } from "@/lib/api";
+import { GET, POST, getToken } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 export const Route = createFileRoute("/security")({
   component: Security,
 });
 
 function Security() {
+  const { user } = useAuth();
+  const actions = Array.isArray(user?.effective_permissions)
+    ? user.effective_permissions.map(String)
+    : null;
+  const role = String(user?.role || "").toLowerCase();
+  const canAudit = actions ? actions.includes("audit.view") : role === "admin" || role === "superadmin";
+  const canPin = actions ? actions.includes("security.override") : role === "superadmin";
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [openId, setOpenId] = useState<number | null>(() => {
@@ -28,6 +36,7 @@ function Security() {
   const auditQ = useQuery({
     queryKey: ["audit", q, page],
     queryFn: () => GET<any[]>("/audit", { q, limit: "50", offset: String(page * 50) }),
+    enabled: canAudit,
   });
   const detailQ = useQuery({
     queryKey: ["audit-event", openId],
@@ -58,6 +67,37 @@ function Security() {
   const err =
     auditQ.data && !Array.isArray(auditQ.data) ? (auditQ.data as any).error : null;
 
+  async function downloadCsv() {
+    const token = getToken();
+    const response = await fetch("/api/audit/export?q=" + encodeURIComponent(q), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "audit-history.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (!canAudit) {
+    return (
+      <AppShell title="Security">
+        <PageHeader
+          eyebrow="Admin"
+          title="Security"
+          description="This account cannot open the audit history."
+          icon={<ShieldCheck className="h-5 w-5 text-gold" />}
+        />
+        <Card className="p-6 text-sm text-text2">
+          Audit history is available to an Admin or a Super Admin. This sign-in does not have that permission.
+        </Card>
+      </AppShell>
+    );
+  }
+
   return (
     <AppShell title="Security">
       <PageHeader
@@ -66,7 +106,7 @@ function Security() {
         description="Policy settings from the POS database and live audit trail."
         icon={<ShieldCheck className="h-5 w-5 text-gold" />}
       />
-      <Card className="mb-4 p-4">
+      {canPin ? <Card className="mb-4 p-4">
         <div className="text-sm font-semibold text-text">Super-Admin PIN</div>
         <p className="mt-1 text-xs text-text2">
           This is not the login password. Leave the current PIN blank only when no PIN has been set.
@@ -99,7 +139,7 @@ function Security() {
           Save PIN
         </Button>
         {pinMsg ? <div className="mt-2 text-sm text-text2">{pinMsg}</div> : null}
-      </Card>
+      </Card> : null}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         {[
           {
@@ -163,7 +203,11 @@ function Security() {
           <ul className="space-y-2 text-sm text-text2">
             <li>Audit records can be opened by an Admin or Super Admin. They cannot be edited here.</li>
             <li>Privileged actions (voids, settings, user changes) appear below.</li>
-            <li>The Super-Admin PIN can be changed on this page. It is not the login password.</li>
+            <li>
+              {canPin
+                ? "The Super-Admin PIN can be changed on this page. It is not the login password."
+                : "The Super-Admin PIN is changed by the shop owner. It is not the login password."}
+            </li>
           </ul>
         </Card>
       </div>
@@ -171,6 +215,8 @@ function Security() {
       <Card className="overflow-hidden">
         <div className="p-4 border-b border-border flex flex-wrap items-center justify-between gap-2">
           <SectionTitle>Audit log</SectionTitle>
+          <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => void downloadCsv()}>Export CSV</Button>
           <Input
             value={q}
             onChange={(e) => {
@@ -180,6 +226,7 @@ function Security() {
             placeholder="Search action, user, module…"
             className="max-w-xs min-h-[40px]"
           />
+          </div>
         </div>
         {openId != null ? (
           <AuditDetail

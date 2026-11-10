@@ -102,6 +102,12 @@ class InventoryTab(QWidget):
             recv.setToolTip('Receive a supplier delivery. No extra PIN.')
             recv.clicked.connect(self._receive_stock_dialog)
             tb.addWidget(recv)
+        if has_permission(self.user, 'inventory.view'):
+            count_btn = SecondaryBtn('Stocktake', 40)
+            count_btn.setToolTip('Count stock. Applying the count is Super-Admin only.')
+            count_btn.clicked.connect(self._open_stocktake)
+            tb.addWidget(count_btn)
+
         if has_permission(self.user, 'inventory.receive') and self._role() != ROLE_SUPERADMIN:
             ask = SecondaryBtn('Request Adjustment', 40)
             ask.setToolTip('Ask a Super-Admin to change stock. This does not change stock.')
@@ -600,6 +606,109 @@ class InventoryTab(QWidget):
 
         reject.clicked.connect(lambda: decide('rejected'))
         approve.clicked.connect(lambda: decide('approved'))
+        dlg.exec_()
+
+    def _open_stocktake(self):
+        from desktop.utils.security import has_permission
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Stocktake')
+        dlg.setMinimumWidth(420)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        name = QLineEdit()
+        name.setPlaceholderText('Count name, for example Monday morning')
+        product = QComboBox()
+        for prod in self.products or []:
+            product.addItem(prod.get('name') or '', prod.get('id'))
+        qty = QDoubleSpinBox()
+        qty.setRange(0, 1000000)
+        qty.setDecimals(2)
+        status = QLabel('A count does not change stock until it is applied.')
+        status.setWordWrap(True)
+        history = QListWidget()
+        history.setMinimumHeight(120)
+        lay.addWidget(QLabel('Name'))
+        lay.addWidget(name)
+        lay.addWidget(QLabel('Product'))
+        lay.addWidget(product)
+        lay.addWidget(QLabel('Counted quantity'))
+        lay.addWidget(qty)
+        lay.addWidget(QLabel('Recent counts'))
+        lay.addWidget(history)
+        lay.addWidget(status)
+
+        def show_history():
+            history.clear()
+            listed = self.api.list_stocktakes()
+            for row in listed.get('stocktakes') or []:
+                item = QListWidgetItem(f"{row.get('name') or 'Count'} · {row.get('status') or ''}")
+                item.setData(Qt.UserRole, row.get('id'))
+                history.addItem(item)
+
+        def open_saved():
+            item = history.currentItem()
+            if item is None:
+                return
+            detail = self.api.get_stocktake(item.data(Qt.UserRole))
+            if detail.get('error'):
+                status.setText(detail['error'])
+                return
+            holder['id'] = detail.get('id')
+            name.setText(detail.get('name') or '')
+            lines = detail.get('lines') or []
+            if lines:
+                status.setText(
+                    f"{detail.get('name')} is {detail.get('status')}. "
+                    f"{lines[0].get('name')}: counted {lines[0].get('counted_qty')}, "
+                    f"snapshot {lines[0].get('snapshot_qty')}."
+                )
+            else:
+                status.setText(f"{detail.get('name')} is {detail.get('status')}. No lines yet.")
+
+        show_history()
+        history.itemClicked.connect(lambda _item: open_saved())
+        buttons = QHBoxLayout()
+        start = PrimaryBtn('Start and save count', 36)
+        apply_btn = SecondaryBtn('Apply count', 36)
+        apply_btn.setEnabled(has_permission(self.user, 'inventory.adjust_stock'))
+        close = GhostBtn('Close', 36)
+        buttons.addWidget(start)
+        buttons.addWidget(apply_btn)
+        buttons.addWidget(close)
+        lay.addLayout(buttons)
+        holder = {'id': None}
+
+        def save():
+            if holder['id'] is None:
+                opened = self.api.start_stocktake(name.text())
+                if not opened.get('success'):
+                    status.setText(opened.get('error') or 'Could not start the count')
+                    return
+                holder['id'] = opened.get('id')
+            pid = product.currentData()
+            saved = self.api.record_stocktake_count(holder['id'], pid, qty.value())
+            status.setText(
+                'Count saved. Stock is unchanged.' if saved.get('success')
+                else (saved.get('error') or 'Could not save the count')
+            )
+            if saved.get('success'):
+                show_history()
+
+        def apply_count():
+            if holder['id'] is None:
+                status.setText('Save a count first.')
+                return
+            result = self.api.apply_stocktake(holder['id'])
+            if result.get('success'):
+                status.setText('Count applied. Stock now includes sales made during the count.')
+                show_history()
+                self.refresh()
+            else:
+                status.setText(result.get('error') or 'Could not apply the count')
+
+        start.clicked.connect(save)
+        apply_btn.clicked.connect(apply_count)
+        close.clicked.connect(dlg.reject)
         dlg.exec_()
 
     def _receive_stock_dialog(self):

@@ -203,6 +203,35 @@ def get_db():
     return g.db
 
 
+def shop_instance_id(db) -> str:
+    """Stable id for this database. A token from another shop is refused."""
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key='shop_instance_id'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return ''
+    if row and str(row['value'] or '').strip():
+        return str(row['value'])
+    import uuid
+    value = uuid.uuid4().hex
+    db.execute(
+        "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('shop_instance_id', ?)",
+        (value,),
+    )
+    db.commit()
+    return value
+
+
+@app.before_request
+def _audit_requests_come_from_the_web():
+    try:
+        from desktop.utils.api_client import set_audit_source
+        set_audit_source('web')
+    except Exception:
+        logger.debug('audit source', exc_info=True)
+
+
 @app.teardown_appcontext
 def close_db(e=None):
     db = g.pop('db', None)
@@ -465,15 +494,6 @@ def init_db():
     );
     """)
 
-    for dept_name in (
-        'Kitchen', 'Bakery', 'Juice Bar', 'Office',
-        'Workshop', 'Manufacturing', 'Maintenance',
-    ):
-        cur.execute(
-            "INSERT OR IGNORE INTO departments (name, active) VALUES (?, 1)",
-            (dept_name,),
-        )
-
     # Production never creates a known default credential. API-only development
     # may opt in with an explicit, non-empty bootstrap password.
     bootstrap_password = os.environ.get('MBT_BOOTSTRAP_ADMIN_PASSWORD', '')
@@ -499,6 +519,15 @@ def init_db():
         'sync_interval': '30',
         'printer_name': '',
         'printer_port': 'USB',
+        'printer_connection': 'USB',
+        'printer_host': '',
+        'paper_size': '80',
+        'document_policy': 'C',
+        'print_customer_copy': '1',
+        'print_duplicate_copy': '0',
+        'show_document_preview': '0',
+        'allow_cashier_doc_override': '0',
+        'allow_reprint': '1',
         'auto_print': '1',
         'auto_report_daily': '1',
         'auto_report_weekly': '1',
@@ -544,6 +573,10 @@ def init_db():
         )
     if 'client_token' not in sales_cols:
         cur.execute("ALTER TABLE sales ADD COLUMN client_token TEXT")
+    if 'issued_document_kind' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN issued_document_kind TEXT")
+    if 'issued_document_number' not in sales_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN issued_document_number TEXT")
     cur.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_token "
         "ON sales(client_token) WHERE client_token IS NOT NULL AND client_token != ''"
@@ -798,6 +831,10 @@ def token_required(f):
                     from desktop.utils.account_sessions import web_session_active
                     if not web_session_active(db, sid):
                         return jsonify({'error': 'This sign-in has ended. Sign in again.'}), 401
+                claimed = str(data.get('shop') or '')
+                current_shop = shop_instance_id(db)
+                if claimed and current_shop and claimed != current_shop:
+                    return jsonify({'error': 'This sign-in belongs to another shop.'}), 401
                 g.current_user = dict(user)
                 g.session_id = sid
                 g.auth_provider = 'local'
@@ -923,13 +960,15 @@ def _keep_last_superadmin(db, uid: int, target: dict, data: dict | None = None) 
 
 def log_action(action, module='system', details=''):
     try:
-        db = get_db()
-        user = getattr(g, 'current_user', {})
-        db.execute("""INSERT INTO audit_log (user_id, username, action, module, details, ip_address)
-                      VALUES (?, ?, ?, ?, ?, ?)""",
-                   (user.get('id'), user.get('username', 'system'),
-                    action, module, details, request.remote_addr))
-        db.commit()
+        from desktop.utils.api_client import _audit
+        user = getattr(g, 'current_user', {}) or {}
+        _audit(
+            user.get('id'),
+            user.get('username') or 'system',
+            action, module, details,
+            source='web',
+            ip_address=request.remote_addr,
+        )
     except Exception as e:
         logger.error(f"Audit log error: {e}")
 
@@ -956,6 +995,15 @@ def login():
     ).fetchone()
 
     if not user or not check_pw(password.decode() if isinstance(password,bytes) else data.get('password',''), user['password_hash']):
+        try:
+            from desktop.utils.api_client import _audit
+            _audit(
+                user['id'] if user else None,
+                username or 'unknown',
+                'LOGIN_FAIL', 'auth', 'invalid credentials', source='web',
+            )
+        except Exception:
+            logger.debug('login failure was not recorded', exc_info=True)
         return jsonify({'error': 'Invalid credentials'}), 401
 
     _clear_login_attempts(client_key)
@@ -977,6 +1025,7 @@ def login():
         'username': user['username'],
         'role': user['role'],
         'sid': sid,
+        'shop': shop_instance_id(db),
         'iat': int(time.time()),
         'exp': int(time.time()) + int(os.environ.get('MBT_JWT_TTL_SECONDS', '28800')),
     }, SECRET_KEY, algorithm='HS256')
@@ -996,6 +1045,17 @@ def login():
             'effective_permissions': sorted(effective_actions(dict(user))),
         }
     })
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+@token_required
+def logout():
+    sid = str(getattr(g, 'session_id', '') or '')
+    if sid:
+        from desktop.utils.account_sessions import revoke_web_session
+        revoke_web_session(get_db(), sid)
+        get_db().commit()
+    return jsonify({'success': True})
 
 
 @app.route('/api/auth/me', methods=['GET'])
@@ -1134,7 +1194,7 @@ def permission_catalogue_http():
 @app.route('/api/users', methods=['GET'])
 @token_required
 def list_users():
-    if not _role_is('admin', 'superadmin', 'manager'):
+    if not _shop_can('users.view'):
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     users = db.execute("""SELECT id, username, full_name, role, email, is_active,
@@ -1438,7 +1498,7 @@ def void_sale_http(sale_id=None):
     from desktop.utils.api_client import APIClient
     from desktop.utils.security import has_permission
     role = (user.get('role') or '').lower()
-    if not has_permission({'role': role}, 'sales.request_void'):
+    if not has_permission(user, 'sales.request_void'):
         return jsonify({'error': 'You cannot request a void.'}), 403
     if sale_id is None:
         raw_sale = data.get('sale_id')
@@ -1622,21 +1682,31 @@ def create_sale():
             notes = (
                 notes + f' | Split: {emethod or "M-Pesa"} {electronic_paid:,.2f} + Cash {cash_paid_col:,.2f}'
             ).strip(' |')
+        from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa
+        mpesa_prepared = prepare_sale_mpesa(db, data, method_name, electronic_paid)
+        if mpesa_prepared.get('mpesa_ref'):
+            mpesa_ref = mpesa_prepared['mpesa_ref']
+        if mpesa_prepared.get('note') and mpesa_prepared['note'] not in notes:
+            notes = (notes + ' | ' + mpesa_prepared['note']).strip(' |')
 
+        original_total = data.get('original_total')
+        if original_total is None:
+            original_total = data['total']
         db.execute("""INSERT INTO sales (receipt_number, cashier_id, cashier_name, subtotal, discount,
-                  tax, total, payment_method, amount_paid, change_amount, notes, mpesa_ref,
+                  tax, total, original_total, payment_method, amount_paid, change_amount, notes, mpesa_ref,
                   sale_date, created_at, customer_id, electronic_paid, electronic_method,
                   cash_paid, payment_tenders, client_token)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                (receipt_number, user['id'], user['full_name'] or user['username'],
                 data.get('subtotal', 0), data.get('discount', 0), data.get('tax', 0),
-                data['total'], method_name,
+                data['total'], original_total, method_name,
                 data.get('amount_paid', 0), data.get('change_amount', 0),
                 notes, mpesa_ref or None, sale_date_s, created_at_s,
                 data.get('customer_id') or None, electronic_paid, emethod or None,
                 cash_paid_col, tenders_json, sale_token or None))
 
         sale_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        attach_sale_mpesa(db, sale_id, mpesa_prepared)
 
         from backend.sale_lines import fill_sale_line
         for item in items:
@@ -1724,7 +1794,31 @@ def create_sale():
                 return jsonify({
                     'error': debt.get('error') or 'Debt invoice was not created. The sale was not saved.',
                 }), 400
+        try:
+            from desktop.utils.accounting_hooks import post_sale_journal
+            post_sale_journal(
+                db, sale_id,
+                user_id=user.get('id'),
+                username=user.get('username') or user.get('full_name') or 'web',
+                safe=True,
+            )
+        except Exception as journal_error:
+            logger.error('sale accounting post: %s', journal_error, exc_info=True)
         db.commit()
+        document_kind = ''
+        document_number = ''
+        try:
+            from printing.sale_documents import stamp_sale_document
+            stamped = stamp_sale_document(
+                db, sale_id, data.get('document_kind') or '',
+                can_edit_settings=_shop_can('settings.edit'),
+                can_sell=_shop_can('sales.create'),
+                commit=True,
+            )
+            document_kind = stamped.get('kind') or ''
+            document_number = stamped.get('number') or ''
+        except Exception as stamp_error:
+            logger.warning('Sale %s saved; document type was not frozen: %s', sale_id, stamp_error)
         log_action('CREATE_SALE', 'sales',
                    f"Receipt: {receipt_number}, Total: {data['total']}")
         return jsonify({
@@ -1733,6 +1827,8 @@ def create_sale():
             'sale_id': sale_id,
             'sale_date': sale_date_s,
             'debt': debt,
+            'document_kind': document_kind,
+            'document_number': document_number,
         })
     except ValueError as e:
         try:
@@ -1798,6 +1894,128 @@ def get_sale(sale_id):
     except Exception:
         pass
     return jsonify(result)
+
+
+def _document_actor_flags():
+    return _shop_can('settings.edit'), _shop_can('sales.create')
+
+
+@app.route('/api/sales/<int:sale_id>/document', methods=['GET'])
+@token_required
+def sale_document(sale_id):
+    if not (_shop_can('sales.view_all') or _shop_can('sales.view_own') or _shop_can('sales.create')):
+        return jsonify({'error': 'Forbidden'}), 403
+    from printing.sale_documents import build_sale_document, load_settings, override_allowed
+    db = get_db()
+    kind = (request.args.get('kind') or '').strip().lower()
+    reprint = (request.args.get('reprint') or '') in ('1', 'true', 'yes')
+    doc = build_sale_document(db, sale_id, kind=kind, reprint=reprint)
+    if doc.get('error'):
+        return jsonify(doc), 404
+    cfg = load_settings(db)
+    can_edit, can_sell = _document_actor_flags()
+    doc['can_override'] = override_allowed(cfg, can_edit_settings=can_edit, can_sell=can_sell)
+    doc['auto_print'] = str(cfg.get('auto_print') or '1') == '1'
+    doc['show_preview'] = str(cfg.get('show_document_preview') or '0') == '1'
+    return jsonify(doc)
+
+
+@app.route('/api/sales/<int:sale_id>/document.pdf', methods=['GET'])
+@token_required
+def sale_document_pdf(sale_id):
+    if not (_shop_can('sales.view_all') or _shop_can('sales.view_own') or _shop_can('sales.create')):
+        return jsonify({'error': 'Forbidden'}), 403
+    from flask import Response
+    from printing.sale_documents import build_sale_document, document_pdf
+    db = get_db()
+    kind = (request.args.get('kind') or '').strip().lower()
+    doc = build_sale_document(db, sale_id, kind=kind, reprint=True)
+    if doc.get('error'):
+        return jsonify(doc), 404
+    filename = f"{doc.get('number') or 'document'}.pdf"
+    return Response(
+        document_pdf(doc),
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route('/api/sales/<int:sale_id>/document/print', methods=['POST'])
+@token_required
+def sale_document_print(sale_id):
+    if not (_shop_can('sales.view_all') or _shop_can('sales.view_own') or _shop_can('sales.create')):
+        return jsonify({'error': 'Forbidden'}), 403
+    from printing.sale_documents import print_existing_sale
+    body = request.json or {}
+    before = get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+    outcome = print_existing_sale(
+        get_db(), sale_id,
+        automatic=bool(body.get('automatic')),
+        reprint=bool(body.get('reprint')),
+    )
+    after = get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+    outcome['sales_unchanged'] = before == after
+    return jsonify(outcome)
+
+
+@app.route('/api/sales/<int:sale_id>/document/kind', methods=['POST'])
+@token_required
+def sale_document_kind(sale_id):
+    from printing.sale_documents import change_document_kind, load_settings, override_allowed
+    db = get_db()
+    cfg = load_settings(db)
+    can_edit, can_sell = _document_actor_flags()
+    allowed = override_allowed(cfg, can_edit_settings=can_edit, can_sell=can_sell)
+    result = change_document_kind(db, sale_id, (request.json or {}).get('kind') or '', allowed=allowed)
+    if result.get('error'):
+        return jsonify(result), int(result.get('status') or 400)
+    if result.get('changed'):
+        log_action(
+            'DOCUMENT_TYPE', 'sales',
+            f"sale={sale_id} {result.get('old_kind')} -> {result.get('kind')} number={result.get('number')}",
+        )
+    return jsonify(result)
+
+
+@app.route('/api/documents/payment', methods=['GET'])
+@token_required
+def payment_document():
+    if not (_shop_can('debt.view') or _shop_can('debt.view_own') or _shop_can('debt.collect') or _shop_can('sales.view_all')):
+        return jsonify({'error': 'Forbidden'}), 403
+    from printing.sale_documents import build_payment_document
+    doc = build_payment_document(get_db(), request.args.get('receipt') or '', reprint=(request.args.get('reprint') or '') in ('1', 'true'))
+    if doc.get('error'):
+        return jsonify(doc), 404
+    return jsonify(doc)
+
+
+@app.route('/api/documents/payment.pdf', methods=['GET'])
+@token_required
+def payment_document_pdf():
+    if not (_shop_can('debt.view') or _shop_can('debt.view_own') or _shop_can('debt.collect') or _shop_can('sales.view_all')):
+        return jsonify({'error': 'Forbidden'}), 403
+    from flask import Response
+    from printing.sale_documents import build_payment_document, document_pdf
+    doc = build_payment_document(get_db(), request.args.get('receipt') or '', reprint=True)
+    if doc.get('error'):
+        return jsonify(doc), 404
+    filename = f"{doc.get('number') or 'payment'}.pdf"
+    return Response(
+        document_pdf(doc),
+        mimetype='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
+
+
+@app.route('/api/documents/logo', methods=['GET'])
+@token_required
+def document_logo():
+    from backend.report_export_service import find_logo_path
+    path = find_logo_path()
+    if not path:
+        return jsonify({'error': 'No logo is configured'}), 404
+    from flask import send_file
+    return send_file(path)
 
 
 # ── REPORTS ───────────────────────────────────────────────────────────────────
@@ -1898,6 +2116,10 @@ def sales_summary():
     summary['inventory_cost_value'] = figures['inventory_cost_value']
     summary['uncosted_lines'] = figures['uncosted_lines']
     summary['profit_note'] = figures['profit_note']
+    # Method tiles include a later repayment. The sale total does not grow again.
+    for key in ('cash_collected', 'mpesa_collected', 'card_collected', 'bank_collected', 'other_collected'):
+        summary[key] = figures.get(key) or 0
+    summary['collected'] = figures['total_collected']
 
     return jsonify({
         'summary': summary,
@@ -2025,30 +2247,87 @@ def _audit_forbidden():
     return None
 
 
+def _audit_page_args():
+    needle = (request.args.get('q') or '').strip().lower()
+    try:
+        limit = int(request.args.get('limit') or 100)
+        offset = int(request.args.get('offset') or 0)
+    except ValueError:
+        return None
+    return needle, limit, offset
+
+
+def _audit_rows(db, needle, limit, offset):
+    from backend.audit_detail import like_pattern, redact
+    like = like_pattern(needle)
+    logs = db.execute(
+        "SELECT * FROM audit_log "
+        "WHERE ? = '' OR lower(COALESCE(action,'')) LIKE ? ESCAPE '\\' "
+        "OR lower(COALESCE(username,'')) LIKE ? ESCAPE '\\' "
+        "OR lower(COALESCE(module,'')) LIKE ? ESCAPE '\\' "
+        "OR lower(COALESCE(details,'')) LIKE ? ESCAPE '\\' "
+        "OR lower(COALESCE(outcome,'')) LIKE ? ESCAPE '\\' "
+        "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (needle, like, like, like, like, like, limit, offset),
+    ).fetchall()
+    rows = []
+    for row in logs:
+        item = dict(row)
+        item['details'] = redact(item.get('details') or '')
+        rows.append(item)
+    return rows
+
+
 @app.route('/api/audit', methods=['GET'])
 @token_required
 def get_audit():
     denied = _audit_forbidden()
     if denied:
         return denied
-    needle = (request.args.get('q') or '').strip().lower()
-    try:
-        limit = min(200, max(1, int(request.args.get('limit') or 100)))
-        offset = max(0, int(request.args.get('offset') or 0))
-    except ValueError:
+    parsed = _audit_page_args()
+    if parsed is None:
         return jsonify({'error': 'Page values must be numbers.'}), 400
+    needle, limit, offset = parsed
+    limit = min(200, max(1, limit))
+    offset = max(0, offset)
+    return jsonify(_audit_rows(get_db(), needle, limit, offset))
+
+
+@app.route('/api/audit/export', methods=['GET'])
+@token_required
+def export_audit():
+    denied = _audit_forbidden()
+    if denied:
+        return denied
+    parsed = _audit_page_args()
+    if parsed is None:
+        return jsonify({'error': 'Page values must be numbers.'}), 400
+    import csv
+    import io
+    needle = parsed[0]
     db = get_db()
-    like = f"%{needle}%"
-    logs = db.execute(
-        "SELECT * FROM audit_log "
-        "WHERE ? = '' OR lower(COALESCE(action,'')) LIKE ? "
-        "OR lower(COALESCE(username,'')) LIKE ? "
-        "OR lower(COALESCE(module,'')) LIKE ? "
-        "OR lower(COALESCE(details,'')) LIKE ? "
-        "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-        (needle, like, like, like, like, limit, offset),
-    ).fetchall()
-    return jsonify([dict(row) for row in logs])
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        'id', 'created_at', 'username', 'role_at_event', 'action',
+        'module', 'outcome', 'source', 'details',
+    ])
+    page_size = 1000
+    offset = 0
+    while True:
+        rows = _audit_rows(db, needle, page_size, offset)
+        for item in rows:
+            writer.writerow([
+                item.get('id'), item.get('created_at'), item.get('username'),
+                item.get('role_at_event'), item.get('action'), item.get('module'),
+                item.get('outcome'), item.get('source'), item.get('details'),
+            ])
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    response = app.response_class('\ufeff' + buffer.getvalue(), mimetype='text/csv; charset=utf-8')
+    response.headers['Content-Disposition'] = 'attachment; filename=audit-history.csv'
+    return response
 
 
 @app.route('/api/audit/<int:event_id>', methods=['GET'])
@@ -2352,6 +2631,9 @@ def get_requests_centre_http(source, source_id):
 def health():
     return jsonify({'status': 'ok', 'time': datetime.now().isoformat(), 'system': 'MBT POS'})
 
+
+from backend.mpesa_routes import register as register_mpesa_routes
+register_mpesa_routes(app, token_required)
 
 # ── Live Dashboard Blueprint (optional; used by web_launcher.py) ──────────────
 # Load web_routes.py from the filesystem bundle path so HOT_APPLY can update the

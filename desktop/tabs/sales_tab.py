@@ -11,7 +11,7 @@ from desktop.utils.pos_components import (
     ProductCard, ProductGrid, PaymentSegment, SummaryCard,
     CustomerCard, CartList, PosSearchBar,
     safe_price as _safe_price,
-    fmt_stock_short as _fmt_stock_short, round_qty, refresh_pos_components,
+    fmt_stock_short as _fmt_stock_short, qty_step_for_unit, round_qty, refresh_pos_components,
 )
 from desktop.utils.option_lists import POS_PAYMENT_METHODS
 from desktop.utils.select_controls import Select
@@ -133,6 +133,8 @@ class SalesTab(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         build_shared_panels(self)
+        from desktop.pos.mpesa_prompt import wire_mpesa_prompt
+        wire_mpesa_prompt(self)
 
         self._shell = QWidget()
         self._shell.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1662,7 +1664,7 @@ class SalesTab(QWidget):
             pass
         for idx, item in enumerate(self.cart):
             if item['product_id'] == p['id']:
-                item['quantity'] = round(item['quantity'] + 1.0, 2)
+                item['quantity'] = round(item['quantity'] + qty_step_for_unit(item.get('unit') or p.get('unit')), 2)
                 self._apply_line_total(item)
                 self._cart_select_idx = idx
                 self._refresh_cart()
@@ -1673,6 +1675,7 @@ class SalesTab(QWidget):
             'sku':          p.get('sku', '') or '',
             'category':     p.get('category') or 'General',
             'quantity':     1.0,
+            'unit':         p.get('unit') or 'pcs',
             'unit_price':   p.get('price', 0),
             'discount':     0.0,
             'total':        p.get('price', 0),
@@ -2377,7 +2380,7 @@ class SalesTab(QWidget):
     def _qty(self, idx, v):
         if 0 <= idx < len(self.cart):
             self._cart_select_idx = idx
-            q = round_qty(v, 0.25)
+            q = round_qty(v, qty_step_for_unit(self.cart[idx].get('unit')), minimum=0.01)
             self.cart[idx]['quantity'] = round(q, 2)
             self._apply_line_total(self.cart[idx])
             if hasattr(self, '_cart_list'):
@@ -2388,7 +2391,11 @@ class SalesTab(QWidget):
     def _change_qty(self, idx, delta):
         if not (0 <= idx < len(self.cart)):
             return
-        new_q = round_qty(self.cart[idx]['quantity'] + delta, 0.25)
+        new_q = round_qty(
+            self.cart[idx]['quantity'] + delta,
+            qty_step_for_unit(self.cart[idx].get('unit')),
+            minimum=0.01,
+        )
         self.cart[idx]['quantity'] = round(new_q, 2)
         self._apply_line_total(self.cart[idx])
         self._cart_select_idx = idx
@@ -2932,6 +2939,7 @@ class SalesTab(QWidget):
                     if (pay_method == 'M-Pesa' or (is_split and elec_method_name == 'M-Pesa'))
                     else ''
                 ),
+                'mpesa_payment_id': getattr(self, '_mpesa_payment_id', '') or '',
                 'sale_date':      self._business_day_iso(),
                 'client_token':   getattr(self, '_sale_token', '') or '',
             }
@@ -2940,6 +2948,13 @@ class SalesTab(QWidget):
             if variance_payload:
                 sale_payload['variance'] = variance_payload
             if self._submit_cashier_backdate(sale_payload, cust_id):
+                return
+            prompt_state = getattr(self, '_mpesa_prompt_state', '')
+            if prompt_state in ('sending', 'prompt_sent', 'waiting', 'unknown', 'preparing'):
+                soft_warn(
+                    self,
+                    'The phone prompt is not verified yet. The sale was not completed.',
+                )
                 return
             res = self.api.create_sale(sale_payload)
             if res and res.get('success'):
@@ -3075,22 +3090,44 @@ class SalesTab(QWidget):
             'mpesa_till':     (self.config_getter() or {}).get('mpesa_till', ''),
             'mpesa_paybill':  (self.config_getter() or {}).get('mpesa_paybill', ''),
             'mpesa_ref':      sale.get('mpesa_ref', '') or '',
+            'mpesa_verification': sale.get('mpesa_verification', '') or '',
             'receipt_footer': (self.config_getter() or {}).get('receipt_footer', 'Thank you!'),
         }
 
     def _try_print_receipt(self, sale_id, receipt_number):
-        """Print receipt after sale — failures never affect the recorded sale."""
+        """Print the saved document. A printer failure never resubmits the sale."""
         cfg = self.config_getter() or {}
-        if cfg.get('auto_print', '1') != '1':
+        if str(cfg.get('auto_print', '1')) != '1':
+            self._open_sale_document(sale_id)
             return
         try:
-            data = self._build_print_data(sale_id, receipt_number)
-            if data:
-                self._get_printer().print_receipt(data)
+            outcome = self.api.print_sale_document(sale_id, automatic=True, reprint=False)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
                 'Receipt print failed (sale %s kept): %s', receipt_number, e)
+            outcome = {
+                'printed': False,
+                'sale_saved': True,
+                'message': (
+                    'Sale saved successfully. Printer unavailable. '
+                    'You can view, download or print the document later.'
+                ),
+            }
+        notice = ''
+        if outcome and not outcome.get('printed') and not outcome.get('skipped') and outcome.get('message'):
+            notice = outcome['message']
+            info_toast(self, notice, tone='warn', ms=6500)
+        self._open_sale_document(sale_id, notice=notice)
+
+    def _open_sale_document(self, sale_id, notice=''):
+        try:
+            from desktop.dialogs.sale_document_dialog import SaleDocumentDialog
+            self._doc_dialog = SaleDocumentDialog(self.api, int(sale_id), self, notice=notice)
+            self._doc_dialog.present()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning('Document window did not open: %s', exc)
 
     def _reprint_receipt(self):
         default = self._last_receipt or ''
@@ -3111,15 +3148,10 @@ class SalesTab(QWidget):
             if not row:
                 soft_warn(self, f'No sale found: {receipt}')
                 return
+            self._open_sale_document(row['id'])
             if row['status'] == 'voided':
-                soft_warn(self, 'This sale was voided — receipt not reprinted.')
-                return
-            data = self._build_print_data(row['id'], receipt)
-            if not data:
-                soft_warn(self, 'Could not load sale data.')
-                return
-            self._get_printer().print_receipt(data)
-            info_toast(self, f'Receipt {receipt} sent to printer.')
+                info_toast(self, f'{receipt} is voided. The reprint keeps the original number and is marked voided.')
+            return
         except Exception as e:
             soft_warn(self, f'Print error: {e}')
 

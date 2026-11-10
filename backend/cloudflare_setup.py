@@ -1493,14 +1493,8 @@ def _run(
 
 
 def is_online() -> bool:
-    for host, port in (('1.1.1.1', 53), ('8.8.8.8', 53)):
-        try:
-            s = socket.create_connection((host, port), timeout=3)
-            s.close()
-            return True
-        except OSError:
-            pass
-    return False
+    from backend.cloud.net_gate import network_up
+    return network_up(1.0)
 
 
 def has_cloudflare_login() -> bool:

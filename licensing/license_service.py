@@ -134,17 +134,9 @@ class LicenseService(threading.Thread):
                 self.engine.enforce_offline_grace(self._grace_days())
 
     def _check_internet(self) -> bool:
-        import socket
-        for host in (('8.8.8.8', 53), ('1.1.1.1', 53)):
-            try:
-                s = socket.create_connection(host, timeout=1.5)
-                s.close()
-                self._connected = True
-                return True
-            except OSError:
-                pass
-        self._connected = False
-        return False
+        from backend.cloud.net_gate import network_up
+        self._connected = network_up(1.0)
+        return self._connected
 
     def _do_remote_sync(self):
         """Phone home: validate license with MugoByte Platform and sync expiry/status."""

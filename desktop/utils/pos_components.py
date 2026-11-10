@@ -88,6 +88,23 @@ def fmt_stock_short(n) -> str:
     return f'{f:g}'
 
 
+_MEASURED_UNITS = {
+    'kg', 'kgs', 'g', 'gram', 'grams', 'l', 'lt', 'ltr', 'litre', 'liter', 'ml', 'm',
+}
+
+
+def qty_step_for_unit(unit, fallback=None) -> float:
+    """Piece goods move one at a time. Weight and volume use the shop wheel step."""
+    name = str(unit or '').strip().lower()
+    if name in _MEASURED_UNITS:
+        try:
+            step = float(_POS_QTY_STEP if fallback is None else fallback)
+        except (TypeError, ValueError):
+            step = 0.25
+        return step if step > 0 else 0.25
+    return 1.0
+
+
 def round_qty(v, step=0.25, minimum=None) -> float:
     try:
         q = float(v)
@@ -994,9 +1011,13 @@ class CartLineRow(QFrame):
         self._save_lbl = QLabel('')
         self._save_lbl.hide()
 
+        qty_step = qty_step_for_unit(self._item.get('unit'))
         self._qty = QuantityControl(
             value=float(self._item.get('quantity') or 1),
-            step=_POS_QTY_STEP, minimum=0.01, snap=False, width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
+            step=qty_step,
+            minimum=1 if qty_step >= 1 else 0.01,
+            snap=qty_step >= 1,
+            width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
         self._qty.valueChanged.connect(self.qtyChanged.emit)
         root.addWidget(self._qty, 0)
 

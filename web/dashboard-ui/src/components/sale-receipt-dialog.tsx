@@ -83,6 +83,7 @@ export function SaleReceiptDialog({
   const [voidReason, setVoidReason] = useState("");
   const [voidMsg, setVoidMsg] = useState("");
   const [voiding, setVoiding] = useState(false);
+  const [confirmCredit, setConfirmCredit] = useState(false);
   const role = String(user?.role || "").toLowerCase();
   const canReturn = ["admin", "superadmin", "manager"].includes(role);
   const canVoidNow = role === "superadmin";
@@ -223,7 +224,15 @@ export function SaleReceiptDialog({
                             }
                             setVoiding(true);
                             try {
-                              const data = await POST<any>(`/sales/${saleId}/void-now`, { reason: voidReason.trim() });
+                              const data = await POST<any>(`/sales/${saleId}/void-now`, {
+                                reason: voidReason.trim(),
+                                confirm_credit_payments: confirmCredit,
+                              });
+                              if (data?.credit_payments_exist || data?.error === "credit_payments_exist") {
+                                setConfirmCredit(true);
+                                setVoidMsg(data?.message || "This sale already has money collected. Confirm to void it. The collected money is not refunded automatically.");
+                                return;
+                              }
                               if (!data || data.error || data.success === false) {
                                 setVoidMsg(data?.message || data?.error || "The receipt was not voided.");
                                 return;
@@ -238,7 +247,7 @@ export function SaleReceiptDialog({
                             }
                           }}
                         >
-                          {voiding ? "Voiding…" : "Confirm void"}
+                          {voiding ? "Voiding…" : confirmCredit ? "Void anyway" : "Confirm void"}
                         </Button>
                         <Button variant="ghost" onClick={() => setVoidOpen(false)}>Cancel</Button>
                       </div>

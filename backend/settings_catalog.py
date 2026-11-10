@@ -33,6 +33,10 @@ SECTIONS = (
 
 BOOL_KEYS = {
     'auto_print',
+    'print_customer_copy',
+    'print_duplicate_copy',
+    'show_document_preview',
+    'allow_cashier_doc_override',
     'auto_report_daily',
     'auto_report_weekly',
     'auto_db_backup',
@@ -72,6 +76,16 @@ SECTION_OF = {
     'receipt_footer': 'receipts',
     'auto_print': 'receipts',
     'printer_port': 'receipts',
+    'printer_name': 'receipts',
+    'printer_connection': 'receipts',
+    'printer_host': 'receipts',
+    'paper_size': 'receipts',
+    'document_policy': 'receipts',
+    'print_customer_copy': 'receipts',
+    'print_duplicate_copy': 'receipts',
+    'show_document_preview': 'receipts',
+    'allow_cashier_doc_override': 'receipts',
+    'allow_reprint': 'receipts',
     'mpesa_mode': 'mpesa',
     'mpesa_till': 'mpesa',
     'mpesa_paybill': 'mpesa',
@@ -131,6 +145,7 @@ FORCED = {
     'daraja_environment': 'sandbox',
     'variance_allow_refund_after_finalize': '0',
     'sync_interval': '30',
+    'allow_reprint': '1',
 }
 
 

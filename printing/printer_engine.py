@@ -281,26 +281,81 @@ def build_receipt(sale_data, shop_name='My Shop', currency='KES',
         electronic_method=sale_data.get('electronic_method', ''),
         cash_paid=sale_data.get('cash_paid', 0),
     )
+    payment_lines = mpesa_receipt_lines(sale_data)
+    for line in payment_lines:
+        b.align('center')
+        b._line(line)
+    if payment_lines:
+        b.align('left')
     b.footer(footer)
     return b.build()
 
 
-class PrintQueue(threading.Thread):
-    """
-    Background thread that processes the print queue.
-    If printer not available, jobs are held and retried.
-    """
+def _mentions_mpesa(value) -> bool:
+    compact = str(value or "").lower().replace("-", "").replace(" ", "")
+    return "mpesa" in compact
 
-    def __init__(self, printer_getter):
+
+def mpesa_receipt_lines(sale_data) -> list:
+    """Customer-facing M-Pesa lines. A simulation never uses the verified wording."""
+    method = str(sale_data.get('payment_method') or '')
+    electronic = str(sale_data.get('electronic_method') or '')
+    relevant = _mentions_mpesa(method) or _mentions_mpesa(electronic)
+    if not relevant:
+        return []
+    lines = []
+    ref = str(sale_data.get('mpesa_ref') or '').strip()
+    if ref:
+        lines.append(left_right('M-Pesa Ref:', ref))
+    verification = str(sale_data.get('mpesa_verification') or '')
+    if verification == 'verified_mock':
+        lines.append('Simulated. Safaricom was not contacted.')
+    elif verification == 'verified_daraja':
+        lines.append('Verified with Safaricom.')
+    elif verification == 'manual':
+        lines.append('Manually recorded. Not verified.')
+    return lines
+
+
+class PrintQueue(threading.Thread):
+    """Background print jobs. A failed printer never creates a sale."""
+
+    def __init__(self, printer_getter, retry_waits=(0.2, 0.5, 1.0)):
         super().__init__(daemon=True, name="PrintQueue")
         self._q = queue.Queue()
-        self.printer_getter = printer_getter  # callable → printer object or None
-        self.status = "idle"  # idle / printing / error
+        self.printer_getter = printer_getter
+        self.retry_waits = tuple(retry_waits)
+        self.status = "idle"
+        self.jobs = {}
+        self._lock = threading.Lock()
         self._stop = threading.Event()
 
-    def enqueue(self, data: bytes, label='receipt'):
-        self._q.put({'data': data, 'label': label, 'queued_at': datetime.now()})
-        logger.info(f"Print job queued: {label}")
+    def enqueue(self, data: bytes, label='receipt', job_id=None, reprint=False):
+        jid = str(job_id or label or 'receipt')
+        with self._lock:
+            current = self.jobs.get(jid)
+            if current and current['status'] in ('queued', 'printing'):
+                return dict(current)
+            if current and current['status'] == 'printed' and not reprint:
+                return dict(current)
+            job = {
+                'id': jid,
+                'data': data,
+                'label': label,
+                'queued_at': datetime.now().isoformat(timespec='seconds'),
+                'attempts': 0,
+                'status': 'queued',
+                'error': '',
+            }
+            self.jobs[jid] = job
+        self._q.put(jid)
+        logger.info("Print job queued: %s", label)
+        return dict(job)
+
+    def job(self, job_id):
+        with self._lock:
+            current = self.jobs.get(str(job_id))
+            return dict(current) if current else None
 
     def stop(self):
         self._stop.set()
@@ -308,33 +363,75 @@ class PrintQueue(threading.Thread):
     def run(self):
         while not self._stop.is_set():
             try:
-                job = self._q.get(timeout=2)
+                jid = self._q.get(timeout=0.2)
             except queue.Empty:
                 continue
-
-            for attempt in range(5):
-                printer = self.printer_getter()
-                if printer is None:
-                    logger.warning(f"Printer unavailable, retry {attempt+1}/5 in 3s")
-                    self.status = "error"
-                    time.sleep(3)
-                    continue
+            with self._lock:
+                job = self.jobs.get(jid)
+            if not job:
+                self._q.task_done()
+                continue
+            last_error = 'Printer unavailable'
+            for attempt, wait in enumerate(self.retry_waits, start=1):
+                with self._lock:
+                    job['attempts'] = attempt
+                    job['status'] = 'printing'
+                self.status = 'printing'
+                printer = None
                 try:
-                    self.status = "printing"
-                    printer.write(job['data'])
-                    printer.flush()
-                    self.status = "idle"
-                    logger.info(f"Printed: {job['label']}")
-                    break
-                except Exception as e:
-                    logger.error(f"Print error: {e}")
-                    self.status = "error"
-                    time.sleep(2)
+                    printer = self.printer_getter()
+                except Exception as exc:
+                    last_error = str(exc)[:180]
+                    printer = None
+                if printer is None:
+                    self.status = 'error'
+                    last_error = last_error or 'Printer unavailable'
+                else:
+                    try:
+                        printer.write(job['data'])
+                        flush = getattr(printer, 'flush', None)
+                        if flush:
+                            flush()
+                        close = getattr(printer, 'close', None)
+                        if close:
+                            close()
+                        with self._lock:
+                            job['status'] = 'printed'
+                            job['error'] = ''
+                        self.status = 'idle'
+                        break
+                    except Exception as exc:
+                        last_error = str(exc)[:180]
+                        self.status = 'error'
+                if attempt < len(self.retry_waits) and wait:
+                    time.sleep(wait)
             else:
-                logger.error(f"Print job failed after 5 attempts: {job['label']}")
-                self.status = "error"
-
+                with self._lock:
+                    job['status'] = 'failed'
+                    job['error'] = last_error
+                self.status = 'error'
+                logger.error("Print job failed: %s", job['label'])
             self._q.task_done()
+
+
+def list_installed_printers():
+    """Windows printers the spooler can see. Empty when the spooler or pywin32 is absent."""
+    if sys.platform != 'win32':
+        return []
+    try:
+        import win32print
+    except Exception:
+        return []
+    found = []
+    try:
+        for flags, description, name, comment in win32print.EnumPrinters(
+            win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS
+        ):
+            found.append({'name': name, 'description': description or '', 'comment': comment or ''})
+    except Exception:
+        logger.warning("Installed printer list is unavailable")
+        return []
+    return found
 
 
 def get_usb_printer(vendor_id=None, product_id=None, port=None):
@@ -429,7 +526,8 @@ class PrinterManager:
             shop_address=cfg.get('shop_address', ''),
             shop_phone=cfg.get('shop_phone', ''),
         )
-        self._queue.enqueue(data, label=sale_data.get('receipt_number', 'receipt'))
+        label = sale_data.get('receipt_number', 'receipt')
+        self._queue.enqueue(data, label=label, job_id=label, reprint=bool(sale_data.get('reprint')))
 
     def print_raw(self, data: bytes, label='raw'):
         self._queue.enqueue(data, label)
@@ -475,6 +573,164 @@ class PrinterManager:
                 pass
             return True
         return False
+
+
+class _MemoryPrinter:
+    """Test double. It accepts bytes and does not touch a device."""
+
+    def write(self, data):
+        logger.info("Simulated printer accepted %s bytes", len(data or b""))
+
+    def flush(self):
+        return None
+
+    def close(self):
+        return None
+
+
+def text_to_escpos(text: str) -> bytes:
+    """Plain document text as one ESC/POS job. The text is already formatted."""
+    out = bytearray()
+    out.extend(INIT)
+    out.extend(ALIGN_LEFT)
+    for line in str(text or "").splitlines():
+        out.extend(line.encode(ENCODING, errors="replace"))
+        out.extend(LF)
+    out.extend(FEED_LINES(3))
+    out.extend(PARTIAL_CUT)
+    return bytes(out)
+
+
+def probe_printer(cfg=None) -> dict:
+    """Fast availability check. A missing device is a normal result, not a sale error."""
+    cfg = cfg or {}
+    simulated = os.environ.get("MBT_PRINTER_SIMULATE", "").strip().lower()
+    if simulated in ("fail", "error", "unavailable"):
+        return {"available": False, "reason": "simulated failure"}
+    if simulated in ("off", "poweroff", "unreachable"):
+        return {"available": False, "reason": "printer powered off or unreachable"}
+    if simulated in ("none", "noprinter", "missing"):
+        return {"available": False, "reason": "no printer"}
+    if simulated in ("ok", "ready"):
+        return {"available": True, "reason": "simulated printer"}
+
+    connection = str(cfg.get("printer_connection") or "").strip().upper()
+    port = str(cfg.get("printer_port") or "").strip()
+    host = str(cfg.get("printer_host") or "").strip()
+    name = str(cfg.get("printer_name") or "").strip()
+    if not connection:
+        if host:
+            connection = "LAN"
+        elif name:
+            connection = "WINDOWS"
+        else:
+            connection = "USB"
+    if connection == "LAN":
+        return _probe_lan(host or port)
+    if connection == "WINDOWS":
+        return _probe_windows(name)
+    if port.upper() in ("", "USB", "NONE") and not name:
+        return {"available": False, "reason": "no printer"}
+    printer = get_usb_printer(port=port if port.upper() not in ("USB", "WINDOWS", "LAN") else None)
+    if printer is None and name:
+        return _probe_windows(name)
+    if printer is None:
+        return {"available": False, "reason": "usb printer not found"}
+    try:
+        printer.close()
+    except Exception:
+        pass
+    return {"available": True, "reason": "usb"}
+
+
+def _probe_lan(host: str) -> dict:
+    target = (host or "").strip()
+    if not target or target.upper() in ("USB", "LAN", "WINDOWS", "NONE"):
+        return {"available": False, "reason": "no printer"}
+    if ":" in target:
+        host_name, _, port_text = target.rpartition(":")
+        try:
+            port_number = int(port_text)
+        except ValueError:
+            host_name, port_number = target, 9100
+    else:
+        host_name, port_number = target, 9100
+    import socket
+    try:
+        sock = socket.create_connection((host_name, port_number), timeout=0.4)
+        sock.close()
+        return {"available": True, "reason": "lan"}
+    except Exception:
+        logger.info("LAN printer %s:%s was not reachable", host_name, port_number)
+        return {"available": False, "reason": "printer powered off or unreachable"}
+
+
+def _probe_windows(name: str) -> dict:
+    if not (name or "").strip():
+        return {"available": False, "reason": "no printer"}
+    try:
+        import win32print
+    except Exception:
+        return {"available": False, "reason": "windows printer support is not installed"}
+    try:
+        handle = win32print.OpenPrinter(name)
+        win32print.ClosePrinter(handle)
+        return {"available": True, "reason": "windows"}
+    except Exception:
+        logger.info("Windows printer was not opened")
+        return {"available": False, "reason": "printer powered off or unreachable"}
+
+
+def print_document_bytes(cfg, payload: bytes, label: str = "document") -> dict:
+    """Queue one already-built job. The caller must not resubmit the sale."""
+    from printing.sale_documents import PRINTER_UNAVAILABLE
+    probe = probe_printer(cfg)
+    if not probe.get("available"):
+        logger.warning("Printer unavailable for %s (%s). The sale was not sent again.", label, probe.get("reason"))
+        return {
+            "printed": False,
+            "queued": False,
+            "sale_saved": True,
+            "message": PRINTER_UNAVAILABLE,
+            "reason": probe.get("reason") or "unavailable",
+        }
+
+    def _write():
+        try:
+            simulated = os.environ.get("MBT_PRINTER_SIMULATE", "").strip().lower()
+            if simulated in ("ok", "ready"):
+                printer = _MemoryPrinter()
+            else:
+                printer = _open_configured_printer(cfg)
+            if printer is None:
+                logger.warning("Printer disappeared before the write for %s", label)
+                return
+            printer.write(payload)
+            printer.flush()
+            try:
+                printer.close()
+            except Exception:
+                pass
+            logger.info("Print job handed to the printer for %s", label)
+        except Exception as exc:
+            logger.warning("Print failed for %s: %s", label, exc.__class__.__name__)
+
+    threading.Thread(target=_write, name="MBTPrintOnce", daemon=True).start()
+    return {
+        "printed": True,
+        "queued": True,
+        "sale_saved": True,
+        "message": "Document sent to the printer. Paper output was not confirmed.",
+        "reason": probe.get("reason") or "",
+    }
+
+
+def _open_configured_printer(cfg):
+    connection = str((cfg or {}).get("printer_connection") or "").strip().upper()
+    port = str((cfg or {}).get("printer_port") or "").strip()
+    if connection in ("LAN", "WINDOWS"):
+        return None
+    return get_usb_printer(port=port if port.upper() not in ("", "USB", "WINDOWS", "LAN") else None)
 
 
 def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
@@ -539,9 +795,9 @@ def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
             lines.append(left_right('M-Pesa Till:', till))
         if pb:
             lines.append(left_right('Paybill:', pb))
-        ref = sale_data.get('mpesa_ref', '')
-        if ref:
-            lines.append(left_right('M-Pesa Ref:', ref))
+        lines.extend(mpesa_receipt_lines(sale_data))
+    elif _mentions_mpesa(sale_data.get('electronic_method')):
+        lines.extend(mpesa_receipt_lines(sale_data))
     if elec > 0.009:
         em = (sale_data.get('electronic_method') or 'Electronic').strip() or 'Electronic'
         cash_amt = float(sale_data.get('cash_paid') or 0)

@@ -424,7 +424,9 @@ function Reports() {
         <Card className="p-4">
           <div className="text-xs font-semibold text-text2">Credit issued</div>
           <div className="mt-1 text-xl font-bold">{KES(summary.credit_issued ?? 0, currency)}</div>
-          <div className="mt-1 text-xs text-text2">Left unpaid on these sales. A later repayment is not a new sale.</div>
+          <div className="mt-1 text-xs text-text2">
+            Left unpaid when the sale was made. Still owed now {KES(summary.outstanding_on_sales ?? 0, currency)}. A later repayment is not a new sale.
+          </div>
         </Card>
         <Card className="p-4">
           <div className="text-xs font-semibold text-text2">Gross profit</div>

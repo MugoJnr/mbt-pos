@@ -1,8 +1,8 @@
 {
-    "version": "3.1.77",
-    "build": "RC-2026-11-03-v3.1.77",
-    "released": "2026-11-03",
-    "release_notes": "The till no longer stops responding while a sale screen is opening. Cash change is counted once. Split payments show under M-Pesa, card, and bank. A debt repayment keeps today's date. Settings saved on the till and the live dashboard use one versioned save and keep a change history. Finance currency and tax remain the values used on receipts. Category tile size and image fit are stored in the same file the till reads. A dashboard test-page request stays waiting until the till queues it. The owner portal keeps a sign-in when several requests refresh together and shows the real debt amount.",
-    "checksum_sha256": "4e8e80f7750e05ca2c1953737f2d6765852ef0320523550164083a2ff1995cae",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.77/MBT_POS_Setup.exe"
+    "version": "3.1.79",
+    "build": "RC-2026-11-10-v3.1.79",
+    "released": "2026-11-10",
+    "release_notes": "A return reduces profit in finance the same way the sales report does. A supplier payment, an approved expense, and an approved cash refund leave the cash account. Voiding a sale that already collected money asks for a second confirmation, and only a Super Admin confirmation is honored. The live dashboard can show and print the last sale on that screen. Reports count refunds in cash collected by method. A supplier delivery request shows its product lines and total. A stock count does not change stock until a Super Admin applies it. Extra user permissions are enforced on the till and the dashboard. A supplier payment larger than the open bills is kept as an advance, and a reversal cannot be reversed again. Audit history export includes every matching event. Licence details stay with the shop owner.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.79/MBT_POS_Setup.exe"
 }

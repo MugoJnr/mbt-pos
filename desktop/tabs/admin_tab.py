@@ -371,6 +371,9 @@ class AdminTab(QWidget):
                 QMessageBox.critical(self, 'Error', err)
     def _load_audit(self):
         try:
+            if not self.api.can_view_audit():
+                self._audit.setRowCount(0)
+                return
             logs=self.api.get_audit_log() or []; self._audit.setRowCount(0)
             for i,l in enumerate(logs[:50]):
                 self._audit.insertRow(i)

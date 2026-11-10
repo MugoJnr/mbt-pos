@@ -44,6 +44,7 @@ function money(value: unknown) {
 
 export function RequestReceiptDialog({
   title,
+  documentLabel = "Sale",
   status,
   reason,
   requester,
@@ -57,6 +58,7 @@ export function RequestReceiptDialog({
   children,
 }: {
   title: string;
+  documentLabel?: string;
   status?: string;
   reason?: string;
   requester?: string;
@@ -191,7 +193,7 @@ export function RequestReceiptDialog({
               <div className="text-xs font-semibold uppercase tracking-wide text-gold">Receipt</div>
               <div className="mt-1 text-lg font-extrabold text-text">{receiptNo}</div>
               <div className="text-sm text-text2">
-                Sale {saleStatus} · {when(shown.created_at || shown.sale_date)} · business date {when(shown.sale_date).slice(0, 10)}
+                {documentLabel} {saleStatus} · {when(shown.created_at || shown.sale_date)} · business date {when(shown.sale_date).slice(0, 10)}
               </div>
               <div className="text-sm text-text2">{shown.cashier_name || "—"} · {customer}</div>
             </div>

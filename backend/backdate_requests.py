@@ -434,7 +434,17 @@ def _post_all(db, actor, row) -> list[str]:
         notes = (sale.get('notes') or '').strip()
         notes = (notes + f" | Backdating request {row['reference']}").strip(' |')
         mpesa_ref = (sale.get('mpesa_ref') or '').strip()
+        prepared = {}
         if mpesa_ref:
+            from backend.mpesa_service import MpesaSaleError, prepare_sale_mpesa
+            try:
+                prepared = prepare_sale_mpesa(
+                    db, {'mpesa_ref': mpesa_ref, 'payment_method': 'M-Pesa', 'amount_paid': amount_paid},
+                    'M-Pesa', 0,
+                )
+            except MpesaSaleError as exc:
+                raise BackdateError(str(exc)) from exc
+            mpesa_ref = prepared.get('mpesa_ref') or mpesa_ref
             notes = (notes + f" | M-Pesa ref: {mpesa_ref} | Reference not verified by the till").strip(' |')
         created_at = _now()
         db.execute(
@@ -451,6 +461,9 @@ def _post_all(db, actor, row) -> list[str]:
              cash_paid, token, row['id']),
         )
         sale_id = _last_id(db)
+        if prepared:
+            from backend.mpesa_service import attach_sale_mpesa
+            attach_sale_mpesa(db, sale_id, prepared)
         for line in lines:
             db.execute(
                 """INSERT INTO sale_items

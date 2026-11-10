@@ -51,17 +51,46 @@ export function browserDashboardVersion(): string {
   }
 }
 
-export function scriptsMatch(loaded: string, served: string): boolean {
-  if (!loaded || !served) return false;
-  return loaded === served || loaded.endsWith(served);
+export function scriptIdentity(value: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutHash = raw.split("#")[0];
+  try {
+    const url = new URL(withoutHash, "http://dashboard.local");
+    const name = url.pathname.split("/").filter(Boolean).pop() || "";
+    return name.split("?")[0];
+  } catch {
+    const path = withoutHash.split("?")[0];
+    return path.split("/").filter(Boolean).pop() || "";
+  }
 }
 
-export function dashboardMismatch(loadedScript: string, browserVersion: string, served: ServedDashboard | null): boolean {
+export function scriptsMatch(loaded: string, served: string): boolean {
+  const left = scriptIdentity(loaded);
+  const right = scriptIdentity(served);
+  return Boolean(left) && left === right;
+}
+
+export function dashboardMismatch(loadedScript: string, _browserVersion: string, served: ServedDashboard | null): boolean {
+  // The version string baked into a bundle cannot change when that same file
+  // is loaded again. The served file name is the only refresh signal.
   if (!served) return false;
-  if (served.asset_ready === false) return true;
-  const scriptDiffers = Boolean(served.entry_script) && Boolean(loadedScript) && !scriptsMatch(loadedScript, served.entry_script || "");
-  const versionDiffers = Boolean(browserVersion) && Boolean(served.version) && browserVersion !== served.version;
-  return scriptDiffers || versionDiffers;
+  const expected = served.entry_script || "";
+  if (expected && loadedScript && scriptsMatch(loadedScript, expected)) return false;
+  if (served.asset_ready === false && expected) return true;
+  return Boolean(expected) && Boolean(loadedScript) && !scriptsMatch(loadedScript, expected);
+}
+
+export function releaseNeedsRefresh(
+  loadedScript: string,
+  browserVersion: string,
+  served: ServedDashboard | null,
+  pendingEntry = "",
+): { show: boolean; landed: boolean; missed: boolean } {
+  const mismatch = dashboardMismatch(loadedScript, browserVersion, served);
+  const missed = Boolean(pendingEntry) && !scriptsMatch(loadedScript, pendingEntry);
+  const landed = Boolean(pendingEntry) && scriptsMatch(loadedScript, pendingEntry) && !mismatch;
+  return { show: mismatch || missed, landed, missed };
 }
 
 async function readServed(): Promise<ServedDashboard> {
@@ -70,65 +99,56 @@ async function readServed(): Promise<ServedDashboard> {
   return response.json();
 }
 
+function readPendingRefresh(): { entry?: string; version?: string } | null {
+  const raw = sessionStorage.getItem("mbt-dashboard-refresh");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    sessionStorage.removeItem("mbt-dashboard-refresh");
+    return null;
+  }
+}
+
+function clearRefreshMarker() {
+  sessionStorage.removeItem("mbt-dashboard-refresh");
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("dashboard")) return;
+  url.searchParams.delete("dashboard");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 async function check() {
   try {
     const served = await readServed();
-    const mismatch = dashboardMismatch(loadedDashboardScript(), browserDashboardVersion(), served);
-    let pendingMismatch = false;
-    try {
-      const pending = JSON.parse(sessionStorage.getItem("mbt-dashboard-refresh") || "null");
-      pendingMismatch = Boolean(pending?.entry) && !scriptsMatch(loadedDashboardScript(), pending.entry);
-    } catch {
-      pendingMismatch = false;
-    }
-    const stillFailed = pendingMismatch || (mismatch && snap.phase === "failed");
+    const loaded = loadedDashboardScript();
+    const pending = readPendingRefresh();
+    const decision = releaseNeedsRefresh(
+      loaded,
+      browserDashboardVersion(),
+      served,
+      pending?.entry || "",
+    );
+    const pendingMissed = decision.missed;
+    const refreshLanded = decision.landed;
+    if (pending && !pendingMissed) clearRefreshMarker();
+    const showButton = decision.show;
     publish({
       served,
       failed: false,
-      mismatch: mismatch || pendingMismatch,
-      phase: stillFailed ? "failed" : "idle",
-      verified: stillFailed ? "" : snap.verified,
-      message: stillFailed
-        ? (snap.message || "The refresh did not load the served dashboard. Try again.")
+      mismatch: showButton,
+      phase: pendingMissed ? "failed" : "idle",
+      percent: null,
+      verified: refreshLanded
+        ? `Dashboard updated to v${pending?.version || served.version || browserDashboardVersion() || "current"}`
+        : "",
+      message: pendingMissed
+        ? "The refresh did not load the served dashboard. Try again."
         : (served.asset_ready === false ? "The served dashboard is missing its script." : ""),
     });
   } catch {
     publish({ served: null, failed: true, mismatch: false, verified: "", message: "" });
   }
-}
-
-function confirmPendingRefresh() {
-  const raw = sessionStorage.getItem("mbt-dashboard-refresh");
-  if (!raw) return;
-  let want: { entry?: string; version?: string } = {};
-  try {
-    want = JSON.parse(raw);
-  } catch {
-    sessionStorage.removeItem("mbt-dashboard-refresh");
-    return;
-  }
-  const loaded = loadedDashboardScript();
-  if (want.entry && scriptsMatch(loaded, want.entry)) {
-    sessionStorage.removeItem("mbt-dashboard-refresh");
-    const url = new URL(window.location.href);
-    url.searchParams.delete("dashboard");
-    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-    publish({
-      phase: "idle",
-      mismatch: false,
-      percent: null,
-      verified: `Dashboard updated to v${want.version || browserDashboardVersion() || "current"}`,
-      message: "",
-    });
-    return;
-  }
-  publish({
-    phase: "failed",
-    mismatch: true,
-    percent: null,
-    verified: "",
-    message: "The refresh did not load the served dashboard. Try again.",
-  });
 }
 
 export function startDashboardReleaseCheck() {
@@ -137,7 +157,6 @@ export function startDashboardReleaseCheck() {
   window.addEventListener("mbt-unsaved", ((event: CustomEvent<boolean>) => {
     unsaved = Boolean(event.detail);
   }) as EventListener);
-  confirmPendingRefresh();
   void check();
   window.setInterval(() => void check(), 45_000);
   window.addEventListener("focus", () => void check());

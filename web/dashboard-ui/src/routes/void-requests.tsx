@@ -68,6 +68,7 @@ function VoidRequestsPage() {
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: ["void-requests"] });
     await qc.invalidateQueries({ queryKey: ["void-request", openId] });
+    await qc.invalidateQueries({ queryKey: ["sale-detail"] });
   };
   const correctM = useMutation({
     mutationFn: () => PUT<any>(`/void-requests/${openId}`, { reason: draft }),

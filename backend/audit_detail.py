@@ -39,24 +39,37 @@ def outcome_label(action: str) -> str:
     return "Recorded"
 
 
+def like_pattern(text: str) -> str:
+    """Match the typed text. Percent and underscore stay literal."""
+    escaped = str(text or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def describe_event(row: dict, related: list | None = None, linked: dict | None = None) -> dict:
     """Fields the audit row actually contains, plus parsed before/after text."""
     details = redact(row.get("details") or "")
     recorded = row.get("created_at") or "Not recorded"
+    stored = str(row.get("outcome") or "").strip().lower()
+    if stored == "denied":
+        outcome = "Denied or failed"
+    elif stored == "recorded":
+        outcome = "Recorded"
+    else:
+        outcome = outcome_label(row.get("action") or "")
     return {
         "id": row.get("id"),
         "action": row.get("action") or "Not recorded",
         "module": row.get("module") or "Not recorded",
         "username": row.get("username") or "Not recorded",
         "user_id": row.get("user_id"),
-        "role_at_event": "Not recorded",
+        "role_at_event": row.get("role_at_event") or "Not recorded",
         "created_at": recorded,
         "recorded_at": recorded,
         "occurred_at": "Not recorded separately from the log time",
         "synced_at": "Not recorded",
         "ip_address": row.get("ip_address") or "Not recorded",
-        "source": "Not recorded",
-        "outcome": outcome_label(row.get("action") or ""),
+        "source": row.get("source") or "Not recorded",
+        "outcome": outcome,
         "details": details or "Not recorded",
         "changes": parse_changes(details),
         "related": related or [],

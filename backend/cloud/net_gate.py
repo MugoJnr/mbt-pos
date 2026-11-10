@@ -7,6 +7,7 @@ so no thread opens a hostname connection while there is no route.
 """
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -15,6 +16,17 @@ _LOCK = threading.Lock()
 _NEG_UNTIL = 0.0
 _NEG_TTL_SEC = 8.0
 _PROBE_HOSTS = (('1.1.1.1', 53), ('8.8.8.8', 53))
+
+
+def local_computer_name() -> str:
+    """Windows computer name from the environment.
+
+    ``socket.gethostname`` and ``platform.node`` can sit on DNS or NetBIOS
+    for a long time when the shop has no working name lookup. That stall
+    has frozen the till. The environment name needs no network.
+    """
+    name = (os.environ.get('COMPUTERNAME') or os.environ.get('HOSTNAME') or '').strip()
+    return name or 'unknown'
 
 
 def network_up(timeout: float = 1.0, *, force: bool = False) -> bool:

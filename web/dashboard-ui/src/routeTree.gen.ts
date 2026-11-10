@@ -19,6 +19,7 @@ import { Route as ReceiptsRouteImport } from './routes/receipts'
 import { Route as PosRouteImport } from './routes/pos'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as NotesRouteImport } from './routes/notes'
+import { Route as MpesaRouteImport } from './routes/mpesa'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LicenseRouteImport } from './routes/license'
@@ -83,6 +84,11 @@ const NotificationsRoute = NotificationsRouteImport.update({
 const NotesRoute = NotesRouteImport.update({
   id: '/notes',
   path: '/notes',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MpesaRoute = MpesaRouteImport.update({
+  id: '/mpesa',
+  path: '/mpesa',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
@@ -177,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/mpesa': typeof MpesaRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -204,6 +211,7 @@ export interface FileRoutesByTo {
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/mpesa': typeof MpesaRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -232,6 +240,7 @@ export interface FileRoutesById {
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
+  '/mpesa': typeof MpesaRoute
   '/notes': typeof NotesRoute
   '/notifications': typeof NotificationsRoute
   '/pos': typeof PosRoute
@@ -261,6 +270,7 @@ export interface FileRouteTypes {
     | '/license'
     | '/live'
     | '/login'
+    | '/mpesa'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -288,6 +298,7 @@ export interface FileRouteTypes {
     | '/license'
     | '/live'
     | '/login'
+    | '/mpesa'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -315,6 +326,7 @@ export interface FileRouteTypes {
     | '/license'
     | '/live'
     | '/login'
+    | '/mpesa'
     | '/notes'
     | '/notifications'
     | '/pos'
@@ -343,6 +355,7 @@ export interface RootRouteChildren {
   LicenseRoute: typeof LicenseRoute
   LiveRoute: typeof LiveRoute
   LoginRoute: typeof LoginRoute
+  MpesaRoute: typeof MpesaRoute
   NotesRoute: typeof NotesRoute
   NotificationsRoute: typeof NotificationsRoute
   PosRoute: typeof PosRoute
@@ -425,6 +438,13 @@ declare module '@tanstack/react-router' {
       path: '/notes'
       fullPath: '/notes'
       preLoaderRoute: typeof NotesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mpesa': {
+      id: '/mpesa'
+      path: '/mpesa'
+      fullPath: '/mpesa'
+      preLoaderRoute: typeof MpesaRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -551,6 +571,7 @@ const rootRouteChildren: RootRouteChildren = {
   LicenseRoute: LicenseRoute,
   LiveRoute: LiveRoute,
   LoginRoute: LoginRoute,
+  MpesaRoute: MpesaRoute,
   NotesRoute: NotesRoute,
   NotificationsRoute: NotificationsRoute,
   PosRoute: PosRoute,

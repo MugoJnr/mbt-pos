@@ -347,6 +347,109 @@ def _simplified_sale_lines(sale, original_total, rounding, credit_applied,
     return lines
 
 
+def post_return_journal(db, return_sale_id: int, *, refund_total=0, cash_refund=0,
+                        debt_reduced=0, cost=0, method='cash', receipt='',
+                        entry_date='', user_id=None, username='', safe=True) -> dict:
+    """Reduce sales, cash or debt, and COGS for a product return or a cash refund."""
+    def _run():
+        existing = find_posted_entry(db, 'sales', str(return_sale_id), 'sale_return')
+        if existing:
+            return {'success': True, 'journal_id': existing['id'], 'idempotent': True}
+        refund = D(refund_total)
+        cash = D(cash_refund)
+        debt = D(debt_reduced)
+        cogs = D(cost)
+        if refund <= 0 and cogs <= 0:
+            return {'skipped': True, 'reason': 'zero'}
+        lines = []
+        if refund > 0:
+            lines.append({
+                'account_code': '4000',
+                'debit': refund,
+                'memo': f'Return {receipt}',
+            })
+        if cash > 0:
+            lines.append({
+                'account_code': payment_method_account(method or 'cash'),
+                'credit': cash,
+                'memo': f'Refund {receipt}',
+            })
+        if debt > 0:
+            lines.append({
+                'account_code': '1100',
+                'credit': debt,
+                'memo': f'Debt reduced {receipt}',
+            })
+        gap = refund - cash - debt
+        if gap > D('0.009'):
+            lines.append({
+                'account_code': payment_method_account(method or 'cash'),
+                'credit': gap,
+                'memo': f'Refund balance {receipt}',
+            })
+        elif gap < D('-0.009'):
+            lines.append({
+                'account_code': '4000',
+                'debit': abs(gap),
+                'memo': f'Return balance {receipt}',
+            })
+        if cogs > 0:
+            lines.append({
+                'account_code': '1200',
+                'debit': cogs,
+                'memo': f'Inventory back {receipt}',
+            })
+            lines.append({
+                'account_code': '5000',
+                'credit': cogs,
+                'memo': f'COGS reversed {receipt}',
+            })
+        return post_journal(
+            db, lines,
+            description=f'Return {receipt or return_sale_id}',
+            entry_date=(entry_date or date.today().isoformat())[:10],
+            source_module='sales',
+            source_id=str(return_sale_id),
+            entry_type='sale_return',
+            user_id=user_id,
+            username=username,
+        )
+    return _safe_call(_run, safe=safe)
+
+
+def post_supplier_payment_journal(db, payment_id: int, *, amount=0, method='cash',
+                                  number='', entry_date='', user_id=None,
+                                  username='', safe=True) -> dict:
+    """Cash leaving the shop to a supplier reduces the cash account."""
+    def _run():
+        existing = find_posted_entry(db, 'supplier', str(payment_id), 'supplier_payment')
+        if existing:
+            return {'success': True, 'journal_id': existing['id'], 'idempotent': True}
+        paid = D(amount)
+        if paid <= 0:
+            return {'skipped': True, 'reason': 'zero'}
+        label = number or str(payment_id)
+        return post_journal(
+            db,
+            [
+                {'account_code': '2000', 'debit': paid, 'memo': f'Supplier payment {label}'},
+                {
+                    'account_code': payment_method_account(method or 'cash'),
+                    'credit': paid,
+                    'memo': f'Supplier payment {label}',
+                },
+            ],
+            description=f'Supplier payment {label}',
+            entry_date=(entry_date or date.today().isoformat())[:10],
+            source_module='supplier',
+            source_id=str(payment_id),
+            entry_type='supplier_payment',
+            user_id=user_id,
+            username=username,
+        )
+    return _safe_call(_run, safe=safe)
+
+
 def reverse_sale_journal(db, sale_id: int, *, reason='', user_id=None,
                          username='', safe=True) -> dict:
     def _run():

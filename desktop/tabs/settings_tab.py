@@ -240,12 +240,57 @@ class SettingsTab(QWidget):
         self._section_anchors['receipts'] = pg
         pf = make_form(); pf_w = QWidget(); pf_w.setLayout(pf)
         self.receipt_footer = Field('Thank you for shopping with us!')
-        self.auto_print = QCheckBox('Auto-print receipt after each sale')
+        self.auto_print = QCheckBox('Print automatically after each sale')
         self.auto_print.setMinimumHeight(36)
         self.printer_port = Field('USB, COM3, or /dev/usb/lp0')
-        for lbl, w in [('Receipt Footer', self.receipt_footer),
-                       ('', self.auto_print), ('Printer Port', self.printer_port)]:
+        self.printer_name = Field('Windows printer name, if one is installed')
+        self.printer_connection = QComboBox()
+        self.printer_connection.setMinimumHeight(40)
+        for label in ('USB', 'LAN', 'Windows'):
+            self.printer_connection.addItem(label, label)
+        self.printer_host = Field('LAN address, for example 192.168.1.50')
+        self.paper_size = QComboBox()
+        self.paper_size.setMinimumHeight(40)
+        self.paper_size.addItem('80mm', '80')
+        self.paper_size.addItem('58mm', '58')
+        self.document_policy = QComboBox()
+        self.document_policy.setMinimumHeight(40)
+        from printing.sale_documents import POLICY_CHOICES
+        for code, label, _text in POLICY_CHOICES:
+            self.document_policy.addItem(f'{code} · {label}', code)
+        self.document_policy.currentIndexChanged.connect(self._sync_policy_help)
+        self.document_policy_help = QLabel('')
+        self.document_policy_help.setWordWrap(True)
+        self.print_customer_copy = QCheckBox('Print a customer copy')
+        self.print_duplicate_copy = QCheckBox('Print a duplicate copy when this is turned on')
+        self.show_document_preview = QCheckBox('Show the document before printing')
+        self.allow_cashier_doc_override = QCheckBox('Allow an authorised cashier to change the document')
+        self.allow_reprint = QCheckBox('Allow later reprinting')
+        self.allow_reprint.setChecked(True)
+        self.allow_reprint.setEnabled(False)
+        for box in (
+            self.print_customer_copy, self.print_duplicate_copy,
+            self.show_document_preview, self.allow_cashier_doc_override, self.allow_reprint,
+        ):
+            box.setMinimumHeight(32)
+        for lbl, w in [
+            ('Receipt footer', self.receipt_footer),
+            ('Document', self.document_policy),
+            ('', self.document_policy_help),
+            ('Printer name', self.printer_name),
+            ('Connection', self.printer_connection),
+            ('LAN address', self.printer_host),
+            ('Paper', self.paper_size),
+            ('Printer port', self.printer_port),
+            ('', self.auto_print),
+            ('', self.print_customer_copy),
+            ('', self.print_duplicate_copy),
+            ('', self.show_document_preview),
+            ('', self.allow_cashier_doc_override),
+            ('', self.allow_reprint),
+        ]:
             FormRow(lbl, w, pf)
+        self._sync_policy_help()
         test_btn = SecondaryBtn('Print Test Page', 40)
         test_btn.setFixedWidth(180); test_btn.clicked.connect(self._test_print)
         pf.addRow(QLabel(''), test_btn)
@@ -919,6 +964,12 @@ class SettingsTab(QWidget):
         layout.addWidget(close)
         dlg.exec_()
 
+    def _sync_policy_help(self, *_args):
+        from printing.sale_documents import policy_text
+        code = self.document_policy.currentData() if hasattr(self, 'document_policy') else 'C'
+        if hasattr(self, 'document_policy_help'):
+            self.document_policy_help.setText(policy_text(code or 'C'))
+
     def refresh(self):
         self._suspend_dirty = True
         cfg = self.api.get_settings() or {}
@@ -936,6 +987,23 @@ class SettingsTab(QWidget):
         self.receipt_footer.setText(cfg.get('receipt_footer', 'Thank you for shopping with us!'))
         self.auto_print.setChecked(cfg.get('auto_print', '1') == '1')
         self.printer_port.setText(cfg.get('printer_port', ''))
+        self.printer_name.setText(cfg.get('printer_name', '') or '')
+        self.printer_host.setText(cfg.get('printer_host', '') or '')
+        connection = cfg.get('printer_connection') or 'USB'
+        found = self.printer_connection.findData(connection)
+        self.printer_connection.setCurrentIndex(found if found >= 0 else 0)
+        paper = str(cfg.get('paper_size') or '80')
+        paper_idx = self.paper_size.findData(paper)
+        self.paper_size.setCurrentIndex(paper_idx if paper_idx >= 0 else 0)
+        policy = str(cfg.get('document_policy') or 'C').upper()[:1]
+        policy_idx = self.document_policy.findData(policy)
+        self.document_policy.setCurrentIndex(policy_idx if policy_idx >= 0 else 2)
+        self.print_customer_copy.setChecked(cfg.get('print_customer_copy', '1') == '1')
+        self.print_duplicate_copy.setChecked(cfg.get('print_duplicate_copy', '0') == '1')
+        self.show_document_preview.setChecked(cfg.get('show_document_preview', '0') == '1')
+        self.allow_cashier_doc_override.setChecked(cfg.get('allow_cashier_doc_override', '0') == '1')
+        self.allow_reprint.setChecked(True)
+        self._sync_policy_help()
         self.sync_interval.setValue(int(cfg.get('sync_interval', 30) or 30))
         self.mpesa_till.setText(cfg.get('mpesa_till', ''))
         self.mpesa_paybill.setText(cfg.get('mpesa_paybill', ''))
@@ -1653,6 +1721,16 @@ class SettingsTab(QWidget):
             'receipt_footer':      self.receipt_footer.text().strip(),
             'auto_print':          '1' if self.auto_print.isChecked() else '0',
             'printer_port':        self.printer_port.text().strip(),
+            'printer_name':        self.printer_name.text().strip(),
+            'printer_connection':  self.printer_connection.currentData() or 'USB',
+            'printer_host':        self.printer_host.text().strip(),
+            'paper_size':          self.paper_size.currentData() or '80',
+            'document_policy':     self.document_policy.currentData() or 'C',
+            'print_customer_copy': '1' if self.print_customer_copy.isChecked() else '0',
+            'print_duplicate_copy': '1' if self.print_duplicate_copy.isChecked() else '0',
+            'show_document_preview': '1' if self.show_document_preview.isChecked() else '0',
+            'allow_cashier_doc_override': '1' if self.allow_cashier_doc_override.isChecked() else '0',
+            'allow_reprint':       '1',
             # sync_interval / STK / post-finalize refund are not wired — persist safe defaults only.
             'sync_interval':       '30',
             'mpesa_mode':          'manual',

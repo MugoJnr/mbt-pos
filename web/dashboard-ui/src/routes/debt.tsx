@@ -5,6 +5,7 @@ import { Phone, Receipt, Banknote, Users, AlertTriangle, TrendingDown } from "lu
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, KpiCard, PageHeader, SectionTitle, Table } from "@/components/ui-kit";
 import { DeliveryActions } from "@/components/delivery-actions";
+import { SaleDocumentPanel } from "@/components/sale-document-panel";
 import { GET, POST, getUser } from "@/lib/api";
 import { KES } from "@/lib/format";
 
@@ -42,6 +43,7 @@ function CollectPanel({
   currency,
   onClose,
   onSaved,
+  onPayment,
 }: {
   customerId: number;
   customerName: string;
@@ -49,6 +51,7 @@ function CollectPanel({
   currency: string;
   onClose: () => void;
   onSaved: () => Promise<void>;
+  onPayment?: (receipt: string) => void;
 }) {
   const ordered = [...invoices].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")) || Number(a.id) - Number(b.id));
   const owed = ordered.reduce((sum, inv) => sum + Number(inv.balance || 0), 0);
@@ -132,7 +135,9 @@ function CollectPanel({
       setError(res?.error || "Payment was not recorded.");
       return;
     }
-    setNote(`${res.collection_receipt}. Allocated ${KES(res.allocated, currency)}. Credit ${KES(res.unapplied, currency)}.`);
+    const paymentReceipt = Array.isArray(res.allocations) ? res.allocations.find((row: any) => row.payment_receipt)?.payment_receipt : "";
+    setNote(`${res.collection_receipt}. Allocated ${KES(res.allocated, currency)}. Credit ${KES(res.unapplied, currency)}. This is not a new sale.`);
+    if (paymentReceipt && onPayment) onPayment(paymentReceipt);
     setAmount("");
     setPreview(null);
     setManual({});
@@ -349,6 +354,7 @@ function Debt() {
   const [payNote, setPayNote] = useState("");
   const [query, setQuery] = useState("");
   const [collectId, setCollectId] = useState<number | null>(null);
+  const [paymentDoc, setPaymentDoc] = useState("");
   const [statementId, setStatementId] = useState<number | null>(null);
 
   const summaryQ = useQuery({
@@ -551,6 +557,7 @@ function Debt() {
               invoices={(Array.isArray(invoicesQ.data) ? invoicesQ.data : []).filter((inv: any) => Number(inv.customer_id) === collectId && Number(inv.balance) > 0 && inv.status !== "paid" && inv.status !== "cancelled")}
               currency={currency}
               onClose={() => setCollectId(null)}
+              onPayment={(receipt) => setPaymentDoc(receipt)}
               onSaved={async () => {
                 await qc.invalidateQueries({ queryKey: ["debt-invoices"] });
                 await qc.invalidateQueries({ queryKey: ["debt-summary"] });
@@ -652,6 +659,13 @@ function Debt() {
           </div>
         ) : null}
       </Card>
+      {paymentDoc ? (
+        <SaleDocumentPanel
+          paymentReceipt={paymentDoc}
+          currency={currency}
+          onClose={() => setPaymentDoc("")}
+        />
+      ) : null}
     </AppShell>
   );
 }

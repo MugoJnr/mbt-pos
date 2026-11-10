@@ -459,7 +459,11 @@ def _collect_hardware_probe_parts() -> list:
     if _HW_PROBE_PARTS is not None:
         return list(_HW_PROBE_PARTS)
     parts = []
-    parts.append(platform.node())
+    try:
+        from backend.cloud.net_gate import local_computer_name
+        parts.append(local_computer_name())
+    except Exception:
+        parts.append('unknown')
     parts.append(platform.processor() or platform.machine())
     parts.append(platform.system() + platform.version()[:20])
 
