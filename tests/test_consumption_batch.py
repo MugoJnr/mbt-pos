@@ -419,6 +419,95 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertAlmostEqual(float(item['stock_before']), 20, places=3)
         self.assertAlmostEqual(float(item['stock_after']), 19.5, places=3)
 
+    def test_future_date_and_piece_fraction_leave_stock_unchanged(self):
+        future = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'date': '2099-01-01',
+            'items': [{'product_id': 1, 'quantity': 1}],
+        })
+        self.assertEqual(future.get('status'), 400, future)
+        self.assertIn('Future', future.get('error') or '')
+        half = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'items': [{'product_id': 1, 'quantity': 0.5}],
+        })
+        self.assertEqual(half.get('status'), 400, half)
+        self.assertEqual(self._stock('SOAP-500'), 20)
+
+    def test_past_business_date_keeps_the_real_creation_time(self):
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'date': '2020-01-15',
+            'items': [{'product_id': 1, 'quantity': 1}],
+        })
+        self.assertTrue(saved.get('success'), saved)
+        detail = self.api.get_consumption(saved['id'])
+        self.assertEqual(str(detail.get('date'))[:10], '2020-01-15')
+        self.assertTrue(str(detail.get('created_at') or '').startswith('2026'))
+
+    def test_cashier_cannot_backdate_consumption(self):
+        self.api._role = 'cashier'
+        refused = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'date': '2020-01-15',
+            'items': [{'product_id': 1, 'quantity': 1}],
+        })
+        self.assertEqual(refused.get('status'), 403, refused)
+        self.assertEqual(self._stock('SOAP-500'), 20)
+        self.api._role = 'manager'
+
+    def test_cashier_response_hides_consumption_cost(self):
+        saved = self.api.create_consumption({
+            'department_id': self.dept_id,
+            'reason': 'Cleaning',
+            'items': [{'product_id': 1, 'quantity': 1}],
+        })
+        self.assertTrue(saved.get('success'), saved)
+        self.assertIn('total_cost', saved)
+        self.api._role = 'cashier'
+        hidden = self.api.get_consumption(saved['id'])
+        self.assertNotIn('total_cost', hidden)
+        self.assertNotIn('unit_cost', hidden['items'][0])
+        listed = self.api.get_consumptions(start='2000-01-01', end='2099-01-01')
+        self.assertTrue(listed)
+        self.assertNotIn('total_cost', listed[0])
+        self.api._role = 'manager'
+        db = self.ac._db()
+        db.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('shop_name', 'QA Shop')"
+        )
+        db.commit()
+        db.close()
+        visible = self.api.get_consumption(saved['id'])
+        self.assertEqual(visible.get('shop_name'), 'QA Shop')
+        self.assertIn('unit_cost', visible['items'][0])
+        from desktop.tabs.consumption_tab import consumption_money_label
+        self.assertIsNone(consumption_money_label(None, False))
+        self.assertIsNone(consumption_money_label(1600, False))
+        self.assertEqual(consumption_money_label(1600, True), 'KES 1,600.00')
+
+    def test_save_does_not_need_a_network(self):
+        """The till writes consumption to the local shop file. A dead network must not block it."""
+        def _offline(*_args, **_kwargs):
+            raise OSError('offline')
+        with patch('socket.create_connection', side_effect=_offline):
+            saved = self.api.create_consumption({
+                'department_id': self.dept_id,
+                'reason': 'Cleaning',
+                'notes': 'offline sample',
+                'items': [{'product_id': 1, 'quantity': 1}],
+            })
+        self.assertTrue(saved.get('success'), saved)
+        self.assertTrue(saved.get('reference_no'))
+        self.assertEqual(self._stock('SOAP-500'), 19)
+        again = self.api.get_consumption(saved['id'])
+        self.assertEqual(again.get('notes'), 'offline sample')
+        self.assertEqual(self._stock('SOAP-500'), 19)
+
 
 if __name__ == '__main__':
     unittest.main()

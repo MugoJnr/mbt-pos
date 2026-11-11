@@ -36,7 +36,13 @@ function ConsumptionPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const role = String(user?.role || "");
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canSeeCost = actions ? actions.includes("inventory.view_cost") : ["manager", "admin", "superadmin"].includes(role);
+  const canBackdate = actions ? actions.includes("sales.business_day") : ["manager", "admin", "superadmin"].includes(role);
   const canRecord = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canReport = actions
+    ? actions.includes("consumption.view_report")
+    : ["viewer", "manager", "admin", "superadmin"].includes(role);
   const canVoid = ["admin", "superadmin"].includes(role);
   const canEdit = ["admin", "superadmin"].includes(role);
   const canRequestVoid = ["cashier", "manager"].includes(role);
@@ -123,6 +129,11 @@ function ConsumptionPage() {
     const amount = Number(qty);
     if (!picked) return setError("Choose a product from the list.");
     if (!Number.isFinite(amount) || amount <= 0) return setError("Quantity must be greater than zero.");
+    const unitName = String(picked.unit || "pcs").trim().toLowerCase();
+    const measured = ["kg", "g", "l", "ml", "ltr", "litre", "liter", "m", "cm"].includes(unitName);
+    if (!measured && Math.abs(amount - Math.round(amount)) > 0.0001) {
+      return setError(`${picked.name} is sold in whole units.`);
+    }
     const pickedStock = Number(picked.stock || 0);
     const pickedCost = Number(picked.cost_price || 0);
     if (amount > pickedStock) return setError(`Only ${pickedStock} available for ${picked.name}.`);
@@ -158,10 +169,11 @@ function ConsumptionPage() {
 
   async function save() {
     setError("");
-    setSavedRef("");
     if (!departmentId) return setError("Choose a department.");
     if (!lines.length) return setError("Add at least one product.");
+    setSavedRef("");
     if (when > today) return setError("Future dates are not allowed.");
+    if (when !== today && !canBackdate) return setError("You cannot record consumption for another day.");
     if (!tokenRef.current) tokenRef.current = crypto.randomUUID();
     const res = await POST<any>("/consumptions", {
       department_id: Number(departmentId),
@@ -318,9 +330,9 @@ function ConsumptionPage() {
         description="Stock used by the shop. This is not a sale and does not create a customer debt. Open History or Report and click a row to see the receipt, void it, or request a void."
       />
       <div className="mb-4 flex flex-wrap gap-2">
-        {canRecord ? <Button variant={pane === "record" ? "primary" : "secondary"} onClick={() => setPane("record")}>New consumption</Button> : null}
-        <Button variant={pane === "history" ? "primary" : "secondary"} onClick={() => setPane("history")}>History</Button>
-        <Button variant={pane === "report" ? "primary" : "secondary"} onClick={() => setPane("report")}>Report</Button>
+        {canRecord ? <Button variant={pane === "record" ? "primary" : "secondary"} onClick={() => { setError(""); setPane("record"); }}>New consumption</Button> : null}
+        <Button variant={pane === "history" ? "primary" : "secondary"} onClick={() => { setError(""); setPane("history"); }}>History</Button>
+        {canReport ? <Button variant={pane === "report" ? "primary" : "secondary"} onClick={() => { setError(""); setPane("report"); }}>Report</Button> : null}
       </div>
       {canRecord && pane === "record" ? (
       <Card padded className="mb-4">
@@ -375,7 +387,7 @@ function ConsumptionPage() {
           </label>
           <label className="text-sm text-text2">
             Business date
-            <Input type="date" max={today} value={when} onChange={(e) => setWhen(e.target.value)} />
+            <Input type="date" max={today} min={canBackdate ? undefined : today} disabled={!canBackdate} value={when} onChange={(e) => setWhen(e.target.value)} />
           </label>
           <label className="text-sm text-text2">
             Taken by
@@ -407,21 +419,23 @@ function ConsumptionPage() {
           {!visibleProducts.length ? <p className="px-3 py-6 text-sm text-text2">No matching products.</p> : null}
         </div>
         <p className="mt-3 text-sm text-text2">
-          {product ? `${product.name} · ${available} ${product.unit || "pcs"} available · estimated ${KES(unitCost * (Number(qty) || 0))} from purchase cost` : "Select a product, enter a quantity such as 0.25, then add it. Earlier lines stay on the list."}
+          {product
+            ? `${product.name} · ${available} ${product.unit || "pcs"} available${canSeeCost ? ` · estimated ${KES(unitCost * (Number(qty) || 0))} from purchase cost` : ""}`
+            : "Select a product, enter a quantity, then add it. Earlier lines stay on the list."}
         </p>
         <div className="mt-3">
           <Button onClick={addLine}>Add product</Button>
         </div>
         {lines.length ? (
           <div className="mt-3 overflow-hidden rounded-lg border border-border">
-            <div className="grid grid-cols-[1fr_auto_8rem_auto_auto] gap-3 border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-text2">
-              <span>Product</span><span className="text-right">Stock</span><span className="text-right">Qty</span><span className="text-right">Line cost</span><span />
+            <div className={`grid ${canSeeCost ? "grid-cols-[1fr_auto_8rem_auto_auto]" : "grid-cols-[1fr_auto_8rem_auto]"} gap-3 border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-text2`}>
+              <span>Product</span><span className="text-right">Stock</span><span className="text-right">Qty</span>{canSeeCost ? <span className="text-right">Line cost</span> : null}<span />
             </div>
             {lines.map((line) => (
-              <div key={line.id} className="grid grid-cols-[1fr_auto_8rem_auto_auto] items-center gap-3 border-b border-border px-3 py-2 last:border-0">
+              <div key={line.id} className={`grid ${canSeeCost ? "grid-cols-[1fr_auto_8rem_auto_auto]" : "grid-cols-[1fr_auto_8rem_auto]"} items-center gap-3 border-b border-border px-3 py-2 last:border-0`}>
                 <div>
                   <div className="font-medium text-text">{line.name}</div>
-                  <div className="text-xs text-text2">{line.sku || "No SKU"} · {line.unit || "pcs"} · {KES(line.unitCost)} each</div>
+                  <div className="text-xs text-text2">{line.sku || "No SKU"} · {line.unit || "pcs"}{canSeeCost ? ` · ${KES(line.unitCost)} each` : ""}</div>
                 </div>
                 <div className="text-right tabular-nums text-text2">{line.stock}</div>
                 <Input
@@ -434,13 +448,13 @@ function ConsumptionPage() {
                     setLines((current) => current.map((item) => item.id === line.id ? { ...item, quantity: next } : item));
                   }}
                 />
-                <div className="text-right font-semibold tabular-nums text-gold">{KES(line.unitCost * line.quantity)}</div>
+                {canSeeCost ? <div className="text-right font-semibold tabular-nums text-gold">{KES(line.unitCost * line.quantity)}</div> : null}
                 <Button variant="ghost" onClick={() => setLines((current) => current.filter((item) => item.id !== line.id))}>Remove</Button>
               </div>
             ))}
           </div>
         ) : null}
-        {lines.length ? (
+        {lines.length && canSeeCost ? (
           <div className="mt-3 flex items-center justify-between rounded-lg border border-border bg-panel px-4 py-3">
             <span className="text-sm text-text2">Estimated stock cost</span>
             <span className="text-xl font-extrabold tabular-nums text-gold">{KES(lines.reduce((sum, line) => sum + line.unitCost * line.quantity, 0))}</span>
@@ -486,14 +500,14 @@ function ConsumptionPage() {
         </div>
         {savedRef && pane === "history" ? <p className="px-4 pt-3 text-sm text-ok">{savedRef}</p> : null}
         {error && pane === "history" ? <p className="px-4 pt-3 text-sm text-err">{error}</p> : null}
-        <Table head={["Reference", "Date", "Department", "Reason", "Cost", "Status"]}>
+        <Table head={canSeeCost ? ["Reference", "Date", "Department", "Reason", "Cost", "Status"] : ["Reference", "Date", "Department", "Reason", "Status"]}>
           {rows.slice(0, 80).map((row) => (
-            <tr key={row.id} className="cursor-pointer hover:bg-hover" onClick={() => setViewId(row.id)}>
+            <tr key={row.id} className="cursor-pointer hover:bg-hover" onClick={() => { setError(""); setViewId(row.id); }}>
               <td className="px-4 py-2.5 font-mono text-sm">{row.reference_no}</td>
               <td className="px-4 py-2.5">{String(row.date || "").slice(0, 10)}</td>
               <td className="px-4 py-2.5">{row.department_name || "—"}</td>
               <td className="px-4 py-2.5">{row.reason}</td>
-              <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{KES(row.total_cost || 0)}</td>
+              {canSeeCost ? <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{KES(row.total_cost || 0)}</td> : null}
               <td className="px-4 py-2.5">
                 <Badge tone={row.voided ? "err" : row.void_requested ? "warn" : "ok"}>
                   {row.voided ? "Voided" : row.void_requested ? "Requested" : "Posted"}
@@ -536,15 +550,15 @@ function ConsumptionPage() {
         {report ? (
           <>
             <p className="mt-3 text-sm">
-              {report.totals?.line_count || 0} lines · {report.totals?.consumption_count || 0} consumptions · Qty {report.totals?.total_qty || 0} · Posted cost {KES((report.rows || []).filter((row) => !row.voided).reduce((sum, row) => sum + Number(row.total_cost || 0), 0))} · Including voided {KES(report.totals?.total_cost || 0)}
+              {report.totals?.line_count || 0} lines · {report.totals?.consumption_count || 0} consumptions · Qty {report.totals?.total_qty || 0}{canSeeCost ? ` · Posted cost ${KES((report.rows || []).filter((row) => !row.voided).reduce((sum, row) => sum + Number(row.total_cost || 0), 0))} · Including voided ${KES(report.totals?.total_cost || 0)}` : ""}
             </p>
             <div className="mt-2">
-              <Table head={["Date", "Reference", "Product", "Qty", "Cost", "Status"]}>
+              <Table head={canSeeCost ? ["Date", "Reference", "Product", "Qty", "Cost", "Status"] : ["Date", "Reference", "Product", "Qty", "Status"]}>
                 {(report.rows || []).map((row, index) => (
                   <tr
                     key={`${row.consumption_id}-${row.product_id}-${index}`}
                     className="cursor-pointer hover:bg-hover"
-                    onClick={() => setViewId(Number(row.consumption_id))}
+                    onClick={() => { setError(""); setViewId(Number(row.consumption_id)); }}
                   >
                     <td className="px-4 py-2.5">{String(row.date || "").slice(0, 10)}</td>
                     <td className="px-4 py-2.5 font-mono text-sm">{row.reference_no}</td>
@@ -553,7 +567,7 @@ function ConsumptionPage() {
                       <div className="text-xs text-text2">{row.department_name || "—"} · {row.reason || "—"}</div>
                     </td>
                     <td className="px-4 py-2.5 tabular-nums">{row.quantity}</td>
-                    <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{KES(row.total_cost || 0)}</td>
+                    {canSeeCost ? <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{KES(row.total_cost || 0)}</td> : null}
                     <td className="px-4 py-2.5">{row.voided ? "Voided" : "Posted"}</td>
                   </tr>
                 ))}
@@ -565,8 +579,11 @@ function ConsumptionPage() {
       ) : null}
       {viewId != null ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" onClick={() => setViewId(null)}>
-          <div className="w-full max-w-lg" onClick={(event) => event.stopPropagation()}>
+          <div className="w-full max-w-3xl" onClick={(event) => event.stopPropagation()}>
           <Card className="max-h-[80vh] overflow-auto p-5">
+            <div className="mbt-print-root">
+            <style>{`@media print { body * { visibility: hidden !important; } .mbt-print-root, .mbt-print-root * { visibility: visible !important; } .mbt-print-root { position: absolute; left: 0; top: 0; width: 100%; background: #fff; color: #111; } .mbt-no-print { display: none !important; } }`}</style>
+            <div className="text-sm font-semibold text-text">{viewQ.data?.shop_name || ""}</div>
             <div className="text-xs font-semibold uppercase tracking-wide text-gold">Internal consumption</div>
             <div className="mt-1 text-lg font-extrabold">{viewQ.data?.reference_no || "Receipt"}</div>
             <p className="mt-2 text-sm text-text2">Stock used by the business. This is not a customer sale and has no payment.</p>
@@ -576,25 +593,25 @@ function ConsumptionPage() {
               <div className="mt-3 space-y-3 text-sm">
                 <div className="text-text2">
                   {Number(viewQ.data.voided || 0) === 1 ? "Voided" : viewQ.data.void_requested ? "Void requested" : "Posted"}
-                  {" · "}{String(viewQ.data.created_at || viewQ.data.date || "").replace("T", " ").slice(0, 19)}
+                  {" · Business date "}{String(viewQ.data.date || "").slice(0, 10) || "—"}
+                  {" · Recorded "}{String(viewQ.data.created_at || "").replace("T", " ").slice(0, 19)}
                   {" · "}{viewQ.data.created_by_name || "—"} · {viewQ.data.department_name || "—"}
                 </div>
                 <div>Taken by {viewQ.data.taken_by || "—"} · {viewQ.data.reason || "—"}</div>
                 {viewQ.data.notes ? <div>Notes {viewQ.data.notes}</div> : null}
                 <div className="overflow-x-auto rounded-lg border border-border">
-                  <div className="grid min-w-[720px] grid-cols-[1.4fr_auto_auto_auto_auto_auto_auto] gap-3 border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-text2">
-                    <span>Product</span><span className="text-right">Qty</span><span className="text-right">Unit</span><span className="text-right">Unit cost</span><span className="text-right">Line</span><span className="text-right">Before</span><span className="text-right">After</span>
+                  <div className={`grid ${canSeeCost ? "grid-cols-[1.4fr_auto_auto_auto_auto_auto_auto]" : "grid-cols-[1.4fr_auto_auto_auto_auto]"} gap-3 border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-text2`}>
+                    <span>Product</span><span className="text-right">Qty</span><span className="text-right">Unit</span>{canSeeCost ? <><span className="text-right">Unit cost</span><span className="text-right">Line</span></> : null}<span className="text-right">Before</span><span className="text-right">After</span>
                   </div>
                   {(viewQ.data.items || []).map((item: any) => (
-                    <div key={item.id} className="grid min-w-[720px] grid-cols-[1.4fr_auto_auto_auto_auto_auto_auto] items-center gap-3 border-b border-border px-3 py-2 last:border-0">
+                    <div key={item.id} className={`grid ${canSeeCost ? "grid-cols-[1.4fr_auto_auto_auto_auto_auto_auto]" : "grid-cols-[1.4fr_auto_auto_auto_auto]"} items-center gap-3 border-b border-border px-3 py-2 last:border-0`}>
                       <div>
                         <div className="font-medium text-text">{item.product_name}</div>
                         <div className="text-xs text-text2">{item.sku || "No SKU"}</div>
                       </div>
                       <div className="text-right tabular-nums">{item.quantity}</div>
                       <div className="text-right">{item.unit || "pcs"}</div>
-                      <div className="text-right tabular-nums">{KES(item.unit_cost || 0)}</div>
-                      <div className="text-right font-semibold tabular-nums text-gold">{KES(item.total_cost || 0)}</div>
+                      {canSeeCost ? <><div className="text-right tabular-nums">{KES(item.unit_cost || 0)}</div><div className="text-right font-semibold tabular-nums text-gold">{KES(item.total_cost || 0)}</div></> : null}
                       <div className="text-right tabular-nums">{item.stock_before ?? "—"}</div>
                       <div className="text-right tabular-nums">{item.stock_after ?? "—"}</div>
                     </div>
@@ -609,15 +626,20 @@ function ConsumptionPage() {
                     return groups;
                   }, {})).map(([unit, amount]) => `${amount} ${unit}`).join(" · ") || "—"}
                 </div>
+                {canSeeCost ? (
                 <div className="flex items-center justify-between rounded-lg border border-border bg-panel px-4 py-3">
                   <span className="text-text2">Stock cost</span>
                   <span className="text-xl font-extrabold tabular-nums text-gold">{KES(viewQ.data.total_cost || 0)}</span>
                 </div>
+                ) : (
+                <div className="rounded-lg border border-border bg-panel px-4 py-3 text-sm text-text2">Internal use. This is not a customer sale and has no payment.</div>
+                )}
                 {error ? <p className="text-sm text-err">{error}</p> : null}
-                {Number(viewQ.data.voided || 0) !== 1 ? (
-                  <Input value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Reason, required before void or request void" aria-label="Void reason" />
+                {(canVoid || canRequestVoid) && Number(viewQ.data.voided || 0) !== 1 ? (
+                  <Input className="mbt-no-print" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Reason, required before void or request void" aria-label="Void reason" />
                 ) : null}
-                <div className="flex flex-wrap justify-end gap-2">
+                <div className="mbt-no-print flex flex-wrap justify-end gap-2">
+                  <Button variant="secondary" onClick={() => window.print()}>Print</Button>
                   {canEdit && !viewQ.data.voided ? <Button variant="secondary" onClick={() => { const id = viewId; setViewId(null); if (id) void openEdit(id); }}>Edit</Button> : null}
                   {canVoid && !viewQ.data.voided ? <Button variant="danger" onClick={() => { if (viewId) void reverse(viewId); }}>Void</Button> : null}
                   {canRequestVoid && !viewQ.data.voided ? (
@@ -629,6 +651,7 @@ function ConsumptionPage() {
                 </div>
               </div>
             ) : null}
+            </div>
           </Card>
           </div>
         </div>

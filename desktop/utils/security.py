@@ -118,6 +118,7 @@ NOT_GRANTABLE = {
     'debt.delete', 'ai_ops.developer', 'sales.edit',
     'users.view', 'users.create', 'users.edit', 'users.delete',
     'settings.edit', 'accounting.edit_accounts', 'accounting.close_period',
+    'consumption.void', 'consumption.edit',
 }
 
 _ACTION_LABELS = {

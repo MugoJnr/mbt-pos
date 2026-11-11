@@ -47,6 +47,16 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def consumption_money_label(value, show_cost, currency='KES'):
+    """Money text only when this user may see a real cost.
+
+    A redacted or missing cost must stay blank. It must not become zero.
+    """
+    if not show_cost or value is None:
+        return None
+    return f"{currency} {_safe_float(value):,.2f}"
+
+
 def _fmt_qty(v):
     f = round(_safe_float(v, 0), 4)
     if abs(f - round(f)) < 1e-9:
@@ -106,7 +116,7 @@ class DateField(QWidget):
         self._edit.setDate(initial if initial is not None else QDate.currentDate())
         self._edit.setMinimumHeight(height)
         self._edit.setMinimumWidth(148)
-        self._edit.setMaximumDate(QDate.currentDate().addYears(5))
+        self._edit.setMaximumDate(QDate.currentDate())
         self._edit.setMinimumDate(QDate(2000, 1, 1))
         self._edit.setButtonSymbols(QAbstractSpinBox.NoButtons)
         # Hide native empty drop-down square — Cal button opens the popup
@@ -248,7 +258,9 @@ class DateField(QWidget):
             f"border:1px solid {C['border2']}; border-radius:{r}px;"
             f"font-size:12px; font-weight:800; letter-spacing:0.5px; }}"
             f"QToolButton#mbtCalBtn:hover {{"
-            f"border-color:{C['gold']}; background:{C['hover']}; }}")
+            f"border-color:{C['gold']}; background:{C['hover']}; }}"
+            f"QToolButton#mbtCalBtn:disabled {{"
+            f"color:{C['muted']}; border-color:{C['border']}; background:{C['input']}; }}")
 
 
 def _make_date_edit(initial=None, height=40):
@@ -431,6 +443,9 @@ class _CreatePane(QWidget):
         row1 = QHBoxLayout()
         row1.setSpacing(16)
         self._date = _make_date_edit(QDate.currentDate(), height=CONTROL_HEIGHT)
+        if not has_permission(self.p.user, 'sales.business_day'):
+            self._date.setEnabled(False)
+            self._date.setToolTip('This record uses today. A manager can choose another day.')
         self._ref_badge = Badge('AUTO-######', tone='gold')
         self._ref_badge.setMinimumHeight(CONTROL_HEIGHT)
         self._ref_badge.setAlignment(Qt.AlignCenter)
@@ -545,6 +560,10 @@ class _CreatePane(QWidget):
         self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        if not self._show_cost:
+            self._tbl.setColumnHidden(4, True)
+            self._tbl.setColumnHidden(5, True)
         ll.addWidget(self._tbl, 1)
         top_host = QWidget()
         top_host.setLayout(top)
@@ -907,10 +926,13 @@ class _CreatePane(QWidget):
 
         groups = _qty_by_unit(self._lines)
         grouped = '  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items())
+        cost_bit = ""
+        if has_permission(self.p.user, 'inventory.view_cost'):
+            cost_bit = f"  ·  Stock cost {cur} {total:,.2f}"
         self._total_lbl.setText(
             f"{len(self._lines)} products"
             + (f"  ·  {grouped}" if grouped else "")
-            + f"  ·  Stock cost {cur} {total:,.2f}"
+            + cost_bit
         )
         apply_table_row_backgrounds(self._tbl)
 
@@ -985,10 +1007,13 @@ class _CreatePane(QWidget):
             self._tbl.setItem(i, 5, tbl_right(f"{cur} {line_tot:,.2f}", C['gold']))
         groups = _qty_by_unit(self._lines)
         grouped = '  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items())
+        cost_bit = ""
+        if has_permission(self.p.user, 'inventory.view_cost'):
+            cost_bit = f"  ·  Stock cost {cur} {total:,.2f}"
         self._total_lbl.setText(
             f"{len(self._lines)} products"
             + (f"  ·  {grouped}" if grouped else "")
-            + f"  ·  Stock cost {cur} {total:,.2f}"
+            + cost_bit
         )
 
     def _remove_line(self, idx):
@@ -1062,10 +1087,13 @@ class _CreatePane(QWidget):
             _audio_play('save')
         except Exception:
             pass
-        QMessageBox.information(
-            self, 'Consumption Saved',
-            f"Reference {ref}\nTotal cost: {cur} {float(res.get('total_cost') or 0):,.2f}\n"
-            f"Stock has been reduced.")
+        saved_text = f"Reference {ref}\nStock has been reduced."
+        if has_permission(self.p.user, 'inventory.view_cost') and res.get('total_cost') is not None:
+            saved_text = (
+                f"Reference {ref}\nTotal cost: {cur} {float(res.get('total_cost') or 0):,.2f}\n"
+                f"Stock has been reduced."
+            )
+        QMessageBox.information(self, 'Consumption Saved', saved_text)
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.reset_consumption(self)
 
@@ -1124,6 +1152,8 @@ class _HistoryPane(QWidget):
         self._e.setMinimumWidth(0)
         self._s._edit.setMinimumWidth(120)
         self._e._edit.setMinimumWidth(120)
+        self._show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        self._tbl.setColumnHidden(4, not self._show_cost)
         self._tbl.setCursor(Qt.PointingHandCursor)
         self._tbl.setToolTip('Click a row to open the consumption receipt')
         self._tbl.cellClicked.connect(self._open_from_row)
@@ -1178,6 +1208,9 @@ class _HistoryPane(QWidget):
             self._stats.setText(f'  Could not load: {e}')
             return
         self._tbl.setRowCount(0)
+        show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        self._show_cost = show_cost
+        self._tbl.setColumnHidden(4, not show_cost)
         self._history_rows = list(rows)
         for i, r in enumerate(rows):
             self._tbl.insertRow(i)
@@ -1194,9 +1227,11 @@ class _HistoryPane(QWidget):
             self._tbl.setItem(i, 1, ref)
             self._tbl.setItem(i, 2, tbl_item(str(r.get('department_name') or '—')))
             self._tbl.setItem(i, 3, tbl_item(str(r.get('reason') or '—')))
-            self._tbl.setItem(i, 4, tbl_right(
-                f"{cur} {_safe_float(r.get('total_cost')):,.2f}",
-                C['muted'] if voided else C['gold']))
+            cost_text = consumption_money_label(r.get('total_cost'), show_cost, cur)
+            if cost_text:
+                self._tbl.setItem(i, 4, tbl_right(
+                    cost_text,
+                    C['muted'] if voided else C['gold']))
             if voided:
                 status, tone = 'Voided', C['err']
             elif r.get('void_requested'):
@@ -1257,10 +1292,12 @@ class _HistoryPane(QWidget):
         note.setStyleSheet(f"color:{C['text2']};")
         layout.addWidget(note)
         items = list(detail.get('items') or [])
-        table = QTableWidget(len(items), 8)
-        table.setHorizontalHeaderLabels([
-            'Product', 'SKU', 'Qty', 'Unit', 'Unit cost', 'Line cost', 'Before', 'After',
-        ])
+        show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        headers = ['Product', 'SKU', 'Qty', 'Unit', 'Before', 'After']
+        if show_cost:
+            headers = ['Product', 'SKU', 'Qty', 'Unit', 'Unit cost', 'Line cost', 'Before', 'After']
+        table = QTableWidget(len(items), len(headers))
+        table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -1274,6 +1311,8 @@ class _HistoryPane(QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setMinimumSectionSize(72)
         for column, width in ((1, 110), (2, 80), (3, 70), (4, 120), (5, 120), (6, 90), (7, 90)):
+            if column >= len(headers):
+                continue
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             table.setColumnWidth(column, width)
         cost_total = 0.0
@@ -1289,11 +1328,16 @@ class _HistoryPane(QWidget):
                 item.get('sku') or '—',
                 _fmt_qty(item.get('quantity')),
                 item.get('unit') or 'pcs',
-                f"{cur} {_safe_float(item.get('unit_cost')):,.2f}",
-                f"{cur} {_safe_float(item.get('total_cost')):,.2f}",
+            ]
+            if show_cost:
+                values.extend([
+                    f"{cur} {_safe_float(item.get('unit_cost')):,.2f}",
+                    f"{cur} {_safe_float(item.get('total_cost')):,.2f}",
+                ])
+            values.extend([
                 _fmt_qty(before) if before is not None else '—',
                 _fmt_qty(after) if after is not None else '—',
-            ]
+            ])
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
                 if column >= 2 and column != 3:
@@ -1309,7 +1353,10 @@ class _HistoryPane(QWidget):
         measures = QLabel(f"{len(items)} products    ·    {grouped}")
         measures.setWordWrap(True)
         layout.addWidget(measures)
-        total = QLabel(f"Stock cost    {cur} {_safe_float(detail.get('total_cost') or cost_total):,.2f}")
+        if show_cost:
+            total = QLabel(f"Stock cost    {cur} {_safe_float(detail.get('total_cost') or cost_total):,.2f}")
+        else:
+            total = QLabel("Internal use — no customer payment")
         total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         total.setStyleSheet(
             f"color:{C['gold']}; font-size:18px; font-weight:800; "
@@ -1351,6 +1398,9 @@ class _HistoryPane(QWidget):
                 ask.clicked.connect(lambda _checked=False, i=cid: (dlg.accept(), self._request_void(i)))
             actions.addWidget(ask)
         actions.addStretch(1)
+        preview_btn = SecondaryBtn('Preview', 40)
+        preview_btn.clicked.connect(lambda _checked=False, payload=detail: self._preview_receipt(payload))
+        actions.addWidget(preview_btn)
         print_btn = SecondaryBtn('Print', 40)
         print_btn.clicked.connect(lambda _checked=False, payload=detail: self._print_receipt(payload))
         actions.addWidget(print_btn)
@@ -1360,13 +1410,7 @@ class _HistoryPane(QWidget):
         layout.addLayout(actions)
         dlg.exec_()
 
-    def _print_receipt(self, detail):
-        """Open the print dialog. Printing does not change stock."""
-        try:
-            from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
-        except Exception:
-            QMessageBox.information(self, 'Print', 'Printing is not available on this till.')
-            return
+    def _receipt_document(self, detail):
         cur = _currency(self.p._cfg())
         shop = str((self.p._cfg() or {}).get('shop_name') or 'Shop')
         lines = [
@@ -1384,27 +1428,61 @@ class _HistoryPane(QWidget):
         if detail.get('notes'):
             lines.append(f"Notes {detail.get('notes')}")
             lines.append('')
+        print_cost = has_permission(self.p.user, 'inventory.view_cost')
         for item in detail.get('items') or []:
+            cost_text = ""
+            if print_cost:
+                cost_text = (
+                    f"@ {cur} {_safe_float(item.get('unit_cost')):,.2f}  "
+                    f"= {cur} {_safe_float(item.get('total_cost')):,.2f}  "
+                )
             lines.append(
                 f"{item.get('product_name')}  {item.get('sku') or ''}  "
                 f"{_fmt_qty(item.get('quantity'))} {item.get('unit') or 'pcs'}  "
-                f"@ {cur} {_safe_float(item.get('unit_cost')):,.2f}  "
-                f"= {cur} {_safe_float(item.get('total_cost')):,.2f}  "
+                f"{cost_text}"
                 f"stock {_fmt_qty(item.get('stock_before')) if item.get('stock_before') is not None else '—'} "
                 f"-> {_fmt_qty(item.get('stock_after')) if item.get('stock_after') is not None else '—'}"
             )
         groups = _qty_by_unit(detail.get('items') or [])
         lines.append('')
         lines.append('  ·  '.join(f"{_fmt_qty(amount)} {unit}" for unit, amount in groups.items()))
-        lines.append(f"Stock cost {cur} {_safe_float(detail.get('total_cost')):,.2f}")
+        if print_cost:
+            lines.append(f"Stock cost {cur} {_safe_float(detail.get('total_cost')):,.2f}")
         lines.append('This is not a customer sale.')
+        document = QTextDocument()
+        document.setPlainText('\n'.join(lines))
+        return document
+
+    def _print_receipt(self, detail):
+        """Open the print dialog. Printing does not change stock."""
+        try:
+            from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
+        except Exception:
+            QMessageBox.information(self, 'Print', 'Printing is not available on this till.')
+            return
         printer = QPrinter(QPrinter.HighResolution)
         dialog = QPrintDialog(printer, self)
         if dialog.exec_() != QDialog.Accepted:
             return
-        document = QTextDocument()
-        document.setPlainText('\n'.join(lines))
-        document.print_(printer)
+        self._receipt_document(detail).print_(printer)
+
+    def _preview_receipt(self, detail):
+        """Show the consumption document before any paper is used."""
+        try:
+            from PyQt5.QtPrintSupport import QPrinter, QPrintPreviewDialog
+        except Exception:
+            QMessageBox.information(self, 'Preview', 'Print preview is not available on this till.')
+            return
+        printer = QPrinter(QPrinter.ScreenResolution)
+        preview = QPrintPreviewDialog(printer, self)
+        preview.setWindowTitle(
+            f"INTERNAL CONSUMPTION {detail.get('reference_no') or ''}".strip()
+        )
+        preview.paintRequested.connect(
+            lambda target, payload=detail: self._receipt_document(payload).print_(target)
+        )
+        preview.resize(900, 700)
+        preview.exec_()
 
     def _edit(self, cid):
         if not require_permission(self.p.user, 'consumption.edit', self):
@@ -1612,6 +1690,8 @@ class _ReportPane(QWidget):
         self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._tbl.setMinimumWidth(0)
         self._tbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self._show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        self._tbl.setColumnHidden(4, not self._show_cost)
         self._tbl.setCursor(Qt.PointingHandCursor)
         self._tbl.setToolTip('Click a line to open the consumption receipt')
         self._tbl.cellClicked.connect(self._open_line)
@@ -1686,6 +1766,8 @@ class _ReportPane(QWidget):
             self._prod.set_value(cur_prod)
 
     def refresh(self):
+        show_cost = has_permission(self.p.user, 'inventory.view_cost')
+        self._tbl.setColumnHidden(4, not show_cost)
         if not has_permission(self.p.user, 'consumption.view_report'):
             self._footer.setText('  You do not have permission to view this report.')
             self._tbl.setRowCount(0)
@@ -1732,24 +1814,30 @@ class _ReportPane(QWidget):
             )
             self._tbl.setItem(i, 2, product)
             self._tbl.setItem(i, 3, tbl_center(_fmt_qty(r.get('quantity'))))
-            self._tbl.setItem(i, 4, tbl_right(
-                f"{cur} {_safe_float(r.get('total_cost')):,.2f}",
-                C['muted'] if voided else C['gold']))
+            cost_text = consumption_money_label(r.get('total_cost'), show_cost, cur)
+            if cost_text:
+                self._tbl.setItem(i, 4, tbl_right(
+                    cost_text,
+                    C['muted'] if voided else C['gold']))
             self._tbl.setItem(i, 5, tbl_center(
                 'Voided' if voided else 'Posted',
                 C['err'] if voided else C['ok']))
         apply_table_row_backgrounds(self._tbl)
-        posted_cost = sum(
-            _safe_float(r.get('total_cost')) for r in rows
-            if int(r.get('voided') or 0) != 1
-        )
-        self._footer.setText(
+        summary = (
             f"  {int(totals.get('line_count') or 0)} lines  ·  "
             f"{int(totals.get('consumption_count') or 0)} consumptions  ·  "
-            f"Qty {_fmt_qty(totals.get('total_qty'))}  ·  "
-            f"Posted cost {cur} {posted_cost:,.2f}  ·  "
-            f"Including voided {cur} {_safe_float(totals.get('total_cost')):,.2f}"
+            f"Qty {_fmt_qty(totals.get('total_qty'))}"
         )
+        if show_cost:
+            posted_cost = sum(
+                _safe_float(r.get('total_cost')) for r in rows
+                if int(r.get('voided') or 0) != 1 and r.get('total_cost') is not None
+            )
+            summary += (
+                f"  ·  Posted cost {cur} {posted_cost:,.2f}  ·  "
+                f"Including voided {cur} {_safe_float(totals.get('total_cost')):,.2f}"
+            )
+        self._footer.setText(summary)
 
     def _open_line(self, row, _column):
         rows = getattr(self, '_last_rows', [])

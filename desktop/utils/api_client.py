@@ -727,16 +727,16 @@ def _migrate_columns(conn: sqlite3.Connection):
                 "ALTER TABLE customers ADD COLUMN customer_type TEXT DEFAULT 'Retail'")
     except Exception:
         pass
-    # Grant Internal Consumption tab to existing inventory-capable staff
+    # Grant Internal Consumption to staff who record it, and to viewers who may read it.
     for row in conn.execute(
         "SELECT id, role, tab_permissions FROM users "
-        "WHERE role IN ('superadmin','admin','manager')"
+        "WHERE role IN ('superadmin','admin','manager','viewer','cashier')"
     ).fetchall():
         try:
             import json as _json
             perms = _json.loads(row['tab_permissions'] or '[]')
             if 'consumption' not in perms and (
-                'inventory' in perms or row['role'] in ('superadmin', 'admin', 'manager')
+                'inventory' in perms or row['role'] in ('superadmin', 'admin', 'manager', 'viewer', 'cashier')
             ):
                 # Insert after inventory when present
                 if 'inventory' in perms:
@@ -9020,6 +9020,31 @@ class APIClient:
         finally:
             db.close()
 
+    def _can_see_consumption_cost(self) -> bool:
+        from desktop.utils.security import client_actor, has_permission
+        return has_permission(client_actor(self), 'inventory.view_cost')
+
+    def _hide_consumption_cost(self, row: dict) -> dict:
+        if self._can_see_consumption_cost() or not isinstance(row, dict):
+            return row
+        hidden = dict(row)
+        hidden.pop('total_cost', None)
+        items = []
+        for item in hidden.get('items') or []:
+            if not isinstance(item, dict):
+                items.append(item)
+                continue
+            cleaned = dict(item)
+            for key in (
+                'unit_cost', 'total_cost', 'selling_price',
+                'retail_opportunity', 'foregone_profit',
+            ):
+                cleaned.pop(key, None)
+            items.append(cleaned)
+        if 'items' in hidden:
+            hidden['items'] = items
+        return hidden
+
     def peek_next_consumption_ref(self) -> str:
         db = _db()
         try:
@@ -9088,6 +9113,21 @@ class APIClient:
 
             ref = self._next_consumption_ref(db)
             cons_date = (data.get('date') or str(date.today())).strip()
+            try:
+                business_day = date.fromisoformat(cons_date[:10])
+            except ValueError:
+                db.rollback()
+                return {'error': 'Enter a valid business date.', 'status': 400}
+            if business_day > date.today():
+                db.rollback()
+                return {'error': 'Future dates are not allowed.', 'status': 400}
+            from desktop.utils.security import can_set_business_day, client_actor
+            if business_day != date.today() and not can_set_business_day(client_actor(self)):
+                db.rollback()
+                return {
+                    'error': 'You cannot record consumption for another day.',
+                    'status': 403,
+                }
             notes = (data.get('notes') or '').strip()
             taken_by = (data.get('taken_by') or '').strip()
             created_name = self._username or 'staff'
@@ -9113,6 +9153,13 @@ class APIClient:
                 if not prod:
                     db.rollback()
                     return {'error': f'Product id {pid} not found.'}
+                from desktop.utils.pos_components import qty_step_for_unit
+                if qty_step_for_unit(prod['unit']) >= 1 and abs(qty - round(qty)) > 0.0001:
+                    db.rollback()
+                    return {
+                        'error': f"'{prod['name']}' is sold in whole units.",
+                        'status': 400,
+                    }
                 stock = round(float(prod['stock'] or 0), 4)
                 if stock < qty:
                     db.rollback()
@@ -9231,8 +9278,9 @@ class APIClient:
                 'success': True,
                 'id': cons_id,
                 'reference_no': ref,
-                'total_cost': round(total_cost, 2),
             }
+            if self._can_see_consumption_cost():
+                result['total_cost'] = round(total_cost, 2)
             if receipt and receipt.get('new'):
                 _save_request_receipt(
                     db, token, 'create_consumption', receipt['hash'], result,
@@ -9370,6 +9418,13 @@ class APIClient:
                 if not prod:
                     db.rollback()
                     return {'error': f'Product id {pid} not found.', 'status': 404}
+                from desktop.utils.pos_components import qty_step_for_unit
+                if qty_step_for_unit(prod['unit']) >= 1 and abs(qty - round(qty)) > 0.0001:
+                    db.rollback()
+                    return {
+                        'error': f"'{prod['name']}' is sold in whole units.",
+                        'status': 400,
+                    }
                 old = old_by_id.get(pid)
                 old_qty = round(float(old['quantity'] or 0), 4) if old else 0.0
                 old_cost = round(float(old['unit_cost'] or 0), 4) if old else round(float(prod['cost_price'] or 0), 4)
@@ -9569,7 +9624,7 @@ class APIClient:
         if (self._role or '').lower() not in ('admin', 'superadmin'):
             _audit(self._user_id, self._username, 'VOID_CONSUMPTION_DENIED',
                    'consumption', f"id={consumption_id} role={self._role}")
-            return {'error': 'Insufficient permissions to void consumptions.'}
+            return {'error': 'Insufficient permissions to void consumptions.', 'status': 403}
 
         db = _db()
         device = self._device_name()
@@ -9839,7 +9894,11 @@ class APIClient:
                 (consumption_id,),
             )) if 'stock_consumption_revisions' in tables else []
             cons['void_requested'] = int(consumption_id) in self._pending_consumption_void_ids(db)
-            return cons
+            shop = db.execute(
+                "SELECT value FROM system_settings WHERE key='shop_name'"
+            ).fetchone()
+            cons['shop_name'] = str(shop[0]).strip() if shop and shop[0] else ''
+            return self._hide_consumption_cost(cons)
         finally:
             db.close()
 
@@ -9899,7 +9958,7 @@ class APIClient:
                     row['void_requested'] = int(row.get('id') or 0) in pending
                 except (TypeError, ValueError):
                     row['void_requested'] = False
-            return rows
+            return [self._hide_consumption_cost(row) for row in rows]
         finally:
             db.close()
 
@@ -9948,7 +10007,7 @@ class APIClient:
                 "WHERE date(date) BETWEEN ? AND ? AND COALESCE(voided,0)=1",
                 (start, end),
             ).fetchone()[0]
-            return {
+            payload = {
                 'rows': rows,
                 'totals': {
                     'line_count': len(rows),
@@ -9958,6 +10017,12 @@ class APIClient:
                     'voided_count': int(voided or 0),
                 },
             }
+            if not self._can_see_consumption_cost():
+                for row in payload['rows']:
+                    row.pop('unit_cost', None)
+                    row.pop('total_cost', None)
+                payload['totals'].pop('total_cost', None)
+            return payload
         finally:
             db.close()
 
