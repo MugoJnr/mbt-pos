@@ -70,6 +70,17 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(has_permission(u, 'sales.create'))
         self.assertTrue(has_permission(u, 'sales.view_all'))
         self.assertTrue(has_permission(u, 'reports.view_all'))
+        self.assertTrue(has_permission(u, 'inventory.view'))
+        self.assertFalse(has_permission(u, 'inventory.create'))
+        self.assertFalse(has_permission(u, 'inventory.edit_info'))
+        self.assertFalse(has_permission(u, 'inventory.view_cost'))
+
+    def test_unknown_role_has_no_tabs_and_no_actions(self):
+        self.assertEqual(default_tab_permissions('owner'), [])
+        self.assertEqual(default_tab_permissions(''), [])
+        self.assertFalse(has_permission(_user('owner'), 'sales.create'))
+        self.assertFalse(has_permission(_user('cashier'), 'inventory.adjust_stock'))
+        self.assertFalse(has_permission(_user('cashier'), 'not.a.real.permission'))
 
     def test_tab_defaults(self):
         self.assertEqual(
@@ -79,6 +90,12 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertIn('security', default_tab_permissions(ROLE_SUPERADMIN))
         self.assertNotIn('security', default_tab_permissions(ROLE_ADMIN))
         self.assertNotIn('license', default_tab_permissions(ROLE_ADMIN))
+        self.assertEqual(
+            default_tab_permissions(ROLE_VIEWER),
+            ['dashboard', 'receipts', 'inventory', 'consumption', 'debt', 'accounting', 'reports'],
+        )
+        self.assertNotIn('sales', default_tab_permissions(ROLE_VIEWER))
+        self.assertNotIn('settings', default_tab_permissions(ROLE_VIEWER))
 
     def test_sanitize_strips_owner_tabs(self):
         dirty = ['dashboard', 'sales', 'security', 'license', 'ai_ops']

@@ -177,6 +177,8 @@ class InventoryTab(QWidget):
             self._tbl.setColumnWidth(col, w)
         hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setMinimumSectionSize(72)
+        if not has_permission(self.user, 'inventory.view_cost'):
+            self._tbl.setColumnHidden(4, True)
         hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         actions_head = self._tbl.horizontalHeaderItem(7)
         if actions_head is not None:

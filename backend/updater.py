@@ -663,6 +663,19 @@ def mark_install_finished(version: str, success: bool, error: str = '') -> None:
 _UPDATER_MUTEX = None
 
 
+def updates_suppressed_for_isolated_test() -> bool:
+    """A disposable till must not take the shop updater lock or download an installer.
+
+    This is only true when the process was started as an isolated test instance
+    with its own data root. A normal shop till never sets those variables, so
+    production updates keep running.
+    """
+    return (
+        os.environ.get('MBT_TEST_INSTANCE') == '1'
+        and bool((os.environ.get('MBT_DATA_ROOT') or '').strip())
+    )
+
+
 def acquire_updater_lock() -> bool:
     """Prevent concurrent updater download/install engines on this PC."""
     global _UPDATER_MUTEX
@@ -1041,6 +1054,10 @@ class UpdateChecker:
                 pass
 
     def start(self):
+        if updates_suppressed_for_isolated_test():
+            logger.info('Isolated test instance — updater engine not started')
+            self._has_updater_lock = False
+            return
         self._has_updater_lock = acquire_updater_lock()
         if not self._has_updater_lock:
             logger.warning('Another updater engine is active — skipping start')
@@ -1055,6 +1072,9 @@ class UpdateChecker:
 
     def check_now(self):
         """Manual / on-demand check (e.g. from Settings)."""
+        if updates_suppressed_for_isolated_test():
+            logger.info('Isolated test instance — manual update check skipped')
+            return
         threading.Thread(
             target=self._check, daemon=True, name='UpdateCheckerNow'
         ).start()

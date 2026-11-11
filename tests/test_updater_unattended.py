@@ -325,5 +325,55 @@ class SingleInstanceTests(unittest.TestCase):
         self.assertFalse(second)
 
 
+class IsolatedTestUpdaterTests(unittest.TestCase):
+    def test_isolated_till_does_not_take_the_shop_updater_lock(self):
+        from backend.updater import UpdateChecker, updates_suppressed_for_isolated_test
+
+        saved = {
+            key: os.environ.get(key)
+            for key in ('MBT_TEST_INSTANCE', 'MBT_DATA_ROOT')
+        }
+        try:
+            os.environ['MBT_TEST_INSTANCE'] = '1'
+            os.environ['MBT_DATA_ROOT'] = r'C:\MBT_Build\qa-consumption-20261111\shop'
+            self.assertTrue(updates_suppressed_for_isolated_test())
+            with patch('backend.updater.acquire_updater_lock') as locked:
+                checker = UpdateChecker('3.1.80')
+                checker.start()
+                checker.check_now()
+                locked.assert_not_called()
+            self.assertFalse(checker._has_updater_lock)
+            self.assertIsNone(checker._thread)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_a_normal_till_still_starts_the_updater(self):
+        from backend.updater import UpdateChecker
+
+        saved = {
+            key: os.environ.get(key)
+            for key in ('MBT_TEST_INSTANCE', 'MBT_DATA_ROOT')
+        }
+        try:
+            os.environ.pop('MBT_TEST_INSTANCE', None)
+            os.environ.pop('MBT_DATA_ROOT', None)
+            with patch('backend.updater.acquire_updater_lock', return_value=False) as locked:
+                checker = UpdateChecker('3.1.80')
+                checker.start()
+                locked.assert_called_once()
+            self.assertFalse(checker._has_updater_lock)
+            self.assertIsNone(checker._thread)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
 if __name__ == '__main__':
     unittest.main()

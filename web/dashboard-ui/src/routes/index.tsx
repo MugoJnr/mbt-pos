@@ -491,11 +491,13 @@ function Dashboard() {
             </div>
           ) : null}
           <ThemeToggle />
-          <Link to="/pos">
-            <Button variant="primary" size="touch">
-              <Plus className="h-4 w-4" /> New Sale
-            </Button>
-          </Link>
+          {role !== "viewer" ? (
+            <Link to="/pos">
+              <Button variant="primary" size="touch">
+                <Plus className="h-4 w-4" /> New Sale
+              </Button>
+            </Link>
+          ) : null}
         </div>
       </div>
 

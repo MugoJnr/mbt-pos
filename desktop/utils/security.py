@@ -33,7 +33,7 @@ _PERMISSIONS = {
     },
     ROLE_VIEWER: {
         'sales.view_all',
-        'inventory.view', 'inventory.create', 'inventory.edit_info',
+        'inventory.view',
         'reports.view_all',
         'notes.view_all',
         'debt.view',

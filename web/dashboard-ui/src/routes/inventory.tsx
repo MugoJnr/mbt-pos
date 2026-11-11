@@ -90,7 +90,7 @@ function Inventory() {
   const role = String(user?.role || "").toLowerCase();
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canAdjust = actions ? actions.includes("inventory.adjust_stock") : role === "superadmin";
-  const canEdit = actions ? actions.includes("inventory.edit_info") : ["cashier", "viewer", "manager", "admin", "superadmin"].includes(role);
+  const canEdit = actions ? actions.includes("inventory.edit_info") : ["cashier", "manager", "admin", "superadmin"].includes(role);
   const canRemove = actions ? actions.includes("inventory.delete") : role === "admin" || role === "superadmin";
   const canReceive = actions
     ? actions.includes("inventory.receive")

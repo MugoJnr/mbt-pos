@@ -25,7 +25,9 @@ TAB_PERMISSIONS_BY_ROLE = {
         'reports', 'notes', 'settings', 'ai_ops',
     ],
     ROLE_CASHIER: ['dashboard', 'sales', 'receipts', 'inventory', 'consumption'],
-    ROLE_VIEWER: ['dashboard', 'receipts', 'consumption', 'reports', 'accounting'],
+    ROLE_VIEWER: [
+        'dashboard', 'receipts', 'inventory', 'consumption', 'debt', 'accounting', 'reports',
+    ],
 }
 
 ROLE_DISPLAY = {
@@ -38,10 +40,8 @@ ROLE_DISPLAY = {
 
 
 def default_tab_permissions(role: str) -> list:
-    return list(TAB_PERMISSIONS_BY_ROLE.get(
-        (role or '').strip().lower(),
-        TAB_PERMISSIONS_BY_ROLE[ROLE_CASHIER],
-    ))
+    """Unknown roles get no tabs. They must not inherit the cashier menu."""
+    return list(TAB_PERMISSIONS_BY_ROLE.get((role or '').strip().lower(), []))
 
 
 def is_superadmin_role(role: str) -> bool:

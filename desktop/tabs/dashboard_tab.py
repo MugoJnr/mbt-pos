@@ -337,7 +337,9 @@ class DashboardTab(QWidget):
         self._ns_btn = ns_btn
         self._style_new_sale_btn()
         ns_btn.clicked.connect(lambda: self.navigate.emit('sales'))
-        right_row.addWidget(ns_btn)
+        from desktop.utils.security import has_permission
+        if has_permission(self.user, 'sales.create'):
+            right_row.addWidget(ns_btn)
 
         hdr.addLayout(right_row)
         self._sticky_lay.addLayout(hdr)
@@ -463,7 +465,8 @@ class DashboardTab(QWidget):
             ('inventory', 'Inventory', 'ok',   'inventory'),
             ('debt',      'Debt',      'info', 'debt'),
         ]
-        from desktop.utils.security import dashboard_locked_to_today as _qa_locked
+        from desktop.utils.security import dashboard_locked_to_today as _qa_locked, has_permission as _qa_can
+        actions = [row for row in actions if row[3] != 'sales' or _qa_can(self.user, 'sales.create')]
         if not _qa_locked(self.user):
             actions.append(('reports', 'Reports', 'warn', 'reports'))
         self._qa_btns = []
@@ -755,15 +758,16 @@ class DashboardTab(QWidget):
                 f"QPushButton:pressed {{ background:{qss_alpha(acc, 0.14)}; }}")
 
     def _install_fab(self):
-        self._fab = FloatingActionButton(
-            [
-                ('$', 'New Sale', lambda: self.navigate.emit('sales')),
-                ('#', 'New Product', lambda: self.navigate.emit('inventory')),
-                ('@', 'New Customer', lambda: self.navigate.emit('debt')),
-                ('%', 'Open Reports', lambda: self.navigate.emit('reports')),
-            ],
-            parent=self,
-        )
+        from desktop.utils.security import has_permission
+        items = []
+        if has_permission(self.user, 'sales.create'):
+            items.append(('$', 'New Sale', lambda: self.navigate.emit('sales')))
+        items.extend([
+            ('#', 'New Product', lambda: self.navigate.emit('inventory')),
+            ('@', 'New Customer', lambda: self.navigate.emit('debt')),
+            ('%', 'Open Reports', lambda: self.navigate.emit('reports')),
+        ])
+        self._fab = FloatingActionButton(items, parent=self)
         self._fab.raise_()
         self._position_fab()
 
@@ -1205,7 +1209,9 @@ class DashboardTab(QWidget):
                             chips.append(('Expenses', float(s.get('expenses') or 0), p.get('text2', C['text2'])))
                         if s.get('net_operating_result') is not None:
                             chips.append(('Net result', float(s.get('net_operating_result') or 0), p.get('ok', C['ok'])))
-                        chips.append(('Inventory cost', float(s.get('inventory_cost_value') or 0), p.get('text2', C['text2'])))
+                        from desktop.utils.security import sees_product_cost
+                        if sees_product_cost(source):
+                            chips.append(('Inventory cost', float(s.get('inventory_cost_value') or 0), p.get('text2', C['text2'])))
                     if hasattr(self, '_rev_break_host'):
                         self._rev_break_host.setVisible(bool(chips))
                     if not hasattr(self, '_rev_break_lay2'):
