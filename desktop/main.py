@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-12-v3.1.81"
-APP_VERSION   = "3.1.81"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-12-v3.1.82"
+APP_VERSION   = "3.1.82"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1310,8 +1310,6 @@ class MainWindow(QMainWindow):
         self._pending_update_version = version
         log.info(f"Update downloaded: v{version}")
         self.signals.update_ready.emit(installer_path, version)
-        from desktop.utils.qt_dispatch import run_on_ui_thread
-        run_on_ui_thread(self._schedule_unattended_install)
 
     def _on_force_update(self, version, reason):
         self._pending_update_version = version
@@ -1352,17 +1350,8 @@ class MainWindow(QMainWindow):
             if key == getattr(self, '_update_fail_key', None):
                 return
             self._update_fail_key = key
-            btn = getattr(self, '_update_btn', None)
-            if btn:
-                btn.setText(f'  Update v{version}  ')
-                btn.setToolTip((reason or title or 'Download issue')[:500])
-                btn.show()
-                btn.raise_()
-            try:
-                if hasattr(self, '_sync_lbl') and self._sync_lbl is not None:
-                    self._sync_lbl.setText((title or 'Update')[:40])
-            except Exception:
-                pass
+            self._show_update_session(
+                'failed', version, detail=(reason or title or 'Try again.'))
         from desktop.utils.qt_dispatch import run_on_ui_thread
         run_on_ui_thread(_show)
 
@@ -1471,31 +1460,12 @@ class MainWindow(QMainWindow):
     def _ui_update_available(self, version, notes):
         self._pending_update_version = version
         self._pending_update_notes = notes
-        btn = getattr(self, '_update_btn', None)
-        if btn:
-            btn.setText(f"  Update available v{version}  ")
-            btn.show()
-            btn.raise_()
-        bar = getattr(self, '_update_bar', None)
-        if bar:
-            bar.hide()
-            bar.setRange(0, 100)
-            bar.setValue(0)
+        self._show_update_session('available', version)
 
     def _ui_update_ready(self, installer_path, version):
         self._pending_installer_path = installer_path
         self._pending_update_version = version
-        btn = getattr(self, '_update_btn', None)
-        if btn:
-            btn.setText(f"  Update v{version}  ")
-            btn.show()
-            btn.raise_()
-        bar = getattr(self, '_update_bar', None)
-        if bar:
-            bar.hide()
-            bar.setRange(0, 100)
-            bar.setValue(0)
-        self._schedule_unattended_install()
+        self._show_update_session('complete', version, percent=100)
 
     def _ui_force_update(self, version, reason):
         # Non-modal: same pattern as install-fail Ã¢â‚¬â€ Update button + status (no surprise OK)
@@ -1505,14 +1475,8 @@ class MainWindow(QMainWindow):
             self._set_status(title)
         except Exception:
             pass
-        btn = getattr(self, '_update_btn', None)
-        if btn is not None:
-            btn.setText(f'  Update required v{version}  ')
-            btn.setToolTip(
-                reason or f'Please update to v{version} to continue using MBT POS.')
-            btn.show()
-            btn.raise_()
-        log.warning('Force update required (non-modal): v%s Ã¢â‚¬â€ %s', version, reason or '')
+        self._show_update_session('available', version)
+        log.warning('Force update required (non-modal): v%s — %s', version, reason or '')
 
     def _restore_pending_update(self):
         """If a update was downloaded while UI was not ready, show the button."""
@@ -1541,6 +1505,7 @@ class MainWindow(QMainWindow):
                 pass
             return
 
+        from backend.update_session import cached_installer_action
         best = None
         best_ver = ''
         for root in search_roots:
@@ -1551,27 +1516,21 @@ class MainWindow(QMainWindow):
                     continue
                 ver = m.group(1)
                 try:
-                    if ver in BLOCKED_VERSIONS or not _version_gt(ver, APP_VERSION):
-                        try:
-                            os.remove(path)
-                            log.info(f'Removed stale cached installer v{ver}')
-                        except Exception:
-                            pass
-                        continue
-                    if os.path.getsize(path) > 1_000_000:
-                        if not best_ver or _version_gt(ver, best_ver):
-                            best, best_ver = path, ver
-                except Exception:
-                    pass
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                action = cached_installer_action(
+                    size, ver, APP_VERSION, BLOCKED_VERSIONS)
+                if action != 'keep':
+                    try:
+                        os.remove(path)
+                        log.info(f'Removed cached installer v{ver}: {action}')
+                    except Exception:
+                        pass
+                    continue
+                if not best_ver or _version_gt(ver, best_ver):
+                    best, best_ver = path, ver
         if best:
-            # Discard known-bad onefile installers (v2.3.5 broke silent updates)
-            if best_ver in BLOCKED_VERSIONS or os.path.getsize(best) > 60_000_000:
-                try:
-                    os.remove(best)
-                    log.warning(f"Removed bad cached installer v{best_ver}")
-                except Exception:
-                    pass
-                return
             log.info(f"Restored pending update: v{best_ver} at {best}")
             self._ui_update_ready(best, best_ver)
 
@@ -1580,99 +1539,86 @@ class MainWindow(QMainWindow):
         from desktop.utils.qt_dispatch import run_on_ui_thread
 
         def _show():
-            btn = getattr(self, '_update_btn', None)
-            bar = getattr(self, '_update_bar', None)
-            text = message or 'Downloading update...'
-            if btn:
-                btn.setText(f"  {text}  ")
-                btn.show()
-                btn.raise_()
-            if bar is None:
+            text = (message or '').lower()
+            if 'fail' in text:
+                self._show_update_session('failed', version, detail=message or 'Try again.')
                 return
-            failed = text.lower().startswith('download failed') or text.lower().startswith('install failed')
-            if failed or percent is None and text in ('Download complete',):
-                bar.hide()
-                bar.setRange(0, 100)
-                bar.setValue(0)
+            if 'close and reopen' in text:
+                self._show_update_session('installing', version)
                 return
-            if percent is None:
-                bar.setRange(0, 0)
-                bar.show()
+            if 'verif' in text or 'checking the download' in text:
+                self._show_update_session('verifying', version)
                 return
-            bar.setRange(0, 100)
-            bar.setValue(max(0, min(100, int(percent))))
-            bar.show()
+            if percent == 100 or 'ready' in text or 'complete' in text:
+                self._show_update_session('complete', version, percent=100)
+                return
+            self._show_update_session('downloading', version, percent=percent)
 
         run_on_ui_thread(_show)
 
-    def _on_update_btn_clicked(self):
-        version = getattr(self, '_pending_update_version', None) or '?'
-        path    = getattr(self, '_pending_installer_path', None) or ''
-        notes   = getattr(self, '_pending_update_notes', None) or ''
+    def _show_update_session(self, state, version='', percent=None, detail=''):
+        banner = getattr(self, '_update_banner', None)
+        ver = version or getattr(self, '_pending_update_version', '') or ''
+        if banner is not None:
+            banner.show_state(state, ver, percent, detail)
+        btn = getattr(self, '_update_btn', None)
+        if btn is not None and state not in ('idle',):
+            btn.hide()
+
+    def _on_update_later(self):
+        banner = getattr(self, '_update_banner', None)
+        if banner is not None:
+            banner.show_state('idle')
+        ver = getattr(self, '_pending_update_version', '') or ''
+        btn = getattr(self, '_update_btn', None)
+        if btn is not None and ver:
+            btn.setText(f'  Update v{ver}  ')
+            btn.show()
+
+    def _on_update_retry(self):
+        ver = getattr(self, '_pending_update_version', '') or ''
+        self._show_update_session('available', ver)
+        updater = getattr(self, '_updater', None)
+        if updater is not None:
+            updater.check_now()
+
+    def _on_update_install_clicked(self):
+        version = getattr(self, '_pending_update_version', None) or ''
+        path = getattr(self, '_pending_installer_path', None) or ''
         if not path or not os.path.isfile(path):
-            QMessageBox.warning(
-                self, 'Update',
-                'The update file is not ready yet. Try again in a few minutes.')
+            self._show_update_session(
+                'failed', version, detail='The update file is not ready yet.')
             return
-        from backend.updater import is_update_helper_registered
-        helper_ok = False
-        try:
-            helper_ok = is_update_helper_registered()
-        except Exception:
-            helper_ok = False
-        dlg = QMessageBox(self)
-        try:
-            from desktop.utils.quiet_ui import style_message_box
-            style_message_box(dlg)
-        except Exception:
-            pass
-        dlg.setWindowTitle(f'Update v{version} Ready')
-        if helper_ok:
-            perm = (
-                'The update will install silently and reopen automatically.<br>'
-                'No Windows permission prompt is needed on this PC.')
-        else:
-            perm = (
-                '<b>Windows will ask for permission once ? click Yes.</b><br>'
-                'That stages silent updates for next time.<br>'
-                'If you see "Windows protected your PC", click <b>More info</b> '
-                'then <b>Run anyway</b>.')
-        dlg.setText(
-            f'<b>Version {version} is ready to install.</b><br><br>'
-            'The app will close briefly, then reopen after a successful install.<br>'
-            f'{perm}<br>'
-            'Do not start MBT POS manually during the update.<br><br>'
-            'Your shop data will not be affected.')
-        if notes:
-            dlg.setDetailedText(notes[:600])
-        dlg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-        dlg.button(QMessageBox.Ok).setText('Install Now')
-        dlg.button(QMessageBox.Cancel).setText('Later')
-        if dlg.exec_() != QMessageBox.Ok:
+        self._show_update_session('installing', version)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        updater = getattr(self, '_updater', None)
+        if updater is None:
+            self._show_update_session('failed', version, detail='Try again.')
             return
         try:
-            if self._updater:
-                ok, err = self._updater.install_and_restart(
-                    path, unattended=False)
-                if not ok:
-                    msg = (err or '').strip()
-                    if not msg:
-                        from desktop.utils.quiet_ui import soft_warn
-                        soft_warn(self, 'Update could not be installed.')
-                        try:
-                            self._set_status('Update could not be installed.')
-                        except Exception:
-                            pass
-                    else:
-                        QMessageBox.warning(self, 'Update Blocked', msg)
-                    return
-                self._pending_installer_path = getattr(
-                    self._updater, '_installer_path', path) or path
-                self._stop_services()
-                QApplication.instance().quit()
+            ok, err = updater.install_and_restart(path, unattended=False)
         except Exception as e:
-            log.error(f'Install update: {e}')
-            QMessageBox.critical(self, 'Update Failed', str(e))
+            log.error('Install update: %s', e)
+            self._show_update_session('failed', version, detail='Try again.')
+            return
+        if not ok:
+            line = (err or 'Try again.').split('\n', 1)[0][:120]
+            self._show_update_session('failed', version, detail=line)
+            return
+        self._pending_installer_path = getattr(updater, '_installer_path', path) or path
+        self._stop_services()
+        if app is not None:
+            app.quit()
+
+    def _on_update_btn_clicked(self):
+        version = getattr(self, '_pending_update_version', None) or ''
+        path = getattr(self, '_pending_installer_path', None) or ''
+        if path and os.path.isfile(path):
+            self._show_update_session('complete', version, percent=100)
+            return
+        self._on_update_retry()
 
     def _stop_services(self):
         """Tear down everything ``_start_services`` armed.
@@ -1736,6 +1682,12 @@ class MainWindow(QMainWindow):
         right = QWidget(); right.setObjectName("content")
         rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(0)
         rl.addWidget(self._build_topbar())
+        from desktop.utils.update_session_banner import UpdateSessionBanner
+        self._update_banner = UpdateSessionBanner()
+        self._update_banner.install_clicked.connect(self._on_update_install_clicked)
+        self._update_banner.later_clicked.connect(self._on_update_later)
+        self._update_banner.retry_clicked.connect(self._on_update_retry)
+        rl.addWidget(self._update_banner)
         self._stack = QStackedWidget(); self._stack.setObjectName("pageStack")
         rl.addWidget(self._stack)
         rl.addWidget(self._build_statusbar())

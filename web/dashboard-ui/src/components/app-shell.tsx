@@ -39,6 +39,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "./theme";
 import { useAuth } from "@/lib/auth";
 import { GET } from "@/lib/api";
+import { updateSessionCopy } from "@/lib/update-session";
 import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { BrandLogo } from "@/components/brand/BrandLogo";
@@ -512,7 +513,6 @@ function TillUpdateNotice() {
       available_version?: string;
       action?: string;
       download_url?: string;
-      download_url?: string;
       till_download?: {
         state?: string;
         percent?: number | null;
@@ -526,49 +526,37 @@ function TillUpdateNotice() {
   });
   const data = updateQ.data;
   const download = data?.till_download;
-  const downloading = download?.state === "downloading" || download?.state === "verifying";
-  const failed = download?.state === "failed";
-  const ready = download?.state === "complete" || download?.state === "installing";
-  const available = data?.state === "available";
-  if (!downloading && !failed && !ready && !available) return null;
-  const percent = typeof download?.percent === "number" ? download.percent : null;
-  let title = "Main Till update";
-  if (downloading) {
-    title = percent == null
-      ? "Downloading Main Till update…"
-      : `Downloading Main Till update… ${percent}%`;
-  } else if (download?.state === "verifying") {
-    title = "Verifying Main Till download";
-  } else if (failed) {
-    title = download?.message || "Main Till download failed";
-  } else if (download?.state === "installing") {
-    title = "Installing on the Main Till";
-  } else if (download?.state === "complete") {
-    title = `Main Till update v${download.version || data?.available_version || ""} downloaded. Install it on the till.`;
-  } else if (available) {
-    title = `Main Till update v${data?.available_version} is available`;
-  }
+  const downloadState = download?.state || "idle";
+  const active = ["downloading", "verifying", "failed", "complete", "installing"].includes(downloadState);
+  const available = data?.state === "available" && !active;
+  const state = active ? downloadState : available ? "available" : "idle";
+  const version = download?.version || data?.available_version || "";
+  const view = updateSessionCopy(state, version, download?.percent, download?.message || "");
+  if (!view.visible) return null;
   return (
-    <div className="flex max-w-[320px] flex-col gap-1">
-      <div className="rounded-lg border border-gold/40 bg-gold/10 px-2.5 py-1.5 text-xs font-semibold text-text">
-        {title}
+    <div
+      role="status"
+      className="border-b border-gold/50 bg-gold/10 px-4 py-2.5"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-text">{view.title}</p>
+        {view.bar === "percent" && view.percent != null ? (
+          <span className="font-mono text-xs font-semibold text-text">{view.percent}%</span>
+        ) : null}
       </div>
-      {downloading && percent != null ? (
-        <div className="h-1.5 overflow-hidden rounded-full bg-panel">
-          <div className="h-full bg-gold" style={{ width: `${Math.min(100, percent)}%` }} />
-        </div>
-      ) : null}
-      {available && !downloading && !ready ? (
-        <div className="text-[11px] leading-snug text-text2">
-          {data?.action || "Install this on the Main Till. The dashboard does not install it."}
-          {data?.download_url ? (
-            <>
-              {" "}
-              <a className="text-gold underline" href={data.download_url} target="_blank" rel="noreferrer">
-                Download the installer
-              </a>
-            </>
-          ) : null}
+      <p className="mt-0.5 text-xs text-text2">{view.detail}</p>
+      {view.bar !== "hidden" ? (
+        <div
+          className="mt-2 h-2 overflow-hidden rounded-full bg-panel"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={view.bar === "percent" ? view.percent ?? 0 : undefined}
+        >
+          <div
+            className={view.bar === "busy" ? "h-full w-1/3 animate-pulse bg-gold" : "h-full bg-gold"}
+            style={view.bar === "percent" ? { width: `${view.percent ?? 0}%` } : undefined}
+          />
         </div>
       ) : null}
     </div>
@@ -825,7 +813,6 @@ export function AppShell({
                 ) : null}
               </Link>
               ) : null}
-              <TillUpdateNotice />
               <DashboardRefreshControl />
               <button
                 type="button"
@@ -841,6 +828,7 @@ export function AppShell({
               </div>
             </div>
           </header>
+          <TillUpdateNotice />
 
           <main
             className={cn(

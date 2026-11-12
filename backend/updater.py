@@ -56,14 +56,20 @@ CHECKSUM_ASSET_NAMES = (
 BLOCKED_VERSIONS = frozenset({'2.3.5'})
 
 # ── Retry / interval settings ─────────────────────────────────────────────────
-FIRST_CHECK_DELAY = 60          # seconds after startup
-RECHECK_INTERVAL  = 4 * 3600   # recheck every 4 hours
-RETRY_INTERVAL    = 15 * 60    # retry sooner after a failed check
+# First look is one minute after the till is open. Later looks are every few
+# minutes, on a background thread, so the sale screen does not wait.
+from backend.update_session import (  # noqa: E402
+    DOWNLOAD_RETRY_INTERVAL,
+    FIRST_CHECK_DELAY,
+    MAX_INSTALLER_BYTES,
+    MIN_INSTALLER_BYTES,
+    RECHECK_INTERVAL,
+    RETRY_INTERVAL,
+    cached_installer_action,
+)
 DOWNLOAD_TIMEOUT  = 3600        # 1 hour — tolerate very slow shop networks (~12 KB/s)
-DOWNLOAD_RETRY_INTERVAL = 30 * 60  # retry failed/partial downloads every 30 min
 REQUEST_TIMEOUT   = 8           # API call timeout (fail-open when GitHub/Portal down)
 FETCH_RETRIES     = 3
-MIN_INSTALLER_BYTES = 1_000_000
 EXPECTED_INSTALLER_BYTES = 40_000_000  # ~45 MB; used for resume detection
 DOWNLOAD_CHUNK = 65536
 MAX_DOWNLOAD_ATTEMPTS = 5
@@ -1027,16 +1033,16 @@ class UpdateChecker:
         self._progress_pct = pct
         self._progress_at = now
         if not message:
-            if state == 'downloading' and pct is not None:
-                message = f'Downloading update... {pct}%'
-            elif state == 'downloading':
-                message = 'Downloading update...'
+            if state == 'downloading':
+                message = 'You can keep selling.'
             elif state == 'verifying':
-                message = 'Verifying download'
+                message = 'Checking the download.'
             elif state == 'complete':
-                message = 'Download complete'
+                message = 'Ready to install.'
+            elif state == 'installing':
+                message = 'The till will close and reopen.'
             elif state == 'failed':
-                message = 'Download failed'
+                message = 'Update did not finish.'
             elif state == 'installing':
                 message = 'Installing'
         try:
@@ -1162,10 +1168,16 @@ class UpdateChecker:
                     if not m:
                         continue
                     ver = m.group(1)
-                    if ver in BLOCKED_VERSIONS or not _version_gt(ver, self.current_version):
+                    try:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        size = 0
+                    action = cached_installer_action(
+                        size, ver, self.current_version, BLOCKED_VERSIONS)
+                    if action != 'keep':
                         try:
                             os.remove(path)
-                            logger.info(f'Removed stale installer: {path}')
+                            logger.info(f'Removed cached installer v{ver}: {action}')
                         except Exception:
                             pass
             except Exception:
