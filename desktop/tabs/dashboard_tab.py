@@ -1163,9 +1163,12 @@ class DashboardTab(QWidget):
                     self._k_rev.set_label('Paid sales')
                     self._k_rev.set_value(f"{cur} {float(s.get('paid_sales') or 0):,.2f}")
                     self._k_rev.set_sub('Credit excluded')
-                    self._k_avg.set_label('Gross profit')
+                    missing_lines = int(s.get('uncosted_lines') or 0)
+                    self._k_avg.set_label(
+                        'Verified gross profit' if missing_lines else 'Gross profit')
                     self._k_avg.set_value(f"{cur} {float(s.get('gross_profit') or 0):,.2f}")
-                    self._k_avg.set_sub('Sales minus recorded cost')
+                    self._k_avg.set_sub(
+                        s.get('profit_note') or 'Sales minus recorded cost')
                     self._k_rev.show()
                     self._k_avg.show()
                 else:
@@ -1199,6 +1202,8 @@ class DashboardTab(QWidget):
                     chips = []
                     if management_view(source.get('role') or ''):
                         chips.extend([
+                            ('Cost of goods', float(s.get('cogs') or 0), p.get('text2', C['text2'])),
+                            ('Sales missing a cost', float(s.get('uncosted_sales') or 0), p.get('warn', C['warn'])),
                             ('Realized profit', float(s.get('realized_gross_profit') or 0), p.get('ok', C['ok'])),
                             ('Unrealized profit', float(s.get('unrealized_gross_profit') or 0), p.get('warn', C['warn'])),
                             ('New credit', credit_out, p.get('warn', C['warn'])),

@@ -981,7 +981,7 @@ def dashboard_kpis(conn) -> dict:
         "SELECT COUNT(*) FROM journal_entries WHERE status='posted' "
         "AND deleted_at IS NULL AND date(entry_date)=date('now')"
     ).fetchone()[0]
-    return {
+    kpis = {
         'month_revenue': pl['total_income'],
         'month_cogs': pl['total_cogs'],
         'month_expenses': pl['total_expenses'],
@@ -995,6 +995,18 @@ def dashboard_kpis(conn) -> dict:
         'trial_balanced': tb['balanced'],
         'currency_code': get_currency_code(conn),
     }
+    try:
+        from desktop.utils.financials import compute_financials
+        figures = compute_financials(conn, month_start, today)
+        kpis['register_sales'] = figures['total_sales']
+        kpis['register_cogs'] = figures['cogs']
+        kpis['register_gross'] = figures['gross_profit']
+        kpis['register_uncosted_sales'] = figures['uncosted_sales']
+        kpis['register_uncosted_lines'] = figures['uncosted_lines']
+        kpis['register_note'] = figures.get('profit_note') or ''
+    except Exception:
+        logging.getLogger(__name__).exception('register profit snapshot failed')
+    return kpis
 
 
 # ── Expenses & transfers ───────────────────────────────────────────────────────

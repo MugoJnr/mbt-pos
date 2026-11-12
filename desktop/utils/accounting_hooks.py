@@ -34,21 +34,18 @@ def _safe_call(fn, *args, safe=True, **kwargs):
 
 
 def _sale_cogs_lines(db, sale_id: int) -> tuple[list, float]:
-    """Build COGS + Inventory lines from sale items × product cost_price."""
-    items = db.execute(
-        "SELECT si.quantity, si.product_id, si.product_name, "
-        "COALESCE(p.cost_price, 0) as cost_price "
-        "FROM sale_items si "
-        "LEFT JOIN products p ON p.id=si.product_id "
-        "WHERE si.sale_id=?",
-        (sale_id,)
-    ).fetchall()
+    """COGS from the cost recorded on this sale. A missing record posts no COGS."""
     total_cost = D(0)
-    for it in items:
-        qty = D(it['quantity'] or 0)
-        cost = D(it['cost_price'] or 0)
-        total_cost += qty * cost
-    total_cost = D(total_cost)
+    try:
+        row = db.execute(
+            """SELECT COALESCE(SUM(quantity * unit_cost), 0)
+               FROM cost_layer_uses
+               WHERE sale_id=? AND COALESCE(reversed, 0)=0""",
+            (sale_id,),
+        ).fetchone()
+        total_cost = D(row[0] if row else 0)
+    except Exception:
+        total_cost = D(0)
     lines = []
     if total_cost > 0:
         lines.append({
@@ -83,7 +80,9 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
             return {'success': True, 'journal_id': existing['id'], 'idempotent': True}
 
         rn = sale.get('receipt_number') or str(sale_id)
-        entry_date = (sale.get('created_at') or date.today().isoformat())[:10]
+        entry_date = (
+            sale.get('sale_date') or sale.get('created_at') or date.today().isoformat()
+        )[:10]
         method = (sale.get('payment_method') or 'cash').strip().lower()
         original_total = D(
             sale.get('original_total') if sale.get('original_total') is not None
@@ -309,6 +308,51 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
         )
 
     return _safe_call(_run, safe=safe)
+
+
+def post_missing_sale_journals(db, *, user_id=None, username='') -> dict:
+    """Post a journal for each completed sale that does not have one.
+
+    Idempotent. Does not change the receipt total. Cost comes only from the
+    cost already recorded on the sale. Each sale is its own savepoint, so one
+    failure does not keep a half-written journal or undo the others.
+    """
+    from desktop.utils.accounting_engine import ensure_accounting_schema
+    ensure_accounting_schema(db)
+    rows = db.execute(
+        """SELECT id FROM sales
+           WHERE COALESCE(status, 'completed')='completed'
+             AND NOT EXISTS (
+               SELECT 1 FROM journal_entries j
+               WHERE j.source_module='sales'
+                 AND j.source_id=CAST(sales.id AS TEXT)
+                 AND j.entry_type='sale'
+                 AND j.status='posted'
+                 AND j.deleted_at IS NULL
+             )
+           ORDER BY id"""
+    ).fetchall()
+    posted = 0
+    failed = 0
+    for row in rows:
+        sale_id = row[0]
+        db.execute("SAVEPOINT sale_journal")
+        result = post_sale_journal(
+            db, sale_id, user_id=user_id, username=username, safe=True,
+        )
+        if result.get('success') and not result.get('error'):
+            db.execute("RELEASE sale_journal")
+            if not result.get('idempotent'):
+                posted += 1
+        else:
+            db.execute("ROLLBACK TO sale_journal")
+            db.execute("RELEASE sale_journal")
+            failed += 1
+            logger.error(
+                'sale journal missing after repair sale_id=%s result=%s',
+                sale_id, result.get('error') or result.get('reason') or 'not posted',
+            )
+    return {'posted': posted, 'failed': failed, 'checked': len(rows)}
 
 
 def _simplified_sale_lines(sale, original_total, rounding, credit_applied,

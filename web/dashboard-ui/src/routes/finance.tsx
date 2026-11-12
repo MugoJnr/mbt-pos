@@ -166,12 +166,24 @@ function FinancePage() {
       {canBooks ? (
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <Card className="p-4">
-          <div className="text-xs text-text2">Month net</div>
-          <div className="mt-1 text-xl font-bold text-text">{KES(Number(summary.month_net || 0), currency)}</div>
+          <div className="text-xs text-text2">
+            {Number(summary.register_uncosted_lines || 0) > 0 ? "Verified gross profit" : "Gross profit"}
+          </div>
+          <div className="mt-1 text-xl font-bold text-text">
+            {KES(Number(summary.register_gross ?? summary.month_gross ?? 0), currency)}
+          </div>
+          <div className="mt-1 text-xs text-text2">
+            {summary.register_note || "Sales minus the cost recorded on each sale."}
+          </div>
         </Card>
         <Card className="p-4">
-          <div className="text-xs text-text2">Month expenses</div>
-          <div className="mt-1 text-xl font-bold text-text">{KES(Number(summary.month_expenses || 0), currency)}</div>
+          <div className="text-xs text-text2">Sales this month</div>
+          <div className="mt-1 text-xl font-bold text-text">
+            {KES(Number(summary.register_sales ?? summary.month_revenue ?? 0), currency)}
+          </div>
+          <div className="mt-1 text-xs text-text2">
+            Books income {KES(Number(summary.month_revenue || 0), currency)}
+          </div>
         </Card>
         <Card className="p-4">
           <div className="text-xs text-text2">Cash position</div>
@@ -227,8 +239,11 @@ function FinancePage() {
         {expenses.length === 0 ? <div className="py-6 text-sm text-text2">No expenses in this period.</div> : null}
         {canBooks && pnl ? (
           <div className="mt-3 text-sm text-text2">
-            Profit and loss {start} to {end}: income {KES(Number(pnl.total_income || 0), currency)}, expenses{" "}
-            {KES(Number(pnl.total_expenses || 0), currency)}, net {KES(Number(pnl.net_profit || 0), currency)}.
+            Profit and loss {start} to {end}: sales register {KES(Number(pnl.register_sales ?? pnl.total_income ?? 0), currency)}, books income {KES(Number(pnl.total_income || 0), currency)}, cost of goods {KES(Number(pnl.register_cogs ?? pnl.total_cogs ?? 0), currency)}, verified gross profit {KES(Number(pnl.register_gross ?? pnl.gross_profit ?? 0), currency)}.
+            {Number(pnl.register_uncosted_lines || 0) > 0 ? ` ${pnl.register_note || "Some sales have no recorded cost."}` : " Every sold line in this list has a cost."}
+            {Math.abs(Number(pnl.register_sales ?? pnl.total_income ?? 0) - Number(pnl.total_income || 0)) > 0.05
+              ? " Some completed sales are still missing from the books."
+              : ""}
             {trial?.balanced === false ? " Trial balance does not balance." : " Trial balance is in balance."}
           </div>
         ) : null}

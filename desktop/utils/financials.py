@@ -154,6 +154,8 @@ def compute_financials(db, start: str, end: str) -> dict:
         "supplier_invoiced": supplier["invoiced_period"],
         "supplier_paid": supplier["paid_period"],
         "inventory_cost_value": inventory["cost_value"],
+        "inventory_layered_quantity": inventory["layered_quantity"],
+        "inventory_unlayered_units": inventory["unlayered_units"],
         "inventory_retail_value": inventory["retail_value"],
         "product_count": inventory["products"],
         "stock_units": inventory["units"],
@@ -228,7 +230,11 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         net = float(row[2] or 0)
         uses = int(row[3] or 0)
         cogs = float(row[4] or 0)
-        bucket = by_sale.setdefault(sale_id, {"revenue": 0.0, "cogs": 0.0, "costed": False})
+        sale_total = float(row[1] or 0)
+        bucket = by_sale.setdefault(
+            sale_id, {"revenue": 0.0, "sale_total": sale_total, "cogs": 0.0, "costed": False},
+        )
+        bucket["sale_total"] = sale_total
         if uses > 0:
             bucket["revenue"] += net
             bucket["cogs"] += cogs
@@ -242,9 +248,9 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         if not bucket["costed"]:
             continue
         profit = money(bucket["revenue"] - bucket["cogs"])
-        revenue = money(bucket["revenue"])
+        sale_total = money(bucket["sale_total"])
         paid = money(sale_paid.get(sale_id, 0.0))
-        ratio = 0.0 if revenue <= 0 else min(1.0, paid / revenue)
+        ratio = 0.0 if sale_total <= 0 else min(1.0, paid / sale_total)
         part = money(profit * ratio)
         gross = money(gross + profit)
         realized = money(realized + part)
@@ -254,7 +260,7 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
     if uncosted_lines:
         note = (
             f"{uncosted_lines} sold line(s) have no recorded cost, "
-            "so they are left out of profit."
+            f"so {money(uncosted):,.2f} of sales is left out of this profit."
         )
     return {
         "gross_profit": gross,
@@ -323,13 +329,16 @@ def _outstanding(db) -> dict:
 
 def _inventory(db) -> dict:
     cost_value = 0.0
+    layered_qty = 0.0
     try:
         from desktop.utils.stock_layers import ensure_cost_layers
         ensure_cost_layers(db)
         row = db.execute(
-            "SELECT COALESCE(SUM(remaining_qty * unit_cost),0) FROM cost_layers"
+            "SELECT COALESCE(SUM(remaining_qty),0), COALESCE(SUM(remaining_qty * unit_cost),0) "
+            "FROM cost_layers"
         ).fetchone()
-        cost_value = money(row[0] if row else 0)
+        layered_qty = float(row[0] if row else 0)
+        cost_value = money(row[1] if row else 0)
     except Exception:
         cost_value = 0.0
     if cost_value <= 0:
@@ -347,7 +356,9 @@ def _inventory(db) -> dict:
         stats = db.execute(
             """SELECT COUNT(*),
                       COALESCE(SUM(stock),0),
-                      COALESCE(SUM(CASE WHEN stock <= COALESCE(min_stock,0) THEN 1 ELSE 0 END),0),
+                      COALESCE(SUM(CASE
+                          WHEN stock > 0 AND COALESCE(min_stock,0) > 0 AND stock <= min_stock
+                          THEN 1 ELSE 0 END),0),
                       COALESCE(SUM(CASE WHEN stock <= 0 THEN 1 ELSE 0 END),0),
                       COALESCE(SUM(stock * COALESCE(price,0)),0)
                FROM products WHERE COALESCE(is_active,1)=1"""
@@ -361,6 +372,8 @@ def _inventory(db) -> dict:
         pass
     return {
         "cost_value": cost_value,
+        "layered_quantity": round(layered_qty, 4),
+        "unlayered_units": round(max(units - layered_qty, 0), 4),
         "retail_value": retail,
         "products": products,
         "units": units,

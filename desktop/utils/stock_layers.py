@@ -138,6 +138,155 @@ def consume_fifo(db, product_id: int, qty: float, sale_id=None, reference: str =
     return {'success': True, 'cogs': cogs, 'uses': uses}
 
 
+def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
+    """Use FIFO batches. If the product has none, copy the product-card cost for this quantity only.
+
+    A missing or zero card cost stays uncosted. Today's card cost is not written onto older sales.
+    """
+    result = consume_fifo(db, product_id, qty, sale_id=sale_id, reference=reference)
+    if not result.get('skipped'):
+        return result
+    try:
+        row = db.execute(
+            "SELECT name, cost_price FROM products WHERE id=?",
+            (int(product_id),),
+        ).fetchone()
+    except Exception:
+        return result
+    if not row:
+        return {'skipped': True, 'reason': 'no_product'}
+    name = row['name'] if hasattr(row, 'keys') else row[0]
+    raw_cost = row['cost_price'] if hasattr(row, 'keys') else row[1]
+    try:
+        cost = float(raw_cost)
+    except (TypeError, ValueError):
+        return {'skipped': True, 'reason': 'no_cost'}
+    if raw_cost is None or cost <= 0:
+        return {'skipped': True, 'reason': 'no_cost'}
+    prior = db.execute(
+        "SELECT COUNT(*) FROM cost_layers WHERE product_id=? AND source_type='product_card'",
+        (int(product_id),),
+    ).fetchone()
+    source_id = f"sale-{sale_id or 0}-{int(product_id)}-{int(prior[0]) + 1}"
+    added = add_layer(
+        db, int(product_id), qty, cost, 'product_card', source_id,
+        product_name=name or '',
+        purchase_unit_cost=cost,
+        extra_unit_cost=0,
+        supplier_name='Product card',
+        reference_note=(
+            'Buying price on the product card when this quantity was sold. '
+            'Not a supplier invoice.'
+        ),
+    )
+    if added.get('error'):
+        return added
+    used = consume_fifo(db, product_id, qty, sale_id=sale_id, reference=reference)
+    if used.get('success'):
+        used['source'] = 'product_card'
+    return used
+
+
+def consume_layer(db, layer_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
+    """Use one named batch. Other batches for the same product stay untouched."""
+    ensure_cost_layers(db)
+    need = round(float(qty), 4)
+    if need <= 0:
+        return {'error': 'Quantity must be greater than zero'}
+    layer = db.execute(
+        "SELECT id, product_id, remaining_qty, unit_cost FROM cost_layers WHERE id=?",
+        (int(layer_id),),
+    ).fetchone()
+    if not layer:
+        return {'error': 'Cost batch was not found.'}
+    unit_cost = float(layer[3])
+    changed = db.execute(
+        "UPDATE cost_layers SET remaining_qty=remaining_qty-? WHERE id=? AND remaining_qty>=?",
+        (need, int(layer_id), need),
+    )
+    if changed.rowcount != 1:
+        return {'error': 'That batch was already used by another sale.'}
+    db.execute(
+        "INSERT INTO cost_layer_uses "
+        "(layer_id, product_id, sale_id, quantity, unit_cost, reference) "
+        "VALUES (?,?,?,?,?,?)",
+        (int(layer_id), int(layer[1]), sale_id, need, unit_cost, reference or None),
+    )
+    return {'success': True, 'cogs': round(need * unit_cost, 4), 'unit_cost': unit_cost}
+
+
+def copy_card_costs_onto_uncosted_sales(db, username: str = '') -> dict:
+    """Copy the product's stored buying price onto completed sales that have no cost.
+
+    A sale that already has a cost is left as it was. A product with no buying
+    price stays uncosted. Current stock batches are not used up.
+    """
+    ensure_cost_layers(db)
+    item_cols = {row[1] for row in db.execute("PRAGMA table_info(sale_items)").fetchall()}
+    if "returned_qty" not in item_cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
+    product_cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
+    if "cost_price" not in product_cols:
+        return {'copied': 0, 'cogs': 0.0, 'skipped': True}
+    rows = db.execute(
+        """SELECT si.sale_id, si.product_id,
+                  MAX(COALESCE(NULLIF(si.product_name,''), p.name, '')),
+                  SUM(COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0)),
+                  p.cost_price
+           FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id
+           JOIN products p ON p.id = si.product_id
+           WHERE COALESCE(s.status,'completed')='completed'
+             AND COALESCE(p.cost_price, 0) > 0
+             AND NOT EXISTS (
+               SELECT 1 FROM cost_layer_uses u
+               WHERE u.sale_id = si.sale_id AND u.product_id = si.product_id
+                 AND COALESCE(u.reversed,0)=0
+             )
+           GROUP BY si.sale_id, si.product_id"""
+    ).fetchall()
+    copied = 0
+    cogs = 0.0
+    for sale_id, product_id, name, qty, raw_cost in rows:
+        quantity = round(float(qty or 0), 4)
+        try:
+            cost = round(float(raw_cost), 4)
+        except (TypeError, ValueError):
+            continue
+        if quantity <= 0 or cost <= 0:
+            continue
+        db.execute("SAVEPOINT card_cost")
+        added = add_layer(
+            db, int(product_id), quantity, cost, 'product_card',
+            f"card-{int(sale_id)}-{int(product_id)}",
+            product_name=name or '',
+            purchase_unit_cost=cost,
+            extra_unit_cost=0,
+            supplier_name='Product card',
+            username=username or '',
+            reference_note=(
+                'Buying price stored on the product. '
+                'Copied onto this sale because the sale had no cost record.'
+            ),
+        )
+        if added.get('error') or not added.get('id'):
+            db.execute("ROLLBACK TO card_cost")
+            db.execute("RELEASE card_cost")
+            continue
+        used = consume_layer(
+            db, int(added['id']), quantity, sale_id=int(sale_id),
+            reference=f"card-{int(sale_id)}-{int(product_id)}",
+        )
+        if not used.get('success'):
+            db.execute("ROLLBACK TO card_cost")
+            db.execute("RELEASE card_cost")
+            continue
+        db.execute("RELEASE card_cost")
+        copied += 1
+        cogs = round(cogs + float(used.get('cogs') or 0), 2)
+    return {'copied': copied, 'cogs': round(cogs, 2)}
+
+
 def restore_reference_layers(db, reference: str) -> dict:
     """Put back cost-layer uses recorded against one consumption reference prefix."""
     ensure_cost_layers(db)
@@ -361,10 +510,21 @@ def inventory_valuation(db) -> dict:
         "SELECT COALESCE(SUM(remaining_qty),0), COALESCE(SUM(remaining_qty * unit_cost),0) "
         "FROM cost_layers"
     ).fetchone()
-    return {
-        'quantity': round(float(row[0] or 0), 4),
+    layered_qty = round(float(row[0] or 0), 4)
+    result = {
+        'quantity': layered_qty,
         'value': round(float(row[1] or 0), 2),
     }
+    try:
+        held = db.execute(
+            "SELECT COALESCE(SUM(stock),0) FROM products WHERE COALESCE(is_active,1)=1"
+        ).fetchone()
+        product_units = round(float(held[0] or 0), 4)
+        result['product_units'] = product_units
+        result['unlayered_units'] = round(max(product_units - layered_qty, 0), 4)
+    except Exception:
+        pass
+    return result
 
 
 def allocate_delivery_extra(lines, total_extra) -> dict:

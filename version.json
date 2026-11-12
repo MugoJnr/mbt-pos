@@ -1,8 +1,8 @@
 {
-    "version": "3.1.82",
-    "build": "RC-2026-11-12-v3.1.82",
+    "version": "3.1.83",
+    "build": "RC-2026-11-12-v3.1.83",
     "released": "2026-11-12",
-    "release_notes": "An update stays on screen with a progress bar. The download is kept, and the till installs it only when you choose Install now. You can keep selling while it downloads.",
-    "checksum_sha256": "e3ca7c6943c022cd58aa8102f359dca88a3520501d2a0c1e79c2b7510b4e8fb3",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.82/MBT_POS_Setup.exe"
+    "release_notes": "A sale that had no recorded cost now uses the buying price stored on the product. Finance includes every completed sale, and profit uses that same cost.",
+    "checksum_sha256": "7479900dfc5ee0c956488c17833d01c215f8ed94a334cd1e7422ece1c22833d0",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.83/MBT_POS_Setup.exe"
 }

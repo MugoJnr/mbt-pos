@@ -21,7 +21,7 @@ import {
   Select,
   Table,
 } from "@/components/ui-kit";
-import { GET } from "@/lib/api";
+import { GET, POST, getUser } from "@/lib/api";
 import { downloadApiPost, exportQuery } from "@/lib/download";
 import { ExportLockDialog } from "@/components/export-lock-dialog";
 import { KES, localISO, rangeForPreset } from "@/lib/format";
@@ -51,6 +51,12 @@ function Reports() {
   const [openSaleId, setOpenSaleId] = useState<number | null>(null);
   const [lockFormat, setLockFormat] = useState<string | null>(null);
   const [lockError, setLockError] = useState("");
+  const [costSale, setCostSale] = useState("");
+  const [costProduct, setCostProduct] = useState("");
+  const [costValue, setCostValue] = useState("");
+  const [costReason, setCostReason] = useState("");
+  const [costMessage, setCostMessage] = useState("");
+  const canCorrectCost = ["admin", "superadmin"].includes(String(getUser()?.role || ""));
   const sectionOptions = [
     ["sales", "Sales"],
     ["debt", "Debt"],
@@ -429,17 +435,62 @@ function Reports() {
           </div>
         </Card>
         <Card className="p-4">
-          <div className="text-xs font-semibold text-text2">Gross profit</div>
+          <div className="text-xs font-semibold text-text2">
+            {Number(summary.uncosted_lines || 0) > 0 ? "Verified gross profit" : "Gross profit"}
+          </div>
           <div className="mt-1 text-xl font-bold">
             {summary.profit == null ? "—" : KES(summary.profit, currency)}
           </div>
           <div className="mt-1 text-xs text-text2">
-            {Number(summary.uncosted_lines || 0) > 0
-              ? `${summary.uncosted_lines} lines have no cost, so this profit is incomplete.`
-              : "Sale value minus the cost recorded on the lines. This is not net profit."}
+            {summary.profit == null
+              ? "Hidden for this login."
+              : `Cost of goods ${KES(summary.cogs || 0, currency)}. ${
+                  Number(summary.uncosted_lines || 0) > 0
+                    ? `${summary.uncosted_lines} lines, ${KES(summary.uncosted_revenue || 0, currency)}, have no cost and are not in this profit.`
+                    : "Every sold line in this list has a cost. This is not net profit."
+                }`}
           </div>
         </Card>
       </div>
+
+      {canCorrectCost && Number(summary.uncosted_lines || 0) > 0 ? (
+        <Card className="p-4 mb-4">
+          <div className="text-sm font-semibold">Record a missing cost</div>
+          <p className="mt-1 text-xs text-text2">
+            This changes historical profit for that line. The sale total stays as it was. Use a supplier invoice or goods receipt, not a guess.
+          </p>
+          <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2">
+            <Input aria-label="Sale id" placeholder="Sale id" value={costSale} onChange={(e) => setCostSale(e.target.value)} />
+            <Input aria-label="Product id" placeholder="Product id" value={costProduct} onChange={(e) => setCostProduct(e.target.value)} />
+            <Input aria-label="Unit cost" placeholder="Unit cost" value={costValue} onChange={(e) => setCostValue(e.target.value)} />
+            <Input aria-label="Reason" placeholder="Reason or invoice" value={costReason} onChange={(e) => setCostReason(e.target.value)} />
+          </div>
+          <div className="mt-2 flex items-center gap-3">
+            <Button
+              type="button"
+              variant="primary"
+              onClick={async () => {
+                setCostMessage("");
+                const result = await POST<any>("/cost-reconciliation", {
+                  sale_id: Number(costSale),
+                  product_id: Number(costProduct),
+                  unit_cost: Number(costValue),
+                  reason: costReason,
+                });
+                if (!result || result.error) {
+                  setCostMessage(result?.error || "The cost was not recorded.");
+                  return;
+                }
+                setCostMessage(`Recorded. Sale total remains ${KES(result.sale_total, currency)}.`);
+                setCostReason("");
+              }}
+            >
+              Save cost
+            </Button>
+            {costMessage ? <span className="text-xs text-text2">{costMessage}</span> : null}
+          </div>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         <Card className="p-5 lg:col-span-2">

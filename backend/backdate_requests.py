@@ -526,7 +526,8 @@ def _apply_stock(db, actor, row, line, receipt, sale_id, consume_fifo) -> None:
          f"Backdating {row['reference']} business day {row['business_date']}",
          actor['id'], actor.get('username') or ''),
     )
-    layer = consume_fifo(db, int(pid), qty, sale_id=sale_id, reference=receipt)
+    from desktop.utils.stock_layers import record_sale_cost
+    layer = record_sale_cost(db, int(pid), qty, sale_id=sale_id, reference=receipt)
     if layer.get('error'):
         raise BackdateError(layer['error'])
 

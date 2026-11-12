@@ -250,11 +250,19 @@ function Dashboard() {
     ? productsQ.data
     : productsQ.data?.products || [];
   const sales = Array.isArray(salesQ.data) ? salesQ.data : salesQ.data?.sales || [];
-  const lowStock =
-    Number(cc.low_stock ?? 0) ||
-    products.filter((p: any) => Number(p.stock || 0) <= Number(p.min_stock ?? 5)).length;
-
   const finance = wrap.finance || {};
+  const lowFromProducts = products.filter((p: any) => {
+    const stock = Number(p.stock || 0);
+    const min = Number(p.min_stock || 0);
+    return stock > 0 && min > 0 && stock <= min;
+  }).length;
+  const lowStock = Number(finance.low_stock ?? lowFromProducts);
+  const outOfStock = Number(
+    finance.out_of_stock ??
+      products.filter((p: any) => Number(p.stock || 0) <= 0).length,
+  );
+  const uncostedLines = Number(finance.uncosted_lines ?? s.uncosted_lines ?? 0);
+
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canFinance = actions
     ? actions.includes("reports.view_all") || actions.includes("accounting.view")
@@ -509,6 +517,10 @@ function Dashboard() {
           <Link to="/inventory">
             <Badge tone="warn">{lowStock} low stock — needs attention</Badge>
           </Link>
+        ) : outOfStock > 0 ? (
+          <Link to="/inventory">
+            <Badge tone="warn">{outOfStock} out of stock</Badge>
+          </Link>
         ) : (
           <Badge tone="ok">Inventory healthy</Badge>
         )}
@@ -567,7 +579,7 @@ function Dashboard() {
             ) : null}
             {canFinance ? (
               <KpiCard
-                label="Gross profit"
+                label={uncostedLines > 0 ? "Verified gross profit" : "Gross profit"}
                 value={KES(grossProfit)}
                 sub={finance.profit_note || "Net sales less the cost recorded on the sale."}
                 accent="info"

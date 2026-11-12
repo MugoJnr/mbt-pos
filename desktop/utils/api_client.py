@@ -2153,19 +2153,21 @@ class APIClient:
                     )
                 except Exception as e:
                     logger.warning(f"Stock movement log skipped: {e}")
-                from desktop.utils.stock_layers import add_layer
-                layer = add_layer(
-                    db, pid, initial_stock, float(data.get('cost_price') or 0),
-                    'opening', str(pid),
-                    product_name=name,
-                    purchase_unit_cost=float(data.get('cost_price') or 0),
-                    extra_unit_cost=0,
-                    supplier_name='Opening stock',
-                    reference_note='Inherited from the product cost. Supplier unknown.',
-                )
-                if layer.get('error'):
-                    db.rollback()
-                    return {'error': layer['error']}
+                card_cost = float(data.get('cost_price') or 0)
+                if card_cost > 0:
+                    from desktop.utils.stock_layers import add_layer
+                    layer = add_layer(
+                        db, pid, initial_stock, card_cost,
+                        'opening', str(pid),
+                        product_name=name,
+                        purchase_unit_cost=card_cost,
+                        extra_unit_cost=0,
+                        supplier_name='Opening stock',
+                        reference_note='Inherited from the product cost. Supplier unknown.',
+                    )
+                    if layer.get('error'):
+                        db.rollback()
+                        return {'error': layer['error']}
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
                    f"name={name} stock={initial_stock}")
@@ -4671,8 +4673,8 @@ class APIClient:
                              rn, f"Sale: {rn}",
                              self._user_id, self._username or 'staff')
                         )
-                        from desktop.utils.stock_layers import consume_fifo
-                        layer = consume_fifo(
+                        from desktop.utils.stock_layers import record_sale_cost
+                        layer = record_sale_cost(
                             db, pid, qty_requested, sale_id=sale_id, reference=rn,
                         )
                         if layer.get('error'):
@@ -6579,6 +6581,13 @@ class APIClient:
             collected_sales = float(summary.get('collected_from_sales') or 0)
             # Opening tender is already in the sale's amount_paid. Add only later collections.
             summary['debt_collected'] = debt_collected
+            if self._acc_perm('inventory.view_cost'):
+                from desktop.utils.stock_layers import copy_card_costs_onto_uncosted_sales
+                copied = copy_card_costs_onto_uncosted_sales(
+                    db, username=getattr(self, '_username', '') or '',
+                )
+                if copied.get('copied'):
+                    db.commit()
             from desktop.utils.financials import compute_financials, public_financials
             figures = compute_financials(db, start, end)
             summary['collected_revenue'] = figures['total_collected']
@@ -6591,6 +6600,7 @@ class APIClient:
             summary['realized_gross_profit'] = figures['realized_gross_profit']
             summary['unrealized_gross_profit'] = figures['unrealized_gross_profit']
             summary['cogs'] = figures['cogs']
+            summary['uncosted_sales'] = figures['uncosted_sales']
             summary['uncosted_lines'] = figures['uncosted_lines']
             summary['profit_note'] = figures['profit_note']
             for key in (
@@ -10113,13 +10123,46 @@ class APIClient:
         from desktop.utils.security import client_actor, has_permission
         return has_permission(client_actor(self), action)
 
+    def _repair_sale_journals(self, db) -> dict:
+        if self._acc_perm('inventory.view_cost'):
+            try:
+                from desktop.utils.stock_layers import copy_card_costs_onto_uncosted_sales
+                copied = copy_card_costs_onto_uncosted_sales(
+                    db, username=self._username or '',
+                )
+                if copied.get('copied'):
+                    db.commit()
+            except Exception as exc:
+                logger.error('sale cost copy: %s', exc, exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        if not self._acc_perm('accounting.create_journal'):
+            return {'posted': 0, 'failed': 0, 'skipped': True}
+        from desktop.utils.accounting_hooks import post_missing_sale_journals
+        try:
+            result = post_missing_sale_journals(
+                db, user_id=self._user_id, username=self._username or '',
+            )
+        except Exception as exc:
+            logger.error('sale journal repair: %s', exc, exc_info=True)
+            return {'posted': 0, 'failed': 0, 'error': str(exc)}
+        if result.get('posted'):
+            db.commit()
+        return result
+
     def accounting_dashboard(self) -> dict:
         if not self._acc_perm('accounting.view'):
             return {'error': 'Insufficient permissions'}
         db = _db()
         try:
             from desktop.utils.accounting_engine import dashboard_kpis
-            return dashboard_kpis(db)
+            repair = self._repair_sale_journals(db)
+            kpis = dashboard_kpis(db)
+            kpis['sale_journals_posted'] = int(repair.get('posted') or 0)
+            kpis['sale_journals_failed'] = int(repair.get('failed') or 0)
+            return kpis
         finally:
             db.close()
 
@@ -10171,6 +10214,7 @@ class APIClient:
         db = _db()
         try:
             from desktop.utils.accounting_engine import list_journals
+            self._repair_sale_journals(db)
             return list_journals(db, start=start, end=end,
                                  source_module=source_module)
         finally:
@@ -10258,7 +10302,22 @@ class APIClient:
         db = _db()
         try:
             from desktop.utils.accounting_engine import profit_and_loss
-            return profit_and_loss(db, start=start, end=end)
+            self._repair_sale_journals(db)
+            report = profit_and_loss(db, start=start, end=end)
+            try:
+                from desktop.utils.financials import compute_financials
+                figures = compute_financials(
+                    db, report.get('start') or start, report.get('end') or end,
+                )
+                report['register_sales'] = figures['total_sales']
+                report['register_cogs'] = figures['cogs']
+                report['register_gross'] = figures['gross_profit']
+                report['register_uncosted_sales'] = figures['uncosted_sales']
+                report['register_uncosted_lines'] = figures['uncosted_lines']
+                report['register_note'] = figures.get('profit_note') or ''
+            except Exception:
+                logger.exception('register profit snapshot failed')
+            return report
         finally:
             db.close()
 

@@ -497,13 +497,24 @@ class _OverviewPage(QWidget):
         overdue = float((debt.get('overdue') or {}).get('total') or 0)
         collected = float((debt.get('today_collected') or {}).get('total') or 0)
 
+        missing_cost = int(dash.get('register_uncosted_lines') or 0)
+        gross_value = dash.get('register_gross')
+        if gross_value is None:
+            gross_value = dash.get('month_gross')
+        gross_label = 'Verified gross profit' if missing_cost else 'Gross profit'
+        if missing_cost:
+            third_label = 'Sales missing a cost'
+            third_value = dash.get('register_uncosted_sales') or 0
+        else:
+            third_label = 'Net profit'
+            third_value = dash.get('month_net')
         row1 = [
             ("Today's Revenue", _fmt(sales_today, cur), C['ok']),
             # warn = attention for negative P&L (err reserved for overdue/cash deficit)
-            ('Gross Profit', _fmt(dash.get('month_gross'), cur),
-             C['warn'] if float(dash.get('month_gross') or 0) < 0 else C['ok']),
-            ('Net Profit', _fmt(dash.get('month_net'), cur),
-             C['warn'] if float(dash.get('month_net') or 0) < 0 else C['ok']),
+            (gross_label, _fmt(gross_value, cur),
+             C['warn'] if float(gross_value or 0) < 0 else C['ok']),
+            (third_label, _fmt(third_value, cur),
+             C['warn'] if (not missing_cost and float(third_value or 0) < 0) else C['ok']),
             ("Today's Expenses", _fmt(expenses_today, cur), C['warn']),
         ]
         row2 = [
@@ -529,9 +540,12 @@ class _OverviewPage(QWidget):
         # Health score from real metrics only
         score = 70
         notes = []
-        net = float(dash.get('month_net') or 0)
+        profit_known = missing_cost == 0
+        net = float(dash.get('month_net') or 0) if profit_known else 0.0
         cash = float(dash.get('cash_balance') or 0) + float(dash.get('mpesa_balance') or 0)
-        if net >= 0:
+        if missing_cost:
+            notes.append(str(dash.get('register_note') or 'Some sales have no recorded cost'))
+        elif net >= 0:
             score += 10
             notes.append('Profitable this month')
         else:

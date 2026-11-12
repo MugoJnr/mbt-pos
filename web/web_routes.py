@@ -2513,7 +2513,8 @@ def _cc_today_snapshot(user=None):
     ).fetchone() or [0])[0])
     try:
         low = int(db.execute(
-            "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock"
+            "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 "
+            "AND stock>0 AND COALESCE(min_stock,0)>0 AND stock<=min_stock"
         ).fetchone()[0]) if _user_can('inventory', user) else 0
     except Exception:
         low = 0
@@ -2555,7 +2556,8 @@ def _cc_today_snapshot(user=None):
     if _user_can('inventory', user) and low:
         low_names = [
             r[0] for r in db.execute(
-                "SELECT name FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock "
+                "SELECT name FROM products WHERE COALESCE(is_active,1)=1 "
+                "AND stock>0 AND COALESCE(min_stock,0)>0 AND stock<=min_stock "
                 "ORDER BY stock ASC LIMIT 8"
             ).fetchall()
         ]
@@ -4398,7 +4400,8 @@ def html_report():
         # Low stock
         low_stock = _trs(db.execute(
             "SELECT name, stock, min_stock, unit FROM products "
-            "WHERE stock<=min_stock AND is_active=1 ORDER BY stock ASC LIMIT 10"
+            "WHERE stock>0 AND COALESCE(min_stock,0)>0 AND stock<=min_stock AND is_active=1 "
+            "ORDER BY stock ASC LIMIT 10"
         ).fetchall())
 
         # Settings
@@ -4849,7 +4852,8 @@ def _seed_live_notifications(db):
     if cnt:
         return
     low = db.execute(
-        "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock<=min_stock"
+        "SELECT COUNT(*) FROM products WHERE is_active=1 AND stock>0 "
+        "AND COALESCE(min_stock,0)>0 AND stock<=min_stock"
     ).fetchone()[0]
     if low:
         _push_notification(
@@ -5102,7 +5106,8 @@ def cc_summary():
         if _user_can('inventory', user):
             try:
                 low_stock = int(db.execute(
-                    "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 AND stock<=min_stock"
+                    "SELECT COUNT(*) FROM products WHERE COALESCE(is_active,1)=1 "
+            "AND stock>0 AND COALESCE(min_stock,0)>0 AND stock<=min_stock"
                 ).fetchone()[0])
             except Exception:
                 low_stock = 0

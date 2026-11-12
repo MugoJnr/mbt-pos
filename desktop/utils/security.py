@@ -79,6 +79,7 @@ _PERMISSIONS = {
         'accounting.reverse_journal', 'accounting.create_expenses',
         'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
+        'accounting.reconcile_cost',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'inventory.view_cost',
         'supplier.view', 'supplier.pay', 'supplier.request', 'supplier.manage',
@@ -105,6 +106,7 @@ _PERMISSIONS = {
         'accounting.reverse_journal', 'accounting.create_expenses',
         'accounting.approve_expenses',
         'accounting.close_period', 'accounting.edit_accounts', 'accounting.export',
+        'accounting.reconcile_cost',
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'ai_ops.developer',
         'inventory.view_cost',
@@ -118,6 +120,7 @@ NOT_GRANTABLE = {
     'debt.delete', 'ai_ops.developer', 'sales.edit',
     'users.view', 'users.create', 'users.edit', 'users.delete',
     'settings.edit', 'accounting.edit_accounts', 'accounting.close_period',
+    'accounting.reconcile_cost',
     'consumption.void', 'consumption.edit',
 }
 
@@ -165,6 +168,7 @@ _ACTION_LABELS = {
     'accounting.reverse_journal': 'Reverse a journal entry',
     'accounting.close_period': 'Close an accounting period',
     'accounting.edit_accounts': 'Edit the chart of accounts',
+    'accounting.reconcile_cost': 'Record a missing sale cost',
     'audit.view': 'View the audit log',
     'audit.clear': 'Clear the audit log',
     'settings.view': 'View settings',

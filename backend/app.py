@@ -1747,8 +1747,8 @@ def create_sale():
                          receipt_number, f"Sale: {receipt_number}",
                          user['id'], user['username'])
                     )
-                    from desktop.utils.stock_layers import consume_fifo
-                    layer = consume_fifo(
+                    from desktop.utils.stock_layers import record_sale_cost
+                    layer = record_sale_cost(
                         db, pid, qty_requested, sale_id=sale_id, reference=receipt_number,
                     )
                     if layer.get('error'):
@@ -2114,8 +2114,12 @@ def sales_summary():
     summary['net_operating_result'] = figures['net_operating_result']
     summary['outstanding_debt'] = figures['outstanding_debt']
     summary['inventory_cost_value'] = figures['inventory_cost_value']
+    summary['cogs'] = figures['cogs']
+    summary['uncosted_sales'] = figures['uncosted_sales']
     summary['uncosted_lines'] = figures['uncosted_lines']
     summary['profit_note'] = figures['profit_note']
+    summary['low_stock'] = figures['low_stock']
+    summary['out_of_stock'] = figures['out_of_stock']
     # Method tiles include a later repayment. The sale total does not grow again.
     for key in ('cash_collected', 'mpesa_collected', 'card_collected', 'bank_collected', 'other_collected'):
         summary[key] = figures.get(key) or 0
@@ -2623,6 +2627,42 @@ def get_requests_centre_http(source, source_id):
     from backend.requests_centre import get_centre_item
     db = get_db()
     return _centre_response(get_centre_item(db, _backdate_actor(), source, source_id))
+
+
+@app.route('/api/cost-reconciliation', methods=['GET'])
+@token_required
+def list_cost_reconciliation():
+    if not _shop_can('inventory.view_cost'):
+        return jsonify({'error': 'You cannot view product costs.'}), 403
+    start = request.args.get('start') or str(date.today())
+    end = request.args.get('end') or start
+    from desktop.utils.cost_reconciliation import list_uncosted
+    return jsonify(list_uncosted(get_db(), start, end))
+
+
+@app.route('/api/cost-reconciliation', methods=['POST'])
+@token_required
+def apply_cost_reconciliation():
+    if not _shop_can('accounting.reconcile_cost'):
+        return jsonify({'error': 'Only an administrator can record a missing cost.'}), 403
+    data = request.json or {}
+    user = g.current_user or {}
+    from desktop.utils.cost_reconciliation import apply_cost
+    db = get_db()
+    result = apply_cost(
+        db,
+        data.get('sale_id'),
+        data.get('product_id'),
+        data.get('unit_cost'),
+        data.get('reason') or '',
+        user.get('username') or user.get('full_name') or '',
+        data.get('evidence') or '',
+    )
+    if result.get('error'):
+        db.rollback()
+        return jsonify(result), 400
+    db.commit()
+    return jsonify(result)
 
 
 # ── HEALTH ────────────────────────────────────────────────────────────────────
