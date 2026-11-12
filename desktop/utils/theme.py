@@ -258,17 +258,19 @@ def biz_day_button_qss(*, date_width: int | None = None, micro: bool = False) ->
     gold_border_hover = qss_alpha(p['gold'], 0.45)
     min_h = 32 if micro else 34
 
+    # Width comes from the label (setMinimumWidth). A QSS floor of 168–220px
+    # turned "Today" into an empty field and pushed View / Copy onto a second row.
     if micro:
-        width_block = "min-width:168px;"
+        width_block = "min-width:0px;"
         pad = "padding:3px 10px;font-size:11px;"
     elif date_width is not None and date_width < 130:
-        width_block = "min-width:168px;"
+        width_block = "min-width:0px;"
         pad = "padding:4px 12px;font-size:12px;"
     elif date_width is not None:
-        width_block = f"min-width:{date_width}px;"
+        width_block = "min-width:0px;"
         pad = "padding:6px 14px;font-size:13px;"
     else:
-        width_block = "min-width:220px;"
+        width_block = "min-width:0px;"
         pad = "padding:6px 14px;font-size:13px;"
 
     return f"""

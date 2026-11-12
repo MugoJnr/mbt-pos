@@ -510,11 +510,8 @@ class PrinterManager:
         self._printer_lock = threading.Lock()
 
     def _get_printer(self):
-        cfg = self.config_getter()
-        port = cfg.get('printer_port', '')
-        vendor = cfg.get('printer_vendor_id', None)
-        product = cfg.get('printer_product_id', None)
-        return get_usb_printer(vendor, product, port)
+        from printing.transport import open_printer
+        return open_printer(self.config_getter() or {})
 
     def print_receipt(self, sale_data):
         cfg = self.config_getter()
@@ -588,15 +585,27 @@ class _MemoryPrinter:
         return None
 
 
-def text_to_escpos(text: str) -> bytes:
-    """Plain document text as one ESC/POS job. The text is already formatted."""
+def text_to_escpos(text: str, reference: str = "") -> bytes:
+    """Plain document text as one ESC/POS job. The text is already formatted.
+
+    Characters the printer's code page cannot store are replaced. The rest of
+    the receipt is still sent. A short CODE39 barcode is added when the
+    reference is plain ASCII.
+    """
+    import re
     out = bytearray()
     out.extend(INIT)
     out.extend(ALIGN_LEFT)
     for line in str(text or "").splitlines():
         out.extend(line.encode(ENCODING, errors="replace"))
         out.extend(LF)
-    out.extend(FEED_LINES(3))
+    code = str(reference or "").upper()
+    if re.fullmatch(r"[A-Z0-9 $%+\-./]{1,20}", code):
+        out.extend(ALIGN_CENTER)
+        out.extend(GS + b"k" + bytes([4]) + code.encode("ascii") + b"\x00")
+        out.extend(LF)
+        out.extend(ALIGN_LEFT)
+    out.extend(FEED_LINES(4))
     out.extend(PARTIAL_CUT)
     return bytes(out)
 
@@ -681,56 +690,73 @@ def _probe_windows(name: str) -> dict:
         return {"available": False, "reason": "printer powered off or unreachable"}
 
 
-def print_document_bytes(cfg, payload: bytes, label: str = "document") -> dict:
-    """Queue one already-built job. The caller must not resubmit the sale."""
+def print_document_bytes(cfg, payload: bytes, label: str = "document", text: str = "", unavailable: str = "") -> dict:
+    """Send one already-built job. The caller must not resubmit the sale.
+
+    The spooler accepting the job is not the same as paper leaving the printer.
+    """
     from printing.sale_documents import PRINTER_UNAVAILABLE
-    probe = probe_printer(cfg)
+    from printing.transport import open_printer, print_driver_text, printer_language
+
+    sink = os.environ.get("MBT_PRINTER_SINK", "").strip()
+    probe = {"available": True, "reason": "file"} if sink else probe_printer(cfg)
     if not probe.get("available"):
         logger.warning("Printer unavailable for %s (%s). The sale was not sent again.", label, probe.get("reason"))
         return {
             "printed": False,
             "queued": False,
+            "status": "failed",
             "sale_saved": True,
-            "message": PRINTER_UNAVAILABLE,
+            "message": unavailable or PRINTER_UNAVAILABLE,
             "reason": probe.get("reason") or "unavailable",
         }
-
-    def _write():
-        try:
+    try:
+        connection = str((cfg or {}).get("printer_connection") or "").strip().upper()
+        name = str((cfg or {}).get("printer_name") or "").strip()
+        if printer_language(cfg) == "driver" and connection == "WINDOWS" and not sink:
+            print_driver_text(name, text or "")
+        else:
             simulated = os.environ.get("MBT_PRINTER_SIMULATE", "").strip().lower()
-            if simulated in ("ok", "ready"):
-                printer = _MemoryPrinter()
-            else:
-                printer = _open_configured_printer(cfg)
+            printer = _MemoryPrinter() if simulated in ("ok", "ready") else open_printer(cfg)
             if printer is None:
-                logger.warning("Printer disappeared before the write for %s", label)
-                return
+                return {
+                    "printed": False,
+                    "queued": False,
+                    "status": "failed",
+                    "sale_saved": True,
+                    "message": unavailable or PRINTER_UNAVAILABLE,
+                    "reason": "printer did not open",
+                }
             printer.write(payload)
             printer.flush()
             try:
                 printer.close()
             except Exception:
                 pass
-            logger.info("Print job handed to the printer for %s", label)
-        except Exception as exc:
-            logger.warning("Print failed for %s: %s", label, exc.__class__.__name__)
-
-    threading.Thread(target=_write, name="MBTPrintOnce", daemon=True).start()
+    except Exception as exc:
+        logger.warning("Print failed for %s: %s", label, exc.__class__.__name__)
+        return {
+            "printed": False,
+            "queued": False,
+            "status": "failed",
+            "sale_saved": True,
+            "message": "The printer did not accept the receipt. Check that it is on, then try again.",
+            "reason": exc.__class__.__name__,
+        }
+    logger.info("Print job handed to the printer for %s", label)
     return {
         "printed": True,
         "queued": True,
+        "status": "submitted",
         "sale_saved": True,
-        "message": "Document sent to the printer. Paper output was not confirmed.",
+        "message": "Receipt sent to the configured printer. The printer did not confirm that paper came out.",
         "reason": probe.get("reason") or "",
     }
 
 
 def _open_configured_printer(cfg):
-    connection = str((cfg or {}).get("printer_connection") or "").strip().upper()
-    port = str((cfg or {}).get("printer_port") or "").strip()
-    if connection in ("LAN", "WINDOWS"):
-        return None
-    return get_usb_printer(port=port if port.upper() not in ("", "USB", "WINDOWS", "LAN") else None)
+    from printing.transport import open_printer
+    return open_printer(cfg)
 
 
 def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):

@@ -750,6 +750,25 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
+    # Viewers may read inventory and customer debt. Older menus omitted those tabs.
+    for row in conn.execute(
+        "SELECT id, tab_permissions FROM users WHERE role='viewer'"
+    ).fetchall():
+        try:
+            import json as _json
+            perms = _json.loads(row['tab_permissions'] or '[]')
+            changed = False
+            for tab in ('inventory', 'debt'):
+                if tab not in perms:
+                    perms.append(tab)
+                    changed = True
+            if changed:
+                conn.execute(
+                    "UPDATE users SET tab_permissions=? WHERE id=?",
+                    (_json.dumps(perms), row['id']),
+                )
+        except Exception:
+            pass
     # Payment variance tables (upgrade path)
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS customer_wallet (
@@ -3663,7 +3682,8 @@ class APIClient:
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Enter a reason for the void request.', 'status': 400}
-        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+        from desktop.utils.security import client_actor, has_permission
+        if not has_permission(client_actor(self), 'consumption.request_void'):
             return {'error': 'You cannot request this void.', 'status': 403}
         db = _db()
         try:
@@ -3838,6 +3858,13 @@ class APIClient:
                 db.rollback()
                 return {'error': 'Not found', 'status': 404}
             status = (row['status'] or '').lower()
+            try:
+                own_requester = int(row['requested_by_id'] or 0)
+            except (TypeError, ValueError):
+                own_requester = 0
+            if own_requester and own_requester == int(self._user_id or 0):
+                db.rollback()
+                return {'error': 'You cannot review your own request.', 'status': 403}
             if action == 'approve' and status == 'approved':
                 db.rollback()
                 return {'success': True, 'duplicate': True, 'status': 'approved'}
@@ -5114,6 +5141,31 @@ class APIClient:
             return doc
         finally:
             db.close()
+
+    def preview_saved_document(self, kind, record_id) -> dict:
+        """Receipt text for the screen. Nothing is sent to a printer."""
+        from printing.direct import render_text
+        db = _db()
+        try:
+            return render_text(db, kind, record_id, self._print_actor())
+        finally:
+            db.close()
+
+    def print_saved_document(self, kind, record_id, reprint: bool = False) -> dict:
+        """Direct print of a saved document. No Windows dialog and no new sale."""
+        from printing.direct import submit
+        db = _db()
+        try:
+            return submit(db, kind, record_id, self._print_actor(), reprint=bool(reprint))
+        finally:
+            db.close()
+
+    def _print_actor(self) -> dict:
+        from desktop.utils.security import client_actor
+        actor = client_actor(self)
+        if not actor.get('role'):
+            actor['role'] = (self._role or '').lower()
+        return actor
 
     def print_sale_document(self, sale_id: int, automatic: bool = False, reprint: bool = False) -> dict:
         """Reprint or print the saved document. Does not create a sale."""

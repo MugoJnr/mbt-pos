@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QTextDocument
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QTableWidget, QTextEdit, QVBoxLayout, QWidget,
+    QApplication, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from desktop.utils.date_controls import pick_date_range
@@ -120,6 +121,7 @@ class ReceiptsTab(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
         root.addWidget(note)
+        self._add_request_links(root)
 
         bar = QHBoxLayout()
         today = shop_today()
@@ -172,6 +174,55 @@ class ReceiptsTab(QWidget):
         self._table.setMinimumHeight(360)
         root.addWidget(self._table, 1)
         self.reload()
+
+    def _add_request_links(self, root):
+        """Void, backdating, and the request list live with saved receipts, not on Point of Sale."""
+        from desktop.utils.security import has_permission
+        if not (
+            has_permission(self.user, 'sales.request_backdate')
+            or has_permission(self.user, 'sales.business_day')
+        ):
+            return
+        links = QHBoxLayout()
+        backdate_btn = SecondaryBtn('Backdating Requests')
+        backdate_btn.setToolTip(
+            'Past-day sales. An admin or manager records the day directly. A cashier sends a request.'
+        )
+        backdate_btn.clicked.connect(self._open_backdate_requests)
+        void_btn = SecondaryBtn('Void Requests')
+        void_btn.setToolTip(
+            'Sale void requests. A new void is sent from Dashboard, Recent Sales, Request Void.'
+        )
+        void_btn.clicked.connect(lambda: self._open_requests_centre('void'))
+        centre_btn = SecondaryBtn('Requests Centre')
+        centre_btn.setToolTip(
+            'Backdated sales, voids, refunds, expenses, price changes, credit, discounts, and stock requests.'
+        )
+        centre_btn.clicked.connect(lambda: self._open_requests_centre(''))
+        debt_btn = SecondaryBtn('Debt')
+        debt_btn.setToolTip('Open debts and repayments. A debt is not an approval request.')
+        debt_btn.clicked.connect(self._open_debt)
+        for button in (backdate_btn, void_btn, centre_btn, debt_btn):
+            links.addWidget(button)
+        links.addStretch(1)
+        root.addLayout(links)
+
+    def _open_backdate_requests(self):
+        from desktop.tabs.backdate_dialog import BackdateDialog
+        BackdateDialog(self.api, self.user, self).exec_()
+
+    def _open_requests_centre(self, kind=''):
+        from desktop.tabs.requests_centre_dialog import RequestsCentreDialog
+        RequestsCentreDialog(self.api, self.user, self, initial_type=kind or '').exec_()
+
+    def _open_debt(self):
+        widget = self
+        while widget is not None:
+            goto = getattr(widget, '_goto', None)
+            if callable(goto):
+                goto('debt')
+                return
+            widget = widget.parent()
 
     def refresh(self, force: bool = False):
         self.reload()
@@ -276,7 +327,10 @@ class ReceiptDetailDialog(QDialog):
         copy = PrimaryBtn("Copy reference")
         copy.clicked.connect(lambda: self._copy(reference))
         actions.addWidget(copy)
-        print_btn = SecondaryBtn("Print")
+        preview_btn = SecondaryBtn("Preview")
+        preview_btn.clicked.connect(self._preview)
+        actions.addWidget(preview_btn)
+        print_btn = PrimaryBtn("Print")
         print_btn.clicked.connect(lambda: self._print(reference))
         actions.addWidget(print_btn)
         actions.addStretch(1)
@@ -289,75 +343,72 @@ class ReceiptDetailDialog(QDialog):
         lay.addWidget(self._copy_state)
         kind = str(row.get("kind") or "")
         status = str(header.get("status") or row.get("status") or "")
+        if kind == "consumption":
+            status = "Voided" if int(header.get("voided") or 0) == 1 else (
+                "Void requested" if header.get("void_requested") else "Posted"
+            )
         who = header.get("cashier_name") or header.get("username") or header.get("created_by_name") or row.get("user") or "—"
-        from desktop.utils.payment_tenders import payment_slip_text
-        lines = [
-            f"Type: {kind.replace('_', ' ')}",
-            f"Sale status: {status}",
-            f"When: {header.get('created_at') or row.get('at') or '—'}",
-            f"Business date: {header.get('sale_date') or header.get('date') or '—'}",
-            f"Who: {who}",
-        ]
+        title_kind = "INTERNAL CONSUMPTION" if kind == "consumption" else kind.replace("_", " ").upper() or "RECEIPT"
+        banner = QLabel(f"{title_kind}   ·   {status or 'Saved'}")
+        banner.setWordWrap(True)
+        banner.setStyleSheet(f"color:{C['text']};font-size:13px;font-weight:700;background:transparent;")
+        lay.addWidget(banner)
+        meta = QLabel(
+            f"When {header.get('created_at') or row.get('at') or '—'}\n"
+            f"Business date {header.get('sale_date') or header.get('date') or '—'}\n"
+            f"Who {who}"
+        )
+        meta.setWordWrap(True)
+        meta.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
+        lay.addWidget(meta)
+        if kind == "consumption":
+            note = QLabel("This is stock used by the business. It is not a customer sale and has no payment.")
+            note.setWordWrap(True)
+            lay.addWidget(note)
         customer = detail.get("customer") or {}
         if customer.get("name"):
             phone = f" · {customer['phone']}" if customer.get("phone") else ""
-            lines.append(f"Customer: {customer['name']}{phone}")
-        body = QTextEdit()
-        body.setReadOnly(True)
-        chunks = ["\n".join(lines), "", payment_slip_text(detail.get("payments") or {})]
-        if kind == "consumption":
-            chunks = [
-                "INTERNAL CONSUMPTION",
-                "This is not a customer sale and has no payment.",
-                f"Reference: {detail.get('reference') or row.get('reference') or ''}",
-                f"Status: {'voided' if int((header.get('voided') or 0)) == 1 else 'recorded'}",
-                f"When: {header.get('created_at') or row.get('at') or '—'}",
-                f"Business date: {header.get('date') or '—'}",
-                f"Recorded by: {header.get('created_by_name') or who}",
-                f"Reason: {header.get('reason') or '—'}",
-                f"Taken by: {header.get('taken_by') or '—'}",
-                f"Notes: {header.get('notes') or '—'}",
+            lay.addWidget(QLabel(f"Customer {customer['name']}{phone}"))
+        item_rows = list(detail.get("lines") or [])
+        show_cost = kind != "consumption" or any(item.get("unit_cost") is not None or item.get("total_cost") is not None for item in item_rows)
+        headers = ["Product", "Qty", "Unit", "Price", "Total"] if show_cost else ["Product", "Qty", "Unit"]
+        table = QTableWidget(len(item_rows), len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.NoSelection)
+        table.setWordWrap(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, len(headers)):
+            table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        for index, item in enumerate(item_rows):
+            name = item.get("product_name") or item.get("name") or "Item"
+            values = [
+                str(name),
+                str(item.get("quantity") if item.get("quantity") is not None else ""),
+                str(item.get("unit") or ""),
             ]
+            if show_cost:
+                price = item.get("unit_price")
+                total = item.get("total")
+                if kind == "consumption":
+                    price = item.get("unit_cost")
+                    total = item.get("total_cost")
+                values.extend([_money(price) if price is not None else "—", _money(total) if total is not None else "—"])
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(value)
+                if column:
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(index, column, cell)
+            table.setRowHeight(index, 36)
+        table.setMinimumHeight(min(280, 42 + 36 * max(len(item_rows), 1)))
+        lay.addWidget(table, 1)
         debt = detail.get("debt") or {}
         if debt:
-            chunks.append(
+            lay.addWidget(QLabel(
                 f"Debt {debt.get('invoice_number') or ''} · balance {_money(debt.get('balance'))} · {debt.get('status') or ''}"
-            )
-        item_rows = detail.get("lines") or []
-        if item_rows:
-            chunks.append("Lines")
-            for item in item_rows:
-                name = item.get("product_name") or item.get("name") or "Item"
-                if kind == "consumption":
-                    chunks.append(
-                        f"  {name}  × {item.get('quantity')} {item.get('unit') or ''}"
-                        f"  cost {_money(item.get('unit_cost'))}  = {_money(item.get('total_cost'))}"
-                    )
-                else:
-                    chunks.append(
-                        f"  {name}  × {item.get('quantity')}  @ {_money(item.get('unit_price'))}  = {_money(item.get('total'))}"
-                    )
-        history = detail.get("history") or []
-        if history:
-            chunks.append("History")
-            for item in history:
-                chunks.append(
-                    f"  {item.get('edit_type') or item.get('action') or 'event'}"
-                    f" · {item.get('edited_by_name') or item.get('username') or '—'}"
-                    f" · {item.get('reason') or item.get('details') or ''}"
-                )
-        approvals = detail.get("approvals") or []
-        if approvals:
-            chunks.append("Requests")
-            for item in approvals:
-                chunks.append(
-                    f"  {item.get('type') or 'request'} #{item.get('id')}"
-                    f" · {item.get('status') or ''}"
-                    f" · {item.get('current_reason') or item.get('details') or ''}"
-                )
-        self._slip_text = "\n".join(chunks)
-        body.setPlainText(self._slip_text)
-        lay.addWidget(body, 1)
+            ))
+        self._slip_text = ""
         role = str(((user.get("user") or user) if isinstance(user, dict) else {}).get("role") or "").lower()
         stored = str(header.get("status") or "").lower()
         if kind == "sale" and stored == "completed" and role == "superadmin":
@@ -383,23 +434,28 @@ class ReceiptDetailDialog(QDialog):
         else:
             self._copy_state.setText("Could not copy")
 
+    def _preview(self):
+        """Show the thermal layout in this till. The Windows printer pane is not used."""
+        result = self.api.preview_saved_document(self.row.get("kind"), self.row.get("id"))
+        text = (result or {}).get("text") or (result or {}).get("error") or "That receipt could not be opened."
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Preview {self._reference}".strip())
+        dialog.resize(520, 640)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit(text)
+        view.setReadOnly(True)
+        view.setFont(QFont("Consolas", 10))
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(view, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec_()
+
     def _print(self, reference: str):
-        try:
-            from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
-        except Exception:
-            self._copy_state.setText("Printing is not available on this till.")
-            return
-        printer = QPrinter(QPrinter.HighResolution)
-        dialog = QPrintDialog(printer, self)
-        if dialog.exec_() != QDialog.Accepted:
-            return
-        doc = QTextDocument()
-        doc.setPlainText(
-            f"{getattr(self, '_slip_text', reference)}\n\n"
-            "Reprint of the saved receipt. This does not create a new sale.\n"
-        )
-        doc.print_(printer)
-        self._copy_state.setText("Reprint sent. No new sale was created.")
+        """Send the saved receipt to the configured printer. No Windows dialog."""
+        result = self.api.print_saved_document(self.row.get("kind"), self.row.get("id"), reprint=True) or {}
+        self._copy_state.setText(result.get("message") or result.get("error") or "Print did not start.")
 
     def _sale_id(self):
         header = self.detail.get("header") or {}

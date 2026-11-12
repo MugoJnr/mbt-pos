@@ -38,6 +38,21 @@ def _role(actor: dict) -> str:
     return str((actor or {}).get("role") or "").strip().lower()
 
 
+def _hide_cost(actor: dict, record: dict) -> None:
+    """Cashiers see the request, not the buying cost or profit."""
+    from desktop.utils.security import sees_product_cost
+    if sees_product_cost(actor):
+        return
+    header = record.get("consumption")
+    if isinstance(header, dict):
+        header.pop("total_cost", None)
+    for line in record.get("lines") or []:
+        if isinstance(line, dict):
+            line.pop("unit_cost", None)
+            line.pop("total_cost", None)
+    record["amount"] = None
+
+
 def _tables(db) -> set[str]:
     return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
@@ -345,6 +360,7 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
                     record["consumption"] = dict(header)
                     record["lines"] = [dict(line) for line in lines]
                     record["receipt_note"] = "INTERNAL CONSUMPTION. This is not a customer sale."
+                    _hide_cost(actor, record)
         record["source"] = "approval"
         record["type_label"] = _TYPE_LABELS.get(record.get("type"), "Request")
         record["status_label"] = _label(record.get("status"))
@@ -387,15 +403,20 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
             "FROM stock_receipt_lines WHERE receipt_id=? ORDER BY id",
             (record.get("receipt_id"),),
         ).fetchall()
+        from desktop.utils.security import sees_product_cost
+        show_cost = sees_product_cost(actor)
         record["lines"] = [
             {
                 "product_name": line["product_name"],
                 "quantity": line["quantity"],
-                "unit_price": line["unit_cost"],
-                "total": line["line_total"],
+                "unit_price": line["unit_cost"] if show_cost else None,
+                "total": line["line_total"] if show_cost else None,
             }
             for line in lines
         ]
+        if not show_cost:
+            record["grand_total"] = None
+            record["amount"] = None
         record["receipt"] = {
             "receipt_number": record.get("receipt_number") or record.get("reference"),
             "total": record.get("grand_total"),

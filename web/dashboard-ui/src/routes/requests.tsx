@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader, Select } from "@/components/ui-kit";
 import { RequestReceiptDialog } from "@/components/request-receipt-dialog";
 import { GET, POST, getUser } from "@/lib/api";
+import { loadQueue, queueStatusLine, requestQueueQuery, useQueueNotice } from "@/lib/queue-sync";
 import { KES } from "@/lib/format";
 
 export const Route = createFileRoute("/requests")({
@@ -158,11 +159,13 @@ function RequestsCentrePage() {
 
   const listQ = useQuery({
     queryKey: ["requests-centre", queue, type, q],
-    queryFn: () => GET<{ requests: CentreRow[]; counts?: Record<string, number>; error?: string }>(
+    queryFn: () => loadQueue<{ requests: CentreRow[]; counts?: Record<string, number>; error?: string }>(
       "/requests-centre",
       { queue, type, q },
     ),
+    ...requestQueueQuery,
   });
+  const queueNotice = useQueueNotice(listQ);
   const detailQ = useQuery({
     queryKey: ["requests-centre-item", selected?.source, selected?.source_id],
     queryFn: () => GET<any>(`/requests-centre/${selected!.source}/${selected!.source_id}`),
@@ -257,22 +260,28 @@ function RequestsCentrePage() {
       <PageHeader
         eyebrow="Overview"
         title="Requests Centre"
-        description="Backdated sales, sale voids, supplier delivery voids and backdates, refunds, expenses, price changes, credit, discounts, and stock requests. Debt is not a request — it is Debt Management. Opening a row does not create a sale, a void, or a stock change."
+        description={queueNotice
+          ? (/current/i.test(queueNotice)
+            ? queueNotice
+            : `${queueNotice} Do not treat this list as current.`)
+          : `${queueStatusLine(listQ)} Backdated sales, sale voids, supplier delivery voids and backdates, refunds, expenses, price changes, credit, discounts, and stock requests. Debt is not a request — it is Debt Management. Opening a row does not create a sale, a void, or a stock change.`}
         actions={
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => navigate({ to: "/backdating" })}>Backdating</Button>
             <Button variant="secondary" onClick={() => navigate({ to: "/void-requests" })}>Void Requests</Button>
             <Button variant="secondary" onClick={() => navigate({ to: "/approvals" })}>Approvals</Button>
             <Button variant="secondary" onClick={() => navigate({ to: "/debt" })}>Debt</Button>
-            <Button onClick={() => navigate({ to: "/pos" })}>New Backdated Sale</Button>
+            {role === "cashier" || role === "manager" || role === "admin" || role === "superadmin" ? (
+              <Button onClick={() => navigate({ to: "/pos" })}>New Backdated Sale</Button>
+            ) : null}
           </div>
         }
       />
       <div className="mb-4 grid gap-3 sm:grid-cols-4">
-        <Card><div className="p-3 text-sm">All <span className="font-semibold">{counts.all ?? 0}</span></div></Card>
-        <Card><div className="p-3 text-sm">Awaiting action <span className="font-semibold">{counts.action ?? 0}</span></div></Card>
-        <Card><div className="p-3 text-sm">Pending <span className="font-semibold">{counts.pending ?? 0}</span></div></Card>
-        <Card><div className="p-3 text-sm">Approved <span className="font-semibold">{counts.approved ?? 0}</span></div></Card>
+        <Card><div className="p-3 text-sm">All <span className="font-semibold">{listQ.isSuccess ? counts.all ?? 0 : "—"}</span></div></Card>
+        <Card><div className="p-3 text-sm">Awaiting action <span className="font-semibold">{listQ.isSuccess ? counts.action ?? 0 : "—"}</span></div></Card>
+        <Card><div className="p-3 text-sm">Pending <span className="font-semibold">{listQ.isSuccess ? counts.pending ?? 0 : "—"}</span></div></Card>
+        <Card><div className="p-3 text-sm">Approved <span className="font-semibold">{listQ.isSuccess ? counts.approved ?? 0 : "—"}</span></div></Card>
       </div>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
         <Card>
@@ -286,7 +295,7 @@ function RequestsCentrePage() {
             </Select>
           </div>
           <div className="divide-y divide-border">
-            {rows.map((row) => (
+            {listQ.isError ? null : listQ.isSuccess ? rows.map((row) => (
               <button
                 key={`${row.source}-${row.source_id}`}
                 type="button"
@@ -304,8 +313,8 @@ function RequestsCentrePage() {
                 </div>
                 <div className="text-xs font-semibold text-gold">View receipt</div>
               </button>
-            ))}
-            {!rows.length ? <div className="p-4 text-sm text-text2">No requests in this list.</div> : null}
+            )) : null}
+            {listQ.isError ? <div className="p-4 text-sm text-text2">Could not refresh. This list is not current.</div> : !listQ.isSuccess ? <div className="p-4 text-sm text-text2">Loading requests…</div> : !rows.length ? <div className="p-4 text-sm text-text2">No requests in this list.</div> : null}
           </div>
         </Card>
         <Card>

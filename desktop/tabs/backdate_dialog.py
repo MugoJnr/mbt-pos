@@ -1,5 +1,5 @@
 """Request list for backdated sales. New sales use the normal till cart."""
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
@@ -91,6 +91,33 @@ def receipt_text(detail: dict) -> str:
     return '\n'.join(lines)
 
 
+def open_backdated_sale(start) -> bool:
+    """Start a past-day cart on Point of Sale.
+
+    The request list now opens from Receipts. The cart still lives on the sales
+    tab, so the walk has to leave the dialog's immediate parent.
+    """
+    widget = start
+    host = None
+    sales = None
+    while widget is not None:
+        if callable(getattr(widget, 'begin_backdated_sale', None)):
+            sales = widget
+        if callable(getattr(widget, '_goto', None)):
+            host = widget
+        parent = getattr(widget, 'parent', None)
+        widget = parent() if callable(parent) else None
+    if host is not None:
+        host._goto('sales')
+        tab = (getattr(host, '_tabs', {}) or {}).get('sales')
+        if tab is not None and callable(getattr(tab, 'begin_backdated_sale', None)):
+            sales = tab
+    if sales is None:
+        return False
+    sales.begin_backdated_sale()
+    return True
+
+
 class BackdateDialog(QDialog):
     def __init__(self, api, user, parent=None):
         super().__init__(parent)
@@ -104,9 +131,16 @@ class BackdateDialog(QDialog):
         self._rows = []
         self._current = None
         self._build()
+        self._timer = QTimer(self)
+        self._timer.setInterval(20000)
+        self._timer.timeout.connect(self._refresh_quiet)
+        self._timer.start()
         self._reload()
 
     def closeEvent(self, event):
+        timer = getattr(self, '_timer', None)
+        if timer is not None:
+            timer.stop()
         from desktop.utils.date_controls import release_window_topmost
         release_window_topmost(self)
         release_window_topmost(self.parent())
@@ -132,6 +166,9 @@ class BackdateDialog(QDialog):
         )
         explain.setWordWrap(True)
         root.addWidget(explain)
+        self.freshness = QLabel('Loading requests…')
+        self.freshness.setWordWrap(True)
+        root.addWidget(self.freshness)
         tools = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText('Search reference, cashier, or reason')
@@ -147,7 +184,7 @@ class BackdateDialog(QDialog):
             ('withdrawn', 'Withdrawn'),
         ):
             self.status_filter.addItem(label, value)
-        self.status_filter.currentIndexChanged.connect(self._reload)
+        self.status_filter.currentIndexChanged.connect(lambda *_: self._reload())
         new_btn = QPushButton('New Backdated Sale')
         new_btn.clicked.connect(self._new_sale)
         refresh = QPushButton('Refresh')
@@ -208,18 +245,44 @@ class BackdateDialog(QDialog):
         root.addLayout(body, 1)
         self._set_actions(None)
 
-    def _reload(self):
+    def _refresh_quiet(self):
+        """While this list is open, pick up a decision made on the web. A closed dialog does not poll."""
+        self._reload(quiet=True)
+
+    def _reload(self, quiet=False):
         result = self.api.list_backdate_requests({
             'status': self.status_filter.currentData() or '',
         }) or {}
         if result.get('error'):
-            QMessageBox.warning(self, 'Backdating', result['error'])
+            self.freshness.setText('Could not refresh. This list may be out of date.')
+            if not quiet:
+                QMessageBox.warning(self, 'Backdating', result['error'])
             return
+        open_id = (self._current or {}).get('id')
+        open_status = (self._current or {}).get('status')
         self._rows = result.get('requests') or []
-        self._current = None
-        self.receipt.setPlainText('Select a request to see the proposed receipt.')
-        self._set_actions(None)
-        self._apply_filter()
+        self.freshness.setText('Updated just now.')
+        self.table.blockSignals(True)
+        try:
+            self._apply_filter()
+        finally:
+            self.table.blockSignals(False)
+        if not quiet:
+            self._current = None
+            self.receipt.setPlainText('Select a request to see the proposed receipt.')
+            self._set_actions(None)
+            return
+        if not open_id:
+            return
+        match = next((row for row in self._rows if row.get('id') == open_id), None)
+        if match is None or match.get('status') != open_status:
+            detail = self.api.get_backdate_request(open_id) or {}
+            if detail.get('error'):
+                self.freshness.setText('Could not refresh the open request. Do not treat it as current.')
+                return
+            self._current = detail
+            self.receipt.setPlainText(receipt_text(detail))
+            self._set_actions(detail)
 
     def _visible_rows(self):
         needle = self.search.text().strip().lower()
@@ -284,9 +347,12 @@ class BackdateDialog(QDialog):
     def _new_sale(self):
         parent = self.parent()
         self.accept()
-        begin = getattr(parent, 'begin_backdated_sale', None)
-        if begin:
-            begin()
+        if not open_backdated_sale(parent):
+            QMessageBox.warning(
+                parent,
+                'Backdating',
+                'Point of Sale is not open, so the past-day cart could not start.',
+            )
 
     def _approve(self):
         detail = self._current

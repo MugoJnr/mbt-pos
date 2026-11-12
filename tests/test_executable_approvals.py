@@ -254,18 +254,35 @@ class ExecutableApprovalTests(unittest.TestCase):
         self.assertEqual(self._stock(), 19)
 
     def test_status_only_approval_does_not_change_stock(self):
-        approval_id = self._request('refund', {'sale_id': 1})
-        decided = self.api.execute_approval(approval_id, 'approve', pin='')
+        discount_id = self._request('large_discount', {'sale_id': 1})
+        decided = self.api.execute_approval(discount_id, 'approve', pin='')
         self.assertTrue(decided.get('success'), decided)
-        self.assertFalse(decided.get('executed'))
+        self.assertFalse((decided.get('result') or {}).get('executed'))
         self.assertEqual(self._stock(), 20)
+        empty = self._request('refund', {'sale_id': 1})
+        refused = self.api.execute_approval(empty, 'approve', pin='')
+        self.assertEqual(refused.get('status'), 400)
+        db = self.ac._db()
+        db.execute("UPDATE cc_approvals SET amount=25, title='QA refund' WHERE id=?", (empty,))
+        db.commit()
+        db.close()
+        posted = self.api.execute_approval(empty, 'approve', pin='')
+        self.assertTrue(posted.get('success'), posted)
+        self.assertTrue((posted.get('result') or {}).get('executed') or posted.get('executed'))
+        self.assertEqual(self._stock(), 20)
+        again = self.api.execute_approval(empty, 'approve', pin='')
+        self.assertTrue(again.get('duplicate') or again.get('success'), again)
         db = self.ac._db()
         try:
+            returns = db.execute(
+                "SELECT COUNT(*) FROM sales WHERE status='return'"
+            ).fetchone()[0]
             status = db.execute(
-                "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
+                "SELECT status FROM cc_approvals WHERE id=?", (empty,)
             ).fetchone()['status']
         finally:
             db.close()
+        self.assertEqual(int(returns), 1)
         self.assertEqual(status, 'approved')
 
     def test_stale_executing_claim_recovers_once(self):
@@ -356,6 +373,26 @@ class ExecutableApprovalTests(unittest.TestCase):
         applied = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertTrue(applied.get('success'), applied)
         self.assertEqual(self._stock(), 19)
+
+    def test_requester_cannot_approve_their_own_request(self):
+        approval_id = self._request('expense', {})
+        db = self.ac._db()
+        db.execute(
+            "UPDATE cc_approvals SET requested_by_id=1, amount=15, title='Own expense' WHERE id=?",
+            (approval_id,),
+        )
+        db.commit()
+        db.close()
+        denied = self.api.execute_approval(approval_id, 'approve', pin='')
+        self.assertEqual(denied.get('status'), 403)
+        db = self.ac._db()
+        try:
+            status = db.execute(
+                "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(status, 'pending')
 
 
 if __name__ == '__main__':

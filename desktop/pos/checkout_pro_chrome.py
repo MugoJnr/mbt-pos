@@ -5,7 +5,7 @@ this module only rearranges visibility, density, and Pro-only accessory chrome.
 """
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QPushButton, QRadioButton, QSizePolicy,
@@ -469,6 +469,101 @@ def pin_checkout_totals(tab) -> None:
                 pass
 
 
+def _secondary_buttons(tab) -> list:
+    buttons = []
+    for name in (
+        '_clr_btn', '_hold_btn', '_resume_btn', '_prv_btn',
+        '_reprint_btn', '_void_btn', '_returns_help_btn',
+    ):
+        b = getattr(tab, name, None)
+        if _alive(b):
+            buttons.append(b)
+    return buttons
+
+
+def secondary_action_columns(buttons, width: int) -> int:
+    """Columns that keep every action label fully inside ``width``."""
+    if not buttons:
+        return 1
+    width = int(width or 0)
+    widest = 64
+    for b in buttons:
+        widest = max(
+            widest,
+            int(b.fontMetrics().horizontalAdvance(b.text() or '') + 22),
+        )
+    gap = 6
+    cols = min(4, len(buttons))
+    if width <= 0:
+        return cols
+    while cols > 1 and (cols * widest + (cols - 1) * gap) > width:
+        cols -= 1
+    return cols
+
+
+def reflow_secondary_actions(tab, width: int) -> None:
+    """Wrap Clear / Hold / Resume / Preview so they stay inside the rail."""
+    grid = getattr(tab, '_checkout_sec_row', None)
+    if grid is None or not hasattr(grid, 'addWidget'):
+        return
+    buttons = _secondary_buttons(tab)
+    if len(buttons) < 4:
+        return
+    cols = secondary_action_columns(buttons, width)
+    if cols == getattr(tab, '_sec_action_cols', None) and grid.count() == len(buttons):
+        return
+    tab._sec_action_cols = cols
+    while grid.count():
+        grid.takeAt(0)
+    for b in buttons:
+        try:
+            b.setMinimumWidth(0)
+            b.setMaximumWidth(16777215)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        except Exception:
+            pass
+        b.show()
+    for i, b in enumerate(buttons):
+        grid.addWidget(b, i // cols, i % cols)
+    for c in range(4):
+        try:
+            grid.setColumnStretch(c, 1 if c < cols else 0)
+        except Exception:
+            pass
+
+
+class _SecondaryActionFit(QObject):
+    """Reflow the action grid when the checkout body or foot changes width."""
+
+    def __init__(self, tab):
+        super().__init__(tab)
+        self._tab = tab
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Resize:
+            grid = getattr(self._tab, '_checkout_sec_row', None)
+            parent = grid.parentWidget() if grid is not None and hasattr(grid, 'parentWidget') else None
+            if parent is obj:
+                lay = obj.layout()
+                inset = 0
+                if lay is not None:
+                    m = lay.contentsMargins()
+                    inset = int(m.left() + m.right())
+                reflow_secondary_actions(self._tab, max(0, int(event.size().width()) - inset))
+        return False
+
+
+def _watch_secondary_actions(tab) -> None:
+    filt = getattr(tab, '_sec_action_filter', None)
+    if filt is None:
+        filt = _SecondaryActionFit(tab)
+        tab._sec_action_filter = filt
+    for name in ('_actions_body', '_checkout_foot'):
+        host = getattr(tab, name, None)
+        if _alive(host):
+            host.installEventFilter(filt)
+
+
 def apply_secondary_action_grid(tab) -> None:
     """Build the two-row Classic/Explorer Clear…Returns action grid."""
     foot = getattr(tab, '_checkout_foot', None)
@@ -480,6 +575,10 @@ def apply_secondary_action_grid(tab) -> None:
     # Already converted?
     if getattr(tab, '_sec_actions_grid_ok', False):
         style_quiet_secondary_actions(tab)
+        _watch_secondary_actions(tab)
+        host = getattr(tab, '_actions_body', None) or foot
+        if _alive(host):
+            reflow_secondary_actions(tab, int(host.width() or 0))
         return
 
     buttons = []
@@ -518,25 +617,24 @@ def apply_secondary_action_grid(tab) -> None:
     grid.setContentsMargins(0, 0, 0, 0)
     grid.setHorizontalSpacing(6)
     grid.setVerticalSpacing(4)
-    cols = 4
-    for i, b in enumerate(buttons):
+    for b in buttons:
         try:
             b.setMinimumHeight(32)
             b.setMaximumHeight(36)
             b.setMinimumWidth(0)
             b.setMaximumWidth(16777215)
-            if hasattr(b, 'setFixedWidth'):
-                # Undo Classic Clear fixed-width crush
-                b.setMinimumWidth(54)
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         except Exception:
             pass
-        grid.addWidget(b, i // cols, i % cols)
         b.show()
     # Insert grid at top of foot (before breathing spacer / Complete Sale)
     fl.insertLayout(0, grid)
     tab._checkout_sec_row = grid
+    tab._sec_action_cols = None
     tab._sec_actions_grid_ok = True
     style_quiet_secondary_actions(tab)
+    _watch_secondary_actions(tab)
+    reflow_secondary_actions(tab, int(foot.width() or 0))
 
 
 def move_secondary_actions_to_scroll(tab) -> None:
@@ -556,14 +654,16 @@ def move_secondary_actions_to_scroll(tab) -> None:
     bl = body.layout()
     if fl is None or bl is None:
         return
-    if getattr(tab, '_sec_actions_in_body', False):
-        return
-    try:
-        fl.removeItem(grid)
-        bl.addLayout(grid)
-        tab._sec_actions_in_body = True
-    except Exception:
-        return
+    if not getattr(tab, '_sec_actions_in_body', False):
+        try:
+            fl.removeItem(grid)
+            bl.addLayout(grid)
+            tab._sec_actions_in_body = True
+            tab._sec_action_cols = None
+        except Exception:
+            return
+    _watch_secondary_actions(tab)
+    reflow_secondary_actions(tab, int(body.width() or 0))
 
 
 def apply_shared_checkout_chrome(tab) -> None:
@@ -656,7 +756,11 @@ def apply_shared_checkout_chrome(tab) -> None:
     bl = body.layout() if _alive(body) else None
     if _alive(st) and bl is not None:
         try:
-            if hasattr(st, 'set_horizontal'):
+            if hasattr(st, 'set_grid'):
+                # 2×2 until the rail is actually wide enough for one row.
+                # A forced single row needs ~360px and clipped Split / Preview.
+                st.set_grid(2)
+            elif hasattr(st, 'set_horizontal'):
                 st.set_horizontal(True)
             st.refresh_theme()
             # Place after payment tiles / before Amount Paid
@@ -989,6 +1093,8 @@ class SaleTypeGroup(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posSaleType')
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._horizontal = False
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(8, 6, 8, 6)
@@ -1001,6 +1107,8 @@ class SaleTypeGroup(QWidget):
         self._root.addWidget(self._hdr)
         self._radio_host = QWidget(self)
         self._radio_host.setObjectName('posSaleTypeRadios')
+        self._radio_host.setMinimumWidth(0)
+        self._radio_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._radio_lay = QVBoxLayout(self._radio_host)
         self._radio_lay.setContentsMargins(0, 0, 0, 0)
         self._radio_lay.setSpacing(3)
@@ -1010,6 +1118,8 @@ class SaleTypeGroup(QWidget):
         for key, label in self._OPTIONS:
             rb = QRadioButton(label)
             rb.setObjectName('posSaleTypeRadio')
+            rb.setMinimumWidth(0)
+            rb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             rb.setToolTip({
                 'cash': 'Collect full payment now (Cash / M-Pesa / Card / Bank / Split)',
                 'credit': 'Credit Sale — charge to customer account (pay later)',
@@ -1073,6 +1183,41 @@ class SaleTypeGroup(QWidget):
         for c in range(int(cols)):
             self._radio_lay.setColumnStretch(c, 1)
         self.refresh_theme()
+
+    def _horizontal_need(self) -> int:
+        radios = list(self._radios.values())
+        if not radios:
+            return 0
+        need = 16
+        for rb in radios:
+            need += max(int(rb.sizeHint().width() or 0), int(rb.fontMetrics().horizontalAdvance(rb.text() or '') + 22))
+        need += 8 * (len(radios) - 1)
+        return need
+
+    def fit_width(self, width: int) -> None:
+        """One row when the labels fit; 2×2 when a single row would clip."""
+        width = int(width or 0)
+        if width <= 0 or getattr(self, '_fitting', False):
+            return
+        self._fitting = True
+        try:
+            if width >= self._horizontal_need():
+                self.set_horizontal(True)
+            else:
+                self.set_grid(2)
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_width(event.size().width())
+
+    def minimumSizeHint(self):
+        radios = list(self._radios.values())
+        widest = 80
+        for rb in radios:
+            widest = max(widest, int(rb.fontMetrics().horizontalAdvance(rb.text() or '') + 28))
+        return QSize(widest, 72)
 
     def set_horizontal(self, horizontal: bool = True):
         """Compact single-row radios for Classic / Explorer rails."""

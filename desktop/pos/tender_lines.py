@@ -100,10 +100,21 @@ class TenderLines(QWidget):
         return bool(self._credit.isChecked())
 
     def reset(self):
+        """Drop every payment line, then leave one empty M-Pesa line.
+
+        Removing the last line normally adds a replacement so a cashier always
+        has a row. That replacement must not run inside this loop, or the list
+        never empties and the till freezes.
+        """
         self._credit.setChecked(False)
-        while self._rows:
-            self._remove(0)
-        self.add_line("M-Pesa", 0)
+        self._dropping = True
+        try:
+            while self._rows:
+                self._remove(0)
+        finally:
+            self._dropping = False
+        if not self._rows:
+            self.add_line("M-Pesa", 0)
 
     def add_line(self, method: str = "", amount: float = 0):
         used = {row["method"].currentText() for row in self._rows}
@@ -163,7 +174,7 @@ class TenderLines(QWidget):
         self._rows.remove(item)
         item["wrap"].setParent(None)
         item["wrap"].deleteLater()
-        if not self._rows:
+        if not self._rows and not getattr(self, '_dropping', False):
             self.add_line()
             return
         self._refresh()

@@ -1306,7 +1306,7 @@ class _HistoryPane(QWidget):
         table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         table.setShowGrid(False)
-        table.setWordWrap(False)
+        table.setWordWrap(True)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setMinimumSectionSize(72)
@@ -1454,35 +1454,33 @@ class _HistoryPane(QWidget):
         return document
 
     def _print_receipt(self, detail):
-        """Open the print dialog. Printing does not change stock."""
-        try:
-            from PyQt5.QtPrintSupport import QPrinter, QPrintDialog
-        except Exception:
-            QMessageBox.information(self, 'Print', 'Printing is not available on this till.')
-            return
-        printer = QPrinter(QPrinter.HighResolution)
-        dialog = QPrintDialog(printer, self)
-        if dialog.exec_() != QDialog.Accepted:
-            return
-        self._receipt_document(detail).print_(printer)
+        """Send the saved consumption receipt to the configured printer.
+
+        The Windows printer window is not opened. Stock is not changed.
+        """
+        result = self.p.api.print_saved_document('consumption', detail.get('id'), reprint=True) or {}
+        QMessageBox.information(
+            self, 'Print',
+            result.get('message') or result.get('error') or 'Print did not start.',
+        )
 
     def _preview_receipt(self, detail):
-        """Show the consumption document before any paper is used."""
-        try:
-            from PyQt5.QtPrintSupport import QPrinter, QPrintPreviewDialog
-        except Exception:
-            QMessageBox.information(self, 'Preview', 'Print preview is not available on this till.')
-            return
-        printer = QPrinter(QPrinter.ScreenResolution)
-        preview = QPrintPreviewDialog(printer, self)
-        preview.setWindowTitle(
-            f"INTERNAL CONSUMPTION {detail.get('reference_no') or ''}".strip()
-        )
-        preview.paintRequested.connect(
-            lambda target, payload=detail: self._receipt_document(payload).print_(target)
-        )
-        preview.resize(900, 700)
-        preview.exec_()
+        """Show the thermal layout in this till, before any paper is used."""
+        result = self.p.api.preview_saved_document('consumption', detail.get('id')) or {}
+        text = result.get('text') or result.get('error') or 'That receipt could not be opened.'
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"INTERNAL CONSUMPTION {detail.get('reference_no') or ''}".strip())
+        dlg.resize(520, 640)
+        layout = QVBoxLayout(dlg)
+        view = QPlainTextEdit(text)
+        view.setReadOnly(True)
+        view.setFont(QFont('Consolas', 10))
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(view, 1)
+        close = SecondaryBtn('Close', 40)
+        close.clicked.connect(dlg.accept)
+        layout.addWidget(close)
+        dlg.exec_()
 
     def _edit(self, cid):
         if not require_permission(self.p.user, 'consumption.edit', self):

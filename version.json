@@ -1,8 +1,8 @@
 {
-    "version": "3.1.80",
-    "build": "RC-2026-11-11-v3.1.80",
-    "released": "2026-11-11",
-    "release_notes": "Internal consumption records shop use without creating a sale. Stock, FIFO cost, and the inventory journal update together. Cashiers can record use but cannot see cost, void, or choose another day. A viewer can read the history and report. Receipts say INTERNAL CONSUMPTION and can be previewed or printed.",
-    "checksum_sha256": "5723abf765148844d9b8804d88d485e90a70f4d60026d0e61387f83622345094",
-    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.80/MBT_POS_Setup.exe"
+    "version": "3.1.81",
+    "build": "RC-2026-11-12-v3.1.81",
+    "released": "2026-11-12",
+    "release_notes": "Approval queues refresh on their own, and a failed refresh is not shown as an empty list. Backdated sales keep the business date and the real entry time. Request shortcuts sit on Receipts. The sale screen fits the window. Receipts print directly. A cashier denied internal consumption stays denied on the web.",
+    "checksum_sha256": "5271bc54bc700ba236f25d8c84a07ee938a7b00f6566df643172f8bacf3f14af",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.81/MBT_POS_Setup.exe"
 }

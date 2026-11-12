@@ -2365,7 +2365,7 @@ def _user_can(module, user=None):
         'payments': {'sales', 'reports', 'debt'},
     }
     need = aliases.get(module, {module})
-    return bool(tabs & need) or role == 'manager'
+    return bool(tabs & need)
 
 
 def _perm(action: str) -> bool:
@@ -2487,13 +2487,19 @@ def _cfg_currency(db=None):
         return 'KES'
 
 
+def _sale_business_day(alias=''):
+    """Reporting day. A backdated sale stays on its business date."""
+    prefix = f'{alias}.' if alias else ''
+    return f"COALESCE(NULLIF({prefix}sale_date,''), date({prefix}created_at))"
+
+
 def _cc_today_snapshot(user=None):
     """Authoritative today stats for Live Dashboard AI (never invent numbers)."""
     db = _get_db()
     today = str(date.today())
     user = user or getattr(g, 'current_user', None) or {}
     role = (user.get('role') or '').lower()
-    sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
+    sales_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed')='completed'"
     params = [today]
     if role == 'cashier' and user.get('id'):
         sales_clause += " AND cashier_id=?"
@@ -2538,10 +2544,10 @@ def _cc_today_snapshot(user=None):
 
     top = []
     if management_view(role) and (_user_can('reports', user) or _user_can('sales', user)):
-        top = _trs(db.execute("""
+        top = _trs(db.execute(f"""
             SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
             FROM sale_items si JOIN sales s ON si.sale_id=s.id
-            WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+            WHERE {_sale_business_day('s')}=? AND COALESCE(s.status,'completed')='completed'
             GROUP BY si.product_name ORDER BY revenue DESC LIMIT 5
         """, (today,)).fetchall())
 
@@ -4363,7 +4369,7 @@ def html_report():
         summary = _tr(db.execute(
             "SELECT COUNT(*) as cnt, COALESCE(SUM(total),0) as rev, "
             "COALESCE(SUM(discount),0) as disc, COALESCE(SUM(tax),0) as tax "
-            "FROM sales WHERE date(created_at)=? AND status='completed'",
+            f"FROM sales WHERE {_sale_business_day()}=? AND status='completed'",
             (rdate,)).fetchone()) or {}
 
         # Top products
@@ -4371,7 +4377,7 @@ def html_report():
             "SELECT si.product_name, SUM(si.quantity) as qty, "
             "SUM(si.total) as revenue "
             "FROM sale_items si JOIN sales s ON si.sale_id=s.id "
-            "WHERE date(s.created_at)=? AND s.status='completed' "
+            f"WHERE {_sale_business_day('s')}=? AND s.status='completed' "
             "GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10",
             (rdate,)).fetchall())
 
@@ -4794,9 +4800,9 @@ def _month_revenue(db):
     today = date.today()
     start = today.replace(day=1).isoformat()
     end = today.isoformat()
-    row = db.execute("""
+    row = db.execute(f"""
         SELECT COALESCE(SUM(total),0) FROM sales
-        WHERE date(created_at) BETWEEN ? AND ? AND status='completed'
+        WHERE {_sale_business_day()} BETWEEN ? AND ? AND status='completed'
     """, (start, end)).fetchone()
     return float(row[0] if row else 0)
 
@@ -5029,7 +5035,7 @@ def cc_summary():
         today = str(date.today())
         user = g.current_user or {}
         role = (user.get('role') or '').lower()
-        sales_clause = "date(created_at)=? AND COALESCE(status,'completed')='completed'"
+        sales_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed')='completed'"
         params = [today]
         if role == 'cashier' and user.get('id'):
             sales_clause += " AND cashier_id=?"
@@ -5072,21 +5078,21 @@ def cc_summary():
         top_products = []
         top_categories = []
         if sees_finance and (_user_can('reports', user) or _user_can('sales', user)):
-            top_products = _trs(db.execute("""
+            top_products = _trs(db.execute(f"""
                 SELECT si.product_name as name, SUM(si.quantity) as qty,
                        COALESCE(SUM(si.total),0) as revenue
                 FROM sale_items si JOIN sales s ON si.sale_id=s.id
-                WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+                WHERE {_sale_business_day('s')}=? AND COALESCE(s.status,'completed')='completed'
                 GROUP BY si.product_name ORDER BY revenue DESC LIMIT 8
             """, (today,)).fetchall())
             try:
-                top_categories = _trs(db.execute("""
+                top_categories = _trs(db.execute(f"""
                     SELECT COALESCE(NULLIF(TRIM(p.category),''), 'Uncategorized') as name,
                            SUM(si.quantity) as qty, COALESCE(SUM(si.total),0) as revenue
                     FROM sale_items si
                     JOIN sales s ON si.sale_id=s.id
                     LEFT JOIN products p ON p.id=si.product_id
-                    WHERE date(s.created_at)=? AND COALESCE(s.status,'completed')='completed'
+                    WHERE {_sale_business_day('s')}=? AND COALESCE(s.status,'completed')='completed'
                     GROUP BY 1 ORDER BY revenue DESC LIMIT 8
                 """, (today,)).fetchall())
             except Exception:
@@ -5168,11 +5174,38 @@ def cc_summary():
     return _inner()
 
 
+_APPROVAL_SUBMIT = {
+    'refund': 'sales.request_void',
+    'large_discount': 'sales.create',
+    'price_override': 'sales.create',
+    'expense': 'accounting.create_expenses',
+    'credit': 'debt.create',
+}
+
+
+def _approval_reader(user):
+    role = (user.get('role') or '').lower()
+    if role in ('manager', 'admin', 'superadmin'):
+        return 'all'
+    if role == 'viewer' and _perm('sales.view_all'):
+        return 'all'
+    if role == 'cashier' and (
+        _perm('sales.request_void') or _perm('sales.create')
+        or _perm('accounting.create_expenses') or _perm('debt.create')
+    ):
+        return 'own'
+    return ''
+
+
 @web.route('/api/approvals', methods=['GET'])
 def list_approvals():
     from backend.app import token_required
     @token_required
     def _inner():
+        user = g.current_user or {}
+        scope = _approval_reader(user)
+        if not scope:
+            return jsonify({'error': 'You cannot view requests.'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
         status = (request.args.get('status') or '').strip()
@@ -5180,6 +5213,9 @@ def list_approvals():
         if status:
             clauses.append('status=?')
             params.append(status)
+        if scope == 'own':
+            clauses.append('requested_by_id=?')
+            params.append(user.get('id'))
         where = ('WHERE ' + ' AND '.join(clauses)) if clauses else ''
         rows = db.execute(
             f"SELECT * FROM cc_approvals {where} ORDER BY "
@@ -5204,6 +5240,9 @@ def create_approval():
             return jsonify({
                 'error': 'Create a void from the receipt, or a stock request from inventory.',
             }), 400
+        needed = _APPROVAL_SUBMIT.get(atype)
+        if not needed or not _perm(needed):
+            return jsonify({'error': 'You cannot submit that request.'}), 403
         title = (data.get('title') or atype.replace('_', ' ').title()).strip()
         details = (data.get('details') or '').strip()
         try:
@@ -6957,5 +6996,81 @@ def finance_pnl_http():
         return _finance_json(_finance_api().accounting_pnl(
             request.args.get('start'), request.args.get('end'),
         ))
+
+    return _inner()
+
+
+def _print_api():
+    """The signed-in shop user. The browser does not choose the printer bytes."""
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username')
+    api._role = user.get('role')
+    return api
+
+
+@web.route('/api/print/direct', methods=['POST'])
+def print_direct_http():
+    """Print a saved receipt on the shop printer. No browser print dialog."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({'error': 'The printer does not accept that request.'}), 400
+        blocked = {'payload', 'escpos', 'bytes', 'commands', 'raw', 'printer_host'}
+        if blocked.intersection(data):
+            return jsonify({'error': 'The printer does not accept raw commands from the browser.'}), 400
+        kind = data.get('kind')
+        record_id = data.get('id')
+        if record_id in (None, ''):
+            return jsonify({'error': 'Choose a saved receipt first.'}), 400
+        result = _print_api().print_saved_document(kind, record_id, reprint=bool(data.get('reprint')))
+        if result.get('status') == 403:
+            return jsonify(result), 403
+        if result.get('error') and not result.get('printed'):
+            return jsonify(result), 400
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/print/status', methods=['GET'])
+def print_status_http():
+    """Printer diagnostics for an admin. Cashiers cannot change this."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        role = str((g.current_user or {}).get('role') or '').lower()
+        if role not in ('admin', 'superadmin'):
+            return jsonify({'error': 'You cannot change printer settings.'}), 403
+        from printing.printer_engine import list_installed_printers, probe_printer
+        from printing.sale_documents import load_settings
+        db = _get_db()
+        cfg = load_settings(db)
+        probe = probe_printer(cfg)
+        last = None
+        try:
+            row = db.execute(
+                "SELECT label, status, reason, created_at FROM print_jobs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            last = dict(row) if row else None
+        except Exception:
+            last = None
+        return jsonify({
+            'printer_name': cfg.get('printer_name') or '',
+            'printer_connection': cfg.get('printer_connection') or '',
+            'printer_host': cfg.get('printer_host') or '',
+            'paper_size': cfg.get('paper_size') or '80',
+            'printer_language': cfg.get('printer_language') or '',
+            'available': bool(probe.get('available')),
+            'reason': probe.get('reason') or '',
+            'installed': list_installed_printers(),
+            'last_job': last,
+        })
 
     return _inner()

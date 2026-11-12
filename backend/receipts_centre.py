@@ -135,8 +135,9 @@ def list_receipts(
         clause, params = _day("COALESCE(s.sale_date, s.created_at)", start, end)
         sale_cols = {item[1] for item in db.execute("PRAGMA table_info(sales)").fetchall()}
         tender_sql = "s.payment_tenders" if "payment_tenders" in sale_cols else "NULL AS payment_tenders"
+        sale_date_sql = "s.sale_date" if "sale_date" in sale_cols else "NULL AS sale_date"
         found = db.execute(
-            f"""SELECT s.id, s.receipt_number, s.created_at, s.cashier_name,
+            f"""SELECT s.id, s.receipt_number, s.created_at, {sale_date_sql}, s.cashier_name,
                        s.total, s.status, s.payment_method, {tender_sql},
                        GROUP_CONCAT(si.product_name, ', ') AS products
                 FROM sales s
@@ -152,7 +153,9 @@ def list_receipts(
                 "kind": "sale",
                 "id": row["id"],
                 "reference": row["receipt_number"],
-                "at": row["created_at"],
+                "at": row["sale_date"] or row["created_at"],
+                "entered_at": row["created_at"],
+                "business_date": row["sale_date"] or "",
                 "user": row["cashier_name"] or "",
                 "amount": row["total"],
                 "status": raw_status,
@@ -189,7 +192,7 @@ def list_receipts(
                 "reference": row["reference_no"],
                 "at": row["created_at"],
                 "user": row["created_by_name"] or "",
-                "amount": row["total_cost"],
+                "amount": row["total_cost"] if can_finance else None,
                 "status": "voided" if int(row["voided"] or 0) else "recorded",
                 "display_status": "voided" if int(row["voided"] or 0) else "active",
                 "payment": "",
@@ -434,7 +437,7 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
         for line in lines:
             item = dict(line)
             if not show_cost:
-                for key in ("unit_cost", "line_cost", "selling_price", "retail_opportunity", "foregone_profit"):
+                for key in ("unit_cost", "total_cost", "line_cost", "selling_price", "retail_opportunity", "foregone_profit"):
                     item.pop(key, None)
             cleaned.append(item)
         if not show_cost:

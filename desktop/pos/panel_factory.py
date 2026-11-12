@@ -48,6 +48,14 @@ class _BizDayButton(QPushButton):
         self._show_caption = True
         self.clicked.connect(self._pick_date)
         self.apply_style()
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFixedSize(240, 34)
+
+    def sizeHint(self):
+        return QSize(240, 34)
+
+    def minimumSizeHint(self):
+        return QSize(240, 34)
 
     def apply_style(self, *, date_width: int | None = None, micro: bool = False) -> None:
         """Direct QSS on the button — survives global QPushButton/QFrame resets."""
@@ -84,13 +92,16 @@ class _BizDayButton(QPushButton):
         color = C.get('err', '#DC2626') if tone != 'today' else C.get('text', '#F8FAFC')
         border = C.get('err', '#DC2626') if tone != 'today' else C.get('border', '#334155')
         self.setStyleSheet(
-            biz_day_button_qss()
+            biz_day_button_qss(date_width=0)
             + f" QPushButton {{ color:{color}; border:1px solid {border}; font-weight:800; }}"
         )
-        self.setMinimumWidth(self.fontMetrics().horizontalAdvance(self.text()) + 36)
-        sync = getattr(self.parent(), 'sync_today_action', None)
-        if sync:
-            sync()
+        # The caption stays a fixed 240px. Growing it, or a word-wrapped
+        # note beside it, makes the sale splitter resize forever.
+        parent = self.parent()
+        if parent is not None and not getattr(parent, '_applying', False):
+            sync = getattr(parent, 'sync_today_action', None)
+            if sync:
+                sync()
 
     def set_editable(self, editable: bool) -> None:
         self.setEnabled(editable)
@@ -115,21 +126,56 @@ class _BizDayButton(QPushButton):
         apply_shop_day_edit(self._date, picked, today=today, block_signals=False)
 
 
-class BusinessDayBar(QFrame):
-    """Business-day chrome that stays usable in the narrow POS product column.
+class _BarNote(QLabel):
+    """Backdate note whose size does not depend on the sentence length.
 
-    The wide form needs ~560px (global QDateEdit min-width:140px + outline
-    buttons). Checkout Pro / Classic / Explorer can shrink the catalog column to
-    ~240–420px, so the bar switches short labels, then a two-row stack, so the
-    date picker and day actions never clip off-screen.
+    A normal word-wrapped label reports the whole sentence as its width.
+    Inside the sale splitter that width can never be satisfied, so Qt
+    resizes the checkout until the till stops responding.
     """
 
-    #: Below this width: short button labels + tighter insets (hide caption).
-    COMPACT_UNDER = 620
-    #: Below this width: date + Today on row 1; View / Copy / warn on row 2.
-    STACK_UNDER = 760
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full = ''
+        self.setWordWrap(False)
+        self.setFixedHeight(22)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def hasHeightForWidth(self):
+        return False
+
+    def heightForWidth(self, width):
+        return 22
+
+    def sizeHint(self):
+        return QSize(0, 22)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text or ''
+        self.setToolTip(self._full)
+        width = 360
+        parent = self.parentWidget()
+        if parent is not None and parent.width() > 80:
+            width = parent.width() - 32
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(80, width))
+        if self.text() != shown:
+            self.setText(shown)
+
+
+class BusinessDayBar(QFrame):
+    """Business-day chrome that stays on one row whenever the labels fit.
+
+    Date, View, and Copy share a row on a medium catalog (~500px). They stack
+    only when the pane is too narrow for those labels, and the date stays the
+    width of its text instead of stretching into an empty field.
+    """
+
     #: Below this width: smallest date field + minimal button padding.
-    MICRO_UNDER = 320
+    MICRO_UNDER = 280
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -148,8 +194,18 @@ class BusinessDayBar(QFrame):
         self._row1.setSpacing(8)
         self._row2 = QHBoxLayout()
         self._row2.setSpacing(6)
+        self._row3 = QHBoxLayout()
+        self._row3.setSpacing(6)
         self._root.addLayout(self._row1)
         self._root.addLayout(self._row2)
+        self._root.addLayout(self._row3)
+        self._note = _BarNote(self)
+        self._note.hide()
+
+    def minimumSizeHint(self):
+        # The splitter must be allowed to keep this pane. Child captions
+        # clip instead of demanding a wider checkout.
+        return QSize(0, max(40, super().minimumSizeHint().height()))
 
     def setup(self, label, date_edit, buttons, warn_label):
         """Build rows and register widgets for responsive wide / compact / stacked."""
@@ -157,6 +213,8 @@ class BusinessDayBar(QFrame):
         self._date = date_edit
         self._picker.bind_date(date_edit)
         self._warn = warn_label
+        if warn_label is not None:
+            warn_label.hide()
         self._buttons = tuple(buttons)
         for lay in (self._row1, self._row2):
             while lay.count():
@@ -172,89 +230,197 @@ class BusinessDayBar(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_layout(width=event.size().width())
+        # Rebuilding the row from resizeEvent changes the buttons' minimum
+        # size, which resizes the checkout again. That loop freezes the till
+        # when a past date makes the caption and "Back to today" wider.
+        # Date changes and the first show request a layout instead.
+
+    def _request_layout(self) -> None:
+        if getattr(self, '_layout_queued', False):
+            return
+        self._layout_queued = True
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self._run_queued_layout)
+
+    def _run_queued_layout(self) -> None:
+        self._layout_queued = False
+        if getattr(self, '_applying', False) or self._date is None:
+            return
+        self._apply_layout(force=True, width=self.width())
 
     def _clear_row(self, lay: QHBoxLayout) -> None:
         while lay.count():
             lay.takeAt(0)
 
+    def _control_width(self, btn, text: str) -> int:
+        if btn is None:
+            return 0
+        return int(btn.fontMetrics().horizontalAdvance(text or '') + 28)
+
+    def _row_need(self, *, short: bool) -> int:
+        """Width of date + visible actions on one row, including insets."""
+        picker = self._control_width(self._picker, self._picker.text() or 'Today  ▼')
+        gap = 6
+        total = picker
+        count = 1
+        for i, (btn, s, wide) in enumerate(self._buttons):
+            if i == 0 and not btn.isVisible():
+                continue
+            label = 'Back to today' if i == 0 else (s if short else wide)
+            total += gap + self._control_width(btn, label)
+            count += 1
+        margins = 24 if short else 40
+        # Slack for button padding the font metric does not include.
+        return total + margins + 12
+
+    def _reset_layout_passes(self) -> None:
+        self._layout_passes = 0
+
+    def _choose_mode(self, w: int) -> tuple:
+        """Pick a row mode that stays put once the caption gets longer.
+
+        A past date shows "Back to today" and a wider caption. Choosing the
+        roomy row from a width that the tighter row itself just created made
+        the two layouts replace each other until the till stopped responding.
+        Stay tight until the wider row fits with slack. A zero width is a
+        layout in progress, not a reason to jump back to the wide row.
+        """
+        micro = 0 < w < self.MICRO_UNDER
+        prev = self._mode
+        if w <= 0:
+            if prev is not None:
+                return prev
+            return (False, False, False)
+        need_wide = self._row_need(short=False)
+        need_short = self._row_need(short=True)
+        slack = 32
+        if prev is not None:
+            was_short, was_stacked, _was_micro = prev[:3]
+            if was_stacked and w < need_short + slack:
+                return (True, True, micro)
+            if was_short and not was_stacked and w < need_wide + slack:
+                return (True, False, micro)
+            if not was_short and w >= need_wide:
+                return (False, False, micro)
+        if w >= need_wide:
+            return (False, False, micro)
+        if w >= need_short:
+            return (True, False, micro)
+        return (True, True, micro)
+
     def _apply_layout(self, force: bool = False, width: int | None = None) -> None:
-        if self._date is None:
+        if self._date is None or getattr(self, '_applying', False):
             return
+        passes = int(getattr(self, '_layout_passes', 0) or 0) + 1
+        self._layout_passes = passes
+        # Stop even if resize events keep arriving in the same turn.
+        if passes > 6:
+            return
+        if passes == 1:
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, self._reset_layout_passes)
+        self._applying = True
+        try:
+            self._apply_layout_body(force=force, width=width)
+        finally:
+            self._applying = False
+
+    def _apply_layout_body(self, force: bool = False, width: int | None = None) -> None:
         w = int(width if width is not None else self.width())
         if w <= 0 and self.parentWidget() is not None:
             w = self.parentWidget().width()
-        compact = w < self.COMPACT_UNDER
-        stacked = w < self.STACK_UNDER
-        micro = w < self.MICRO_UNDER
-        mode = (compact, stacked, micro)
+        # One tidy row whenever the labels fit. Stack only when they do not,
+        # and never stretch the date into an empty field.
+        self.sync_today_action()
+        if w <= 0 and self._mode is None:
+            return
+        short, stacked, micro = self._choose_mode(w)
+        warn_on = self._warn is not None and bool((self._warn.text() or '').strip())
+        # Warning text is part of the mode. A past date fills it in, and the
+        # row has to be rebuilt once so the note appears. Rebuilding again
+        # for the same text is what let the layout chase its own width.
+        mode = (short, stacked, micro, warn_on)
         if not force and mode == self._mode:
             return
         self._mode = mode
 
-        margins = (8, 4, 8, 4) if micro else ((10, 6, 10, 6) if compact else (16, 8, 16, 8))
+        margins = (8, 4, 8, 4) if micro else ((10, 6, 10, 6) if short else (16, 8, 16, 8))
         self._root.setContentsMargins(*margins)
-        gap = 4 if stacked else (6 if compact else 8)
+        gap = 4 if micro else (6 if short else 8)
         self._row1.setSpacing(gap)
-        self._row2.setSpacing(6 if compact else 8)
+        self._row2.setSpacing(gap)
 
         self._clear_row(self._row1)
         self._clear_row(self._row2)
+        self._clear_row(self._row3)
 
         today_btn = self._buttons[0][0] if self._buttons else None
         view_btn = self._buttons[1][0] if len(self._buttons) > 1 else None
         copy_btn = self._buttons[2][0] if len(self._buttons) > 2 else None
 
-        self._picker.set_show_caption(not compact)
-
-        if micro:
-            dw = 104
-        elif compact:
-            dw = 112 if stacked else 116
+        self._picker.set_show_caption(not short)
+        self._picker.apply_style(date_width=0, micro=micro)
+        if stacked:
+            date_w = 168
+        elif w < 640:
+            date_w = 200
         else:
-            dw = 150
-        self._picker.apply_style(date_width=dw, micro=micro)
-        self._picker.setMinimumHeight(34 if not micro else 32)
-        self._picker.setSizePolicy(
-            QSizePolicy.Expanding if stacked else QSizePolicy.Fixed,
-            QSizePolicy.Fixed,
-        )
+            date_w = 240
+        self._picker.setFixedSize(date_w, 34)
+        # Re-apply the caption after the stylesheet reset. Do this while
+        # _applying is set so the caption cannot ask for another layout.
+        if hasattr(self._picker, '_sync_label'):
+            self._picker._sync_label()
 
-        btn_ss_compact = (
-            "QPushButton#outlineBtn{padding:3px 6px;font-size:11px;font-weight:600;}"
-            if micro else
-            "QPushButton#outlineBtn{padding:4px 8px;font-size:11px;font-weight:600;}"
+        btn_ss = (
+            "QPushButton#outlineBtn{padding:3px 8px;font-size:11px;font-weight:600;}"
+            if short else ''
         )
-        for btn, short, wide in self._buttons:
+        for i, (btn, s, wide) in enumerate(self._buttons):
             if btn is today_btn:
+                btn.setMinimumWidth(0)
+                btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
                 continue
-            btn.setText(short if compact else wide)
-            btn.setStyleSheet(btn_ss_compact if compact else '')
-            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            btn.setText(s if short else wide)
+            btn.setStyleSheet(btn_ss)
+            btn.setMinimumWidth(0)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             btn.show()
         self.sync_today_action()
 
-        if stacked:
-            self._row1.addWidget(self._picker, 1)
-            if today_btn is not None:
-                self._row1.addWidget(today_btn)
-            if view_btn is not None:
-                self._row2.addWidget(view_btn)
-            if copy_btn is not None:
-                self._row2.addWidget(copy_btn)
-            if self._warn is not None:
-                self._warn.setWordWrap(True)
-                self._row2.addWidget(self._warn, 1)
-            self._row2.setContentsMargins(0, 0, 0, 0)
-        else:
-            self._row1.addWidget(self._picker)
-            for btn, _, _ in self._buttons:
-                self._row1.addWidget(btn)
-            if self._warn is not None:
-                self._warn.setWordWrap(True)
-                self._row1.addWidget(self._warn, 1)
+        actions = []
+        if today_btn is not None:
+            actions.append(today_btn)
+        if view_btn is not None:
+            actions.append(view_btn)
+        if copy_btn is not None:
+            actions.append(copy_btn)
 
-        self.setMinimumHeight(68 if stacked else 40)
+        if stacked:
+            self._row1.addWidget(self._picker, 0)
+            self._row1.addStretch(1)
+            for btn in actions:
+                self._row2.addWidget(btn, 0)
+            self._row2.addStretch(1)
+        else:
+            self._row1.addWidget(self._picker, 0)
+            for btn in actions:
+                self._row1.addWidget(btn, 0)
+            self._row1.addStretch(1)
+        # The note sits on its own row. A word-wrapped label in the button
+        # row reports the whole sentence as its width, the splitter cannot
+        # satisfy that, and the till stops responding.
+        if warn_on:
+            self._note.set_full_text(self._warn.text())
+            self._note.setStyleSheet(self._warn.styleSheet())
+            self._note.show()
+            self._row3.addWidget(self._note, 1)
+        else:
+            self._note.hide()
+
+        self.setMinimumHeight((64 if warn_on else 40) + (28 if stacked else 0))
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(16777215)
         self.updateGeometry()
 
     def sync_today_action(self) -> None:
@@ -267,8 +433,11 @@ class BusinessDayBar(QFrame):
         qdate = self._date.date()
         day = date_cls(qdate.year(), qdate.month(), qdate.day())
         other_day = day != shop_today()
-        btn.setText('Back to today')
-        btn.setVisible(other_day)
+        if btn.text() != 'Back to today':
+            btn.setText('Back to today')
+        btn.setFixedWidth(132)
+        if btn.isVisible() != other_day:
+            btn.setVisible(other_day)
         btn.setToolTip('Return this sale to today')
 
 
@@ -280,6 +449,7 @@ class SearchToolbar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('posSearchBarRow')
+        self.setMinimumWidth(0)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(
             f"QFrame#posSearchBarRow{{background:transparent;"
@@ -291,8 +461,10 @@ class SearchToolbar(QFrame):
         self._root.setSpacing(6)
         self._row1 = QHBoxLayout()
         self._row2 = QHBoxLayout()
+        self._row3 = QHBoxLayout()
         self._root.addLayout(self._row1)
         self._root.addLayout(self._row2)
+        self._root.addLayout(self._row3)
 
     def setup(self, search, category, layout, refresh, focus) -> None:
         self._widgets = (search, category, layout, refresh, focus)
@@ -304,7 +476,13 @@ class SearchToolbar(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._apply_layout(width=event.size().width())
+        if getattr(self, '_applying', False):
+            return
+        self._applying = True
+        try:
+            self._apply_layout(width=event.size().width())
+        finally:
+            self._applying = False
 
     @staticmethod
     def _clear(layout) -> None:
@@ -318,12 +496,21 @@ class SearchToolbar(QFrame):
         if w <= 0 and self.parentWidget() is not None:
             w = self.parentWidget().width()
         stacked = w < self.STACK_UNDER
-        if not force and stacked == self._mode:
-            return
-        self._mode = stacked
         search, category, layout, refresh, focus = self._widgets
+        combo_need = (
+            int(category.sizeHint().width() or 0)
+            + int(layout.sizeHint().width() or 0)
+            + 12
+        )
+        inner = max(0, w - 20)
+        split_combos = bool(stacked and combo_need > inner)
+        mode = (stacked, split_combos)
+        if not force and mode == self._mode:
+            return
+        self._mode = mode
         self._clear(self._row1)
         self._clear(self._row2)
+        self._clear(self._row3)
         if stacked:
             self._root.setContentsMargins(10, 6, 10, 6)
             self._row1.setSpacing(6)
@@ -332,14 +519,26 @@ class SearchToolbar(QFrame):
                 combo.setMinimumWidth(0)
                 combo.setMaximumWidth(16777215)
                 combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            search.setMinimumWidth(80)
-            focus.setMinimumWidth(70)
-            focus.setMaximumWidth(90)
+                try:
+                    combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                    combo.setMinimumContentsLength(8)
+                except Exception:
+                    pass
+            focus_w = max(56, focus.fontMetrics().horizontalAdvance(focus.text() or 'Focus') + 18)
+            search.setMinimumWidth(0 if w < 360 else 80)
+            focus.setMinimumWidth(focus_w)
+            focus.setMaximumWidth(max(focus_w, 96))
+            refresh.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             self._row1.addWidget(search, 1)
             self._row1.addWidget(refresh)
             self._row1.addWidget(focus)
-            self._row2.addWidget(category, 1)
-            self._row2.addWidget(layout, 1)
+            if split_combos:
+                # Each combo on its own row so the closed label is not cut off.
+                self._row2.addWidget(category, 1)
+                self._row3.addWidget(layout, 1)
+            else:
+                self._row2.addWidget(category, 1)
+                self._row2.addWidget(layout, 1)
         else:
             self._root.setContentsMargins(16, 14, 16, 14)
             self._row1.setSpacing(10)
@@ -353,7 +552,9 @@ class SearchToolbar(QFrame):
             self._row1.addWidget(refresh)
             self._row1.addWidget(focus)
         self._row2.setContentsMargins(0, 0, 0, 0)
-        self.setMinimumHeight(92 if stacked else 72)
+        self._row3.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(128 if split_combos else (92 if stacked else 72))
         self.updateGeometry()
 
 
@@ -424,7 +625,7 @@ def build_shared_panels(tab) -> None:
     tab._biz_warn.setStyleSheet(
         f"color:{C.get('warn', '#D97706')};font-size:12px;font-weight:700;"
         f"background:transparent;")
-    # Short/wide label pairs; two-row stack below STACK_UNDER keeps controls visible
+    # Short/wide label pairs. The bar keeps them on one row when they fit.
     biz.setup(None, tab._biz_date, (
         (tab._biz_today_btn, 'Today', 'Today'),
         (tab._biz_view_btn, 'View', 'View day'),
@@ -997,6 +1198,8 @@ def build_shared_panels(tab) -> None:
 
     tab._charge_btn = PrimaryBtn('$  Complete Sale', 56)
     tab._charge_btn.setMinimumHeight(56)
+    tab._charge_btn.setMinimumWidth(0)
+    tab._charge_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     tab._charge_btn.clicked.connect(tab._process)
     fl.addWidget(tab._charge_btn)
 

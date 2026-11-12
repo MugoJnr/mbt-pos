@@ -1,5 +1,5 @@
 """Shop request list. Opening a row shows the receipt and the decision buttons."""
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QComboBox, QDialog, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
@@ -76,9 +76,16 @@ class RequestsCentreDialog(QDialog):
                 self.kind.blockSignals(True)
                 self.kind.setCurrentIndex(index)
                 self.kind.blockSignals(False)
+        self._timer = QTimer(self)
+        self._timer.setInterval(20000)
+        self._timer.timeout.connect(self._refresh_quiet)
+        self._timer.start()
         self._reload()
 
     def closeEvent(self, event):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.stop()
         from desktop.utils.date_controls import release_window_topmost
         release_window_topmost(self)
         release_window_topmost(self.parent())
@@ -97,10 +104,13 @@ class RequestsCentreDialog(QDialog):
         )
         explain.setWordWrap(True)
         root.addWidget(explain)
+        self.freshness = QLabel("Loading requests…")
+        self.freshness.setWordWrap(True)
+        root.addWidget(self.freshness)
         tools = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search reference, person, or reason")
-        self.search.textChanged.connect(self._reload)
+        self.search.textChanged.connect(lambda *_: self._reload())
         self.queue = QComboBox()
         for value, label in (
             ("all", "All requests"),
@@ -112,7 +122,7 @@ class RequestsCentreDialog(QDialog):
             ("returned", "Returned for correction"),
         ):
             self.queue.addItem(label, value)
-        self.queue.currentIndexChanged.connect(self._reload)
+        self.queue.currentIndexChanged.connect(lambda *_: self._reload())
         self.kind = QComboBox()
         self.kind.addItem("All types", "")
         for value, label in (
@@ -129,7 +139,7 @@ class RequestsCentreDialog(QDialog):
             ("large_discount", "Large discount"),
         ):
             self.kind.addItem(label, value)
-        self.kind.currentIndexChanged.connect(self._reload)
+        self.kind.currentIndexChanged.connect(lambda *_: self._reload())
         new_btn = QPushButton("New Backdated Sale")
         new_btn.clicked.connect(self._new_backdated_sale)
         refresh = QPushButton("Refresh")
@@ -194,14 +204,25 @@ class RequestsCentreDialog(QDialog):
         close.clicked.connect(self.accept)
         root.addWidget(close)
 
-    def _reload(self):
+    def _refresh_quiet(self):
+        """While this list is open, pick up a decision made on the web. A closed dialog does not poll."""
+        self._reload(quiet=True)
+
+    def _reload(self, quiet=False):
         result = self.api.list_requests_centre({
             "queue": self.queue.currentData() or "all",
             "type": self.kind.currentData() or "",
             "q": self.search.text().strip(),
         }) or {}
         if result.get("error") and not result.get("requests"):
-            self.receipt.setPlainText(result["error"])
+            self.freshness.setText("Could not refresh. This list may be out of date.")
+            if not quiet:
+                self.receipt.setPlainText(result["error"])
+            return
+        self.freshness.setText("Updated just now.")
+        open_key = None
+        if self._current_item:
+            open_key = (self._current_item.get("source"), self._current_item.get("source_id"), self._current_item.get("status_label"))
         self._rows = result.get("requests") or []
         self.table.setRowCount(len(self._rows))
         for index, item in enumerate(self._rows):
@@ -216,6 +237,21 @@ class RequestsCentreDialog(QDialog):
             ]
             for column, value in enumerate(values):
                 self.table.setItem(index, column, QTableWidgetItem(str(value)))
+        if quiet and open_key:
+            source, source_id, status_label = open_key
+            match = next(
+                (row for row in self._rows if row.get("source") == source and row.get("source_id") == source_id),
+                None,
+            )
+            if match and match.get("status_label") != status_label:
+                detail = self.api.get_requests_centre_item(source, source_id) or {}
+                self._current_item = match
+                self._current_detail = detail
+                self.receipt.setPlainText(detail_text(detail))
+                self._paint_side(match, detail)
+                self._paint_decisions()
+            elif match is None:
+                self.freshness.setText("The open request left this list. Do not treat the open detail as current.")
         if not self._rows:
             self._current_item = None
             self._current_detail = None
@@ -780,6 +816,10 @@ class RequestsCentreDialog(QDialog):
     def _new_backdated_sale(self):
         parent = self.parent()
         self.accept()
-        begin = getattr(parent, "begin_backdated_sale", None)
-        if begin:
-            begin()
+        from desktop.tabs.backdate_dialog import open_backdated_sale
+        if not open_backdated_sale(parent):
+            QMessageBox.warning(
+                parent,
+                "Backdating",
+                "Point of Sale is not open, so the past-day cart could not start.",
+            )

@@ -508,6 +508,19 @@ class ConsumptionBatchTests(unittest.TestCase):
         self.assertEqual(again.get('notes'), 'offline sample')
         self.assertEqual(self._stock('SOAP-500'), 19)
 
+    def test_print_opens_our_preview_instead_of_the_blank_windows_pane(self):
+        import inspect
+        from desktop.tabs.consumption_tab import _HistoryPane
+        from desktop.tabs.receipts_tab import ReceiptDetailDialog
+        consumption = inspect.getsource(_HistoryPane._print_receipt)
+        preview = inspect.getsource(_HistoryPane._preview_receipt)
+        receipts = inspect.getsource(ReceiptDetailDialog._print)
+        self.assertIn('print_saved_document', consumption)
+        self.assertNotIn('QPrintDialog', consumption)
+        self.assertNotIn('QPrintPreviewDialog', preview)
+        self.assertIn('print_saved_document', receipts)
+        self.assertNotIn('QPrintDialog', receipts)
+
 
 if __name__ == '__main__':
     unittest.main()

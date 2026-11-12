@@ -42,30 +42,11 @@ export function SaleDocumentPanel({
   }, [saleId, paymentReceipt]);
 
   async function print(reprint: boolean) {
-    if (paymentReceipt) {
-      await browserPrint();
-      return;
-    }
-    const outcome = await POST<any>(`/sales/${saleId}/document/print`, { reprint, automatic: false });
-    setBanner(outcome?.printed ? (outcome.message || "Sent to the printer.") : (outcome?.message || UNAVAILABLE));
+    const outcome = paymentReceipt
+      ? await POST<any>("/print/direct", { kind: "debt_payment", id: paymentReceipt, reprint })
+      : await POST<any>("/print/direct", { kind: "sale", id: saleId, reprint });
+    setBanner(outcome?.printed ? (outcome.message || "Sent to the printer.") : (outcome?.message || outcome?.error || UNAVAILABLE));
     if (reprint) await load(kind);
-  }
-
-  function browserPrint() {
-    const html = doc?.html || `<pre>${doc?.text || ""}</pre>`;
-    const frame = document.createElement("iframe");
-    frame.title = "Document";
-    frame.style.position = "fixed";
-    frame.style.width = "0";
-    frame.style.height = "0";
-    frame.style.border = "0";
-    frame.srcdoc = html;
-    document.body.appendChild(frame);
-    frame.onload = () => {
-      frame.contentWindow?.focus();
-      frame.contentWindow?.print();
-      window.setTimeout(() => frame.remove(), 1500);
-    };
   }
 
   async function download() {
@@ -94,11 +75,17 @@ export function SaleDocumentPanel({
         <div className="text-lg font-extrabold">{doc?.title || "Document"} {doc?.number || ""}</div>
         <div className="mt-1 text-sm text-text2">{doc?.payment_status}{doc?.voided ? " · VOIDED" : ""}{doc?.reprint ? " · REPRINT" : ""}</div>
         {doc?.customer?.name ? <div className="mt-1 text-sm">{doc.customer.name} {doc.customer.phone || ""}</div> : null}
-        <div className="mt-3 space-y-1 text-sm">
+        <div className="mt-3 text-sm">
+          <div className="grid grid-cols-[1fr_4.5rem_5.5rem] gap-2 border-b border-border pb-1 text-xs font-semibold uppercase text-text2">
+            <span>Product</span>
+            <span className="text-right">Qty</span>
+            <span className="text-right">Total</span>
+          </div>
           {(doc?.items || []).map((line: any, index: number) => (
-            <div key={index} className="flex justify-between gap-3">
-              <span>{line.product_name} × {line.quantity}</span>
-              <span className="tabular-nums">{KES(line.total, currency)}</span>
+            <div key={index} className="grid grid-cols-[1fr_4.5rem_5.5rem] gap-2 border-b border-border py-1.5">
+              <span className="break-words">{line.product_name}</span>
+              <span className="text-right tabular-nums">{line.quantity} {line.unit || ""}</span>
+              <span className="text-right tabular-nums">{KES(line.total, currency)}</span>
             </div>
           ))}
         </div>

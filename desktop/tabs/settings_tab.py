@@ -253,6 +253,10 @@ class SettingsTab(QWidget):
         self.paper_size.setMinimumHeight(40)
         self.paper_size.addItem('80mm', '80')
         self.paper_size.addItem('58mm', '58')
+        self.printer_language = QComboBox()
+        self.printer_language.setMinimumHeight(40)
+        self.printer_language.addItem('ESC/POS thermal', 'escpos')
+        self.printer_language.addItem('Windows driver', 'driver')
         self.document_policy = QComboBox()
         self.document_policy.setMinimumHeight(40)
         from printing.sale_documents import POLICY_CHOICES
@@ -281,6 +285,7 @@ class SettingsTab(QWidget):
             ('Connection', self.printer_connection),
             ('LAN address', self.printer_host),
             ('Paper', self.paper_size),
+            ('Printer language', self.printer_language),
             ('Printer port', self.printer_port),
             ('', self.auto_print),
             ('', self.print_customer_copy),
@@ -995,6 +1000,11 @@ class SettingsTab(QWidget):
         paper = str(cfg.get('paper_size') or '80')
         paper_idx = self.paper_size.findData(paper)
         self.paper_size.setCurrentIndex(paper_idx if paper_idx >= 0 else 0)
+        language = str(cfg.get('printer_language') or '')
+        if language not in ('escpos', 'driver'):
+            language = 'driver' if str(connection).lower() == 'windows' else 'escpos'
+        language_idx = self.printer_language.findData(language)
+        self.printer_language.setCurrentIndex(language_idx if language_idx >= 0 else 0)
         policy = str(cfg.get('document_policy') or 'C').upper()[:1]
         policy_idx = self.document_policy.findData(policy)
         self.document_policy.setCurrentIndex(policy_idx if policy_idx >= 0 else 2)
@@ -1725,6 +1735,7 @@ class SettingsTab(QWidget):
             'printer_connection':  self.printer_connection.currentData() or 'USB',
             'printer_host':        self.printer_host.text().strip(),
             'paper_size':          self.paper_size.currentData() or '80',
+            'printer_language':    self.printer_language.currentData() or 'escpos',
             'document_policy':     self.document_policy.currentData() or 'C',
             'print_customer_copy': '1' if self.print_customer_copy.isChecked() else '0',
             'print_duplicate_copy': '1' if self.print_duplicate_copy.isChecked() else '0',
@@ -1967,9 +1978,11 @@ class SettingsTab(QWidget):
         if not job:
             return
         try:
-            from printing.printer_engine import PrinterManager
-            PrinterManager(lambda: self.api.get_settings() or {}).test_print()
-            finish(job.get('id'), 'queued', 'Test page was queued. The printer has not confirmed paper.')
+            from printing.printer_engine import print_document_bytes, text_to_escpos
+            cfg = self.api.get_settings() or {}
+            sample = "MBT POS\nTEST PRINT\nThis page does not create a sale."
+            outcome = print_document_bytes(cfg, text_to_escpos(sample, "TEST"), label="TEST", text=sample)
+            finish(job.get('id'), outcome.get('status') or 'failed', outcome.get('message') or '')
         except Exception:
             try:
                 finish(job.get('id'), 'failed', 'The till could not queue the test page.')
@@ -1979,9 +1992,11 @@ class SettingsTab(QWidget):
     def _test_print(self):
         try:
             sys.path.insert(0, _PR)
-            from printing.printer_engine import PrinterManager
-            PrinterManager(lambda: self.api.get_settings() or {}).test_print()
-            QMessageBox.information(self, 'Test', 'Test page queued.')
+            from printing.printer_engine import print_document_bytes, text_to_escpos
+            cfg = self.api.get_settings() or {}
+            sample = "MBT POS\nTEST PRINT\nThis page does not create a sale."
+            outcome = print_document_bytes(cfg, text_to_escpos(sample, "TEST"), label="TEST", text=sample)
+            QMessageBox.information(self, 'Test', outcome.get('message') or 'Test page was not sent.')
         except Exception as e:
             QMessageBox.critical(self, 'Error', str(e))
 

@@ -6,6 +6,7 @@ import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
 import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { loadQueue, queueStatusLine, requestQueueQuery, useQueueNotice } from "@/lib/queue-sync";
 
 export const Route = createFileRoute("/backdating")({
   component: BackdatingPage,
@@ -73,6 +74,8 @@ function BackdatingPage() {
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
   const canReview = role === "manager" || role === "admin" || role === "superadmin";
+  const permissions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canRequest = permissions ? permissions.includes("sales.request_backdate") : role === "cashier" || canReview;
   const qc = useQueryClient();
   const [status, setStatus] = useState(canReview ? "submitted" : "");
   const [query, setQuery] = useState("");
@@ -85,15 +88,17 @@ function BackdatingPage() {
 
   const listQ = useQuery({
     queryKey: ["backdate", status, query],
-    queryFn: () => GET<{ requests: RequestRow[]; pending_count: number }>("/backdate-requests", {
+    queryFn: () => loadQueue<{ requests: RequestRow[]; pending_count: number; error?: string }>("/backdate-requests", {
       status,
       q: query,
     }),
+    ...requestQueueQuery,
   });
   const detailQ = useQuery({
     queryKey: ["backdate", selected],
     queryFn: () => GET<RequestRow>(`/backdate-requests/${selected}`),
     enabled: selected != null,
+    ...requestQueueQuery,
   });
   const productsQ = useQuery({
     queryKey: ["products"],
@@ -105,6 +110,7 @@ function BackdatingPage() {
   });
 
   const rows = listQ.data?.requests || [];
+  const queueNotice = useQueueNotice(listQ);
   const detail = detailQ.data && !detailQ.data.error ? detailQ.data : null;
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
@@ -160,11 +166,15 @@ function BackdatingPage() {
         title="Backdating Requests"
         icon={<CalendarClock className="h-5 w-5" />}
         description={
-          canReview
-            ? `${pending} waiting for review. Approval is the only step that posts sales, stock, and debt.`
-            : "Prepare sales for an earlier day. Nothing is posted until an administrator approves the request."
+          queueNotice
+            ? (/current/i.test(queueNotice)
+              ? queueNotice
+              : `${queueNotice} Do not treat this list as current.`)
+            : canReview
+              ? `${queueStatusLine(listQ, `${pending} waiting for review.`)} Approval is the only step that posts sales, stock, and debt.`
+              : `${queueStatusLine(listQ)} Prepare sales for an earlier day. Nothing is posted until an administrator approves the request.`
         }
-        actions={<Button onClick={() => navigate({ to: "/pos" })}>New Backdated Sale</Button>}
+        actions={canRequest ? <Button onClick={() => navigate({ to: "/pos" })}>New Backdated Sale</Button> : undefined}
       />
       <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
         <Card>
@@ -181,20 +191,22 @@ function BackdatingPage() {
             </select>
           </div>
           <div className="divide-y divide-border">
-            {rows.map((row) => (
+            {queueNotice || listQ.isError ? null : rows.map((row) => (
               <button key={row.id} className="block w-full px-3 py-3 text-left hover:bg-hover" onClick={() => loadDetail(row)}>
                 <div className="font-semibold">{row.reference}</div>
                 <div className="text-sm text-text2">{row.business_date} · {statusLabel(row.status)} · {row.cashier_name}</div>
                 <div className="text-sm">{row.summary?.total_sales ?? 0} · {row.reason || "No reason"}</div>
               </button>
             ))}
-            {!rows.length ? <div className="p-4 text-sm text-text2">No requests in this list.</div> : null}
+            {queueNotice ? <div className="p-4 text-sm text-text2">Could not refresh. This list is not current.</div> : !listQ.isSuccess ? <div className="p-4 text-sm text-text2">Loading requests…</div> : !rows.length ? <div className="p-4 text-sm text-text2">No requests in this list.</div> : null}
           </div>
         </Card>
         <Card>
           <div className="space-y-3 p-4">
             {message ? <div className="rounded-lg bg-err/10 px-3 py-2 text-sm">{message}</div> : null}
-            {!detail ? (
+            {queueNotice ? (
+              <p className="text-sm text-text2">Could not refresh. The open request is not current.</p>
+            ) : !detail ? (
               <div className="space-y-2 text-sm text-text2">
                 <p>Select a request to review the proposed receipt.</p>
                 <p>New backdated sales are prepared in Point of Sale. A past date and a reason send the cart for approval. Nothing is posted until a reviewer approves it.</p>

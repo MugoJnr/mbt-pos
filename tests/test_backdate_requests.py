@@ -403,3 +403,78 @@ class BackdateRequestTests(unittest.TestCase):
         self.assertIn("2026-10-01", text)
         self.assertIn("Power cut", text)
         self.assertNotIn("Sale recorded", text)
+
+    def test_denied_backdate_permission_cannot_submit(self):
+        db = self.ac._db()
+        db.execute(
+            "UPDATE users SET permission_denials=? WHERE username='cashier'",
+            ('["sales.request_backdate"]',),
+        )
+        db.commit()
+        db.close()
+        cashier = self._login("cashier")
+        response = self.client.post("/api/backdate-requests", headers=cashier, json={
+            "business_date": self.yesterday,
+            "reason": "Denied cashier",
+            "sales": [self._sale(self.sugar, 1, 100)],
+        })
+        self.assertEqual(response.status_code, 403, response.get_json())
+        self.assertEqual(self._counts()[0], 0)
+
+    def test_opening_limit_and_closed_period_block_the_date(self):
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO system_settings (key, value) VALUES ('shop_opened_on', ?)",
+            (self.yesterday,),
+        )
+        db.commit()
+        db.close()
+        cashier = self._login("cashier")
+        before_open = self.client.post("/api/backdate-requests", headers=cashier, json={
+            "business_date": self.older,
+            "reason": "Before the shop opened",
+            "sales": [self._sale(self.sugar, 1, 100)],
+        })
+        self.assertEqual(before_open.status_code, 400, before_open.get_json())
+        self.assertIn("before this shop opened", before_open.get_json()["error"])
+        db = self.ac._db()
+        db.execute("DELETE FROM system_settings WHERE key='shop_opened_on'")
+        db.execute(
+            "INSERT INTO system_settings (key, value) VALUES ('backdate_max_days', '2')"
+        )
+        db.commit()
+        db.close()
+        beyond = self.client.post("/api/backdate-requests", headers=cashier, json={
+            "business_date": self.older,
+            "reason": "Beyond the configured limit",
+            "sales": [self._sale(self.sugar, 1, 100)],
+        })
+        self.assertEqual(beyond.status_code, 400, beyond.get_json())
+        self.assertIn("more than 2 days", beyond.get_json()["error"])
+        db = self.ac._db()
+        db.execute("DELETE FROM system_settings WHERE key='backdate_max_days'")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS accounting_periods (
+                id INTEGER PRIMARY KEY, name TEXT, start_date TEXT, end_date TEXT, status TEXT
+            )"""
+        )
+        db.execute(
+            "INSERT INTO accounting_periods (name, start_date, end_date, status) VALUES (?,?,?,?)",
+            ("Closed October", "2026-10-01", "2026-10-31", "closed"),
+        )
+        db.commit()
+        db.close()
+        closed = self.client.post("/api/backdate-requests", headers=cashier, json={
+            "business_date": "2026-10-15",
+            "reason": "Closed period",
+            "sales": [self._sale(self.sugar, 1, 100)],
+        })
+        self.assertEqual(closed.status_code, 400, closed.get_json())
+        self.assertIn("closed", closed.get_json()["error"].lower())
+        allowed = self.client.post("/api/backdate-requests", headers=cashier, json={
+            "business_date": self.yesterday,
+            "reason": "Inside the limit",
+            "sales": [self._sale(self.sugar, 1, 100)],
+        })
+        self.assertEqual(allowed.status_code, 200, allowed.get_json())
+        self.assertEqual(self._counts()[0], 0)

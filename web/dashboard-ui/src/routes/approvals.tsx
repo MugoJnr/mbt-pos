@@ -4,10 +4,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, X, Plus, Filter } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, EmptyState, Input, PageHeader, Select } from "@/components/ui-kit";
-import { GET, POST } from "@/lib/api";
+import { POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { RequestReceiptDialog } from "@/components/request-receipt-dialog";
 import { KES } from "@/lib/format";
+import { loadQueue, requestQueueQuery } from "@/lib/queue-sync";
 
 export const Route = createFileRoute("/approvals")({
   component: ApprovalsPage,
@@ -77,17 +78,11 @@ function ApprovalsPage() {
 
   const q = useQuery({
     queryKey: ["approvals", status],
-    queryFn: async () => {
-      const data = await GET<{ approvals: Approval[]; error?: string }>(
-        "/approvals",
-        status === "all" ? undefined : { status },
-      );
-      if (!data || data.error) {
-        throw new Error(data?.error || "Could not load approvals");
-      }
-      return data;
-    },
-    refetchInterval: 20_000,
+    queryFn: () => loadQueue<{ approvals: Approval[]; error?: string }>(
+      "/approvals",
+      status === "all" ? undefined : { status },
+    ),
+    ...requestQueueQuery,
   });
 
   const approveM = useMutation({
@@ -186,9 +181,11 @@ function ApprovalsPage() {
               <option value="all">All</option>
             </Select>
           </div>
-          <Button variant="primary" onClick={() => setShowNew((v) => !v)}>
-            <Plus className="h-4 w-4" /> New Request
-          </Button>
+          {canRequest ? (
+            <Button variant="primary" onClick={() => setShowNew((v) => !v)}>
+              <Plus className="h-4 w-4" /> New Request
+            </Button>
+          ) : null}
         </div>
         }
       />

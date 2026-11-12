@@ -1857,11 +1857,20 @@ class PaymentSegment(QWidget):
             if hasattr(lay, 'setVerticalSpacing'):
                 lay.setVerticalSpacing(gap)
 
-    def set_row_layout(self, row: bool = True):
-        """Checkout Pro: five equal tiles in one horizontal row (or 3×2 grid when narrow)."""
+    def _tile_text_width(self) -> int:
+        widest = 48
+        for b in self._btns.values():
+            widest = max(widest, int(b.sizeHint().width() or 0), int(b.fontMetrics().horizontalAdvance(b.text() or '') + 16))
+        return widest
+
+    def set_columns(self, cols: int) -> None:
+        """Lay the tender tiles out in ``cols`` columns so the row can wrap."""
+        cols = max(1, min(len(self._btns) or 1, int(cols)))
+        if getattr(self, '_col_count', None) == cols and self.layout() is not None:
+            return
+        self._col_count = cols
         old = self.layout()
-        keys = list(self._btns.keys())
-        widgets = [self._btns[k] for k in keys]
+        widgets = [self._btns[k] for k in self._btns.keys()]
         if old is not None:
             while old.count():
                 old.takeAt(0)
@@ -1871,24 +1880,71 @@ class PaymentSegment(QWidget):
             sink.hide()
             sink.setLayout(old)
             sink.deleteLater()
-        if row:
+        # Ignored lets the parent assign the rail width; the column count keeps
+        # each label fully inside its cell instead of drawing past the pane.
+        gap = 6 if cols >= 5 else 5
+        if cols >= len(widgets):
             lay = QHBoxLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(6)
+            lay.setSpacing(gap)
             for b in widgets:
-                b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
                 b.setMinimumWidth(0)
                 lay.addWidget(b, 1)
         else:
             lay = QGridLayout(self)
             lay.setContentsMargins(0, 0, 0, 0)
-            lay.setHorizontalSpacing(5)
-            lay.setVerticalSpacing(5)
+            lay.setHorizontalSpacing(gap)
+            lay.setVerticalSpacing(gap)
             for i, b in enumerate(widgets):
-                b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
                 b.setMinimumWidth(0)
-                lay.addWidget(b, i // 3, i % 3)
+                lay.addWidget(b, i // cols, i % cols)
+            for c in range(cols):
+                lay.setColumnStretch(c, 1)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.refresh_theme()
+
+    def columns_for_width(self, width: int) -> int:
+        """How many tender tiles fit on one row without clipping a label."""
+        width = int(width or 0)
+        n = len(self._btns) or 1
+        if width <= 0:
+            return n
+        tile = self._tile_text_width()
+        gap = 6
+        cols = n
+        while cols > 1 and (cols * tile + (cols - 1) * gap) > width:
+            cols -= 1
+        return cols
+
+    def fit_width(self, width: int) -> None:
+        if getattr(self, '_fitting', False):
+            return
+        self._fitting = True
+        try:
+            self.set_columns(self.columns_for_width(width))
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_width(event.size().width())
+
+    def set_row_layout(self, row: bool = True):
+        """Checkout Pro: five equal tiles in one horizontal row (or 3×2 grid when narrow)."""
+        self.set_columns(len(self._btns) if row else 3)
+
+    def minimumSizeHint(self):
+        # Floor is one tile, not the sum, so a narrow rail can wrap instead of clip.
+        tile = self._tile_text_width()
+        h = 36
+        for b in self._btns.values():
+            h = max(h, int(b.sizeHint().height() or 36))
+        cols = max(1, int(getattr(self, '_col_count', 1) or 1))
+        rows = max(1, (len(self._btns) + cols - 1) // cols)
+        return QSize(tile, h * rows + 6 * (rows - 1))
 
 
 # ── SummaryCard ───────────────────────────────────────────────────────────────
@@ -2288,6 +2344,90 @@ class CustomerCard(QFrame):
         self._new_phone.clear()
         return cid
 
+    @staticmethod
+    def _label_width(btn) -> int:
+        if btn is None:
+            return 0
+        text = btn.text() or ''
+        # Cap the floor so a styled font cannot force the rail wider than one tile.
+        return min(200, int(btn.fontMetrics().horizontalAdvance(text) + 28))
+
+    def _pro_pair_need(self) -> int:
+        btn = self._new_btn_slot
+        chip = self._label_width(self._btn)
+        if btn is None or not btn.isVisible():
+            return chip
+        return chip + self._label_width(btn) + 8
+
+    def _rebuild_pro_row(self, stacked: bool) -> None:
+        row = self._pro_row
+        if row is None:
+            return
+        old = row.layout()
+        if old is not None:
+            while old.count():
+                old.takeAt(0)
+            sink = QWidget()
+            sink.hide()
+            sink.setAttribute(Qt.WA_DontShowOnScreen, True)
+            sink.setLayout(old)
+            sink.deleteLater()
+        btn = self._new_btn_slot
+        if stacked:
+            lay = QVBoxLayout(row)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(4)
+            lay.addWidget(self._btn)
+            if btn is not None:
+                lay.addWidget(btn)
+        else:
+            lay = QHBoxLayout(row)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(8)
+            lay.addWidget(self._btn, 1)
+            if btn is not None:
+                lay.addWidget(btn, 0)
+        # Ignored chip: the row's floor is not "chip + button", so a narrow rail
+        # can wrap instead of keeping a 280px minimum that clips New Customer.
+        self._btn.setMinimumWidth(0)
+        self._btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        if btn is not None:
+            if stacked:
+                btn.setMinimumWidth(0)
+                btn.setMaximumWidth(16777215)
+                btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            else:
+                btn.setMaximumWidth(16777215)
+                btn.setMinimumWidth(max(72, self._label_width(btn)))
+                btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._pro_stacked = stacked
+
+    def fit_width(self, width: int) -> None:
+        """Keep Walk-in and New Customer inside the rail. Wrap when one row clips."""
+        if self._pro_row is None or getattr(self, '_fitting', False):
+            return
+        width = int(width or 0)
+        if width <= 0:
+            return
+        stacked = width < self._pro_pair_need()
+        if stacked == bool(getattr(self, '_pro_stacked', False)) and self._pro_row.layout() is not None:
+            return
+        self._fitting = True
+        try:
+            self._rebuild_pro_row(stacked)
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_width(event.size().width())
+
+    def minimumSizeHint(self):
+        # Font width, not the stretched sizeHint, so the rail can wrap this card.
+        btn_w = self._label_width(self._new_btn_slot)
+        chip_w = self._label_width(self._btn)
+        return QSize(max(96, chip_w, btn_w), 36)
+
     def set_pro_row(self, enabled: bool = True, new_btn=None):
         """Checkout Pro: Walk-in chip + New Customer on one compact row."""
         lay = self.layout()
@@ -2297,27 +2437,24 @@ class CustomerCard(QFrame):
             if self._pro_row is None:
                 row = QWidget()
                 row.setObjectName('posCustProRow')
-                rl = QHBoxLayout(row)
-                rl.setContentsMargins(0, 0, 0, 0)
-                rl.setSpacing(8)
-                # Move chip into row
+                row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 lay.removeWidget(self._btn)
-                rl.addWidget(self._btn, 1)
-                if new_btn is not None:
-                    rl.addWidget(new_btn, 0)
-                    new_btn.show()
-                    self._new_btn_slot = new_btn
                 lay.addWidget(row)
                 self._pro_row = row
+                self._pro_stacked = False
+                if new_btn is not None:
+                    new_btn.show()
+                    self._new_btn_slot = new_btn
+                self._rebuild_pro_row(False)
             else:
                 self._pro_row.show()
                 if new_btn is not None:
-                    if new_btn.parent() is not self._pro_row:
-                        self._pro_row.layout().addWidget(new_btn)
                     new_btn.show()
                     self._new_btn_slot = new_btn
+                self._rebuild_pro_row(bool(getattr(self, '_pro_stacked', False)))
             self._btn.setMinimumHeight(32)
             self._btn.setMaximumHeight(36)
+            self.fit_width(self.width())
         else:
             if self._pro_row is not None:
                 rl = self._pro_row.layout()
@@ -2915,7 +3052,11 @@ class ProductGrid(QWidget):
         self._grid.setSpacing(GAP)
         # Symmetric side pad so right-column cards never clip against the rail
         self._grid.setContentsMargins(PADDING - 2, PADDING - 4, PADDING - 2, PADDING - 4)
-        self._grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        # AlignTop (not AlignLeft) lets an Expanding card fill its cell. AlignLeft
+        # pinned every tile to 240px and left a gutter in a one-column catalog.
+        self._grid.setAlignment(Qt.AlignTop)
+        self._host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         # Hint above grid by default; Checkout Pro moves it below via set_pro_density
         outer.addWidget(self._hint)
         outer.addWidget(self._host, 1)
@@ -2935,11 +3076,10 @@ class ProductGrid(QWidget):
         pad = 10 if self._pro_density else max(PADDING - 4, 10)
         self._grid.setSpacing(gap)
         self._grid.setContentsMargins(pad, pad, pad, pad)
-        # AlignLeft pins the grid to its sizeHint, so Pro's Expanding cards could
-        # never take the width they were unlocked for. Let the grid fill instead.
+        # AlignLeft pins the grid to its sizeHint, so Expanding cards never take
+        # the width unlock_width asked for. Fill the cell in every layout.
         try:
-            self._grid.setAlignment(
-                Qt.AlignTop if self._pro_density else (Qt.AlignTop | Qt.AlignLeft))
+            self._grid.setAlignment(Qt.AlignTop)
         except Exception:
             pass
         # Prevent rows from stealing vertical space from each other
@@ -3048,10 +3188,10 @@ class ProductGrid(QWidget):
             # Taller cards so names wrap instead of "DAP Fertili…"
             card_size = (248, 178) if self._is_light else (240, 174)
         cols = max(1, int(columns))
-        if self._pro_density and cols == 1:
+        if cols == 1:
             # One full-width card per row reads as a product list row; keeping
             # the tile height would leave a wide band of empty card.
-            card_size = (card_size[0], 104)
+            card_size = (card_size[0], 104 if self._pro_density else 132)
         cmap = self._categories_by_name or {}
         # Clear stretch left by a wider column count, or a single column would
         # still be laid out inside its old half/third of the row.
@@ -3087,15 +3227,17 @@ class ProductGrid(QWidget):
                 category_meta=meta, compact=self._pro_density)
             card.clicked.connect(self.productClicked.emit)
             self._grid.addWidget(card, idx // cols, idx % cols)
-            if self._pro_density:
-                try:
-                    card.unlock_width(int(card_size[0] * 0.85))
-                except Exception:
-                    pass
-                try:
-                    self._grid.setRowMinimumHeight(idx // cols, int(card_size[1]) + 4)
-                except Exception:
-                    pass
+            # One column stretches to the catalog (list row). Two or more fill
+            # their cells, with a floor so a card is not a sliver.
+            try:
+                floor = 0 if cols == 1 else int(card_size[0] * 0.85)
+                card.unlock_width(floor)
+            except Exception:
+                pass
+            try:
+                self._grid.setRowMinimumHeight(idx // cols, int(card_size[1]) + 4)
+            except Exception:
+                pass
 
     def _populate_next_chunk(self, token: int):
         if token != int(getattr(self, '_populate_token', 0) or 0):

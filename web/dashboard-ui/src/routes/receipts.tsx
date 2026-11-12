@@ -47,6 +47,7 @@ function ReceiptsPage() {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState<ReceiptRow | null>(null);
+  const [printNote, setPrintNote] = useState("");
   const [restoreReason, setRestoreReason] = useState("");
   const [restoreMsg, setRestoreMsg] = useState("");
   const [voidOpen, setVoidOpen] = useState(false);
@@ -263,32 +264,18 @@ function ReceiptsPage() {
               ) : null}
               <div className="mb-3">
                 <Button
-                  variant="secondary"
-                  onClick={() => {
-                    const reference = detailQ.data?.reference || open.reference;
-                    const popup = window.open("", "mbt-receipt", "noopener,width=480,height=720");
-                    if (!popup) return;
-                    const consumptionPrint = open.kind === "consumption";
-                    const hideCost = consumptionPrint && lines.every((line: any) => line.unit_cost == null);
-                    const itemRows = lines.map((line: any) => hideCost
-                      ? `<tr><td>${line.product_name || line.name || ""}</td><td>${line.quantity} ${line.unit || ""}</td></tr>`
-                      : `<tr><td>${line.product_name || line.name || ""}</td><td>${line.quantity} ${line.unit || ""}</td><td>${consumptionPrint ? (line.unit_cost ?? "") : (line.unit_price ?? "")}</td><td>${consumptionPrint ? (line.total_cost ?? "") : (line.total ?? "")}</td></tr>`).join("");
-                    const pay = payments || {};
-                    const payLines = (pay.lines || tenders).map((tender: any) => `<tr><td>${tender.method || ""}</td><td>${tender.amount ?? ""}</td><td>${tender.status || ""}</td><td>${tender.kind || ""}</td></tr>`).join("");
-                    const tenderRows = `<table><tr><th>Method</th><th>Amount</th><th>Status</th><th>Recorded as</th></tr>${payLines}</table><p>Sale total ${pay.sale_total ?? header.total ?? ""} · Tendered ${pay.amount_tendered ?? ""} · Collected ${pay.amount_collected ?? ""} · Change ${pay.change ?? header.change_amount ?? 0} · Outstanding ${pay.outstanding ?? ""}</p>${pay.note ? `<p>${pay.note}</p>` : ""}${pay.warning ? `<p>${pay.warning}</p>` : ""}`;
-                    const heading = consumptionPrint ? "INTERNAL CONSUMPTION" : reference;
-                    const intro = consumptionPrint
-                      ? `<p>INTERNAL CONSUMPTION. This is not a customer sale and has no payment.</p><p>${header.reason || ""} · ${header.taken_by || ""}</p>`
-                      : `<p>${paidWith || header.payment_method || open.payment || ""}</p>${customer ? `<p>${customer.name}</p>` : ""}${tenderRows}`;
-                    const totalLine = hideCost ? "" : `<p><strong>${consumptionPrint ? "Stock cost" : "Total"} ${header.total ?? header.total_cost ?? open.amount ?? ""}</strong></p>`;
-                    popup.document.write(`<!doctype html><html><head><title>${reference}</title><style>body{font-family:Segoe UI,sans-serif;padding:24px;color:#111}table{width:100%;border-collapse:collapse}td{padding:4px 0;border-bottom:1px solid #ddd}</style></head><body><h1>${heading}</h1><p>${reference}</p><p>${shownStatus || ""} · ${header.cashier_name || header.username || header.created_by_name || open.user || ""}</p>${intro}<table>${itemRows}</table>${totalLine}${debt ? `<p>Debt ${debt.invoice_number} balance ${debt.balance}</p>` : ""}<p>Reprint of the saved receipt. This does not create a new sale.</p></body></html>`);
-                    popup.document.close();
-                    popup.focus();
-                    popup.print();
+                  onClick={async () => {
+                    const result = await POST<any>("/print/direct", {
+                      kind: open.kind,
+                      id: open.id,
+                      reprint: true,
+                    });
+                    setPrintNote(result?.message || result?.error || "Print did not start.");
                   }}
                 >
                   Print
                 </Button>
+                {printNote ? <p className="mt-2 text-sm text-text">{printNote}</p> : null}
               </div>
               {lines.length ? (
                 <Table head={open.kind === "consumption" && lines.every((line: any) => line.unit_cost == null) ? ["Item", "Qty"] : (open.kind === "consumption" ? ["Item", "Qty", "Unit cost", "Stock cost"] : ["Item", "Qty", "Price", "Total"])}>

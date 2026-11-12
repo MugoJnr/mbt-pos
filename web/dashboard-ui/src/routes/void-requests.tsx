@@ -8,6 +8,7 @@ import { RequestReceiptDialog } from "@/components/request-receipt-dialog";
 import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
+import { loadQueue, queueStatusLine, requestQueueQuery } from "@/lib/queue-sync";
 
 export const Route = createFileRoute("/void-requests")({
   component: VoidRequestsPage,
@@ -51,13 +52,13 @@ function VoidRequestsPage() {
 
   const listQ = useQuery({
     queryKey: ["void-requests", status, q, page],
-    queryFn: () =>
-      GET<{ requests: VoidRequest[]; total: number; error?: string }>("/void-requests", {
-        status,
-        q,
-        limit: String(limit),
-        offset: String(page * limit),
-      }),
+    queryFn: () => loadQueue<{ requests: VoidRequest[]; total: number; error?: string }>("/void-requests", {
+      status,
+      q,
+      limit: String(limit),
+      offset: String(page * limit),
+    }),
+    ...requestQueueQuery,
   });
   const detailQ = useQuery({
     queryKey: ["void-request", openId],
@@ -124,7 +125,7 @@ function VoidRequestsPage() {
         eyebrow="Overview"
         title="Void Requests"
         icon={<Ban className="h-4 w-4" />}
-        description="A request asks for a void. The receipt stays completed until the request is approved. A signed-in Super Admin can void a receipt directly from the receipt instead."
+        description={`${queueStatusLine(listQ)} A request asks for a void. The receipt stays completed until the request is approved. A signed-in Super Admin can void a receipt directly from the receipt instead.`}
       />
       <Card className="mb-4 p-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -137,17 +138,17 @@ function VoidRequestsPage() {
             <option value="rejected">Rejected</option>
             <option value="cancelled">Cancelled</option>
           </Select>
-          <div className="self-center text-xs text-text2">{total} requests</div>
+          <div className="self-center text-xs text-text2">{listQ.isSuccess ? `${total} requests` : listQ.isError ? "List is not current" : "Loading requests…"}</div>
         </div>
       </Card>
       {listQ.isError || listQ.data?.error ? (
-        <div className="mb-3 text-sm text-err">{listQ.data?.error || "Could not load void requests."}</div>
+        <div className="mb-3 text-sm text-err">Could not refresh. This list is not current.</div>
       ) : null}
       <Card className="overflow-hidden">
         {listQ.isLoading ? <div className="py-10 text-center text-sm text-text2">Loading void requests…</div> : null}
-        {!listQ.isLoading && rows.length === 0 ? (
+        {listQ.isSuccess && rows.length === 0 ? (
           <div className="py-10 text-center text-sm text-text2">No void requests match this filter.</div>
-        ) : (
+        ) : listQ.isSuccess ? (
           <div className="divide-y divide-border">
             {rows.map((row) => (
               <button
@@ -168,7 +169,7 @@ function VoidRequestsPage() {
               </button>
             ))}
           </div>
-        )}
+        ) : null}
         <div className="flex justify-end gap-2 px-4 py-3 text-xs text-text2">
           <Button size="sm" variant="ghost" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous</Button>
           <span className="self-center">Page {page + 1} / {pages}</span>

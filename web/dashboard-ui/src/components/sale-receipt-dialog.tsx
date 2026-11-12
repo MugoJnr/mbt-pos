@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PaymentBreakdown, type SalePayments } from "@/components/payment-breakdown";
-import { Button, Card, Input } from "@/components/ui-kit";
+import { Button, Card, Input, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { KES } from "@/lib/format";
@@ -84,6 +84,7 @@ export function SaleReceiptDialog({
   const [voidMsg, setVoidMsg] = useState("");
   const [voiding, setVoiding] = useState(false);
   const [confirmCredit, setConfirmCredit] = useState(false);
+  const [printMsg, setPrintMsg] = useState("");
   const role = String(user?.role || "").toLowerCase();
   const canReturn = ["admin", "superadmin", "manager"].includes(role);
   const canVoidNow = role === "superadmin";
@@ -119,9 +120,19 @@ export function SaleReceiptDialog({
               </div>
               {banner ? <div className="mt-2 text-sm text-text">{banner}</div> : null}
             </div>
-            <Button variant="ghost" onClick={onClose}>
-              Close
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                onClick={async () => {
+                  const result = await POST<any>("/print/direct", { kind: "sale", id: saleId, reprint: true });
+                  setPrintMsg(result?.message || result?.error || "Print did not start.");
+                }}
+              >
+                Print
+              </Button>
+              <Button variant="ghost" onClick={onClose}>
+                Close
+              </Button>
+            </div>
           </div>
           {detailQ.isLoading ? (
             <div className="px-5 py-8 text-sm text-text2">Loading receipt…</div>
@@ -148,52 +159,42 @@ export function SaleReceiptDialog({
                   <div className="mt-1 text-text">{sale.notes}</div>
                 </div>
               ) : null}
+              {printMsg ? <div className="px-5 pb-2 text-sm text-text">{printMsg}</div> : null}
               <div className="border-t border-border px-5 pt-4 text-xs font-semibold uppercase tracking-wide text-text2">
                 Products
               </div>
               {items.length === 0 ? (
                 <div className="px-5 py-4 text-sm text-text2">No line items on this receipt.</div>
               ) : (
-                <div className="divide-y divide-border">
-                  {items.map((item, index) => {
-                    const name = item.product_name || "—";
-                    const sku = item.sku || item.product_sku || "—";
-                    return (
-                      <div key={`${name}-${index}`} className="px-5 py-3">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="font-semibold text-text">{name}</div>
-                            <div className="text-xs text-text2">
-                              {item.category || "General"} · {sku} · {item.barcode || "—"} ·{" "}
-                              {item.unit || "pcs"}
-                            </div>
-                          </div>
-                          <div className="font-semibold tabular-nums text-gold">
-                            {money(item.total, currency)}
-                          </div>
+                <>
+                  <div className="hidden md:block">
+                    <Table head={["Product", "Qty", "Unit", "Unit price", "Total"]}>
+                      {items.map((item, index) => (
+                        <tr key={`${item.product_name}-${index}`}>
+                          <td className="px-4 py-2.5">
+                            <div className="font-semibold text-text">{item.product_name || "—"}</div>
+                            <div className="text-xs text-text2">{item.sku || item.product_sku || item.category || ""}</div>
+                          </td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{Number(item.quantity || 0)}</td>
+                          <td className="px-4 py-2.5 text-right">{item.unit || "pcs"}</td>
+                          <td className="px-4 py-2.5 text-right tabular-nums">{money(item.unit_price, currency)}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{money(item.total, currency)}</td>
+                        </tr>
+                      ))}
+                    </Table>
+                  </div>
+                  <div className="divide-y divide-border md:hidden">
+                    {items.map((item, index) => (
+                      <div key={`narrow-${index}`} className="px-5 py-3">
+                        <div className="font-semibold text-text">{item.product_name || "—"}</div>
+                        <div className="mt-1 text-sm text-text2">
+                          {Number(item.quantity || 0)} {item.unit || "pcs"} · {money(item.unit_price, currency)}
                         </div>
-                        <div className="mt-2 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                          {field("Qty", `${Number(item.quantity || 0)}`)}
-                          {field("Unit price", money(item.unit_price, currency))}
-                          {field("Discount", money(item.discount, currency))}
-                          {field("Line total", money(item.total, currency))}
-                          {field(
-                            "Selling price",
-                            item.product_price == null ? "—" : money(item.product_price, currency),
-                          )}
-                          {field(
-                            "Cost",
-                            item.cost_price == null ? "—" : money(item.cost_price, currency),
-                          )}
-                          {field(
-                            "On hand now",
-                            item.current_stock == null ? "—" : String(Number(item.current_stock)),
-                          )}
-                        </div>
+                        <div className="mt-1 text-right font-semibold tabular-nums text-gold">{money(item.total, currency)}</div>
                       </div>
-                    );
-                  })}
-                </div>
+                    ))}
+                  </div>
+                </>
               )}
               {canVoidNow && !voided ? (
                 <div className="border-t border-border px-5 py-4">

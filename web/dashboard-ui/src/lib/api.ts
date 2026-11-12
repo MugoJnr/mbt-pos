@@ -39,11 +39,13 @@ export async function api<T = any>(
   path: string,
   body?: unknown,
   noAuth = false,
+  timeoutMs?: number,
 ): Promise<T | null> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
   if (!noAuth && token) headers.Authorization = `Bearer ${token}`;
   const opts: RequestInit = { method, headers };
+  if (timeoutMs) opts.signal = AbortSignal.timeout(timeoutMs);
   if (body !== undefined) opts.body = JSON.stringify(body);
   const r = await fetch("/api" + path, opts);
   const data = (await r.json().catch(() => ({}))) as T & { error?: string };
@@ -55,8 +57,8 @@ export async function api<T = any>(
   return data;
 }
 
-export const GET = <T = any>(path: string, q?: Record<string, string>) =>
-  api<T>("GET", path + (q ? "?" + new URLSearchParams(q) : ""));
+export const GET = <T = any>(path: string, q?: Record<string, string>, timeoutMs?: number) =>
+  api<T>("GET", path + (q ? "?" + new URLSearchParams(q) : ""), undefined, false, timeoutMs);
 
 export const POST = <T = any>(path: string, body?: unknown) => api<T>("POST", path, body);
 export const PUT = <T = any>(path: string, body?: unknown) => api<T>("PUT", path, body);

@@ -39,7 +39,9 @@ function ConsumptionPage() {
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canSeeCost = actions ? actions.includes("inventory.view_cost") : ["manager", "admin", "superadmin"].includes(role);
   const canBackdate = actions ? actions.includes("sales.business_day") : ["manager", "admin", "superadmin"].includes(role);
-  const canRecord = ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canRecord = actions
+    ? actions.includes("consumption.create")
+    : ["cashier", "manager", "admin", "superadmin"].includes(role);
   const canReport = actions
     ? actions.includes("consumption.view_report")
     : ["viewer", "manager", "admin", "superadmin"].includes(role);
@@ -64,6 +66,7 @@ function ConsumptionPage() {
   const [takenBy, setTakenBy] = useState("");
   const [when, setWhen] = useState(today);
   const [error, setError] = useState("");
+  const [printNote, setPrintNote] = useState("");
   const [voidReason, setVoidReason] = useState("");
   const [savedRef, setSavedRef] = useState("");
   const tokenRef = useRef("");
@@ -638,8 +641,13 @@ function ConsumptionPage() {
                 {(canVoid || canRequestVoid) && Number(viewQ.data.voided || 0) !== 1 ? (
                   <Input className="mbt-no-print" value={voidReason} onChange={(e) => setVoidReason(e.target.value)} placeholder="Reason, required before void or request void" aria-label="Void reason" />
                 ) : null}
+                {printNote ? <p className="text-sm text-text">{printNote}</p> : null}
                 <div className="mbt-no-print flex flex-wrap justify-end gap-2">
-                  <Button variant="secondary" onClick={() => window.print()}>Print</Button>
+                  <Button onClick={async () => {
+                    if (viewId == null) return;
+                    const result = await POST<any>("/print/direct", { kind: "consumption", id: viewId, reprint: true });
+                    setPrintNote(result?.message || result?.error || "Print did not start.");
+                  }}>Print</Button>
                   {canEdit && !viewQ.data.voided ? <Button variant="secondary" onClick={() => { const id = viewId; setViewId(null); if (id) void openEdit(id); }}>Edit</Button> : null}
                   {canVoid && !viewQ.data.voided ? <Button variant="danger" onClick={() => { if (viewId) void reverse(viewId); }}>Void</Button> : null}
                   {canRequestVoid && !viewQ.data.voided ? (

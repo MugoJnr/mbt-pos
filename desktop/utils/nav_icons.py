@@ -282,18 +282,18 @@ def section_icon_for_title(title: str, size: int = 18) -> QIcon:
 
 def icon_refresh(size=16, accent=None) -> QIcon:
     def draw(p, s, gold, muted):
-        pen = QPen(gold, max(1.4, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        # Ring with a gap, and a right-pointing arrow sitting in that gap.
+        # A head drawn on the stroke itself vanished at 18px and read as a "C".
+        pen = QPen(gold, max(1.8, s * 0.11), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawArc(QRectF(s * 0.18, s * 0.18, s * 0.64, s * 0.64), 40 * 16, 280 * 16)
-        # arrow head
+        p.drawArc(QRectF(s * 0.10, s * 0.37, s * 0.70, s * 0.57), 15 * 16, 310 * 16)
         p.setBrush(QBrush(gold))
         p.setPen(Qt.NoPen)
-        tip = QPointF(s * 0.72, s * 0.22)
         path = QPainterPath()
-        path.moveTo(tip)
-        path.lineTo(tip + QPointF(-s * 0.16, s * 0.04))
-        path.lineTo(tip + QPointF(-s * 0.02, s * 0.18))
+        path.moveTo(QPointF(s * 0.92, s * 0.14))
+        path.lineTo(QPointF(s * 0.50, s * 0.01))
+        path.lineTo(QPointF(s * 0.50, s * 0.29))
         path.closeSubpath()
         p.drawPath(path)
     return _paint_base(size, draw, accent=accent)

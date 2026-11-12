@@ -37,6 +37,7 @@ DOCUMENT_DEFAULTS = {
     "printer_connection": "USB",
     "printer_host": "",
     "paper_size": "80",
+    "printer_language": "",
     "print_customer_copy": "1",
     "print_duplicate_copy": "0",
     "show_document_preview": "0",
@@ -362,19 +363,14 @@ def _render_lines(doc: dict, width: int) -> list:
         lines.append(_fit("Contact:", customer["phone"], width))
     if doc.get("due_date"):
         lines.append(_fit("Due:", str(doc["due_date"]), width))
+    business_date = str(doc.get("business_date") or "")[:10]
+    recorded = str(doc.get("when") or "")[:10]
+    if business_date and business_date != recorded:
+        lines.append(_fit("Business date:", business_date, width))
     lines.append("-" * width)
     if doc.get("items"):
-        for item in doc["items"]:
-            name = str(item.get("product_name") or "")
-            qty = item.get("quantity")
-            qty_text = f"{qty:g}" if isinstance(qty, float) and qty != int(qty) else str(qty)
-            amount = f"{_money(item.get('total')):,.2f}"
-            lines.append(_fit(f"{qty_text} {name}"[:width - len(amount) - 1], amount, width))
-            price = _money(item.get("unit_price"))
-            if price:
-                lines.append(f"  @ {price:,.2f}")
-            if _money(item.get("discount")) > 0:
-                lines.append(f"  Discount -{_money(item.get('discount')):,.2f}")
+        from printing.sheet import sale_item_lines
+        lines.extend(sale_item_lines(doc["items"], width, show_money=True))
         lines.append("-" * width)
     if _money(doc.get("discount")) > 0:
         lines.append(_fit("Discount:", f"-{_money(doc.get('discount')):,.2f}", width))
@@ -543,6 +539,7 @@ def build_sale_document(db, sale_id: int, kind: str = "", *, reprint: bool = Fal
         },
         "logo": _logo_configured(),
         "when": sale.get("created_at") or sale.get("sale_date") or "",
+        "business_date": str(sale.get("sale_date") or "")[:10],
         "cashier": sale.get("cashier_name") or "",
         "customer": _customer(db, sale, debt),
         "due_date": debt.get("due_date") or "",
@@ -754,7 +751,9 @@ def print_existing_sale(db, sale_id: int, *, automatic: bool = False, reprint: b
     if duplicate:
         dup = build_sale_document(db, sale_id, reprint=reprint, duplicate=True, stamp_if_missing=False)
         blobs.append(text_to_escpos(dup.get("text") or doc["text"]))
-    outcome = print_document_bytes(cfg, b"".join(blobs), label=str(doc.get("number") or sale_id))
+    outcome = print_document_bytes(
+        cfg, b"".join(blobs), label=str(doc.get("number") or sale_id), text=doc.get("text") or "",
+    )
     outcome["sale_saved"] = True
     outcome["sale_id"] = int(sale_id)
     outcome["kind"] = doc.get("kind")

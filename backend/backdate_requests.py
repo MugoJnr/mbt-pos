@@ -113,6 +113,9 @@ def create_request(db, actor: dict, data: dict) -> dict:
                 raise BackdateError('A new request can only follow a rejected or withdrawn one.')
             if not _can_review(actor) and int(prior['cashier_id']) != int(actor['id']):
                 raise BackdateError('You cannot replace another cashier\'s request.', 403)
+        blocked = _date_policy(db, day)
+        if blocked:
+            raise BackdateError(blocked)
         reference = _next_reference(db)
         name = actor.get('full_name') or actor.get('username') or ''
         db.execute(
@@ -145,6 +148,9 @@ def update_request(db, actor: dict, request_id: int, data: dict) -> dict:
             day = _past_day(data.get('business_date'))
         else:
             day = row['business_date']
+        blocked = _date_policy(db, day)
+        if blocked:
+            raise BackdateError(blocked)
         reason = row['reason'] if data.get('reason') is None else (data.get('reason') or '').strip()
         version = int(row['version']) + 1
         db.execute(
@@ -564,6 +570,9 @@ def _create_debt(db, row, sale, sale_id, receipt, total, paid, notes) -> None:
 
 
 def _blocking_problems(db, row) -> list[str]:
+    policy = _date_policy(db, row['business_date'])
+    if policy:
+        return [policy]
     if not (row['reason'] or '').strip():
         return ['Enter the reason for recording this past day.']
     sales = _sales_for(db, row['id'])
@@ -762,7 +771,7 @@ def _editable(row, actor, version) -> None:
         raise BackdateError('This request is closed and cannot be edited.')
     _check_version(row, version)
     owner = int(row['cashier_id']) == int(actor['id'])
-    if owner and row['status'] in _OPEN_FOR_CASHIER and _request_role(actor):
+    if owner and row['status'] in _OPEN_FOR_CASHIER and _may_request(actor):
         return
     if _can_review(actor) and row['status'] in ('draft', 'submitted', 'returned'):
         return
@@ -810,6 +819,44 @@ def _check_version(row, version) -> None:
         return
     if int(version) != int(row['version']):
         raise BackdateError('This request changed while you had it open. Reload it and try again.', 409)
+
+
+def _setting(db, key: str) -> str:
+    try:
+        row = db.execute("SELECT value FROM system_settings WHERE key=?", (key,)).fetchone()
+    except Exception:
+        return ''
+    if not row:
+        return ''
+    value = row['value'] if hasattr(row, 'keys') else row[0]
+    return str(value or '').strip()
+
+
+def _date_policy(db, day: str) -> str | None:
+    """Reject dates outside the shop's opening, limit, or a closed period."""
+    opened = _setting(db, 'shop_opened_on') or _setting(db, 'business_start_date')
+    opened_day = parse_sale_date(opened) if opened else None
+    if opened_day and str(day) < opened_day.isoformat():
+        return 'That date is before this shop opened.'
+    raw_limit = _setting(db, 'backdate_max_days')
+    if raw_limit:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            limit = 0
+        if limit > 0:
+            from datetime import timedelta
+            oldest = (shop_today() - timedelta(days=limit)).isoformat()
+            if str(day) < oldest:
+                return f'That date is more than {limit} days ago.'
+    try:
+        from desktop.utils.accounting_engine import PeriodClosedError, assert_period_open
+        assert_period_open(db, str(day))
+    except PeriodClosedError as exc:
+        return str(exc)
+    except Exception:
+        return None
+    return None
 
 
 def _past_day(raw) -> str:
@@ -873,8 +920,13 @@ def _request_role(actor) -> bool:
     return (actor.get('role') or '') in _REQUEST_ROLES
 
 
+def _may_request(actor) -> bool:
+    from desktop.utils.security import has_permission
+    return has_permission(actor, 'sales.request_backdate')
+
+
 def _require_request(actor) -> None:
-    if not _request_role(actor):
+    if not _may_request(actor):
         raise BackdateError('You cannot create a backdating request.', 403)
 
 
@@ -886,7 +938,7 @@ def _require_review(actor) -> None:
 def _can_see(actor, row) -> bool:
     if _can_review(actor):
         return True
-    return _request_role(actor) and int(row['cashier_id']) == int(actor.get('id') or 0)
+    return _may_request(actor) and int(row['cashier_id']) == int(actor.get('id') or 0)
 
 
 def _now() -> str:

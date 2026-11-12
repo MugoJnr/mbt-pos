@@ -101,33 +101,6 @@ class SalesTab(QWidget):
         root.setContentsMargins(PADDING, 12, PADDING, 12)
         root.setSpacing(0)
         self._root_lay = root
-        from desktop.utils.security import has_permission
-        if has_permission(self.user, 'sales.request_backdate') or has_permission(self.user, 'sales.business_day'):
-            backdate_bar = QHBoxLayout()
-            backdate_btn = SecondaryBtn('Backdating Requests')
-            backdate_btn.setToolTip(
-                'Past-day sales. An admin or manager records the day directly. A cashier sends a request.'
-            )
-            backdate_btn.clicked.connect(self._open_backdate_requests)
-            void_btn = SecondaryBtn('Void Requests')
-            void_btn.setToolTip(
-                'Sale void requests. A new void is sent from Dashboard, Recent Sales, Request Void.'
-            )
-            void_btn.clicked.connect(lambda: self._open_requests_centre('void'))
-            centre_btn = SecondaryBtn('Requests Centre')
-            centre_btn.setToolTip(
-                'Backdated sales, voids, refunds, expenses, price changes, credit, discounts, and stock requests.'
-            )
-            centre_btn.clicked.connect(lambda: self._open_requests_centre(''))
-            debt_btn = SecondaryBtn('Debt')
-            debt_btn.setToolTip('Open debts and repayments. A debt is not an approval request.')
-            debt_btn.clicked.connect(self._open_debt)
-            backdate_bar.addWidget(backdate_btn)
-            backdate_bar.addWidget(void_btn)
-            backdate_bar.addWidget(centre_btn)
-            backdate_bar.addWidget(debt_btn)
-            backdate_bar.addStretch(1)
-            root.addLayout(backdate_bar)
 
         # Prevent the Sales tab itself from scrolling — panels scroll independently.
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1517,26 +1490,44 @@ class SalesTab(QWidget):
             self._prod_grid.retint()
         refresh_pos_components(self)
 
+    def _catalog_inner_width(self) -> int:
+        """Width the product cards can actually occupy, margins excluded."""
+        grid = getattr(self, '_prod_grid', None)
+        extra = 36
+        if grid is not None:
+            try:
+                m = grid._grid.contentsMargins()
+                extra = int(m.left() + m.right())
+            except Exception:
+                extra = 36
+        scroll = getattr(self, '_prod_scroll', None)
+        vp = 0
+        if scroll is not None and scroll.viewport() is not None:
+            try:
+                vp = int(scroll.viewport().width() or 0)
+            except Exception:
+                vp = 0
+        left = getattr(self, '_product_panel', None) or getattr(self, '_left_panel', None)
+        pane = 0
+        if left is not None:
+            try:
+                pane = int(left.width() or 0)
+            except Exception:
+                pane = 0
+        base = vp if vp > 80 else pane
+        if base <= 80:
+            return 760
+        return max(120, base - extra)
+
     def _product_columns(self) -> int:
         layout_id = getattr(self, '_checkout_layout', 'product_explorer')
+        available = self._catalog_inner_width()
         if layout_id == 'checkout_pro':
             # Measured, not assumed: a hardcoded 2 clipped the right-hand card
             # whenever the Pro product column was under ~560px.
-            try:
-                left = getattr(self, '_product_panel', None) or self._left_panel
-                available = int(left.width()) - 48
-            except Exception:
-                available = 380
             if hasattr(self, '_prod_grid'):
                 return self._prod_grid.columns_for_width(available)
             return 1
-        try:
-            left = getattr(self, '_product_panel', None) or self._left_panel
-            # Measured, never floored: the catalog column is drag-resizable now,
-            # so a minimum of 640 would clip cards once it is narrowed.
-            available = max(160, left.width() - 48)
-        except Exception:
-            available = 760
         if layout_id == 'retail_classic':
             # Prefer denser list feel on supermarket layout
             if hasattr(self, '_prod_grid'):
@@ -1545,7 +1536,7 @@ class SalesTab(QWidget):
             return self._prod_grid.columns_for_width(available)
         card_w = 214 if self._is_light else 206
         gap = 14
-        cols = max(2, int((available + gap) // (card_w + gap)))
+        cols = max(1, int((available + gap) // (card_w + gap)))
         return min(4, cols)
 
     def _prod_btn(self, p):
@@ -1894,7 +1885,10 @@ class SalesTab(QWidget):
         self._backdate_reason = ''
         self._stashed_cart = None
         self._reset_business_day_today()
-        if restore and stash:
+        # Always replace the request lines. An empty stash means the till
+        # had no cart before the request, so Complete Sale must not still
+        # be holding the lines that were just sent for approval.
+        if restore:
             self.cart = stash
             self._refresh_cart()
 
@@ -1983,7 +1977,10 @@ class SalesTab(QWidget):
         box.setText('\n'.join(preview))
         submit_btn = box.addButton('Submit for approval', QMessageBox.AcceptRole)
         draft_btn = box.addButton('Save draft', QMessageBox.ActionRole)
-        box.addButton('Back to cart', QMessageBox.RejectRole)
+        back_btn = box.addButton('Back to cart', QMessageBox.RejectRole)
+        for btn in (submit_btn, draft_btn, back_btn):
+            btn.setMinimumWidth(168)
+        box.setMinimumWidth(520)
         box.exec_()
         chosen = box.clickedButton()
         if chosen not in (submit_btn, draft_btn):
@@ -2081,6 +2078,7 @@ class SalesTab(QWidget):
                 f"color:{C.get('err', '#DC2626')};font-size:12px;font-weight:800;"
                 f"background:transparent;"
             )
+            self._refresh_business_day_bar()
             return
         if tone == 'today':
             warn.setText('')
@@ -2093,6 +2091,20 @@ class SalesTab(QWidget):
                 f"color:{C.get('err', '#DC2626')};font-size:12px;font-weight:800;"
                 f"background:transparent;"
             )
+        self._refresh_business_day_bar()
+
+    def _refresh_business_day_bar(self):
+        bar = getattr(self, '_business_day_bar', None)
+        if bar is None or getattr(bar, '_applying', False):
+            return
+        request = getattr(bar, '_request_layout', None)
+        if request:
+            request()
+            return
+        try:
+            bar._apply_layout(force=True)
+        except Exception:
+            pass
 
     def _on_business_day_changed(self, qdate):
         from desktop.utils.security import can_set_business_day

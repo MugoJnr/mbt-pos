@@ -188,6 +188,7 @@ function Settings() {
   });
   const [form, setForm] = useState<Record<string, string>>({});
   const [dirty, setDirty] = useState(false);
+  const [printerNote, setPrinterNote] = useState("");
   const [printJob, setPrintJob] = useState<Record<string, string> | null>(null);
   const [printBusy, setPrintBusy] = useState(false);
   const visualsQ = useQuery({
@@ -290,6 +291,7 @@ function Settings() {
         printer_connection: form.printer_connection || "USB",
         printer_host: form.printer_host || "",
         paper_size: form.paper_size || "80",
+        printer_language: form.printer_language || "escpos",
         document_policy: form.document_policy || "C",
         print_customer_copy: form.print_customer_copy || "1",
         print_duplicate_copy: form.print_duplicate_copy || "0",
@@ -547,6 +549,16 @@ function Settings() {
               <Input value={form.printer_host || ""} placeholder="192.168.1.50"
                 onChange={(e) => set("printer_host", e.target.value)} />
             </Field>
+            <Field label="Printer language">
+              <Select
+                value={form.printer_language || "escpos"}
+                onChange={(v) => set("printer_language", v)}
+                options={[
+                  { value: "escpos", label: "ESC/POS thermal" },
+                  { value: "driver", label: "Windows driver" },
+                ]}
+              />
+            </Field>
             <Field label="Paper">
               <Select
                 value={form.paper_size || "80"}
@@ -573,8 +585,27 @@ function Settings() {
               onChange={(v) => setFlag("allow_cashier_doc_override", v)} />
             <Check label="Allow later reprinting" checked disabled onChange={() => undefined} />
             <p className="text-sm text-text2 sm:col-span-2">
-              This portal opens the browser print dialog and downloads a PDF. It does not silently drive a USB or network printer. The till uses a connected printer when one is available.
+              Print on a receipt sends the saved document to the printer configured here. The browser print window is not used. The printer does not confirm that paper came out. A cashier cannot change these settings.
             </p>
+            <div className="sm:col-span-2">
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  const status = await GET<any>("/print/status");
+                  if (!status || status.error) {
+                    setPrinterNote(status?.error || "Printer status is not available.");
+                    return;
+                  }
+                  const ready = status.available ? "reachable" : "not reachable";
+                  setPrinterNote(
+                    `${status.printer_name || "No printer name"} · ${status.paper_size || "80"} mm · ${ready}. ${status.reason || ""} Last: ${status.last_job?.status || "none"}.`,
+                  );
+                }}
+              >
+                Check printer
+              </Button>
+              {printerNote ? <p className="mt-2 text-sm text-text">{printerNote}</p> : null}
+            </div>
             <p className="text-sm text-text2 sm:col-span-2">
               A test page is queued on the till. The printer does not confirm that paper came out.
               {printJob ? ` ${printMessage(printJob)}` : ""}
