@@ -80,39 +80,52 @@ def list_uncosted(db, start: str, end: str, sample_limit: int = 100) -> dict:
     end = str(end or start)[:10]
     day = "COALESCE(NULLIF(s.sale_date,''), date(s.created_at))"
     rows = db.execute(
-        f"""SELECT s.id, s.receipt_number, s.created_at, s.total,
+            f"""SELECT s.id, s.receipt_number, s.created_at, s.total,
                    si.product_id, si.product_name,
                    CASE WHEN COALESCE(si.quantity,0)=0 THEN 0
                         ELSE si.total * (COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0))
                              / si.quantity END AS net_total,
-                   COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0) AS net_qty
+                   COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0) AS net_qty,
+                   (SELECT COALESCE(SUM(u.quantity),0) FROM cost_layer_uses u
+                    WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                      AND COALESCE(u.reversed,0)=0) AS covered_qty
             FROM sale_items si
             JOIN sales s ON s.id = si.sale_id
             WHERE {day} BETWEEN ? AND ?
-              AND COALESCE(s.status,'completed')='completed'
-              AND NOT EXISTS (
-                  SELECT 1 FROM cost_layer_uses u
-                  WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                    AND COALESCE(u.reversed,0)=0
-              )""",
+              AND COALESCE(s.status,'completed')='completed'""",
         (start, end),
     ).fetchall()
     categories = {}
     sample = []
     revenue = 0.0
+    units = 0.0
+    lines = 0
+    products = set()
     for row in rows:
         item = dict(row) if hasattr(row, "keys") else None
         if item is None:
             item = {
                 "id": row[0], "receipt_number": row[1], "created_at": row[2],
                 "total": row[3], "product_id": row[4], "product_name": row[5],
-                "net_total": row[6], "net_qty": row[7],
+                "net_total": row[6], "net_qty": row[7], "covered_qty": row[8],
             }
-        net = float(item.get("net_total") or 0)
+        net_qty = float(item.get("net_qty") or 0)
+        covered = min(float(item.get("covered_qty") or 0), net_qty)
+        gap = round(net_qty - covered, 4)
+        if gap <= 0.0001:
+            continue
+        full = float(item.get("net_total") or 0)
+        net = full * gap / net_qty if net_qty else 0.0
+        item["gap_qty"] = gap
         revenue += net
+        units += gap
+        lines += 1
+        if item.get("product_id"):
+            products.add(int(item["product_id"]))
         category = classify_missing_cost(db, item.get("product_id"), item.get("created_at"))
-        bucket = categories.setdefault(category, {"lines": 0, "revenue": 0.0})
+        bucket = categories.setdefault(category, {"lines": 0, "revenue": 0.0, "units": 0.0})
         bucket["lines"] += 1
+        bucket["units"] = round(bucket["units"] + gap, 4)
         bucket["revenue"] = _money(bucket["revenue"] + net)
         if len(sample) < sample_limit:
             sample.append({
@@ -120,7 +133,7 @@ def list_uncosted(db, start: str, end: str, sample_limit: int = 100) -> dict:
                 "receipt_number": item.get("receipt_number") or "",
                 "product_id": item.get("product_id"),
                 "product_name": item.get("product_name") or "",
-                "quantity": round(float(item.get("net_qty") or 0), 4),
+                "quantity": round(float(item.get("gap_qty") or 0), 4),
                 "revenue": _money(net),
                 "category": category,
             })
@@ -129,7 +142,9 @@ def list_uncosted(db, start: str, end: str, sample_limit: int = 100) -> dict:
     return {
         "period_start": start,
         "period_end": end,
-        "lines": len(rows),
+        "lines": lines,
+        "units": round(units, 4),
+        "products": len(products),
         "revenue": _money(revenue),
         "categories": categories,
         "sample": sample,
@@ -167,13 +182,12 @@ def apply_cost(db, sale_id: int, product_id: int, unit_cost, reason: str,
     sale_total = float((sale["total"] if hasattr(sale, "keys") else sale[1]) or 0)
     receipt = sale["receipt_number"] if hasattr(sale, "keys") else sale[3]
     existing = db.execute(
-        """SELECT COUNT(*), COALESCE(SUM(quantity * unit_cost), 0)
+        """SELECT COALESCE(SUM(quantity), 0)
            FROM cost_layer_uses
            WHERE sale_id=? AND product_id=? AND COALESCE(reversed,0)=0""",
         (int(sale_id), int(product_id)),
     ).fetchone()
-    if int(existing[0] or 0) > 0:
-        return {"error": "This sale already has a cost for that product."}
+    covered = round(float(existing[0] or 0), 4)
     line = db.execute(
         """SELECT COALESCE(SUM(COALESCE(quantity,0) - COALESCE(returned_qty,0)),0),
                   COALESCE(SUM(CASE WHEN COALESCE(quantity,0)=0 THEN 0
@@ -184,10 +198,15 @@ def apply_cost(db, sale_id: int, product_id: int, unit_cost, reason: str,
         (int(sale_id), int(product_id)),
     ).fetchone()
     qty = round(float(line[0] or 0), 4)
-    revenue = _money(line[1])
+    full_revenue = _money(line[1])
     name = line[2] or ""
     if qty <= 0:
         return {"error": "That product is not on this sale."}
+    gap = round(qty - covered, 4)
+    if gap <= 0.0001:
+        return {"error": "This sale already has a cost for that product."}
+    qty = gap
+    revenue = _money(full_revenue * gap / float(line[0] or gap))
     from desktop.utils.stock_layers import add_layer, consume_layer
     added = add_layer(
         db, int(product_id), qty, cost, "reconciliation",

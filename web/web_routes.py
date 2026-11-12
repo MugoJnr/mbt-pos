@@ -2573,6 +2573,8 @@ def _cc_today_snapshot(user=None):
         'cogs': None if profit_detail is None else profit_detail.get('cogs'),
         'uncosted_revenue': None if profit_detail is None else profit_detail.get('uncosted_revenue'),
         'uncosted_lines': None if profit_detail is None else profit_detail.get('uncosted_lines'),
+        'uncosted_units': None if profit_detail is None else profit_detail.get('uncosted_units'),
+        'uncosted_products': None if profit_detail is None else profit_detail.get('uncosted_products'),
         'inventory_value': inv_val,
         'outstanding_debt': debt_out,
         'overdue_invoices': overdue,
@@ -3452,19 +3454,24 @@ def adjust_stock(pid):
              user.get('full_name') or user['username'])
         )
         movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        from desktop.utils.stock_layers import add_layer, consume_fifo
+        from desktop.utils.stock_layers import add_layer, consume_available_cost
         if qty_change > 0.0001:
-            layer = add_layer(
-                db, pid, qty_change, float(row['cost_price'] or 0),
-                'adjust', str(movement_id),
-                product_name=row['name'],
-                purchase_unit_cost=float(row['cost_price'] or 0),
-                extra_unit_cost=0,
-                supplier_name='Stock adjustment',
-                reference_note=reason,
+            known_cost = float(row['cost_price'] or 0)
+            layer = (
+                add_layer(
+                    db, pid, qty_change, known_cost,
+                    'adjust', str(movement_id),
+                    product_name=row['name'],
+                    purchase_unit_cost=known_cost,
+                    extra_unit_cost=0,
+                    supplier_name='Stock adjustment',
+                    reference_note=reason,
+                )
+                if known_cost > 0
+                else {'success': True, 'uncosted': qty_change}
             )
         elif qty_change < -0.0001:
-            layer = consume_fifo(
+            layer = consume_available_cost(
                 db, pid, abs(qty_change), reference=f"WEB_pid={pid}",
             )
         else:
@@ -4780,7 +4787,8 @@ def _profit_detail(db, day=None):
     except Exception:
         return {
             'profit': 0.0, 'revenue_costed': 0.0, 'cogs': 0.0,
-            'uncosted_revenue': 0.0, 'uncosted_lines': 0, 'costed_lines': 0,
+            'uncosted_revenue': 0.0, 'uncosted_lines': 0, 'uncosted_units': 0,
+            'uncosted_products': 0, 'costed_lines': 0,
         }
 
 
@@ -5159,6 +5167,8 @@ def cc_summary():
                 'cogs': None if profit_detail is None else profit_detail.get('cogs'),
                 'uncosted_revenue': None if profit_detail is None else profit_detail.get('uncosted_revenue'),
                 'uncosted_lines': None if profit_detail is None else profit_detail.get('uncosted_lines'),
+        'uncosted_units': None if profit_detail is None else profit_detail.get('uncosted_units'),
+        'uncosted_products': None if profit_detail is None else profit_detail.get('uncosted_products'),
                 'cash': _pay_sum('cash'),
                 'mpesa': _pay_sum('mpesa', 'm-pesa', 'm_pesa', 'mobile'),
                 'bank': _pay_sum('bank', 'card', 'transfer', 'cheque', 'check'),
@@ -6222,6 +6232,8 @@ def _query_report_bundle(db, filt):
         summary['cogs'] = detail['cogs']
         summary['uncosted_revenue'] = detail['uncosted_revenue']
         summary['uncosted_lines'] = detail['uncosted_lines']
+        summary['uncosted_units'] = detail.get('uncosted_units', 0)
+        summary['uncosted_products'] = detail.get('uncosted_products', 0)
 
     # Rebuild aggregates from filtered sales ids when category/customer filters applied
     sale_ids = [s['id'] for s in sales]

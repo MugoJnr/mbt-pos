@@ -2117,6 +2117,8 @@ def sales_summary():
     summary['cogs'] = figures['cogs']
     summary['uncosted_sales'] = figures['uncosted_sales']
     summary['uncosted_lines'] = figures['uncosted_lines']
+    summary['uncosted_units'] = figures.get('uncosted_units', 0)
+    summary['uncosted_products'] = figures.get('uncosted_products', 0)
     summary['profit_note'] = figures['profit_note']
     summary['low_stock'] = figures['low_stock']
     summary['out_of_stock'] = figures['out_of_stock']

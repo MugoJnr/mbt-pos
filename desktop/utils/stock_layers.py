@@ -138,53 +138,73 @@ def consume_fifo(db, product_id: int, qty: float, sale_id=None, reference: str =
     return {'success': True, 'cogs': cogs, 'uses': uses}
 
 
-def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
-    """Use FIFO batches. If the product has none, copy the product-card cost for this quantity only.
+def consume_available_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
+    """Apply recorded FIFO cost up to the quantity that still has a batch.
 
-    A missing or zero card cost stays uncosted. Today's card cost is not written onto older sales.
+    A shortfall is uncosted. It does not fail the sale, invent a batch, or use zero
+    as a buying price. A conditional update stops two sales from taking the same units.
     """
-    result = consume_fifo(db, product_id, qty, sale_id=sale_id, reference=reference)
-    if not result.get('skipped'):
-        return result
-    try:
+    ensure_cost_layers(db)
+    need = round(float(qty), 4)
+    if need <= 0:
+        return {'error': 'Quantity must be greater than zero'}
+    left = need
+    covered = 0.0
+    cogs = 0.0
+    uses = []
+    skipped = set()
+    while left > 0.0001:
         row = db.execute(
-            "SELECT name, cost_price FROM products WHERE id=?",
+            "SELECT id, remaining_qty, unit_cost FROM cost_layers "
+            "WHERE product_id=? AND remaining_qty>0 ORDER BY created_at, id LIMIT 1",
             (int(product_id),),
         ).fetchone()
-    except Exception:
-        return result
-    if not row:
-        return {'skipped': True, 'reason': 'no_product'}
-    name = row['name'] if hasattr(row, 'keys') else row[0]
-    raw_cost = row['cost_price'] if hasattr(row, 'keys') else row[1]
-    try:
-        cost = float(raw_cost)
-    except (TypeError, ValueError):
-        return {'skipped': True, 'reason': 'no_cost'}
-    if raw_cost is None or cost <= 0:
-        return {'skipped': True, 'reason': 'no_cost'}
-    prior = db.execute(
-        "SELECT COUNT(*) FROM cost_layers WHERE product_id=? AND source_type='product_card'",
-        (int(product_id),),
-    ).fetchone()
-    source_id = f"sale-{sale_id or 0}-{int(product_id)}-{int(prior[0]) + 1}"
-    added = add_layer(
-        db, int(product_id), qty, cost, 'product_card', source_id,
-        product_name=name or '',
-        purchase_unit_cost=cost,
-        extra_unit_cost=0,
-        supplier_name='Product card',
-        reference_note=(
-            'Buying price on the product card when this quantity was sold. '
-            'Not a supplier invoice.'
-        ),
+        if not row:
+            break
+        if row[0] in skipped:
+            row = db.execute(
+                "SELECT id, remaining_qty, unit_cost FROM cost_layers "
+                "WHERE product_id=? AND remaining_qty>0 AND id NOT IN (%s) "
+                "ORDER BY created_at, id LIMIT 1" % ",".join("?" * len(skipped)),
+                (int(product_id), *skipped),
+            ).fetchone()
+            if not row:
+                break
+        take = round(min(left, float(row[1] or 0)), 4)
+        if take <= 0:
+            break
+        changed = db.execute(
+            "UPDATE cost_layers SET remaining_qty=remaining_qty-? "
+            "WHERE id=? AND remaining_qty>=?",
+            (take, row[0], take),
+        )
+        if changed.rowcount != 1:
+            skipped.add(row[0])
+            continue
+        db.execute(
+            "INSERT INTO cost_layer_uses "
+            "(layer_id, product_id, sale_id, quantity, unit_cost, reference) "
+            "VALUES (?,?,?,?,?,?)",
+            (row[0], int(product_id), sale_id, take, float(row[2]), reference or None),
+        )
+        uses.append({'layer_id': row[0], 'quantity': take, 'unit_cost': float(row[2])})
+        cogs = round(cogs + take * float(row[2]), 4)
+        covered = round(covered + take, 4)
+        left = round(left - take, 4)
+    return {
+        'success': True,
+        'cogs': cogs,
+        'covered': covered,
+        'uncosted': round(max(left, 0), 4),
+        'uses': uses,
+    }
+
+
+def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
+    """Record the FIFO cost that exists. Missing coverage stays unknown."""
+    return consume_available_cost(
+        db, product_id, qty, sale_id=sale_id, reference=reference,
     )
-    if added.get('error'):
-        return added
-    used = consume_fifo(db, product_id, qty, sale_id=sale_id, reference=reference)
-    if used.get('success'):
-        used['source'] = 'product_card'
-    return used
 
 
 def consume_layer(db, layer_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
@@ -216,75 +236,8 @@ def consume_layer(db, layer_id: int, qty: float, sale_id=None, reference: str = 
 
 
 def copy_card_costs_onto_uncosted_sales(db, username: str = '') -> dict:
-    """Copy the product's stored buying price onto completed sales that have no cost.
-
-    A sale that already has a cost is left as it was. A product with no buying
-    price stays uncosted. Current stock batches are not used up.
-    """
-    ensure_cost_layers(db)
-    item_cols = {row[1] for row in db.execute("PRAGMA table_info(sale_items)").fetchall()}
-    if "returned_qty" not in item_cols:
-        db.execute("ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
-    product_cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
-    if "cost_price" not in product_cols:
-        return {'copied': 0, 'cogs': 0.0, 'skipped': True}
-    rows = db.execute(
-        """SELECT si.sale_id, si.product_id,
-                  MAX(COALESCE(NULLIF(si.product_name,''), p.name, '')),
-                  SUM(COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0)),
-                  p.cost_price
-           FROM sale_items si
-           JOIN sales s ON s.id = si.sale_id
-           JOIN products p ON p.id = si.product_id
-           WHERE COALESCE(s.status,'completed')='completed'
-             AND COALESCE(p.cost_price, 0) > 0
-             AND NOT EXISTS (
-               SELECT 1 FROM cost_layer_uses u
-               WHERE u.sale_id = si.sale_id AND u.product_id = si.product_id
-                 AND COALESCE(u.reversed,0)=0
-             )
-           GROUP BY si.sale_id, si.product_id"""
-    ).fetchall()
-    copied = 0
-    cogs = 0.0
-    for sale_id, product_id, name, qty, raw_cost in rows:
-        quantity = round(float(qty or 0), 4)
-        try:
-            cost = round(float(raw_cost), 4)
-        except (TypeError, ValueError):
-            continue
-        if quantity <= 0 or cost <= 0:
-            continue
-        db.execute("SAVEPOINT card_cost")
-        added = add_layer(
-            db, int(product_id), quantity, cost, 'product_card',
-            f"card-{int(sale_id)}-{int(product_id)}",
-            product_name=name or '',
-            purchase_unit_cost=cost,
-            extra_unit_cost=0,
-            supplier_name='Product card',
-            username=username or '',
-            reference_note=(
-                'Buying price stored on the product. '
-                'Copied onto this sale because the sale had no cost record.'
-            ),
-        )
-        if added.get('error') or not added.get('id'):
-            db.execute("ROLLBACK TO card_cost")
-            db.execute("RELEASE card_cost")
-            continue
-        used = consume_layer(
-            db, int(added['id']), quantity, sale_id=int(sale_id),
-            reference=f"card-{int(sale_id)}-{int(product_id)}",
-        )
-        if not used.get('success'):
-            db.execute("ROLLBACK TO card_cost")
-            db.execute("RELEASE card_cost")
-            continue
-        db.execute("RELEASE card_cost")
-        copied += 1
-        cogs = round(cogs + float(used.get('cogs') or 0), 2)
-    return {'copied': copied, 'cogs': round(cogs, 2)}
+    """Do not invent a buying price. Unknown cost stays visible until an admin records it."""
+    return {'copied': 0, 'reason': 'card_price_is_not_a_historical_cost'}
 
 
 def restore_reference_layers(db, reference: str) -> dict:
@@ -463,15 +416,17 @@ def period_profit(db, start: str, end: str) -> dict:
     day = "COALESCE(NULLIF(s.sale_date,''), date(s.created_at))"
     rows = db.execute(
         f"""
-        SELECT CASE
+        SELECT si.product_id,
+               CASE
                  WHEN COALESCE(si.quantity, 0) = 0 THEN 0
                  ELSE si.total * (
                    COALESCE(si.quantity, 0) - COALESCE(si.returned_qty, 0)
                  ) / si.quantity
                END AS total,
-               (SELECT COUNT(*) FROM cost_layer_uses u
+               COALESCE(si.quantity, 0) - COALESCE(si.returned_qty, 0) AS net_qty,
+               (SELECT COALESCE(SUM(u.quantity), 0) FROM cost_layer_uses u
                 WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                  AND COALESCE(u.reversed,0)=0) AS uses,
+                  AND COALESCE(u.reversed,0)=0) AS covered_qty,
                (SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
                 WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
                   AND COALESCE(u.reversed,0)=0) AS cogs
@@ -483,22 +438,35 @@ def period_profit(db, start: str, end: str) -> dict:
         (str(start)[:10], str(end)[:10]),
     ).fetchall()
     revenue = cogs = uncosted = 0.0
+    uncosted_units = 0.0
     costed_lines = uncosted_lines = 0
-    for total, uses, line_cogs in rows:
+    products = set()
+    for product_id, total, net_qty, covered_qty, line_cogs in rows:
+        net = float(net_qty or 0)
+        if net <= 0.0001:
+            continue
+        covered = min(float(covered_qty or 0), net)
+        gap = round(net - covered, 4)
         amount = float(total or 0)
-        if int(uses or 0) > 0:
-            revenue += amount
+        if covered > 0.0001:
+            revenue += amount * covered / net
             cogs += float(line_cogs or 0)
-            costed_lines += 1
-        else:
-            uncosted += amount
+            if gap <= 0.0001:
+                costed_lines += 1
+        if gap > 0.0001:
+            uncosted += amount * gap / net
             uncosted_lines += 1
+            uncosted_units += gap
+            if product_id:
+                products.add(int(product_id))
     return {
         'profit': round(revenue - cogs, 2),
         'revenue_costed': round(revenue, 2),
         'cogs': round(cogs, 2),
         'uncosted_revenue': round(uncosted, 2),
         'uncosted_lines': uncosted_lines,
+        'uncosted_units': round(uncosted_units, 4),
+        'uncosted_products': len(products),
         'costed_lines': costed_lines,
     }
 

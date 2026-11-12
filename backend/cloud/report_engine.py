@@ -103,24 +103,32 @@ class ReportEngine:
                        COALESCE(p.category, '') as category,
                        SUM(si.quantity) as qty,
                        SUM(COALESCE(si.total, si.quantity * si.unit_price)) as revenue,
-                       SUM(CASE WHEN (
-                         SELECT COUNT(*) FROM cost_layer_uses u
-                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                           AND COALESCE(u.reversed,0)=0
-                       ) > 0 THEN (
+                       SUM((
                          SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
                          WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
                            AND COALESCE(u.reversed,0)=0
-                       ) ELSE 0 END) as cost,
-                       SUM(CASE WHEN (
-                         SELECT COUNT(*) FROM cost_layer_uses u
-                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                           AND COALESCE(u.reversed,0)=0
-                       ) > 0 THEN COALESCE(si.total, si.quantity * si.unit_price) - (
-                         SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
-                         WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                           AND COALESCE(u.reversed,0)=0
-                       ) ELSE 0 END) as profit
+                       )) as cost,
+                       SUM(CASE
+                         WHEN COALESCE(si.quantity, 0) <= 0 THEN 0
+                         WHEN (
+                           SELECT COALESCE(SUM(u.quantity), 0) FROM cost_layer_uses u
+                           WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                             AND COALESCE(u.reversed,0)=0
+                         ) <= 0 THEN 0
+                         ELSE COALESCE(si.total, si.quantity * si.unit_price)
+                              * MIN(
+                                  (SELECT COALESCE(SUM(u.quantity), 0) FROM cost_layer_uses u
+                                   WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                                     AND COALESCE(u.reversed,0)=0),
+                                  COALESCE(si.quantity, 0)
+                                ) / si.quantity
+                              - (
+                                  SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0)
+                                  FROM cost_layer_uses u
+                                  WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
+                                    AND COALESCE(u.reversed,0)=0
+                                )
+                       END) as profit
                 FROM sale_items si
                 LEFT JOIN products p ON p.id = si.product_id
                 JOIN sales s ON s.id = si.sale_id

@@ -1003,6 +1003,8 @@ def dashboard_kpis(conn) -> dict:
         kpis['register_gross'] = figures['gross_profit']
         kpis['register_uncosted_sales'] = figures['uncosted_sales']
         kpis['register_uncosted_lines'] = figures['uncosted_lines']
+        kpis['register_uncosted_units'] = figures.get('uncosted_units', 0)
+        kpis['register_uncosted_products'] = figures.get('uncosted_products', 0)
         kpis['register_note'] = figures.get('profit_note') or ''
     except Exception:
         logging.getLogger(__name__).exception('register profit snapshot failed')

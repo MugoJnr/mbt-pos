@@ -446,7 +446,7 @@ function Reports() {
               ? "Hidden for this login."
               : `Cost of goods ${KES(summary.cogs || 0, currency)}. ${
                   Number(summary.uncosted_lines || 0) > 0
-                    ? `${summary.uncosted_lines} lines, ${KES(summary.uncosted_revenue || 0, currency)}, have no cost and are not in this profit.`
+                    ? `${summary.uncosted_lines} lines, ${Number(summary.uncosted_units || 0)} units across ${Number(summary.uncosted_products || 0)} products, ${KES(summary.uncosted_revenue || 0, currency)}, have no cost and are not in this profit.`
                     : "Every sold line in this list has a cost. This is not net profit."
                 }`}
           </div>

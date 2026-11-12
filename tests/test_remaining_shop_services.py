@@ -108,7 +108,7 @@ class RemainingShopServices(unittest.TestCase):
             db.close()
         self.assertAlmostEqual(float(left), 30.0, places=2)
 
-    def test_sale_rolls_back_when_layers_are_short(self):
+    def test_short_cost_layers_do_not_block_the_sale(self):
         from desktop.utils.stock_layers import add_layer
         db = self.ac._db()
         try:
@@ -124,14 +124,24 @@ class RemainingShopServices(unittest.TestCase):
             'subtotal': 2000, 'discount': 0, 'tax': 0, 'total': 2000,
             'payment_method': 'Cash', 'amount_paid': 2000, 'change_amount': 0,
         })
-        self.assertIn('Insufficient cost layers', sale.get('error', ''))
-        self.assertEqual(self._stock(), 30)
+        self.assertTrue(sale.get('success'), sale)
+        self.assertNotIn('Insufficient cost layers', str(sale.get('error', '')))
+        self.assertEqual(self._stock(), 20)
         db = self.ac._db()
         try:
-            sales = db.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            covered = db.execute(
+                "SELECT COALESCE(SUM(quantity),0), COALESCE(SUM(quantity*unit_cost),0) "
+                "FROM cost_layer_uses WHERE sale_id=? AND COALESCE(reversed,0)=0",
+                (sale['sale_id'],),
+            ).fetchone()
+            fake = db.execute(
+                "SELECT COUNT(*) FROM cost_layers WHERE source_type='product_card'"
+            ).fetchone()[0]
         finally:
             db.close()
-        self.assertEqual(sales, 0)
+        self.assertAlmostEqual(float(covered[0]), 5, places=2)
+        self.assertAlmostEqual(float(covered[1]), 500, places=2)
+        self.assertEqual(int(fake), 0)
 
     def test_opening_backfill_does_not_invent_a_missing_cost(self):
         from desktop.utils.stock_layers import opening_backfill

@@ -2539,14 +2539,18 @@ class APIClient:
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            from desktop.utils.stock_layers import add_layer, consume_fifo
+            from desktop.utils.stock_layers import add_layer, consume_available_cost
             if signed > 0:
-                layer = add_layer(
-                    db, pid, signed, float(row['cost_price'] or 0),
-                    'adjust', str(mov_id),
+                known_cost = float(row['cost_price'] or 0)
+                layer = (
+                    add_layer(db, pid, signed, known_cost, 'adjust', str(mov_id))
+                    if known_cost > 0
+                    else {'success': True, 'uncosted': signed}
                 )
             else:
-                layer = consume_fifo(db, pid, abs(signed), reference=movement_ref)
+                layer = consume_available_cost(
+                    db, pid, abs(signed), reference=movement_ref,
+                )
             if layer.get('error'):
                 db.rollback()
                 return {'error': layer['error'], 'status': 400}
@@ -4321,14 +4325,18 @@ class APIClient:
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-            from desktop.utils.stock_layers import add_layer, consume_fifo
+            from desktop.utils.stock_layers import add_layer, consume_available_cost
             if qty_change > 0:
-                layer = add_layer(
-                    db, row['id'], qty_change, float(row['cost_price'] or 0),
-                    'adjust', str(mov_id),
+                known_cost = float(row['cost_price'] or 0)
+                layer = (
+                    add_layer(
+                        db, row['id'], qty_change, known_cost, 'adjust', str(mov_id),
+                    )
+                    if known_cost > 0
+                    else {'success': True, 'uncosted': qty_change}
                 )
             elif qty_change < 0:
-                layer = consume_fifo(
+                layer = consume_available_cost(
                     db, row['id'], abs(qty_change),
                     reference=f"ADJUST_pid={row['id']}",
                 )
@@ -6581,13 +6589,6 @@ class APIClient:
             collected_sales = float(summary.get('collected_from_sales') or 0)
             # Opening tender is already in the sale's amount_paid. Add only later collections.
             summary['debt_collected'] = debt_collected
-            if self._acc_perm('inventory.view_cost'):
-                from desktop.utils.stock_layers import copy_card_costs_onto_uncosted_sales
-                copied = copy_card_costs_onto_uncosted_sales(
-                    db, username=getattr(self, '_username', '') or '',
-                )
-                if copied.get('copied'):
-                    db.commit()
             from desktop.utils.financials import compute_financials, public_financials
             figures = compute_financials(db, start, end)
             summary['collected_revenue'] = figures['total_collected']
@@ -6602,6 +6603,8 @@ class APIClient:
             summary['cogs'] = figures['cogs']
             summary['uncosted_sales'] = figures['uncosted_sales']
             summary['uncosted_lines'] = figures['uncosted_lines']
+            summary['uncosted_units'] = figures.get('uncosted_units', 0)
+            summary['uncosted_products'] = figures.get('uncosted_products', 0)
             summary['profit_note'] = figures['profit_note']
             for key in (
                 'cash_collected', 'mpesa_collected', 'card_collected',
@@ -9254,20 +9257,22 @@ class APIClient:
             )
             cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             audit_lines = []
-            from desktop.utils.stock_layers import consume_fifo
+            from desktop.utils.stock_layers import consume_available_cost
             priced_rows = []
             total_cost = 0.0
             for prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone in line_rows:
-                layer = consume_fifo(
+                layer = consume_available_cost(
                     db, int(prod['id']), qty,
                     reference=f"CONSUMPTION:{cons_id}:{prod['id']}",
                 )
                 if layer.get('error'):
                     db.rollback()
                     return {'error': layer['error']}
-                if layer.get('success'):
-                    unit_cost = round(float(layer['cogs']) / qty, 4)
-                    line_total = round(qty * unit_cost, 2)
+                known = round(float(layer.get('cogs') or 0), 2)
+                covered = float(layer.get('covered') or 0)
+                if covered > 0:
+                    unit_cost = round(known / covered, 4)
+                    line_total = known
                     opportunity = round(qty * selling, 2)
                     foregone = round(opportunity - line_total, 2)
                 total_cost += line_total
@@ -9455,7 +9460,7 @@ class APIClient:
                     return {'error': 'Enter each product once on this consumption.', 'status': 400}
                 seen.add(pid)
                 cleaned.append({'product_id': pid, 'quantity': qty})
-            from desktop.utils.stock_layers import consume_fifo, restore_reference_quantity
+            from desktop.utils.stock_layers import consume_available_cost, restore_reference_quantity
             created_name = self._username or 'admin'
             before = [
                 {
@@ -9491,6 +9496,7 @@ class APIClient:
                 old_qty = round(float(old['quantity'] or 0), 4) if old else 0.0
                 old_cost = round(float(old['unit_cost'] or 0), 4) if old else round(float(prod['cost_price'] or 0), 4)
                 delta = round(qty - old_qty, 4)
+                partial_cost = False
                 stock = round(float(prod['stock'] or 0), 4)
                 unit_cost = old_cost
                 if delta > 0:
@@ -9503,15 +9509,22 @@ class APIClient:
                             ),
                             'status': 400,
                         }
-                    layer = consume_fifo(
+                    layer = consume_available_cost(
                         db, pid, delta,
                         reference=f"CONSUMPTION:{int(consumption_id)}:{pid}:REV:{now}",
                     )
                     if layer.get('error'):
                         db.rollback()
                         return {'error': layer['error'], 'status': 400}
-                    extra = round(float(layer.get('cogs') or 0), 4) if layer.get('success') else round(delta * old_cost, 4)
-                    unit_cost = round(((old_qty * old_cost) + extra) / qty, 4)
+                    extra = round(float(layer.get('cogs') or 0), 4)
+                    covered = float(layer.get('covered') or 0)
+                    if covered <= 0:
+                        unit_cost = old_cost
+                    elif float(layer.get('uncosted') or 0) > 0.0001:
+                        partial_cost = True
+                        unit_cost = round(extra / covered, 4)
+                    else:
+                        unit_cost = round(((old_qty * old_cost) + extra) / qty, 4)
                 elif delta < 0:
                     restored = restore_reference_quantity(
                         db, f"CONSUMPTION:{int(consumption_id)}:{pid}", abs(delta),
@@ -9533,7 +9546,10 @@ class APIClient:
                         db.rollback()
                         return {'error': 'Stock changed before the correction could be saved.', 'status': 409}
                     movements.append((prod, stock, -delta, new_stock))
-                line_total = round(qty * unit_cost, 2)
+                if partial_cost:
+                    line_total = round((old_qty * old_cost) + extra, 2)
+                else:
+                    line_total = round(qty * float(unit_cost or 0), 2)
                 total_cost += line_total
                 selling = round(float(prod['price'] or 0), 4)
                 stored_before = None
@@ -10124,20 +10140,6 @@ class APIClient:
         return has_permission(client_actor(self), action)
 
     def _repair_sale_journals(self, db) -> dict:
-        if self._acc_perm('inventory.view_cost'):
-            try:
-                from desktop.utils.stock_layers import copy_card_costs_onto_uncosted_sales
-                copied = copy_card_costs_onto_uncosted_sales(
-                    db, username=self._username or '',
-                )
-                if copied.get('copied'):
-                    db.commit()
-            except Exception as exc:
-                logger.error('sale cost copy: %s', exc, exc_info=True)
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
         if not self._acc_perm('accounting.create_journal'):
             return {'posted': 0, 'failed': 0, 'skipped': True}
         from desktop.utils.accounting_hooks import post_missing_sale_journals
@@ -10314,6 +10316,8 @@ class APIClient:
                 report['register_gross'] = figures['gross_profit']
                 report['register_uncosted_sales'] = figures['uncosted_sales']
                 report['register_uncosted_lines'] = figures['uncosted_lines']
+                report['register_uncosted_units'] = figures.get('uncosted_units', 0)
+                report['register_uncosted_products'] = figures.get('uncosted_products', 0)
                 report['register_note'] = figures.get('profit_note') or ''
             except Exception:
                 logger.exception('register profit snapshot failed')

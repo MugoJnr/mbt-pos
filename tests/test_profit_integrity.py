@@ -141,18 +141,18 @@ class ProfitIntegrityTests(unittest.TestCase):
         db = self.ac._db()
         try:
             source = db.execute(
-                "SELECT source_type FROM cost_layers WHERE product_id=?",
+                "SELECT COUNT(*) AS n FROM cost_layers WHERE product_id=?",
                 (priced["id"],),
             ).fetchone()
-            self.assertEqual(source["source_type"], "product_card")
+            self.assertEqual(int(source["n"]), 0)
             figures = compute_financials(db, today, today)
             listed = None
         finally:
             db.close()
-        self.assertEqual(figures["cogs"], 80)
-        self.assertEqual(figures["gross_profit"], 120)
-        self.assertEqual(figures["uncosted_lines"], 1)
-        self.assertEqual(figures["uncosted_sales"], 80)
+        self.assertEqual(figures["cogs"], 0)
+        self.assertEqual(figures["gross_profit"], 0)
+        self.assertEqual(figures["uncosted_lines"], 2)
+        self.assertEqual(figures["uncosted_sales"], 280)
         self.assertIsNone(figures["net_operating_result"])
         owner = self._login("owner", "owner-pass")
         body = self.client.get(
@@ -160,8 +160,8 @@ class ProfitIntegrityTests(unittest.TestCase):
         )
         self.assertEqual(body.status_code, 200, body.get_json())
         listed = body.get_json()
-        self.assertEqual(listed["lines"], 1)
-        self.assertEqual(listed["revenue"], 80)
+        self.assertEqual(listed["lines"], 2)
+        self.assertEqual(listed["revenue"], 280)
         self.assertEqual(listed["categories"]["no_buying_price"]["lines"], 1)
         cashier = self._login("cashier", "cashier-pass")
         hidden = self.client.get(
@@ -195,9 +195,9 @@ class ProfitIntegrityTests(unittest.TestCase):
         finally:
             db.close()
         self.assertEqual(total["total"], 80)
-        self.assertEqual(after["uncosted_lines"], 0)
-        self.assertEqual(after["cogs"], 110)
-        self.assertEqual(after["gross_profit"], 170)
+        self.assertEqual(after["uncosted_lines"], 1)
+        self.assertEqual(after["cogs"], 30)
+        self.assertEqual(after["gross_profit"], 50)
         self.assertEqual(audit["reason"], "Supplier invoice 9")
         self.assertEqual(float(audit["new_unit_cost"]), 30)
         self.assertEqual(audit["username"], "owner")
@@ -238,13 +238,16 @@ class ProfitIntegrityTests(unittest.TestCase):
             "cost_price": 0, "stock": 0,
         })
         self.assertTrue(blank.get("success"), blank)
+        from desktop.utils.stock_layers import add_layer
         db = self.ac._db()
         try:
             db.execute("UPDATE products SET stock=2 WHERE id=?", (priced["id"],))
             db.execute("UPDATE products SET stock=1 WHERE id=?", (blank["id"],))
+            added = add_layer(db, priced["id"], 2, 40, "purchase", "journal-layer")
             db.commit()
         finally:
             db.close()
+        self.assertTrue(added.get("success"), added)
         known = self.api.create_sale({
             "items": [{"product_id": priced["id"], "quantity": 2, "unit_price": 100}],
             "subtotal": 200, "discount": 0, "tax": 0, "total": 200,
@@ -278,14 +281,15 @@ class ProfitIntegrityTests(unittest.TestCase):
         today = date.today().isoformat()
         report = self.api.accounting_pnl(today, today)
         self.assertAlmostEqual(float(report["total_income"]), 250, places=2)
-        self.assertAlmostEqual(float(report["total_cogs"]), 1079, places=2)
+        self.assertAlmostEqual(float(report["total_cogs"]), 80, places=2)
         self.assertAlmostEqual(float(report["register_sales"]), 250, places=2)
-        self.assertAlmostEqual(float(report["register_cogs"]), 1079, places=2)
-        self.assertAlmostEqual(float(report["register_gross"]), -829, places=2)
-        self.assertEqual(int(report["register_uncosted_lines"]), 0)
+        self.assertAlmostEqual(float(report["register_cogs"]), 80, places=2)
+        self.assertAlmostEqual(float(report["register_gross"]), 120, places=2)
+        self.assertEqual(int(report["register_uncosted_lines"]), 1)
+        self.assertAlmostEqual(float(report["register_uncosted_sales"]), 50, places=2)
         again = self.api.accounting_pnl(today, today)
         self.assertAlmostEqual(float(again["total_income"]), 250, places=2)
-        self.assertAlmostEqual(float(again["total_cogs"]), 1079, places=2)
+        self.assertAlmostEqual(float(again["total_cogs"]), 80, places=2)
         db = self.ac._db()
         try:
             known_cost = db.execute(
@@ -300,71 +304,186 @@ class ProfitIntegrityTests(unittest.TestCase):
         self.assertAlmostEqual(float(dash["register_sales"]), 250, places=2)
         self.assertAlmostEqual(float(dash["month_revenue"]), 250, places=2)
 
-    def test_missing_cost_copies_the_product_price_and_leaves_stock_batches(self):
-        product = self.api.create_product({
-            "name": "Stored Cost", "sku": "QA-CARD", "price": 40,
-            "cost_price": 25, "stock": 0,
-        })
-        self.assertTrue(product.get("success"), product)
-        from desktop.utils.stock_layers import add_layer, copy_card_costs_onto_uncosted_sales
-        db = self.ac._db()
-        try:
-            added = add_layer(db, product["id"], 5, 10, "receipt", "current-stock")
+    def test_short_cost_layers_do_not_block_the_sale(self):
+        import threading
+        from desktop.utils.stock_layers import add_layer
+        from desktop.utils.financials import compute_financials
+
+        def shelf(product_id, layers, layer_cost=100):
+            created = self.api.create_product({
+                "name": f"Bags {product_id}", "sku": f"BAG-{product_id}",
+                "price": 200, "cost_price": 999, "stock": 0,
+            })
+            self.assertTrue(created.get("success"), created)
+            db = self.ac._db()
+            try:
+                db.execute("UPDATE products SET stock=20 WHERE id=?", (created["id"],))
+                added = add_layer(db, created["id"], layers, layer_cost, "purchase", f"b-{created['id']}")
+                db.commit()
+            finally:
+                db.close()
             self.assertTrue(added.get("success"), added)
-            db.execute("UPDATE products SET stock=5 WHERE id=?", (product["id"],))
-            db.commit()
-        finally:
-            db.close()
+            return created["id"]
+
+        desktop_id = shelf("desk", 10)
         sale = self.api.create_sale({
-            "items": [{"product_id": product["id"], "quantity": 1, "unit_price": 40}],
-            "subtotal": 40, "discount": 0, "tax": 0, "total": 40,
-            "payment_method": "Cash", "amount_paid": 40,
-            "client_token": "card-copy",
+            "items": [{"product_id": desktop_id, "quantity": 15, "unit_price": 200, "total": 3000}],
+            "subtotal": 3000, "discount": 0, "tax": 0, "total": 3000,
+            "payment_method": "Cash", "amount_paid": 3000,
+            "client_token": "short-desktop",
         })
         self.assertTrue(sale.get("success"), sale)
+        self.assertNotIn("cost layer", str(sale.get("error", "")).lower())
+        today = date.today().isoformat()
         db = self.ac._db()
         try:
-            db.execute(
-                "UPDATE cost_layers SET remaining_qty=remaining_qty+"
-                "(SELECT COALESCE(SUM(quantity),0) FROM cost_layer_uses "
-                " WHERE sale_id=? AND layer_id=cost_layers.id) "
-                "WHERE id=?",
-                (sale["sale_id"], added["id"]),
-            )
-            db.execute("DELETE FROM cost_layer_uses WHERE sale_id=?", (sale["sale_id"],))
-            db.commit()
-            before = db.execute(
-                "SELECT remaining_qty FROM cost_layers WHERE id=?", (added["id"],),
-            ).fetchone()[0]
-            copied = copy_card_costs_onto_uncosted_sales(db, username="owner")
-            db.commit()
-            after = db.execute(
-                "SELECT remaining_qty FROM cost_layers WHERE id=?", (added["id"],),
-            ).fetchone()[0]
-            use = db.execute(
-                "SELECT quantity, unit_cost FROM cost_layer_uses "
-                "WHERE sale_id=? AND COALESCE(reversed,0)=0",
+            stock = db.execute("SELECT stock FROM products WHERE id=?", (desktop_id,)).fetchone()["stock"]
+            covered = db.execute(
+                "SELECT COALESCE(SUM(quantity),0), COALESCE(SUM(quantity*unit_cost),0) "
+                "FROM cost_layer_uses WHERE sale_id=? AND COALESCE(reversed,0)=0",
                 (sale["sale_id"],),
             ).fetchone()
-            total = db.execute(
-                "SELECT total FROM sales WHERE id=?", (sale["sale_id"],),
+            fake = db.execute(
+                "SELECT COUNT(*) FROM cost_layers WHERE source_type IN ('product_card','reconciliation')"
             ).fetchone()[0]
-            stock = db.execute(
-                "SELECT stock FROM products WHERE id=?", (product["id"],),
+            figures = compute_financials(db, today, today)
+            item_id = db.execute(
+                "SELECT id FROM sale_items WHERE sale_id=?", (sale["sale_id"],),
+            ).fetchone()["id"]
+        finally:
+            db.close()
+        self.assertAlmostEqual(float(stock), 5, places=2)
+        self.assertAlmostEqual(float(covered[0]), 10, places=2)
+        self.assertAlmostEqual(float(covered[1]), 1000, places=2)
+        self.assertEqual(int(fake), 0)
+        self.assertAlmostEqual(figures["cogs"], 1000, places=2)
+        self.assertAlmostEqual(figures["gross_profit"], 1000, places=2)
+        self.assertAlmostEqual(figures["uncosted_sales"], 1000, places=2)
+        self.assertAlmostEqual(figures["uncosted_units"], 5, places=2)
+        self.assertEqual(figures["uncosted_products"], 1)
+        self.assertIsNone(figures["net_operating_result"])
+
+        web_id = shelf("web", 10)
+        headers = self._login("owner", "owner-pass")
+        web = self.client.post("/api/sales", headers=headers, json={
+            "items": [{"product_id": web_id, "quantity": 15, "unit_price": 200, "total": 3000}],
+            "subtotal": 3000, "discount": 0, "tax": 0, "total": 3000,
+            "payment_method": "cash", "amount_paid": 3000,
+            "client_token": "short-web",
+        })
+        self.assertEqual(web.status_code, 200, web.get_json())
+        db = self.ac._db()
+        try:
+            web_stock = db.execute("SELECT stock FROM products WHERE id=?", (web_id,)).fetchone()["stock"]
+            web_sale = db.execute(
+                "SELECT id FROM sales WHERE receipt_number=?",
+                (web.get_json()["receipt_number"],),
+            ).fetchone()["id"]
+        finally:
+            db.close()
+        self.assertAlmostEqual(float(web_stock), 5, places=2)
+        cashier = self._login("cashier", "cashier-pass")
+        hidden = self.client.get(
+            f"/api/reports/summary?start={today}&end={today}", headers=cashier,
+        )
+        self.assertNotIn("gross_profit", hidden.get_json().get("summary", {}))
+        listed = self.client.get(
+            f"/api/cost-reconciliation?start={today}&end={today}", headers=headers,
+        ).get_json()
+        self.assertGreaterEqual(listed["units"], 5)
+        self.assertGreaterEqual(listed["products"], 1)
+
+        voided = self.api.void_sale(int(web_sale), "Wrong bags")
+        self.assertTrue(voided.get("success"), voided)
+        db = self.ac._db()
+        try:
+            after_void = db.execute("SELECT stock FROM products WHERE id=?", (web_id,)).fetchone()["stock"]
+            left = db.execute(
+                "SELECT COALESCE(SUM(remaining_qty),0) FROM cost_layers WHERE product_id=?",
+                (web_id,),
             ).fetchone()[0]
         finally:
             db.close()
-        self.assertEqual(copied["copied"], 1)
-        self.assertAlmostEqual(float(before), float(after), places=2)
-        self.assertAlmostEqual(float(use[0]), 1, places=2)
-        self.assertAlmostEqual(float(use[1]), 25, places=2)
-        self.assertAlmostEqual(float(total), 40, places=2)
-        self.assertAlmostEqual(float(stock), 4, places=2)
-        today = date.today().isoformat()
-        report = self.api.accounting_pnl(today, today)
-        self.assertAlmostEqual(float(report["register_cogs"]), 25, places=2)
-        self.assertAlmostEqual(float(report["register_gross"]), 15, places=2)
-        self.assertEqual(int(report["register_uncosted_lines"]), 0)
+        self.assertAlmostEqual(float(after_void), 20, places=2)
+        self.assertAlmostEqual(float(left), 10, places=2)
+
+        returned = self.api.return_sale(
+            int(sale["sale_id"]),
+            [{"sale_item_id": item_id, "quantity": 5}],
+            "Customer changed quantity",
+        )
+        self.assertTrue(returned.get("success"), returned)
+        db = self.ac._db()
+        try:
+            after_return = db.execute(
+                "SELECT stock FROM products WHERE id=?", (desktop_id,),
+            ).fetchone()["stock"]
+            still = db.execute(
+                "SELECT COALESCE(SUM(quantity),0) FROM cost_layer_uses "
+                "WHERE sale_id=? AND COALESCE(reversed,0)=0",
+                (sale["sale_id"],),
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertAlmostEqual(float(after_return), 10, places=2)
+        self.assertAlmostEqual(float(still), 5, places=2)
+
+        supplier = self.api.create_supplier({"name": "QA Mill"})
+        received = self.api.receive_delivery(
+            supplier["id"],
+            [{"product_id": desktop_id, "quantity": 10, "unit_cost": 110}],
+        )
+        self.assertTrue(received.get("success"), received)
+        restarted = self.ac.APIClient()
+        restarted._role = "superadmin"
+        restarted._username = "owner"
+        restarted._user_id = 1
+        again = restarted.create_sale({
+            "items": [{"product_id": desktop_id, "quantity": 1, "unit_price": 200, "total": 200}],
+            "subtotal": 200, "discount": 0, "tax": 0, "total": 200,
+            "payment_method": "Cash", "amount_paid": 200,
+            "client_token": "short-restart",
+        })
+        self.assertTrue(again.get("success"), again)
+
+        race_id = shelf("race", 10)
+        results = []
+
+        def sell(token):
+            client = self.ac.APIClient()
+            client._role = "superadmin"
+            client._username = "owner"
+            client._user_id = 1
+            results.append(client.create_sale({
+                "items": [{"product_id": race_id, "quantity": 8, "unit_price": 200, "total": 1600}],
+                "subtotal": 1600, "discount": 0, "tax": 0, "total": 1600,
+                "payment_method": "Cash", "amount_paid": 1600,
+                "client_token": token,
+            }))
+
+        threads = [
+            threading.Thread(target=sell, args=("race-a",)),
+            threading.Thread(target=sell, args=("race-b",)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(item.get("success") for item in results), results)
+        db = self.ac._db()
+        try:
+            race_stock = db.execute("SELECT stock FROM products WHERE id=?", (race_id,)).fetchone()["stock"]
+            race_cost = db.execute(
+                "SELECT COALESCE(SUM(quantity),0) FROM cost_layer_uses u "
+                "JOIN sales s ON s.id=u.sale_id WHERE u.product_id=? "
+                "AND COALESCE(u.reversed,0)=0 AND COALESCE(s.status,'completed')='completed'",
+                (race_id,),
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertAlmostEqual(float(race_stock), 4, places=2)
+        self.assertAlmostEqual(float(race_cost), 10, places=2)
 
     def test_backup_round_trip_keeps_the_sale_and_its_cost(self):
         from backend.cloud_backup.encryption import decrypt_file, encrypt_file

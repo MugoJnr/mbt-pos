@@ -142,6 +142,8 @@ def compute_financials(db, start: str, end: str) -> dict:
         "cogs": profit["cogs"],
         "uncosted_sales": profit["uncosted_revenue"],
         "uncosted_lines": profit["uncosted_lines"],
+        "uncosted_units": profit.get("uncosted_units", 0),
+        "uncosted_products": profit.get("uncosted_products", 0),
         "profit_note": profit["note"],
         "expenses": expenses,
         "expenses_known": expenses_known,
@@ -199,18 +201,21 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
             "gross_profit": 0.0, "realized_gross_profit": 0.0,
             "unrealized_gross_profit": 0.0, "cogs": 0.0,
             "uncosted_revenue": 0.0, "uncosted_lines": 0,
+            "uncosted_units": 0.0, "uncosted_products": 0,
             "note": "Cost records are not available, so profit is not shown.",
         }
     day = sale_day_sql("s")
     try:
         rows = db.execute(
             f"""SELECT s.id, s.total,
+                      si.product_id,
                       CASE WHEN COALESCE(si.quantity,0)=0 THEN 0
                            ELSE si.total * (COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0))
                                 / si.quantity END AS net_total,
-                      (SELECT COUNT(*) FROM cost_layer_uses u
+                      COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0) AS net_qty,
+                      (SELECT COALESCE(SUM(u.quantity),0) FROM cost_layer_uses u
                        WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                         AND COALESCE(u.reversed,0)=0) AS uses,
+                         AND COALESCE(u.reversed,0)=0) AS covered_qty,
                       (SELECT COALESCE(SUM(u.quantity * u.unit_cost),0) FROM cost_layer_uses u
                        WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
                          AND COALESCE(u.reversed,0)=0) AS cogs
@@ -224,24 +229,35 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         rows = []
     by_sale = {}
     uncosted = 0.0
+    uncosted_units = 0.0
     uncosted_lines = 0
+    products = set()
     for row in rows:
         sale_id = int(row[0])
-        net = float(row[2] or 0)
-        uses = int(row[3] or 0)
-        cogs = float(row[4] or 0)
         sale_total = float(row[1] or 0)
+        product_id = row[2]
+        net = float(row[3] or 0)
+        net_qty = float(row[4] or 0)
+        covered_qty = float(row[5] or 0)
+        cogs = float(row[6] or 0)
         bucket = by_sale.setdefault(
             sale_id, {"revenue": 0.0, "sale_total": sale_total, "cogs": 0.0, "costed": False},
         )
         bucket["sale_total"] = sale_total
-        if uses > 0:
-            bucket["revenue"] += net
+        if net_qty <= 0.0001:
+            continue
+        covered = min(covered_qty, net_qty)
+        gap = round(net_qty - covered, 4)
+        if covered > 0.0001:
+            bucket["revenue"] += net * covered / net_qty
             bucket["cogs"] += cogs
             bucket["costed"] = True
-        else:
-            uncosted += net
+        if gap > 0.0001:
+            uncosted += net * gap / net_qty
             uncosted_lines += 1
+            uncosted_units += gap
+            if product_id:
+                products.add(int(product_id))
     gross = realized = 0.0
     cogs_total = 0.0
     for sale_id, bucket in by_sale.items():
@@ -258,9 +274,12 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
     unrealized = money(gross - realized)
     note = ""
     if uncosted_lines:
+        product_word = "product" if len(products) == 1 else "products"
         note = (
-            f"{uncosted_lines} sold line(s) have no recorded cost, "
-            f"so {money(uncosted):,.2f} of sales is left out of this profit."
+            f"{uncosted_lines} sold line(s) have an incomplete cost, "
+            f"so {money(uncosted):,.2f} of sales is left out of this profit. "
+            f"{round(uncosted_units, 2):,.2f} units across {len(products)} {product_word} "
+            f"still need a buying price."
         )
     return {
         "gross_profit": gross,
@@ -269,6 +288,8 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         "cogs": cogs_total,
         "uncosted_revenue": money(uncosted),
         "uncosted_lines": uncosted_lines,
+        "uncosted_units": round(uncosted_units, 4),
+        "uncosted_products": len(products),
         "note": note,
     }
 
