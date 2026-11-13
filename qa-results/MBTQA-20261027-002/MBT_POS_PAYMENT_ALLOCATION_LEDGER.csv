@@ -1,0 +1,14 @@
+test_id,receipt,total,tenders,debt_balance,status,duplicate
+ST-01,RCP-20261027-0001,1000,"[{""method"": ""Cash"", ""amount"": 1000}]",,200,False
+ST-02,RCP-20261027-0002,1000,"[{""method"": ""M-Pesa"", ""amount"": 1000}]",,200,False
+ST-03,RCP-20261027-0003,1000,"[{""method"": ""Cash"", ""amount"": 400}, {""method"": ""Credit"", ""amount"": 600}]",600.0,200,False
+ST-04,RCP-20261027-0004,1000,"[{""method"": ""M-Pesa"", ""amount"": 400}, {""method"": ""Credit"", ""amount"": 600}]",600.0,200,False
+ST-05,RCP-20261027-0005,1000,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""M-Pesa"", ""amount"": 300}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-06,RCP-20261027-0006,1000,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""Card"", ""amount"": 300}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-07,RCP-20261027-0007,1000,"[{""method"": ""Cash"", ""amount"": 100}, {""method"": ""M-Pesa"", ""amount"": 200}, {""method"": ""Card"", ""amount"": 200}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-08,RCP-20261027-0008,1000,"[{""method"": ""M-Pesa"", ""amount"": 300}, {""method"": ""Bank Transfer"", ""amount"": 200}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-09,RCP-20261027-0009,1000,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""M-Pesa"", ""amount"": 300}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-10,,1000,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""M-Pesa"", ""amount"": 300, ""status"": ""pending""}, {""method"": ""Credit"", ""amount"": 500}]",,400,False
+ST-10,RCP-20261027-0010,1000,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""M-Pesa"", ""amount"": 300}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-11,RCP-20261027-0011,900,"[{""method"": ""Cash"", ""amount"": 200}, {""method"": ""M-Pesa"", ""amount"": 200}, {""method"": ""Credit"", ""amount"": 500}]",500.0,200,False
+ST-12,RCP-20261027-0012,1000,"[{""method"": ""Cash"", ""amount"": 400}, {""method"": ""Credit"", ""amount"": 600}]",600.0,200,False

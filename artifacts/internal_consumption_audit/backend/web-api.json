@@ -1,0 +1,23 @@
+{
+  "db": "C:\\MBT_Build\\qa-isolated-consumption\\data\\mbt_pos.db",
+  "departments_status": 200,
+  "created_status": 200,
+  "created_ok": true,
+  "created_ref": "AUTO-000002",
+  "retry_duplicate": true,
+  "retry_same_id": true,
+  "short_status": 400,
+  "short_error": "Insufficient stock for 'IC-AUDIT Zero Stock Cups': requested 1.0, available 0.0",
+  "before": {
+    "IC-AUDIT-SOAP-500": 18.0,
+    "IC-AUDIT-SOAP-REFILL": 8.0
+  },
+  "after": {
+    "IC-AUDIT-SOAP-500": 17.0,
+    "IC-AUDIT-SOAP-REFILL": 6.0
+  },
+  "history_count": 2,
+  "cashier_create_status": 403,
+  "cashier_view_status": 401,
+  "sales": 0
+}

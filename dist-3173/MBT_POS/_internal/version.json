@@ -1,0 +1,8 @@
+{
+    "version": "3.1.73",
+    "build": "RC-2026-10-27-v3.1.73",
+    "released": "2026-10-27",
+    "release_notes": "A cashier or viewer no longer sees inventory value or product cost. Dashboard profit uses the cost layers the till consumed, and sales with no cost layer stay uncosted. An administrator can remove a product from the list and the edit window. A product with stock or history is archived so old receipts remain. A product with no history is deleted. Includes the 3.1.72 startup fix.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.73/MBT_POS_Setup.exe"
+}

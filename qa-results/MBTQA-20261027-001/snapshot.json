@@ -1,0 +1,311 @@
+{
+  "run": "MBTQA-20261027-001",
+  "date": "2026-10-27",
+  "products": [
+    {
+      "id": 1,
+      "name": "QA-Product-A",
+      "stock": 7,
+      "is_active": 0
+    },
+    {
+      "id": 2,
+      "name": "QA-Product-B",
+      "stock": 7,
+      "is_active": 1
+    },
+    {
+      "id": 3,
+      "name": "QA-Product-C",
+      "stock": 2,
+      "is_active": 1
+    },
+    {
+      "id": 4,
+      "name": "QA-Decimal-Product",
+      "stock": 8.13,
+      "is_active": 1
+    },
+    {
+      "id": 5,
+      "name": "QA-Layered-Product",
+      "stock": 20,
+      "is_active": 1
+    },
+    {
+      "id": 6,
+      "name": "QA-Viewer-Should-Fail",
+      "stock": 1,
+      "is_active": 1
+    }
+  ],
+  "sales": [
+    {
+      "receipt_number": "RCP-20261027-0001",
+      "total": 100.0,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0002",
+      "total": 525.0,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0003",
+      "total": 54.8,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0004",
+      "total": 140.0,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0005",
+      "total": 1000.0,
+      "payment_method": "Mixed",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0006",
+      "total": 1000.0,
+      "payment_method": "Credit Sale",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0007",
+      "total": 2400.0,
+      "payment_method": "cash",
+      "status": "voided",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0008",
+      "total": 75.0,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261027-0009",
+      "total": 250.0,
+      "payment_method": "cash",
+      "status": "completed",
+      "sale_date": "2026-10-27"
+    },
+    {
+      "receipt_number": "RCP-20261026-0001",
+      "total": 75.0,
+      "payment_method": "Cash",
+      "status": "completed",
+      "sale_date": "2026-10-26"
+    }
+  ],
+  "movements": [
+    {
+      "product_id": 1,
+      "movement_type": "INITIAL",
+      "qty_change": 20.0
+    },
+    {
+      "product_id": 2,
+      "movement_type": "INITIAL",
+      "qty_change": 12.0
+    },
+    {
+      "product_id": 3,
+      "movement_type": "INITIAL",
+      "qty_change": 8.0
+    },
+    {
+      "product_id": 4,
+      "movement_type": "INITIAL",
+      "qty_change": 10.0
+    },
+    {
+      "product_id": 6,
+      "movement_type": "INITIAL",
+      "qty_change": 1.0
+    },
+    {
+      "product_id": 5,
+      "movement_type": "PURCHASE",
+      "qty_change": 10.0
+    },
+    {
+      "product_id": 5,
+      "movement_type": "PURCHASE",
+      "qty_change": 10.0
+    },
+    {
+      "product_id": 1,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 1,
+      "movement_type": "SALE",
+      "qty_change": -2.0
+    },
+    {
+      "product_id": 2,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 3,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 4,
+      "movement_type": "SALE",
+      "qty_change": -1.37
+    },
+    {
+      "product_id": 2,
+      "movement_type": "SALE",
+      "qty_change": -2.0
+    },
+    {
+      "product_id": 3,
+      "movement_type": "SALE",
+      "qty_change": -4.0
+    },
+    {
+      "product_id": 1,
+      "movement_type": "SALE",
+      "qty_change": -10.0
+    },
+    {
+      "product_id": 5,
+      "movement_type": "SALE",
+      "qty_change": -12.0
+    },
+    {
+      "product_id": 2,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 5,
+      "movement_type": "VOID_RESTORE",
+      "qty_change": 12.0
+    },
+    {
+      "product_id": 3,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 2,
+      "movement_type": "SALE",
+      "qty_change": -1.0
+    },
+    {
+      "product_id": 4,
+      "movement_type": "INTERNAL_USE",
+      "qty_change": -0.5
+    }
+  ],
+  "layers": [
+    {
+      "product_id": 1,
+      "original_qty": 20.0,
+      "remaining_qty": 7.0,
+      "unit_cost": 60.0,
+      "source_type": "opening"
+    },
+    {
+      "product_id": 2,
+      "original_qty": 12.0,
+      "remaining_qty": 7.0,
+      "unit_cost": 45.0,
+      "source_type": "opening"
+    },
+    {
+      "product_id": 3,
+      "original_qty": 8.0,
+      "remaining_qty": 2.0,
+      "unit_cost": 180.0,
+      "source_type": "opening"
+    },
+    {
+      "product_id": 4,
+      "original_qty": 10.0,
+      "remaining_qty": 8.129999999999999,
+      "unit_cost": 25.0,
+      "source_type": "opening"
+    },
+    {
+      "product_id": 6,
+      "original_qty": 1.0,
+      "remaining_qty": 1.0,
+      "unit_cost": 0.0,
+      "source_type": "opening"
+    },
+    {
+      "product_id": 5,
+      "original_qty": 10.0,
+      "remaining_qty": 10.0,
+      "unit_cost": 100.0,
+      "source_type": "purchase"
+    },
+    {
+      "product_id": 5,
+      "original_qty": 10.0,
+      "remaining_qty": 10.0,
+      "unit_cost": 140.0,
+      "source_type": "purchase"
+    }
+  ],
+  "debts": [
+    {
+      "id": 1,
+      "balance": 0.0,
+      "status": "paid",
+      "total_amount": 1000.0
+    }
+  ],
+  "profit": {
+    "profit": 1100.55,
+    "revenue_costed": 3219.8,
+    "cogs": 2119.25,
+    "uncosted_revenue": 0.0,
+    "uncosted_lines": 0,
+    "costed_lines": 11
+  },
+  "expected": {
+    "layered_remaining_after_void": 20,
+    "fifo_receipt_cogs": 1280,
+    "period": {
+      "profit": 1100.55,
+      "revenue_costed": 3219.8,
+      "cogs": 2119.25,
+      "uncosted_revenue": 0.0,
+      "uncosted_lines": 0,
+      "costed_lines": 11
+    }
+  },
+  "report_summary": {
+    "avg_transaction": 357.7555555555556,
+    "cogs": 2119.25,
+    "profit": 1100.55,
+    "total_discounts": 10.0,
+    "total_revenue": 3219.8,
+    "total_tax": 0.0,
+    "total_transactions": 9,
+    "uncosted_lines": 0,
+    "uncosted_revenue": 0.0
+  }
+}

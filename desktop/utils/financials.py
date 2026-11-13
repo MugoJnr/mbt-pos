@@ -103,9 +103,9 @@ def compute_financials(db, start: str, end: str) -> dict:
         paid_sales = money(paid_sales + paid)
         new_credit = money(new_credit + max(0.0, value - paid))
 
-    repayments = money(sum(amount for amount, _method in later_in_period))
-    collections = money(float(tender.get("collected") or 0) + repayments)
     extra = repayment_method_totals(db, start, end)
+    repayments = money(sum(extra.values()))
+    collections = money(float(tender.get("collected") or 0) + repayments)
     for key, amount in extra.items():
         field = f"{key}_collected"
         tender[field] = money(float(tender.get(field) or 0) + amount)

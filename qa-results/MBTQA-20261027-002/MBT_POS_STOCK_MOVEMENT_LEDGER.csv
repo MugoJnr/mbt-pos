@@ -1,0 +1,14 @@
+test_id,product,before,after,expected_change,actual_change
+ST-01,QA-Tender-Item,500.0,490.0,-10,-10.0
+ST-02,QA-Tender-Item,490.0,480.0,-10,-10.0
+ST-03,QA-Tender-Item,480.0,470.0,-10,-10.0
+ST-04,QA-Tender-Item,470.0,460.0,-10,-10.0
+ST-05,QA-Tender-Item,460.0,450.0,-10,-10.0
+ST-06,QA-Tender-Item,450.0,440.0,-10,-10.0
+ST-07,QA-Tender-Item,440.0,430.0,-10,-10.0
+ST-08,QA-Tender-Item,430.0,420.0,-10,-10.0
+ST-09,QA-Tender-Item,420.0,410.0,-10,-10.0
+ST-10,QA-Tender-Item,410.0,410.0,-10,0.0
+ST-10,QA-Tender-Item,410.0,400.0,-10,-10.0
+ST-11,QA-Tender-Item,400.0,390.0,-10,-10.0
+ST-12,QA-Tender-Item,390.0,380.0,-10,-10.0

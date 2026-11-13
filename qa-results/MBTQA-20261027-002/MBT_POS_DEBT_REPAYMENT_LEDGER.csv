@@ -1,0 +1,4 @@
+invoice,payment,balance_after,status
+7,100,400.0,200
+7,150,250.0,200
+7,250,0.0,200

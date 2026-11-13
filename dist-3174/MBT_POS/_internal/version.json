@@ -1,0 +1,8 @@
+{
+    "version": "3.1.74",
+    "build": "RC-2026-10-28-v3.1.74",
+    "released": "2026-10-28",
+    "release_notes": "One sale can take cash, M-Pesa, card, bank transfer, and a customer-credit remainder. Only confirmed payments count. A pending M-Pesa line is not collected. A return reduces the outstanding debt before any cash is refunded. A manager must enter the Super-Admin PIN before a void request changes the receipt. A signed-in Super Admin is not asked again. Dashboard profit uses the cost layers the sale consumed. A credit sale needs a customer. A zero quantity is refused. Includes the 3.1.73 inventory-value, product-removal, and startup fixes.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos/releases/download/v3.1.74/MBT_POS_Setup.exe"
+}

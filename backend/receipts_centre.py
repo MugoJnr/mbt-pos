@@ -153,7 +153,7 @@ def list_receipts(
                 "kind": "sale",
                 "id": row["id"],
                 "reference": row["receipt_number"],
-                "at": row["sale_date"] or row["created_at"],
+                "at": row["created_at"] or row["sale_date"],
                 "entered_at": row["created_at"],
                 "business_date": row["sale_date"] or "",
                 "user": row["cashier_name"] or "",

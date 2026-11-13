@@ -1,0 +1,562 @@
+﻿[
+    {
+        "path":  ".gitignore",
+        "size":  1212,
+        "status":  "ok"
+    },
+    {
+        "path":  ".lovable/project.json",
+        "size":  437,
+        "status":  "ok"
+    },
+    {
+        "path":  ".prettierignore",
+        "size":  343,
+        "status":  "ok"
+    },
+    {
+        "path":  ".prettierrc",
+        "size":  317,
+        "status":  "ok"
+    },
+    {
+        "path":  "AGENTS.md",
+        "size":  1724,
+        "status":  "ok"
+    },
+    {
+        "path":  "bun.lock",
+        "size":  574087,
+        "status":  "ok"
+    },
+    {
+        "path":  "bunfig.toml",
+        "size":  1679,
+        "status":  "ok"
+    },
+    {
+        "path":  "components.json",
+        "size":  1526,
+        "status":  "ok"
+    },
+    {
+        "path":  "eslint.config.js",
+        "size":  4433,
+        "status":  "ok"
+    },
+    {
+        "path":  "package.json",
+        "size":  9751,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/layout/AppSidebar.tsx",
+        "size":  20823,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/layout/AppTopbar.tsx",
+        "size":  14859,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/layout/ModulePage.tsx",
+        "size":  12907,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/layout/PageShell.tsx",
+        "size":  7064,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/layout/StatCard.tsx",
+        "size":  8324,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/accordion.tsx",
+        "size":  7237,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/alert-dialog.tsx",
+        "size":  14960,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/alert.tsx",
+        "size":  5603,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/aspect-ratio.tsx",
+        "size":  518,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/avatar.tsx",
+        "size":  5007,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/badge.tsx",
+        "size":  4016,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/breadcrumb.tsx",
+        "size":  9624,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/button.tsx",
+        "size":  6757,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/calendar.tsx",
+        "size":  25346,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/card.tsx",
+        "size":  6351,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/carousel.tsx",
+        "size":  21557,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/chart.tsx",
+        "size":  36281,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/checkbox.tsx",
+        "size":  3737,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/collapsible.tsx",
+        "size":  1230,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/command.tsx",
+        "size":  17394,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/context-menu.tsx",
+        "size":  26579,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/dialog.tsx",
+        "size":  12998,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/drawer.tsx",
+        "size":  10584,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/dropdown-menu.tsx",
+        "size":  27349,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/form.tsx",
+        "size":  14928,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/hover-card.tsx",
+        "size":  4492,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/input-otp.tsx",
+        "size":  7609,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/input.tsx",
+        "size":  2771,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/label.tsx",
+        "size":  2559,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/menubar.tsx",
+        "size":  30468,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/navigation-menu.tsx",
+        "size":  18564,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/pagination.tsx",
+        "size":  9637,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/popover.tsx",
+        "size":  4888,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/progress.tsx",
+        "size":  2807,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/radio-group.tsx",
+        "size":  5035,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/resizable.tsx",
+        "size":  5538,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/scroll-area.tsx",
+        "size":  5826,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/select.tsx",
+        "size":  20542,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/separator.tsx",
+        "size":  2577,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/sheet.tsx",
+        "size":  15188,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/sidebar.tsx",
+        "size":  83631,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/skeleton.tsx",
+        "size":  855,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/slider.tsx",
+        "size":  3705,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/sonner.tsx",
+        "size":  2606,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/switch.tsx",
+        "size":  4157,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/table.tsx",
+        "size":  9788,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/tabs.tsx",
+        "size":  6928,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/textarea.tsx",
+        "size":  2393,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/toggle-group.tsx",
+        "size":  6303,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/toggle.tsx",
+        "size":  5481,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/components/ui/tooltip.tsx",
+        "size":  4631,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/hooks/use-mobile.tsx",
+        "size":  1996,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/lib/error-capture.ts",
+        "size":  3274,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/lib/error-page.ts",
+        "size":  4807,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/lib/lovable-error-reporting.ts",
+        "size":  6047,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/lib/theme.tsx",
+        "size":  6682,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/lib/utils.ts",
+        "size":  616,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routeTree.gen.ts",
+        "size":  100326,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/router.tsx",
+        "size":  1424,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/README.md",
+        "size":  2990,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/__root.tsx",
+        "size":  20616,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.analytics.tsx",
+        "size":  2180,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.audit-logs.tsx",
+        "size":  2179,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.backups.tsx",
+        "size":  2156,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.devices.tsx",
+        "size":  2258,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.feature-flags.tsx",
+        "size":  2141,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.index.tsx",
+        "size":  20344,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.licenses.tsx",
+        "size":  2240,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.notifications.tsx",
+        "size":  2216,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.reports.tsx",
+        "size":  2259,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.settings.tsx",
+        "size":  2176,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.shops.tsx",
+        "size":  2144,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.system-health.tsx",
+        "size":  2287,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.updates.tsx",
+        "size":  2124,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.admin.users.tsx",
+        "size":  2091,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_admin.tsx",
+        "size":  2548,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.account.tsx",
+        "size":  2290,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.backups.tsx",
+        "size":  2168,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.dashboard.tsx",
+        "size":  38740,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.devices.tsx",
+        "size":  2181,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.inventory.tsx",
+        "size":  2403,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.license.tsx",
+        "size":  2096,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.notifications.tsx",
+        "size":  2289,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.reports.tsx",
+        "size":  2121,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.sales.tsx",
+        "size":  2223,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.settings.tsx",
+        "size":  2375,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.support.tsx",
+        "size":  2106,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_app.tsx",
+        "size":  2536,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.forgot-password.tsx",
+        "size":  4085,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.login.tsx",
+        "size":  11537,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.register.tsx",
+        "size":  6186,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.reset-password.tsx",
+        "size":  4273,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.session-expired.tsx",
+        "size":  3177,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.tsx",
+        "size":  10840,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.two-factor.tsx",
+        "size":  5258,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/_auth.verify-email.tsx",
+        "size":  3489,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/routes/index.tsx",
+        "size":  662,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/server.ts",
+        "size":  7368,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/start.ts",
+        "size":  2203,
+        "status":  "ok"
+    },
+    {
+        "path":  "src/styles.css",
+        "size":  24601,
+        "status":  "ok"
+    },
+    {
+        "path":  "tsconfig.json",
+        "size":  2318,
+        "status":  "ok"
+    },
+    {
+        "path":  "vite.config.ts",
+        "size":  2955,
+        "status":  "ok"
+    }
+]

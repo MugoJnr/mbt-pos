@@ -94,8 +94,13 @@ _MEASURED_UNITS = {
 
 
 def qty_step_for_unit(unit, fallback=None) -> float:
-    """Piece goods move one at a time. Weight and volume use the shop wheel step."""
+    """Piece goods move one at a time. Weight and volume use the shop wheel step.
+
+    A blank unit has not been classified, so the cart keeps the decimals the cashier typed.
+    """
     name = str(unit or '').strip().lower()
+    if not name:
+        return 0.01
     if name in _MEASURED_UNITS:
         try:
             step = float(_POS_QTY_STEP if fallback is None else fallback)

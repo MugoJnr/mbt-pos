@@ -1,0 +1,11 @@
+Isolated pytest on C:\MBT_Build\mbt-pos-port
+MBT_DATA_ROOT=C:\MBT_Build\qa-isolated-20261020
+PROGRAMDATA=C:\MBT_Build\qa-isolated-20261020\programdata
+Result: 546 passed, 92 warnings, 5 subtests, 95.41s, exit 0
+
+Live till PID 14596 still running, started 2026-10-20 17:57:19.
+Shop database size 2547712, mtime 2026-10-20 17:58:22,
+SHA-256 F5B68B5262461846461233EFDC78820FAD0714F9258D85E1386B37865A96F12D.
+Licence file size 69632. It was not opened.
+
+Release verdict: NOT READY. No installer was built and the portal was not deployed.

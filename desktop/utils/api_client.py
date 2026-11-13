@@ -4590,10 +4590,11 @@ class APIClient:
                     store_credit=credit_applied,
                 ))
             if electronic_paid > 0.009 and emethod and 'split:' not in notes.lower():
-                cash_bit = round(float(data.get('cash_paid') or (amount_paid - electronic_paid)), 2)
-                notes = (
-                    notes + f' | Split: {emethod} {electronic_paid:,.2f} + Cash {cash_bit:,.2f}'
-                ).strip(' |')
+                cash_bit = round(float(data.get('cash_paid') or 0), 2)
+                if cash_bit > 0.009:
+                    notes = (
+                        notes + f' | Split: {emethod} {electronic_paid:,.2f} + Cash {cash_bit:,.2f}'
+                    ).strip(' |')
             if is_backdated and 'business day' not in notes.lower():
                 notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
             from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa
@@ -9234,12 +9235,11 @@ class APIClient:
                             f"requested {qty}, available {stock}"
                         )
                     }
-                unit_cost = item.get('unit_cost')
-                if unit_cost is None or unit_cost == '':
-                    unit_cost = float(prod['cost_price'] or 0)
+                supplied = item.get('unit_cost')
+                if supplied is None or supplied == '':
+                    unit_cost = 0.0
                 else:
-                    unit_cost = float(unit_cost)
-                unit_cost = round(unit_cost, 4)
+                    unit_cost = round(float(supplied), 4)
                 line_total = round(qty * unit_cost, 2)
                 selling = round(float(prod['price'] or 0), 4)
                 opportunity = round(qty * selling, 2)
@@ -9273,8 +9273,11 @@ class APIClient:
                 if covered > 0:
                     unit_cost = round(known / covered, 4)
                     line_total = known
-                    opportunity = round(qty * selling, 2)
-                    foregone = round(opportunity - line_total, 2)
+                else:
+                    unit_cost = 0.0
+                    line_total = 0.0
+                opportunity = round(qty * selling, 2)
+                foregone = round(opportunity - line_total, 2)
                 total_cost += line_total
                 priced_rows.append(
                     (prod, qty, unit_cost, line_total, old_stock, selling, opportunity, foregone)

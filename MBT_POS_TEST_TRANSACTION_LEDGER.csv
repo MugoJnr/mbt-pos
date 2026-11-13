@@ -1,0 +1,12 @@
+actor,actual_cogs,actual_debt,actual_profit,actual_stock,expected_cogs,expected_profit,expected_stock,interface,operation,product,quantity,receipt,result,role,run_id,scenario_id,total,unit_price
+qa-super,,,,20.0,,,20,dashboard-api,create_product,QA-Product-A,20,,PASS,superadmin,MBTQA-20261027-001,PROD-QA-A,0,100
+qa-super,,,,12.0,,,12,dashboard-api,create_product,QA-Product-B,12,,PASS,superadmin,MBTQA-20261027-001,PROD-QA-B,0,75
+qa-super,,,,8.0,,,8,dashboard-api,create_product,QA-Product-C,8,,PASS,superadmin,MBTQA-20261027-001,PROD-QA-C,0,250
+qa-super,,,,10.0,,,10,dashboard-api,create_product,QA-Decimal-Product,10,,PASS,superadmin,MBTQA-20261027-001,PROD-QA-DEC,0,40
+qa-super,,,,0.0,,,0,dashboard-api,create_product,QA-Layered-Product,0,,PASS,superadmin,MBTQA-20261027-001,PROD-QA-LAYER,0,200
+qa-cashier,,,,20.0,,,20,dashboard-api,supplier_receipt,QA-Layered-Product,20,,recorded,cashier,MBTQA-20261027-001,RCV-FIFO,2400,
+qa-cashier,,,,19.0,,,19,dashboard-api,cash_sale,QA-Product-A,1,RCP-20261027-0001,200,cashier,MBTQA-20261027-001,SALE-A,100,100
+qa-cashier,,700.0,,,,,,dashboard-api,debt_payment,,,,200,cashier,MBTQA-20261027-001,PAY-300,300,
+qa-cashier,,500.0,,,,,,dashboard-api,debt_payment,,,,200,cashier,MBTQA-20261027-001,PAY-200,200,
+qa-cashier,,0.0,,,,,,dashboard-api,debt_payment,,,,200,cashier,MBTQA-20261027-001,PAY-500,500,
+qa-cashier,1280.0,,1120.0,,1280,1120,,dashboard-api,fifo_sale,QA-Layered-Product,12,,200,cashier,MBTQA-20261027-001,FIFO-12,2400,200

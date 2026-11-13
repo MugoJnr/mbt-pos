@@ -1,0 +1,77 @@
+{
+  "db_path": "C:\\MBT_Build\\qa-isolated-consumption\\data\\mbt_pos.db",
+  "before": {
+    "IC-AUDIT-SOAP-500": 20.0,
+    "IC-AUDIT-SOAP-1L": 5.0
+  },
+  "after": {
+    "IC-AUDIT-SOAP-500": 18.0,
+    "IC-AUDIT-SOAP-1L": 4.0
+  },
+  "recent": [
+    {
+      "reference_no": "AUTO-000001",
+      "voided": 0
+    }
+  ],
+  "sales": 0,
+  "dialogs": [
+    "IC-AUDIT Zero Stock Cups has no stock available.",
+    "Reference AUTO-000001\nTotal cost: KES 140.00\nStock has been reduced."
+  ],
+  "shots": [
+    {
+      "file": "baseline-new-consumption.png",
+      "bytes": 38265
+    },
+    {
+      "file": "search-soap-matches.png",
+      "bytes": 37349
+    },
+    {
+      "file": "search-no-results.png",
+      "bytes": 33963
+    },
+    {
+      "file": "search-sku-with-spaces.png",
+      "bytes": 36225
+    },
+    {
+      "file": "batch-two-products.png",
+      "bytes": 39590
+    },
+    {
+      "file": "department-dropdown-open.png",
+      "bytes": 39590
+    },
+    {
+      "file": "reason-dropdown-open.png",
+      "bytes": 6009
+    },
+    {
+      "file": "dialog-7.png",
+      "bytes": 4295
+    },
+    {
+      "file": "after-zero-stock-attempt.png",
+      "bytes": 39806
+    },
+    {
+      "file": "dialog-9.png",
+      "bytes": 5277
+    },
+    {
+      "file": "after-save.png",
+      "bytes": 38019
+    },
+    {
+      "file": "history.png",
+      "bytes": 23861
+    },
+    {
+      "file": "report.png",
+      "bytes": 27267
+    }
+  ],
+  "lines_left": 0
+}

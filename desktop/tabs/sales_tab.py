@@ -2391,8 +2391,14 @@ class SalesTab(QWidget):
 
     def _qty(self, idx, v):
         if 0 <= idx < len(self.cart):
+            try:
+                requested = float(v)
+            except (TypeError, ValueError):
+                return
+            if requested <= 0:
+                return
             self._cart_select_idx = idx
-            q = round_qty(v, qty_step_for_unit(self.cart[idx].get('unit')), minimum=0.01)
+            q = round_qty(requested, qty_step_for_unit(self.cart[idx].get('unit')), minimum=0.01)
             self.cart[idx]['quantity'] = round(q, 2)
             self._apply_line_total(self.cart[idx])
             if hasattr(self, '_cart_list'):

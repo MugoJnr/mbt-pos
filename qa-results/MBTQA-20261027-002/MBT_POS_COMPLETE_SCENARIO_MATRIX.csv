@@ -1,0 +1,16 @@
+test_id,feature,role,interface,expected,actual,status,evidence
+ST-01,Mixed tender,cashier,dashboard-api,"One sale, credit 0",status 200 debt None,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-02,Mixed tender,cashier,dashboard-api,"One sale, credit 0",status 200 debt None,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-03,Mixed tender,cashier,dashboard-api,"One sale, credit 600",status 200 debt 600.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-04,Mixed tender,cashier,dashboard-api,"One sale, credit 600",status 200 debt 600.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-05,Mixed tender,cashier,dashboard-api,"One sale, credit 500",status 200 debt 500.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-06,Mixed tender,cashier,dashboard-api,"One sale, credit 500",status 200 debt 500.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-07,Mixed tender,cashier,dashboard-api,"One sale, credit 500",status 200 debt 500.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-08,Mixed tender,cashier,dashboard-api,"One sale, credit 500",status 200 debt 500.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-09,"Repay 100, 150, 250",cashier,dashboard-api,"Balances 400, 250, 0","[400.0, 250.0, 0.0]",PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-09-REV,Repayments are not new sales,cashier,dashboard-api,Sale count unchanged,sales=9 before=9,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-10,Pending M-Pesa is not collected,cashier,dashboard-api,"Pending rejected, confirmed sale once",pending=400 confirmed=200 duplicate=None,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-11,Discounted mixed tender,cashier,dashboard-api,Allocations match 900,status 200 debt 500.0,PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+ST-12,Partial return after mixed tender,cashier,dashboard-api,Cashier denied. Admin return cuts debt 600 to 400 and restocks 2.,"cashier 400 admin 200 debt 400.0 stock 382 body {'cash_refund': 0.0, 'debt_reduced': 200.0, 'original_receipt': 'RCP-20261027-0012', 'receipt_number': 'RET-20261027194916144204-12', 'refund_total': 200.0, 'return_sale_id': 13, 'success': True}",PASS,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+SPLIT-CART,Split one cart into separate bills,cashier,dashboard-api,A dedicated cart-split action,"Not supported. Two checkouts are used instead, and each quantity is sold once.",NOT SUPPORTED,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db
+REAL-MPESA,Safaricom callback,cashier,dashboard-api,Gateway confirmation,"Not sent. M-Pesa amounts here are recorded tenders, not Daraja charges.",NOT SUPPORTED,C:\MBT_Build\qa-mixed-tender-20261027\shop\data\mbt_pos.db

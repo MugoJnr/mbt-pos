@@ -1,0 +1,11 @@
+Branch: port/controlled-master
+Commit tested: acf7a3a68fae94184ad8c50d2c67fb98e7d38444
+Isolation: MBT_DATA_ROOT=C:\MBT_Build\qa-isolated-20261020
+PROGRAMDATA for the pytest process: C:\MBT_Build\qa-isolated-20261020\programdata
+Command: C:\MBT_Build\_python311\python.exe -m pytest -q --tb=line -p no:cacheprovider
+Result: 525 passed, 0 failed, 92 warnings, 5 subtests passed
+Duration: 121.76s
+Exit code: 0
+Earlier stopped run: 40 failed, 430 passed, maxfail=40, exit 1
+Live shop db after the run: size 2547712, mtime 2026-10-20 17:58:22, sha256 f5b68b5262461846461233efdc78820fad0714f9258d85e1386b37865a96f12d
+Live till: PID 14596, started 2026-10-20 17:57:19, still running
