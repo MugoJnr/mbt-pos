@@ -3,6 +3,6 @@
     "build": "RC-2026-11-15-v3.1.86",
     "released": "2026-11-15",
     "release_notes": "Business issues show missing buying prices, negative stock, short payments, unbalanced journals and sync delays without stopping a sale. Cashiers do not see buying prices or profit.",
-    "checksum_sha256": "",
+    "checksum_sha256": "95c56c9b4e440e9877747024d05328bac5a6a22e1cb56ebff5a14395908eb77b",
     "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.86/MBT_POS_Setup.exe"
 }
