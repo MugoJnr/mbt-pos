@@ -4,9 +4,13 @@ The dashboard reports the result. It does not download or install anything.
 """
 import json
 import os
+import urllib.error
 import urllib.request
 
-GITHUB_LATEST = "https://api.github.com/repos/MugoJnr/mbt-pos/releases/latest"
+from backend.release_repos import RELEASE_REPOS, release_api_url
+
+# Kept so older diagnostics still name the feed the dashboard tries first.
+GITHUB_LATEST = release_api_url(RELEASE_REPOS[0])
 
 
 def parse_version(value) -> tuple | None:
@@ -125,20 +129,37 @@ def load_release_feed() -> tuple[dict | None, bool]:
             return {"version": ""}, True
         parsed.setdefault("source", "controlled test feed")
         return parsed, True
-    try:
-        request = urllib.request.Request(
-            GITHUB_LATEST,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "MBT-POS-dashboard",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=4) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        if isinstance(payload, dict) and payload.get("tag_name"):
-            return _release_from_github(payload), True
-    except Exception:
-        pass
+    best = None
+    saw_feed = False
+    for repo in RELEASE_REPOS:
+        try:
+            request = urllib.request.Request(
+                release_api_url(repo),
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "MBT-POS-dashboard",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=4) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            # 404 before the first public release, or 404 once the source repo is private.
+            continue
+        except Exception:
+            continue
+        if not isinstance(payload, dict) or not payload.get("tag_name"):
+            continue
+        saw_feed = True
+        parsed = _release_from_github(payload)
+        parsed["source"] = f"GitHub releases ({repo})"
+        remote = parse_version(parsed.get("version"))
+        current = parse_version((best or {}).get("version"))
+        if best is None or (remote and current and remote > current) or (remote and not current):
+            best = parsed
+    if best is not None:
+        return best, True
+    if saw_feed:
+        return None, True
     try:
         from backend.cloud.update_center import get_update_center
         latest = get_update_center().get_latest()

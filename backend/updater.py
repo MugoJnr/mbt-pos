@@ -2,11 +2,13 @@
 MBT POS — Auto Update Engine
 MugoByte Technologies | mugobyte.com
 
-Checks GitHub Releases for a newer version, downloads it silently
-in the background, verifies SHA-256, and installs when POS is idle.
+Checks the public releases repository for a newer version, downloads it
+silently in the background, verifies SHA-256, and installs when POS is idle.
+The source repository is only a fallback, so tills keep updating after
+MugoJnr/mbt-pos is made private.
 
 Flow:
-  1. 60s after startup → check GitHub API for latest release
+  1. 60s after startup → check the public releases feed, then the legacy one
   2. If newer → download installer (resumable) to TEMP / updates folder
   3. Verify SHA-256 (release metadata or sidecar asset)
   4. When idle (no cart/modal/critical UI) → silent install via elevated
@@ -38,20 +40,23 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# ── GitHub repo — change to your actual repo ──────────────────────────────────
-GITHUB_REPO     = "MugoJnr/mbt-pos"
-GITHUB_API      = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-ASSET_NAME      = "MBT_POS_Setup.exe"
-GITHUB_LATEST_DOWNLOAD = (
-    f"https://github.com/{GITHUB_REPO}/releases/latest/download/{ASSET_NAME}"
+# Public installer feed first, legacy source repo second. See release_repos.py.
+from backend.release_repos import (  # noqa: E402
+    ASSET_NAME,
+    CHECKSUM_ASSET_NAMES,
+    PUBLIC_RELEASE_REPO,
+    RELEASE_REPOS,
+    latest_installer_url,
+    pick_best_release,
+    release_api_url,
 )
-CHECKSUM_ASSET_NAMES = (
-    'MBT_POS_Setup.exe.sha256',
-    'MBT_POS_Setup.sha256',
-    'checksums.sha256',
-    'SHA256SUMS',
-    'checksums.txt',
-)
+
+GITHUB_REPO = PUBLIC_RELEASE_REPO
+GITHUB_API = release_api_url(PUBLIC_RELEASE_REPO)
+GITHUB_LATEST_DOWNLOAD = latest_installer_url(PUBLIC_RELEASE_REPO)
+# A private repo, or a public repo with no releases yet, answers 404.
+# 403 is also used for rate limits, so it is retried like any other error.
+_MISSING_RELEASE_STATUS = frozenset({404})
 # Broken onefile release — never offer or install (Python DLL error on update)
 BLOCKED_VERSIONS = frozenset({'2.3.5'})
 
@@ -906,15 +911,29 @@ def _parse_version_from_download_url(url: str) -> str:
     return m.group(1).lstrip('v').strip()
 
 
-def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
+def _http_status(exc: BaseException) -> int | None:
+    """Status from urllib or requests, when the failure was an HTTP response."""
+    code = getattr(exc, 'code', None)
+    if isinstance(code, int):
+        return code
+    response = getattr(exc, 'response', None)
+    status = getattr(response, 'status_code', None)
+    return status if isinstance(status, int) else None
+
+
+def fetch_release_via_github_redirect(
+        headers: dict | None = None, repo: str | None = None) -> dict:
     """
     Resolve latest release without api.github.com (often blocked on shop LANs).
 
     Follows releases/latest/download → .../download/vX.Y.Z/MBT_POS_Setup.exe
     and loads checksum from the published .sha256 sidecar on github.com.
+    ``repo`` defaults to the public releases repository.
     """
     headers = dict(headers or {})
     headers.setdefault('User-Agent', 'MBT-POS/update-check')
+    repo = repo or PUBLIC_RELEASE_REPO
+    download_url = latest_installer_url(repo)
     asset_url = ''
     version = ''
     redirect_urls: list[str] = []
@@ -922,7 +941,7 @@ def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
     try:
         import requests
         resp = requests.head(
-            GITHUB_LATEST_DOWNLOAD,
+            download_url,
             headers=headers,
             timeout=REQUEST_TIMEOUT,
             allow_redirects=True,
@@ -934,7 +953,7 @@ def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
         logger.debug('redirect HEAD via requests failed: %s', e)
         try:
             req = urllib.request.Request(
-                GITHUB_LATEST_DOWNLOAD, method='HEAD', headers=headers)
+                download_url, method='HEAD', headers=headers)
             with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
                 if resp.url:
                     redirect_urls.append(resp.url)
@@ -958,6 +977,7 @@ def fetch_release_via_github_redirect(headers: dict | None = None) -> dict:
         'asset_url': asset_url,
         'min_required_version': '0.0.0',
         'checksum_sha256': checksum,
+        'repo': repo,
     }
 
 
@@ -1280,9 +1300,10 @@ class UpdateChecker:
 
     def _fetch_release_info(self) -> dict:
         """
-        Fetch latest release from GitHub API, with Portal Update Center fallback.
+        Fetch the latest release from the public feed, then the legacy feed.
+
         Returns dict with keys: version, notes, asset_url, min_required_version,
-        checksum_sha256
+        checksum_sha256, repo. Portal Update Center is the last fallback.
         """
         _ensure_ssl_certs()
         headers = {
@@ -1300,87 +1321,37 @@ class UpdateChecker:
         except Exception:
             cloud = None
 
-        for attempt in range(1, FETCH_RETRIES + 1):
-            try:
-                data = self._http_get_json(GITHUB_API, headers)
-                if not data:
-                    continue
-                tag     = data.get('tag_name', '0.0.0')
-                version = tag.lstrip('v')
-                notes   = data.get('body', '')[:2000]
-                assets  = data.get('assets', []) or []
-
-                asset_url = ''
-                for asset in assets:
-                    if asset.get('name', '').lower() == ASSET_NAME.lower():
-                        asset_url = asset.get('browser_download_url', '')
-                        size = int(asset.get('size') or 0)
-                        if size > MIN_INSTALLER_BYTES:
-                            self._expected_bytes = size
-                        break
-
-                # Prefer cloud download URL when GitHub asset missing
-                if not asset_url and cloud and cloud.get('download_url'):
-                    asset_url = cloud.get('download_url') or ''
-                    notes = notes or (cloud.get('release_notes') or '')
-
-                min_version = '0.0.0'
-                if '[min_version:' in notes:
-                    try:
-                        start = notes.index('[min_version:') + len('[min_version:')
-                        end   = notes.index(']', start)
-                        min_version = notes[start:end].strip()
-                    except Exception:
-                        pass
-                if cloud and cloud.get('min_version'):
-                    min_version = str(cloud.get('min_version') or min_version)
-
-                checksum = resolve_release_checksum(
-                    notes, assets, asset_url, headers, cloud_checksum)
-
-                if not asset_url:
-                    logger.warning(
-                        f"GitHub release v{version} missing asset {ASSET_NAME}")
-                if not checksum:
-                    logger.warning(
-                        f"GitHub release v{version} missing SHA-256 checksum "
-                        f"(unattended install will be blocked)")
-
-                return {
-                    'version':              version,
-                    'notes':                notes,
-                    'asset_url':            asset_url,
-                    'min_required_version': min_version,
-                    'checksum_sha256':      checksum,
-                }
-            except Exception as e:
-                last_err = e
-                logger.warning(
-                    f"Update API attempt {attempt}/{FETCH_RETRIES} failed: {e}")
-                time.sleep(min(attempt * 2, 6))
+        found = []
+        for repo in RELEASE_REPOS:
+            info, err = self._fetch_repo_release(repo, headers, cloud, cloud_checksum)
+            if err is not None:
+                last_err = err
+            if info and info.get('version'):
+                found.append(info)
+        best = pick_best_release(found)
+        if best.get('version'):
+            size = int(best.get('asset_size') or 0)
+            if size > MIN_INSTALLER_BYTES:
+                self._expected_bytes = size
+            logger.info(
+                'Update feed %s v%s', best.get('repo') or PUBLIC_RELEASE_REPO,
+                best.get('version'))
+            return best
 
         # api.github.com blocked/rate-limited — resolve via github.com redirect
-        redirect_info = fetch_release_via_github_redirect(headers)
-        if redirect_info.get('version') and redirect_info.get('asset_url'):
-            version = redirect_info['version']
-            asset_url = redirect_info['asset_url']
-            notes = (cloud or {}).get('release_notes') or redirect_info.get('notes') or ''
-            checksum = redirect_info.get('checksum_sha256') or cloud_checksum or ''
-            if not checksum:
-                checksum = fetch_sidecar_checksum(asset_url, headers)
-            if cloud and cloud.get('download_url') and not asset_url:
-                asset_url = cloud.get('download_url') or asset_url
-            if cloud and cloud.get('checksum_sha256') and not checksum:
-                checksum = normalize_checksum(cloud.get('checksum_sha256') or '') or checksum
+        redirected = []
+        for repo in RELEASE_REPOS:
+            redirect_info = fetch_release_via_github_redirect(headers, repo=repo)
+            shaped = self._shape_redirect_release(
+                redirect_info, cloud, cloud_checksum, headers)
+            if shaped.get('version') and shaped.get('asset_url'):
+                redirected.append(shaped)
+        best = pick_best_release(redirected)
+        if best.get('version') and best.get('asset_url'):
             logger.info(
-                'Using GitHub redirect fallback for v%s (API unavailable)', version)
-            return {
-                'version':              version,
-                'notes':                notes[:2000],
-                'asset_url':            asset_url,
-                'min_required_version': str((cloud or {}).get('min_version') or '0.0.0'),
-                'checksum_sha256':      normalize_checksum(checksum) or '',
-            }
+                'Using GitHub redirect fallback %s v%s (API unavailable)',
+                best.get('repo') or '', best.get('version'))
+            return best
 
         # GitHub unreachable — use Portal Update Center if it has a newer build
         if cloud and cloud.get('download_url'):
@@ -1395,11 +1366,125 @@ class UpdateChecker:
                 'min_required_version': str(cloud.get('min_version') or '0.0.0'),
                 'checksum_sha256':      normalize_checksum(
                     cloud.get('checksum_sha256') or '') or '',
+                'repo':                 'portal',
             }
 
         if last_err:
             logger.warning(f"Update check gave up: {last_err}")
         return {}
+
+    def _cloud_checksum_for(self, cloud: dict | None, cloud_checksum: str,
+                            version: str) -> str:
+        """Use the portal checksum only when it belongs to this version."""
+        if not cloud_checksum:
+            return ''
+        cloud_ver = str((cloud or {}).get('version') or '').lstrip('vV')
+        if cloud_ver and cloud_ver != str(version or '').lstrip('vV'):
+            return ''
+        return cloud_checksum
+
+    def _fetch_repo_release(self, repo: str, headers: dict,
+                            cloud: dict | None, cloud_checksum: str) -> tuple:
+        """Return (info or None, last error or None). 404/401/403 is not retried."""
+        url = release_api_url(repo)
+        last_err = None
+        for attempt in range(1, FETCH_RETRIES + 1):
+            try:
+                data = self._http_get_json(url, headers)
+                if not data:
+                    continue
+                return self._info_from_api_payload(
+                    data, headers, cloud, cloud_checksum, repo), None
+            except Exception as e:
+                status = _http_status(e)
+                if status in _MISSING_RELEASE_STATUS:
+                    logger.info(
+                        'Release API %s returned HTTP %s — trying the next feed',
+                        repo, status)
+                    return None, e
+                last_err = e
+                logger.warning(
+                    f"Update API {repo} attempt {attempt}/{FETCH_RETRIES} failed: {e}")
+                if attempt < FETCH_RETRIES:
+                    time.sleep(min(attempt * 2, 6))
+        return None, last_err
+
+    def _info_from_api_payload(self, data: dict, headers: dict,
+                               cloud: dict | None, cloud_checksum: str,
+                               repo: str) -> dict:
+        tag = data.get('tag_name', '0.0.0')
+        version = str(tag).lstrip('v')
+        notes = (data.get('body') or '')[:2000]
+        assets = data.get('assets', []) or []
+
+        asset_url = ''
+        asset_size = 0
+        for asset in assets:
+            if asset.get('name', '').lower() == ASSET_NAME.lower():
+                asset_url = asset.get('browser_download_url', '')
+                asset_size = int(asset.get('size') or 0)
+                break
+
+        if not asset_url and cloud and cloud.get('download_url'):
+            asset_url = cloud.get('download_url') or ''
+            notes = notes or (cloud.get('release_notes') or '')
+
+        min_version = '0.0.0'
+        if '[min_version:' in notes:
+            try:
+                start = notes.index('[min_version:') + len('[min_version:')
+                end = notes.index(']', start)
+                min_version = notes[start:end].strip()
+            except Exception:
+                pass
+        if cloud and cloud.get('min_version'):
+            min_version = str(cloud.get('min_version') or min_version)
+
+        checksum = resolve_release_checksum(
+            notes, assets, asset_url, headers,
+            self._cloud_checksum_for(cloud, cloud_checksum, version))
+
+        if not asset_url:
+            logger.warning(
+                f"GitHub release v{version} on {repo} missing asset {ASSET_NAME}")
+        if not checksum:
+            logger.warning(
+                f"GitHub release v{version} on {repo} missing SHA-256 checksum "
+                f"(unattended install will be blocked)")
+
+        return {
+            'version':              version,
+            'notes':                notes,
+            'asset_url':            asset_url,
+            'min_required_version': min_version,
+            'checksum_sha256':      checksum,
+            'repo':                 repo,
+            'asset_size':           asset_size,
+        }
+
+    def _shape_redirect_release(self, redirect_info: dict, cloud: dict | None,
+                                cloud_checksum: str, headers: dict) -> dict:
+        if not redirect_info.get('version') or not redirect_info.get('asset_url'):
+            return {}
+        version = redirect_info['version']
+        asset_url = redirect_info['asset_url']
+        notes = (cloud or {}).get('release_notes') or redirect_info.get('notes') or ''
+        checksum = redirect_info.get('checksum_sha256') or ''
+        matched = self._cloud_checksum_for(cloud, cloud_checksum, version)
+        if not checksum:
+            checksum = matched
+        if not checksum:
+            checksum = fetch_sidecar_checksum(asset_url, headers)
+        if cloud and cloud.get('download_url') and not asset_url:
+            asset_url = cloud.get('download_url') or asset_url
+        return {
+            'version':              version,
+            'notes':                notes[:2000],
+            'asset_url':            asset_url,
+            'min_required_version': str((cloud or {}).get('min_version') or '0.0.0'),
+            'checksum_sha256':      normalize_checksum(checksum) or '',
+            'repo':                 redirect_info.get('repo') or '',
+        }
 
     def _http_get_json(self, url: str, headers: dict) -> dict:
         """HTTPS GET returning parsed JSON — requests first, urllib fallback."""

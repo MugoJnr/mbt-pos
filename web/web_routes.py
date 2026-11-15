@@ -35,6 +35,12 @@ _PORTAL_HOSTS = frozenset({
 })
 
 
+def _public_installer_url() -> str:
+    """Setup.exe on the public releases repo. Works with no token."""
+    from backend.release_repos import public_installer_url
+    return public_installer_url()
+
+
 def _request_wants_portal() -> bool:
     """
     Decide which SPA to serve without merging the two apps.
@@ -233,7 +239,7 @@ def _platform_demo_apps(user=None):
             'category': 'Retail',
             'section': 'Point of Sale',
             'version': ver,
-            'download_url': 'https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe',
+            'download_url': _public_installer_url(),
         },
         {
             'id': 'pulse',
@@ -4704,7 +4710,7 @@ def _app_version_info():
         'build': 'RC-2026-07-21-v3.0.0-rc1',
         'build_date': '2026-07-21',
         'exe': 'MBT_POS.exe',
-        'download_url': 'https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe',
+        'download_url': _public_installer_url(),
     }
     try:
         if os.path.isfile(ver_path):

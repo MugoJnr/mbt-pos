@@ -1,0 +1,93 @@
+# Pushing cursor/transition-3-1-85-ca82 builds MBT_POS_Setup.exe on
+# windows-latest and publishes it. A release created with GITHUB_TOKEN
+# does not start the mirror workflow, so this job copies the assets to
+# MugoJnr/mbt-pos-releases itself with RELEASES_REPO_TOKEN.
+#
+# The portal app_updates row is written only when MBT_SUPABASE_SERVICE_KEY
+# is present. That key is not in the repository.
+
+name: Build and publish Windows installer
+
+on:
+  push:
+    branches:
+      - cursor/transition-3-1-85-ca82
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6.0,<7.0" pyserial
+
+      - name: Download cloudflared
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "tools\cloudflared.exe"
+          if (-not (Test-Path "tools\cloudflared.exe")) { throw "cloudflared download failed" }
+
+      - name: Build web dashboards
+        shell: cmd
+        run: build_web.bat
+
+      - name: Confirm secrets are not bundled
+        run: |
+          python -c "from config.deploy import verify_installer_bundle; ok,msg=verify_installer_bundle(); print(msg); raise SystemExit(0 if ok else 1)"
+
+      - name: Build MBT_POS.exe
+        run: python -m PyInstaller --noconfirm --clean mbt_pos.spec
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Build MBT_POS_Setup.exe
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $makensis) { throw "makensis.exe was not installed" }
+          & $makensis installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit $LASTEXITCODE" }
+          $setup = Get-Item "dist\MBT_POS_Setup.exe"
+          if ($setup.Length -lt 50000000) { throw "installer is too small ($($setup.Length) bytes)" }
+          Write-Host "installer bytes=$($setup.Length)"
+
+      - name: Stamp checksum and verify
+        run: |
+          python scripts/publish_release_3.py --stamp-only
+          python scripts/verify_installer_integrity.py
+
+      - name: Publish installer to both GitHub repositories
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASES_REPO_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          MBT_SUPABASE_SERVICE_KEY: ${{ secrets.MBT_SUPABASE_SERVICE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MBT_SUPABASE_SERVICE_KEY)) {
+            python scripts/publish_release_3.py --publish --skip-cloud
+          } else {
+            python scripts/publish_release_3.py --publish
+          }
+          if ($LASTEXITCODE -ne 0) { throw "publish failed with exit $LASTEXITCODE" }
