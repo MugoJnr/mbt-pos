@@ -35,6 +35,10 @@ if errorlevel 1 (
 )
 
 echo.
+echo  [!] This one-time script is obsolete. Tills download installers from
+echo      the public repo MugoJnr/mbt-pos-releases.
+echo      Publish with: python scripts\publish_release_3.py --publish
+echo.
 echo  [3/4] Publishing release v2.2.0 with installer...
 if not exist "dist\MBT_POS_Setup.exe" (
     echo  [!] dist\MBT_POS_Setup.exe not found — run BUILD.bat first.

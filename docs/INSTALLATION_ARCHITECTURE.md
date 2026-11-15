@@ -11,7 +11,7 @@ Existing install detected → backup AppData DB + license → update Program Fil
 User never chooses Upgrade vs Fresh.
 
 ## Portal Download Center
-`https://portal.mugobyte.com/downloads` is the source of truth for `MBT_POS_Setup.exe`.
+`https://portal.mugobyte.com/downloads` is the download page. The file itself is `MBT_POS_Setup.exe` on the public repository `MugoJnr/mbt-pos-releases` (latest asset URL, no token). The source repository is not the download host once it is private.
 
 ## Separation
 - Portal = cloud account, licenses, devices, downloads

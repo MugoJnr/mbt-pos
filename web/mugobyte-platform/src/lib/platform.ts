@@ -54,7 +54,7 @@ const FALLBACK_APPS: PlatformApp[] = [
     section: "Point of Sale",
     version: "2.4.x",
     download_url:
-      "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+      "https://github.com/MugoJnr/mbt-pos-releases/releases/latest/download/MBT_POS_Setup.exe",
   },
   {
     id: "pulse",
