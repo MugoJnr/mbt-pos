@@ -23,6 +23,7 @@ import { Route as MpesaRouteImport } from './routes/mpesa'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as LiveRouteImport } from './routes/live'
 import { Route as LicenseRouteImport } from './routes/license'
+import { Route as IssuesRouteImport } from './routes/issues'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as HealthRouteImport } from './routes/health'
 import { Route as FinanceRouteImport } from './routes/finance'
@@ -106,6 +107,11 @@ const LicenseRoute = LicenseRouteImport.update({
   path: '/license',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IssuesRoute = IssuesRouteImport.update({
+  id: '/issues',
+  path: '/issues',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const InventoryRoute = InventoryRouteImport.update({
   id: '/inventory',
   path: '/inventory',
@@ -180,6 +186,7 @@ export interface FileRoutesByFullPath {
   '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
+  '/issues': typeof IssuesRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
@@ -208,6 +215,7 @@ export interface FileRoutesByTo {
   '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
+  '/issues': typeof IssuesRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
@@ -237,6 +245,7 @@ export interface FileRoutesById {
   '/finance': typeof FinanceRoute
   '/health': typeof HealthRoute
   '/inventory': typeof InventoryRoute
+  '/issues': typeof IssuesRoute
   '/license': typeof LicenseRoute
   '/live': typeof LiveRoute
   '/login': typeof LoginRoute
@@ -267,6 +276,7 @@ export interface FileRouteTypes {
     | '/finance'
     | '/health'
     | '/inventory'
+    | '/issues'
     | '/license'
     | '/live'
     | '/login'
@@ -295,6 +305,7 @@ export interface FileRouteTypes {
     | '/finance'
     | '/health'
     | '/inventory'
+    | '/issues'
     | '/license'
     | '/live'
     | '/login'
@@ -323,6 +334,7 @@ export interface FileRouteTypes {
     | '/finance'
     | '/health'
     | '/inventory'
+    | '/issues'
     | '/license'
     | '/live'
     | '/login'
@@ -352,6 +364,7 @@ export interface RootRouteChildren {
   FinanceRoute: typeof FinanceRoute
   HealthRoute: typeof HealthRoute
   InventoryRoute: typeof InventoryRoute
+  IssuesRoute: typeof IssuesRoute
   LicenseRoute: typeof LicenseRoute
   LiveRoute: typeof LiveRoute
   LoginRoute: typeof LoginRoute
@@ -468,6 +481,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LicenseRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/issues': {
+      id: '/issues'
+      path: '/issues'
+      fullPath: '/issues'
+      preLoaderRoute: typeof IssuesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/inventory': {
       id: '/inventory'
       path: '/inventory'
@@ -568,6 +588,7 @@ const rootRouteChildren: RootRouteChildren = {
   FinanceRoute: FinanceRoute,
   HealthRoute: HealthRoute,
   InventoryRoute: InventoryRoute,
+  IssuesRoute: IssuesRoute,
   LicenseRoute: LicenseRoute,
   LiveRoute: LiveRoute,
   LoginRoute: LoginRoute,

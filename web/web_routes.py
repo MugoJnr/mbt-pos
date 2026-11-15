@@ -7091,3 +7091,11 @@ def print_status_http():
         })
 
     return _inner()
+
+
+try:
+    from backend.issues_routes import register_issue_routes
+    register_issue_routes(web)
+except Exception:
+    import logging
+    logging.getLogger('web').exception('Issues Centre routes were not registered')

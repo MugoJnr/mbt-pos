@@ -103,6 +103,10 @@ class InventoryTab(QWidget):
             recv.clicked.connect(self._receive_stock_dialog)
             tb.addWidget(recv)
         if has_permission(self.user, 'inventory.view'):
+            issues_btn = SecondaryBtn('Issues', 40)
+            issues_btn.setToolTip('Business issues for stock and products. A sale is not blocked.')
+            issues_btn.clicked.connect(self._open_issues)
+            tb.addWidget(issues_btn)
             count_btn = SecondaryBtn('Stocktake', 40)
             count_btn.setToolTip('Count stock. Applying the count is Super-Admin only.')
             count_btn.clicked.connect(self._open_stocktake)
@@ -918,6 +922,59 @@ class InventoryTab(QWidget):
             QMessageBox.critical(
                 self, 'Error',
                 f'Could not add product:\n\n{e}')
+
+    def _open_issues(self):
+        from desktop.utils.api_client import _db
+        from desktop.utils.business_issues import list_issues, scan, summary
+        db = _db()
+        try:
+            scan(db, str(self.user.get('username') or 'till'))
+            items = list_issues(db, self.user, 'open')
+            counts = summary(db, self.user)
+        finally:
+            db.close()
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Business issues')
+        dlg.resize(760, 480)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(Caption(
+            f"Open {counts['open']}  ·  Important {counts['important']}  ·  "
+            f"Attention {counts['attention']}  ·  Critical {counts['critical']}"
+        ))
+        lay.addWidget(Caption('Opening a row does not resolve it. Saving the real correction does.'))
+        table = make_table(['Severity', 'Issue', 'Since'])
+        table.setRowCount(len(items))
+        for i, item in enumerate(items):
+            table.setItem(i, 0, tbl_item(item['severity'].title()))
+            table.setItem(i, 1, tbl_item(item['title']))
+            table.setItem(i, 2, tbl_item((item.get('first_detected') or '')[:16]))
+            table.item(i, 0).setData(Qt.UserRole, item)
+        lay.addWidget(table, 1)
+        buttons = QHBoxLayout()
+        open_btn = PrimaryBtn('Open record', 40)
+        close_btn = GhostBtn('Close', 40)
+
+        def _open():
+            row = table.currentRow()
+            if row < 0:
+                return
+            item = table.item(row, 0).data(Qt.UserRole) or {}
+            dest = item.get('destination') or {}
+            product_id = dest.get('product_id')
+            dlg.accept()
+            if product_id:
+                self.refresh()
+                self._edit(int(product_id))
+                self._open_issues()
+
+        open_btn.clicked.connect(_open)
+        close_btn.clicked.connect(dlg.reject)
+        buttons.addWidget(open_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(close_btn)
+        lay.addLayout(buttons)
+        dlg.exec_()
 
     def _edit(self, pid):
         if not require_permission(self.user, 'inventory.edit_info', self):

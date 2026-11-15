@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, Package, Download } from "lucide-react";
@@ -1041,6 +1041,12 @@ function Inventory() {
           : `${products.length} SKUs${lowCount ? ` · ${lowCount} low` : ""}`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Link
+              to="/issues"
+              className="inline-flex min-h-[44px] items-center rounded-md border border-gold/50 px-3 text-sm font-semibold text-gold"
+            >
+              Issues
+            </Link>
             <Button
               variant="primary"
               onClick={() => setShowAdd(true)}
