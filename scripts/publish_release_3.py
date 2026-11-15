@@ -230,6 +230,11 @@ def silent_install() -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--publish", action="store_true")
+    ap.add_argument(
+        "--skip-cloud",
+        action="store_true",
+        help="Publish the GitHub releases and do not write the portal app_updates row",
+    )
     ap.add_argument("--install", action="store_true")
     ap.add_argument("--stamp-only", action="store_true")
     ap.add_argument(
@@ -270,8 +275,14 @@ def main() -> None:
                     file=sys.stderr,
                 )
         finally:
-            if source_published:
+            if source_published and not args.skip_cloud:
                 publish_app_updates(vj)
+            elif source_published and args.skip_cloud:
+                print(
+                    "Skipped portal app_updates. Set MBT_SUPABASE_SERVICE_KEY and "
+                    "run publish again without --skip-cloud to record the download URL.",
+                    file=sys.stderr,
+                )
 
 
 if __name__ == "__main__":
