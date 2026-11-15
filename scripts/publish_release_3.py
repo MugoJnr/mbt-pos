@@ -15,9 +15,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.release_repos import (  # noqa: E402
+    LEGACY_RELEASE_REPO,
+    PUBLIC_RELEASE_REPO,
+    is_mirror_asset,
+    public_installer_url,
+)
+
 SETUP = ROOT / "dist" / "MBT_POS_Setup.exe"
 VERSION_JSON = ROOT / "version.json"
 SIDECAR = ROOT / "dist" / "MBT_POS_Setup.exe.sha256"
+_LEGACY_DOWNLOAD_HOST = "github.com/MugoJnr/mbt-pos/"
+_PUBLIC_DOWNLOAD_HOST = "github.com/MugoJnr/mbt-pos-releases/"
 
 
 def sha256_file(path: Path) -> str:
@@ -34,6 +46,7 @@ def stamp_checksum() -> dict:
     digest = sha256_file(SETUP)
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
     vj["checksum_sha256"] = digest
+    vj = ensure_public_download_url(vj)
     VERSION_JSON.write_text(json.dumps(vj, indent=4) + "\n", encoding="utf-8", newline="\n")
     SIDECAR.write_text(f"{digest}  MBT_POS_Setup.exe\n", encoding="utf-8", newline="\n")
     print(f"version={vj['version']} sha256={digest} size={SETUP.stat().st_size}")
@@ -60,11 +73,19 @@ def embed_checksum_before_nsis() -> None:
     print("embedded runtime manifest (external installer checksum)")
 
 
-def gh_release(vj: dict) -> None:
+def ensure_public_download_url(vj: dict) -> dict:
+    """Point the manifest at the public feed when it still names the source repo."""
+    url = str(vj.get("download_url") or "")
+    legacy = _LEGACY_DOWNLOAD_HOST in url and _PUBLIC_DOWNLOAD_HOST not in url
+    if not url or legacy:
+        vj["download_url"] = public_installer_url(vj.get("version") or "")
+    return vj
+
+
+def release_notes_body(vj: dict) -> str:
     ver = vj["version"]
-    tag = f"v{ver}"
     notes = vj.get("release_notes") or f"MBT POS {ver}"
-    body = f"""## Summary
+    return f"""## Summary
 {notes}
 
 ## Installer
@@ -73,36 +94,105 @@ def gh_release(vj: dict) -> None:
 
 [checksum_sha256: {vj['checksum_sha256']}]
 """
-    exists = subprocess.run(
-        ["gh", "release", "view", tag],
+
+
+def _gh_env(token: str | None) -> dict:
+    env = os.environ.copy()
+    if token:
+        env["GH_TOKEN"] = token
+        env["GITHUB_TOKEN"] = token
+    return env
+
+
+def _release_exists(repo: str, tag: str, env: dict) -> bool:
+    result = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repo],
         cwd=str(ROOT),
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
-    if exists.returncode == 0:
+    return result.returncode == 0
+
+
+def _release_asset_args() -> list[str]:
+    files = [SETUP, SIDECAR]
+    for path in files:
+        if not is_mirror_asset(path.name):
+            raise SystemExit(f"Refusing to upload {path.name}")
+        if not path.is_file():
+            raise SystemExit(f"Missing release file: {path}")
+    return [str(path) for path in files]
+
+
+def publish_source_release(vj: dict) -> None:
+    """Publish the installer on the source repo so tills on the old updater can install it."""
+    ver = vj["version"]
+    tag = f"v{ver}"
+    if _release_exists(LEGACY_RELEASE_REPO, tag, _gh_env(None)):
         raise SystemExit(
-            f"GitHub release {tag} already exists; refusing destructive replacement")
+            f"GitHub release {tag} already exists on {LEGACY_RELEASE_REPO}; "
+            "refusing destructive replacement")
+    target = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+    ).strip()
     cmd = [
-        "gh",
-        "release",
-        "create",
-        tag,
-        str(SETUP),
-        str(SIDECAR),
-        "--title",
-        f"MBT POS {ver}",
-        "--notes",
-        body,
-        "--target",
-        subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
-        ).strip(),
+        "gh", "release", "create", tag,
+        *_release_asset_args(),
+        "--repo", LEGACY_RELEASE_REPO,
+        "--title", f"MBT POS {ver}",
+        "--notes", release_notes_body(vj),
+        "--target", target,
         "--latest",
     ]
     print("Running:", " ".join(cmd[:6]), "...")
-    subprocess.check_call(cmd, cwd=str(ROOT))
-    print(f"GitHub release {tag} published")
+    subprocess.check_call(cmd, cwd=str(ROOT), env=_gh_env(None))
+    print(f"GitHub release {tag} published on {LEGACY_RELEASE_REPO}")
+
+
+def publish_public_release(vj: dict, token: str) -> None:
+    """Copy the same installer onto the public releases repo. No source commit is attached."""
+    if not token:
+        raise SystemExit("RELEASES_REPO_TOKEN is required")
+    ver = vj["version"]
+    tag = f"v{ver}"
+    env = _gh_env(token)
+    title = f"MBT POS {ver}"
+    notes = release_notes_body(vj)
+    assets = _release_asset_args()
+    if _release_exists(PUBLIC_RELEASE_REPO, tag, env):
+        cmd = [
+            "gh", "release", "upload", tag, *assets,
+            "--repo", PUBLIC_RELEASE_REPO,
+            "--clobber",
+        ]
+        print(f"Updating existing public release {tag}")
+        subprocess.check_call(cmd, cwd=str(ROOT), env=env)
+        subprocess.check_call(
+            [
+                "gh", "release", "edit", tag,
+                "--repo", PUBLIC_RELEASE_REPO,
+                "--title", title,
+                "--notes", notes,
+                "--latest",
+            ],
+            cwd=str(ROOT),
+            env=env,
+        )
+    else:
+        # Do not pass --target. The source SHA is not a commit on the public repo,
+        # and the public repo must not receive the source tree.
+        cmd = [
+            "gh", "release", "create", tag, *assets,
+            "--repo", PUBLIC_RELEASE_REPO,
+            "--title", title,
+            "--notes", notes,
+            "--latest",
+        ]
+        print("Running:", " ".join(cmd[:6]), "...")
+        subprocess.check_call(cmd, cwd=str(ROOT), env=env)
+    print(f"GitHub release {tag} published on {PUBLIC_RELEASE_REPO}")
 
 
 def publish_app_updates(vj: dict) -> None:
@@ -112,8 +202,7 @@ def publish_app_updates(vj: dict) -> None:
     uc = UpdateCenter()
     row = uc.publish_update(
         version=vj["version"],
-        download_url=vj.get("download_url")
-        or "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe",
+        download_url=public_installer_url(vj["version"]),
         checksum=vj["checksum_sha256"],
         release_notes=vj.get("release_notes") or "",
         is_mandatory=False,
@@ -158,8 +247,31 @@ def main() -> None:
     if args.install:
         silent_install()
     if args.publish:
-        gh_release(vj)
-        publish_app_updates(vj)
+        source_published = False
+        try:
+            publish_source_release(vj)
+            source_published = True
+            token = os.environ.get("RELEASES_REPO_TOKEN", "").strip()
+            if token:
+                publish_public_release(vj, token)
+            else:
+                print(
+                    "RELEASES_REPO_TOKEN is not set. The source release was published.\n"
+                    "Tills still on the old updater can install it from "
+                    f"{LEGACY_RELEASE_REPO}.\n"
+                    "Create a fine-grained PAT with Contents read/write on "
+                    f"{PUBLIC_RELEASE_REPO} only, store it as the repository secret "
+                    "RELEASES_REPO_TOKEN, and let "
+                    ".github/workflows/mirror-public-release.yml copy this release. "
+                    "Until that secret exists, re-run with RELEASES_REPO_TOKEN set "
+                    "to publish the public copy from this machine.\n"
+                    "Do not make the source repository private until tills are "
+                    "running a build that reads the public releases repository.",
+                    file=sys.stderr,
+                )
+        finally:
+            if source_published:
+                publish_app_updates(vj)
 
 
 if __name__ == "__main__":

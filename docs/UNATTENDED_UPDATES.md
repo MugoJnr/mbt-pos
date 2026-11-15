@@ -31,6 +31,12 @@ PCs installed before the helper task:
 
 ## Publishing a release
 
+Installers are served from the public repository `MugoJnr/mbt-pos-releases` (no source code). The till tries that feed first and falls back to `MugoJnr/mbt-pos` while the source repository is still public.
+
+`python scripts/publish_release_3.py --publish` creates the source release (so tills on the previous updater can install it) and, when `RELEASES_REPO_TOKEN` is set, copies the installer and checksum to the public repository. The same copy runs in GitHub Actions (`.github/workflows/mirror-public-release.yml`) using the repository secret `RELEASES_REPO_TOKEN`: a fine-grained PAT with Contents read/write on `MugoJnr/mbt-pos-releases` only. Do not commit that token.
+
+The workflow file has to be on the default branch (`main`) or GitHub will not start it when a release is published.
+
 Always publish checksum with the installer:
 
 ```
@@ -39,3 +45,5 @@ Always publish checksum with the installer:
 ```
 
 And/or upload `MBT_POS_Setup.exe.sha256` next to the setup EXE.
+
+Portal `app_updates.download_url` is the public versioned URL (`.../mbt-pos-releases/releases/download/vX.Y.Z/MBT_POS_Setup.exe`), not the source repository.

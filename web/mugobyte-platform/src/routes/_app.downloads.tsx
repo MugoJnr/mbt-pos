@@ -13,8 +13,34 @@ export const Route = createFileRoute("/_app/downloads")({
   head: () => ({ meta: [{ title: pageTitle(POS_CLOUD_PRODUCT, "Downloads") }] }),
 });
 
-const FALLBACK_INSTALLER =
-  "https://github.com/MugoJnr/mbt-pos/releases/latest/download/MBT_POS_Setup.exe";
+const PUBLIC_RELEASE_REPO = "MugoJnr/mbt-pos-releases";
+const LEGACY_RELEASE_REPO = "MugoJnr/mbt-pos";
+const RELEASE_REPOS = [PUBLIC_RELEASE_REPO, LEGACY_RELEASE_REPO] as const;
+
+function installerLatestUrl(repo: string): string {
+  return `https://github.com/${repo}/releases/latest/download/MBT_POS_Setup.exe`;
+}
+
+const FALLBACK_INSTALLER = installerLatestUrl(PUBLIC_RELEASE_REPO);
+
+function versionKey(version: string): number[] {
+  return version.split(".").map((part) => {
+    const n = parseInt(part, 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+}
+
+function higherVersion(a: string, b: string): string {
+  const ka = versionKey(a);
+  const kb = versionKey(b);
+  const width = Math.max(ka.length, kb.length);
+  for (let i = 0; i < width; i++) {
+    const da = ka[i] || 0;
+    const db = kb[i] || 0;
+    if (da !== db) return da > db ? a : b;
+  }
+  return a || b;
+}
 
 /** Numeric semver only — never "latest" (Badge used to render "vlatest"). */
 function pickReleaseVersion(...candidates: Array<string | undefined | null>): string {
@@ -63,13 +89,22 @@ function DownloadsPage() {
   const githubQ = useQuery({
     queryKey: ["github-latest-release"],
     queryFn: async () => {
-      const r = await fetch(
-        "https://api.github.com/repos/MugoJnr/mbt-pos/releases/latest",
-        { headers: { Accept: "application/vnd.github+json" } },
-      );
-      if (!r.ok) return null;
-      const data = (await r.json()) as { tag_name?: string; name?: string };
-      return pickReleaseVersion(data.tag_name, data.name) || null;
+      let best = "";
+      for (const repo of RELEASE_REPOS) {
+        try {
+          const r = await fetch(
+            `https://api.github.com/repos/${repo}/releases/latest`,
+            { headers: { Accept: "application/vnd.github+json" } },
+          );
+          if (!r.ok) continue;
+          const data = (await r.json()) as { tag_name?: string; name?: string };
+          const ver = pickReleaseVersion(data.tag_name, data.name);
+          if (ver) best = best ? higherVersion(best, ver) : ver;
+        } catch {
+          continue;
+        }
+      }
+      return best || null;
     },
     retry: false,
     staleTime: 5 * 60_000,
@@ -215,8 +250,8 @@ function DownloadsPage() {
           {updates.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 p-4 text-sm text-muted-foreground">
               <p>
-                No cloud releases listed yet. Use the primary download above (GitHub / latest
-                published Setup).
+                No cloud releases listed yet. Use the primary download above (public
+                releases repository).
               </p>
               <Button asChild variant="link" className="mt-2 h-auto px-0">
                 <a href={FALLBACK_INSTALLER} target="_blank" rel="noreferrer">
