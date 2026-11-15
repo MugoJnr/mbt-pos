@@ -1,8 +1,8 @@
 {
-    "version": "3.1.84",
-    "build": "RC-2026-11-12-v3.1.84",
-    "released": "2026-11-12",
-    "release_notes": "A sale with enough stock completes even when some units have no recorded buying cost. Known costs stay on the units they belong to, and profit leaves the unknown units out.",
-    "checksum_sha256": "91c9ea1d32496d149ba1213b4c010b1fc3358f681e07a7a04b9ece1c25d653e4",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.84/MBT_POS_Setup.exe"
+    "version": "3.1.85",
+    "build": "RC-2026-11-15-v3.1.85",
+    "released": "2026-11-15",
+    "release_notes": "Tills look for updates on the public releases repository first, and still check the old repository while it is public. Shop data and the licence stay where they are.",
+    "checksum_sha256": "",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.85/MBT_POS_Setup.exe"
 }
