@@ -103,6 +103,12 @@ class InventoryTab(QWidget):
             recv.clicked.connect(self._receive_stock_dialog)
             tb.addWidget(recv)
         if has_permission(self.user, 'inventory.view'):
+            from desktop.dialogs.restock_dialog import can_open_restock
+            if can_open_restock(self.user):
+                restock_btn = SecondaryBtn('Restock Lists', 40)
+                restock_btn.setToolTip('Lists of products to buy. This does not change stock or the open sale.')
+                restock_btn.clicked.connect(self._open_restock)
+                tb.addWidget(restock_btn)
             issues_btn = SecondaryBtn('Issues', 40)
             issues_btn.setToolTip('Business issues for stock and products. A sale is not blocked.')
             issues_btn.clicked.connect(self._open_issues)
@@ -505,6 +511,9 @@ class InventoryTab(QWidget):
         if can_edit:
             menu.addAction('Edit product', lambda pid=pid: self._edit(pid))
         menu.addAction('History', lambda pid=pid: self._show_history(pid))
+        from desktop.dialogs.restock_dialog import can_open_restock
+        if can_open_restock(self.user):
+            menu.addAction('Add to Restock List', lambda pid=pid: self._add_to_restock(pid))
         if can_delete:
             menu.addSeparator()
             menu.addAction('Remove', lambda pid=pid: self._delete(pid))
@@ -540,6 +549,7 @@ class InventoryTab(QWidget):
         qty = QDoubleSpinBox()
         qty.setRange(0, 999999)
         qty.setDecimals(3)
+        qty.setSingleStep(0.01)
         reason = QLineEdit()
         reason.setPlaceholderText('Why should stock change?')
         form.addRow('Product', prod)
@@ -629,6 +639,7 @@ class InventoryTab(QWidget):
         qty = QDoubleSpinBox()
         qty.setRange(0, 1000000)
         qty.setDecimals(2)
+        qty.setSingleStep(0.01)
         status = QLabel('A count does not change stock until it is applied.')
         status.setWordWrap(True)
         history = QListWidget()
@@ -717,6 +728,37 @@ class InventoryTab(QWidget):
         close.clicked.connect(dlg.reject)
         dlg.exec_()
 
+    def _open_restock(self):
+        from desktop.dialogs.restock_dialog import open_restock_dialog
+        open_restock_dialog(self, self.api, self.user)
+
+    def _add_to_restock(self, product_id):
+        from desktop.dialogs.restock_dialog import RestockDialog, _run
+        from backend import restock_requests as restock
+        dialog = RestockDialog(self.api, self.user, self)
+        lists = _run(dialog.actor, restock.list_requests, {})
+        drafts = [row for row in (lists.get('requests') or []) if row.get('status') == 'draft']
+        if not drafts:
+            created = _run(dialog.actor, restock.create_request, {'name': 'Shop restock'})
+            if created.get('error'):
+                QMessageBox.warning(self, 'Restock list', created['error'])
+                return
+            target = created['request']
+        else:
+            target = drafts[0]
+            full = _run(dialog.actor, restock.get_request, target['id'])
+            target = full.get('request') or target
+        added = _run(dialog.actor, restock.add_line, target['id'], {
+            'version': target['version'], 'product_id': product_id, 'quantity': 1, 'merge': True,
+        })
+        if added.get('error'):
+            QMessageBox.warning(self, 'Restock list', added['error'])
+            return
+        QMessageBox.information(
+            self, 'Restock list',
+            f"Added to {added['request']['name']}. The open sale was not changed.",
+        )
+
     def _receive_stock_dialog(self):
         if not has_permission(self.user, 'inventory.receive'):
             QMessageBox.warning(self, 'Access Denied',
@@ -770,6 +812,7 @@ class InventoryTab(QWidget):
             qty = QDoubleSpinBox()
             qty.setRange(0, 999999)
             qty.setDecimals(4)
+            qty.setSingleStep(0.01)
             qty.setMinimumHeight(40)
             qty.setEnabled(False)
             selected = {'pid': None, 'stock': None}
@@ -1121,8 +1164,9 @@ class _ProdDlg(QDialog):
         lay.addRow(lbl('Category'),          cat_wrap)
         self._on_cat_preview(self.cat.text())
         lay.addRow(lbl('Selling Price'),     self.price)
-        if self._see_cost:
-            lay.addRow(lbl('Cost Price'),    self.cost)
+        self._enter_cost = self._see_cost or prod is None
+        if self._enter_cost:
+            lay.addRow(lbl('Cost Price' if self._see_cost else 'Buying price'), self.cost)
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
         lay.addRow(lbl('Unit'),              self.unit)
         if self._can_remove:
@@ -1255,7 +1299,7 @@ class _ProdDlg(QDialog):
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
         }
-        if self._see_cost:
+        if self._enter_cost:
             d['cost_price'] = self.cost.value()
         if self._can_remove:
             status = self.status.current_label() or 'Active'

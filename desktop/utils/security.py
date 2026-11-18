@@ -41,6 +41,7 @@ _PERMISSIONS = {
         'reports.view_variance',
         'accounting.view', 'accounting.view_reports',
         'supplier.view',
+        'restock.view',
     },
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
@@ -60,6 +61,7 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support',
         'inventory.view_cost',
         'supplier.view', 'supplier.pay', 'supplier.request',
+        'restock.view', 'restock.create', 'restock.manage', 'restock.purchase',
     },
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
@@ -83,6 +85,7 @@ _PERMISSIONS = {
         'ai_ops.view', 'ai_ops.heal_safe', 'ai_ops.support', 'ai_ops.analyze',
         'inventory.view_cost',
         'supplier.view', 'supplier.pay', 'supplier.request', 'supplier.manage',
+        'restock.view', 'restock.create', 'restock.manage', 'restock.purchase',
     },
     ROLE_SUPERADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
@@ -111,6 +114,7 @@ _PERMISSIONS = {
         'ai_ops.developer',
         'inventory.view_cost',
         'supplier.view', 'supplier.pay', 'supplier.request', 'supplier.manage',
+        'restock.view', 'restock.create', 'restock.manage', 'restock.purchase',
     },
 }
 
@@ -153,6 +157,10 @@ _ACTION_LABELS = {
     'supplier.pay': 'Record supplier payments',
     'supplier.request': 'Request a delivery void or backdate',
     'supplier.manage': 'Edit, void, backdate, or return a delivery',
+    'restock.view': 'View restock lists',
+    'restock.create': 'Create and edit own restock drafts',
+    'restock.manage': 'Send, assign, and archive restock lists',
+    'restock.purchase': 'Record what a buyer purchased',
     'consumption.create': 'Record internal consumption',
     'consumption.edit': 'Correct internal consumption',
     'consumption.void': 'Void internal consumption',

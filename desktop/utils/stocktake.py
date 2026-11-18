@@ -36,9 +36,23 @@ def start_stocktake(db, name: str) -> dict:
 
 def record_count(db, stocktake_id: int, product_id: int, counted_qty: float) -> dict:
     ensure_stocktake(db)
-    counted = round(float(counted_qty), 4)
-    if counted < 0:
-        return {'error': 'Count cannot be negative'}
+    from desktop.utils.quantities import QuantityError, parse_quantity
+    product = db.execute(
+        "SELECT name, unit FROM products WHERE id=?", (int(product_id),)
+    ).fetchone()
+    if not product:
+        return {'error': 'Product was not found'}
+    unit = product['unit'] if hasattr(product, 'keys') else product[1]
+    name = product['name'] if hasattr(product, 'keys') else product[0]
+    try:
+        counted = parse_quantity(counted_qty, unit, allow_zero=True)
+    except QuantityError as exc:
+        message = str(exc)
+        if 'whole units' in message:
+            return {'error': f"'{name}' is sold in whole units.", 'status': 400}
+        if 'negative' in message:
+            return {'error': 'Count cannot be negative'}
+        return {'error': message, 'status': 400}
     header = db.execute(
         "SELECT status FROM stocktakes WHERE id=?", (int(stocktake_id),)
     ).fetchone()
@@ -66,7 +80,7 @@ def record_count(db, stocktake_id: int, product_id: int, counted_qty: float) -> 
     }
 
 
-def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None) -> dict:
+def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None, business_date: str = '', backdate_reason: str = '') -> dict:
     """Set each counted product once. A second apply does nothing."""
     ensure_stocktake(db)
     db.execute('BEGIN IMMEDIATE')
@@ -90,7 +104,7 @@ def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None) -> 
     described = []
     for product_id, counted, snapshot in lines:
         row = db.execute(
-            "SELECT id, name, stock FROM products WHERE id=?", (product_id,)
+            "SELECT id, name, stock, cost_price FROM products WHERE id=?", (product_id,)
         ).fetchone()
         if not row:
             db.rollback()
@@ -125,8 +139,31 @@ def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None) -> 
             "qty_after,reference,reason,user_id,username) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (product_id, row[1], 'STOCKTAKE', old, round(new - old, 4), new,
-             ref, f'Stocktake {stocktake_id}', None, (username or 'stocktake')[:40]),
+             ref, (f'Stocktake {stocktake_id}. {backdate_reason}'.strip() if backdate_reason else f'Stocktake {stocktake_id}'),
+             None, (username or 'stocktake')[:40]),
         )
+        if business_date:
+            cols = {item[1] for item in db.execute("PRAGMA table_info(stock_movements)")}
+            if 'business_date' not in cols:
+                db.execute("ALTER TABLE stock_movements ADD COLUMN business_date TEXT")
+            db.execute(
+                "UPDATE stock_movements SET business_date=? WHERE reference=?",
+                (str(business_date)[:10], ref),
+            )
+        from desktop.utils.stock_layers import add_layer, consume_available_cost
+        delta = round(new - old, 4)
+        if delta < 0:
+            layer = consume_available_cost(db, product_id, abs(delta), reference=ref)
+        else:
+            known_cost = float(row[3] or 0)
+            layer = (
+                add_layer(db, product_id, delta, known_cost, 'stocktake', ref)
+                if known_cost > 0
+                else {'success': True, 'uncosted': delta}
+            )
+        if layer.get('error'):
+            db.rollback()
+            return {'error': layer['error'], 'status': 400}
         changed.append(product_id)
         described.append(f"pid={product_id} stock {old}->{new}")
     db.execute(
@@ -188,3 +225,73 @@ def stocktake_detail(db, stocktake_id: int) -> dict:
             for line in lines
         ],
     }
+
+
+_REPAIRED_PATHS = set()
+
+
+def repair_uncosted_stocktake_shortages(db) -> dict:
+    """Consume FIFO for stocktake shortages that were applied before cost batches moved.
+
+    Product quantity and the original stocktake row stay as posted. The missing
+    cost use is added once, with the same reference as the stock movement.
+    A second call finds the use and does nothing.
+    """
+    try:
+        path = ''
+        for row in db.execute('PRAGMA database_list'):
+            if row[1] == 'main':
+                path = row[2] or ''
+        if path and path in _REPAIRED_PATHS:
+            return {'success': True, 'skipped': True, 'repaired': []}
+    except Exception:
+        path = ''
+    try:
+        movements = db.execute(
+            "SELECT product_id, qty_change, reference FROM stock_movements "
+            "WHERE movement_type='STOCKTAKE' AND qty_change < -0.0001 "
+            "AND reference IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        if path:
+            _REPAIRED_PATHS.add(path)
+        return {'success': True, 'repaired': []}
+    from desktop.utils.stock_layers import consume_available_cost, ensure_cost_layers
+    ensure_cost_layers(db)
+    repaired = []
+    for product_id, qty_change, reference in movements:
+        ref = str(reference or '')
+        if not ref:
+            continue
+        used = db.execute(
+            "SELECT COALESCE(SUM(quantity), 0) FROM cost_layer_uses "
+            "WHERE reference=? AND COALESCE(reversed, 0)=0",
+            (ref,),
+        ).fetchone()
+        covered = round(float(used[0] or 0), 4) if used else 0.0
+        need = round(abs(float(qty_change)) - covered, 4)
+        if need <= 0.0001:
+            continue
+        layer = consume_available_cost(db, int(product_id), need, reference=ref)
+        if layer.get('error'):
+            db.rollback()
+            return {'error': layer['error'], 'repaired': repaired}
+        repaired.append({
+            'product_id': int(product_id),
+            'reference': ref,
+            'quantity': need,
+            'cost': layer.get('cogs'),
+        })
+    if repaired:
+        try:
+            from desktop.utils.api_client import _audit
+            detail = '; '.join(
+                f"{row['reference']} qty {row['quantity']}" for row in repaired
+            )
+            _audit(None, 'system', 'REPAIR_STOCKTAKE_COST', 'inventory', detail, conn=db)
+        except Exception:
+            pass
+        db.commit()
+    if path:
+        _REPAIRED_PATHS.add(path)
+    return {'success': True, 'repaired': repaired}

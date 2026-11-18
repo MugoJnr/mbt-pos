@@ -25,6 +25,7 @@ import {
   Ban,
   CalendarClock,
   ClipboardList,
+  ListChecks,
   AlertTriangle,
   Receipt,
   HeartPulse,
@@ -67,6 +68,7 @@ const NAV: NavItem[] = [
   { to: "/pos", label: "Point of Sale", icon: ShoppingCart, group: "Operations", roles: ["cashier", "manager", "admin", "superadmin"] },
   { to: "/receipts", label: "All Receipts", icon: Receipt, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/inventory", label: "Inventory", icon: Package, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
+  { to: "/restock", label: "Restock Lists", icon: ListChecks, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
   { to: "/issues", label: "Issues", icon: AlertTriangle, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/consumption", label: "Internal Consumption", icon: ClipboardList, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
@@ -157,6 +159,7 @@ function SidebarContent({
             if (n.group !== group) return false;
             if (actions) {
               if (n.to === "/reports") return actions.includes("reports.view_all");
+              if (n.to === "/restock") return actions.some((action) => ["restock.view", "restock.create", "restock.manage", "restock.purchase"].includes(action));
               if (n.to === "/users") return actions.includes("users.view");
               if (n.to === "/finance") {
                 return actions.includes("accounting.view") || actions.includes("accounting.create_expenses") || actions.includes("reports.view_all");

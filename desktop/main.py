@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-15-v3.1.86"
-APP_VERSION   = "3.1.86"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-18-v3.1.88"
+APP_VERSION   = "3.1.88"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -1226,7 +1226,12 @@ class MainWindow(QMainWindow):
                 reason = {
                     STATE_TAMPERED:  "WARNING: License Tampered\n\nThis license has been flagged. The application will now close.",
                     STATE_INACTIVE:  "License Revoked\n\nYour license has been revoked by MugoByte Technologies.\nPlease contact support to renew.",
-                    STATE_EXPIRED:   "License Expired\n\nYour subscription has expired.\nPlease contact MugoByte Technologies to renew.",
+                    STATE_EXPIRED: (
+                        "License expired\n\n"
+                        "New sales and other shop changes are blocked. "
+                        "Your existing shop data is still on this computer.\n"
+                        "Use the license screen to renew or activate."
+                    ),
                 }.get(state, "License invalid.")
 
                 # Avoid stealing focus mid-sale: status + license tab first;
@@ -1245,7 +1250,7 @@ class MainWindow(QMainWindow):
                 short = {
                     STATE_TAMPERED: 'License tampered Ã¢â‚¬â€ contact support',
                     STATE_INACTIVE: 'License revoked Ã¢â‚¬â€ contact support',
-                    STATE_EXPIRED: 'License expired Ã¢â‚¬â€ renew to continue',
+                    STATE_EXPIRED: 'License expired — renew to continue',
                 }.get(state, 'License invalid')
                 try:
                     self._set_status(short)
@@ -3305,6 +3310,36 @@ def _read_boot_theme_is_light(settings) -> bool:
     return theme == 'light'
 
 
+def _isolated_disposable_till() -> bool:
+    """True only when this process is a QA till pointed away from the live shop.
+
+    Production never sets MBT_TEST_INSTANCE. A test that still uses the live
+    ProgramData licence store or the live shop folder is not isolated.
+    """
+    if os.environ.get('MBT_TEST_INSTANCE') != '1':
+        return False
+    root = (os.environ.get('MBT_DATA_ROOT') or '').strip()
+    if not root:
+        return False
+    try:
+        data = os.path.normcase(os.path.abspath(root))
+    except Exception:
+        return False
+    profile = os.environ.get('USERPROFILE') or ''
+    live_shop = os.path.normcase(os.path.join(profile, 'AppData', 'Local', 'MugoByte', 'MBT POS'))
+    if data == live_shop or data.startswith(live_shop + os.sep):
+        return False
+    programdata = os.environ.get('PROGRAMDATA') or r'C:\ProgramData'
+    try:
+        store = os.path.normcase(os.path.abspath(programdata))
+    except Exception:
+        store = os.path.normcase(programdata)
+    live_store = os.path.normcase(r'C:\ProgramData')
+    if store == live_store or store.startswith(live_store + os.sep):
+        return False
+    return True
+
+
 def main():
     # Single instance ? prevent duplicate POS during update restart
     try:
@@ -3406,6 +3441,7 @@ def main():
     splash.set_status("Starting MBT POS...", 5)
     QApplication.processEvents()
 
+    isolated = _isolated_disposable_till()
     splash.set_status("Initialising database...", 30)
     QApplication.processEvents()
     # Init DB directly ? no HTTP server needed
@@ -3415,20 +3451,27 @@ def main():
     except Exception as e:
         log.error(f"DB init: {e}")
 
-    try:
-        from backend.cloud.device_service import get_device_service
-        from backend.cloud.command_center import get_command_center
-        from mbt_paths import get_db_path
-        get_device_service(lambda: APIClient(BACKEND_URL).get_settings() or {}).start_heartbeat()
-        get_command_center(get_db_path(), lambda: APIClient(BACKEND_URL).get_settings() or {}).start_poller(
-            lambda: __import__('backend.cloud_backup.device_manager', fromlist=['get_or_create_device_id']).get_or_create_device_id()
+    if isolated:
+        log.info(
+            'Disposable till. Embedded dashboard, cloud poller, and activation screen are not started. Data root %s',
+            os.environ.get('MBT_DATA_ROOT'),
         )
-    except Exception as e:
-        log.warning(f"Cloud services: {e}")
+    else:
+        try:
+            from backend.cloud.device_service import get_device_service
+            from backend.cloud.command_center import get_command_center
+            from mbt_paths import get_db_path
+            get_device_service(lambda: APIClient(BACKEND_URL).get_settings() or {}).start_heartbeat()
+            get_command_center(get_db_path(), lambda: APIClient(BACKEND_URL).get_settings() or {}).start_poller(
+                lambda: __import__('backend.cloud_backup.device_manager', fromlist=['get_or_create_device_id']).get_or_create_device_id()
+            )
+        except Exception as e:
+            log.warning(f"Cloud services: {e}")
 
     splash.set_status("Starting web dashboard...", 55)
     QApplication.processEvents()
-    _start_web_dashboard()
+    if not isolated:
+        _start_web_dashboard()
 
     splash.set_status("Loading interface...", 80)
     QApplication.processEvents()
@@ -3448,6 +3491,20 @@ def main():
             wiz.move(s.center().x() - wiz.width()//2, s.center().y() - wiz.height()//2)
             if wiz.exec_() != QDialog.Accepted:
                 QApplication.instance().quit(); return
+
+        if _isolated_disposable_till():
+            licensed = True
+            log.info('Disposable till opened without the shop licence store')
+        else:
+            try:
+                from launcher import ensure_licensed
+                licensed = ensure_licensed()
+            except Exception:
+                log.exception('License gate failed')
+                licensed = False
+        if not licensed:
+            QApplication.instance().quit()
+            return
 
         _show_login()
 

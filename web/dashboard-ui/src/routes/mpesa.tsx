@@ -137,7 +137,7 @@ function MpesaCentre() {
           <p>Address saved: {diagnostics.data?.service_address_set ? "yes" : "no"}</p>
           <p>Service answered: {diagnostics.data?.service_reachable ? "yes" : "no"}</p>
           <p>Service token: {diagnostics.data?.service_authentication || "not configured"}</p>
-          <p>Callback verified: no. Production: off.</p>
+          <p>Callback reachability is not verified from this screen. Production stays locked until go-live is confirmed.</p>
           {canConfigure ? (
             <div className="flex flex-wrap gap-2">
               <Input

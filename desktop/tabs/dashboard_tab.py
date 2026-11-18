@@ -1139,8 +1139,16 @@ class DashboardTab(QWidget):
         if getattr(self, '_top_title', None):
             self._top_title.setText(f"Top Products | {span}")
         if getattr(self, '_sales_empty', None):
-            self._sales_empty._title.setText(
-                'No sales today' if start == end == today else f'No sales for {span}')
+            from desktop.utils.security import has_permission
+            source = (self.user or {}).get('user') or self.user or {}
+            if has_permission(source, 'sales.view_all'):
+                self._sales_empty._title.setText(
+                    'No sales today' if start == end == today else f'No sales for {span}')
+                self._sales_empty._sub.setText('Start your first sale from Point of Sale')
+            else:
+                self._sales_empty._title.setText(f'No receipts of yours for {span}')
+                self._sales_empty._sub.setText(
+                    'This list is only your receipts. The shop total above counts every cashier.')
 
         # -- Sales KPIs ---
         today_tx = 0
@@ -1172,9 +1180,11 @@ class DashboardTab(QWidget):
                     self._k_rev.show()
                     self._k_avg.show()
                 else:
-                    self._k_sales.set_label('Total sales')
+                    self._k_sales.set_label('Shop sales')
                     self._k_sales.set_value(f"{cur} {today_rev:,.2f}")
-                    self._k_sales.set_sub(f"This day · {today_tx} receipts")
+                    self._k_sales.set_sub(
+                        f"Shop-wide · {today_tx} receipt"
+                        f"{'' if today_tx == 1 else 's'}. The list below is yours.")
                     self._k_rev.hide()
                     self._k_avg.hide()
                 if start_d == end_d:
@@ -1372,7 +1382,9 @@ class DashboardTab(QWidget):
             qty = float(cs.get('item_qty') or 0)
             cost = float(cs.get('total_cost') or 0)
             # Prefer item count (lines); show qty in sub when useful
-            self._k_cons.set_value(str(lines if lines else int(qty) if qty else 0))
+            from desktop.utils.quantities import format_quantity
+            shown_qty = format_quantity(qty)
+            self._k_cons.set_value(str(lines if lines else shown_qty))
             self._k_cons.set_sub(f"{cur} {cost:,.0f} used in range")
         except Exception as e:
             log.warning(f"Dashboard consumption KPI: {e}")
@@ -1380,6 +1392,15 @@ class DashboardTab(QWidget):
         # -- Recent sales table ---
         try:
             sales = self.api.get_sales(start, end) or []
+            from desktop.utils.security import has_permission
+            source = (self.user or {}).get('user') or self.user or {}
+            own_list = not has_permission(source, 'sales.view_all')
+            if own_list:
+                uid = int(source.get('id') or 0)
+                sales = [
+                    row for row in sales
+                    if int(row.get('cashier_id') or 0) == uid
+                ]
             self._tbl.setRowCount(0)
             shown = sales[:500]
             for i, s in enumerate(shown):
@@ -1411,9 +1432,17 @@ class DashboardTab(QWidget):
             extra = ''
             if n > len(shown):
                 extra = f" | showing {len(shown)} of {n}"
-            self._tbl_footer.setText(
-                f"  {n} transaction{'s' if n != 1 else ''} · {span}{extra}" +
-                (f" | Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
+            if getattr(self, '_sales_title', None):
+                self._sales_title.setText(
+                    f'Your receipts · {n}' if own_list else 'Recent Sales')
+            if own_list:
+                self._tbl_footer.setText(
+                    f"  {n} of your receipts · {span}. "
+                    f"The shop card counts every cashier.")
+            else:
+                self._tbl_footer.setText(
+                    f"  {n} transaction{'s' if n != 1 else ''} · {span}{extra}" +
+                    (f" | Total: {cur} {sum(float(s.get('total',0)) for s in sales if (s.get('status') or '').lower() != 'voided'):,.2f}" if n > 0 else ''))
             self._on_sale_selected()
 
             # Activity feed from recent sales

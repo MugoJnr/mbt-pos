@@ -6,6 +6,7 @@ A sale is marked verified only after a status query returns the same amount.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -31,9 +32,52 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+_LEGACY_PAYMENT_COLUMNS = (
+    ("profile_id", "TEXT"),
+    ("branch_id", "INTEGER"),
+    ("kind", "TEXT"),
+    ("state", "TEXT"),
+    ("amount_shillings", "INTEGER"),
+    ("amount_text", "TEXT"),
+    ("phone", "TEXT"),
+    ("sale_reference", "TEXT"),
+    ("receipt_code", "TEXT"),
+    ("verification", "TEXT DEFAULT 'unverified'"),
+    ("provider", "TEXT"),
+    ("result_code", "TEXT"),
+    ("result_detail", "TEXT"),
+    ("released", "INTEGER NOT NULL DEFAULT 0"),
+    ("evidence_json", "TEXT"),
+)
+
+
+def _table_columns(db, table: str) -> dict:
+    return {row[1]: row for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_payment_columns(db) -> None:
+    """Add the current payment columns to a shop database that already has the older table."""
+    present = _table_columns(db, "mpesa_payments")
+    if not present:
+        return
+    for name, declaration in _LEGACY_PAYMENT_COLUMNS:
+        if name not in present:
+            db.execute(f"ALTER TABLE mpesa_payments ADD COLUMN {name} {declaration}")
+
+
 def _is_mpesa(name: str) -> bool:
     key = str(name or "").lower().replace("-", "").replace(" ", "")
     return "mpesa" in key
+
+
+def sale_uses_mpesa(method: str, electronic_method: str = "", tenders=None) -> bool:
+    """True only when this sale actually takes an M-Pesa amount."""
+    rows = tenders if isinstance(tenders, list) else []
+    return (
+        _is_mpesa(method)
+        or _is_mpesa(electronic_method)
+        or any(_is_mpesa(str(row.get("method") or "")) for row in rows if isinstance(row, dict))
+    )
 
 
 def _role(actor) -> str:
@@ -117,6 +161,7 @@ def ensure_tables(db: sqlite3.Connection) -> None:
             updated_at TEXT
         )"""
     )
+    _ensure_payment_columns(db)
     db.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS mpesa_receipt_code_unique
            ON mpesa_payments(receipt_code)
@@ -157,6 +202,16 @@ def ensure_tables(db: sqlite3.Connection) -> None:
         """CREATE UNIQUE INDEX IF NOT EXISTS mpesa_sale_reference_unique
            ON mpesa_payments(sale_reference)
            WHERE sale_reference IS NOT NULL AND sale_reference != ''"""
+    )
+    db.execute(
+        """CREATE TABLE IF NOT EXISTS mpesa_callbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            checkout_request_id TEXT,
+            payload_hash TEXT,
+            matched INTEGER NOT NULL DEFAULT 0,
+            detail TEXT,
+            created_at TEXT
+        )"""
     )
 
 
@@ -351,10 +406,90 @@ def _lab(db, method: str, path: str, body: dict | None = None, timeout: int = 20
         raise MpesaSaleError("Payment service did not answer. No second prompt was sent.") from exc
 
 
+def _direct_client(profile, secrets: dict):
+    from backend.daraja_client import DarajaClient
+    party_b = profile["till_number"] if profile["merchant_type"] == "till" else profile["shortcode"]
+    return DarajaClient(
+        environment=profile["environment"] or "sandbox",
+        consumer_key=secrets["consumer_key"],
+        consumer_secret=secrets["consumer_secret"],
+        shortcode=profile["shortcode"] or "",
+        passkey=secrets["passkey"],
+        merchant_type=profile["merchant_type"] or "",
+        party_b=party_b or profile["shortcode"] or "",
+        callback_url=profile["callback_url"] or "",
+    )
+
+
+def _create_direct_profile(db, actor, fields: dict) -> dict:
+    """Save a Daraja profile on this till. Secrets are not sent to another service."""
+    from backend.daraja_secrets import store_profile_secrets
+    environment = str(fields.get("environment") or "sandbox").lower()
+    if environment not in {"sandbox", "production"}:
+        raise MpesaSaleError("Choose sandbox or production.")
+    merchant_type = str(fields.get("merchant_type") or "").lower()
+    if merchant_type not in {"till", "paybill"}:
+        raise MpesaSaleError("Choose Buy Goods Till or Paybill.")
+    name = str(fields.get("name") or "").strip()[:80]
+    shortcode = re.sub(r"\s+", "", str(fields.get("shortcode") or ""))
+    till_number = re.sub(r"\s+", "", str(fields.get("till_number") or ""))
+    paybill_number = re.sub(r"\s+", "", str(fields.get("paybill_number") or ""))
+    if not name or not shortcode:
+        raise MpesaSaleError("Enter a profile name and the business shortcode.")
+    if merchant_type == "till" and not till_number:
+        till_number = shortcode
+    if merchant_type == "paybill" and not paybill_number:
+        paybill_number = shortcode
+    callback = str(fields.get("callback_url") or "").strip()
+    if not callback.lower().startswith("https://") or any(
+        host in callback.lower() for host in ("localhost", "127.0.0.1")
+    ):
+        raise MpesaSaleError(
+            "Enter the public HTTPS callback URL Safaricom will call. "
+            "This till's localhost address cannot receive it."
+        )
+    confirmed = str(fields.get("go_live_confirmed") or "").strip().lower() in {"1", "true", "yes"}
+    if environment == "production" and not confirmed:
+        raise MpesaSaleError(
+            "Production stays locked until go-live is confirmed. "
+            "Sandbox can be saved without that. No prompt was sent."
+        )
+    key = str(fields.get("consumer_key") or "")
+    secret = str(fields.get("consumer_secret") or "")
+    passkey = str(fields.get("passkey") or "")
+    if not key or not secret or not passkey:
+        raise MpesaSaleError("Enter the consumer key, consumer secret, and passkey once. They are not shown again.")
+    profile_id = str(uuid.uuid4())
+    try:
+        store_profile_secrets(profile_id, key, secret, passkey)
+    except OSError as exc:
+        raise MpesaSaleError("The Daraja secrets could not be stored. Nothing was saved.") from exc
+    now = _now()
+    branch = fields.get("branch_id")
+    db.execute(
+        """INSERT INTO mpesa_profiles
+           (id, name, merchant_type, till_number, paybill_number, shortcode, business_name,
+            account_reference_label, callback_url, branch_id, environment, status,
+            is_default, credentials_stored, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?, ?, 'draft', 0, 1, ?, ?)""",
+        (
+            profile_id, name, merchant_type, till_number, paybill_number, shortcode,
+            str(fields.get("business_name") or name)[:120],
+            str(fields.get("account_reference_label") or "Invoice")[:40],
+            callback, int(branch) if branch else None, environment, now, now,
+        ),
+    )
+    _audit(db, profile_id, actor, "profile_created", f"Direct Daraja {environment}. Secrets are not in the database.")
+    row = db.execute("SELECT * FROM mpesa_profiles WHERE id=?", (profile_id,)).fetchone()
+    return _public_profile(row)
+
+
 def create_profile(db, actor, fields: dict) -> dict:
     if not can_configure(actor):
         raise MpesaSaleError("Only an admin can save a merchant profile.")
     ensure_tables(db)
+    if not gateway_config(db)["url"]:
+        return _create_direct_profile(db, actor, fields)
     environment = str(fields.get("environment") or "sandbox").lower()
     if environment != "sandbox":
         raise MpesaSaleError("Production is not enabled.")
@@ -447,6 +582,26 @@ def authenticate_profile(db, actor, profile_id: str) -> dict:
     if not can_view(actor):
         raise MpesaSaleError("You cannot test this profile.")
     ensure_tables(db)
+    if not gateway_config(db)["url"]:
+        from backend.daraja_client import DarajaError
+        from backend.daraja_secrets import load_profile_secrets
+        profile = db.execute("SELECT * FROM mpesa_profiles WHERE id=?", (profile_id,)).fetchone()
+        secrets = load_profile_secrets(profile_id)
+        if not profile or not secrets:
+            raise MpesaSaleError("That merchant profile is not on this shop.")
+        try:
+            _direct_client(profile, secrets).access_token()
+        except DarajaError as exc:
+            raise MpesaSaleError(str(exc)) from exc
+        return {
+            "success": True,
+            "message": "Safaricom accepted the sandbox or production keys. This is not a payment.",
+            "provider": "daraja",
+            "environment": profile["environment"],
+            "payment_created": False,
+            "sale_created": False,
+            "token_returned": False,
+        }
     _status, body = _lab(db, "POST", f"/api/v1/profiles/{profile_id}/authenticate", {})
     return {
         "success": bool(body.get("success")),
@@ -486,8 +641,13 @@ def diagnostics(db, actor) -> dict:
         "manual_checkout": True,
         "payment_confirmed": False,
         "message": (
-            "A health check does not take a payment. "
-            "Callback reachability is not verified. Production is off."
+            "Manual M-Pesa is available. A phone prompt is not payment. "
+            "Production stays locked until go-live is confirmed. "
+            "A health check does not take a payment."
+            if not cfg["url"]
+            else
+            "A separate gateway URL is set. Manual M-Pesa is still available. "
+            "A health check does not take a payment."
         ),
     }
 
@@ -498,6 +658,23 @@ def _insert_payment(db, **fields) -> str:
     fields.setdefault("created_at", now)
     fields.setdefault("updated_at", now)
     fields["id"] = payment_id
+    info = _table_columns(db, "mpesa_payments")
+    if "shop_id" in info and "shop_id" not in fields:
+        fields["shop_id"] = "local"
+    if "amount_expected" in info and "amount_expected" not in fields:
+        raw = fields.get("amount_shillings")
+        if raw is None:
+            try:
+                raw = float(fields.get("amount_text") or 0)
+            except (TypeError, ValueError):
+                raw = 0
+        fields["amount_expected"] = float(raw or 0)
+    for stamp in ("created_at", "updated_at"):
+        column = info.get(stamp)
+        if not column or stamp not in fields:
+            continue
+        if str(column[2] or "").upper() == "REAL" and not isinstance(fields[stamp], (int, float)):
+            fields[stamp] = datetime.now(timezone.utc).timestamp()
     columns = list(fields)
     db.execute(
         f"INSERT INTO mpesa_payments ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
@@ -566,15 +743,37 @@ def start_stk(db, actor, *, phone: str, amount, profile_id: str, sale_reference:
     _audit(db, payment_id, actor, "stk_send", f"amount={shillings}")
     db.commit()
     try:
-        _status, body = _lab(db, "POST", "/api/v1/transactions/stk-push", {
-            "phone": normalized,
-            "amount": shillings,
-            "account_reference": reference,
-            "transaction_desc": "Payment",
-            "idempotency_key": key,
-            "profile_id": profile_id,
-            "callback_url": profile["callback_url"],
-        })
+        if gateway_config(db)["url"]:
+            _status, body = _lab(db, "POST", "/api/v1/transactions/stk-push", {
+                "phone": normalized,
+                "amount": shillings,
+                "account_reference": reference,
+                "transaction_desc": "Payment",
+                "idempotency_key": key,
+                "profile_id": profile_id,
+                "callback_url": profile["callback_url"],
+            })
+        else:
+            from backend.daraja_client import DarajaError
+            from backend.daraja_secrets import load_profile_secrets
+            secrets = load_profile_secrets(profile_id)
+            if not secrets:
+                raise MpesaSaleError("Save the Daraja consumer key, secret, and passkey on this till. No prompt was sent.")
+            try:
+                sent = _direct_client(profile, secrets).stk_push(
+                    phone=normalized,
+                    amount=shillings,
+                    account_reference=reference,
+                    description="Payment",
+                )
+            except DarajaError as exc:
+                raise MpesaSaleError(str(exc)) from exc
+            body = {
+                "checkout_request_id": sent["checkout_request_id"],
+                "merchant_request_id": sent["merchant_request_id"],
+                "response_code": sent["response_code"],
+                "provider": "daraja",
+            }
     except MpesaSaleError as exc:
         db.execute(
             """UPDATE mpesa_payments
@@ -630,10 +829,42 @@ def poll_payment(db, actor, payment_id: str) -> dict:
             db.commit()
         return _public_payment(_payment(db, payment_id))
     try:
-        _status, body = _lab(db, "POST", "/api/v1/transactions/stk-query", {
-            "checkout_request_id": row["checkout_request_id"],
-            "profile_id": row["profile_id"],
-        })
+        if gateway_config(db)["url"]:
+            _status, body = _lab(db, "POST", "/api/v1/transactions/stk-query", {
+                "checkout_request_id": row["checkout_request_id"],
+                "profile_id": row["profile_id"],
+            })
+        else:
+            from backend.daraja_client import DarajaError, reconcile_stk
+            from backend.daraja_secrets import load_profile_secrets
+            profile = db.execute("SELECT * FROM mpesa_profiles WHERE id=?", (row["profile_id"],)).fetchone()
+            secrets = load_profile_secrets(row["profile_id"] or "")
+            if not profile or not secrets:
+                raise MpesaSaleError("The Daraja profile for this prompt is missing. The sale was not completed.")
+            try:
+                queried = _direct_client(profile, secrets).stk_query(row["checkout_request_id"])
+            except DarajaError as exc:
+                raise MpesaSaleError(str(exc)) from exc
+            stored = {}
+            try:
+                stored = json.loads(row["evidence_json"] or "{}")
+            except json.JSONDecodeError:
+                stored = {}
+            decision = reconcile_stk(
+                query=queried,
+                callback=stored.get("callback"),
+                intended_shillings=int(row["amount_shillings"]),
+                checkout_id=row["checkout_request_id"] or "",
+            )
+            body = {
+                "provider": "daraja",
+                "queried": True,
+                "ResultCode": (decision.get("evidence") or {}).get("query_result_code") or queried.get("ResultCode"),
+                "ResultDesc": decision.get("detail") or "",
+                "CheckoutRequestID": row["checkout_request_id"],
+                "callback_payload": stored.get("callback"),
+                "_direct_decision": decision,
+            }
     except MpesaSaleError as exc:
         db.execute(
             """UPDATE mpesa_payments
@@ -644,18 +875,28 @@ def poll_payment(db, actor, payment_id: str) -> dict:
         db.commit()
         return _public_payment(_payment(db, payment_id))
     from backend.mpesa_daraja import normalise_stk_query
-    decision = normalise_stk_query(
-        body if isinstance(body, dict) else {},
-        intended_shillings=int(row["amount_shillings"]),
-        checkout_id=row["checkout_request_id"] or "",
-    )
+    if isinstance(body, dict) and body.get("_direct_decision"):
+        decision = body["_direct_decision"]
+    else:
+        decision = normalise_stk_query(
+            body if isinstance(body, dict) else {},
+            intended_shillings=int(row["amount_shillings"]),
+            checkout_id=row["checkout_request_id"] or "",
+        )
     provider = "mock" if body.get("provider") == "mock" else (row["provider"] or "daraja")
     state = "waiting" if decision["state"] == "unresolved" else decision["state"]
     verification = decision["verification"]
     receipt = decision["receipt"]
     detail = decision["detail"]
     code = str((decision.get("evidence") or {}).get("query_result_code") or "")
-    evidence = json.dumps(decision.get("evidence") or {}, default=str)[:2000]
+    evidence_obj = dict(decision.get("evidence") or {})
+    try:
+        previous = json.loads(row["evidence_json"] or "{}")
+    except json.JSONDecodeError:
+        previous = {}
+    if isinstance(previous, dict) and previous.get("callback"):
+        evidence_obj["callback"] = previous["callback"]
+    evidence = json.dumps(evidence_obj, default=str)[:8000]
     try:
         db.execute(
             """UPDATE mpesa_payments
@@ -717,14 +958,8 @@ def prepare_sale_mpesa(db, data: dict, method: str, electronic_paid: float) -> d
     electronic_method = str(data.get("electronic_method") or "")
     tenders = data.get("payment_tenders") or []
     mpesa_tenders = [row for row in tenders if _is_mpesa(str(row.get("method") or ""))]
-    touches = (
-        _is_mpesa(method_name)
-        or _is_mpesa(electronic_method)
-        or bool(mpesa_tenders)
-        or bool(str(data.get("mpesa_payment_id") or "").strip())
-        or bool(str(data.get("mpesa_ref") or "").strip())
-    )
-    if not touches:
+    # Cash, card, and credit must ignore a code left over from the previous tender.
+    if not sale_uses_mpesa(method_name, electronic_method, tenders):
         return {}
     ensure_tables(db)
     if mpesa_tenders:
@@ -751,17 +986,36 @@ def prepare_sale_mpesa(db, data: dict, method: str, electronic_paid: float) -> d
             "verification": row["verification"],
             "note": note,
         }
-    code = normalize_code(str(data.get("mpesa_ref") or ""))
-    if code and _code_taken(db, code):
-        raise MpesaSaleError("That M-Pesa code is already recorded.")
-    if code:
+    codes = []
+    header = str(data.get("mpesa_ref") or "").strip()
+    if header:
+        codes.append(normalize_code(header))
+    for row in mpesa_tenders:
+        raw = str(row.get("reference") or "").strip()
+        if raw:
+            codes.append(normalize_code(raw))
+    seen = []
+    for item in codes:
+        if item and item not in seen:
+            seen.append(item)
+    code = seen[0] if seen else ""
+    for item in seen:
+        if _code_taken(db, item):
+            raise MpesaSaleError("That M-Pesa code is already recorded.")
+    for item in seen:
+        amount_text = f"{component:.2f}"
+        for row in mpesa_tenders:
+            raw = str(row.get("reference") or "").strip()
+            if raw and normalize_code(raw) == item:
+                amount_text = f"{float(row.get('amount') or component):.2f}"
+                break
         _insert_payment(
             db,
             kind="manual",
             state="recorded",
             amount_shillings=None,
-            amount_text=f"{component:.2f}",
-            receipt_code=code,
+            amount_text=amount_text,
+            receipt_code=item,
             verification="manual",
             provider="manual",
             result_detail="Manually recorded. Not verified with Safaricom.",
@@ -794,6 +1048,95 @@ def attach_sale_mpesa(db, sale_id: int, prepared: dict) -> None:
                WHERE receipt_code=? AND sale_id IS NULL""",
             (sale_id, _now(), prepared["mpesa_ref"]),
         )
+
+
+def _mask_callback(payload: dict) -> dict:
+    def walk(value):
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, dict):
+            masked = {}
+            name = str(value.get("Name") or value.get("name") or "")
+            if name == "PhoneNumber" and ("Value" in value or "value" in value):
+                masked.update(value)
+                raw = str(value.get("Value", value.get("value")) or "")
+                digits = re.sub(r"\D+", "", raw)
+                hidden = digits[:4] + "***" + digits[-3:] if len(digits) >= 7 else "hidden"
+                if "Value" in value:
+                    masked["Value"] = hidden
+                else:
+                    masked["value"] = hidden
+                return masked
+            return {key: walk(item) for key, item in value.items()}
+        return value
+    walked = walk(payload)
+    return walked if isinstance(walked, dict) else {}
+
+
+def apply_stk_callback(db, payload: dict) -> dict:
+    """Store Safaricom's callback. Do not settle the sale from the callback alone."""
+    ensure_tables(db)
+    if not isinstance(payload, dict):
+        raise MpesaSaleError("The callback was not a JSON object.")
+    from backend.mpesa_daraja import callback_metadata
+    meta = callback_metadata(payload)
+    checkout = str(meta.get("_checkout_request_id") or "")
+    if not checkout:
+        raise MpesaSaleError("The callback has no checkout request.")
+    masked = _mask_callback(payload)
+    digest = hashlib.sha256(
+        json.dumps(masked, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    row = db.execute(
+        "SELECT * FROM mpesa_payments WHERE checkout_request_id=?",
+        (checkout,),
+    ).fetchone()
+    prior = db.execute(
+        "SELECT id FROM mpesa_callbacks WHERE checkout_request_id=? AND payload_hash=?",
+        (checkout, digest),
+    ).fetchone()
+    if prior:
+        return {"accepted": True, "duplicate": True, "matched": bool(row), "settled": False}
+    db.execute(
+        """INSERT INTO mpesa_callbacks
+           (checkout_request_id, payload_hash, matched, detail, created_at)
+           VALUES (?,?,?,?,?)""",
+        (checkout, digest, 1 if row else 0, "Callback stored. Not a payment.", _now()),
+    )
+    if not row:
+        db.execute(
+            """INSERT INTO mpesa_incoming
+               (id, provider_ref, amount_shillings, phone_masked, account_reference,
+                state, detail, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()), checkout + ":" + digest[:12], None, "", checkout,
+                "unmatched", "Callback did not match a prompt.", _now(), _now(),
+            ),
+        )
+        return {"accepted": True, "duplicate": False, "matched": False, "settled": False}
+    if row["state"] == "verified":
+        _audit(db, row["id"], {"username": "callback"}, "callback_duplicate_verified", checkout)
+        return {"accepted": True, "duplicate": False, "matched": True, "settled": False}
+    try:
+        previous = json.loads(row["evidence_json"] or "{}")
+    except json.JSONDecodeError:
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    previous["callback"] = masked
+    db.execute(
+        """UPDATE mpesa_payments
+           SET evidence_json=?, result_detail=?, updated_at=?
+           WHERE id=? AND state NOT IN ('verified')""",
+        (
+            json.dumps(previous, default=str)[:8000],
+            "Callback stored. Waiting for a status query. Not a payment.",
+            _now(), row["id"],
+        ),
+    )
+    _audit(db, row["id"], {"username": "callback"}, "callback_stored", checkout)
+    return {"accepted": True, "duplicate": False, "matched": True, "settled": False}
 
 
 def list_payments(db, actor, **filters) -> list:

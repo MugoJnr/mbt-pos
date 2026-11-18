@@ -142,9 +142,31 @@ def _lines_for(sale: dict, items: list[dict]) -> list[dict]:
     return out
 
 
+def line_is_uncosted(item: dict) -> bool:
+    """A missing or zero synced cost is not a buying price.
+
+    The portal must not turn that sale into profit. A later sync that
+    carries the till's unit cost is what makes the line count.
+    """
+    raw = item.get('unit_cost')
+    if raw in (None, ''):
+        raw = item.get('cost_price')
+    if raw in (None, ''):
+        return True
+    try:
+        return float(raw) <= 0
+    except (TypeError, ValueError):
+        return True
+
+
 def line_profit(item: dict) -> tuple[float, float, float]:
     revenue = _num(item.get('total'))
-    cost = _num(item.get('quantity')) * _num(item.get('unit_cost', item.get('cost_price')))
+    if line_is_uncosted(item):
+        return _round2(revenue), 0.0, 0.0
+    raw = item.get('unit_cost')
+    if raw in (None, ''):
+        raw = item.get('cost_price')
+    cost = _num(item.get('quantity')) * float(raw)
     return _round2(revenue), _round2(cost), _round2(revenue - cost)
 
 
@@ -164,6 +186,8 @@ def allocate_sale_profits(
         'gross_profit_collected': 0.0,
         'gross_profit_outstanding': 0.0,
         'profit_sales': 0,
+        'uncosted_sales': 0.0,
+        'uncosted_lines': 0,
     }
     by_day: dict[str, float] = {}
     details = []
@@ -174,6 +198,12 @@ def allocate_sale_profits(
         revenue = 0.0
         cost = 0.0
         for line in lines:
+            if line_is_uncosted(line):
+                buckets['uncosted_sales'] = _round2(
+                    buckets['uncosted_sales'] + _num(line.get('total'))
+                )
+                buckets['uncosted_lines'] += 1
+                continue
             line_revenue, line_cost, _gp = line_profit(line)
             revenue += line_revenue
             cost += line_cost

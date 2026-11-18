@@ -443,9 +443,16 @@ class _CreatePane(QWidget):
         row1 = QHBoxLayout()
         row1.setSpacing(16)
         self._date = _make_date_edit(QDate.currentDate(), height=CONTROL_HEIGHT)
-        if not has_permission(self.p.user, 'sales.business_day'):
-            self._date.setEnabled(False)
-            self._date.setToolTip('This record uses today. A manager can choose another day.')
+        self._date.setToolTip('A past date is sent for approval. Stock does not change until it is approved.')
+        self._backdate_reason = ReasonSelect(reasons=[], height=CONTROL_HEIGHT)
+        from desktop.utils.option_lists import BACKDATE_REASONS
+        self._backdate_reason.set_reasons(BACKDATE_REASONS)
+        self._backdate_box = QWidget()
+        back_lay = QVBoxLayout(self._backdate_box)
+        back_lay.setContentsMargins(0, 0, 0, 0)
+        back_lay.addWidget(_field('Why this past date', self._backdate_reason))
+        self._backdate_box.hide()
+        self._date.dateChanged.connect(self._sync_backdate_reason)
         self._ref_badge = Badge('AUTO-######', tone='gold')
         self._ref_badge.setMinimumHeight(CONTROL_HEIGHT)
         self._ref_badge.setAlignment(Qt.AlignCenter)
@@ -457,6 +464,7 @@ class _CreatePane(QWidget):
         row1.addWidget(_field('Date', self._date), 1)
         row1.addWidget(_field('Reference', self._ref_badge), 1)
         fl.addLayout(row1)
+        fl.addWidget(self._backdate_box)
 
         self._dept = Select(placeholder='Select department', height=CONTROL_HEIGHT)
         self._dept.setMinimumWidth(220)
@@ -509,6 +517,7 @@ class _CreatePane(QWidget):
         self._qty_add = QDoubleSpinBox()
         self._qty_add.setRange(0.001, 1_000_000)
         self._qty_add.setDecimals(3)
+        self._qty_add.setSingleStep(0.01)
         self._qty_add.setValue(1.0)
         self._qty_add.setMinimumHeight(CONTROL_HEIGHT)
         self._qty_add.setFixedWidth(120)
@@ -1025,6 +1034,13 @@ class _CreatePane(QWidget):
         from desktop.utils.state_reset import StateResetManager
         StateResetManager.reset_consumption(self)
 
+    def _sync_backdate_reason(self, *_args):
+        from desktop.utils.security import can_set_business_day
+        from desktop.utils.shop_time import shop_today
+        chosen = self._date.date()
+        past = chosen < QDate(shop_today().year, shop_today().month, shop_today().day)
+        self._backdate_box.setVisible(past and not can_set_business_day(self.p.user))
+
     def _save(self):
         if not require_permission(self.p.user, 'consumption.create', self):
             return
@@ -1070,10 +1086,46 @@ class _CreatePane(QWidget):
                 for ln in self._lines
             ],
         }
+        from datetime import date as date_cls
+        from desktop.utils.security import can_set_business_day
+        from desktop.utils.shop_time import shop_today
+        try:
+            chosen = date_cls.fromisoformat(payload['date'][:10])
+        except ValueError:
+            QMessageBox.warning(self, 'Date', 'Enter a valid business date.')
+            return
+        if chosen > shop_today():
+            QMessageBox.warning(self, 'Date', 'Future dates are not allowed.')
+            return
+        if chosen < shop_today() and not can_set_business_day(self.p.user):
+            if not self._backdate_reason.is_valid():
+                QMessageBox.warning(self, 'Backdating request', self._backdate_reason.validation_error() or 'Choose a reason for this past date.')
+                return
+            payload['backdate_reason'] = self._backdate_reason.value()
+            from backend.dated_actions import warning_for
+            answer = QMessageBox.question(
+                self,
+                'Backdated transaction',
+                warning_for(payload['date']) + '\n\nSubmit it for administrator approval? Stock will not change until it is approved.',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         try:
             res = self.p.api.create_consumption(payload) or {}
         except Exception as e:
             QMessageBox.critical(self, 'Save Failed', str(e))
+            return
+        if res.get('pending_approval'):
+            self._client_token = ''
+            QMessageBox.information(
+                self,
+                'Waiting for approval',
+                f"Request {res.get('reference')} is pending approval.\nStock was not changed.",
+            )
+            from desktop.utils.state_reset import StateResetManager
+            StateResetManager.reset_consumption(self)
             return
         if res.get('error'):
             QMessageBox.critical(self, 'Save Failed', res['error'])
@@ -1223,10 +1275,16 @@ class _HistoryPane(QWidget):
                 pass
             self._tbl.setItem(i, 0, tbl_item(dstr))
             ref = tbl_item(str(r.get('reference_no') or ''))
-            ref.setToolTip(f"{r.get('item_count') or 0} lines · taken by {r.get('taken_by') or '—'}")
+            ref.setToolTip(
+                f"{r.get('item_count') or 0} lines · taken by {r.get('taken_by') or '—'}"
+                f"\n{r.get('ledger_account') or ''}"
+            )
             self._tbl.setItem(i, 1, ref)
             self._tbl.setItem(i, 2, tbl_item(str(r.get('department_name') or '—')))
             self._tbl.setItem(i, 3, tbl_item(str(r.get('reason') or '—')))
+            reason_cell = self._tbl.item(i, 3)
+            if reason_cell is not None:
+                reason_cell.setToolTip(str(r.get('ledger_account') or ''))
             cost_text = consumption_money_label(r.get('total_cost'), show_cost, cur)
             if cost_text:
                 self._tbl.setItem(i, 4, tbl_right(
@@ -1502,7 +1560,7 @@ class _HistoryPane(QWidget):
             row.addWidget(QLabel(f"{item.get('product_name')} ({item.get('unit') or 'pcs'})"))
             spin = QDoubleSpinBox()
             spin.setDecimals(3)
-            spin.setSingleStep(0.25)
+            spin.setSingleStep(0.01)
             spin.setRange(0.001, 1000000)
             spin.setValue(float(item.get('quantity') or 0))
             spin.setProperty('product_id', int(item.get('product_id') or 0))

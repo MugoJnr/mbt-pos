@@ -43,8 +43,8 @@ class RemainingShopServices(unittest.TestCase):
             ('superadmin_pin_hash', _pin_hash(self.PIN)),
         )
         db.execute(
-            "INSERT INTO products (name,sku,price,cost_price,stock,min_stock) "
-            "VALUES ('Sugar','SUG-1',200,50,30,1)"
+            "INSERT INTO products (name,sku,price,cost_price,stock,min_stock,unit) "
+            "VALUES ('Sugar','SUG-1',200,50,30,1,'kg')"
         )
         db.commit()
         db.close()
@@ -337,6 +337,15 @@ class RemainingShopServices(unittest.TestCase):
         self.assertEqual(self._stock(), 29)
         approved = self.api.execute_approval(requested['id'], 'approve', pin=self.PIN)
         self.assertEqual(approved.get('status'), 403)
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (id,username,password_hash,role,is_active) "
+            "VALUES (2,'reviewer','x:y','superadmin',1)"
+        )
+        db.commit()
+        db.close()
+        self.api._user_id = 2
+        self.api._username = 'reviewer'
         self.api._role = 'superadmin'
         approved = self.api.execute_approval(requested['id'], 'approve', pin=self.PIN)
         self.assertTrue(approved.get('success'), approved)

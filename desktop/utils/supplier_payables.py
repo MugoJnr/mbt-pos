@@ -306,24 +306,25 @@ def record_payment(api, supplier_id, amount, *, method="cash", reference="", not
                     continue
                 chosen.append((int(invoice["id"]), part))
                 left = money(left - part)
+        who = getattr(api, "_username", "") or getattr(api, "_role", "") or "staff"
         saved = _insert_payment(
             db, supplier_id=supplier_id, amount=amount, method=method,
             reference=reference, notes=notes, user_id=getattr(api, "_user_id", None),
-            username=getattr(api, "_username", "") or role, allocations=chosen,
+            username=who, allocations=chosen,
             client_token=token, paid_at=(paid_at or "").strip(),
         )
         db.execute(
             "INSERT INTO supplier_delivery_events (receipt_id,kind,detail,user_id,username,created_at) "
             "VALUES (?,?,?,?,?,?)",
             (None, "payment", f"{saved['payment_number']} {amount}",
-             getattr(api, "_user_id", None), getattr(api, "_username", "") or role, _now()),
+             getattr(api, "_user_id", None), who, _now()),
         )
         from desktop.utils.accounting_hooks import post_supplier_payment_journal
         posted = post_supplier_payment_journal(
             db, saved["payment_id"],
             amount=amount, method=method, number=saved["payment_number"],
             user_id=getattr(api, "_user_id", None),
-            username=getattr(api, "_username", "") or role,
+            username=who,
             safe=False,
         )
         if posted.get("error"):
@@ -809,8 +810,11 @@ def return_receipt_line(api, receipt_id, product_id, quantity, *, reason="", pin
     denied = _admin(api)
     if denied:
         return denied
+    from desktop.utils.quantities import QuantityError, parse_quantity
     try:
-        qty = round(float(quantity), 4)
+        qty = parse_quantity(quantity, allow_zero=False)
+    except QuantityError as exc:
+        return {"error": str(exc), "status": 400}
     except (TypeError, ValueError):
         return {"error": "Enter the quantity being returned.", "status": 400}
     if qty <= 0 or qty != qty:
@@ -851,8 +855,13 @@ def return_receipt_line(api, receipt_id, product_id, quantity, *, reason="", pin
             db.rollback()
             return {"error": "You cannot return more than was received.", "status": 400}
         prod = db.execute(
-            "SELECT id, name, stock FROM products WHERE id=?", (int(product_id),)
+            "SELECT id, name, stock, unit FROM products WHERE id=?", (int(product_id),)
         ).fetchone()
+        try:
+            qty = parse_quantity(qty, unit=(prod["unit"] if prod and "unit" in prod.keys() else ""), allow_zero=False)
+        except QuantityError as exc:
+            db.rollback()
+            return {"error": str(exc), "status": 400}
         if not prod:
             db.rollback()
             return {"error": "Product not found", "status": 404}

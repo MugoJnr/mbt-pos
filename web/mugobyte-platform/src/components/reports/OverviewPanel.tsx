@@ -64,9 +64,16 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
     ["Outstanding debt", formatMoney(outstanding, currency), WalletCards, "warning"],
     ["Transactions", formatNumber(transactions), ArrowUpRight, "primary"],
   ];
+  const uncostedLines = Number(value(summary, "uncosted_lines") || 0);
+  const uncostedSales = Number(value(summary, "uncosted_sales") || 0);
   if (showProfit) {
     cards.push(
-      ["Gross profit", formatMoney(value(summary, "gross_profit"), currency), Banknote, "success"],
+      [
+        uncostedLines > 0 ? "Verified gross profit" : "Gross profit",
+        formatMoney(value(summary, "gross_profit"), currency),
+        Banknote,
+        "success",
+      ],
       ["Profit on credit and part-payment", formatMoney(value(summary, "gross_profit_credit_and_part"), currency), CreditCard, "info"],
       ["Profit on fully paid sales", formatMoney(value(summary, "gross_profit_fully_paid"), currency), Banknote, "primary"],
       ["Profit still on outstanding debt", formatMoney(value(summary, "gross_profit_outstanding"), currency), WalletCards, "warning"],
@@ -96,6 +103,11 @@ export function OverviewPanel({ orgId, start, end }: { orgId: string; start: str
         {sync.stale ? (
           <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
             These figures may be behind the till. A failed or missing sync is not treated as a new update.
+          </p>
+        ) : null}
+        {uncostedLines > 0 ? (
+          <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-foreground">
+            {uncostedLines} sold line{uncostedLines === 1 ? "" : "s"} worth {formatMoney(uncostedSales, currency)} have no buying cost. That amount is not included in gross profit.
           </p>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

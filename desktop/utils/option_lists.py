@@ -12,6 +12,16 @@ from typing import Iterable, List, Optional, Tuple
 
 # ── Void / Consumption / Stock ────────────────────────────────────────────────
 
+BACKDATE_REASONS = (
+    'Network or system downtime',
+    'Transaction entered late',
+    'Previous transaction was missed',
+    'Supplier delivery recorded late',
+    'Correction of an earlier recording error',
+    'Supporting documents received late',
+    'Other',
+)
+
 VOID_REASONS = (
     'Duplicate Sale',
     'Wrong Product',
@@ -41,6 +51,9 @@ CONSUMPTION_REASONS = (
     'Cleaning',
     'Sampling',
     'Damaged During Production',
+    'Wastage',
+    'Expired Goods',
+    'Owner Use',
     'Donation',
     'Promotion',
     'Other',

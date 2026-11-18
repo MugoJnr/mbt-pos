@@ -16,7 +16,7 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from mbt_paths import configure_sqlite_connection, get_data_dir, get_db_path
+from mbt_paths import get_db_path
 
 from backend.cloud_backup import SCHEMA_VERSION
 from backend.cloud_backup.device_manager import get_or_create_device_id
@@ -34,6 +34,89 @@ logger = logging.getLogger('cloud_backup.restore')
 
 class RestoreError(Exception):
     pass
+
+
+def sqlite_snapshot_ok(path: str) -> bool:
+    """True only when the file is a readable SQLite database that passes its own check."""
+    if not path or not os.path.isfile(path) or os.path.getsize(path) < 512:
+        return False
+    try:
+        conn = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5)
+    except sqlite3.Error:
+        return False
+    try:
+        row = conn.execute('PRAGMA integrity_check').fetchone()
+        if not row or str(row[0]).lower() != 'ok':
+            return False
+        conn.execute('SELECT count(*) FROM sqlite_master').fetchone()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def install_verified_snapshot(live: str, snapshot: str) -> str:
+    """Replace the shop database with a snapshot that has already been checked.
+
+    A damaged or unreadable snapshot raises RestoreError and leaves the shop
+    file where it was. The previous shop file is copied aside before the swap.
+    """
+    if not sqlite_snapshot_ok(snapshot):
+        raise RestoreError(
+            'This backup is damaged and was not restored. The shop on this computer was not changed.'
+        )
+    live = os.path.abspath(live)
+    parent = os.path.dirname(live) or '.'
+    os.makedirs(parent, exist_ok=True)
+    incoming = live + '.incoming'
+    shutil.copy2(snapshot, incoming)
+    pre = ''
+    try:
+        if not sqlite_snapshot_ok(incoming):
+            raise RestoreError(
+                'This backup is damaged and was not restored. The shop on this computer was not changed.'
+            )
+        if os.path.isfile(live):
+            try:
+                conn = sqlite3.connect(live, timeout=5)
+                try:
+                    conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                finally:
+                    conn.close()
+            except sqlite3.Error as exc:
+                raise RestoreError(
+                    'The shop database is in use. Close it and try the restore again. Nothing was replaced.'
+                ) from exc
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            pre = os.path.join(parent, f'mbt_pos.pre_restore_{stamp}.db')
+            shutil.copy2(live, pre)
+            for suffix in ('-wal', '-shm'):
+                side = live + suffix
+                if os.path.isfile(side):
+                    shutil.copy2(side, pre + suffix)
+        os.replace(incoming, live)
+        incoming = ''
+        for suffix in ('-wal', '-shm'):
+            side = live + suffix
+            if os.path.isfile(side):
+                try:
+                    os.remove(side)
+                except OSError:
+                    pass
+        return pre
+    except RestoreError:
+        raise
+    except Exception as exc:
+        raise RestoreError(
+            'The restore did not finish. The shop on this computer was not changed.'
+        ) from exc
+    finally:
+        if incoming and os.path.isfile(incoming):
+            try:
+                os.remove(incoming)
+            except OSError:
+                pass
 
 
 def _utc_now() -> str:
@@ -200,41 +283,10 @@ class RestoreManager:
             if not os.path.isfile(snap):
                 raise RestoreError('Backup archive missing mbt_pos.db')
 
-            # Sanity: open SQLite
-            conn = sqlite3.connect(snap)
-            try:
-                configure_sqlite_connection(conn)
-                conn.execute('SELECT count(*) FROM sqlite_master').fetchone()
-            finally:
-                conn.close()
-
             live = get_db_path()
-            data_dir = get_data_dir()
-            os.makedirs(data_dir, exist_ok=True)
-
             if replace:
                 self._emit('Replacing local database…', 80)
-                stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                if os.path.isfile(live):
-                    pre = os.path.join(data_dir, f'mbt_pos.pre_restore_{stamp}.db')
-                    shutil.copy2(live, pre)
-                    # Also copy WAL/SHM aside if present
-                    for suffix in ('-wal', '-shm'):
-                        side = live + suffix
-                        if os.path.isfile(side):
-                            try:
-                                shutil.copy2(side, pre + suffix)
-                            except Exception:
-                                pass
-                # Remove WAL so we don't mix journals
-                for suffix in ('-wal', '-shm'):
-                    side = live + suffix
-                    if os.path.isfile(side):
-                        try:
-                            os.remove(side)
-                        except OSError:
-                            pass
-                shutil.copy2(snap, live)
+                install_verified_snapshot(live, snap)
 
             try:
                 client.log_restore({

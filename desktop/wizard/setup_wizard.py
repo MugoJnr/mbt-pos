@@ -39,19 +39,10 @@ def needs_wizard() -> bool:
 
 
 def device_has_persisted_license() -> bool:
-    """True when a license token exists locally (even if grace/cloud flags are set)."""
+    """True only when LicenseEngine.is_valid. A file or setup flag is not enough."""
     try:
-        from licensing.license_engine import LicenseEngine, _read_raw_license_token
-        eng = LicenseEngine(PROJECT_ROOT)
-        if eng.is_valid:
-            return True
-        if _read_raw_license_token():
-            try:
-                from launcher import _shop_already_ready
-                return _shop_already_ready(eng)
-            except Exception:
-                return True
-        return bool(getattr(eng, 'has_local_license_payload', lambda: False)())
+        from licensing.license_engine import LicenseEngine
+        return bool(LicenseEngine(PROJECT_ROOT).is_valid)
     except Exception:
         return False
 
@@ -649,8 +640,9 @@ class SetupWizard(QDialog):
             return w
 
         lay.addWidget(_label(
-            "This PC is registered to your Portal organization. Activate with your Portal license — "
-            "no trial mode and no manual serial codes.",
+            "This step allows this computer to run the shop. It is not a cashier login. "
+            "Paste the licence key from your MugoByte Portal email or from portal.mugobyte.com. "
+            "One plan allows a fixed number of computers. Activating again on this same computer does not use another one.",
             14, color=C['text2']))
         lay.addSpacing(8)
 
@@ -671,7 +663,9 @@ class SetupWizard(QDialog):
         dv = QLabel(did_display)
         dv.setStyleSheet(f"color:{C['gold']}; font-size:13px; font-family:Consolas;")
         dv.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        hint = QLabel("Visible in Portal → Devices. An organization admin must approve new devices.")
+        hint = QLabel(
+            "MugoByte uses this to recognise this computer. You do not need to type it."
+        )
         hint.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
         df.addWidget(dl); df.addWidget(dv); df.addWidget(hint)
         lay.addWidget(dev_frame)
@@ -730,11 +724,15 @@ class SetupWizard(QDialog):
             if ok:
                 self._data['license_key'] = key
                 self._data['license_activated'] = True
+            else:
+                from licensing.activation_messages import explain_activation_failure
+                msg = explain_activation_failure(msg)
             self.w_lic_status.setText(("✓ " if ok else "✗ ") + msg)
             self.w_lic_status.setStyleSheet(
                 f"color:{C['ok'] if ok else C['err']}; font-size:13px; font-weight:600;")
         except Exception as e:
-            self.w_lic_status.setText(f"Validation error: {e}")
+            from licensing.activation_messages import explain_activation_failure
+            self.w_lic_status.setText(explain_activation_failure(str(e)))
             self.w_lic_status.setStyleSheet(f"color:{C['warn']}; font-size:13px;")
 
     def _page_telegram_removed(self):
@@ -1360,7 +1358,10 @@ class SetupWizard(QDialog):
             except Exception:
                 pass
             if not key and not self._data.get('license_activated'):
-                self._show_err("Activate your Portal license key to continue. There is no trial mode.")
+                self._show_err(
+                    "Activate this computer with the licence key from the MugoByte Portal before continuing. "
+                    "A cashier account is created on the next step. It does not activate the computer."
+                )
                 return False
         elif step == 3:
             if not self.w_shop_name.text().strip():
@@ -1470,6 +1471,12 @@ class SetupWizard(QDialog):
         QMessageBox.warning(self, "Validation", msg)
 
     def _finish(self):
+        if not device_has_persisted_license():
+            self._show_err(
+                "This computer needs a valid licence before the till can open. "
+                "Your shop data is not deleted. Activate or renew to continue."
+            )
+            return
         self._collect_step()
         self._apply_config()
         mark_initialized()
@@ -1498,7 +1505,7 @@ class SetupWizard(QDialog):
                 deploy = {}
                 extra  = {}
             settings = {
-                'shop_name':            self._data.get('shop_name', 'My Shop'),
+                'shop_name':            (self._data.get('shop_name') or '').strip(),
                 'shop_address':         self._data.get('shop_address', ''),
                 'shop_phone':           self._data.get('shop_phone', ''),
                 'currency_symbol':      self._data.get('currency', 'KES'),
@@ -1511,7 +1518,7 @@ class SetupWizard(QDialog):
                 'auto_local_db_backup': '1',
                 'auto_local_db_backup_interval_hours': '6',
                 'mpesa_mode':           'manual',
-                'mpesa_business_name':  self._data.get('shop_name', 'My Shop'),
+                'mpesa_business_name':  (self._data.get('shop_name') or '').strip(),
             }
             if deploy.get('developer_chat_id'):
                 settings['developer_chat_id'] = str(deploy['developer_chat_id'])

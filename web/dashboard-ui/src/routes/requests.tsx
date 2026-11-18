@@ -67,6 +67,17 @@ function decisionCopy(row: CentreRow | null, detail: any) {
   if (!row) {
     return { note: "Select a request. Approve and Reject are in this section.", approve: false, reject: false, back: false };
   }
+  if (source === "dated") {
+    const open = reviewer && status === "pending" && !own;
+    return {
+      approve: open, reject: open, back: false,
+      note: own && status === "pending"
+        ? "You cannot approve your own request."
+        : open
+          ? "Approve posts this once. Reject does not post it."
+          : `This request is ${status || "closed"}. The buttons stay visible.`,
+    };
+  }
   if (source === "backdate") {
     const open = reviewer && status === "submitted" && !own;
     return {
@@ -180,6 +191,10 @@ function RequestsCentrePage() {
   async function decide(action: "approve" | "reject" | "return") {
     if (!selected || busy) return;
     setDecisionError("");
+    if (action === "reject" && selected.source === "dated" && reason.trim().length < 3) {
+      setDecisionError("Enter a reason before rejecting the request.");
+      return;
+    }
     if (action !== "approve" && reason.trim().length < 3 && selected.source === "backdate") {
       setDecisionError("Enter a reason of at least 3 characters.");
       return;
@@ -192,7 +207,9 @@ function RequestsCentrePage() {
     setBusy(true);
     try {
       let result: { error?: string; success?: boolean; message?: string; credit_payments_exist?: boolean } = {};
-      if (selected.source === "backdate") {
+      if (selected.source === "dated") {
+        result = await POST(`/dated-actions/${selected.source_id}/${action}`, action === "approve" ? {} : { reason });
+      } else if (selected.source === "backdate") {
         result = await POST(`/backdate-requests/${selected.source_id}/${action}`, action === "approve" ? {} : { reason });
       } else if (selected.source === "delivery") {
         result = await POST(`/supplier-delivery-requests/${selected.source_id}`, {
@@ -341,6 +358,7 @@ function RequestsCentrePage() {
                 <div className="text-sm text-text2">
                   {String(selected.submitted_at || "—").replace("T", " ").slice(0, 19)}
                   {selected.business_date ? ` · business date ${selected.business_date}` : ""}
+                  {selected.reason ? ` · reason ${selected.reason}` : ""}
                   {selected.next_action ? ` · ${selected.next_action}` : ""}
                 </div>
                 <div className="overflow-hidden rounded-lg border border-border">

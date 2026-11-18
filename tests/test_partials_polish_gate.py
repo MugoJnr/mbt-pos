@@ -310,7 +310,9 @@ class U05NoDeadPoStkReturnsGate(unittest.TestCase):
             os.path.join(ROOT, 'desktop', 'tabs', 'settings_tab.py'), encoding='utf-8'
         ).read()
         self.assertIn('self.mpesa_mode.hide()', settings)
-        self.assertIn('STK Push is not implemented', settings)
+        self.assertIn('Manual M-Pesa stays available', settings)
+        self.assertIn('Production stays locked', settings)
+        self.assertNotIn('STK Push is live', settings)
 
         sales = open(
             os.path.join(ROOT, 'desktop', 'tabs', 'sales_tab.py'), encoding='utf-8'

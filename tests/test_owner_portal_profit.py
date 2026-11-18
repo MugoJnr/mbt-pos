@@ -43,6 +43,15 @@ def _line(sale_id, total, qty, unit_cost):
 
 
 class ProfitScenarios(unittest.TestCase):
+    def test_a_missing_buying_cost_is_not_shown_as_profit(self):
+        sales = [_sale('9', 'cash', 183391, 183391)]
+        items = [_line('9', 182391, 12, 0), _line('9', 1000, 1, 400)]
+        result = allocate_sale_profits(sales, items, [])
+        self.assertEqual(result['gross_profit'], 600)
+        self.assertEqual(result['cost_of_goods'], 400)
+        self.assertEqual(result['uncosted_sales'], 182391)
+        self.assertEqual(result['uncosted_lines'], 1)
+
     def test_fully_paid_sale_is_collected_profit(self):
         # Scenario A: 1000 paid in full, cost 400, profit 600.
         sales = [_sale('1', 'cash', 1000, 1000)]

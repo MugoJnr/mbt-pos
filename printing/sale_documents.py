@@ -105,6 +105,14 @@ def override_allowed(cfg: dict, *, can_edit_settings: bool, can_sell: bool) -> b
     return policy in ("E", "F") or allow
 
 
+def _business_name(cfg) -> str:
+    """A blank or untouched placeholder is not a shop. A saved name is kept."""
+    name = str((cfg or {}).get("shop_name") or "").strip()
+    if name.lower() in ("", "my shop"):
+        return "Shop name not set"
+    return name
+
+
 def load_settings(db) -> dict:
     cfg = dict(DOCUMENT_DEFAULTS)
     try:
@@ -340,10 +348,10 @@ def _render_lines(doc: dict, width: int) -> list:
     if doc.get("duplicate"):
         lines.append(center("DUPLICATE", width))
     lines.append("=" * width)
-    lines.append(center(doc["business"].get("name") or "Shop", width))
+    lines.extend(_wrapped_center(doc["business"].get("name") or "Shop", width))
     for bit in (doc["business"].get("address"), doc["business"].get("phone"), doc["business"].get("email")):
         if bit:
-            lines.append(center(str(bit), width))
+            lines.extend(_wrapped_center(str(bit), width))
     if doc.get("logo"):
         lines.append(center("[logo]", width))
     lines.append(center(doc["title"], width))
@@ -407,6 +415,35 @@ def center(text: str, width: int) -> str:
         return text[:width]
     pad = (width - len(text)) // 2
     return (" " * pad) + text
+
+
+def _wrapped_center(text: str, width: int) -> list:
+    """Keep a long shop name on the receipt instead of cutting it off."""
+    text = " ".join(str(text or "").split())
+    width = max(8, int(width or 32))
+    if not text:
+        return []
+    if len(text) <= width:
+        return [center(text, width)]
+    rows = []
+    current = ""
+    for word in text.split(" "):
+        if len(word) > width:
+            if current:
+                rows.append(center(current, width))
+                current = ""
+            for start in range(0, len(word), width):
+                rows.append(center(word[start:start + width], width))
+            continue
+        trial = word if not current else f"{current} {word}"
+        if len(trial) <= width:
+            current = trial
+        else:
+            rows.append(center(current, width))
+            current = word
+    if current:
+        rows.append(center(current, width))
+    return rows
 
 
 def _html_doc(doc: dict) -> str:
@@ -532,7 +569,7 @@ def build_sale_document(db, sale_id: int, kind: str = "", *, reprint: bool = Fal
         "reprint": bool(reprint),
         "duplicate": bool(duplicate),
         "business": {
-            "name": cfg.get("shop_name") or "My Shop",
+            "name": _business_name(cfg),
             "address": cfg.get("shop_address") or "",
             "phone": cfg.get("shop_phone") or "",
             "email": cfg.get("shop_email") or "",
@@ -597,7 +634,7 @@ def build_payment_document(db, payment_receipt: str, *, reprint: bool = False) -
         "duplicate": False,
         "not_a_sale": True,
         "business": {
-            "name": cfg.get("shop_name") or "My Shop",
+            "name": _business_name(cfg),
             "address": cfg.get("shop_address") or "",
             "phone": cfg.get("shop_phone") or "",
             "email": cfg.get("shop_email") or "",
@@ -635,9 +672,9 @@ def build_payment_document(db, payment_receipt: str, *, reprint: bool = False) -
         lines.append(center("VOIDED", width))
     if reprint:
         lines.append(center("REPRINT", width))
+    lines.append("=" * width)
+    lines.extend(_wrapped_center(doc["business"]["name"], width))
     lines.extend([
-        "=" * width,
-        center(doc["business"]["name"], width),
         center("PAYMENT RECEIPT", width),
         "=" * width,
         _fit("Number:", receipt, width),
@@ -818,3 +855,61 @@ def lines_to_pdf(lines: list, paper_size: str = "80") -> bytes:
 
 def document_pdf(doc: dict) -> bytes:
     return lines_to_pdf(doc.get("lines") or [], doc.get("paper_size") or "80")
+
+
+def _pdf_escape(text: str) -> str:
+    safe = str(text or "").encode("latin-1", "replace").decode("latin-1")
+    return safe.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def office_pdf(lines: list, reference: str = "", title: str = "RESTOCKING REQUEST") -> bytes:
+    """A4 text PDF with the reference and a page number on every page."""
+    page_w, page_h = 595, 842
+    margin = 48
+    leading = 13
+    capacity = 48
+    body = [str(line) for line in (lines or [""])]
+    chunks = [body[index:index + capacity] for index in range(0, len(body), capacity)] or [[""]]
+    page_count = len(chunks)
+    contents = []
+    for number, chunk in enumerate(chunks, start=1):
+        commands = ["BT", "/F1 11 Tf", f"1 0 0 1 {margin} {page_h - margin} Tm ({_pdf_escape(title)}) Tj"]
+        commands.append(f"0 -{leading} Td ({_pdf_escape(reference)}) Tj")
+        commands.append("0 -8 Td () Tj")
+        for line in chunk:
+            commands.append(f"0 -{leading} Td ({_pdf_escape(line)}) Tj")
+        commands.append(
+            f"0 -{leading * 2} Td ({_pdf_escape(f'{reference}    Page {number} of {page_count}')}) Tj"
+        )
+        commands.append("ET")
+        contents.append("\n".join(commands).encode("latin-1", "replace"))
+
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>"]
+    page_ids = [3 + index * 2 for index in range(page_count)]
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+    objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {page_count} >>".encode())
+    font_id = 3 + page_count * 2
+    for index, stream in enumerate(contents):
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page_w} {page_h}] "
+            f"/Contents {page_ids[index] + 1} 0 R /Resources << /Font << /F1 {font_id} 0 R >> >> >>".encode()
+        )
+        objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, body_bytes in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out.extend(f"{index} 0 obj\n".encode())
+        out.extend(body_bytes)
+        out.extend(b"\nendobj\n")
+    xref = len(out)
+    out.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    out.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        out.extend(f"{offset:010d} 00000 n \n".encode())
+    out.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
+    )
+    return bytes(out)

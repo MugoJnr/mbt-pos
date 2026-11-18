@@ -518,6 +518,16 @@ class SalesTab(QWidget):
         # First open or stale: load after this event so shell paints first
         QTimer.singleShot(0, lambda: self.refresh(defer_grid=True))
 
+    def hideEvent(self, event):
+        """Drop the catalog cache when the till is left.
+
+        A sale on this screen updates its own cards. Stock changed on the
+        dashboard, or on another screen, must show when the cashier comes back
+        instead of waiting out the short cache.
+        """
+        super().hideEvent(event)
+        self.invalidate_catalog()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         try:
@@ -600,6 +610,7 @@ class SalesTab(QWidget):
             return
         self._update_rounding_ui()
         self._calc_change()
+        self._sync_split_mpesa_ui()
 
     def _elec_portion(self) -> float:
         if self._using_tender_lines():
@@ -721,35 +732,36 @@ class SalesTab(QWidget):
 
     def _sync_split_mpesa_ui(self):
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
-        if self._using_tender_lines():
-            if hasattr(self, '_mpesa_frame'):
-                try:
-                    self._mpesa_frame.setVisible(False)
-                except RuntimeError:
-                    pass
-            return
-        if method == 'M-Pesa':
-            return
-        show = method == 'Mixed' and self._elec_method_name() == 'M-Pesa'
+        show = method == 'M-Pesa'
+        if not show and method == 'Mixed':
+            if self._using_tender_lines():
+                from backend.mpesa_service import _is_mpesa
+                show = any(
+                    _is_mpesa(str(row.get('method') or ''))
+                    for row in self._tender_lines.rows()
+                )
+            else:
+                show = self._elec_method_name() == 'M-Pesa'
         if hasattr(self, '_mpesa_frame'):
             try:
                 self._mpesa_frame.setVisible(show)
             except RuntimeError:
                 pass
-        if show:
-            cfg = self._cfg()
-            till = cfg.get('mpesa_till', '').strip()
-            pb = cfg.get('mpesa_paybill', '').strip()
-            biz = cfg.get('mpesa_business_name', '') or cfg.get('shop_name', 'Shop')
-            parts = [biz]
-            if till:
-                parts.append(f'Till: {till}')
-            if pb:
-                parts.append(f'Paybill: {pb}')
-            if not till and not pb:
-                parts.append('Set Till/Paybill in Settings → M-Pesa')
-            if hasattr(self, '_mpesa_info'):
-                self._mpesa_info.setText(' · '.join(parts))
+        if not show:
+            return
+        cfg = self._cfg()
+        till = cfg.get('mpesa_till', '').strip()
+        pb = cfg.get('mpesa_paybill', '').strip()
+        biz = cfg.get('mpesa_business_name', '') or cfg.get('shop_name', 'Shop')
+        parts = [biz]
+        if till:
+            parts.append(f'Till: {till}')
+        if pb:
+            parts.append(f'Paybill: {pb}')
+        if not till and not pb:
+            parts.append('Set Till/Paybill in Settings → M-Pesa')
+        if hasattr(self, '_mpesa_info'):
+            self._mpesa_info.setText(' · '.join(parts))
 
     def _on_elec_paid_changed(self, *_args):
         if not getattr(self, '_elec_programmatic', False):
@@ -1860,15 +1872,18 @@ class SalesTab(QWidget):
             return
         reason = ''
         if not direct:
-            reason, ok = QInputDialog.getText(
+            from desktop.utils.option_lists import BACKDATE_REASONS
+            from desktop.utils.select_controls import prompt_reason
+            reason = prompt_reason(
                 self,
-                'Backdating request',
-                'Why is this sale for an earlier day?',
+                title='Backdating request',
+                prompt='Why is this sale for an earlier day? Choose a reason. Stock and money stay unchanged until it is approved.',
+                reasons=BACKDATE_REASONS,
             )
-            reason = (reason or '').strip()
-            if not ok or len(reason) < 3:
+            if not reason or len(reason.strip()) < 3 or reason.strip() == 'Other':
                 soft_warn(self, 'A backdated sale needs a reason before the cart opens.')
                 return
+            reason = reason.strip()
         self._stashed_cart = [dict(item) for item in (self.cart or [])]
         self._clear()
         self._backdate_request_mode = not direct
@@ -1918,19 +1933,21 @@ class SalesTab(QWidget):
         if getattr(self, '_backdate_busy', False):
             return True
         reason = (getattr(self, '_backdate_reason', '') or '').strip()
-        if len(reason) < 3:
-            from PyQt5.QtWidgets import QInputDialog
-            typed, ok = QInputDialog.getText(
+        if len(reason) < 3 or reason == 'Other':
+            from desktop.utils.option_lists import BACKDATE_REASONS
+            from desktop.utils.select_controls import prompt_reason
+            typed = prompt_reason(
                 self,
-                'Backdating request',
-                'This sale is for an earlier day. It is not recorded until an administrator approves it.\nReason:',
+                title='Backdating request',
+                prompt='Choose why this sale is for an earlier day. A listed reason is enough. For Other, write what happened.',
+                reasons=BACKDATE_REASONS,
             )
-            if not ok:
+            typed = (typed or '').strip()
+            if len(typed) < 3 or typed == 'Other':
+                soft_warn(self, 'The sale was not recorded. Choose a reason, or write one after Other.')
                 return True
-            reason = (typed or '').strip()
-        if len(reason) < 3:
-            soft_warn(self, 'Enter a reason before sending the request.')
-            return True
+            reason = typed
+            self._backdate_reason = reason
         method = str(sale_payload.get('payment_method') or 'Cash')
         label = {
             'part payment': 'Part Payment',
@@ -1971,6 +1988,8 @@ class SalesTab(QWidget):
                 f"{item.get('product_name') or 'Product'}  "
                 f"{item.get('quantity')} × {float(item.get('unit_price') or 0):,.2f}"
             )
+        from backend.dated_actions import warning_for
+        preview.append(warning_for(body['business_date']))
         preview.append('This does not record the sale until an administrator approves it.')
         box = QMessageBox(self)
         box.setWindowTitle('Review backdated sale')
@@ -2911,6 +2930,10 @@ class SalesTab(QWidget):
                     elec = paid_now
                     elec_method_name = pay_method
                     cash_paid_now = 0.0
+            from desktop.utils.payment_tenders import electronic_method_label
+            combined_electronic = electronic_method_label(tenders)
+            if combined_electronic:
+                elec_method_name = combined_electronic
             note_bits = [self._note.text().strip()]
             if is_split and tenders:
                 money = [
@@ -2957,7 +2980,11 @@ class SalesTab(QWidget):
                     if (pay_method == 'M-Pesa' or (is_split and elec_method_name == 'M-Pesa'))
                     else ''
                 ),
-                'mpesa_payment_id': getattr(self, '_mpesa_payment_id', '') or '',
+                'mpesa_payment_id': (
+                    getattr(self, '_mpesa_payment_id', '') or ''
+                    if (pay_method == 'M-Pesa' or (is_split and elec_method_name == 'M-Pesa'))
+                    else ''
+                ),
                 'sale_date':      self._business_day_iso(),
                 'client_token':   getattr(self, '_sale_token', '') or '',
             }
@@ -3029,9 +3056,11 @@ class SalesTab(QWidget):
                         msg += f'Change:   {self._currency} {change_amount:,.2f}\n'
                     sale_complete_feedback(self, 'Sale Complete', msg)
                 self._try_print_receipt(sid, rn)
-                # Refresh stock/products first, then force After Sale defaults
-                # (Walk-in must win after credit sale — do not leave John selected).
-                self.refresh(force=True)
+                # The sale is already committed. Update the sold cards from the
+                # saved quantities, then reload the catalog after this click
+                # returns so the cashier is not waiting on a full grid rebuild.
+                self._refresh_sold_stock(sale_payload.get('items') or [])
+                QTimer.singleShot(0, lambda: self.refresh(force=True, defer_grid=True))
                 from desktop.utils.state_reset import StateResetManager
                 cfg = {}
                 try:
@@ -3111,6 +3140,30 @@ class SalesTab(QWidget):
             'mpesa_verification': sale.get('mpesa_verification', '') or '',
             'receipt_footer': (self.config_getter() or {}).get('receipt_footer', 'Thank you!'),
         }
+
+    def _refresh_sold_stock(self, items):
+        """Update the cards that were just sold. Other products stay as painted."""
+        ids = []
+        for line in items or []:
+            pid = line.get('product_id') or line.get('id')
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if pid not in ids:
+                ids.append(pid)
+        if not ids:
+            return
+        try:
+            stocks = self.api.product_stocks(ids)
+        except Exception:
+            return
+        for product in self.products or []:
+            if product.get('id') in stocks:
+                product['stock'] = stocks[product.get('id')]
+        grid = getattr(self, '_prod_grid', None)
+        if grid is not None and hasattr(grid, 'apply_stock'):
+            grid.apply_stock(stocks)
 
     def _try_print_receipt(self, sale_id, receipt_number):
         """Print the saved document. A printer failure never resubmits the sale."""
@@ -3295,7 +3348,10 @@ class SalesTab(QWidget):
             }
             if hasattr(self, '_customer') and self._customer.selected_id():
                 data['customer_name'] = self._customer.currentText().split('  ·  ')[0]
-            txt = generate_receipt_text(data, cfg.get('shop_name', 'My Shop'), self._currency)
+            shop = str(cfg.get('shop_name') or '').strip()
+            if shop.lower() in ('', 'my shop'):
+                shop = 'Shop name not set'
+            txt = generate_receipt_text(data, shop, self._currency)
             dlg = QDialog(self); dlg.setWindowTitle('Invoice Preview')
             dlg.resize(480, 580); lv = QVBoxLayout(dlg)
             te = QTextEdit(); te.setReadOnly(True); te.setFont(QFont('Consolas', 11))

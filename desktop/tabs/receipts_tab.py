@@ -330,9 +330,12 @@ class ReceiptDetailDialog(QDialog):
         preview_btn = SecondaryBtn("Preview")
         preview_btn.clicked.connect(self._preview)
         actions.addWidget(preview_btn)
-        print_btn = PrimaryBtn("Print")
+        print_btn = PrimaryBtn("Print receipt")
         print_btn.clicked.connect(lambda: self._print(reference))
         actions.addWidget(print_btn)
+        pdf_btn = SecondaryBtn("Save as PDF")
+        pdf_btn.clicked.connect(self._save_pdf)
+        actions.addWidget(pdf_btn)
         actions.addStretch(1)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
@@ -456,6 +459,24 @@ class ReceiptDetailDialog(QDialog):
         """Send the saved receipt to the configured printer. No Windows dialog."""
         result = self.api.print_saved_document(self.row.get("kind"), self.row.get("id"), reprint=True) or {}
         self._copy_state.setText(result.get("message") or result.get("error") or "Print did not start.")
+
+    def _save_pdf(self):
+        """Write the receipt text to a PDF. A missing printer does not block this."""
+        preview = self.api.preview_saved_document(self.row.get("kind"), self.row.get("id")) or {}
+        if preview.get("error") or not preview.get("text"):
+            self._copy_state.setText(preview.get("error") or "That receipt could not be saved.")
+            return
+        from PyQt5.QtWidgets import QFileDialog
+        from printing.sale_documents import lines_to_pdf
+        name = str(preview.get("reference") or self._reference or "receipt")
+        path, _selected = QFileDialog.getSaveFileName(self, "Save receipt PDF", f"{name}.pdf", "PDF (*.pdf)")
+        if not path:
+            self._copy_state.setText("PDF save was cancelled. The receipt is unchanged.")
+            return
+        blob = lines_to_pdf((preview.get("text") or "").splitlines(), preview.get("paper") or "80")
+        with open(path, "wb") as handle:
+            handle.write(blob)
+        self._copy_state.setText("PDF saved. This did not create a sale.")
 
     def _sale_id(self):
         header = self.detail.get("header") or {}

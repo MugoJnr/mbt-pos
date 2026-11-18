@@ -21,6 +21,16 @@ _TYPE_LABELS = {
     "stock_adjustment": "Stock adjustment",
     "supplier_void": "Supplier delivery void",
     "supplier_backdate": "Supplier delivery backdate",
+    "consumption": "Backdated consumption",
+    "expense": "Backdated expense",
+    "supplier_delivery": "Backdated supplier delivery",
+    "supplier_payment": "Backdated supplier payment",
+    "debt_payment": "Backdated debt payment",
+    "stock_adjustment": "Backdated stock adjustment",
+    "customer_return": "Backdated customer return",
+    "supplier_return": "Backdated supplier return",
+    "journal": "Backdated journal",
+    "cash_transfer": "Backdated cash transfer",
 }
 _STATUS_LABELS = {
     "submitted": "Pending approval",
@@ -276,6 +286,30 @@ def _deliveries(db, actor) -> list[dict]:
     return items
 
 
+def _dated(db, actor) -> list[dict]:
+    from backend.dated_actions import list_requests
+    items = []
+    for record in list_requests(db, actor):
+        items.append(_row(
+            actor=actor,
+            source="dated",
+            source_id=record["id"],
+            reference=record.get("reference"),
+            type=record.get("kind") or "dated",
+            subject=record.get("business_date") or "",
+            requester=record.get("requester_name"),
+            requester_id=record.get("requester_id"),
+            submitted_at=record.get("submitted_at"),
+            business_date=record.get("business_date"),
+            amount=None,
+            impact=record.get("kind") or "",
+            reason=record.get("backdate_reason") or record.get("review_note") or record.get("warning") or "",
+            status=record.get("status"),
+            updated_at=record.get("updated_at"),
+        ))
+    return items
+
+
 def list_centre(db, actor: dict, filters: dict | None = None) -> dict:
     filters = filters or {}
     if _role(actor) not in _STAFF_ROLES:
@@ -290,6 +324,8 @@ def list_centre(db, actor: dict, filters: dict | None = None) -> dict:
         items.extend(_stock(db, actor))
     if "supplier_delivery_requests" in tables:
         items.extend(_deliveries(db, actor))
+    if "dated_action_requests" in tables:
+        items.extend(_dated(db, actor))
     visible = [item for item in items if _matches(item, {**filters, "queue": "all", "status": ""}, actor)]
     queued = [item for item in visible if _matches(item, filters, actor)]
     queued.sort(key=lambda item: str(item.get("updated_at") or item.get("submitted_at") or ""), reverse=True)
@@ -312,6 +348,16 @@ def get_centre_item(db, actor: dict, source: str, source_id: int) -> dict:
     if _role(actor) not in _STAFF_ROLES:
         return {"error": "You cannot view requests."}
     source = (source or "").strip().lower()
+    if source == "dated":
+        from backend.dated_actions import DatedActionError, get_request
+        try:
+            detail = get_request(db, actor, int(source_id))
+        except DatedActionError as exc:
+            return {"error": exc.message, "status": exc.status}
+        detail["source"] = "dated"
+        detail["type_label"] = _TYPE_LABELS.get(detail.get("kind"), "Backdated record")
+        detail["status_label"] = _label(detail.get("status"))
+        return detail
     if source == "backdate":
         from backend.backdate_requests import get_request
         detail = get_request(db, actor, int(source_id))

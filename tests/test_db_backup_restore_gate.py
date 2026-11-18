@@ -44,6 +44,21 @@ class DbBackupRestoreGate(unittest.TestCase):
             zip_path, _size, _digest = create_db_backup_zip(src)
             with zipfile.ZipFile(zip_path, 'r') as zf:
                 self.assertIn('product-images/product-1.jpg', zf.namelist())
+                self.assertNotIn('lc.db', zf.namelist())
+                self.assertFalse(any('license' in name.lower() for name in zf.namelist()))
+
+            licence_store = os.path.join(td, 'lc.db')
+            marker = b'licence-store-must-stay'
+            with open(licence_store, 'wb') as handle:
+                handle.write(marker)
+            restored = os.path.join(td, 'shop-after-restore.db')
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                with zf.open('mbt_pos.db') as src_f, open(restored, 'wb') as dst_f:
+                    dst_f.write(src_f.read())
+            with open(licence_store, 'rb') as handle:
+                self.assertEqual(handle.read(), marker)
+            self.assertTrue(os.path.isfile(restored))
+            self.assertNotEqual(os.path.abspath(restored), os.path.abspath(licence_store))
 
             try:
                 os.remove(zip_path)

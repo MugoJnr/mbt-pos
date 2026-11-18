@@ -137,7 +137,9 @@ function Dashboard() {
   const [customEnd, setCustomEnd] = useState(localISO());
   const roleEarly = String(user?.role || "").toLowerCase();
   const cashierDay = roleEarly === "cashier";
-  const lockedToToday = false;
+  const grantedBusinessDay = Array.isArray(user?.effective_permissions)
+    && user.effective_permissions.map(String).includes("sales.business_day");
+  const lockedToToday = cashierDay && !grantedBusinessDay;
   const range = useMemo(() => {
     if (cashierDay) {
       if (preset === "Choose a day") return { start: customStart, end: customStart };
@@ -562,9 +564,11 @@ function Dashboard() {
             )}
           >
             <KpiCard
-              label="Total sales"
+              label={canFinance ? "Total sales" : "Shop sales"}
               value={KES(revenue)}
-              sub={`Including credit sales · ${txns} receipts · ${rangeLabel}`}
+              sub={canFinance
+                ? `Including credit sales · ${txns} receipts · ${rangeLabel}`
+                : `${txns} shop receipt${txns === 1 ? "" : "s"} · all cashiers`}
               accent="gold"
               icon={<ShoppingCart className="h-5 w-5" />}
             />
@@ -903,9 +907,15 @@ function Dashboard() {
                 )
               }
             >
-              Sales · {rangeLabel}
+              {cashierDay ? `Your receipts · ${sales.length}` : `Sales · ${rangeLabel}`}
             </SectionTitle>
           </div>
+          {cashierDay ? (
+            <p className="px-4 pt-3 text-xs text-text2">
+              {sales.length} receipt{sales.length === 1 ? "" : "s"} for this login.
+              The shop sold {KES(revenue)} across {txns} receipt{txns === 1 ? "" : "s"}.
+            </p>
+          ) : null}
           {voidFor ? (
             <div className="mx-4 mt-3 rounded-lg border border-err/40 bg-err/10 p-3">
               <div className="text-sm font-semibold text-text">
@@ -947,8 +957,10 @@ function Dashboard() {
           {sales.length === 0 && !salesQ.isError ? (
             <EmptyState
               icon={<BarChart3 className="h-6 w-6" />}
-              title={`No sales for ${rangeLabel}`}
-              description="Sales, voids, and totals on this page follow the period you picked."
+              title={cashierDay ? `No receipts of yours for ${rangeLabel}` : `No sales for ${rangeLabel}`}
+              description={cashierDay
+                ? "This list is only your receipts. The shop total above still counts every cashier."
+                : "Sales, voids, and totals on this page follow the period you picked."}
             />
           ) : (
             <>

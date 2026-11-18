@@ -7,7 +7,8 @@ import { Badge, Button, Card, Input, KpiCard, PageHeader, SectionTitle, Table } 
 import { DeliveryActions } from "@/components/delivery-actions";
 import { SaleDocumentPanel } from "@/components/sale-document-panel";
 import { GET, POST, getUser } from "@/lib/api";
-import { KES } from "@/lib/format";
+import { BusinessDateField, canPostBusinessDay } from "@/components/business-date-field";
+import { KES, shopTodayISO } from "@/lib/format";
 
 export const Route = createFileRoute("/debt")({
   component: Debt,
@@ -335,12 +336,14 @@ function Debt() {
   const [payId, setPayId] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState("Cash");
-  const [today, setToday] = useState(localToday);
+  const [payDate, setPayDate] = useState(shopTodayISO);
+  const [payDateConfirmed, setPayDateConfirmed] = useState(false);
+  const [payBackdate, setPayBackdate] = useState("");
   const [payError, setPayError] = useState("");
   useEffect(() => {
-    const tick = () => setToday((prev) => {
-      const next = localToday();
-      return prev === next ? prev : next;
+    const tick = () => setPayDate((prev) => {
+      const next = shopTodayISO();
+      return prev === next ? prev : prev;
     });
     const id = window.setInterval(tick, 30000);
     window.addEventListener("focus", tick);
@@ -404,14 +407,28 @@ function Debt() {
     const amount = Number(payAmount);
     if (!payId) return setPayError("Choose an open invoice.");
     if (!Number.isFinite(amount) || amount <= 0) return setPayError("Payment must be greater than zero.");
-    if (today > localToday()) return setPayError("Future payment dates are not allowed.");
+    if (payDate > shopTodayISO()) return setPayError("Future payment dates are not allowed.");
+    if (payDate < shopTodayISO() && !payDateConfirmed) {
+      return setPayError("Confirm the backdated date. The payment is not posted until a different administrator approves it.");
+    }
+    if (payDate < shopTodayISO() && !canPostBusinessDay() && (payBackdate.trim().length < 3 || payBackdate.trim() === "Other")) {
+      return setPayError("Choose a reason for this past date. If you choose Other, write what happened.");
+    }
     if (!payToken.current) payToken.current = crypto.randomUUID();
     const res = await POST<any>(`/debt/invoices/${payId}/pay`, {
       amount,
       payment_method: payMethod,
-      payment_date: today,
+      payment_date: payDate,
+      backdate_reason: payBackdate.trim(),
       payment_reference: payToken.current,
     });
+    if (res?.pending_approval) {
+      payToken.current = "";
+      setPayNote(`${res.reference} is pending approval. The payment was not posted.`);
+      setPayDate(shopTodayISO());
+      setPayDateConfirmed(false);
+      return;
+    }
     if (!res || res.error) {
       setPayError(res?.error || "Payment was not recorded.");
       return;
@@ -589,7 +606,7 @@ function Debt() {
             <select className="h-9 rounded-lg border border-border bg-input px-3 text-sm" value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
               {["Cash", "M-Pesa", "Bank"].map((m) => <option key={m}>{m}</option>)}
             </select>
-            <Input type="date" aria-label="Payment date" value={today} readOnly />
+            <BusinessDateField label="Payment date" value={payDate} onChange={setPayDate} confirmed={payDateConfirmed} onConfirm={setPayDateConfirmed} reason={payBackdate} onReason={setPayBackdate} />
             <Button onClick={collect}>Record payment</Button>
             {payError ? <p className="md:col-span-5 text-sm text-err">{payError}</p> : null}
             {payNote ? <p className="md:col-span-5 text-sm text-text">{payNote}</p> : null}
@@ -677,6 +694,9 @@ function SupplierDebts({ currency }: { currency: string }) {
     queryFn: () => GET<any>("/supplier-payables"),
   });
   const [amount, setAmount] = useState("");
+  const [paidOn, setPaidOn] = useState(shopTodayISO);
+  const [paidBackdate, setPaidBackdate] = useState("");
+  const [paidConfirmed, setPaidConfirmed] = useState(false);
   const [msg, setMsg] = useState("");
   const [open, setOpen] = useState<any>(null);
   const data = summaryQ.data || {};
@@ -713,9 +733,18 @@ function SupplierDebts({ currency }: { currency: string }) {
           Pay the selected supplier, oldest invoice first
           <Input aria-label="Supplier payment" type="number" min={0} step={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="mt-1 h-11 w-48" />
         </label>
+        <BusinessDateField label="Payment date" value={paidOn} onChange={setPaidOn} confirmed={paidConfirmed} onConfirm={setPaidConfirmed} reason={paidBackdate} onReason={setPaidBackdate} />
         <Button onClick={async () => {
           if (!open?.supplier_id) {
             setMsg("Open an invoice first, then enter the amount.");
+            return;
+          }
+          if (paidOn < shopTodayISO() && !paidConfirmed) {
+            setMsg("Confirm the backdated date. The payment is not posted until a different administrator approves it.");
+            return;
+          }
+          if (paidOn < shopTodayISO() && !canPostBusinessDay() && (paidBackdate.trim().length < 3 || paidBackdate.trim() === "Other")) {
+            setMsg("Choose a reason for this past date. If you choose Other, write what happened.");
             return;
           }
           const saved = await POST<any>("/supplier-payments", {
@@ -723,8 +752,12 @@ function SupplierDebts({ currency }: { currency: string }) {
             amount: Number(amount),
             method: "cash",
             mode: "oldest",
+            paid_at: paidOn,
+            backdate_reason: paidBackdate.trim(),
           });
-          setMsg(saved?.success ? `${saved.payment_number} recorded.` : (saved?.error || "Could not record the payment."));
+          setMsg(saved?.pending_approval
+            ? `${saved.reference} is pending approval. The payment was not posted.`
+            : saved?.success ? `${saved.payment_number} recorded.` : (saved?.error || "Could not record the payment."));
           if (saved?.success) {
             setAmount("");
             qc.invalidateQueries({ queryKey: ["supplier-payables"] });

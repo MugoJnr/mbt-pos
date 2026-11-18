@@ -333,6 +333,16 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertEqual(sales.status_code, 200, sales.get_json())
         numbers = {row['receipt_number'] for row in sales.get_json()}
         self.assertEqual(numbers, {'RCP-OWN'})
+        summary = self.client.get(
+            f"/api/reports/summary?start={today}&end={today}", headers=cashier,
+        )
+        self.assertEqual(summary.status_code, 200, summary.get_json())
+        body = summary.get_json()
+        self.assertAlmostEqual(float(body['summary']['total_revenue']), 109.0, places=2)
+        self.assertEqual(int(body['summary']['total_transactions']), 2)
+        self.assertNotIn('gross_profit', body['summary'])
+        self.assertNotIn('gross_profit', body['finance'])
+        self.assertNotIn('inventory_cost_value', body['finance'])
         hidden = self.client.get(f"/api/sales/{other_sale}", headers=cashier)
         self.assertEqual(hidden.status_code, 403)
         notes = self.client.get("/api/notes", headers=cashier)

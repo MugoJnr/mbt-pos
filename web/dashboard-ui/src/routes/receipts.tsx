@@ -263,6 +263,7 @@ function ReceiptsPage() {
                 </p>
               ) : null}
               <div className="mb-3">
+                <div className="flex flex-wrap gap-2">
                 <Button
                   onClick={async () => {
                     const result = await POST<any>("/print/direct", {
@@ -273,8 +274,32 @@ function ReceiptsPage() {
                     setPrintNote(result?.message || result?.error || "Print did not start.");
                   }}
                 >
-                  Print
+                  Print receipt
                 </Button>
+                <Button
+                  variant="secondary"
+                  onClick={async () => {
+                    const token = localStorage.getItem("mbt_token") || "";
+                    const response = await fetch(`/api/print/pdf?kind=${encodeURIComponent(open.kind)}&id=${open.id}`, {
+                      headers: { Authorization: `Bearer ${token}` },
+                    });
+                    if (!response.ok) {
+                      setPrintNote("The PDF was not saved. The receipt itself is unchanged.");
+                      return;
+                    }
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = `${open.reference || "receipt"}.pdf`;
+                    link.click();
+                    URL.revokeObjectURL(url);
+                    setPrintNote("PDF saved. This did not print paper and did not create a sale.");
+                  }}
+                >
+                  Save as PDF
+                </Button>
+                </div>
                 {printNote ? <p className="mt-2 text-sm text-text">{printNote}</p> : null}
               </div>
               {lines.length ? (

@@ -98,16 +98,15 @@ def qty_step_for_unit(unit, fallback=None) -> float:
 
     A blank unit has not been classified, so the cart keeps the decimals the cashier typed.
     """
-    name = str(unit or '').strip().lower()
-    if not name:
-        return 0.01
-    if name in _MEASURED_UNITS:
+    from desktop.utils.quantities import MEASURED_UNITS, qty_step, unit_key
+    name = unit_key(unit)
+    if name in MEASURED_UNITS:
         try:
             step = float(_POS_QTY_STEP if fallback is None else fallback)
         except (TypeError, ValueError):
             step = 0.25
-        return step if step > 0 else 0.25
-    return 1.0
+        return qty_step(unit, step if step > 0 else 0.25)
+    return qty_step(unit)
 
 
 def round_qty(v, step=0.25, minimum=None) -> float:
@@ -259,6 +258,18 @@ class StockBadge(QLabel):
         fm = self.fontMetrics()
         text = fm.elidedText(text, Qt.ElideRight, 78)
         self.setText(text)
+        # The painted text and the name automation reads must change together.
+        # setText alone can leave the old quantity ("16 left") visible to readers.
+        try:
+            self.setAccessibleName(text)
+        except Exception:
+            pass
+        try:
+            from PyQt5.QtGui import QAccessible, QAccessibleEvent
+            QAccessible.updateAccessibility(
+                QAccessibleEvent(self, QAccessible.NameChanged))
+        except Exception:
+            pass
         self.setProperty('mbtBadgeTone', 'err' if n <= 0 else ('warn' if n < 10 else 'muted'))
         self.setToolTip(
             'Out of stock' if n <= 0 else f'{n:g} {unit_s} in stock')
@@ -553,6 +564,24 @@ class ProductCard(QFrame):
     def product(self) -> dict:
         return self._product
 
+    def update_stock(self, stock, unit=None):
+        """Refresh the visible quantity without rebuilding the card."""
+        try:
+            stock_n = float(stock)
+        except (TypeError, ValueError):
+            stock_n = 0.0
+        self._product['stock'] = stock_n
+        if unit:
+            self._product['unit'] = unit
+        self._oos = stock_n <= 0
+        badge = getattr(self, '_badge', None)
+        if badge is not None:
+            badge.refresh_from(stock_n, unit or self._product.get('unit') or 'pcs')
+        try:
+            self.refresh_theme()
+        except Exception:
+            pass
+
     def set_card_active(self, active: bool):
         self._active = bool(active)
         self.setCursor(Qt.PointingHandCursor if self._active else Qt.ArrowCursor)
@@ -629,6 +658,39 @@ class ProductCard(QFrame):
         self._icon.refresh_theme()
         self._badge.refresh_from(self._product.get('stock', 0) or 0,
                                  self._product.get('unit', 'pcs') or 'pcs')
+
+    def apply_listing(self, product: dict):
+        """Update price and stock on a card that is already on screen.
+
+        The grid keeps the same tiles when the product list has not changed.
+        A sale still has to change the stock badge.
+        """
+        self._product = product or {}
+        stock = self._product.get('stock', 0) or 0
+        try:
+            stock_n = float(stock)
+        except (TypeError, ValueError):
+            stock_n = 0.0
+        price = self._product.get('price', 0)
+        try:
+            price_n = float(price)
+        except (TypeError, ValueError):
+            price_n = 0.0
+        self._oos = stock_n <= 0
+        self._unpriced = price_n <= 0.009
+        unit = self._product.get('unit') or 'pcs'
+        if self._unpriced:
+            self._price_text = '—'
+            self._price.setText('—')
+            self._price.setToolTip('No sell price set')
+        else:
+            self._price_text = f'{self._currency} {safe_price(price_n)}'
+            self._price.setText(self._price_text)
+            self._price.setToolTip(self._price_text)
+        name = self._display_name or (self._product.get('name') or '')
+        self.setToolTip(f'{name}\nStock: {stock_n:g} {unit}')
+        self.set_card_active(not self._oos)
+        self.refresh_theme()
 
 
 _POS_QTY_STEP = 0.25
@@ -3105,6 +3167,19 @@ class ProductGrid(QWidget):
     def set_categories_map(self, mapping: dict):
         self._categories_by_name = mapping or {}
 
+    def apply_stock(self, stocks: dict):
+        """Update visible cards for products whose quantity changed."""
+        if not stocks:
+            return
+        for index in range(self._grid.count()):
+            widget = self._grid.itemAt(index).widget()
+            if widget is None or not hasattr(widget, 'update_stock'):
+                continue
+            product = widget.product() if hasattr(widget, 'product') else {}
+            pid = product.get('id')
+            if pid in stocks:
+                widget.update_stock(stocks[pid], product.get('unit'))
+
     def clear(self):
         # Cancel in-flight chunked populate
         self._populate_token = int(getattr(self, '_populate_token', 0) or 0) + 1
@@ -3167,7 +3242,17 @@ class ProductGrid(QWidget):
             and self._grid.count() > 0
         ):
             self._products = visible
-            return
+            # Match by product id. A grid spacer or a different item order
+            # must not leave the previous quantity on a card.
+            by_id = {}
+            for card in self.findChildren(ProductCard):
+                pid = (getattr(card, '_product', None) or {}).get('id')
+                if pid is not None:
+                    by_id[pid] = card
+            if all(pid in by_id for pid in new_ids):
+                for product in visible:
+                    by_id[product.get('id')].apply_listing(product)
+                return
         self.clear()
         self._last_populate_cols = cols
         self._products = visible

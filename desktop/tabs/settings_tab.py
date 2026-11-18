@@ -314,9 +314,10 @@ class SettingsTab(QWidget):
         self.mpesa_paybill = Field('e.g. 400200')
         self.mpesa_business = Field('Name shown on receipt')
         mpesa_hint = QLabel(
-            'Each shop uses its own Till or Paybill. Cashiers confirm payment on the customer\'s phone — '
-            'no buyer personal details are stored. STK Push is not available yet. '
-            'The gateway checklist does not take payment.')
+            'Manual M-Pesa stays available and is not checked with Safaricom. '
+            'A phone prompt is a separate step. It is not a payment until a status query '
+            'matches the amount and the receipt. Production stays locked until go-live is confirmed. '
+            'Do not type a customer PIN into this till.')
         mpesa_hint.setWordWrap(True)
         mpesa_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
         for lbl, w in [('Till Number', self.mpesa_till),
@@ -331,7 +332,7 @@ class SettingsTab(QWidget):
         self.daraja_status = QLabel('')
         self.daraja_status.setWordWrap(True)
         self.daraja_status.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
-        FormRow('Gateway URL', self.daraja_gateway_url, mf)
+        FormRow('Legacy gateway URL (leave empty)', self.daraja_gateway_url, mf)
         FormRow('Environment', self.daraja_env, mf)
         test_gateway = SecondaryBtn('Test gateway health', 40)
         test_gateway.setFixedWidth(200)
@@ -1694,11 +1695,11 @@ class SettingsTab(QWidget):
     def _refresh_daraja_readiness(self):
         url = self.daraja_gateway_url.text().strip() if hasattr(self, 'daraja_gateway_url') else ''
         lines = [
-            'Checkout uses manual M-Pesa. STK Push is not implemented.',
-            'Production is disabled.',
-            'Consumer secrets and the passkey stay on the gateway, not in this till.',
-            'Callback reachability: not verified.',
-            'A saved URL is not a connection and not a payment.',
+            'Manual M-Pesa stays available. It is not checked with Safaricom.',
+            'Phone prompt calls Safaricom only after an admin saves a Daraja profile on this till.',
+            'Production stays locked until go-live is confirmed.',
+            'Consumer secrets and the passkey are not shown again after they are saved.',
+            'A saved URL or a health check is not a payment.',
         ]
         head = 'Gateway URL: configuration incomplete.' if not url else 'Gateway URL: saved. Not verified.'
         self.daraja_status.setText(head + '\n' + '\n'.join(lines))

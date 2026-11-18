@@ -453,10 +453,12 @@ class ConsumptionBatchTests(unittest.TestCase):
         refused = self.api.create_consumption({
             'department_id': self.dept_id,
             'reason': 'Cleaning',
+            'backdate_reason': 'Transaction entered late',
             'date': '2020-01-15',
             'items': [{'product_id': 1, 'quantity': 1}],
         })
-        self.assertEqual(refused.get('status'), 403, refused)
+        self.assertTrue(refused.get('pending_approval'), refused)
+        self.assertEqual(refused.get('status'), 'pending')
         self.assertEqual(self._stock('SOAP-500'), 20)
         self.api._role = 'manager'
 

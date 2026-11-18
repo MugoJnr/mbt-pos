@@ -2843,9 +2843,6 @@ def pay_debt_invoice(inv_id):
         if _perm('debt.view_own') and not _perm('debt.view'):
             if int(inv.get('cashier_id') or 0) != int(g.current_user.get('id') or 0):
                 return jsonify({'error': 'Forbidden'}), 403
-        posted = str(data.get('payment_date') or '').strip()
-        if posted and posted != str(date.today()):
-            return jsonify({'error': 'A debt payment is recorded on the day it is taken.'}), 400
         user = g.current_user or {}
         from desktop.utils.api_client import APIClient
         api = APIClient()
@@ -2858,9 +2855,14 @@ def pay_debt_invoice(inv_id):
             str(data.get('payment_method') or 'cash'),
             str(data.get('notes') or ''),
             str(data.get('payment_reference') or ''),
+            payment_date=str(data.get('payment_date') or ''),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
+        if result.get('pending_approval'):
+            return jsonify(result), 202
         if result.get('error'):
-            return jsonify(result), 400
+            return jsonify(result), int(result.get('status') or 400)
         return jsonify(result)
     return _inner()
 
@@ -3167,7 +3169,7 @@ def list_departments_http():
 
     @token_required
     def _inner():
-        if not _user_can('consumption'):
+        if not (_perm('consumption.create') or _perm('consumption.view_report')):
             return jsonify({'error': 'Consumption access required'}), 403
         return jsonify(_consumption_api().get_departments() or [])
 
@@ -3246,7 +3248,7 @@ def get_consumption_http(cid):
 
     @token_required
     def _inner():
-        if not _user_can('consumption'):
+        if not (_perm('consumption.create') or _perm('consumption.view_report')):
             return jsonify({'error': 'Consumption access required'}), 403
         row = _consumption_api().get_consumption(cid)
         if not row:
@@ -3406,114 +3408,26 @@ def product_history_http(pid):
 
 @web.route('/api/products/<int:pid>/adjust', methods=['POST'])
 def adjust_stock(pid):
+    """Same adjustment rules as the till. This route does not write stock itself."""
     from backend.app import token_required
     @token_required
     def _inner():
-        from desktop.utils.security import has_permission
-        if not has_permission(g.current_user, 'inventory.adjust_stock'):
-            return jsonify({'error': 'Super-Admin access required'}), 403
-        data    = request.json or {}
-        try:
-            new_qty = float(data.get('new_qty', 0))
-            expected_stock = float(data['expected_stock'])
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Invalid quantity'}), 400
-        except KeyError:
-            return jsonify({'error': 'Refresh stock and try again'}), 409
-        if new_qty < 0 or new_qty > 999999:
-            return jsonify({'error': 'Quantity is outside the allowed range'}), 400
-        reason  = (data.get('reason') or '').strip()
-        if not reason:
-            return jsonify({'error': 'Reason is required for stock adjustments'}), 400
-        db  = _get_db()
-        row = _tr(db.execute("SELECT * FROM products WHERE id=?", (pid,)).fetchone())
-        if not row:
-            return jsonify({'error': 'Product not found'}), 404
-        old_qty    = float(row['stock'] or 0)
-        if abs(old_qty - expected_stock) > 0.00001:
-            return jsonify({
-                'error': 'Stock changed. Refresh and review the latest quantity.',
-                'current_stock': old_qty,
-            }), 409
-        qty_change = new_qty - old_qty
-        user       = g.current_user
-        changed = db.execute(
-            "UPDATE products SET stock=?, updated_at=? "
-            "WHERE id=? AND COALESCE(stock,0)=?",
-            (new_qty, datetime.now().isoformat(), pid, old_qty),
+        data = request.json or {}
+        result = _inventory_api().adjust_stock(
+            pid,
+            data.get('new_qty', 0),
+            str(data.get('reason') or ''),
+            pin=data.get('pin') or None,
+            expected_stock=data.get('expected_stock'),
+            idempotency_key=str(data.get('client_token') or ''),
+            business_date=str(data.get('business_date') or ''),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
-        if changed.rowcount != 1:
-            db.rollback()
-            latest = db.execute(
-                "SELECT COALESCE(stock,0) FROM products WHERE id=?", (pid,)
-            ).fetchone()
-            return jsonify({
-                'error': 'Stock changed. Refresh and try again.',
-                'current_stock': float(latest[0] if latest else 0),
-            }), 409
-        db.execute(
-            "INSERT INTO stock_movements "
-            "(product_id,product_name,movement_type,qty_before,qty_change,"
-            "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (pid, row['name'], 'SUPERADMIN_ADJUST', old_qty, qty_change, new_qty,
-             f"WEB_pid={pid}", reason, user['id'],
-             user.get('full_name') or user['username'])
-        )
-        movement_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        from desktop.utils.stock_layers import add_layer, consume_available_cost
-        if qty_change > 0.0001:
-            known_cost = float(row['cost_price'] or 0)
-            layer = (
-                add_layer(
-                    db, pid, qty_change, known_cost,
-                    'adjust', str(movement_id),
-                    product_name=row['name'],
-                    purchase_unit_cost=known_cost,
-                    extra_unit_cost=0,
-                    supplier_name='Stock adjustment',
-                    reference_note=reason,
-                )
-                if known_cost > 0
-                else {'success': True, 'uncosted': qty_change}
-            )
-        elif qty_change < -0.0001:
-            layer = consume_available_cost(
-                db, pid, abs(qty_change), reference=f"WEB_pid={pid}",
-            )
-        else:
-            layer = {'success': True}
-        if layer.get('error'):
-            db.rollback()
-            return jsonify({'error': layer['error']}), 400
-        try:
-            from desktop.utils.accounting_hooks import post_stock_adjust_journal
-            posted = post_stock_adjust_journal(
-                db, product_id=pid, product_name=row['name'],
-                qty_change=qty_change, unit_cost=float(row['cost_price'] or 0),
-                reason=reason, movement_id=movement_id, user_id=user['id'],
-                username=user.get('full_name') or user['username'], safe=False,
-            )
-        except Exception:
-            db.rollback()
-            current_app.logger.exception('web stock adjust accounting')
-            return jsonify({'error': 'Could not post the stock adjustment.'}), 500
-        if (
-            isinstance(posted, dict)
-            and posted.get('error')
-            and not posted.get('success')
-            and not posted.get('skipped')
-        ):
-            db.rollback()
-            return jsonify({'error': 'Could not post the stock adjustment.'}), 500
-        db.commit()
-        from desktop.utils.api_client import _audit
-        _audit(
-            user.get('id'), user.get('username'),
-            'STOCK_ADJUSTED', 'inventory',
-            f'pid={pid} stock {old_qty}->{new_qty} reason={reason}',
-            source='web',
-        )
-        return jsonify({'success': True, 'old_stock': old_qty, 'new_stock': new_qty})
+        if result.get('pending_approval'):
+            return jsonify(result), 202
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
     return _inner()
 
 
@@ -3668,6 +3582,9 @@ def return_sale_http(sale_id):
             str(data.get('reason') or ''),
             refund_method=str(data.get('refund_method') or 'cash'),
             client_token=str(data.get('client_token') or ''),
+            business_date=str(data.get('business_date') or ''),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
         if result.get('error'):
             return jsonify(result), int(result.get('status') or 400)
@@ -3837,8 +3754,12 @@ def create_stock_receipt():
             due_date=str(data.get('due_date') or ''),
             effective_date=str(data.get('effective_date') or ''),
             delivery_extra=data.get('delivery_extra'),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
-        code = 200 if result.get('success') else 400
+        if result.get('pending_approval'):
+            return jsonify(result), 202
+        code = 200 if result.get('success') else int(result.get('status') or 400)
         return jsonify(result), code
 
     return _inner()
@@ -3937,7 +3858,11 @@ def supplier_payment_http():
             allocations=data.get('allocations') or [],
             client_token=str(data.get('client_token') or ''),
             paid_at=str(data.get('paid_at') or ''),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
+        if result.get('pending_approval'):
+            return jsonify(result), 202
         code = 200 if result.get('success') else int(result.get('status') or 400)
         return jsonify(result), code
 
@@ -4060,6 +3985,9 @@ def return_receipt_line_http(rid, pid):
             reason=str(data.get('reason') or ''),
             pin=str(data.get('pin') or ''),
             client_token=str(data.get('client_token') or ''),
+            business_date=str(data.get('business_date') or ''),
+            offline=bool(data.get('offline')),
+            backdate_reason=str(data.get('backdate_reason') or ''),
         )
         code = 200 if result.get('success') else int(result.get('status') or 400)
         return jsonify(result), code
@@ -4325,7 +4253,11 @@ def stocktake_apply_http(stocktake_id):
 
     @token_required
     def _inner():
-        result = _inventory_api().apply_stocktake(stocktake_id)
+        data = request.json or {}
+        result = _inventory_api().apply_stocktake(
+            stocktake_id, str(data.get('business_date') or ''),
+            backdate_reason=str(data.get('backdate_reason') or ''),
+        )
         code = 200 if result.get('success') else int(result.get('status') or 400)
         return jsonify(result), code
 
@@ -6980,6 +6912,18 @@ def finance_reverse_expense_http(expense_id):
     return _inner()
 
 
+@web.route('/api/finance/transfers', methods=['POST'])
+def finance_transfer_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        result = _finance_api().accounting_create_transfer(request.json or {})
+        return _finance_json(result, 201 if result.get('success') else 400)
+
+    return _inner()
+
+
 @web.route('/api/finance/journals', methods=['GET', 'POST'])
 def finance_journals_http():
     from backend.app import token_required
@@ -7061,6 +7005,41 @@ def print_direct_http():
     return _inner()
 
 
+@web.route('/api/print/pdf', methods=['GET'])
+def print_pdf_http():
+    """Save the same receipt text as a PDF. Nothing is sent to a printer."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        from flask import Response
+        from printing.direct import render_text
+        from printing.sale_documents import lines_to_pdf
+        kind = request.args.get("kind")
+        record_id = request.args.get("id")
+        if record_id in (None, ""):
+            return jsonify({"error": "Choose a saved receipt first."}), 400
+        db = _get_db()
+        try:
+            reprint = str(request.args.get("reprint") or "").lower() in ("1", "true", "yes")
+            rendered = render_text(db, kind, record_id, _print_api()._print_actor(), reprint=reprint)
+        finally:
+            db.close()
+        if rendered.get("error"):
+            status = 403 if rendered.get("status") == 403 else 400
+            return jsonify(rendered), status
+        paper = str(request.args.get("paper") or rendered.get("paper") or "80")
+        blob = lines_to_pdf((rendered.get("text") or "").splitlines(), paper)
+        name = rendered.get("reference") or "receipt"
+        return Response(
+            blob,
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={name}.pdf"},
+        )
+
+    return _inner()
+
+
 @web.route('/api/print/status', methods=['GET'])
 def print_status_http():
     """Printer diagnostics for an admin. Cashiers cannot change this."""
@@ -7105,3 +7084,10 @@ try:
 except Exception:
     import logging
     logging.getLogger('web').exception('Issues Centre routes were not registered')
+
+try:
+    from backend.restock_http import register_restock_routes
+    register_restock_routes(web)
+except Exception:
+    import logging
+    logging.getLogger('web').exception('Restock list routes were not registered')

@@ -224,7 +224,17 @@ class ActivationDialog(QDialog):
             f"color:{C['gold']}; font-size:22px; font-weight:900; "
             f"background:transparent;")
 
-        sub = QLabel("Activate this computer to use MBT POS.")
+        sub_text = "Activate this computer to use MBT POS."
+        try:
+            from licensing.license_engine import STATE_EXPIRED
+            if getattr(license_engine, 'state', '') == STATE_EXPIRED:
+                sub_text = (
+                    "This licence has expired. New sales and other shop changes stay blocked. "
+                    "Your shop data is still on this computer. Renew or activate below."
+                )
+        except Exception:
+            pass
+        sub = QLabel(sub_text)
         sub.setAlignment(Qt.AlignCenter)
         sub.setWordWrap(True)
         sub.setStyleSheet(
@@ -472,6 +482,9 @@ class ActivationDialog(QDialog):
                 except Exception:
                     pass
             ok, msg = self.engine.activate_with_key(key)
+            if not ok:
+                from licensing.activation_messages import explain_activation_failure
+                msg = explain_activation_failure(msg)
             self._set_result(msg, error=not ok)
             if ok:
                 # Inline result label already shows success — no extra OK MessageBox

@@ -13,6 +13,7 @@ import { Route as VoidRequestsRouteImport } from './routes/void-requests'
 import { Route as UsersRouteImport } from './routes/users'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as SecurityRouteImport } from './routes/security'
+import { Route as RestockRouteImport } from './routes/restock'
 import { Route as RequestsRouteImport } from './routes/requests'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ReceiptsRouteImport } from './routes/receipts'
@@ -55,6 +56,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const SecurityRoute = SecurityRouteImport.update({
   id: '/security',
   path: '/security',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RestockRoute = RestockRouteImport.update({
+  id: '/restock',
+  path: '/restock',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RequestsRoute = RequestsRouteImport.update({
@@ -197,6 +203,7 @@ export interface FileRoutesByFullPath {
   '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/requests': typeof RequestsRoute
+  '/restock': typeof RestockRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
@@ -226,6 +233,7 @@ export interface FileRoutesByTo {
   '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/requests': typeof RequestsRoute
+  '/restock': typeof RestockRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
@@ -256,6 +264,7 @@ export interface FileRoutesById {
   '/receipts': typeof ReceiptsRoute
   '/reports': typeof ReportsRoute
   '/requests': typeof RequestsRoute
+  '/restock': typeof RestockRoute
   '/security': typeof SecurityRoute
   '/settings': typeof SettingsRoute
   '/users': typeof UsersRoute
@@ -287,6 +296,7 @@ export interface FileRouteTypes {
     | '/receipts'
     | '/reports'
     | '/requests'
+    | '/restock'
     | '/security'
     | '/settings'
     | '/users'
@@ -316,6 +326,7 @@ export interface FileRouteTypes {
     | '/receipts'
     | '/reports'
     | '/requests'
+    | '/restock'
     | '/security'
     | '/settings'
     | '/users'
@@ -345,6 +356,7 @@ export interface FileRouteTypes {
     | '/receipts'
     | '/reports'
     | '/requests'
+    | '/restock'
     | '/security'
     | '/settings'
     | '/users'
@@ -375,6 +387,7 @@ export interface RootRouteChildren {
   ReceiptsRoute: typeof ReceiptsRoute
   ReportsRoute: typeof ReportsRoute
   RequestsRoute: typeof RequestsRoute
+  RestockRoute: typeof RestockRoute
   SecurityRoute: typeof SecurityRoute
   SettingsRoute: typeof SettingsRoute
   UsersRoute: typeof UsersRoute
@@ -409,6 +422,13 @@ declare module '@tanstack/react-router' {
       path: '/security'
       fullPath: '/security'
       preLoaderRoute: typeof SecurityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/restock': {
+      id: '/restock'
+      path: '/restock'
+      fullPath: '/restock'
+      preLoaderRoute: typeof RestockRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/requests': {
@@ -599,6 +619,7 @@ const rootRouteChildren: RootRouteChildren = {
   ReceiptsRoute: ReceiptsRoute,
   ReportsRoute: ReportsRoute,
   RequestsRoute: RequestsRoute,
+  RestockRoute: RestockRoute,
   SecurityRoute: SecurityRoute,
   SettingsRoute: SettingsRoute,
   UsersRoute: UsersRoute,

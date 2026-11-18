@@ -2204,14 +2204,18 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         cat = str(i.get('category') or '').strip() or 'Uncategorized'
         rev = _fnum(i.get('total'))
         qty = _fnum(i.get('quantity'))
-        cost = qty * _fnum(i.get('unit_cost', i.get('cost_price')))
+        from backend.cloud.owner_profit import line_is_uncosted
+        known = not line_is_uncosted(i)
+        raw_cost = i.get('unit_cost') if i.get('unit_cost') not in (None, '') else i.get('cost_price')
+        cost = qty * _fnum(raw_cost) if known else 0.0
         p = prod_map.setdefault(name, {
             'name': name, 'category': cat, 'qty': 0.0, 'revenue': 0.0, 'cost': 0.0, 'profit': 0.0,
         })
         p['qty'] = round(p['qty'] + qty, 3)
         p['revenue'] = round(p['revenue'] + rev, 2)
-        p['cost'] = round(p['cost'] + cost, 2)
-        p['profit'] = round(p['revenue'] - p['cost'], 2)
+        if known:
+            p['cost'] = round(p['cost'] + cost, 2)
+            p['profit'] = round(p['profit'] + (rev - cost), 2)
         c = cat_map.setdefault(cat, {'category': cat, 'qty': 0.0, 'revenue': 0.0})
         c['qty'] = round(c['qty'] + qty, 3)
         c['revenue'] = round(c['revenue'] + rev, 2)
@@ -2270,9 +2274,14 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         'debt_overdue': debt_overdue,
         'overdue_count': len(overdue),
         'outstanding_count': len(outstanding_invoices),
-        'cost_of_goods': cost_of_goods,
-        'gross_profit': gross_profit,
-        'gross_margin_pct': gross_margin_pct,
+        'cost_of_goods': profit_split['cost_of_goods'],
+        'gross_profit': profit_split['gross_profit'],
+        'gross_margin_pct': round(
+            (profit_split['gross_profit'] / (profit_split['gross_profit'] + profit_split['cost_of_goods'])) * 100,
+            2,
+        ) if (profit_split['gross_profit'] + profit_split['cost_of_goods']) else 0.0,
+        'uncosted_sales': profit_split.get('uncosted_sales', 0.0),
+        'uncosted_lines': profit_split.get('uncosted_lines', 0),
         'gross_profit_fully_paid': profit_split['gross_profit_fully_paid'],
         'gross_profit_credit': profit_split['gross_profit_credit'],
         'gross_profit_part_payment': profit_split['gross_profit_part_payment'],

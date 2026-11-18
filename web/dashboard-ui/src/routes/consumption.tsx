@@ -7,7 +7,9 @@ import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadApiPost } from "@/lib/download";
 import { ExportLockDialog } from "@/components/export-lock-dialog";
-import { KES } from "@/lib/format";
+import { BusinessDateField, canPostBusinessDay } from "@/components/business-date-field";
+import { KES, shopTodayISO } from "@/lib/format";
+import { parseQuantity } from "@/lib/quantity";
 
 export const Route = createFileRoute("/consumption")({
   component: ConsumptionPage,
@@ -20,6 +22,9 @@ const REASONS = [
   "Cleaning",
   "Sampling",
   "Damaged During Production",
+  "Wastage",
+  "Expired Goods",
+  "Owner Use",
   "Donation",
   "Promotion",
   "Other",
@@ -38,7 +43,7 @@ function ConsumptionPage() {
   const role = String(user?.role || "");
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canSeeCost = actions ? actions.includes("inventory.view_cost") : ["manager", "admin", "superadmin"].includes(role);
-  const canBackdate = actions ? actions.includes("sales.business_day") : ["manager", "admin", "superadmin"].includes(role);
+  const canBackdate = canPostBusinessDay();
   const canRecord = actions
     ? actions.includes("consumption.create")
     : ["cashier", "manager", "admin", "superadmin"].includes(role);
@@ -54,17 +59,19 @@ function ConsumptionPage() {
   const [editLines, setEditLines] = useState<{ id: number; name: string; sku: string; quantity: string; stock: number; unit: string }[]>([]);
   const [editReason, setEditReason] = useState("");
   const [editCategory, setEditCategory] = useState("Cleaning");
-  const today = localToday();
+  const today = shopTodayISO();
+  const [dateConfirmed, setDateConfirmed] = useState(false);
   const [departmentId, setDepartmentId] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [productId, setProductId] = useState("");
   const [qty, setQty] = useState("1");
-  const [lines, setLines] = useState<{ id: number; name: string; sku: string; quantity: number; stock: number; unitCost: number; unit: string }[]>([]);
+  const [lines, setLines] = useState<{ id: number; name: string; sku: string; quantity: number | string; stock: number; unitCost: number; unit: string }[]>([]);
   const [reason, setReason] = useState("Cleaning");
   const [notes, setNotes] = useState("");
   const [takenBy, setTakenBy] = useState("");
   const [when, setWhen] = useState(today);
+  const [backdateReason, setBackdateReason] = useState("");
   const [error, setError] = useState("");
   const [printNote, setPrintNote] = useState("");
   const [voidReason, setVoidReason] = useState("");
@@ -129,14 +136,12 @@ function ConsumptionPage() {
   function addLine(chosen?: any) {
     setError("");
     const picked = chosen && typeof chosen.id !== "undefined" && chosen.name ? chosen : product;
-    const amount = Number(qty);
+    const parsed = parseQuantity(qty, String(picked?.unit || ""));
     if (!picked) return setError("Choose a product from the list.");
-    if (!Number.isFinite(amount) || amount <= 0) return setError("Quantity must be greater than zero.");
-    const unitName = String(picked.unit || "pcs").trim().toLowerCase();
-    const measured = ["kg", "g", "l", "ml", "ltr", "litre", "liter", "m", "cm"].includes(unitName);
-    if (!measured && Math.abs(amount - Math.round(amount)) > 0.0001) {
-      return setError(`${picked.name} is sold in whole units.`);
+    if ("error" in parsed) {
+      return setError(parsed.error.includes("whole units") ? `${picked.name} is sold in whole units.` : parsed.error);
     }
+    const amount = parsed.quantity;
     const pickedStock = Number(picked.stock || 0);
     const pickedCost = Number(picked.cost_price || 0);
     if (amount > pickedStock) return setError(`Only ${pickedStock} available for ${picked.name}.`);
@@ -176,7 +181,18 @@ function ConsumptionPage() {
     if (!lines.length) return setError("Add at least one product.");
     setSavedRef("");
     if (when > today) return setError("Future dates are not allowed.");
-    if (when !== today && !canBackdate) return setError("You cannot record consumption for another day.");
+    if (when < today && !canBackdate && !dateConfirmed) {
+      return setError("Confirm the backdated date before submitting. Stock will not change until a different administrator approves it.");
+    }
+    if (when < today && !canBackdate && (backdateReason.trim().length < 3 || backdateReason.trim() === "Other")) {
+      return setError("Choose a reason for this past date. If you choose Other, write what happened.");
+    }
+    const items = [];
+    for (const line of lines) {
+      const parsed = parseQuantity(String(line.quantity), line.unit);
+      if ("error" in parsed) return setError(`${line.name}: ${parsed.error}`);
+      items.push({ product_id: line.id, quantity: parsed.quantity });
+    }
     if (!tokenRef.current) tokenRef.current = crypto.randomUUID();
     const res = await POST<any>("/consumptions", {
       department_id: Number(departmentId),
@@ -184,9 +200,17 @@ function ConsumptionPage() {
       notes,
       taken_by: takenBy,
       date: when,
+      backdate_reason: backdateReason.trim(),
       client_token: tokenRef.current,
-      items: lines.map((line) => ({ product_id: line.id, quantity: line.quantity })),
+      items,
     });
+    if (res?.pending_approval) {
+      tokenRef.current = "";
+      setSavedRef(`${res.reference} is pending approval. Stock was not changed.`);
+      setDateConfirmed(false);
+      setWhen(today);
+      return;
+    }
     if (!res || res.error) {
       setError(res?.error || "Could not save consumption.");
       return;
@@ -278,10 +302,12 @@ function ConsumptionPage() {
     setError("");
     if (!editId) return;
     if (editReason.trim().length < 3) return setError("Enter why this consumption is being corrected.");
-    const items = editLines.map((line) => ({
-      product_id: line.id,
-      quantity: Number(line.quantity),
-    })).filter((line) => line.quantity > 0);
+    const items = [];
+    for (const line of editLines) {
+      const parsed = parseQuantity(String(line.quantity), line.unit);
+      if ("error" in parsed) return setError(`${line.name}: ${parsed.error}`);
+      items.push({ product_id: line.id, quantity: parsed.quantity });
+    }
     if (!items.length) return setError("Keep at least one product, or void the consumption.");
     const res = await PUT<any>(`/consumptions/${editId}`, {
       edit_reason: editReason.trim(),
@@ -388,10 +414,18 @@ function ConsumptionPage() {
               ))}
             </select>
           </label>
-          <label className="text-sm text-text2">
+          <div className="text-sm text-text2">
             Business date
-            <Input type="date" max={today} min={canBackdate ? undefined : today} disabled={!canBackdate} value={when} onChange={(e) => setWhen(e.target.value)} />
-          </label>
+            <BusinessDateField
+              label="Consumption date"
+              value={when}
+              onChange={setWhen}
+              confirmed={dateConfirmed}
+              onConfirm={setDateConfirmed}
+              reason={backdateReason}
+              onReason={setBackdateReason}
+            />
+          </div>
           <label className="text-sm text-text2">
             Taken by
             <Input value={takenBy} onChange={(e) => setTakenBy(e.target.value)} placeholder="Name" />
@@ -446,12 +480,11 @@ function ConsumptionPage() {
                   inputMode="decimal"
                   value={String(line.quantity)}
                   onChange={(event) => {
-                    const next = Number(event.target.value);
-                    if (!Number.isFinite(next)) return;
-                    setLines((current) => current.map((item) => item.id === line.id ? { ...item, quantity: next } : item));
+                    const raw = event.target.value;
+                    setLines((current) => current.map((item) => item.id === line.id ? { ...item, quantity: raw } : item));
                   }}
                 />
-                {canSeeCost ? <div className="text-right font-semibold tabular-nums text-gold">{KES(line.unitCost * line.quantity)}</div> : null}
+                {canSeeCost ? <div className="text-right font-semibold tabular-nums text-gold">{KES(line.unitCost * (Number(line.quantity) || 0))}</div> : null}
                 <Button variant="ghost" onClick={() => setLines((current) => current.filter((item) => item.id !== line.id))}>Remove</Button>
               </div>
             ))}
@@ -509,7 +542,7 @@ function ConsumptionPage() {
               <td className="px-4 py-2.5 font-mono text-sm">{row.reference_no}</td>
               <td className="px-4 py-2.5">{String(row.date || "").slice(0, 10)}</td>
               <td className="px-4 py-2.5">{row.department_name || "—"}</td>
-              <td className="px-4 py-2.5">{row.reason}</td>
+              <td className="px-4 py-2.5">{row.reason}{row.ledger_account ? <span className="block text-xs text-text2">{row.ledger_account}</span> : null}</td>
               {canSeeCost ? <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-gold">{KES(row.total_cost || 0)}</td> : null}
               <td className="px-4 py-2.5">
                 <Badge tone={row.voided ? "err" : row.void_requested ? "warn" : "ok"}>

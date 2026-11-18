@@ -14,7 +14,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QComboBox, QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QAbstractItemView, QFrame, QPushButton,
-    QDialog, QDialogButtonBox, QSizePolicy, QMessageBox, QApplication,
+    QDialog, QDialogButtonBox, QSizePolicy, QApplication,
     QStyledItemDelegate,
 )
 
@@ -78,11 +78,25 @@ def install_combo_popup_fix() -> None:
     original_menu_exec = QMenu.exec_
 
     def _hide_popup(self):
+        picked = getattr(self, "_mbt_picked_index", None)
+        self._mbt_picked_index = None
         panel = getattr(self, "_mbt_row_popup", None)
         self._mbt_row_popup = None
         if panel is not None:
             panel.close()
-        return original_hide(self)
+        result = original_hide(self)
+        # The native hide puts the previous row back. Put the clicked row
+        # back afterwards, or a chosen reason never reaches OK.
+        if isinstance(picked, int) and 0 <= picked < self.count():
+            self.setCurrentIndex(picked)
+            def _keep(index=picked, combo=self):
+                try:
+                    if 0 <= index < combo.count() and combo.currentIndex() != index:
+                        combo.setCurrentIndex(index)
+                except Exception:
+                    pass
+            QTimer.singleShot(0, _keep)
+        return result
 
     def _show_popup(self):
         try:
@@ -147,6 +161,7 @@ def install_combo_popup_fix() -> None:
                         except Exception:
                             allowed = True
                         if allowed:
+                            box._mbt_picked_index = idx
                             box.setCurrentIndex(idx)
                         panel.close()
                         box.hidePopup()
@@ -1068,7 +1083,7 @@ class ReasonSelect(QWidget):
 
 
 class ReasonDialog(QDialog):
-    """Modal: title + ReasonSelect + optional notes. Returns reason string."""
+    """Modal reason list. A click on a row is the reason; it does not depend on the combo popup."""
 
     def __init__(self, parent=None, *, title: str = 'Reason',
                  prompt: str = '', reasons: Sequence[str] = (),
@@ -1077,18 +1092,41 @@ class ReasonDialog(QDialog):
         self.setWindowTitle(title)
         self.setMinimumWidth(420)
         self._require = require_reason
+        self._other = OTHER_TOKEN
+        self._picked = ''
+        self._buttons: list[QPushButton] = []
         apply_themed_dialog(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(12)
+        lay.setSpacing(8)
         if prompt:
             lbl = QLabel(prompt)
             lbl.setWordWrap(True)
             lbl.setStyleSheet(
                 f"color:{C['text2']};font-size:13px;background:transparent;")
             lay.addWidget(lbl)
-        self._reason = ReasonSelect(self, reasons=reasons)
-        lay.addWidget(self._reason)
+        # Buttons, not a combo. The till popup was closing before the clicked
+        # reason was stored, so OK had nothing to accept.
+        for item in reasons or ():
+            text = str(item or '').strip()
+            if not text:
+                continue
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setMinimumHeight(CONTROL_HEIGHT)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _checked=False, label=text: self._on_pick(label))
+            lay.addWidget(btn)
+            self._buttons.append(btn)
+        self._paint_reasons()
+        self._specify = QLineEdit()
+        self._specify.setObjectName('mbtSelectSpecify')
+        self._specify.setPlaceholderText('What happened')
+        self._specify.setMinimumHeight(CONTROL_HEIGHT)
+        self._specify.setStyleSheet(_line_qss())
+        self._specify.hide()
+        self._specify.textChanged.connect(lambda _text: self._error.setText(''))
+        lay.addWidget(self._specify)
         notes_lbl = QLabel('Notes (optional)')
         notes_lbl.setStyleSheet(
             f"color:{C['muted']};font-size:12px;background:transparent;")
@@ -1099,20 +1137,58 @@ class ReasonDialog(QDialog):
         self._notes.setMinimumHeight(CONTROL_HEIGHT)
         self._notes.setStyleSheet(_line_qss())
         lay.addWidget(self._notes)
+        self._error = QLabel('')
+        self._error.setWordWrap(True)
+        self._error.setStyleSheet(
+            f"color:{C.get('err', '#DC2626')};font-size:13px;font-weight:600;background:transparent;")
+        lay.addWidget(self._error)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
-        self._reason.refresh_theme()
+
+    def _paint_reasons(self):
+        for btn in self._buttons:
+            on = btn.text() == self._picked
+            btn.setStyleSheet(
+                "QPushButton{background:%s;color:%s;border:1px solid %s;"
+                "border-radius:8px;text-align:left;padding:8px 12px;font-size:13px;font-weight:600;}"
+                "QPushButton:hover{background:%s;}"
+                % (
+                    C.get('selected', '#E7EEF6') if on else C.get('card', '#F7F9FC'),
+                    C.get('text', '#121820'),
+                    C.get('gold', '#C9A227') if on else C.get('border', '#C5D0DE'),
+                    C.get('hover', '#E7EEF6'),
+                )
+            )
+
+    def _on_pick(self, text: str):
+        chosen = (text or '').strip()
+        self._picked = chosen
+        self._paint_reasons()
+        self._specify.setVisible(chosen == self._other)
+        if chosen == self._other:
+            self._specify.setFocus()
+        self._error.setText('')
+
+    def _chosen_reason(self) -> str:
+        label = (self._picked or '').strip()
+        if label == self._other:
+            detail = self._specify.text().strip()
+            return f'{self._other}: {detail}' if detail else self._other
+        return label
 
     def _accept(self):
-        if self._require and not self._reason.is_valid():
-            QMessageBox.warning(self, 'Required', self._reason.validation_error())
+        reason = self._chosen_reason()
+        if self._require and (len(reason) < 3 or reason == self._other):
+            self._error.setText(
+                'Choose a listed reason. If you choose Other, write what happened. Nothing was saved.'
+            )
             return
         self.accept()
 
     def reason(self) -> str:
-        return self._reason.value()
+        return self._chosen_reason()
 
     def notes(self) -> str:
         return self._notes.text().strip()

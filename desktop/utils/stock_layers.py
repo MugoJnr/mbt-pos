@@ -1,5 +1,18 @@
-"""FIFO cost layers. Opening stock is backfilled only when a cost is already stored."""
+"""FIFO cost layers.
+
+A real delivery batch is used first. When that batch runs out, a product whose
+card buying price is above zero records that price for the remainder. A blank
+or zero buying price is left uncosted. Zero is never stored as a cost.
+"""
 from __future__ import annotations
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+CARD_PRICE = "card_price"
+CARD_NOTE = "Product card buying price. Not a supplier invoice."
+_BUYING_PRICE_REPAIR_DONE = False
 
 
 def ensure_cost_layers(db) -> None:
@@ -138,11 +151,33 @@ def consume_fifo(db, product_id: int, qty: float, sale_id=None, reference: str =
     return {'success': True, 'cogs': cogs, 'uses': uses}
 
 
-def consume_available_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
-    """Apply recorded FIFO cost up to the quantity that still has a batch.
+def _card_buying_price(db, product_id: int) -> float:
+    """The product card price for a quantity that has no supplier batch.
 
-    A shortfall is uncosted. It does not fail the sale, invent a batch, or use zero
-    as a buying price. A conditional update stops two sales from taking the same units.
+    This does not rewrite older sales. A missing or zero price stays uncosted.
+    """
+    try:
+        row = db.execute(
+            "SELECT cost_price FROM products WHERE id=?", (int(product_id),)
+        ).fetchone()
+    except Exception:
+        return 0.0
+    if not row or row[0] in (None, ''):
+        return 0.0
+    try:
+        price = round(float(row[0]), 4)
+    except (TypeError, ValueError):
+        return 0.0
+    return price if price > 0 else 0.0
+
+
+def consume_available_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
+    """Apply recorded FIFO batches first.
+
+    When a product has no batch at all, the card buying price is used if it is
+    above zero. A sale that already used a real batch does not invent a second
+    price for the shortfall. A blank or zero card price stays uncosted.
+    Older sales are not rewritten.
     """
     ensure_cost_layers(db)
     need = round(float(qty), 4)
@@ -160,7 +195,19 @@ def consume_available_cost(db, product_id: int, qty: float, sale_id=None, refere
             (int(product_id),),
         ).fetchone()
         if not row:
-            break
+            if covered > 0.0001:
+                break
+            card = _card_buying_price(db, product_id)
+            if card <= 0:
+                break
+            import uuid
+            added = add_layer(
+                db, product_id, left, card, CARD_PRICE, uuid.uuid4().hex,
+                reference_note=CARD_NOTE,
+            )
+            if added.get('error') or not added.get('id'):
+                break
+            continue
         if row[0] in skipped:
             row = db.execute(
                 "SELECT id, remaining_qty, unit_cost FROM cost_layers "

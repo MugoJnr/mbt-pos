@@ -358,6 +358,97 @@ def allocate_sale(total: float, tenders: Optional[Iterable[dict]]) -> dict:
     }
 
 
+_DEBT_METHODS = {
+    'credit sale', 'credit', 'credit account', 'part payment',
+    'part-payment', 'part pay', 'on account', 'customer credit',
+}
+
+
+def sale_collection_error(data: Optional[dict]) -> str:
+    """Reject a sale that would reduce stock without matching money or a customer debt.
+
+    The till already warns the cashier. This is the same rule for a direct call.
+    A credit or part-payment sale may collect less than the total when a customer
+    is named. Cash change is allowed. A list of tenders must add up to the total.
+    """
+    data = data or {}
+    try:
+        total = _r2(data.get('total'))
+        paid = _r2(data.get('amount_paid'))
+        credit_applied = _r2(data.get('credit_applied'))
+        change = _r2(data.get('change_amount'))
+        cash_paid = _r2(data.get('cash_paid'))
+        electronic_paid = _r2(data.get('electronic_paid'))
+    except (TypeError, ValueError):
+        return 'Payment amount is not a valid number.'
+    if min(total, paid, credit_applied, change, cash_paid, electronic_paid) < -0.009:
+        return 'Sale and payment amounts cannot be negative.'
+    if total <= 0.009:
+        if _r2(paid + credit_applied + cash_paid + electronic_paid) > 0.02:
+            return 'A zero sale cannot collect money.'
+        return ''
+    tenders = data.get('payment_tenders')
+    if isinstance(tenders, str) and tenders.strip():
+        try:
+            tenders = json.loads(tenders)
+        except (TypeError, ValueError):
+            return 'Payments could not be read.'
+    if isinstance(tenders, list) and tenders:
+        allocation = allocate_sale(total, tenders)
+        if allocation.get('error'):
+            return str(allocation['error'])
+        if float(allocation.get('credit') or 0) > 0.009 and not data.get('customer_id'):
+            return 'Choose a customer before leaving an amount on credit.'
+        return ''
+    method = str(data.get('payment_method') or 'cash').strip().lower()
+    if method in ('mixed', 'split'):
+        covered = _r2(cash_paid + electronic_paid + credit_applied)
+        if covered + 0.02 < total:
+            return (
+                f'Payments {covered:.2f} do not cover the sale total {total:.2f}. '
+                'The sale was not saved.'
+            )
+        if covered > total + 0.02:
+            return 'Amount collected is more than the sale total.'
+        return ''
+    kept = _r2(paid - change) if paid > total + 0.02 else paid
+    if method in _DEBT_METHODS:
+        if not data.get('customer_id'):
+            return 'Choose a customer before a credit or part payment.'
+        if _r2(kept + credit_applied) > total + 0.02:
+            return 'Amount collected is more than the sale total.'
+        return ''
+    covered = _r2(kept + credit_applied)
+    if covered + 0.02 < total:
+        return (
+            f'Payments {covered:.2f} do not cover the sale total {total:.2f}. '
+            'The sale was not saved.'
+        )
+    if covered > total + 0.02:
+        return 'Amount collected is more than the sale total.'
+    return ''
+
+
+def electronic_method_label(tenders: Optional[Iterable[dict]], fallback: str = '') -> str:
+    """Name every confirmed non-cash tender. Cash and credit stay out of this field."""
+    names = []
+    for tender in tenders or []:
+        if not isinstance(tender, dict):
+            continue
+        name = str(tender.get('method') or '').strip()
+        status = str(tender.get('status') or 'confirmed').lower()
+        if not name or status != 'confirmed' or name.lower() == 'cash' or is_credit_method(name):
+            continue
+        try:
+            amount = _r2(tender.get('amount'))
+        except Exception:
+            continue
+        if amount <= 0.009 or name in names:
+            continue
+        names.append(name)
+    return ' + '.join(names) or str(fallback or '').strip()
+
+
 def collected_method_label(tenders: Optional[Iterable[dict]], fallback: str = 'cash') -> str:
     """Name the money taken. An outstanding credit line is not a payment method."""
     names = []

@@ -14,9 +14,11 @@ class PieceQuantityTests(unittest.TestCase):
     def test_piece_steps_by_one_and_weight_keeps_the_wheel(self):
         from desktop.utils.pos_components import qty_step_for_unit
         self.assertEqual(qty_step_for_unit("pcs"), 1)
-        self.assertEqual(qty_step_for_unit(""), 1)
-        self.assertEqual(qty_step_for_unit(None), 1)
+        self.assertEqual(qty_step_for_unit(""), 0.01)
+        self.assertEqual(qty_step_for_unit(None), 0.01)
         self.assertEqual(qty_step_for_unit("kg"), 0.25)
+        self.assertEqual(qty_step_for_unit("cm"), 0.25)
+        self.assertEqual(qty_step_for_unit("metre"), 0.25)
         self.assertEqual(round(1 + qty_step_for_unit("pcs"), 2), 2)
         self.assertEqual(round(1 + qty_step_for_unit("kg"), 2), 1.25)
 

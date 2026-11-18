@@ -125,7 +125,7 @@ class ReturnSaleDialog(QDialog):
             spin = QDoubleSpinBox()
             spin.setRange(0, rem)
             spin.setDecimals(3)
-            spin.setSingleStep(1 if rem >= 1 else 0.25)
+            spin.setSingleStep(0.01)
             spin.setMinimumHeight(36)
             spin.setEnabled(rem > 0.0001)
             self._tbl.setCellWidget(r, 4, spin)

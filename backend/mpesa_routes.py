@@ -47,6 +47,25 @@ def register(app, token_required):
         finally:
             db.close()
 
+    @app.route("/api/daraja/stk/callback", methods=["POST"])
+    def daraja_stk_callback():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"ResultCode": 1, "ResultDesc": "Rejected"}), 400
+        db = _db()
+        try:
+            from backend.mpesa_service import apply_stk_callback
+            result = apply_stk_callback(db, payload)
+            db.commit()
+        except MpesaSaleError:
+            db.rollback()
+            return jsonify({"ResultCode": 1, "ResultDesc": "Rejected"}), 400
+        finally:
+            db.close()
+        result["ResultCode"] = 0
+        result["ResultDesc"] = "Accepted"
+        return jsonify(result)
+
     @app.route("/api/mpesa/diagnostics", methods=["GET"])
     @token_required
     def mpesa_diagnostics():

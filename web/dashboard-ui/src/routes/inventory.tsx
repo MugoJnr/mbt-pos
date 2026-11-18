@@ -11,7 +11,9 @@ import { useAuth } from "@/lib/auth";
 import { downloadApiPost } from "@/lib/download";
 import { ExportLockDialog } from "@/components/export-lock-dialog";
 import { DeliveryActions } from "@/components/delivery-actions";
-import { KES, todayISO } from "@/lib/format";
+import { BusinessDateField, canPostBusinessDay } from "@/components/business-date-field";
+import { KES, shopTodayISO, todayISO } from "@/lib/format";
+import { parseQuantity } from "@/lib/quantity";
 import { nameMatches } from "@/lib/name-search";
 import { wheelStep } from "@/lib/wheel-steps";
 
@@ -99,6 +101,9 @@ function Inventory() {
   const [adjDir, setAdjDir] = useState("add");
   const [adjQty, setAdjQty] = useState("1");
   const [adjReason, setAdjReason] = useState("Correction");
+  const [adjDate, setAdjDate] = useState(shopTodayISO);
+  const [adjDateConfirmed, setAdjDateConfirmed] = useState(false);
+  const [adjBackdate, setAdjBackdate] = useState("");
   const [adjMsg, setAdjMsg] = useState("");
   const [adjPin, setAdjPin] = useState("");
   const [reviewPin, setReviewPin] = useState("");
@@ -120,7 +125,7 @@ function Inventory() {
   const [recvBusy, setRecvBusy] = useState(false);
   const recvTokenRef = useRef("");
   const [recvLines, setRecvLines] = useState<
-    { product_id: number; name: string; sku?: string; unit?: string; quantity: number; unit_cost: number | null }[]
+    { product_id: number; name: string; sku?: string; unit?: string; quantity: number | string; unit_cost: number | null }[]
   >([]);
   const [recvCost, setRecvCost] = useState("");
   const [recvExtra, setRecvExtra] = useState("");
@@ -128,6 +133,9 @@ function Inventory() {
   const [recvPayMethod, setRecvPayMethod] = useState("cash");
   const [recvPayRef, setRecvPayRef] = useState("");
   const [recvDue, setRecvDue] = useState("");
+  const [recvDate, setRecvDate] = useState(shopTodayISO);
+  const [recvDateConfirmed, setRecvDateConfirmed] = useState(false);
+  const [recvBackdateReason, setRecvBackdateReason] = useState("");
   const [productDetail, setProductDetail] = useState<Product | null>(null);
   const historyQ = useQuery({
     queryKey: ["product-history", productDetail?.id],
@@ -146,6 +154,8 @@ function Inventory() {
   const [stocktakeId, setStocktakeId] = useState<number | null>(null);
   const [stocktakeProduct, setStocktakeProduct] = useState("");
   const [stocktakeQty, setStocktakeQty] = useState("");
+  const [stocktakeDate, setStocktakeDate] = useState(shopTodayISO);
+  const [stocktakeBackdate, setStocktakeBackdate] = useState("");
   const [stocktakeMsg, setStocktakeMsg] = useState("");
   const [newProduct, setNewProduct] = useState({
     name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "",
@@ -219,7 +229,7 @@ function Inventory() {
   const pageRows = list.slice(page * pageSize, page * pageSize + pageSize);
 
   const valuationQ = useQuery({
-    queryKey: ["inventory-valuation"],
+    queryKey: ["inventory-valuation", productsQ.dataUpdatedAt],
     queryFn: () => GET<{ value?: number; quantity?: number }>("/inventory-valuation"),
     enabled: seeCost,
   });
@@ -535,6 +545,7 @@ function Inventory() {
                 />
               </label>
               )}
+              <BusinessDateField label="Adjustment date" value={adjDate} onChange={setAdjDate} confirmed={adjDateConfirmed} onConfirm={setAdjDateConfirmed} reason={adjBackdate} onReason={setAdjBackdate} />
               <div className="text-xs font-semibold text-text2">
                 Current stock
                 <div id="adj-current-stock" className="mt-1 text-lg font-extrabold text-text">
@@ -558,6 +569,10 @@ function Inventory() {
                   setAdjMsg("Super-Admin PIN is required.");
                   return;
                 }
+                if (adjDate < shopTodayISO() && (adjBackdate.trim().length < 3 || adjBackdate.trim() === "Other")) {
+                  setAdjMsg("Choose a reason for this past date. If you choose Other, write what happened.");
+                  return;
+                }
                 const current = Number(selectedProduct?.stock || 0);
                 const newQty =
                   adjDir === "set" ? qty : adjDir === "remove" ? current - qty : current + qty;
@@ -570,6 +585,9 @@ function Inventory() {
                   expected_stock: current,
                   reason: adjReason || "Correction",
                   pin: adjPin,
+                  business_date: adjDate,
+                  backdate_reason: adjBackdate.trim(),
+                  client_token: `adj-${adjId}-${adjDate}-${newQty}`,
                 });
                 if (res?.success) {
                   setAdjMsg(`Stock adjusted: ${res.old_stock} → ${res.new_stock}.`);
@@ -758,16 +776,19 @@ function Inventory() {
                 Due date
                 <Input aria-label="Due date" value={recvDue} onChange={(e) => setRecvDue(e.target.value)} className="mt-1 h-11" placeholder="YYYY-MM-DD" />
               </label>
+              <BusinessDateField label="Delivery date" value={recvDate} onChange={setRecvDate} confirmed={recvDateConfirmed} onConfirm={setRecvDateConfirmed} reason={recvBackdateReason} onReason={setRecvBackdateReason} />
             </div>
             <Button
               variant="secondary"
               onClick={() => {
-                const qty = Number(recvQty);
-                const cost = recvCost.trim() === "" ? null : Number(recvCost);
-                if (!recvId || !Number.isFinite(qty) || qty <= 0) {
-                  setRecvMsg("Select a product and a quantity before adding a line.");
+                const productForQty = products.find((p) => p.id === Number(recvId));
+                const parsedQty = parseQuantity(recvQty, productForQty?.unit);
+                if (!recvId || "error" in parsedQty) {
+                  setRecvMsg("error" in parsedQty ? parsedQty.error : "Select a product and a quantity before adding a line.");
                   return;
                 }
+                const qty = parsedQty.quantity;
+                const cost = recvCost.trim() === "" ? null : Number(recvCost);
                 if (cost !== null && !Number.isFinite(cost)) {
                   setRecvMsg("Enter a valid purchase cost, or leave it blank to keep the current cost.");
                   return;
@@ -820,16 +841,12 @@ function Inventory() {
                           <td className="px-3 py-2">
                             <Input
                               aria-label={`Quantity for ${line.name}`}
-                              type="number"
-                              min={0}
-                              step="any"
-                              value={line.quantity}
+                              inputMode="decimal"
+                              value={String(line.quantity)}
                               onChange={(e) => {
-                                const next = Number(e.target.value);
+                                const raw = e.target.value;
                                 setRecvLines((lines) => lines.map((item) => (
-                                  item.product_id === line.product_id
-                                    ? { ...item, quantity: Number.isFinite(next) ? next : item.quantity }
-                                    : item
+                                  item.product_id === line.product_id ? { ...item, quantity: raw } : item
                                 )));
                               }}
                               className="h-10 w-28"
@@ -855,7 +872,7 @@ function Inventory() {
                             />
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums font-semibold text-text">
-                            {(line.quantity * cost).toFixed(2)}
+                            {((Number(line.quantity) || 0) * cost).toFixed(2)}
                           </td>
                           <td className="px-3 py-2 text-right">
                             <button
@@ -876,7 +893,7 @@ function Inventory() {
                     const goods = recvLines.reduce((sum, line) => {
                       const product = products.find((p) => p.id === line.product_id);
                       const cost = line.unit_cost == null ? Number(product?.cost_price || 0) : line.unit_cost;
-                      return sum + line.quantity * (Number.isFinite(cost) ? cost : 0);
+                      return sum + (Number(line.quantity) || 0) * (Number.isFinite(cost) ? cost : 0);
                     }, 0);
                     const extra = recvExtra.trim() === "" ? 0 : Number(recvExtra);
                     const extraSafe = Number.isFinite(extra) && extra > 0 ? extra : 0;
@@ -922,17 +939,40 @@ function Inventory() {
                     setRecvSupplierNotes("");
                     qc.invalidateQueries({ queryKey: ["suppliers"] });
                   }
-                  const lines = recvLines.length
-                    ? recvLines.map((line) => ({
+                  const lines = [];
+                  if (recvLines.length) {
+                    for (const line of recvLines) {
+                      const parsed = parseQuantity(String(line.quantity), line.unit);
+                      if ("error" in parsed) {
+                        setRecvMsg(`${line.name}: ${parsed.error}`);
+                        return;
+                      }
+                      lines.push({
                         product_id: line.product_id,
-                        quantity: line.quantity,
+                        quantity: parsed.quantity,
                         unit_cost: line.unit_cost,
-                      }))
-                    : [{
-                        product_id: Number(recvId),
-                        quantity: qty,
-                        unit_cost: recvCost.trim() === "" ? null : Number(recvCost),
-                      }];
+                      });
+                    }
+                  } else {
+                    const parsed = parseQuantity(String(recvQty));
+                    if ("error" in parsed) {
+                      setRecvMsg(parsed.error);
+                      return;
+                    }
+                    lines.push({
+                      product_id: Number(recvId),
+                      quantity: parsed.quantity,
+                      unit_cost: recvCost.trim() === "" ? null : Number(recvCost),
+                    });
+                  }
+                  if (recvDate < shopTodayISO() && !recvDateConfirmed) {
+                    setRecvMsg("Confirm the backdated delivery date. Stock is not received until a different administrator approves it.");
+                    return;
+                  }
+                  if (recvDate < shopTodayISO() && !canPostBusinessDay() && (recvBackdateReason.trim().length < 3 || recvBackdateReason.trim() === "Other")) {
+                    setRecvMsg("Choose a reason for this past date. If you choose Other, write what happened.");
+                    return;
+                  }
                   if (!recvTokenRef.current) {
                     recvTokenRef.current =
                       typeof crypto !== "undefined" && crypto.randomUUID
@@ -948,9 +988,17 @@ function Inventory() {
                     payment_method: recvPayMethod,
                     payment_reference: recvPayRef.trim(),
                     due_date: recvDue.trim(),
+                    effective_date: recvDate,
+                    backdate_reason: recvBackdateReason.trim(),
                     delivery_extra: recvExtra.trim() === "" ? 0 : Number(recvExtra),
                     lines,
                   });
+                  if (res?.pending_approval) {
+                    setRecvMsg(`${res.reference} is pending approval. Stock was not received.`);
+                    setRecvDate(shopTodayISO());
+                    setRecvDateConfirmed(false);
+                    return;
+                  }
                   if (!res?.success) {
                     setRecvMsg(res?.error || "Could not receive that delivery.");
                     return;
@@ -1042,6 +1090,12 @@ function Inventory() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Link
+              to="/restock"
+              className="inline-flex min-h-[44px] items-center rounded-md border border-gold/50 px-3 text-sm font-semibold text-gold"
+            >
+              Restock Lists
+            </Link>
+            <Link
               to="/issues"
               className="inline-flex min-h-[44px] items-center rounded-md border border-gold/50 px-3 text-sm font-semibold text-gold"
             >
@@ -1131,6 +1185,7 @@ function Inventory() {
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
+            <BusinessDateField label="Stocktake date" value={stocktakeDate} onChange={setStocktakeDate} reason={stocktakeBackdate} onReason={setStocktakeBackdate} />
             <Input aria-label="Counted quantity" type="number" min={0} step="0.01" value={stocktakeQty}
               onChange={(e) => setStocktakeQty(e.target.value)} className="h-11" placeholder="Counted" />
             <Button type="submit" variant="secondary" className="min-h-[44px]">Save count</Button>
@@ -1141,7 +1196,14 @@ function Inventory() {
               variant="primary"
               className="min-h-[44px]"
               onClick={async () => {
-                const applied = await POST<any>(`/stocktakes/${stocktakeId}/apply`, {});
+                if (stocktakeDate < shopTodayISO() && (stocktakeBackdate.trim().length < 3 || stocktakeBackdate.trim() === "Other")) {
+                  setStocktakeMsg("Choose a reason for this past stocktake date. If you choose Other, write what happened.");
+                  return;
+                }
+                const applied = await POST<any>(`/stocktakes/${stocktakeId}/apply`, {
+                  business_date: stocktakeDate,
+                  backdate_reason: stocktakeBackdate.trim(),
+                });
                 setStocktakeMsg(applied?.success
                   ? "Count applied."
                   : (applied?.error || "Could not apply the count"));
@@ -1392,11 +1454,9 @@ function Inventory() {
                 <label className="text-xs text-text2">Selling price
                   <Input className="mt-1 h-11" type="number" min={0} value={newProduct.price} onChange={(e) => setNewProduct({ ...newProduct, price: e.target.value })} />
                 </label>
-                {seeCost ? (
-                  <label className="text-xs text-text2">Cost
-                    <Input className="mt-1 h-11" type="number" min={0} value={newProduct.cost_price} onChange={(e) => setNewProduct({ ...newProduct, cost_price: e.target.value })} />
-                  </label>
-                ) : null}
+                <label className="text-xs text-text2">{seeCost ? "Cost" : "Buying price"}
+                  <Input aria-label="Buying price" className="mt-1 h-11" type="number" min={0} step={0.01} value={newProduct.cost_price} onChange={(e) => setNewProduct({ ...newProduct, cost_price: e.target.value })} />
+                </label>
                 <label className="text-xs text-text2">Opening stock
                   <Input className="mt-1 h-11" type="number" min={0} value={newProduct.stock} onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })} />
                 </label>

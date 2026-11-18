@@ -37,6 +37,7 @@ DEFAULT_COA = [
     ('3000', "Owner's Equity", 'equity', 'equity', 'credit', 1, 'Opening capital'),
     ('3100', 'Retained Earnings', 'equity', 'equity', 'credit', 1, 'Accumulated earnings'),
     ('3200', 'Opening Balance Equity', 'equity', 'equity', 'credit', 1, 'System opening balances'),
+    ('3300', "Owner Drawings", 'equity', 'equity', 'debit', 1, 'Owner withdrawals of stock or cash'),
     # Income
     ('4000', 'Sales Revenue', 'income', 'revenue', 'credit', 1, 'Product sales'),
     ('4100', 'Other Income', 'income', 'other', 'credit', 0, 'Non-operating income'),
@@ -376,8 +377,24 @@ def require_account(conn, code: str) -> dict:
 
 
 def payment_method_account(method: str) -> str:
-    m = (method or 'cash').strip().lower()
-    return PAYMENT_ACCOUNT.get(m, '1000')
+    """Cash, card, bank, and mobile money each have their own asset account.
+
+    Airtel and other mobile-money names share 1010, which is the mobile-money
+    float. An unknown method stays on cash, matching the previous rule.
+    """
+    m = (method or 'cash').strip().lower().replace('_', ' ')
+    if m in PAYMENT_ACCOUNT:
+        return PAYMENT_ACCOUNT[m]
+    compact = m.replace('-', '').replace(' ', '')
+    if 'mpesa' in compact or 'airtel' in m or m in ('mobile money', 'mobile'):
+        return '1010'
+    if 'card' in m:
+        return '1030'
+    if 'bank' in m or 'cheque' in m or m == 'check':
+        return '1020'
+    if 'cash' in m:
+        return '1000'
+    return '1000'
 
 
 def list_accounts(conn, active_only=True, account_type=None) -> list:
@@ -1027,14 +1044,28 @@ def _next_doc(conn, table: str, col: str, prefix: str) -> str:
     return f'{prefix}{n + 1:06d}'
 
 
+def _account_kind(acc: dict) -> str:
+    return (acc.get('account_type') or '').strip().lower()
+
+
+def _is_cash_or_bank(acc: dict) -> bool:
+    return _account_kind(acc) == 'asset' and (acc.get('subtype') or '').strip().lower() in ('cash', 'bank')
+
+
 def create_expense(conn, data: dict, *, user_id=None, username='') -> dict:
     amount = D(data.get('amount') or 0)
     if amount <= 0:
         return {'error': 'Amount must be greater than zero'}
     exp_code = (data.get('account_code') or '6000').strip()
     pay_code = (data.get('pay_from_code') or '1000').strip()
-    require_account(conn, exp_code)
-    require_account(conn, pay_code)
+    expense_account = require_account(conn, exp_code)
+    pay_account = require_account(conn, pay_code)
+    if _account_kind(expense_account) != 'expense':
+        return {'error': 'An expense must debit an expense account. It cannot be posted to sales or cash.'}
+    pay_kind = _account_kind(pay_account)
+    pay_sub = (pay_account.get('subtype') or '').strip().lower()
+    if not (_is_cash_or_bank(pay_account) or (pay_kind == 'liability' and pay_sub == 'payable')):
+        return {'error': 'Pay an expense from cash, M-Pesa, bank, card, or accounts payable.'}
     exp_date = (data.get('expense_date') or date.today().isoformat())[:10]
     num = _next_doc(conn, 'expense_entries', 'expense_number', 'EXP-')
     desc = (data.get('description') or 'Expense').strip()
@@ -1180,8 +1211,10 @@ def create_transfer(conn, data: dict, *, user_id=None, username='') -> dict:
     to_code = (data.get('to_code') or '').strip()
     if not from_code or not to_code or from_code == to_code:
         return {'error': 'Distinct from/to accounts required'}
-    require_account(conn, from_code)
-    require_account(conn, to_code)
+    source = require_account(conn, from_code)
+    destination = require_account(conn, to_code)
+    if not _is_cash_or_bank(source) or not _is_cash_or_bank(destination):
+        return {'error': 'A transfer can only move money between cash, M-Pesa, card, and bank. It is not income.'}
     tdate = (data.get('transfer_date') or date.today().isoformat())[:10]
     num = _next_doc(conn, 'accounting_transfers', 'transfer_number', 'TRF-')
     desc = (data.get('description') or f'Transfer {from_code}→{to_code}').strip()

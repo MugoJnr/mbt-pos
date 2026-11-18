@@ -65,7 +65,7 @@ def format_currency(amount, symbol='KES'):
 class ReceiptBuilder:
     """Builds ESC/POS byte stream for 80mm thermal printer."""
 
-    def __init__(self, shop_name='My Shop', currency='KES',
+    def __init__(self, shop_name='Shop name not set', currency='KES',
                  shop_address='', shop_phone=''):
         self.shop_name = shop_name
         self.currency = currency
@@ -238,7 +238,7 @@ class ReceiptBuilder:
         return bytes(self._buf)
 
 
-def build_receipt(sale_data, shop_name='My Shop', currency='KES',
+def build_receipt(sale_data, shop_name='Shop name not set', currency='KES',
                   footer='Thank you for shopping with us!',
                   shop_address='', shop_phone=''):
     """
@@ -515,7 +515,7 @@ class PrinterManager:
 
     def print_receipt(self, sale_data):
         cfg = self.config_getter()
-        shop  = cfg.get('shop_name', 'My Shop')
+        shop = str(cfg.get('shop_name') or '').strip() or 'Shop name not set'
         cur   = cfg.get('currency_symbol', 'KES')
         foot  = cfg.get('receipt_footer', 'Thank you for shopping with us!')
         data  = build_receipt(
@@ -531,7 +531,7 @@ class PrinterManager:
 
     def test_print(self):
         cfg = self.config_getter()
-        shop = cfg.get('shop_name', 'My Shop')
+        shop = str(cfg.get('shop_name') or '').strip() or 'Shop name not set'
         addr = (cfg.get('shop_address') or '').strip()
         phone = (cfg.get('shop_phone') or '').strip()
         b = ReceiptBuilder(shop_name=shop, shop_address=addr, shop_phone=phone)
@@ -640,16 +640,19 @@ def probe_printer(cfg=None) -> dict:
         return _probe_windows(name)
     if port.upper() in ("", "USB", "NONE") and not name:
         return {"available": False, "reason": "no printer"}
-    printer = get_usb_printer(port=port if port.upper() not in ("USB", "WINDOWS", "LAN") else None)
-    if printer is None and name:
+    if name:
         return _probe_windows(name)
-    if printer is None:
-        return {"available": False, "reason": "usb printer not found"}
-    try:
-        printer.close()
-    except Exception:
-        pass
-    return {"available": True, "reason": "usb"}
+    # Do not open LPT1 or scan the USB bus during a sale. That search can
+    # stall the till for seconds when no printer is actually configured.
+    if port.upper().startswith("COM"):
+        try:
+            import serial
+            handle = serial.Serial(port, 9600, timeout=0.2, write_timeout=0.2)
+            handle.close()
+            return {"available": True, "reason": "serial"}
+        except Exception:
+            return {"available": False, "reason": "usb printer not found"}
+    return {"available": False, "reason": "usb printer not found"}
 
 
 def _probe_lan(host: str) -> dict:
@@ -759,7 +762,7 @@ def _open_configured_printer(cfg):
     return open_printer(cfg)
 
 
-def generate_receipt_text(sale_data, shop_name='My Shop', currency='KES'):
+def generate_receipt_text(sale_data, shop_name='Shop name not set', currency='KES'):
     """Plain-text fallback invoice (for preview / non-printer output)."""
     lines = []
     W = PAPER_CHARS

@@ -86,14 +86,17 @@ class CostCoverageReleaseTests(unittest.TestCase):
         self.assertTrue(added.get("success"), added)
 
     def _sell(self, product_id, qty, token, price=200, **extra):
-        total = round(qty * price - float(extra.pop("discount", 0) or 0), 2)
+        line_discount = float(extra.pop("line_discount", 0) or 0)
+        sale_discount = float(extra.pop("discount", 0) or 0)
+        line_total = round(qty * price - line_discount, 2)
+        total = round(line_total - sale_discount, 2)
         payload = {
             "items": [{
                 "product_id": product_id, "quantity": qty, "unit_price": price,
-                "discount": extra.pop("line_discount", 0), "total": total,
+                "discount": line_discount, "total": line_total,
             }],
             "subtotal": round(qty * price, 2),
-            "discount": 0, "tax": 0, "total": total,
+            "discount": sale_discount, "tax": 0, "total": total,
             "payment_method": "Cash", "amount_paid": total,
             "client_token": token,
         }

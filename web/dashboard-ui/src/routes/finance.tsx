@@ -5,17 +5,15 @@ import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { KES } from "@/lib/format";
+import { BusinessDateField } from "@/components/business-date-field";
+import { KES, shopTodayISO } from "@/lib/format";
 
 export const Route = createFileRoute("/finance")({
   component: FinancePage,
 });
 
 function localToday() {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${d.getFullYear()}-${m}-${day}`;
+  return shopTodayISO();
 }
 
 function FinancePage() {
@@ -32,11 +30,23 @@ function FinancePage() {
   const [description, setDescription] = useState("");
   const [vendor, setVendor] = useState("");
   const [expenseDate, setExpenseDate] = useState(today);
+  const [expenseBackdate, setExpenseBackdate] = useState("");
+  const [expenseConfirmed, setExpenseConfirmed] = useState(false);
   const [msg, setMsg] = useState("");
   const [journalDesc, setJournalDesc] = useState("");
   const [debit, setDebit] = useState("6000");
   const [credit, setCredit] = useState("1000");
   const [journalAmount, setJournalAmount] = useState("");
+  const [transferFrom, setTransferFrom] = useState("1000");
+  const [transferTo, setTransferTo] = useState("1020");
+  const [transferAmount, setTransferAmount] = useState("");
+  const [transferNote, setTransferNote] = useState("");
+  const [transferDate, setTransferDate] = useState(today);
+  const [transferBackdate, setTransferBackdate] = useState("");
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
+  const [journalDate, setJournalDate] = useState(today);
+  const [journalBackdate, setJournalBackdate] = useState("");
+  const [journalConfirmed, setJournalConfirmed] = useState(false);
 
   const summaryQ = useQuery({
     queryKey: ["finance-summary"],
@@ -79,14 +89,29 @@ function FinancePage() {
 
   async function saveExpense() {
     setMsg("");
+    if (expenseDate < today && !expenseConfirmed && !["manager", "admin", "superadmin"].includes(role)) {
+      setMsg("Confirm the backdated date. The expense is not posted until a different administrator approves it.");
+      return;
+    }
+    if (expenseDate < today && !["manager", "admin", "superadmin"].includes(role) && (expenseBackdate.trim().length < 3 || expenseBackdate.trim() === "Other")) {
+      setMsg("Choose a reason for this past date. If you choose Other, write what happened.");
+      return;
+    }
     const res = await POST<any>("/finance/expenses", {
       amount,
       description,
       vendor_name: vendor,
       expense_date: expenseDate,
+      backdate_reason: expenseBackdate.trim(),
       account_code: "6000",
       pay_from_code: "1000",
     });
+    if (res?.pending_approval) {
+      setMsg(`${res.reference} is pending approval. The expense was not posted.`);
+      setExpenseDate(today);
+      setExpenseConfirmed(false);
+      return;
+    }
     if (res?.success) {
       setAmount("");
       setDescription("");
@@ -99,6 +124,43 @@ function FinancePage() {
       return;
     }
     setMsg(res?.error || "Could not save the expense.");
+  }
+
+  async function saveTransfer() {
+    setMsg("");
+    const value = Number(transferAmount);
+    if (!Number.isFinite(value) || value <= 0) {
+      setMsg("Enter a transfer amount greater than zero.");
+      return;
+    }
+    if (transferDate < today && !transferConfirmed) {
+      setMsg("Confirm the past transfer date before posting.");
+      return;
+    }
+    if (transferDate < today && (transferBackdate.trim().length < 3 || transferBackdate.trim() === "Other")) {
+      setMsg("Choose a reason for this past date. If you choose Other, write what happened.");
+      return;
+    }
+    const res = await POST<any>("/finance/transfers", {
+      from_code: transferFrom,
+      to_code: transferTo,
+      amount: value,
+      description: transferNote.trim() || "Cash transfer",
+      transfer_date: transferDate,
+      backdate_reason: transferBackdate.trim(),
+    });
+    if (res?.pending_approval) {
+      setMsg(`${res.reference || "Request"} is waiting for administrator approval. Nothing was posted.`);
+      return;
+    }
+    if (res?.success) {
+      setTransferAmount("");
+      setMsg(`Transfer ${res.transfer_number} posted. This is not income.`);
+      await qc.invalidateQueries({ queryKey: ["finance-summary"] });
+      await qc.invalidateQueries({ queryKey: ["finance-journals"] });
+      return;
+    }
+    setMsg(res?.error || "Could not post the transfer.");
   }
 
   async function reverseExpense(id: number) {
@@ -118,14 +180,27 @@ function FinancePage() {
       setMsg("Enter a description and an amount greater than zero.");
       return;
     }
+    if (journalDate < today && !journalConfirmed) {
+      setMsg("Confirm the past journal date before posting.");
+      return;
+    }
+    if (journalDate < today && (journalBackdate.trim().length < 3 || journalBackdate.trim() === "Other")) {
+      setMsg("Choose a reason for this past date. If you choose Other, write what happened.");
+      return;
+    }
     const res = await POST<any>("/finance/journals", {
       description: journalDesc.trim(),
-      entry_date: end,
+      entry_date: journalDate,
+      backdate_reason: journalBackdate.trim(),
       lines: [
         { account_code: debit.trim(), debit: value, memo: journalDesc.trim() },
         { account_code: credit.trim(), credit: value, memo: journalDesc.trim() },
       ],
     });
+    if (res?.pending_approval) {
+      setMsg(`${res.reference || "Request"} is waiting for administrator approval. Nothing was posted.`);
+      return;
+    }
     if (res?.success) {
       setJournalDesc("");
       setJournalAmount("");
@@ -199,13 +274,46 @@ function FinancePage() {
       <Card className="mb-4 p-4">
         <div className="mb-3 text-sm font-semibold text-text">Record an expense</div>
         <div className="grid gap-2 sm:grid-cols-2">
-          <Input value={expenseDate} onChange={(e) => setExpenseDate(e.target.value)} type="date" />
+          <BusinessDateField
+            label="Expense date"
+            value={expenseDate}
+            onChange={setExpenseDate}
+            confirmed={expenseConfirmed}
+            onConfirm={setExpenseConfirmed}
+            reason={expenseBackdate}
+            onReason={setExpenseBackdate}
+          />
           <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Amount" />
           <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description" />
           <Input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="Payee" />
         </div>
         <Button className="mt-3" onClick={saveExpense}>Save expense</Button>
         {msg ? <div className="mt-2 text-sm text-text2">{msg}</div> : null}
+      </Card>
+      ) : null}
+
+      {canJournal ? (
+      <Card className="mb-4 p-4">
+        <div className="mb-3 text-sm font-semibold text-text">Move money between cash accounts</div>
+        <p className="mb-2 text-sm text-text2">Cash, M-Pesa, card, and bank only. A transfer is not a sale and not an expense.</p>
+        <BusinessDateField label="Transfer date" value={transferDate} onChange={setTransferDate} confirmed={transferConfirmed} onConfirm={setTransferConfirmed} reason={transferBackdate} onReason={setTransferBackdate} />
+        <div className="grid gap-2 sm:grid-cols-4">
+          <select aria-label="Transfer from" className="h-10 rounded-md border border-border bg-panel px-3 text-text" value={transferFrom} onChange={(e) => setTransferFrom(e.target.value)}>
+            <option value="1000">Cash</option>
+            <option value="1010">M-Pesa</option>
+            <option value="1020">Bank</option>
+            <option value="1030">Card</option>
+          </select>
+          <select aria-label="Transfer to" className="h-10 rounded-md border border-border bg-panel px-3 text-text" value={transferTo} onChange={(e) => setTransferTo(e.target.value)}>
+            <option value="1020">Bank</option>
+            <option value="1000">Cash</option>
+            <option value="1010">M-Pesa</option>
+            <option value="1030">Card</option>
+          </select>
+          <Input value={transferAmount} onChange={(e) => setTransferAmount(e.target.value)} placeholder="Amount" />
+          <Input value={transferNote} onChange={(e) => setTransferNote(e.target.value)} placeholder="Note" />
+        </div>
+        <Button className="mt-3" onClick={saveTransfer}>Post transfer</Button>
       </Card>
       ) : null}
 
@@ -252,6 +360,7 @@ function FinancePage() {
       {canJournal ? (
       <Card className="p-4">
         <div className="mb-3 text-sm font-semibold text-text">Post a balanced journal</div>
+        <BusinessDateField label="Journal date" value={journalDate} onChange={setJournalDate} confirmed={journalConfirmed} onConfirm={setJournalConfirmed} reason={journalBackdate} onReason={setJournalBackdate} />
         <div className="grid gap-2 sm:grid-cols-2">
           <Input value={journalDesc} onChange={(e) => setJournalDesc(e.target.value)} placeholder="Description" />
           <Input value={journalAmount} onChange={(e) => setJournalAmount(e.target.value)} placeholder="Amount" />

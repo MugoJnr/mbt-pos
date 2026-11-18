@@ -134,6 +134,45 @@ def _request_context():
     g.request_id = request.headers.get('X-Request-ID') or secrets.token_hex(12)
 
 
+_LICENSE_WRITE_EXEMPT_PREFIXES = (
+    '/api/auth/login',
+    '/api/auth/logout',
+    '/api/cloud/auth/',
+    '/api/cloud/licenses',
+    '/api/daraja/stk/callback',
+)
+
+
+@app.before_request
+def _block_protected_writes_when_licence_invalid():
+    """Block shop mutations when the licence engine is not valid.
+
+    Login and the existing cloud licence routes stay open so a shop can renew.
+    Reads stay open. A commercial read-only export mode is not defined.
+    """
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return None
+    path = request.path or ''
+    if not path.startswith('/api/'):
+        return None
+    for prefix in _LICENSE_WRITE_EXEMPT_PREFIXES:
+        if path == prefix or path.startswith(prefix):
+            return None
+    try:
+        from licensing.license_engine import protected_write_block_reason
+        reason = protected_write_block_reason()
+    except Exception:
+        logger.warning('licence write gate failed', exc_info=True)
+        if os.environ.get('MBT_TEST_INSTANCE') == '1':
+            return None
+        reason = (
+            'License could not be verified. Shop changes are blocked until the licence is valid.'
+        )
+    if not reason:
+        return None
+    return jsonify({'error': reason, 'license_block': True}), 403
+
+
 @app.after_request
 def _security_headers(response):
     response.headers['X-Request-ID'] = getattr(g, 'request_id', '')
@@ -508,7 +547,7 @@ def init_db():
 
     # Default settings
     defaults = {
-        'shop_name': 'My Shop',
+        'shop_name': '',
         'shop_address': '',
         'shop_phone': '',
         'shop_email': '',
@@ -827,10 +866,13 @@ def token_required(f):
                               (data['user_id'],)).fetchone()
             if user:
                 sid = str(data.get('sid') or '')
-                if sid:
-                    from desktop.utils.account_sessions import web_session_active
-                    if not web_session_active(db, sid):
-                        return jsonify({'error': 'This sign-in has ended. Sign in again.'}), 401
+                # A token with no session cannot be revoked. Desktop till tokens
+                # are not accepted on this API; the browser sign-in always has one.
+                if not sid:
+                    return jsonify({'error': 'This sign-in has ended. Sign in again.'}), 401
+                from desktop.utils.account_sessions import web_session_active
+                if not web_session_active(db, sid):
+                    return jsonify({'error': 'This sign-in has ended. Sign in again.'}), 401
                 claimed = str(data.get('shop') or '')
                 current_shop = shop_instance_id(db)
                 if claimed and current_shop and claimed != current_shop:
@@ -1128,6 +1170,13 @@ def change_superadmin_pin_http():
     )
     code = 200 if result.get('success') else int(result.get('status') or 400)
     return jsonify(result), code
+
+
+@app.route('/api/sessions/open', methods=['POST'])
+@token_required
+def confirm_web_session():
+    """Login already opened the session. This stops the dashboard from 404ing."""
+    return jsonify({'success': True, 'sid': str(getattr(g, 'session_id', '') or '')})
 
 
 @app.route('/api/sessions', methods=['GET'])
@@ -1572,6 +1621,20 @@ def create_sale():
     items = data.get('items') or []
     if not items:
         return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
+    from desktop.utils.shop_time import parse_sale_date, shop_today
+    from desktop.utils.security import has_permission
+    raw_day = (data.get('sale_date') or data.get('business_day') or '').strip()
+    requested_day = parse_sale_date(raw_day) if raw_day else shop_today()
+    if raw_day and requested_day is None:
+        return jsonify({'error': 'Invalid sale date. Use YYYY-MM-DD.'}), 400
+    if requested_day and requested_day > shop_today():
+        return jsonify({'error': 'Sale date cannot be in the future.'}), 400
+    if requested_day and requested_day != shop_today() and not has_permission(g.current_user, 'sales.business_day'):
+        return jsonify({'error': 'Only a manager or admin can backdate a sale.'}), 403
+    from desktop.utils.payment_tenders import sale_collection_error
+    pay_error = sale_collection_error(data)
+    if pay_error:
+        return jsonify({'error': pay_error}), 400
     method_name = (data.get('payment_method') or 'cash').strip().lower()
     if method_name in ('credit sale', 'credit', 'part payment', 'part-payment') and not data.get('customer_id'):
         return jsonify({'error': 'Choose a customer before a credit or part payment.'}), 400
@@ -1622,8 +1685,6 @@ def create_sale():
         if sale_date_s != shop_today().isoformat() and 'business day' not in notes.lower():
             notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
         mpesa_ref = (data.get('mpesa_ref') or '').strip()
-        if mpesa_ref and 'mpesa ref' not in notes.lower():
-            notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
         method_name = (data.get('payment_method') or 'cash').strip()
         electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
         cash_paid_col = round(float(data.get('cash_paid') or 0), 2)
@@ -1638,6 +1699,10 @@ def create_sale():
                 return jsonify({'error': allocation['error']}), 400
             cash_paid_col = allocation['cash']
             electronic_paid = allocation['electronic']
+            from desktop.utils.payment_tenders import electronic_method_label
+            derived_method = electronic_method_label(allocation['tenders'], emethod)
+            if derived_method:
+                emethod = derived_method
             if allocation['credit'] > 0.009 and not data.get('customer_id'):
                 db.rollback()
                 return jsonify({'error': 'Choose a customer before leaving an amount on credit.'}), 400
@@ -1682,10 +1747,14 @@ def create_sale():
             notes = (
                 notes + f' | Split: {emethod or "M-Pesa"} {electronic_paid:,.2f} + Cash {cash_paid_col:,.2f}'
             ).strip(' |')
-        from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa
+        from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa, sale_uses_mpesa
         mpesa_prepared = prepare_sale_mpesa(db, data, method_name, electronic_paid)
         if mpesa_prepared.get('mpesa_ref'):
             mpesa_ref = mpesa_prepared['mpesa_ref']
+        elif not sale_uses_mpesa(method_name, emethod, allocation['tenders'] if allocation else tenders):
+            mpesa_ref = ''
+        if mpesa_ref and 'mpesa ref' not in notes.lower():
+            notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
         if mpesa_prepared.get('note') and mpesa_prepared['note'] not in notes:
             notes = (notes + ' | ' + mpesa_prepared['note']).strip(' |')
 
@@ -1929,7 +1998,8 @@ def sale_document_pdf(sale_id):
     from printing.sale_documents import build_sale_document, document_pdf
     db = get_db()
     kind = (request.args.get('kind') or '').strip().lower()
-    doc = build_sale_document(db, sale_id, kind=kind, reprint=True)
+    reprint = str(request.args.get('reprint') or '').lower() in ('1', 'true', 'yes')
+    doc = build_sale_document(db, sale_id, kind=kind, reprint=reprint)
     if doc.get('error'):
         return jsonify(doc), 404
     filename = f"{doc.get('number') or 'document'}.pdf"
@@ -1996,7 +2066,8 @@ def payment_document_pdf():
         return jsonify({'error': 'Forbidden'}), 403
     from flask import Response
     from printing.sale_documents import build_payment_document, document_pdf
-    doc = build_payment_document(get_db(), request.args.get('receipt') or '', reprint=True)
+    reprint = str(request.args.get('reprint') or '').lower() in ('1', 'true', 'yes')
+    doc = build_payment_document(get_db(), request.args.get('receipt') or '', reprint=reprint)
     if doc.get('error'):
         return jsonify(doc), 404
     filename = f"{doc.get('number') or 'payment'}.pdf"
@@ -2601,6 +2672,45 @@ def reject_backdate_request_http(request_id):
 def approve_backdate_request_http(request_id):
     from backend.backdate_requests import approve_request
     return _backdate_call(approve_request, request_id, request.json or {})
+
+
+def _dated_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._role = (user.get('role') or '').lower()
+    api._user_id = user.get('id')
+    api._username = user.get('full_name') or user.get('username') or ''
+    return api
+
+
+def _dated_response(result: dict):
+    if result.get('pending_approval'):
+        return jsonify(result), 202
+    if result.get('error'):
+        return jsonify(result), int(result.get('status') or 400)
+    return jsonify(result)
+
+
+@app.route('/api/dated-actions/<int:request_id>/approve', methods=['POST'])
+@token_required
+def approve_dated_action_http(request_id):
+    note = str((request.json or {}).get('note') or '')
+    return _dated_response(_dated_api().approve_dated_action(request_id, note))
+
+
+@app.route('/api/dated-actions/<int:request_id>/reject', methods=['POST'])
+@token_required
+def reject_dated_action_http(request_id):
+    reason = str((request.json or {}).get('reason') or (request.json or {}).get('note') or '')
+    return _dated_response(_dated_api().reject_dated_action(request_id, reason))
+
+
+@app.route('/api/dated-actions/<int:request_id>/cancel', methods=['POST'])
+@token_required
+def cancel_dated_action_http(request_id):
+    reason = str((request.json or {}).get('reason') or '')
+    return _dated_response(_dated_api().cancel_dated_action(request_id, reason))
 
 
 def _centre_response(body: dict):

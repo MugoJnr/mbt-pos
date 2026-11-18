@@ -89,7 +89,7 @@ def verify_cloudflare_token() -> tuple[bool, str]:
 def shop_settings_defaults() -> dict:
     """Inserted into system_settings for new installs (INSERT OR IGNORE)."""
     return {
-        'shop_name': 'My Shop',
+        'shop_name': '',
         'shop_address': '',
         'shop_phone': '',
         'shop_email': '',

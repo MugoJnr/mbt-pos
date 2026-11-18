@@ -61,6 +61,48 @@ def _sale_cogs_lines(db, sale_id: int) -> tuple[list, float]:
     return lines, money_float(total_cost)
 
 
+def _tender_account_debits(sale, product_tender, change_amount, receipt_number):
+    """Debit each confirmed tender to its own asset account.
+
+    Returns None when the sale has no tender list, or when the list does not
+    add up to the amount kept. The older single-bucket posting then remains.
+    Cash change is taken off the cash debit so the drawer is not overstated.
+    """
+    from desktop.utils.payment_tenders import is_credit_method, parse_tenders
+    rows = parse_tenders(sale.get('payment_tenders'))
+    if not rows:
+        return None
+    buckets = {}
+    for row in rows:
+        status = str(row.get('status') or 'confirmed').strip().lower()
+        method = str(row.get('method') or '').strip()
+        if status != 'confirmed' or not method or is_credit_method(method):
+            continue
+        amount = D(row.get('amount') or 0)
+        if amount <= 0:
+            continue
+        code = payment_method_account(method)
+        buckets[code] = buckets.get(code, D(0)) + amount
+    if not buckets:
+        return None
+    if change_amount > 0 and buckets.get('1000', D(0)) > 0:
+        buckets['1000'] = buckets['1000'] - change_amount
+        if buckets['1000'] <= 0:
+            buckets.pop('1000', None)
+    posted = sum(buckets.values(), D(0))
+    if abs(posted - product_tender) > D('0.02'):
+        return None
+    return [
+        {
+            'account_code': code,
+            'debit': amount,
+            'memo': f'Payment {code} {receipt_number}',
+        }
+        for code, amount in buckets.items()
+        if amount > 0
+    ]
+
+
 def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
                       safe=True) -> dict:
     """
@@ -190,8 +232,13 @@ def post_sale_journal(db, sale_id: int, *, user_id=None, username='',
             # Overpay without variance record — treat residual as change already handled
             ar_amount = D(0)
 
-        # Split tender across cash / electronic accounts for mixed payments
-        if product_tender > 0:
+        # Split tender across cash / electronic accounts for mixed payments.
+        # A saved tender list is posted per method. Card must not follow M-Pesa
+        # into 1010, and Airtel must not be rewritten as a cash sale.
+        tender_debits = _tender_account_debits(sale, product_tender, change_amount, rn)
+        if tender_debits:
+            lines.extend(tender_debits)
+        elif product_tender > 0:
             if electronic_paid > 0 and method in ('cash', 'mixed', 'split'):
                 e_amt = min(electronic_paid, product_tender)
                 c_amt = product_tender - e_amt
@@ -461,6 +508,47 @@ def post_return_journal(db, return_sale_id: int, *, refund_total=0, cash_refund=
     return _safe_call(_run, safe=safe)
 
 
+def post_stock_receipt_journal(db, receipt_id: int, *, user_id=None, username='',
+                               safe=True) -> dict:
+    """Dr Inventory, Cr Accounts Payable for one posted goods receipt.
+
+    A later supplier payment posts its own journal. This entry is the invoice.
+    """
+    def _run():
+        row = db.execute(
+            "SELECT * FROM stock_receipts WHERE id=?", (int(receipt_id),)
+        ).fetchone()
+        if not row:
+            return {'error': 'Receipt not found'}
+        row = dict(row)
+        if str(row.get('status') or 'posted').lower() == 'reversed':
+            return {'skipped': True, 'reason': 'reversed'}
+        existing = find_posted_entry(db, 'stock_receipts', str(receipt_id), 'receipt')
+        if existing:
+            return {'success': True, 'journal_id': existing['id'], 'idempotent': True}
+        total = D(row.get('grand_total') or 0)
+        if total <= 0:
+            return {'skipped': True, 'reason': 'no amount'}
+        number = row.get('receipt_number') or str(receipt_id)
+        entry_date = (row.get('effective_date') or row.get('created_at') or date.today().isoformat())[:10]
+        return post_journal(
+            db,
+            [
+                {'account_code': '1200', 'debit': total, 'memo': f'Goods received {number}'},
+                {'account_code': '2000', 'credit': total, 'memo': f'Supplier invoice {number}'},
+            ],
+            description=f'Goods receipt {number}',
+            entry_date=entry_date,
+            source_module='stock_receipts',
+            source_id=str(receipt_id),
+            entry_type='receipt',
+            user_id=user_id,
+            username=username,
+        )
+
+    return _safe_call(_run, safe=safe)
+
+
 def post_supplier_payment_journal(db, payment_id: int, *, amount=0, method='cash',
                                   number='', entry_date='', user_id=None,
                                   username='', safe=True) -> dict:
@@ -515,7 +603,7 @@ def reverse_sale_journal(db, sale_id: int, *, reason='', user_id=None,
 def post_debt_payment_journal(db, payment_id: int = None, *,
                               invoice_id=None, amount=None,
                               payment_method='cash', payment_receipt='',
-                              user_id=None, username='', safe=True) -> dict:
+                              user_id=None, username='', entry_date=None, safe=True) -> dict:
     """Dr Cash/M-Pesa … Cr Accounts Receivable."""
     def _run():
         src_id = str(payment_id or payment_receipt or f'{invoice_id}:{amount}')
@@ -535,7 +623,7 @@ def post_debt_payment_journal(db, payment_id: int = None, *,
                  'memo': f'AR collection inv={invoice_id}'},
             ],
             description=f'Debt payment {payment_receipt or src_id}',
-            entry_date=date.today().isoformat(),
+            entry_date=(entry_date or date.today().isoformat())[:10],
             source_module='debt',
             source_id=src_id,
             entry_type='debt_payment',
@@ -545,10 +633,37 @@ def post_debt_payment_journal(db, payment_id: int = None, *,
     return _safe_call(_run, safe=safe)
 
 
+_CONSUMPTION_BOOKS = {
+    '6100': 'Internal consumption',
+    '6200': 'Inventory shrinkage',
+    '6300': 'Inventory expiry',
+    '3300': 'Owner drawings',
+}
+
+
+def consumption_debit_account(reason: str) -> str:
+    """Staff and shop use stay an operating cost. Damage, expiry, and owner drawings do not."""
+    text = (reason or '').lower()
+    if any(word in text for word in ('owner', 'drawing', 'personal use')):
+        return '3300'
+    if 'expir' in text:
+        return '6300'
+    if any(word in text for word in ('damage', 'wastage', 'waste', 'spoil', 'broken')):
+        return '6200'
+    return '6100'
+
+
+def consumption_books_label(reason: str) -> str:
+    code = consumption_debit_account(reason)
+    return f"{code} {_CONSUMPTION_BOOKS[code]}"
+
+
 def post_consumption_journal(db, consumption_id: int, *, user_id=None,
                              username='', safe=True) -> dict:
-    """Dr Internal Consumption expense, Cr Inventory."""
+    """Dr the account that matches the reason, Cr Inventory. Not every use is an expense."""
     def _run():
+        from desktop.utils.accounting_engine import seed_chart_of_accounts
+        seed_chart_of_accounts(db)
         existing = find_posted_entry(db, 'consumption', str(consumption_id),
                                      'consumption')
         if existing:
@@ -560,7 +675,6 @@ def post_consumption_journal(db, consumption_id: int, *, user_id=None,
             return {'error': 'Consumption not found'}
         amount = D(cons['total_cost'] or 0)
         if amount <= 0:
-            # Sum lines
             row = db.execute(
                 "SELECT COALESCE(SUM(total_cost),0) FROM stock_consumption_items "
                 "WHERE consumption_id=?", (consumption_id,)
@@ -569,10 +683,12 @@ def post_consumption_journal(db, consumption_id: int, *, user_id=None,
         if amount <= 0:
             return {'skipped': True, 'reason': 'zero cost'}
         ref = cons['reference_no']
+        reason = cons['reason'] if 'reason' in cons.keys() else ''
+        account = consumption_debit_account(reason)
         return post_journal(
             db,
             [
-                {'account_code': '6100', 'debit': amount,
+                {'account_code': account, 'debit': amount,
                  'memo': f'Internal use {ref}'},
                 {'account_code': '1200', 'credit': amount,
                  'memo': f'Inventory out {ref}'},

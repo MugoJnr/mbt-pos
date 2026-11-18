@@ -5,6 +5,7 @@ import { CalendarClock } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Button, Card, Input, PageHeader } from "@/components/ui-kit";
 import { GET, POST, PUT } from "@/lib/api";
+import { parseQuantity } from "@/lib/quantity";
 import { useAuth } from "@/lib/auth";
 import { loadQueue, queueStatusLine, requestQueueQuery, useQueueNotice } from "@/lib/queue-sync";
 
@@ -15,7 +16,7 @@ export const Route = createFileRoute("/backdating")({
 type Line = {
   product_id?: number;
   product_name?: string;
-  quantity: number;
+  quantity: number | string;
   unit_price: number;
   discount: number;
 };
@@ -286,7 +287,7 @@ function BackdatingPage() {
                       <option value="">Product</option>
                       {products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}
                     </select>
-                    <Input type="number" value={line.quantity} onChange={(e) => updateLine(saleIndex, lineIndex, { quantity: Number(e.target.value) })} />
+                    <Input inputMode="decimal" value={String(line.quantity ?? "")} onChange={(e) => updateLine(saleIndex, lineIndex, { quantity: e.target.value })} />
                     <Input type="number" value={line.unit_price} onChange={(e) => updateLine(saleIndex, lineIndex, { unit_price: Number(e.target.value) })} />
                     <Input type="number" value={line.discount} onChange={(e) => updateLine(saleIndex, lineIndex, { discount: Number(e.target.value) })} />
                   </div>
@@ -348,7 +349,20 @@ function BackdatingPage() {
     }));
   }
   async function save(submit: boolean) {
-    const body = payload;
+    const sales = [];
+    for (const sale of draftSales) {
+      const lines = [];
+      for (const line of sale.lines) {
+        const parsed = parseQuantity(String(line.quantity ?? ""));
+        if ("error" in parsed) {
+          setMessage(parsed.error);
+          return;
+        }
+        lines.push({ ...line, quantity: parsed.quantity });
+      }
+      sales.push({ ...sale, lines });
+    }
+    const body = { ...payload, sales };
     let current = detail;
     if (!current) {
       const created = await POST<RequestRow & { error?: string }>("/backdate-requests", body);

@@ -83,7 +83,7 @@ class StockReceiveDeliveryTests(unittest.TestCase):
         supplier = self._supplier()
         a = self._product("Receive A", 20, 100)
         b = self._product("Receive B", 15, 40)
-        c = self._product("Receive C", 8, 10)
+        c = self._product("Receive C", 8, 10, unit="kg")
         saved = self.api.receive_delivery(supplier, [
             {"product_id": a, "quantity": 10, "unit_cost": 100},
             {"product_id": b, "quantity": 5, "unit_cost": 50},
@@ -127,7 +127,7 @@ class StockReceiveDeliveryTests(unittest.TestCase):
 
     def test_decimal_quantity_is_not_truncated(self):
         supplier = self._supplier("Decimal Supplier")
-        pid = self._product("Receive Decimal", 1, 20)
+        pid = self._product("Receive Decimal", 1, 20, unit="kg")
         saved = self.api.receive_delivery(supplier, [
             {"product_id": pid, "quantity": 10.125, "unit_cost": 4},
         ], client_token="recv-decimal")
@@ -195,6 +195,18 @@ class StockReceiveDeliveryTests(unittest.TestCase):
             {"product_id": pid, "quantity": 10, "unit_cost": 100},
         ], client_token="recv-correct")
         self.assertEqual(self._stock(pid)[0], 30)
+        db = self.ac._db()
+        try:
+            journal = db.execute(
+                "SELECT total_debit, total_credit, entry_type FROM journal_entries "
+                "WHERE source_module='stock_receipts' AND source_id=?",
+                (str(saved["receipt_id"]),),
+            ).fetchone()
+            self.assertEqual(journal["entry_type"], "receipt")
+            self.assertEqual(journal["total_debit"], 1000)
+            self.assertEqual(journal["total_credit"], 1000)
+        finally:
+            db.close()
         self.api._role = "cashier"
         blocked = self.api.correct_stock_receipt_line(saved["receipt_id"], pid, 12)
         self.assertEqual(blocked.get("status"), 403)

@@ -259,6 +259,11 @@ def _db(*, ensure_schema: bool = True) -> sqlite3.Connection:
     if ensure_schema and not _SCHEMA_READY:
         _ensure_schema(conn)
         _SCHEMA_READY = True
+        try:
+            from desktop.utils.stocktake import repair_uncosted_stocktake_shortages
+            repair_uncosted_stocktake_shortages(conn)
+        except Exception:
+            logger.exception('stocktake cost repair skipped')
     _ensure_permission_columns(conn)
     return conn
 
@@ -573,7 +578,7 @@ def _ensure_schema(conn: sqlite3.Connection):
             defaults = shop_settings_defaults()
         except Exception:
             defaults = {
-                'shop_name': 'My Shop', 'shop_address': '', 'shop_phone': '',
+                'shop_name': '', 'shop_address': '', 'shop_phone': '',
                 'shop_email': '', 'currency_symbol': 'KES', 'tax_rate': '0',
                 'receipt_footer': 'Thank you for shopping with us!',
                 'theme': 'dark', 'sync_interval': '30',
@@ -932,6 +937,11 @@ def _migrate_columns(conn: sqlite3.Connection):
     except Exception:
         logger.exception('supplier payables schema')
     try:
+        from backend.restock_requests import ensure_schema as _restock_schema
+        _restock_schema(conn)
+    except Exception:
+        logger.exception('restock schema')
+    try:
         prod_cols = {r[1] for r in conn.execute("PRAGMA table_info(products)").fetchall()}
         if prod_cols and 'supplier_id' not in prod_cols:
             conn.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER")
@@ -1243,6 +1253,34 @@ def _audit(user_id, username, action, module='system', details='', conn=None, so
 # APIClient — drop-in replacement for the HTTP version
 # Same method signatures, same return shapes. Just uses SQLite directly.
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _license_write_block():
+    """Refuse shop mutations when the authoritative licence is not valid."""
+    try:
+        from licensing.license_engine import protected_write_block_reason
+        reason = protected_write_block_reason()
+    except Exception:
+        logger.warning('License write gate failed', exc_info=True)
+        if os.environ.get('MBT_TEST_INSTANCE') == '1':
+            return None
+        reason = (
+            'License could not be verified. Shop changes are blocked until the licence is valid.'
+        )
+    if not reason:
+        return None
+    return {'error': reason, 'status': 403, 'license_block': True}
+
+
+def _requires_shop_licence(method):
+    def _wrapped(self, *args, **kwargs):
+        blocked = _license_write_block()
+        if blocked:
+            return blocked
+        return method(self, *args, **kwargs)
+    _wrapped.__name__ = getattr(method, '__name__', 'shop_write')
+    _wrapped.__doc__ = getattr(method, '__doc__', None)
+    return _wrapped
+
 
 class APIClient:
     def __init__(self, base_url=None):
@@ -2117,6 +2155,28 @@ class APIClient:
         finally:
             db.close()
 
+    def product_stocks(self, product_ids) -> dict:
+        """Current quantities for the products just saved. Not the whole catalog."""
+        ids = []
+        for raw in product_ids or []:
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if pid not in ids:
+                ids.append(pid)
+        if not ids:
+            return {}
+        db = _db(ensure_schema=False)
+        try:
+            marks = ",".join("?" * len(ids))
+            rows = db.execute(
+                f"SELECT id, stock FROM products WHERE id IN ({marks})", ids
+            ).fetchall()
+            return {int(row["id"]): row["stock"] for row in rows}
+        finally:
+            db.close()
+
     def create_product(self, data: dict) -> dict:
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
@@ -2362,7 +2422,8 @@ class APIClient:
 
     def adjust_stock(self, pid: int, new_qty, reason: str = '',
                      fourth=None, *, pin=None, expected_stock=None,
-                     idempotency_key: str = '') -> dict:
+                     idempotency_key: str = '', business_date: str = '',
+                     offline: bool = False, backdate_reason: str = '') -> dict:
         """
         Super-admin stock adjustment.
 
@@ -2391,10 +2452,14 @@ class APIClient:
             pid, direction, quantity, absolute, str(reason or ''),
             pin=pin, expected_stock=expected_stock,
             idempotency_key=idempotency_key,
+            business_date=business_date, offline=offline,
+            backdate_reason=backdate_reason,
         )
 
     def _apply_stock_adjustment(self, pid, direction, quantity, absolute, reason, *,
-                                pin, expected_stock, idempotency_key='') -> dict:
+                                pin, expected_stock, idempotency_key='',
+                                business_date='', offline=False,
+                                backdate_reason='') -> dict:
         import math
         from desktop.utils.option_lists import (
             STOCK_DECREASE_REASONS, STOCK_INCREASE_REASONS,
@@ -2413,8 +2478,14 @@ class APIClient:
         reason = str(reason or '').strip()
         if direction is not None and direction not in ('add', 'remove', 'set'):
             return {'error': 'Choose add, remove, or set.', 'status': 400}
+        from desktop.utils.quantities import QuantityError, parse_quantity
         try:
-            amount = round(float(quantity if direction else absolute), 4)
+            amount = parse_quantity(
+                quantity if direction else absolute,
+                allow_zero=direction in (None, 'set'),
+            )
+        except QuantityError as exc:
+            return {'error': str(exc), 'status': 400}
         except (TypeError, ValueError):
             return {'error': 'Enter a valid stock quantity.', 'status': 400}
         if not math.isfinite(amount):
@@ -2431,10 +2502,19 @@ class APIClient:
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock, cost_price FROM products WHERE id=?", (pid,)
+                "SELECT id, name, stock, cost_price, unit FROM products WHERE id=?", (pid,)
             ).fetchone()
             if not row:
                 return {'error': 'Product not found', 'status': 404}
+            try:
+                amount = parse_quantity(
+                    amount, row['unit'], allow_zero=direction in (None, 'set'),
+                )
+            except QuantityError as exc:
+                message = str(exc)
+                if 'whole units' in message:
+                    message = f"'{row['name']}' is sold in whole units."
+                return {'error': message, 'status': 400}
             old_stock = round(float(row['stock'] or 0), 4)
             if direction == 'add':
                 new_stock = round(old_stock + amount, 4)
@@ -2497,6 +2577,22 @@ class APIClient:
                     return {'error': message, 'status': 403}
                 _pin_failures_clear(self._user_id)
 
+            from desktop.utils.shop_time import shop_today
+            move_day = (str(business_date or '').strip()[:10] or shop_today().isoformat())
+            held = self._maybe_hold_backdate('stock_adjustment', move_day, {
+                'product_id': pid,
+                'direction': direction,
+                'quantity': amount,
+                'new_qty': amount if direction is None else None,
+                'reason': reason,
+                'expected_stock': expected_stock,
+                'client_token': idempotency_key,
+                'business_date': move_day,
+                'backdate_reason': (backdate_reason or '').strip(),
+                'offline': bool(offline),
+            })
+            if held:
+                return held
             db.execute('BEGIN IMMEDIATE')
             movement_ref = (idempotency_key or '').strip() or f'ADJUST_pid={pid}'
             if (idempotency_key or '').strip():
@@ -2529,6 +2625,17 @@ class APIClient:
             if changed.rowcount != 1:
                 db.rollback()
                 return {'error': 'Stock changed. Refresh and try again.', 'status': 409}
+            from desktop.utils.shop_time import shop_today as _shop_today
+            if move_day < _shop_today().isoformat():
+                note = (backdate_reason or '').strip()
+                if len(note) < 3 or note == 'Other':
+                    db.rollback()
+                    return {
+                        'error': 'Choose a reason for this past adjustment date. If you choose Other, write what happened.',
+                        'status': 400,
+                    }
+                if note not in reason:
+                    reason = f'{reason} — {note}'
             db.execute(
                 "INSERT INTO stock_movements "
                 "(product_id,product_name,movement_type,qty_before,qty_change,"
@@ -2539,6 +2646,13 @@ class APIClient:
                  self._user_id, self._username or 'superadmin'),
             )
             mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            move_cols = {item[1] for item in db.execute("PRAGMA table_info(stock_movements)")}
+            if 'business_date' not in move_cols:
+                db.execute("ALTER TABLE stock_movements ADD COLUMN business_date TEXT")
+            db.execute(
+                "UPDATE stock_movements SET business_date=? WHERE id=?",
+                (move_day, mov_id),
+            )
             from desktop.utils.stock_layers import add_layer, consume_available_cost
             if signed > 0:
                 known_cost = float(row['cost_price'] or 0)
@@ -2700,7 +2814,8 @@ class APIClient:
                          client_token: str = '', payment_amount=0,
                          payment_method: str = '', payment_reference: str = '',
                          due_date: str = '', effective_date: str = '',
-                         delivery_extra=None) -> dict:
+                         delivery_extra=None, offline: bool = False,
+                         backdate_reason: str = '') -> dict:
         """One supplier delivery, many products, one receipt. Atomic."""
         if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
             return {'error': 'You cannot receive supplier stock.'}
@@ -2713,12 +2828,15 @@ class APIClient:
         cleaned = []
         seen = set()
         for raw in lines or []:
+            from desktop.utils.quantities import QuantityError, parse_quantity
             try:
                 pid = int(raw.get('product_id'))
-                qty = round(float(raw.get('quantity') or 0), 4)
+                qty = parse_quantity(raw.get('quantity'))
+            except QuantityError as exc:
+                return {'error': str(exc), 'status': 400}
             except (TypeError, ValueError, AttributeError):
                 return {'error': 'Each line needs a product and a quantity.'}
-            if qty != qty or qty <= 0 or qty > 999999:
+            if qty <= 0 or qty > 999999:
                 return {'error': 'Quantity to receive must be greater than zero.'}
             if pid in seen:
                 return {'error': 'Each product can appear once on a delivery.'}
@@ -2752,6 +2870,40 @@ class APIClient:
             if not sup:
                 return {'error': 'Supplier not found'}
             supplier_name = sup['name'] or ''
+            from desktop.utils.quantities import QuantityError, parse_quantity
+            for line in cleaned:
+                prod = db.execute(
+                    "SELECT name, unit FROM products WHERE id=?",
+                    (line['product_id'],),
+                ).fetchone()
+                if not prod:
+                    return {'error': 'Product was not found.'}
+                try:
+                    line['quantity'] = parse_quantity(line['quantity'], prod['unit'])
+                except QuantityError as exc:
+                    message = str(exc)
+                    if 'whole units' in message:
+                        message = f"'{prod['name']}' is sold in whole units."
+                    return {'error': message, 'status': 400}
+            from desktop.utils.shop_time import shop_today
+            delivery_day = (str(effective_date or '').strip()[:10] or shop_today().isoformat())
+            held = self._maybe_hold_backdate('supplier_delivery', delivery_day, {
+                'supplier_id': supplier_id,
+                'lines': cleaned,
+                'reference': reference,
+                'notes': notes,
+                'client_token': token,
+                'payment_amount': payment_amount,
+                'payment_method': payment_method,
+                'payment_reference': payment_reference,
+                'due_date': due_date,
+                'effective_date': delivery_day,
+                'delivery_extra': delivery_extra,
+                'backdate_reason': (backdate_reason or '').strip(),
+                'offline': bool(offline),
+            })
+            if held:
+                return held
             for _attempt in range(5):
                 saved = self._write_delivery(
                     db, supplier_id, supplier_name, cleaned,
@@ -2957,6 +3109,16 @@ class APIClient:
                     db, self, receipt_id, supplier_id, paid_now,
                     payment_method, payment_reference,
                 )
+            from desktop.utils.accounting_hooks import post_stock_receipt_journal
+            posted_journal = post_stock_receipt_journal(
+                db, receipt_id,
+                user_id=self._user_id,
+                username=self._username or self._role or '',
+                safe=False,
+            )
+            if not posted_journal.get('success') and not posted_journal.get('skipped'):
+                db.rollback()
+                return {'error': posted_journal.get('error') or 'The delivery journal was not posted.'}
             db.commit()
             _audit(self._user_id, self._username, 'RECEIVE_STOCK', 'inventory',
                    f"receipt={receipt_number} supplier={supplier_id} lines={len(saved)} total={grand}")
@@ -3040,12 +3202,30 @@ class APIClient:
 
     def record_supplier_payment(self, supplier_id, amount, *, method='cash', reference='',
                                 notes='', mode='oldest', allocations=None,
-                                client_token='', paid_at='') -> dict:
+                                client_token='', paid_at='', offline=False,
+                                backdate_reason='') -> dict:
+        from desktop.utils.shop_time import shop_today
+        day = (str(paid_at or '').strip()[:10] or shop_today().isoformat())
+        held = self._maybe_hold_backdate('supplier_payment', day, {
+            'supplier_id': supplier_id,
+            'amount': amount,
+            'method': method,
+            'reference': reference,
+            'notes': notes,
+            'mode': mode,
+            'allocations': allocations,
+            'client_token': client_token,
+            'paid_at': day,
+            'backdate_reason': (backdate_reason or '').strip(),
+            'offline': bool(offline),
+        })
+        if held:
+            return held
         from desktop.utils.supplier_payables import record_payment
         return record_payment(
             self, supplier_id, amount, method=method, reference=reference,
             notes=notes, mode=mode, allocations=allocations,
-            client_token=client_token, paid_at=paid_at,
+            client_token=client_token, paid_at=day,
         )
 
     def supplier_payable_summary(self, start=None, end=None) -> dict:
@@ -3098,7 +3278,28 @@ class APIClient:
         return review_delivery_request(self, request_id, decision, note, pin)
 
     def return_receipt_line(self, receipt_id: int, product_id: int, quantity, *,
-                            reason: str = '', pin: str = '', client_token: str = '') -> dict:
+                            reason: str = '', pin: str = '', client_token: str = '',
+                            business_date: str = '', offline: bool = False,
+                            backdate_reason: str = '') -> dict:
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        from desktop.utils.shop_time import shop_today
+        try:
+            quantity = parse_quantity(quantity, allow_zero=False)
+        except QuantityError as exc:
+            return {'error': str(exc), 'status': 400}
+        day = (business_date or shop_today().isoformat())[:10]
+        held = self._maybe_hold_backdate('supplier_return', day, {
+            'receipt_id': int(receipt_id),
+            'product_id': int(product_id),
+            'quantity': quantity,
+            'reason': reason,
+            'client_token': client_token,
+            'business_date': day,
+            'backdate_reason': (backdate_reason or '').strip(),
+            'offline': offline,
+        })
+        if held:
+            return held
         from desktop.utils.supplier_payables import return_receipt_line
         return return_receipt_line(
             self, receipt_id, product_id, quantity, reason=reason, pin=pin,
@@ -3462,8 +3663,11 @@ class APIClient:
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'A reason is required.'}
+        from desktop.utils.quantities import QuantityError, parse_quantity
         try:
-            requested_qty = round(float(requested_qty), 4)
+            requested_qty = parse_quantity(requested_qty, allow_zero=True)
+        except QuantityError as exc:
+            return {'error': str(exc)}
         except (TypeError, ValueError):
             return {'error': 'Enter a valid quantity.'}
         if requested_qty < 0:
@@ -3531,15 +3735,48 @@ class APIClient:
         finally:
             db.close()
 
-    def apply_stocktake(self, stocktake_id: int) -> dict:
+    def apply_stocktake(self, stocktake_id: int, business_date: str = '',
+                        backdate_reason: str = '') -> dict:
         from desktop.utils.security import client_actor, has_permission
         from desktop.utils.stocktake import apply_stocktake
         if not has_permission(client_actor(self), 'inventory.adjust_stock'):
             return {'error': 'Only Super-Admin can apply a stocktake.', 'status': 403}
+        from desktop.utils.shop_time import parse_sale_date, shop_today
+        day = (business_date or '').strip()[:10]
+        if day:
+            parsed = parse_sale_date(day)
+            if parsed is None:
+                return {'error': 'Enter a valid business date.', 'status': 400}
+            if parsed > shop_today():
+                return {'error': 'A business date cannot be in the future.', 'status': 400}
+            from desktop.utils.security import can_set_business_day
+            if parsed < shop_today() and not can_set_business_day(client_actor(self)):
+                from backend.dated_actions import warning_for
+                return {
+                    'error': warning_for(parsed.isoformat()) + ' A stocktake is applied by a Super Admin. It is not sent as a cashier request. Stock was not changed.',
+                    'status': 403,
+                }
+            if parsed < shop_today():
+                note = (backdate_reason or '').strip()
+                if len(note) < 3 or note == 'Other':
+                    return {
+                        'error': 'Choose a reason for this past stocktake date. If you choose Other, write what happened.',
+                        'status': 400,
+                    }
+            probe = _db()
+            try:
+                from backend.dated_actions import _closed
+                closed = _closed(probe, parsed.isoformat())
+            finally:
+                probe.close()
+            if closed:
+                return {'error': closed, 'status': 409}
+            day = parsed.isoformat()
         db = _db()
         try:
             return apply_stocktake(
                 db, stocktake_id, username=self._username or '', user_id=self._user_id,
+                business_date=day, backdate_reason=backdate_reason,
             )
         finally:
             db.close()
@@ -3766,12 +4003,155 @@ class APIClient:
             db.close()
 
     def _backdate_actor(self) -> dict:
-        return {
-            'id': self._user_id,
-            'username': self._username or '',
-            'full_name': self._username or '',
-            'role': (self._role or '').lower(),
-        }
+        from desktop.utils.security import client_actor
+        actor = client_actor(self)
+        actor['id'] = self._user_id
+        actor['username'] = self._username or ''
+        actor['full_name'] = self._username or ''
+        return actor
+
+    def _maybe_hold_backdate(self, kind: str, business_date: str, payload: dict):
+        """Park a cashier's past-dated record. None means the caller should post it."""
+        if getattr(self, '_replaying_dated', False):
+            return None
+        from backend.dated_actions import consider
+        db = _db()
+        try:
+            return consider(
+                db, self._backdate_actor(), kind, business_date, payload or {},
+                offline=bool((payload or {}).get('offline')),
+            )
+        finally:
+            db.close()
+
+    def approve_dated_action(self, request_id: int, note: str = '') -> dict:
+        from backend.dated_actions import DatedActionError, approve
+        db = _db()
+        try:
+            def poster(kind, payload, day):
+                self._replaying_dated = True
+                try:
+                    return self._replay_dated_action(kind, payload, day)
+                finally:
+                    self._replaying_dated = False
+            return approve(db, self._backdate_actor(), int(request_id), poster, note)
+        except DatedActionError as exc:
+            return {'error': exc.message, 'status': exc.status}
+        finally:
+            db.close()
+
+    def reject_dated_action(self, request_id: int, reason: str) -> dict:
+        from backend.dated_actions import DatedActionError, reject
+        db = _db()
+        try:
+            return reject(db, self._backdate_actor(), int(request_id), reason)
+        except DatedActionError as exc:
+            return {'error': exc.message, 'status': exc.status}
+        finally:
+            db.close()
+
+    def cancel_dated_action(self, request_id: int, reason: str = '') -> dict:
+        from backend.dated_actions import DatedActionError, cancel
+        db = _db()
+        try:
+            return cancel(db, self._backdate_actor(), int(request_id), reason)
+        except DatedActionError as exc:
+            return {'error': exc.message, 'status': exc.status}
+        finally:
+            db.close()
+
+    def _replay_dated_action(self, kind: str, payload: dict, day: str) -> dict:
+        payload = dict(payload or {})
+        payload['date'] = day
+        if kind == 'consumption':
+            payload['date'] = day
+            return self.create_consumption(payload)
+        if kind == 'expense':
+            payload['expense_date'] = day
+            return self.accounting_create_expense(payload)
+        if kind == 'supplier_delivery':
+            return self.receive_delivery(
+                payload.get('supplier_id'),
+                payload.get('lines') or [],
+                reference=payload.get('reference') or '',
+                notes=payload.get('notes') or '',
+                client_token=payload.get('client_token') or '',
+                payment_amount=payload.get('payment_amount') or 0,
+                payment_method=payload.get('payment_method') or '',
+                payment_reference=payload.get('payment_reference') or '',
+                due_date=payload.get('due_date') or '',
+                effective_date=day,
+                delivery_extra=payload.get('delivery_extra'),
+            )
+        if kind == 'supplier_payment':
+            return self.record_supplier_payment(
+                payload.get('supplier_id'),
+                payload.get('amount') or 0,
+                method=payload.get('method') or 'cash',
+                reference=payload.get('reference') or '',
+                notes=payload.get('notes') or '',
+                mode=payload.get('mode') or 'oldest',
+                allocations=payload.get('allocations'),
+                client_token=payload.get('client_token') or '',
+                paid_at=day,
+            )
+        if kind == 'debt_payment':
+            reference = payload.get('payment_reference') or payload.get('client_token') or ''
+            return self.record_debt_payment(
+                int(payload.get('invoice_id') or 0),
+                payload.get('amount') or 0,
+                payload.get('payment_method') or 'cash',
+                payload.get('notes') or '',
+                reference,
+                payment_date=day,
+            )
+        if kind == 'customer_return':
+            return self.return_sale(
+                int(payload.get('sale_id') or 0),
+                payload.get('items') or [],
+                payload.get('reason') or '',
+                refund_method=payload.get('refund_method') or 'cash',
+                client_token=payload.get('client_token') or '',
+                business_date=day,
+            )
+        if kind == 'supplier_return':
+            return self.return_receipt_line(
+                int(payload.get('receipt_id') or 0),
+                int(payload.get('product_id') or 0),
+                payload.get('quantity'),
+                reason=payload.get('reason') or '',
+                pin='',
+                client_token=payload.get('client_token') or '',
+                business_date=day,
+            )
+        if kind == 'journal':
+            payload['entry_date'] = day
+            return self.accounting_post_manual(payload)
+        if kind == 'cash_transfer':
+            payload['transfer_date'] = day
+            return self.accounting_create_transfer(payload)
+        if kind == 'stock_adjustment':
+            if payload.get('direction'):
+                return self.adjust_stock(
+                    int(payload.get('product_id') or 0),
+                    payload.get('direction'),
+                    payload.get('quantity'),
+                    payload.get('reason') or '',
+                    pin=payload.get('pin') or '',
+                    expected_stock=payload.get('expected_stock'),
+                    idempotency_key=payload.get('client_token') or '',
+                    business_date=day,
+                )
+            return self.adjust_stock(
+                int(payload.get('product_id') or 0),
+                payload.get('new_qty'),
+                payload.get('reason') or '',
+                pin=payload.get('pin') or '',
+                expected_stock=payload.get('expected_stock'),
+                idempotency_key=payload.get('client_token') or '',
+                business_date=day,
+            )
+        return {'error': 'That request cannot be posted.', 'status': 400}
 
     def _backdate(self, func, *args):
         from backend.backdate_requests import BackdateError
@@ -4566,10 +4946,37 @@ class APIClient:
             if abs(cash_rounding_adj) > 0.009 and abs(total - original_total) < 0.009:
                 total = round(original_total + cash_rounding_adj, 2)
 
+            from desktop.utils.payment_tenders import allocate_sale, sale_collection_error
+            pay_error = sale_collection_error({**data, 'total': total})
+            if pay_error:
+                db.rollback()
+                return {'error': pay_error}
+            raw_tenders = data.get('payment_tenders')
+            if isinstance(raw_tenders, list) and raw_tenders:
+                allocation = allocate_sale(total, raw_tenders)
+                if allocation.get('error'):
+                    db.rollback()
+                    return {'error': allocation['error']}
+                amount_paid = allocation['collected']
+                change_amount = allocation['change']
+                electronic_paid = allocation['electronic']
+                from desktop.utils.payment_tenders import electronic_method_label
+                derived_method = electronic_method_label(
+                    allocation.get('tenders'), data.get('electronic_method') or '',
+                )
+                data = {
+                    **data,
+                    'cash_paid': allocation['cash'],
+                    'electronic_paid': electronic_paid,
+                    'amount_paid': amount_paid,
+                    'change_amount': change_amount,
+                    'electronic_method': derived_method or data.get('electronic_method') or '',
+                }
+                if allocation['credit'] > 0.009:
+                    data['payment_method'] = 'Part Payment'
+
             notes = data.get('notes', '') or ''
             mpesa_ref = (data.get('mpesa_ref') or '').strip()
-            if mpesa_ref and 'mpesa ref' not in notes.lower():
-                notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
             if variance_handling:
                 notes = (notes + f' | Variance: {variance_handling}').strip(' |')
             if abs(cash_rounding_adj) > 0.009:
@@ -4589,7 +4996,11 @@ class APIClient:
                     electronic_method=emethod,
                     store_credit=credit_applied,
                 ))
-            if electronic_paid > 0.009 and emethod and 'split:' not in notes.lower():
+            if (
+                electronic_paid > 0.009 and emethod
+                and 'split:' not in notes.lower()
+                and 'paid:' not in notes.lower()
+            ):
                 cash_bit = round(float(data.get('cash_paid') or 0), 2)
                 if cash_bit > 0.009:
                     notes = (
@@ -4597,12 +5008,18 @@ class APIClient:
                     ).strip(' |')
             if is_backdated and 'business day' not in notes.lower():
                 notes = (notes + f' | Business day: {sale_date_s}').strip(' |')
-            from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa
+            from backend.mpesa_service import attach_sale_mpesa, prepare_sale_mpesa, sale_uses_mpesa
             mpesa_prepared = prepare_sale_mpesa(
                 db, data, data.get('payment_method', 'cash'), electronic_paid,
             )
             if mpesa_prepared.get('mpesa_ref'):
                 mpesa_ref = mpesa_prepared['mpesa_ref']
+            elif not sale_uses_mpesa(
+                data.get('payment_method', 'cash'), emethod, data.get('payment_tenders'),
+            ):
+                mpesa_ref = ''
+            if mpesa_ref and 'mpesa ref' not in notes.lower():
+                notes = (notes + f' | M-Pesa ref: {mpesa_ref}').strip(' |')
             if mpesa_prepared.get('note') and mpesa_prepared['note'] not in notes:
                 notes = (notes + ' | ' + mpesa_prepared['note']).strip(' |')
 
@@ -5828,7 +6245,9 @@ class APIClient:
             db.close()
 
     def return_sale(self, sale_id: int, items: list, reason: str,
-                    *, refund_method: str = 'cash', client_token: str = '') -> dict:
+                    *, refund_method: str = 'cash', client_token: str = '',
+                    business_date: str = '', offline: bool = False,
+                    backdate_reason: str = '') -> dict:
         """
         Partial product return against a completed sale.
         Restocks inventory, records a status='return' sale (negative totals),
@@ -5848,7 +6267,10 @@ class APIClient:
         for spec in items:
             try:
                 si_id = int(spec.get('sale_item_id') or 0)
-                qty = round(float(spec.get('quantity')), 4)
+                from desktop.utils.quantities import QuantityError, parse_quantity
+                qty = parse_quantity(spec.get('quantity'), allow_zero=False)
+            except QuantityError as exc:
+                return {'error': str(exc), 'status': 400}
             except (TypeError, ValueError):
                 return {'error': 'Enter a valid return quantity.', 'status': 400}
             if si_id <= 0 or qty <= 0:
@@ -5858,6 +6280,20 @@ class APIClient:
             seen_lines.add(si_id)
             norm_items.append({'sale_item_id': si_id, 'quantity': qty})
         norm_items.sort(key=lambda row: row['sale_item_id'])
+        from desktop.utils.shop_time import shop_today
+        return_day = (business_date or shop_today().isoformat())[:10]
+        held = self._maybe_hold_backdate('customer_return', return_day, {
+            'sale_id': int(sale_id),
+            'items': norm_items,
+            'reason': reason,
+            'refund_method': method,
+            'client_token': token,
+            'business_date': return_day,
+            'backdate_reason': (backdate_reason or '').strip(),
+            'offline': offline,
+        })
+        if held:
+            return held
         request_body = {
             'sale_id': int(sale_id),
             'items': norm_items,
@@ -5889,19 +6325,9 @@ class APIClient:
             orig_rn = sale['receipt_number'] or str(sale_id)
             refund_total = 0.0
             restock_lines = []
-            from desktop.utils.shop_time import business_day_iso, sale_created_at_for_day
-            orig_day = ''
-            try:
-                orig_day = (sale['sale_date'] or '') if 'sale_date' in sale.keys() else ''
-            except Exception:
-                orig_day = ''
-            if not orig_day:
-                try:
-                    orig_day = str(sale['created_at'] or '')[:10]
-                except Exception:
-                    orig_day = ''
-            sale_date_s = business_day_iso(orig_day or None)
-            created_at_s = sale_created_at_for_day(sale_date_s)
+            from desktop.utils.shop_time import business_day_iso, sale_created_at_for_day, shop_today
+            sale_date_s = business_day_iso(return_day)
+            created_at_s = sale_created_at_for_day(shop_today())
             now = created_at_s
 
             for spec in norm_items:
@@ -7241,12 +7667,28 @@ class APIClient:
 
     def record_debt_payment(self, invoice_id: int, amount: float,
                             payment_method: str = 'cash', notes: str = '',
-                            payment_reference: str = '') -> dict:
+                            payment_reference: str = '', *,
+                            payment_date: str = '', offline: bool = False,
+                            backdate_reason: str = '') -> dict:
         """Collect a payment against an existing invoice. Rejects invalid / orphan debts."""
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
         if role and not has_permission(client_actor(self), 'debt.collect'):
             return {'error': 'You cannot collect a debt payment.', 'status': 403}
+        from desktop.utils.shop_time import shop_today
+        pay_day = (str(payment_date or '').strip()[:10] or shop_today().isoformat())
+        held = self._maybe_hold_backdate('debt_payment', pay_day, {
+            'invoice_id': invoice_id,
+            'amount': amount,
+            'payment_method': payment_method,
+            'notes': notes,
+            'payment_reference': payment_reference,
+            'payment_date': pay_day,
+            'backdate_reason': (backdate_reason or '').strip(),
+            'offline': bool(offline),
+        })
+        if held:
+            return held
         db = _db()
         try:
             if not invoice_id:
@@ -7343,6 +7785,9 @@ class APIClient:
             pay_receipt = self._next_payment_receipt(db)
             from desktop.utils.shop_time import shop_now
             paid_at = shop_now().strftime('%Y-%m-%d %H:%M:%S')
+            if 'payment_date' not in dp_cols:
+                db.execute("ALTER TABLE debt_payments ADD COLUMN payment_date TEXT")
+                dp_cols.add('payment_date')
 
             if 'payment_reference' in dp_cols:
                 db.execute(
@@ -7388,9 +7833,15 @@ class APIClient:
                     payment_receipt=pay_receipt,
                     user_id=self._user_id,
                     username=self._username or 'staff',
+                    entry_date=pay_day,
                     safe=True)
             except Exception as _je:
                 logger.error('debt payment accounting: %s', _je, exc_info=True)
+            if 'payment_date' in dp_cols:
+                db.execute(
+                    "UPDATE debt_payments SET payment_date=? WHERE payment_receipt=?",
+                    (pay_day, pay_receipt),
+                )
             db.commit()
             _audit(self._user_id, self._username, 'DEBT_PAYMENT', 'debt',
                    f"inv={inv['invoice_number']} sale={inv.get('sale_id')} "
@@ -9139,6 +9590,27 @@ class APIClient:
         dept_id = data.get('department_id')
         if not dept_id:
             return {'error': 'Department is required.'}
+        if not getattr(self, '_replaying_dated', False):
+            data.pop('_requester_id', None)
+            data.pop('_requester_name', None)
+            data.pop('_dated_replay', None)
+        from desktop.utils.shop_time import shop_today
+        cons_date = (data.get('date') or shop_today().isoformat()).strip()
+        try:
+            business_day = date.fromisoformat(cons_date[:10])
+        except ValueError:
+            return {'error': 'Enter a valid business date.', 'status': 400}
+        if business_day > shop_today():
+            return {'error': 'Future dates are not allowed.', 'status': 400}
+        held = self._maybe_hold_backdate('consumption', business_day.isoformat(), data)
+        if held:
+            return held
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        for item in items:
+            try:
+                parse_quantity(item.get('quantity'), allow_zero=False)
+            except QuantityError as exc:
+                return {'error': str(exc), 'status': 400}
 
         db = _db()
         device = self._device_name()
@@ -9178,17 +9650,9 @@ class APIClient:
                 return {'error': 'Invalid department.'}
 
             ref = self._next_consumption_ref(db)
-            cons_date = (data.get('date') or str(date.today())).strip()
-            try:
-                business_day = date.fromisoformat(cons_date[:10])
-            except ValueError:
-                db.rollback()
-                return {'error': 'Enter a valid business date.', 'status': 400}
-            if business_day > date.today():
-                db.rollback()
-                return {'error': 'Future dates are not allowed.', 'status': 400}
+            cons_date = business_day.isoformat()
             from desktop.utils.security import can_set_business_day, client_actor
-            if business_day != date.today() and not can_set_business_day(client_actor(self)):
+            if business_day != shop_today() and not can_set_business_day(client_actor(self)):
                 db.rollback()
                 return {
                     'error': 'You cannot record consumption for another day.',
@@ -9197,6 +9661,10 @@ class APIClient:
             notes = (data.get('notes') or '').strip()
             taken_by = (data.get('taken_by') or '').strip()
             created_name = self._username or 'staff'
+            created_id = self._user_id
+            if getattr(self, '_replaying_dated', False) and data.get('_requester_id'):
+                created_id = data.get('_requester_id')
+                created_name = data.get('_requester_name') or created_name
             now = datetime.now().isoformat()
 
             line_rows = []
@@ -9204,7 +9672,23 @@ class APIClient:
             seen_products = set()
             for item in items:
                 pid = item.get('product_id')
-                qty = round(float(item.get('quantity') or 0), 4)
+                from desktop.utils.quantities import QuantityError, parse_quantity
+                prod_unit = None
+                unit_row = None
+                if pid:
+                    unit_row = db.execute(
+                        "SELECT unit, name FROM products WHERE id=?", (pid,)
+                    ).fetchone()
+                    if unit_row:
+                        prod_unit = unit_row['unit']
+                try:
+                    qty = parse_quantity(item.get('quantity'), prod_unit)
+                except QuantityError as exc:
+                    db.rollback()
+                    message = str(exc)
+                    if prod_unit is not None and 'whole units' in message and unit_row:
+                        message = f"'{unit_row['name']}' is sold in whole units."
+                    return {'error': message, 'status': 400}
                 if not pid or qty <= 0:
                     db.rollback()
                     return {'error': 'Each line needs a product and quantity > 0.'}
@@ -9219,13 +9703,6 @@ class APIClient:
                 if not prod:
                     db.rollback()
                     return {'error': f'Product id {pid} not found.'}
-                from desktop.utils.pos_components import qty_step_for_unit
-                if qty_step_for_unit(prod['unit']) >= 1 and abs(qty - round(qty)) > 0.0001:
-                    db.rollback()
-                    return {
-                        'error': f"'{prod['name']}' is sold in whole units.",
-                        'status': 400,
-                    }
                 stock = round(float(prod['stock'] or 0), 4)
                 if stock < qty:
                     db.rollback()
@@ -9253,7 +9730,7 @@ class APIClient:
                 " created_by, created_by_name, created_at, voided) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,0)",
                 (ref, cons_date, dept_id, reason, notes, taken_by, round(total_cost, 2),
-                 self._user_id, created_name, now)
+                 created_id, created_name, now)
             )
             cons_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             audit_lines = []
@@ -9488,13 +9965,15 @@ class APIClient:
                 if not prod:
                     db.rollback()
                     return {'error': f'Product id {pid} not found.', 'status': 404}
-                from desktop.utils.pos_components import qty_step_for_unit
-                if qty_step_for_unit(prod['unit']) >= 1 and abs(qty - round(qty)) > 0.0001:
+                from desktop.utils.quantities import QuantityError, parse_quantity
+                try:
+                    qty = parse_quantity(qty, prod['unit'])
+                except QuantityError as exc:
                     db.rollback()
-                    return {
-                        'error': f"'{prod['name']}' is sold in whole units.",
-                        'status': 400,
-                    }
+                    message = str(exc)
+                    if 'whole units' in message:
+                        message = f"'{prod['name']}' is sold in whole units."
+                    return {'error': message, 'status': 400}
                 old = old_by_id.get(pid)
                 old_qty = round(float(old['quantity'] or 0), 4) if old else 0.0
                 old_cost = round(float(old['unit_cost'] or 0), 4) if old else round(float(prod['cost_price'] or 0), 4)
@@ -10034,11 +10513,13 @@ class APIClient:
             params.append(int(limit))
             rows = _rows(db.execute(sql, params))
             pending = self._pending_consumption_void_ids(db)
+            from desktop.utils.accounting_hooks import consumption_books_label
             for row in rows:
                 try:
                     row['void_requested'] = int(row.get('id') or 0) in pending
                 except (TypeError, ValueError):
                     row['void_requested'] = False
+                row['ledger_account'] = consumption_books_label(row.get('reason') or '')
             return [self._hide_consumption_cost(row) for row in rows]
         finally:
             db.close()
@@ -10079,6 +10560,9 @@ class APIClient:
             sql += " ORDER BY sc.date DESC, sc.reference_no, sci.id"
 
             rows = _rows(db.execute(sql, params))
+            from desktop.utils.accounting_hooks import consumption_books_label
+            for row in rows:
+                row['ledger_account'] = consumption_books_label(row.get('reason') or '')
             total_qty = sum(float(r.get('quantity') or 0) for r in rows)
             total_cost = sum(float(r.get('total_cost') or 0) for r in rows)
             # Distinct consumptions / products
@@ -10238,6 +10722,22 @@ class APIClient:
     def accounting_post_manual(self, data: dict) -> dict:
         if not self._acc_perm('accounting.create_journal'):
             return {'error': 'Insufficient permissions to create journals'}
+        data = dict(data or {})
+        from desktop.utils.shop_time import shop_today
+        day = str(data.get('entry_date') or shop_today().isoformat())[:10]
+        if day < shop_today().isoformat():
+            note = str(data.get('backdate_reason') or '').strip()
+            if len(note) < 3 or note == 'Other':
+                return {
+                    'error': 'Choose a reason for this past journal date. If you choose Other, write what happened.',
+                    'status': 400,
+                }
+            if note not in str(data.get('description') or ''):
+                data['description'] = f"{data.get('description') or 'Manual journal'} — {note}"
+        held = self._maybe_hold_backdate('journal', day, data)
+        if held:
+            return held
+        data['entry_date'] = day
         db = _db()
         try:
             from desktop.utils.accounting_engine import post_journal
@@ -10390,11 +10890,50 @@ class APIClient:
             or self._acc_perm('accounting.approve_expenses')
         ):
             return {'error': 'Insufficient permissions to record expenses'}
+        data = dict(data or {})
+        if not getattr(self, '_replaying_dated', False):
+            data.pop('_requester_id', None)
+            data.pop('_requester_name', None)
+        from desktop.utils.shop_time import shop_today
+        exp_day = (str(data.get('expense_date') or shop_today().isoformat()))[:10]
+        held = self._maybe_hold_backdate('expense', exp_day, data)
+        if held:
+            return held
+        data['expense_date'] = exp_day
         db = _db()
         try:
             from desktop.utils.accounting_engine import create_expense
-            r = create_expense(db, data, user_id=self._user_id,
-                               username=self._username or '')
+            token = str(data.get('client_token') or '').strip()
+            cols = {row[1] for row in db.execute("PRAGMA table_info(expense_entries)").fetchall()}
+            if cols and 'client_token' not in cols:
+                db.execute("ALTER TABLE expense_entries ADD COLUMN client_token TEXT")
+                cols.add('client_token')
+            if token and 'client_token' in cols:
+                prior = db.execute(
+                    "SELECT id, expense_number FROM expense_entries WHERE client_token=?",
+                    (token,),
+                ).fetchone()
+                if prior:
+                    return {
+                        'success': True, 'duplicate': True,
+                        'id': prior['id'], 'expense_number': prior['expense_number'],
+                    }
+            user_id = data.get('_requester_id') if getattr(self, '_replaying_dated', False) else self._user_id
+            username = data.get('_requester_name') if getattr(self, '_replaying_dated', False) else (self._username or '')
+            r = create_expense(db, data, user_id=user_id, username=username or '')
+            if r.get('error'):
+                db.rollback()
+                return r
+            if token and r.get('id'):
+                db.execute(
+                    "UPDATE expense_entries SET client_token=? WHERE id=?",
+                    (token, r['id']),
+                )
+            if getattr(self, '_replaying_dated', False) and r.get('id'):
+                db.execute(
+                    "UPDATE expense_entries SET approved_by=?, approved_by_name=? WHERE id=?",
+                    (self._user_id, self._username or '', r['id']),
+                )
             db.commit()
             return r
         except Exception as e:
@@ -10497,6 +11036,22 @@ class APIClient:
     def accounting_create_transfer(self, data: dict) -> dict:
         if not self._acc_perm('accounting.create_journal'):
             return {'error': 'Insufficient permissions'}
+        data = dict(data or {})
+        from desktop.utils.shop_time import shop_today
+        day = str(data.get('transfer_date') or shop_today().isoformat())[:10]
+        if day < shop_today().isoformat():
+            note = str(data.get('backdate_reason') or '').strip()
+            if len(note) < 3 or note == 'Other':
+                return {
+                    'error': 'Choose a reason for this past transfer date. If you choose Other, write what happened.',
+                    'status': 400,
+                }
+            if note not in str(data.get('description') or ''):
+                data['description'] = f"{data.get('description') or 'Cash transfer'} — {note}"
+        held = self._maybe_hold_backdate('cash_transfer', day, data)
+        if held:
+            return held
+        data['transfer_date'] = day
         db = _db()
         try:
             from desktop.utils.accounting_engine import create_transfer
@@ -10552,3 +11107,90 @@ class APIClient:
             return True
         except Exception:
             return False
+
+
+_SHOP_LICENCE_WRITES = (
+    'update_settings',
+    'update_category_visuals',
+    'create_user',
+    'update_user',
+    'delete_user',
+    'create_category',
+    'update_category',
+    'delete_category',
+    'create_product',
+    'save_product_image',
+    'update_product',
+    'delete_product',
+    'adjust_stock',
+    'create_supplier',
+    'update_supplier',
+    'receive_stock',
+    'receive_delivery',
+    'record_supplier_payment',
+    'backdate_stock_receipt',
+    'update_stock_receipt_header',
+    'record_stocktake_count',
+    'apply_stocktake',
+    'start_stocktake',
+    'request_stock_adjustment',
+    'review_stock_adjustment',
+    'reverse_stock_receipt',
+    'correct_stock_receipt_line',
+    'return_receipt_line',
+    'request_delivery_action',
+    'review_delivery_request',
+    'clear_product_image',
+    'create_backdate_request',
+    'update_backdate_request',
+    'submit_backdate_request',
+    'withdraw_backdate_request',
+    'return_backdate_request',
+    'reject_backdate_request',
+    'approve_backdate_request',
+    'request_sale_void',
+    'request_consumption_void',
+    'execute_approval',
+    'create_sale',
+    'return_sale',
+    'edit_sale',
+    'void_sale',
+    'unvoid_sale',
+    'create_note',
+    'update_note',
+    'delete_note',
+    'create_customer',
+    'update_customer',
+    'create_debt_invoice',
+    'record_debt_payment',
+    'collect_customer_payment',
+    'reverse_debt_collection',
+    'reverse_debt_payment',
+    'reallocate_debt_payment',
+    'cancel_sale_resolve_debt',
+    'write_off_debt',
+    'cancel_invoice',
+    'delete_debt_invoice',
+    'save_department',
+    'create_consumption',
+    'edit_consumption',
+    'void_consumption',
+    'unvoid_consumption',
+    'accounting_save_account',
+    'accounting_delete_account',
+    'accounting_post_manual',
+    'accounting_reverse',
+    'accounting_create_expense',
+    'accounting_reverse_expense',
+    'accounting_save_expense_category',
+    'accounting_update_expense',
+    'accounting_delete_expense',
+    'accounting_create_transfer',
+    'accounting_close_period',
+)
+for _shop_write_name in _SHOP_LICENCE_WRITES:
+    _shop_write = getattr(APIClient, _shop_write_name, None)
+    if _shop_write is None:
+        raise AttributeError(f'APIClient is missing protected write {_shop_write_name}')
+    setattr(APIClient, _shop_write_name, _requires_shop_licence(_shop_write))
+del _shop_write_name, _shop_write

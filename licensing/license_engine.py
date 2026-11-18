@@ -984,6 +984,29 @@ def _cached_trusted_time() -> Optional[int]:
         return None
 
 
+def _authorization_now(highest_ts: int = 0) -> int:
+    """Time used for expiry and the existing offline allowance.
+
+    A backward local clock must not move this earlier than cached trusted
+    time or the highest local timestamp already recorded.
+    """
+    local_now = int(time.time())
+    points = [local_now]
+    trusted = _cached_trusted_time()
+    if trusted is not None:
+        try:
+            points.append(int(trusted))
+        except (TypeError, ValueError):
+            pass
+    try:
+        highest = int(highest_ts or 0)
+    except (TypeError, ValueError):
+        highest = 0
+    if highest > 0:
+        points.append(highest)
+    return max(points)
+
+
 def _fetch_trusted_time(*, allow_network: bool = True) -> Optional[int]:
     """Return Unix timestamp from an internet time source, or None if offline.
 
@@ -1061,8 +1084,24 @@ class LicenseEngine:
             if self.store.get('revoked'):
                 self._license_data = {}
                 self._state = STATE_INACTIVE
-            else:
-                self._state = STATE_UNACTIVATED
+                return
+            # A copied licence store is encrypted for another device. The row
+            # is present, but this computer cannot read it. That is not a
+            # fresh install and must not validate.
+            raw = _read_raw_license_token()
+            if raw:
+                self._license_data = {}
+                self._state = STATE_TAMPERED
+                try:
+                    self.store.set('tampered', True)
+                    self.store.log(
+                        'TAMPER_DETECT',
+                        'License record is not readable on this device',
+                    )
+                except Exception:
+                    pass
+                return
+            self._state = STATE_UNACTIVATED
             return
 
         data = decrypt_payload(token, self.device_id)
@@ -1144,24 +1183,27 @@ class LicenseEngine:
             return
 
         local_now  = int(time.time())
-        last_local = self.store.get('last_checked_ts', 0)
+        last_local = int(self.store.get('last_checked_ts', 0) or 0)
 
-        # Clock jumps after reboot (no NTP yet, CMOS lag) must NOT brick a
-        # valid local license — that put Edmus back on the activation screen.
+        # A short CMOS lag must not be treated as an attack. A backward clock
+        # must not extend the licence: expiry uses the high-water mark below.
         if last_local and local_now < (last_local - 3600):
             self._tamper_count += 1
             self.store.log('TIME_ROLLBACK',
                 f'Local clock went back: last={last_local} now={local_now} '
-                f'delta={last_local - local_now}s (ignored — license kept)')
+                f'delta={last_local - local_now}s '
+                f'(expiry uses the high-water mark)')
 
         highest = int(self.store.get('highest_ts_seen', 0) or 0)
         if highest and local_now < (highest - 3600):
             self.store.log('ROLLBACK_HIGHEST',
-                f'now={local_now} highest_ever={highest} (ignored — license kept)')
-            # Do not advance anchors while the clock is still catching up.
+                f'now={local_now} highest_ever={highest} '
+                f'(expiry uses highest_ts_seen)')
+            # Do not advance anchors while the clock is still behind.
         elif local_now > highest:
             self.store.set('highest_ts_seen', local_now)
             self.store.set('last_checked_ts', local_now)
+            highest = local_now
         else:
             self.store.set('last_checked_ts', local_now)
 
@@ -1174,9 +1216,9 @@ class LicenseEngine:
                 self.store.log('CLOCK_DRIFT',
                     f'Local={local_now} Trusted={trusted} Drift={drift}s (warning only)')
 
-        # For expiry, use the later of local vs cached trusted so a slow clock
-        # does not falsely expire; still use local for rollback anchors above.
-        expiry_now = max(local_now, trusted) if trusted is not None else local_now
+        # Later of local, cached trusted time, and highest_ts_seen. A rolled-back
+        # local clock cannot make expires_at look further away.
+        expiry_now = _authorization_now(highest)
 
         expires   = self._license_data.get('expires_at', 0)
         days_left = max(0, (expires - expiry_now) // 86400)
@@ -1307,10 +1349,14 @@ class LicenseEngine:
                     self._wire_cloud_backup_after_activation(result)
                     return True, message
                 return False, message
-            return False, result.get('message') or 'Cloud activation failed'
+            from licensing.activation_messages import explain_activation_failure
+            return False, explain_activation_failure(
+                result.get('message') or 'Activation failed'
+            )
         except Exception as e:
             logger.warning('Cloud key activation failed: %s', e)
-            return False, str(e)
+            from licensing.activation_messages import explain_activation_failure
+            return False, explain_activation_failure(str(e))
 
     def _wire_cloud_backup_after_activation(self, result: dict) -> None:
         """Persist org linkage and kick off backup when a Portal session exists."""
@@ -1544,7 +1590,7 @@ class LicenseEngine:
             act = (self._license_data or {}).get('activated_at') or 0
             last_ok = int(act) if act else int(time.time())
             self.store.set('last_cloud_ok_ts', last_ok)
-        now = int(time.time())
+        now = _authorization_now(int(self.store.get('highest_ts_seen') or 0))
         offline_secs = now - last_ok
         grace_secs = max(1, int(grace_days)) * 86400
         if offline_secs <= grace_secs:
@@ -1557,8 +1603,10 @@ class LicenseEngine:
                 'OFFLINE_GRACE_EXCEEDED',
                 f'{offline_secs // 86400} days without cloud confirmation (limit {grace_days})',
             )
-            # Soft-lock: mark inactive until online validate succeeds
-            if self._state not in (STATE_TAMPERED, STATE_INACTIVE):
+            # Soft-lock only a licence that is otherwise still in date.
+            if self._state not in (
+                STATE_TAMPERED, STATE_INACTIVE, STATE_EXPIRED, STATE_UNACTIVATED,
+            ):
                 self._state = STATE_CRITICAL
         return False, f'Must connect to internet — offline for {offline_secs // 86400} days (limit {grace_days})'
 
@@ -1623,7 +1671,8 @@ class LicenseEngine:
     def days_remaining(self) -> int:
         exp = self._license_data.get('expires_at', 0)
         if not exp: return 0
-        actual_now = _cached_trusted_time() or int(time.time())
+        highest = int(self.store.get('highest_ts_seen', 0) or 0)
+        actual_now = _authorization_now(highest)
         return max(0, (exp - actual_now) // 86400)
 
     @property
@@ -1681,3 +1730,78 @@ class LicenseEngine:
             self._load_from_store()
             self._evaluate_state()
             return self._state
+
+
+# A commercial read-only or export-after-expiry mode is not defined in this
+# codebase. Expired and otherwise invalid licences block shop mutations.
+# Existing rows and the licence record stay where they are.
+EXPIRED_SHOP_WRITE_MESSAGE = (
+    "License expired. New sales, inventory changes, and other shop updates are blocked. "
+    "Your existing shop data and licence record are unchanged. "
+    "Renew or activate from the license screen to continue."
+)
+_LIVE_PROGRAMDATA = os.path.normcase(r"C:\ProgramData")
+
+
+def _testing_must_not_touch_live_licence_store() -> bool:
+    """Skip the write gate only for a test process pointed at the real store.
+
+    Production never sets MBT_TEST_INSTANCE. Isolated tests redirect
+    PROGRAMDATA, so they still enforce against the disposable store.
+    """
+    if os.environ.get('MBT_TEST_INSTANCE') != '1':
+        return False
+    programdata = os.environ.get('PROGRAMDATA') or r'C:\ProgramData'
+    try:
+        pd = os.path.normcase(os.path.abspath(programdata))
+    except Exception:
+        pd = os.path.normcase(programdata)
+    return pd == _LIVE_PROGRAMDATA or pd.startswith(_LIVE_PROGRAMDATA + os.sep)
+
+
+def protected_write_block_reason(engine=None) -> str:
+    """Empty when a shop mutation may proceed. Otherwise a message for the user.
+
+    Never-activated installs with no token are left to the startup activation
+    wall. Disposable shop tests that never install a licence keep working.
+    A token that is expired, revoked, tampered, or otherwise not valid blocks.
+    """
+    if engine is None and _testing_must_not_touch_live_licence_store():
+        return ''
+    created = engine is None
+    eng = engine if engine is not None else LicenseEngine()
+    try:
+        if eng.is_valid:
+            return ''
+        state = eng.state
+        if state == STATE_EXPIRED:
+            return EXPIRED_SHOP_WRITE_MESSAGE
+        has_token = False
+        try:
+            has_token = bool(str(eng.store.get('license_token') or '').strip())
+        except Exception:
+            has_token = bool(getattr(eng, '_license_data', None))
+        if not has_token and state == STATE_UNACTIVATED:
+            return ''
+        if state == STATE_INACTIVE:
+            return (
+                "License revoked. Shop changes are blocked. "
+                "Your shop data is unchanged. Contact MugoByte to restore a licence."
+            )
+        if state == STATE_TAMPERED:
+            return (
+                "This licence does not belong to this computer. Shop changes are blocked. "
+                "Your shop data is unchanged. Activate this computer from the license screen."
+            )
+        return (
+            "License is not valid. Shop changes are blocked. "
+            "Your shop data is unchanged. Renew or activate from the license screen."
+        )
+    except Exception:
+        logger.warning('License write check failed', exc_info=True)
+        if created and os.environ.get('MBT_TEST_INSTANCE') == '1':
+            return ''
+        return (
+            "License could not be verified. Shop changes are blocked until the licence is valid. "
+            "Your shop data is unchanged."
+        )

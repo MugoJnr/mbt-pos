@@ -49,8 +49,11 @@ def _record(db, label: str, status: str, reason: str) -> None:
         logger.info("Print job was not recorded")
 
 
-def render_text(db, kind: str, record_id, actor: dict) -> dict:
-    """The text the printer will receive. Totals come from the saved document."""
+def render_text(db, kind: str, record_id, actor: dict, *, reprint: bool = False) -> dict:
+    """The text the printer will receive. Totals come from the saved document.
+
+    The first copy is not a reprint. Pass reprint=True only for a later copy.
+    """
     role = _actor_role(actor)
     if role not in _ALLOWED:
         return {"error": "You cannot print receipts.", "status": 403}
@@ -69,7 +72,7 @@ def render_text(db, kind: str, record_id, actor: dict) -> dict:
 
     if kind == "sale":
         from printing.sale_documents import build_sale_document
-        doc = build_sale_document(db, int(record_id), reprint=True)
+        doc = build_sale_document(db, int(record_id), reprint=bool(reprint))
         if doc.get("error"):
             return doc
         return {"success": True, "kind": kind, "reference": doc.get("number") or "", "text": doc.get("text") or "", "paper": cfg.get("paper_size")}
@@ -83,10 +86,24 @@ def render_text(db, kind: str, record_id, actor: dict) -> dict:
         if not receipt:
             return {"error": "That payment receipt was not found."}
         from printing.sale_documents import build_payment_document
-        doc = build_payment_document(db, receipt, reprint=True)
+        doc = build_payment_document(db, receipt, reprint=bool(reprint))
         if doc.get("error"):
             return doc
         return {"success": True, "kind": "debt_payment", "reference": doc.get("number") or "", "text": doc.get("text") or "", "paper": cfg.get("paper_size")}
+
+    if kind == "restock":
+        from backend import restock_requests as restock
+        paper = str((cfg or {}).get("paper_size") or "80")
+        rendered = restock.document_text(db, actor, int(record_id), paper)
+        if rendered.get("error"):
+            return rendered
+        return {
+            "success": True,
+            "kind": "restock",
+            "reference": rendered.get("reference") or "",
+            "text": rendered.get("text") or "",
+            "paper": rendered.get("paper") or paper,
+        }
 
     if kind == "consumption":
         detail = _consumption(db, int(record_id), show_cost)
@@ -143,7 +160,7 @@ def _consumption(db, record_id: int, show_cost: bool) -> dict | None:
 def submit(db, kind: str, record_id, actor: dict, *, reprint: bool = False) -> dict:
     """Hand one saved receipt to the configured printer."""
     before = _counts(db)
-    rendered = render_text(db, kind, record_id, actor)
+    rendered = render_text(db, kind, record_id, actor, reprint=reprint)
     if rendered.get("error"):
         return rendered
     reference = str(rendered.get("reference") or kind)

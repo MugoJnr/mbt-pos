@@ -251,6 +251,13 @@ class BackdateRequestTests(unittest.TestCase):
             self.assertEqual(debt["balance"], 80)
             note = db.execute("SELECT notes FROM sales WHERE payment_method='M-Pesa'").fetchone()
             self.assertIsNone(note)
+            journals = db.execute(
+                "SELECT source_id, total_debit, total_credit, entry_date FROM journal_entries "
+                "WHERE source_module='sales' AND entry_type='sale'"
+            ).fetchall()
+            self.assertEqual(len(journals), 2)
+            self.assertTrue(all(row["total_debit"] == row["total_credit"] and row["total_debit"] > 0 for row in journals))
+            self.assertEqual({row["entry_date"] for row in journals}, {self.yesterday})
         finally:
             db.close()
         rewrite = self.client.put(

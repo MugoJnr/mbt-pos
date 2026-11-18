@@ -125,94 +125,39 @@ def _ensure_shop_cloud_endpoints():
 
 # ── License Check ─────────────────────────────────────────────────────────────
 def _shop_already_ready(engine) -> bool:
-    """True when this PC was previously set up and still has a local license.
+    """True only when LicenseEngine.is_valid allows this PC to open the till.
 
-    Used to skip the mandatory online activation wall when Portal/Supabase are
-    unreachable — shops must keep selling offline under grace.
+    A licence file or an already-setup flag is not authorization. This does
+    not clear offline_lock. A valid local licence inside the existing offline
+    grace rules still reports valid through is_valid. An expired, tampered,
+    revoked, or otherwise invalid licence does not.
     """
     try:
-        from mbt_paths import get_init_flag_path
-        initialized = os.path.exists(get_init_flag_path())
+        return bool(engine.is_valid)
     except Exception:
-        initialized = False
-    has_local = False
-    decryptable = False
-    try:
-        from licensing.license_engine import _read_raw_license_token, _resolve_inner_license_token
-        inner, _ = _resolve_inner_license_token()
-        has_local = bool(
-            inner
-            or getattr(engine, 'has_local_license_payload', lambda: False)()
-            or _read_raw_license_token()
-        )
-        decryptable = bool(
-            inner
-            or getattr(engine, '_license_data', None)
-            or getattr(engine, 'has_local_license_payload', lambda: False)()
-        )
-    except Exception:
-        has_local = False
-        decryptable = False
-    if not (initialized or has_local):
         return False
-    try:
-        # Stale tamper flags from clock rollback must not force re-activation
-        # when a license token is still on disk for this PC.
-        if engine.store.get('tampered') and has_local and not decryptable:
-            try:
-                engine.store.set('tampered', False)
-                engine.revalidate()
-                decryptable = bool(
-                    getattr(engine, '_license_data', None)
-                    or getattr(engine, 'has_local_license_payload', lambda: False)()
-                )
-            except Exception:
-                pass
-        if engine.store.get('tampered') and not decryptable:
-            return False
-        if engine.store.get('revoked') and not getattr(engine, '_license_data', None):
-            return False
-    except Exception:
-        pass
-    # Soft offline lock must not block boot — background service re-enforces grace.
-    try:
-        if engine.store.get('offline_lock'):
-            engine.store.set('offline_lock', False)
-    except Exception:
-        pass
-    try:
-        if engine.is_valid:
-            return True
-    except Exception:
-        pass
-    # Last resort: decryptable, not-yet-expired local payload
-    try:
-        import time as _time
-        data = getattr(engine, '_license_data', None) or {}
-        exp = int(data.get('expires_at') or 0)
-        if exp and exp > int(_time.time()):
-            return True
-    except Exception:
-        pass
-    # Raw/decryptable local token is enough — init flag can be missing after
-    # a reinstall, but the shop must not be sent back to the activation wall.
-    return bool(has_local or initialized)
 
 
-def check_license():
+def ensure_licensed() -> bool:
+    """Return True only after LicenseEngine.is_valid. Shows activation otherwise.
+
+    Does not treat a raw token or the setup flag as a reason to open the till.
+    """
     from licensing.license_engine import LicenseEngine, ensure_license_store_ready
     from licensing.activation_ui import show_activation_screen
 
     ensure_license_store_ready()
     engine = LicenseEngine(PROJECT_ROOT)
     if engine.is_valid:
-        return
-    if _shop_already_ready(engine):
-        return
+        return True
     if not show_activation_screen(engine.device_id, engine):
-        sys.exit(0)
+        return False
     engine.revalidate()
-    if not engine.is_valid and not _shop_already_ready(engine):
+    return bool(engine.is_valid)
+
+
+def check_license():
+    if not ensure_licensed():
         sys.exit(0)
 
 

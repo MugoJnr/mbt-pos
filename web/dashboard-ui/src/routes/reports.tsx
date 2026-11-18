@@ -89,8 +89,19 @@ function Reports() {
     [range, employee, payment, category, customer, q],
   );
 
+  const reportUser = getUser();
+  const reportActions = Array.isArray(reportUser?.effective_permissions)
+    ? reportUser.effective_permissions.map(String)
+    : null;
+  const canOpenReports = reportActions
+    ? reportActions.includes("reports.view_all")
+    : ["viewer", "manager", "admin", "superadmin"].includes(
+        String(reportUser?.role || "").toLowerCase(),
+      );
   const dataQ = useQuery({
     queryKey: ["reports-data", filterParams],
+    enabled: canOpenReports,
+    retry: false,
     queryFn: () =>
       GET<any>("/reports/data", {
         start: filterParams.start,
@@ -182,6 +193,37 @@ function Reports() {
     setPage(0);
   }
 
+  if (!canOpenReports || data?.error) {
+    return (
+      <AppShell title="Reports">
+        <PageHeader
+          eyebrow="Operations"
+          title="Reports"
+          icon={<BarChart3 className="h-4 w-4" />}
+          description="This login cannot open the shop report."
+        />
+        <Card className="p-4">
+          <div className="text-sm font-semibold text-text">This report is not available for your login.</div>
+          <p className="mt-1 text-sm text-text2">
+            A manager can open sales, profit, and inventory reports. Your own till totals stay on the dashboard.
+          </p>
+        </Card>
+      </AppShell>
+    );
+  }
+  if (dataQ.isPending || dataQ.isLoading) {
+    return (
+      <AppShell title="Reports">
+        <PageHeader
+          eyebrow="Operations"
+          title="Reports"
+          icon={<BarChart3 className="h-4 w-4" />}
+          description="Loading this report."
+        />
+        <Card className="p-4 text-sm text-text2">Loading the report…</Card>
+      </AppShell>
+    );
+  }
   return (
     <AppShell title="Reports">
       <ExportLockDialog

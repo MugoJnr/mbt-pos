@@ -162,6 +162,69 @@ def consumption_lines(detail: dict, width: int, *, show_cost: bool) -> list[str]
     return [line[:width] for line in lines]
 
 
+def restock_lines(detail: dict, width: int) -> list[str]:
+    """Thermal restocking request. Quantities are wrapped, not cut off."""
+    width = max(16, int(width or 32))
+    lines = ["=" * width, "RESTOCKING REQUEST".center(width)[:width]]
+    shop = str(detail.get("shop_name") or "").strip()
+    if shop:
+        lines.extend(_wrap(shop, width))
+    contact = " ".join(
+        part for part in (str(detail.get("shop_address") or "").strip(), str(detail.get("shop_phone") or "").strip()) if part
+    )
+    if contact:
+        lines.extend(_wrap(contact, width))
+    lines.extend(_wrap("Not a sale, tax invoice, or goods received note.", width))
+    lines.append("=" * width)
+    lines.extend(_wrap(f"Ref: {detail.get('reference') or ''}", width))
+    lines.extend(_wrap(f"List: {detail.get('name') or ''}", width))
+    lines.extend(_wrap(f"Status: {detail.get('status_label') or detail.get('status') or ''}", width))
+    lines.extend(_wrap(f"Priority: {detail.get('priority') or ''}", width))
+    lines.extend(_wrap(f"Prepared: {detail.get('created_at') or ''} {detail.get('created_name') or ''}".strip(), width))
+    buyer = detail.get("buyer_name") or detail.get("external_buyer") or "Not assigned"
+    lines.extend(_wrap(f"Buyer: {buyer}", width))
+    printed = str(detail.get("printed_at") or "").strip()
+    if printed:
+        lines.extend(_wrap(f"Printed: {printed}", width))
+    instructions = str(detail.get("instructions") or "").strip()
+    if instructions:
+        lines.extend(_wrap(f"Instructions: {instructions}", width))
+    lines.append("-" * width)
+    for index, line in enumerate(detail.get("lines") or [], start=1):
+        unit = str(line.get("unit") or "").strip()
+        name = str(line.get("product_name") or "Product")
+        sku = str(line.get("sku") or "").strip()
+        lines.extend(_wrap(f"{index}. {name}", width))
+        if sku:
+            lines.extend(_wrap(f"SKU {sku}", width))
+        lines.extend(_wrap(f"Asked: {qty_text(line.get('quantity'))} {unit}".strip(), width))
+        lines.extend(_wrap(f"Bought: {qty_text(line.get('purchased_qty'))} {unit}".strip(), width))
+        lines.extend(_wrap(f"Unavailable: {qty_text(line.get('unavailable_qty'))} {unit}".strip(), width))
+        lines.extend(_wrap(f"Received: {qty_text(line.get('received_qty'))} {unit}".strip(), width))
+        lines.extend(_wrap(f"Rejected: {qty_text(line.get('rejected_qty'))} {unit}".strip(), width))
+        lines.extend(_wrap(f"Outstanding: {qty_text(line.get('outstanding_qty'))} {unit}".strip(), width))
+        note = str(line.get("notes") or line.get("purchase_notes") or "").strip()
+        if note:
+            lines.extend(_wrap(f"Note: {note}", width))
+        lines.append("-" * width)
+    receipts = detail.get("receipts") or []
+    if receipts:
+        lines.append("Deliveries".center(width)[:width])
+        for receipt in receipts:
+            lines.extend(_wrap(
+                f"{receipt.get('receipt_number') or receipt.get('receipt_id')} "
+                f"accepted {qty_text(receipt.get('qty_accepted'))} "
+                f"rejected {qty_text(receipt.get('qty_rejected'))}",
+                width,
+            ))
+        lines.append("-" * width)
+    lines.extend(_wrap(
+        "THIS IS A RESTOCKING REQUEST. IT IS NOT A SUPPLIER INVOICE OR GOODS RECEIVED NOTE.",
+        width,
+    ))
+    return lines
+
+
 def centre_lines(detail: dict, width: int) -> list[str]:
     """Plain reading of a receipt-centre document that is not a sale."""
     header = detail.get("header") or {}

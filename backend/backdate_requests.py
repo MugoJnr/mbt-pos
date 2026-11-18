@@ -144,6 +144,12 @@ def update_request(db, actor: dict, request_id: int, data: dict) -> dict:
         row = _locked(db, request_id)
         _editable(row, actor, data.get('version'))
         before = _snapshot(db, row)
+        if row['status'] == 'submitted' and data.get('business_date'):
+            requested = _past_day(data.get('business_date'))
+            if requested != row['business_date']:
+                raise BackdateError(
+                    'The business date cannot change after the request is submitted.'
+                )
         if data.get('business_date'):
             day = _past_day(data.get('business_date'))
         else:
@@ -415,7 +421,10 @@ def _post_all(db, actor, row) -> list[str]:
             continue
         lines = []
         for line in sale['lines']:
-            filled = fill_sale_line(db, line)
+            try:
+                filled = fill_sale_line(db, line)
+            except ValueError as exc:
+                raise BackdateError(str(exc)) from exc
             if filled['quantity'] <= 0:
                 raise BackdateError('Each product needs a quantity above zero.')
             if filled['total'] < 0:
@@ -456,11 +465,11 @@ def _post_all(db, actor, row) -> list[str]:
         db.execute(
             """INSERT INTO sales
                (receipt_number, cashier_id, cashier_name, subtotal, discount, tax, total,
-                payment_method, amount_paid, change_amount, notes, mpesa_ref, sale_date,
-                created_at, customer_id, electronic_paid, electronic_method, cash_paid,
+                original_total, payment_method, amount_paid, change_amount, notes, mpesa_ref,
+                sale_date, created_at, customer_id, electronic_paid, electronic_method, cash_paid,
                 client_token, backdate_request_id, status)
-               VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'completed')""",
-            (receipt, row['cashier_id'], row['cashier_name'], total, discount, total,
+               VALUES (?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'completed')""",
+            (receipt, row['cashier_id'], row['cashier_name'], total, discount, total, total,
              method_name, amount_paid, change, notes, mpesa_ref or None, row['business_date'],
              created_at, sale.get('customer_id'), electronic_paid,
              'M-Pesa' if kind == 'mpesa' else ('Bank' if kind == 'bank' else None),
@@ -481,6 +490,17 @@ def _post_all(db, actor, row) -> list[str]:
             _apply_stock(db, actor, row, line, receipt, sale_id, consume_fifo)
         if kind in ('credit', 'part'):
             _create_debt(db, row, sale, sale_id, receipt, total, amount_paid, notes)
+        from desktop.utils.accounting_hooks import post_sale_journal
+        posted_journal = post_sale_journal(
+            db, sale_id,
+            user_id=actor.get('id'),
+            username=actor.get('username') or '',
+            safe=False,
+        )
+        if not posted_journal.get('success'):
+            raise BackdateError(
+                posted_journal.get('error') or 'The sale could not be posted to the accounts.'
+            )
         db.execute(
             "INSERT INTO sync_queue (action_type, payload) VALUES (?, ?)",
             ('sale', json.dumps({
@@ -574,8 +594,9 @@ def _blocking_problems(db, row) -> list[str]:
     policy = _date_policy(db, row['business_date'])
     if policy:
         return [policy]
-    if not (row['reason'] or '').strip():
-        return ['Enter the reason for recording this past day.']
+    reason = (row['reason'] or '').strip()
+    if len(reason) < 3 or reason == 'Other':
+        return ['Choose a reason for this past date. If you choose Other, write what happened.']
     sales = _sales_for(db, row['id'])
     if not sales:
         return ['Add at least one sale before submitting.']
@@ -600,6 +621,11 @@ def _blocking_problems(db, row) -> list[str]:
             if covered + 0.009 < total:
                 return ['A mixed sale needs the cash amount and the second payment to cover the total.']
         for line in sale['lines']:
+            try:
+                from backend.sale_lines import fill_sale_line
+                fill_sale_line(db, line)
+            except ValueError as exc:
+                return [str(exc)]
             if float(line['quantity']) <= 0:
                 return ['Each product needs a quantity above zero.']
             if float(line['unit_price']) < 0 or float(line['discount']) < 0:
