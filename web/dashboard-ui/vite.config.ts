@@ -52,7 +52,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://127.0.0.1:5050", changeOrigin: true },
+      "/api": {
+        target: process.env.MBT_API_PROXY || "http://127.0.0.1:5050",
+        changeOrigin: true,
+      },
     },
   },
 });

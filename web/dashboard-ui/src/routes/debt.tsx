@@ -699,6 +699,7 @@ function SupplierDebts({ currency }: { currency: string }) {
   const [paidConfirmed, setPaidConfirmed] = useState(false);
   const [msg, setMsg] = useState("");
   const [open, setOpen] = useState<any>(null);
+  const [statement, setStatement] = useState<any>(null);
   const data = summaryQ.data || {};
   const invoices = (Array.isArray(data.invoices) ? data.invoices : []).filter(
     (row: any) => row.payment_status !== "VOIDED",
@@ -765,7 +766,28 @@ function SupplierDebts({ currency }: { currency: string }) {
             if (full?.id) setOpen(full);
           }
         }}>Record payment</Button>
+        <Button variant="secondary" onClick={async () => {
+          if (!open?.supplier_id) {
+            setMsg("Open an invoice first.");
+            return;
+          }
+          const body = await GET<any>(`/suppliers/${open.supplier_id}/statement`);
+          setStatement(body?.error ? null : body);
+          if (body?.error) setMsg(body.error);
+        }}>Statement</Button>
       </div>
+      ) : null}
+      {statement?.supplier ? (
+        <div className="rounded-xl border border-border p-4 text-sm">
+          <div className="font-extrabold text-text">Supplier statement · {statement.supplier.name}</div>
+          <div className="mt-1 text-text2">Charged {KES(statement.charged || 0, currency)} · Outstanding {KES(statement.outstanding || 0, currency)}</div>
+          {(statement.invoices || []).map((invoice: any) => (
+            <div key={invoice.id} className="mt-1">{invoice.receipt_number} · {invoice.reference_note || "—"} · {KES(invoice.grand_total, currency)} · outstanding {KES(invoice.outstanding, currency)} · {invoice.payment_status}</div>
+          ))}
+          {(statement.payments || []).map((payment: any) => (
+            <div key={payment.id} className="mt-1">{payment.payment_number} · {payment.method} · {KES(payment.amount, currency)}</div>
+          ))}
+        </div>
       ) : null}
       {msg ? <p className="text-sm text-text2">{msg}</p> : null}
       {open?.receipt_number ? (

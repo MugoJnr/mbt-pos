@@ -123,6 +123,29 @@ def _reclaim_actions_body(tab, body) -> None:
         pass
 
 
+def _mount_catalog_bar(tab, shell: QWidget) -> QWidget:
+    """Put the one-line catalog controls above the columns and return the column host."""
+    outer = QVBoxLayout(shell)
+    outer.setContentsMargins(4, 2, 4, 0)
+    outer.setSpacing(2)
+    bar = getattr(tab, '_catalog_bar', None)
+    if _alive(bar):
+        try:
+            bar.setAttribute(Qt.WA_DontShowOnScreen, False)
+        except Exception:
+            pass
+        bar.setParent(shell)
+        bar.show()
+        outer.addWidget(bar, 0)
+        if hasattr(bar, 'relayout'):
+            bar.relayout(force=True)
+    host = QWidget(shell)
+    host.setObjectName('posShellBody')
+    host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    outer.addWidget(host, 1)
+    return host
+
+
 def _replace_layout(host: QWidget) -> None:
     """Remove existing layout from host so a new one can be assigned."""
     if not _alive(host):
@@ -220,14 +243,18 @@ def _apply_layout_shell_inner(tab, lid: str, shell, safe_show, hide_orphan_pos_f
     except Exception:
         pass
 
+    bar = getattr(tab, '_catalog_bar', None)
+    if _alive(bar):
+        _stash(tab, bar)
     _replace_layout(shell)
+    host = _mount_catalog_bar(tab, shell)
 
     if lid == LAYOUT_CHECKOUT_PRO:
-        _assemble_checkout_pro(tab, shell, product, sale, actions, body, foot)
+        _assemble_checkout_pro(tab, host, product, sale, actions, body, foot)
     elif lid == LAYOUT_RETAIL_CLASSIC:
-        _assemble_retail_classic(tab, shell, product, sale, actions, body, foot)
+        _assemble_retail_classic(tab, host, product, sale, actions, body, foot)
     else:
-        _assemble_product_explorer(tab, shell, product, sale, actions, body, foot)
+        _assemble_product_explorer(tab, host, product, sale, actions, body, foot)
 
     tab._checkout_layout = lid
     tab._left_panel = product

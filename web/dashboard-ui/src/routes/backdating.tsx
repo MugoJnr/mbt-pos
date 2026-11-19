@@ -50,7 +50,23 @@ type RequestRow = {
   sales?: Sale[];
   warnings?: string[];
   events?: { action: string; actor_name?: string; note?: string; created_at?: string }[];
+  disapproval?: {
+    headline?: string;
+    approved_at?: string;
+    approved_by?: string;
+    disapproved_at?: string;
+    disapproved_by?: string;
+    reason?: string;
+    sale_reference?: string;
+  } | null;
   error?: string;
+};
+type PendingGroup = {
+  business_date: string;
+  count: number;
+  total: number;
+  eligible_count: number;
+  eligible_total: number;
 };
 
 const METHODS = ["Cash", "M-Pesa", "Bank Transfer", "Credit Sale", "Part Payment", "Mixed"];
@@ -80,6 +96,8 @@ function BackdatingPage() {
   const qc = useQueryClient();
   const [status, setStatus] = useState(canReview ? "submitted" : "");
   const [query, setQuery] = useState("");
+  const [dateMode, setDateMode] = useState("all");
+  const [day, setDay] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [draftDate, setDraftDate] = useState("");
@@ -88,10 +106,17 @@ function BackdatingPage() {
   const [correcting, setCorrecting] = useState(false);
 
   const listQ = useQuery({
-    queryKey: ["backdate", status, query],
-    queryFn: () => loadQueue<{ requests: RequestRow[]; pending_count: number; error?: string }>("/backdate-requests", {
+    queryKey: ["backdate", status, query, dateMode, day],
+    queryFn: () => loadQueue<{
+      requests: RequestRow[];
+      pending_count: number;
+      pending_total: number;
+      groups: PendingGroup[];
+      error?: string;
+    }>("/backdate-requests", {
       status,
       q: query,
+      ...(dateMode === "date" ? { business_date: day } : { date: dateMode }),
     }),
     ...requestQueueQuery,
   });
@@ -116,6 +141,14 @@ function BackdatingPage() {
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const customers = Array.isArray(customersQ.data) ? customersQ.data : [];
   const pending = listQ.data?.pending_count || 0;
+  const pendingTotal = listQ.data?.pending_total || 0;
+  const groups = listQ.data?.groups || [];
+  const selectedDay = dateMode === "date"
+    ? day
+    : dateMode === "yesterday"
+      ? (groups.find((group) => group.eligible_count)?.business_date || "")
+      : "";
+  const dayGroup = groups.find((group) => group.business_date === selectedDay);
   const ownRequest = detail != null && user?.id != null && Number(detail.cashier_id) === Number(user.id);
   const editable = correcting && !!detail && (detail.status === "draft" || detail.status === "returned");
 
@@ -190,7 +223,33 @@ function BackdatingPage() {
               <option value="rejected">Rejected</option>
               <option value="withdrawn">Withdrawn</option>
             </select>
+            <select className="h-9 rounded-lg border border-border bg-card px-2 text-sm" value={dateMode} onChange={(e) => setDateMode(e.target.value)} aria-label="Requested sales date">
+              <option value="all">All dates</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="date">Selected date</option>
+            </select>
+            {dateMode === "date" ? (
+              <Input type="date" aria-label="Selected requested sales date" value={day} onChange={(e) => setDay(e.target.value)} />
+            ) : null}
           </div>
+          {canReview ? (
+            <div className="flex flex-wrap gap-2 px-3 pb-3">
+              <Button size="sm" disabled={!pending || run.isPending} onClick={() => bulk("all")}>
+                Approve all pending ({pending}, {pendingTotal})
+              </Button>
+              <Button size="sm" variant="secondary" disabled={!dayGroup?.eligible_count || run.isPending} onClick={() => bulk("day")}>
+                Approve all for {selectedDay || "selected day"}
+              </Button>
+            </div>
+          ) : null}
+          {groups.length ? (
+            <div className="space-y-1 px-3 pb-3 text-sm text-text2">
+              {groups.map((group) => (
+                <div key={group.business_date}>{group.business_date} · {group.count} pending · {group.total}</div>
+              ))}
+            </div>
+          ) : null}
           <div className="divide-y divide-border">
             {queueNotice || listQ.isError ? null : rows.map((row) => (
               <button key={row.id} className="block w-full px-3 py-3 text-left hover:bg-hover" onClick={() => loadDetail(row)}>
@@ -214,6 +273,16 @@ function BackdatingPage() {
               </div>
             ) : (
               <div className="space-y-2 text-sm">
+                {detail.disapproval ? (
+                  <div className="rounded-lg border border-err/40 bg-err/10 p-3">
+                    <div className="font-semibold">{detail.disapproval.headline || "PREVIOUSLY APPROVED — SUBSEQUENTLY DISAPPROVED"}</div>
+                    <div>Originally approved {detail.disapproval.approved_at || "—"} by {detail.disapproval.approved_by || "—"}.</div>
+                    <div>Disapproved {detail.disapproval.disapproved_at || "—"} by {detail.disapproval.disapproved_by || "—"}.</div>
+                    <div>Reason: {detail.disapproval.reason || "—"}</div>
+                    <div>Original transaction: {detail.disapproval.sale_reference || "—"}</div>
+                    <div>The previous posting was reversed. The request is waiting for review again.</div>
+                  </div>
+                ) : null}
                 <div className="text-base font-semibold">{detail.reference} · {statusLabel(detail.status)}</div>
                 <div>Cashier {detail.cashier_name || "—"} · submitted {detail.submitted_at || "not yet"} · created {detail.created_at || "—"}</div>
                 <div>Business date {detail.business_date}. This is the requested sale date, not the day the request was typed.</div>
@@ -329,6 +398,9 @@ function BackdatingPage() {
                   <Button variant="danger" onClick={() => act("reject")}>Reject</Button>
                 </>
               ) : null}
+              {canReview && detail?.status === "approved" && !ownRequest ? (
+                <Button variant="danger" onClick={disapprove}>Disapprove approved sale</Button>
+              ) : null}
             </div>
             {(detail?.events || []).map((event, index) => (
               <div key={index} className="text-xs text-text2">{event.created_at} · {event.actor_name} · {event.action} {event.note}</div>
@@ -395,6 +467,37 @@ function BackdatingPage() {
     setMessage("");
     setSelected(current.id);
     await refresh();
+  }
+  async function bulk(scope: "all" | "day") {
+    const count = scope === "all" ? pending : (dayGroup?.eligible_count || 0);
+    const total = scope === "all" ? pendingTotal : (dayGroup?.eligible_total || 0);
+    const when = scope === "day" ? ` for ${selectedDay}` : "";
+    if (!count) return;
+    if (!window.confirm(`Approve ${count} pending request(s)${when} totalling ${total}? Each request posts on its own. A failure does not undo the ones that already posted.`)) return;
+    const result = await POST<{ error?: string; approved?: number; failed?: number; skipped?: number; approved_total?: number }>(
+      "/backdate-requests/bulk-approve",
+      { scope, business_date: scope === "day" ? selectedDay : "" },
+    );
+    if (!result || result.error) {
+      setMessage(result?.error || "Nothing was approved.");
+      await refresh();
+      return;
+    }
+    setMessage(`Approved ${result.approved || 0}. Failed ${result.failed || 0}. Skipped ${result.skipped || 0}. Posted ${result.approved_total || 0}.`);
+    await refresh();
+  }
+  function disapprove() {
+    if (!detail) return;
+    const reason = window.prompt("Why is this approved sale being reversed?");
+    if (!reason || reason.trim().length < 3) {
+      setMessage("Enter a reason of at least 3 characters.");
+      return;
+    }
+    if (!window.confirm("This reverses the posted sale, stock, and debt, and returns the request to pending. The original receipt stays in history.")) return;
+    run.mutate({
+      path: `/backdate-requests/${detail.id}/disapprove`,
+      body: { version: detail.version, reason: reason.trim() },
+    });
   }
   function act(action: "approve" | "return" | "reject" | "withdraw") {
     if (!detail) return;

@@ -1115,15 +1115,20 @@ class ReasonDialog(QDialog):
             btn.setCheckable(True)
             btn.setMinimumHeight(CONTROL_HEIGHT)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.clicked.connect(lambda _checked=False, label=text: self._on_pick(label))
+            btn.clicked.connect(self._pick_slot(text))
             lay.addWidget(btn)
             self._buttons.append(btn)
         self._paint_reasons()
+        self._specify_label = QLabel('Write the reason')
+        self._specify_label.setStyleSheet(
+            f"color:{C['text']};font-size:13px;font-weight:700;background:transparent;")
+        self._specify_label.hide()
+        lay.addWidget(self._specify_label)
         self._specify = QLineEdit()
-        self._specify.setObjectName('mbtSelectSpecify')
+        self._specify.setObjectName('mbtBackdateOther')
         self._specify.setPlaceholderText('What happened')
         self._specify.setMinimumHeight(CONTROL_HEIGHT)
-        self._specify.setStyleSheet(_line_qss())
+        self._specify.setStyleSheet(_line_qss('mbtBackdateOther'))
         self._specify.hide()
         self._specify.textChanged.connect(lambda _text: self._error.setText(''))
         lay.addWidget(self._specify)
@@ -1162,13 +1167,21 @@ class ReasonDialog(QDialog):
                 )
             )
 
+    def _pick_slot(self, label: str):
+        def _clicked(_checked=False):
+            self._on_pick(label)
+        return _clicked
+
     def _on_pick(self, text: str):
         chosen = (text or '').strip()
         self._picked = chosen
         self._paint_reasons()
-        self._specify.setVisible(chosen == self._other)
-        if chosen == self._other:
+        show_write_in = chosen == self._other
+        self._specify_label.setVisible(show_write_in)
+        self._specify.setVisible(show_write_in)
+        if show_write_in:
             self._specify.setFocus()
+            self.adjustSize()
         self._error.setText('')
 
     def _chosen_reason(self) -> str:

@@ -45,7 +45,10 @@ class SupplierDebtPanel(QWidget):
         row = QHBoxLayout()
         open_btn = SecondaryBtn('Open receipt', 40)
         open_btn.clicked.connect(self._open)
+        statement_btn = SecondaryBtn('Statement', 40)
+        statement_btn.clicked.connect(self._statement)
         row.addWidget(open_btn)
+        row.addWidget(statement_btn)
         role = (getattr(self.api, '_role', '') or '').lower()
         if role in ('cashier', 'manager', 'admin', 'superadmin'):
             pay_btn = PrimaryBtn('Record payment', 40)
@@ -98,6 +101,49 @@ class SupplierDebtPanel(QWidget):
         from desktop.dialogs.receive_stock_dialog import DeliveryReceiptDialog
         DeliveryReceiptDialog(self.api, full, self).exec_()
         self.refresh()
+
+    def _statement(self):
+        _receipt_id, supplier_id = self._current()
+        if not supplier_id and self._table.rowCount():
+            supplier_id = self._table.item(0, 1).data(Qt.UserRole)
+        if not supplier_id:
+            QMessageBox.information(self, 'Statement', 'Select a supplier invoice first.')
+            return
+        data = self.api.supplier_statement(int(supplier_id)) if hasattr(self.api, 'supplier_statement') else {}
+        if not data or data.get('error'):
+            QMessageBox.warning(self, 'Statement', (data or {}).get('error', 'Could not open the statement.'))
+            return
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit
+        supplier = data.get('supplier') or {}
+        lines = [
+            f"Supplier statement  {supplier.get('name') or ''}",
+            f"Phone {supplier.get('phone') or '-'}   Contact {supplier.get('contact_name') or '-'}",
+            f"Charged {_money(data.get('charged'))}    Outstanding {_money(data.get('outstanding'))}",
+            "",
+            "Invoices",
+        ]
+        for invoice in data.get('invoices') or []:
+            lines.append(
+                f"{invoice.get('receipt_number') or ''}  {invoice.get('reference_note') or ''}  "
+                f"total {_money(invoice.get('grand_total'))}  outstanding {_money(invoice.get('outstanding'))}  "
+                f"{invoice.get('payment_status') or ''}"
+            )
+        lines.append("")
+        lines.append("Payments")
+        for payment in data.get('payments') or []:
+            lines.append(
+                f"{payment.get('payment_number') or ''}  {_money(payment.get('amount'))}  "
+                f"{payment.get('method') or ''}  {payment.get('reference') or ''}"
+            )
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Supplier statement')
+        dialog.resize(720, 520)
+        layout = QVBoxLayout(dialog)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText("\n".join(lines))
+        layout.addWidget(view)
+        dialog.exec_()
 
     def _pay(self):
         receipt_id, supplier_id = self._current()

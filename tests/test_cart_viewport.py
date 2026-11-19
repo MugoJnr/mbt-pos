@@ -61,6 +61,15 @@ class CartViewportMath(unittest.TestCase):
         self.assertEqual(category.maximumWidth(), 220)
         self.assertEqual(layout.minimumWidth(), 168)
         self.assertEqual(layout.maximumWidth(), 168)
+
+        toolbar.set_single_row(True)
+        toolbar.resize(420, 80)
+        app.processEvents()
+        self.assertEqual(toolbar._row1.count(), 2)
+        self.assertEqual(toolbar._row2.count(), 0)
+        self.assertEqual(toolbar._row3.count(), 0)
+        self.assertLessEqual(toolbar.height(), 34)
+        self.assertEqual(layout.geometry().y(), search.geometry().y())
         toolbar.close()
 
     def test_pinned_totals_are_one_non_overlapping_row(self):

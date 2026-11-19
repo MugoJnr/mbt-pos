@@ -87,10 +87,9 @@ class MultiLayoutSwitchTests(unittest.TestCase):
         from PyQt5.QtWidgets import QSplitter
         tab = self.tab
         tab.set_checkout_layout(LAYOUT_CHECKOUT_PRO)
-        lay = tab._shell.layout()
-        self.assertEqual(lay.count(), 1)
-        split = lay.itemAt(0).widget()
+        split = tab._pos_splitter
         self.assertIsInstance(split, QSplitter)
+        self.assertEqual(split.parentWidget().objectName(), 'posShellBody')
         self.assertEqual(split.count(), 3)
         self.assertIs(split.widget(0), tab._product_panel)
         self.assertIs(split.widget(1), tab._sale_panel)

@@ -1205,25 +1205,38 @@ class UpdateChecker:
 
     def _run(self):
         self._stop.wait(FIRST_CHECK_DELAY)
-        last_online = self._is_online()
+        try:
+            last_online = bool(self._is_online())
+        except Exception:
+            last_online = False
         while not self._stop.is_set():
-            if self._checking:
-                self._stop.wait(1)
-                continue
-            self._checking = True
+            # One failed online/status call must not end the engine. The shop
+            # otherwise keeps the update lock and never notices a new release.
             try:
-                ok = self._check()
-            finally:
+                if self._checking:
+                    self._stop.wait(1)
+                    continue
+                self._checking = True
+                try:
+                    ok = self._check()
+                finally:
+                    self._checking = False
+                deadline = time.time() + (RECHECK_INTERVAL if ok else RETRY_INTERVAL)
+                while time.time() < deadline and not self._stop.is_set():
+                    self._stop.wait(30)
+                    try:
+                        now_online = bool(self._is_online())
+                    except Exception:
+                        now_online = last_online
+                    if should_trigger_reconnect_check(last_online, now_online, self._checking):
+                        last_online = True
+                        logger.info('Internet reconnected — rechecking for updates')
+                        break
+                    last_online = now_online
+            except Exception as exc:
                 self._checking = False
-            deadline = time.time() + (RECHECK_INTERVAL if ok else RETRY_INTERVAL)
-            while time.time() < deadline and not self._stop.is_set():
-                self._stop.wait(30)
-                now_online = self._is_online()
-                if should_trigger_reconnect_check(last_online, now_online, self._checking):
-                    last_online = True
-                    logger.info('Internet reconnected — rechecking for updates')
-                    break
-                last_online = now_online
+                logger.warning('Update check loop recovered: %s', exc)
+                self._stop.wait(RETRY_INTERVAL)
 
     def _check(self) -> bool:
         """Return True when GitHub was reached (even if already up to date)."""

@@ -19,7 +19,11 @@ export function quantityStep(unit: string | undefined | null, wheel = 0.25) {
   return 0.01;
 }
 
-export function parseQuantity(raw: string | number, unit?: string | null): { quantity: number } | { error: string } {
+export function parseQuantity(
+  raw: string | number,
+  unit?: string | null,
+  options?: { allowZero?: boolean },
+): { quantity: number } | { error: string } {
   const text = String(raw ?? "").trim().replace(/,/g, "");
   if (!/^-?\d+(\.\d+)?$/.test(text)) return { error: "Enter a valid quantity." };
   if (text.includes(".") && text.split(".")[1].length > 4) {
@@ -28,7 +32,7 @@ export function parseQuantity(raw: string | number, unit?: string | null): { qua
   const quantity = Number(text);
   if (!Number.isFinite(quantity)) return { error: "Enter a valid quantity." };
   if (quantity < 0) return { error: "Quantity cannot be negative." };
-  if (quantity === 0) return { error: "Quantity must be greater than zero." };
+  if (quantity === 0 && !options?.allowZero) return { error: "Quantity must be greater than zero." };
   return { quantity: Math.round(quantity * 10000) / 10000 };
 }
 

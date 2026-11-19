@@ -6,7 +6,8 @@ Approval posts every sale in one database transaction, exactly once.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 
 from desktop.utils.shop_time import business_day_iso, parse_sale_date, shop_today
 
@@ -96,6 +97,15 @@ def ensure_schema(db) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_token "
         "ON sales(client_token) WHERE client_token IS NOT NULL AND client_token != ''"
     )
+    for name, ddl in (
+        ('actor_role', 'TEXT'),
+        ('previous_status', 'TEXT'),
+        ('new_status', 'TEXT'),
+        ('sale_reference', 'TEXT'),
+        ('reversal_reference', 'TEXT'),
+        ('bulk_id', 'TEXT'),
+    ):
+        _add_column(db, 'backdate_events', name, ddl)
     db.commit()
 
 
@@ -287,7 +297,11 @@ def approve_request(db, actor: dict, request_id: int, data: dict | None = None) 
         )
         if db.execute("SELECT changes()").fetchone()[0] != 1:
             raise BackdateError('This request was already decided.', 409)
-        _event(db, request_id, version, 'approved', actor, note, None)
+        _event(
+            db, request_id, version, 'approved', actor, note, None,
+            previous_status='submitted', new_status='approved',
+            sale_reference=','.join(posted), bulk_id=(data.get('bulk_id') or ''),
+        )
         _audit(db, actor, 'BACKDATE_APPROVED', f"{row['reference']} receipts={','.join(posted)}")
         db.commit()
     except Exception:
@@ -296,6 +310,128 @@ def approve_request(db, actor: dict, request_id: int, data: dict | None = None) 
     body = get_request(db, actor, request_id)
     body['already_approved'] = False
     return body
+
+
+def bulk_approve(db, actor: dict, data: dict | None = None) -> dict:
+    """Approve each eligible pending request on its own. One failure does not undo the others."""
+    ensure_schema(db)
+    _require_review(actor)
+    data = data or {}
+    scope = (data.get('scope') or 'all').strip().lower()
+    day = ''
+    if scope == 'day':
+        day = _filter_day(data.get('business_date'))
+        if not day:
+            raise BackdateError('Choose the requested sales date before approving that day.')
+    elif scope not in ('all', 'pending'):
+        raise BackdateError('Choose all pending requests, or one requested sales date.')
+    bulk_id = uuid.uuid4().hex
+    rows = _pending_rows(db, actor, day if scope == 'day' else '')
+    results = []
+    approved_total = 0.0
+    for row in rows:
+        try:
+            body = approve_request(db, actor, int(row['id']), {
+                'note': 'Approved with the other pending requests for this review.',
+                'bulk_id': bulk_id,
+            })
+        except BackdateError as exc:
+            results.append({
+                'id': int(row['id']),
+                'reference': row['reference'],
+                'business_date': row['business_date'],
+                'outcome': 'failed',
+                'reason': exc.message,
+            })
+            continue
+        if body.get('already_approved'):
+            results.append({
+                'id': int(row['id']),
+                'reference': body.get('reference') or row['reference'],
+                'business_date': body.get('business_date') or row['business_date'],
+                'outcome': 'skipped',
+                'reason': 'Already approved.',
+            })
+            continue
+        amount = float((body.get('summary') or {}).get('total_sales') or 0)
+        approved_total = round(approved_total + amount, 2)
+        results.append({
+            'id': int(body['id']),
+            'reference': body.get('reference'),
+            'business_date': body.get('business_date'),
+            'outcome': 'approved',
+            'amount': amount,
+            'receipts': [
+                sale.get('posted_receipt') for sale in (body.get('sales') or []) if sale.get('posted_receipt')
+            ],
+        })
+    return {
+        'bulk_id': bulk_id,
+        'scope': 'day' if scope == 'day' else 'all',
+        'business_date': day,
+        'approved': sum(1 for item in results if item['outcome'] == 'approved'),
+        'failed': sum(1 for item in results if item['outcome'] == 'failed'),
+        'skipped': sum(1 for item in results if item['outcome'] == 'skipped'),
+        'approved_total': approved_total,
+        'results': results,
+    }
+
+
+def disapprove_request(db, actor: dict, request_id: int, data: dict | None = None) -> dict:
+    """Reverse an approved posting and return the request to pending review."""
+    ensure_schema(db)
+    _require_review(actor)
+    data = data or {}
+    reason = (data.get('reason') or data.get('note') or '').strip()
+    if len(reason) < 3:
+        raise BackdateError('Enter a reason for disapproving this approved sale.')
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        row = _locked(db, request_id)
+        if not row:
+            raise BackdateError('Request was not found.', 404)
+        if row['status'] != 'approved':
+            raise BackdateError('Only an approved request can be disapproved.')
+        if int(row['cashier_id']) == int(actor['id']):
+            raise BackdateError('You cannot disapprove your own request.', 403)
+        _check_version(row, data.get('version'))
+        sales = _sales_for(db, row['id'])
+        voided = []
+        for sale in sales:
+            posted_id = sale.get('posted_sale_id')
+            if not posted_id:
+                continue
+            receipt = _reverse_posted_sale(db, actor, int(posted_id), reason, row['reference'])
+            if receipt:
+                voided.append(receipt)
+        version = int(row['version']) + 1
+        now = _now()
+        changed = db.execute(
+            """UPDATE backdate_requests
+               SET status='submitted', version=?, review_note=?, updated_at=?
+               WHERE id=? AND status='approved'""",
+            (version, reason, now, request_id),
+        )
+        if changed.rowcount != 1:
+            raise BackdateError('This request was already changed.', 409)
+        _event(
+            db, request_id, version, 'disapproved', actor, reason, None,
+            previous_status='approved', new_status='submitted',
+            sale_reference=','.join(voided),
+            reversal_reference=','.join(voided),
+        )
+        _event(
+            db, request_id, version, 'returned_to_pending', actor,
+            'The posted sale was reversed. The request is waiting for review again.',
+            None, previous_status='approved', new_status='submitted',
+            sale_reference=','.join(voided), reversal_reference=','.join(voided),
+        )
+        _audit(db, actor, 'BACKDATE_DISAPPROVED', f"{row['reference']}: {reason} receipts={','.join(voided)}")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return get_request(db, actor, request_id)
 
 
 def get_request(db, actor: dict, request_id: int) -> dict:
@@ -318,6 +454,7 @@ def get_request(db, actor: dict, request_id: int) -> dict:
     ]
     for event in record['events']:
         event.pop('snapshot', None)
+    record['disapproval'] = _disapproval_banner(record['events'], record['status'])
     return record
 
 
@@ -336,9 +473,10 @@ def list_requests(db, actor: dict, filters: dict | None = None) -> dict:
     if filters.get('status'):
         clauses.append('status=?')
         params.append(str(filters['status']).strip().lower())
-    if filters.get('business_date'):
+    day = _requested_day_filter(filters)
+    if day:
         clauses.append('business_date=?')
-        params.append(str(filters['business_date']).strip())
+        params.append(day)
     query = (filters.get('q') or filters.get('reference') or '').strip()
     if query:
         clauses.append('reference LIKE ?')
@@ -356,12 +494,28 @@ def list_requests(db, actor: dict, filters: dict | None = None) -> dict:
         item['summary'] = _summary(sales)
         item.pop('sales', None)
         items.append(item)
+    own_clause = '' if _can_review(actor) else ' AND cashier_id=?'
+    own_params = () if _can_review(actor) else (actor['id'],)
     pending = db.execute(
-        "SELECT COUNT(*) AS c FROM backdate_requests WHERE status='submitted'"
-        + ('' if _can_review(actor) else ' AND cashier_id=?'),
-        () if _can_review(actor) else (actor['id'],),
+        "SELECT COUNT(*) AS c FROM backdate_requests WHERE status='submitted'" + own_clause,
+        own_params,
     ).fetchone()
-    return {'requests': items, 'pending_count': int(pending['c'] if pending else 0)}
+    pending_total = db.execute(
+        """SELECT COALESCE(SUM(l.total), 0) AS total
+           FROM backdate_lines l
+           JOIN backdate_sales s ON s.id = l.backdate_sale_id
+           JOIN backdate_requests r ON r.id = s.request_id
+           WHERE r.status='submitted'""" + own_clause.replace('cashier_id', 'r.cashier_id'),
+        own_params,
+    ).fetchone()
+    groups = _pending_groups(items, actor)
+    return {
+        'requests': items,
+        'pending_count': int(pending['c'] if pending else 0),
+        'pending_total': round(float(pending_total['total'] if pending_total else 0), 2),
+        'groups': groups,
+        'date_filter': day or 'all',
+    }
 
 
 def _decide(db, actor, request_id, data, status, action, audit_action) -> dict:
@@ -407,11 +561,7 @@ def _post_all(db, actor, row) -> list[str]:
     from backend.sale_lines import fill_sale_line
     from desktop.utils.stock_layers import consume_fifo
     for sale in sales:
-        token = f"backdate-{row['id']}-{sale['id']}"
-        existing = db.execute(
-            "SELECT id, receipt_number FROM sales WHERE client_token=?",
-            (token,),
-        ).fetchone()
+        token, existing = _claim_post(db, row['id'], sale['id'])
         if existing:
             db.execute(
                 "UPDATE backdate_sales SET posted_sale_id=?, posted_receipt=? WHERE id=?",
@@ -813,14 +963,19 @@ def _snapshot(db, row) -> str:
     return json.dumps(body, default=str)
 
 
-def _event(db, request_id, version, action, actor, note, snapshot) -> None:
+def _event(db, request_id, version, action, actor, note, snapshot, *,
+           previous_status='', new_status='', sale_reference='',
+           reversal_reference='', bulk_id='') -> None:
     db.execute(
         """INSERT INTO backdate_events
-           (request_id, version, action, actor_id, actor_name, note, snapshot, created_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
+           (request_id, version, action, actor_id, actor_name, note, snapshot, created_at,
+            actor_role, previous_status, new_status, sale_reference, reversal_reference, bulk_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (request_id, version, action, actor.get('id'),
          actor.get('full_name') or actor.get('username') or '',
-         note or '', snapshot, _now()),
+         note or '', snapshot, _now(),
+         (actor.get('role') or ''), previous_status, new_status,
+         sale_reference, reversal_reference, bulk_id),
     )
 
 
@@ -939,6 +1094,245 @@ def _tenders(kind, sale, total, amount_paid):
     return 0, 0, 'Credit Sale' if kind == 'credit' else 'Part Payment'
 
 
+def _add_column(db, table: str, name: str, ddl: str) -> None:
+    cols = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+    if name not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
+def _requested_day_filter(filters: dict) -> str:
+    raw = str(filters.get('date') or '').strip().lower()
+    explicit = str(filters.get('business_date') or '').strip()
+    if raw in ('', 'all') and not explicit:
+        return ''
+    if raw == 'today':
+        return shop_today().isoformat()
+    if raw == 'yesterday':
+        return (shop_today() - timedelta(days=1)).isoformat()
+    chosen = explicit or raw
+    if not chosen or chosen == 'all':
+        return ''
+    day = parse_sale_date(chosen)
+    if day is None:
+        raise BackdateError('Enter the requested sales date as YYYY-MM-DD.')
+    return business_day_iso(day)
+
+
+def _filter_day(raw) -> str:
+    day = parse_sale_date(str(raw or '').strip())
+    if day is None:
+        return ''
+    return business_day_iso(day)
+
+
+def _pending_groups(items, actor) -> list:
+    groups = {}
+    actor_id = int(actor.get('id') or 0)
+    for item in items:
+        if item.get('status') != 'submitted':
+            continue
+        day = item.get('business_date') or ''
+        bucket = groups.setdefault(day, {
+            'business_date': day,
+            'count': 0,
+            'total': 0.0,
+            'eligible_count': 0,
+            'eligible_total': 0.0,
+            'request_ids': [],
+        })
+        amount = float((item.get('summary') or {}).get('total_sales') or 0)
+        bucket['count'] += 1
+        bucket['total'] = round(bucket['total'] + amount, 2)
+        bucket['request_ids'].append(item['id'])
+        if _can_review(actor) and int(item.get('cashier_id') or 0) != actor_id:
+            bucket['eligible_count'] += 1
+            bucket['eligible_total'] = round(bucket['eligible_total'] + amount, 2)
+    return [groups[key] for key in sorted(groups, reverse=True)]
+
+
+def _pending_rows(db, actor, day: str):
+    sql = "SELECT * FROM backdate_requests WHERE status='submitted' AND cashier_id!=?"
+    params: list = [int(actor['id'])]
+    if day:
+        sql += " AND business_date=?"
+        params.append(day)
+    sql += " ORDER BY business_date, id"
+    return db.execute(sql, params).fetchall()
+
+
+def _claim_post(db, request_id: int, backdate_sale_id: int):
+    base = f"backdate-{int(request_id)}-{int(backdate_sale_id)}"
+    rows = db.execute(
+        """SELECT id, receipt_number, status, client_token FROM sales
+           WHERE client_token=? OR client_token LIKE ?""",
+        (base, base + '-r%'),
+    ).fetchall()
+    for row in rows:
+        if (row['status'] or 'completed') != 'voided':
+            return row['client_token'], row
+    used = {row['client_token'] for row in rows}
+    if base not in used:
+        return base, None
+    cycle = 2
+    while f"{base}-r{cycle}" in used:
+        cycle += 1
+    return f"{base}-r{cycle}", None
+
+
+def _disapproval_banner(events, status: str):
+    if status != 'submitted':
+        return None
+    approved = None
+    disapproved = None
+    for event in events or []:
+        action = event.get('action')
+        if action == 'approved':
+            approved = event
+        elif action == 'disapproved':
+            disapproved = event
+    if not disapproved or not approved:
+        return None
+    if (approved.get('id') or 0) > (disapproved.get('id') or 0):
+        return None
+    return {
+        'headline': 'PREVIOUSLY APPROVED — SUBSEQUENTLY DISAPPROVED',
+        'approved_at': approved.get('created_at') or '',
+        'approved_by': approved.get('actor_name') or '',
+        'disapproved_at': disapproved.get('created_at') or '',
+        'disapproved_by': disapproved.get('actor_name') or '',
+        'reason': disapproved.get('note') or '',
+        'sale_reference': disapproved.get('sale_reference') or '',
+        'reversal_reference': disapproved.get('reversal_reference') or '',
+        'reversed': True,
+    }
+
+
+def _reverse_posted_sale(db, actor, sale_id: int, reason: str, reference: str) -> str:
+    sale = db.execute("SELECT * FROM sales WHERE id=?", (int(sale_id),)).fetchone()
+    if not sale:
+        raise BackdateError('The posted sale for this request was not found.')
+    if (sale['status'] or '') == 'voided':
+        return sale['receipt_number'] or ''
+    _block_later_debt(db, sale)
+    _restore_sale_stock(db, actor, sale, reason)
+    from desktop.utils.stock_layers import restore_sale_layers
+    restore_sale_layers(db, int(sale['id']))
+    _cancel_sale_debt(db, sale, reason)
+    from desktop.utils.accounting_hooks import reverse_sale_journal
+    reversed_journal = reverse_sale_journal(
+        db, int(sale['id']), reason=reason,
+        user_id=actor.get('id'), username=actor.get('username') or '',
+        safe=False,
+    )
+    if reversed_journal.get('error'):
+        raise BackdateError(reversed_journal['error'])
+    updated = db.execute(
+        "UPDATE sales SET status='voided', notes=? WHERE id=? AND COALESCE(status,'completed')!='voided'",
+        (
+            f"VOIDED by {actor.get('username') or 'administrator'}: disapproval of {reference}. {reason}",
+            sale['id'],
+        ),
+    )
+    if updated.rowcount != 1:
+        raise BackdateError('This sale was already reversed.', 409)
+    try:
+        db.execute(
+            """INSERT INTO sale_edits
+               (sale_id, edited_by_id, edited_by_name, edit_type, field_name, old_value, new_value, reason)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (sale['id'], actor.get('id'), actor.get('username') or '',
+             'VOID', 'status', 'completed', 'voided', reason),
+        )
+    except Exception:
+        pass
+    return sale['receipt_number'] or ''
+
+
+def _block_later_debt(db, sale) -> None:
+    try:
+        payments = db.execute(
+            """SELECT dp.notes, dp.payment_receipt
+               FROM debt_payments dp
+               JOIN debt_invoices di ON di.id = dp.invoice_id
+               WHERE di.sale_id=?""",
+            (sale['id'],),
+        ).fetchall()
+    except Exception:
+        return
+    for payment in payments:
+        note = payment['notes'] or ''
+        slip = payment['payment_receipt'] or ''
+        if note.startswith('Deposit on') and slip.startswith('PAY-BD-'):
+            continue
+        raise BackdateError(
+            'This sale has a later customer payment. Disapproval is blocked so that payment is not deleted. '
+            'Refund or reallocate it first, then disapprove the request.'
+        )
+
+
+def _restore_sale_stock(db, actor, sale, reason: str) -> None:
+    ref = f"VOID_sale={int(sale['id'])}"
+    already = db.execute(
+        "SELECT 1 FROM stock_movements WHERE movement_type='VOID_RESTORE' AND reference=? LIMIT 1",
+        (ref,),
+    ).fetchone()
+    if already:
+        return
+    items = db.execute(
+        "SELECT product_id, product_name, quantity FROM sale_items WHERE sale_id=?",
+        (sale['id'],),
+    ).fetchall()
+    for item in items:
+        pid = item['product_id']
+        qty = float(item['quantity'] or 0)
+        if not pid or qty <= 0:
+            continue
+        product = db.execute("SELECT name, stock FROM products WHERE id=?", (int(pid),)).fetchone()
+        if not product:
+            raise BackdateError(
+                f"{item['product_name'] or 'A product'} no longer exists, so the stock cannot be restored."
+            )
+        current = float(product['stock'] or 0)
+        new_stock = round(current + qty, 4)
+        db.execute("UPDATE products SET stock=? WHERE id=?", (new_stock, int(pid)))
+        db.execute(
+            """INSERT INTO stock_movements
+               (product_id, product_name, movement_type, qty_before, qty_change, qty_after,
+                reference, reason, user_id, username)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (int(pid), product['name'], 'VOID_RESTORE', current, qty, new_stock, ref,
+             f"Stock restored: disapproval of {sale['receipt_number']}. {reason}",
+             actor.get('id'), actor.get('username') or ''),
+        )
+
+
+def _cancel_sale_debt(db, sale, reason: str) -> None:
+    try:
+        rows = db.execute(
+            """SELECT id, amount_paid FROM debt_invoices
+               WHERE sale_id=? AND status!='cancelled'""",
+            (sale['id'],),
+        ).fetchall()
+    except Exception:
+        return
+    now = _now()
+    for inv in rows:
+        paid = float(inv['amount_paid'] or 0)
+        note = f"CANCELLED: sale {sale['receipt_number']} disapproved — {reason}"
+        if paid > 0.009:
+            note += f" | Deposit already recorded: {paid:,.2f}. It stays in the payment history and is not a cash refund."
+        try:
+            db.execute(
+                "UPDATE debt_invoices SET status='cancelled', balance=0, notes=?, updated_at=? WHERE id=?",
+                (note, now, inv['id']),
+            )
+        except Exception:
+            db.execute(
+                "UPDATE debt_invoices SET status='cancelled', balance=0, notes=? WHERE id=?",
+                (note, inv['id']),
+            )
+
+
 def _can_review(actor) -> bool:
     return (actor.get('role') or '') in _REVIEW_ROLES
 
@@ -958,7 +1352,8 @@ def _require_request(actor) -> None:
 
 
 def _require_review(actor) -> None:
-    if not _can_review(actor):
+    from desktop.utils.security import has_permission
+    if not _can_review(actor) or not has_permission(actor, 'sales.void'):
         raise BackdateError('Only a manager or administrator can review a backdating request.', 403)
 
 

@@ -846,9 +846,9 @@ class CategoryChipBar(QWidget):
     categorySelected = pyqtSignal(str)  # 'All' or category name
     viewAllClicked = pyqtSignal()
 
-    CHIP_BAR_H = 108
-    CHIP_PILL_H = 34
-    CHIP_HOST_H = 56  # air around 34px pills + 1px borders so bottoms stay round
+    CHIP_BAR_H = 30
+    CHIP_PILL_H = 26
+    CHIP_HOST_H = 26
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -859,8 +859,9 @@ class CategoryChipBar(QWidget):
         self.setFixedHeight(self.CHIP_BAR_H)
         self._selected = 'All'
         self._chips = {}
+        self._packed = False
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(10, 26, 12, 26)
+        outer.setContentsMargins(4, 2, 4, 2)
         outer.setSpacing(0)
         outer.setAlignment(Qt.AlignVCenter)
 
@@ -869,7 +870,7 @@ class CategoryChipBar(QWidget):
         self._wrap.setFixedHeight(self.CHIP_HOST_H)
         self._wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root = QHBoxLayout(self._wrap)
-        root.setContentsMargins(0, 11, 0, 11)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(10)
         root.setAlignment(Qt.AlignVCenter)
         self._flow = root
@@ -889,8 +890,32 @@ class CategoryChipBar(QWidget):
         root.addWidget(self._view_all, 0)
         self.refresh_theme()
 
+    def set_packed(self, enabled: bool) -> None:
+        """Pack All / category / More as a group instead of stretching across the column."""
+        if enabled:
+            self.pack_to(int(getattr(self, '_pack_budget', 520) or 520))
+        else:
+            self._packed = False
+
+    def pack_to(self, budget: int) -> None:
+        """Show as many chips as fit in ``budget`` pixels, then More."""
+        budget = max(180, int(budget))
+        if (
+            getattr(self, '_packed', False)
+            and int(getattr(self, '_pack_budget', 0) or 0) == budget
+            and int(self.width() or 0) > 0
+        ):
+            return
+        self._packed = True
+        self._pack_budget = budget
+        labels = getattr(self, '_all_labels', None)
+        if labels:
+            self.set_categories([n for n in labels if n != 'All'])
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if getattr(self, '_packed', False):
+            return
         # Re-pack when the product column width changes (laptop / 3-col layouts)
         self.repack_for_width(force=False)
 
@@ -950,7 +975,10 @@ class CategoryChipBar(QWidget):
         labels = ['All'] + [n for n in (names or []) if n and n != 'All']
         self._all_labels = list(labels)
         try:
-            avail = max(160, int(self.width()) - 100)
+            if getattr(self, '_packed', False):
+                avail = max(180, int(getattr(self, '_pack_budget', 520) or 520))
+            else:
+                avail = max(160, int(self.width()) - 100)
         except Exception:
             avail = 360
         budget = max(100, avail - 12)
@@ -1005,7 +1033,9 @@ class CategoryChipBar(QWidget):
             self._flow.insertWidget(insert_at, b, 0)
             self._chips[self._selected] = b
         # Keep More on the right with a gap, not overlapping chips.
-        self._flow.insertStretch(max(0, self._flow.count() - 1), 1)
+        # Packed mode sits in the one-line catalog bar, so a stretch would eat the search field.
+        if not getattr(self, '_packed', False):
+            self._flow.insertStretch(max(0, self._flow.count() - 1), 1)
         overflow = max(0, len(labels) - len(shown))
         self._view_all.setVisible(True)
         if overflow:
@@ -1019,6 +1049,15 @@ class CategoryChipBar(QWidget):
             self._selected in self._chips or self._selected == 'All') else 'All'
         self.select(keep, emit=False)
         self.refresh_theme()
+        if getattr(self, '_packed', False):
+            used = 8
+            for i in range(self._flow.count()):
+                item = self._flow.itemAt(i)
+                widget = item.widget() if item is not None else None
+                if widget is not None and not widget.isHidden():
+                    used += int(widget.width() or widget.sizeHint().width() or 0) + 10
+            self.setFixedWidth(max(160, used))
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def select(self, name: str, emit=True):
         name = name or 'All'
@@ -1054,13 +1093,13 @@ class CategoryChipBar(QWidget):
             if on:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['gold']};color:#1A1A1A;"
-                    f"border:none;border-radius:17px;padding:0 14px;margin:0;"
+                    f"border:none;border-radius:{self.CHIP_PILL_H // 2}px;padding:0 12px;margin:0;"
                     f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:800;}}")
             else:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['card2']};color:{C['text2']};"
-                    f"border:1px solid {C['border']};border-radius:17px;padding:0 14px;margin:0;"
+                    f"border:1px solid {C['border']};border-radius:{self.CHIP_PILL_H // 2}px;padding:0 12px;margin:0;"
                     f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:700;}}"
                     f"QPushButton#posCatChip:hover{{border-color:{C['gold']};color:{C['text']};}}")
@@ -1068,7 +1107,7 @@ class CategoryChipBar(QWidget):
     def refresh_theme(self):
         self._view_all.setStyleSheet(
             f"QPushButton#posCatViewAll{{color:{C['text2']};font-size:10px;font-weight:700;"
-            f"background:{C['card2']};border:1px solid {C['border']};border-radius:17px;"
+            f"background:{C['card2']};border:1px solid {C['border']};border-radius:{self.CHIP_PILL_H // 2}px;"
             f"padding:0 12px;margin:0;min-width:72px;"
             f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;}}"
             f"QPushButton#posCatViewAll:hover{{border-color:{C['gold']};color:{C['text']};}}")
@@ -1683,6 +1722,9 @@ def sync_category_chips(tab) -> None:
     chips.set_categories(names)
     cur = cat.currentText() or 'All Categories'
     chips.select('All' if cur.lower().startswith('all') else cur, emit=False)
+    bar = getattr(tab, '_catalog_bar', None)
+    if _alive(bar) and hasattr(bar, 'relayout'):
+        bar.relayout(force=True)
 
 
 NARROW_RAIL = 340
@@ -1775,7 +1817,7 @@ def sync_pro_square_layout(tab) -> None:
     layout_combo = getattr(tab, '_layout_combo', None)
     if _alive(layout_combo):
         try:
-            layout_combo.setFixedWidth(112 if narrow_prod else 150)
+            layout_combo.setFixedWidth(128 if narrow_prod else 168)
         except Exception:
             pass
 
@@ -1783,12 +1825,8 @@ def sync_pro_square_layout(tab) -> None:
     search_row_lay = search_bar.layout() if _alive(search_bar) else None
     if search_row_lay is not None:
         try:
-            if narrow_prod:
-                search_row_lay.setContentsMargins(8, 8, 8, 8)
-                search_row_lay.setSpacing(6)
-            else:
-                search_row_lay.setContentsMargins(12, 10, 12, 10)
-                search_row_lay.setSpacing(8)
+            search_row_lay.setContentsMargins(4, 0, 4, 0)
+            search_row_lay.setSpacing(6)
         except Exception:
             pass
 
@@ -1878,10 +1916,11 @@ def apply_checkout_pro_chrome(tab) -> None:
     cat = getattr(tab, '_cat', None)
     if _alive(cat):
         cat.hide()
-    for name in ('_focus_btn', '_refresh_btn'):
-        w = getattr(tab, name, None)
-        if _alive(w):
-            w.hide()
+    if not _alive(getattr(tab, '_catalog_bar', None)):
+        for name in ('_focus_btn', '_refresh_btn'):
+            w = getattr(tab, name, None)
+            if _alive(w):
+                w.hide()
     # Layout switcher stays visible so cashiers can leave Checkout Pro without Settings
     layout_combo = getattr(tab, '_layout_combo', None)
     if _alive(layout_combo):
@@ -1889,6 +1928,8 @@ def apply_checkout_pro_chrome(tab) -> None:
 
     product = getattr(tab, '_product_panel', None)
     chips = tab._cat_chips
+    if _alive(getattr(tab, '_catalog_bar', None)):
+        chips = None
     if _alive(product) and _alive(chips):
         pl = product.layout()
         if pl is not None:
@@ -1912,7 +1953,8 @@ def apply_checkout_pro_chrome(tab) -> None:
             except Exception:
                 pass
             try:
-                pl.setSpacing(10)
+                pl.setSpacing(0)
+                pl.setContentsMargins(0, 0, 0, 0)
             except Exception:
                 pass
             chips.show()
@@ -1942,14 +1984,22 @@ def apply_checkout_pro_chrome(tab) -> None:
         search.setPlaceholderText('Search or scan…')
         search.setToolTip('Search or scan barcode, product name or SKU')
     if _alive(layout_combo):
-        layout_combo.setFixedWidth(150)
+        layout_combo.setFixedWidth(168)
         layout_combo.setToolTip(
             'Checkout layout — Retail Classic / Product Explorer / Checkout Pro.\n'
             'Also available in Settings → Jump: Checkout')
+    biz = getattr(tab, '_business_day_bar', None)
+    if _alive(biz) and hasattr(biz, 'set_tight'):
+        biz.set_tight(True)
+    if _alive(search_bar) and hasattr(search_bar, 'set_single_row') and not _alive(getattr(tab, '_catalog_bar', None)):
+        search_bar.set_single_row(True)
+    bar = getattr(tab, '_catalog_bar', None)
+    if _alive(bar) and hasattr(bar, 'relayout'):
+        bar.relayout(force=True)
     search_row_lay = search_bar.layout() if _alive(search_bar) else None
     if search_row_lay is not None:
-        search_row_lay.setContentsMargins(12, 10, 12, 10)
-        search_row_lay.setSpacing(8)
+        search_row_lay.setContentsMargins(4, 0, 4, 0)
+        search_row_lay.setSpacing(6)
 
     # Larger cards / fill scroll
     grid = getattr(tab, '_prod_grid', None)
@@ -2508,17 +2558,26 @@ def _ensure_body_pro_sections(tab, bl):
 def restore_shared_chrome(tab) -> None:
     """Undo Checkout Pro–specific chrome when switching to other layouts."""
     chips = getattr(tab, '_cat_chips', None)
-    if _alive(chips):
+    if _alive(chips) and not _alive(getattr(tab, '_catalog_bar', None)):
         chips.hide()
         _stash(tab, chips)
 
     cat = getattr(tab, '_cat', None)
-    if _alive(cat):
+    if _alive(cat) and not _alive(getattr(tab, '_catalog_bar', None)):
         cat.show()
+    search_bar = getattr(tab, '_search_bar', None)
+    if _alive(search_bar) and hasattr(search_bar, 'set_single_row') and not _alive(getattr(tab, '_catalog_bar', None)):
+        search_bar.set_single_row(False)
+    biz = getattr(tab, '_business_day_bar', None)
+    if _alive(biz) and hasattr(biz, 'set_tight') and not getattr(biz, '_inline', False):
+        biz.set_tight(False)
     for name in ('_focus_btn', '_refresh_btn'):
         w = getattr(tab, name, None)
         if _alive(w):
             w.show()
+    bar = getattr(tab, '_catalog_bar', None)
+    if _alive(bar) and hasattr(bar, 'relayout'):
+        bar.relayout(force=True)
 
     search = getattr(tab, '_search', None)
     if _alive(search) and hasattr(search, 'set_pro_icons'):

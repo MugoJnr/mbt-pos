@@ -1315,9 +1315,8 @@ class SalesTab(QWidget):
             pass
         self._rebuild_category_combo(cats)
         try:
-            if getattr(self, '_checkout_layout', '') == 'checkout_pro':
-                from desktop.pos.checkout_pro_chrome import sync_category_chips
-                sync_category_chips(self)
+            from desktop.pos.checkout_pro_chrome import sync_category_chips
+            sync_category_chips(self)
         except Exception:
             pass
         self._catalog_loaded = True
@@ -2124,6 +2123,9 @@ class SalesTab(QWidget):
             bar._apply_layout(force=True)
         except Exception:
             pass
+        catalog = getattr(self, '_catalog_bar', None)
+        if catalog is not None and hasattr(catalog, 'relayout'):
+            catalog.relayout(force=True)
 
     def _on_business_day_changed(self, qdate):
         from desktop.utils.security import can_set_business_day

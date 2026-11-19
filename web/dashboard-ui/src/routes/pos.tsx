@@ -33,7 +33,7 @@ import { Button, Card, EmptyState, Input, Select, Skeleton } from "@/components/
 import { SaleDocumentPanel } from "@/components/sale-document-panel";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { BACKDATE_REASONS, backdateWarning } from "@/components/business-date-field";
+import { BackdateReasonPicker, backdateWarning, normalizeBackdateReason } from "@/components/business-date-field";
 import { KES, saleDayCaption, shopTodayISO } from "@/lib/format";
 import { quantityStep } from "@/lib/quantity";
 import { wheelStep } from "@/lib/wheel-steps";
@@ -480,7 +480,7 @@ function POS() {
         : (paid || total);
       const pastDate = saleDate && saleDate < shopTodayISO();
       if (pastDate && !canDate) {
-        const reason = backdateReason.trim();
+        const reason = normalizeBackdateReason(backdateReason);
         if (reason.length < 3 || reason === "Other") {
           throw new Error("Choose a reason for this past date. If you choose Other, write what happened. The sale was not recorded.");
         }
@@ -1013,26 +1013,7 @@ function POS() {
                   {!canDate && saleDate < shopTodayISO() ? (
                     <div className="flex w-full min-w-0 basis-full flex-col gap-1">
                       <p className="text-xs font-semibold text-err">{backdateWarning(saleDate)}</p>
-                      <select
-                        aria-label="Backdating reason"
-                        value={BACKDATE_REASONS.includes(backdateReason) ? backdateReason : backdateReason ? "Other" : ""}
-                        onChange={(e) => setBackdateReason(e.target.value)}
-                        className="h-8 rounded-lg border border-border bg-input px-2 text-xs text-text"
-                      >
-                        <option value="">Choose a reason</option>
-                        {BACKDATE_REASONS.map((item) => (
-                          <option key={item} value={item}>{item}</option>
-                        ))}
-                      </select>
-                      {backdateReason === "Other" || (backdateReason && !BACKDATE_REASONS.includes(backdateReason)) ? (
-                        <Input
-                          aria-label="Backdating explanation"
-                          placeholder="What happened"
-                          value={backdateReason === "Other" ? "" : backdateReason.replace(/^Other:\s*/, "")}
-                          onChange={(e) => setBackdateReason(e.target.value.trim() ? `Other: ${e.target.value.trim()}` : "Other")}
-                          className="h-8 min-h-0 text-xs"
-                        />
-                      ) : null}
+                      <BackdateReasonPicker compact reason={backdateReason} onReason={setBackdateReason} />
                     </div>
                   ) : null}
                 </>

@@ -34,6 +34,11 @@ type Product = {
   unit?: string;
   image_path?: string;
   is_active?: number;
+  cost_confirmed?: number;
+  cost_health?: {
+    primary?: string;
+    badges?: { code: string; label: string; tone?: "err" | "warn" | "ok" | "muted" }[];
+  };
 };
 
 type SortKey = "name" | "stock" | "price" | "category";
@@ -83,7 +88,10 @@ type StockReceipt = {
     old_stock?: number;
     new_stock?: number;
     returned_qty?: number;
+    rejected_qty?: number;
+    ordered_qty?: number | null;
   }[];
+  grn_text?: string;
 };
 
 function Inventory() {
@@ -125,9 +133,13 @@ function Inventory() {
   const [recvBusy, setRecvBusy] = useState(false);
   const recvTokenRef = useRef("");
   const [recvLines, setRecvLines] = useState<
-    { product_id: number; name: string; sku?: string; unit?: string; quantity: number | string; unit_cost: number | null }[]
+    { product_id: number; name: string; sku?: string; unit?: string; quantity: number | string; unit_cost: number | null; rejected_qty?: number; ordered_qty?: number | null; explicit_zero?: boolean; allow_excess?: boolean }[]
   >([]);
   const [recvCost, setRecvCost] = useState("");
+  const [recvRejected, setRecvRejected] = useState("");
+  const [recvOrdered, setRecvOrdered] = useState("");
+  const [recvFree, setRecvFree] = useState(false);
+  const [recvExcess, setRecvExcess] = useState(false);
   const [recvExtra, setRecvExtra] = useState("");
   const [recvPaid, setRecvPaid] = useState("");
   const [recvPayMethod, setRecvPayMethod] = useState("cash");
@@ -164,6 +176,7 @@ function Inventory() {
   const [newPhotoUrl, setNewPhotoUrl] = useState("");
   const [savingProduct, setSavingProduct] = useState(false);
   const [q, setQ] = useState("");
+  const [costFilter, setCostFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(0);
@@ -207,7 +220,18 @@ function Inventory() {
   const selectedProduct = products.find((p) => String(p.id) === adjId);
 
   const list = useMemo(() => {
-    const filtered = products.filter((p) => nameMatches(q, p.name));
+    const filtered = products.filter((p) => {
+      if (!nameMatches(q, p.name)) return false;
+      const codes = new Set((p.cost_health?.badges || []).map((badge) => badge.code));
+      if (!costFilter) return true;
+      if (costFilter === "zero_or_invalid") {
+        return codes.has("explicit_zero") || codes.has("invalid_price") || codes.has("zero_review");
+      }
+      if (costFilter === "inconsistent") {
+        return codes.has("inconsistent") || codes.has("zero_review") || codes.has("stock_without_cost");
+      }
+      return codes.has(costFilter);
+    });
     filtered.sort((a, b) => {
       let av: string | number = a[sortKey] as any;
       let bv: string | number = b[sortKey] as any;
@@ -223,19 +247,19 @@ function Inventory() {
       return 0;
     });
     return filtered;
-  }, [products, q, sortKey, sortDir]);
+  }, [products, q, sortKey, sortDir, costFilter]);
 
   const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
   const pageRows = list.slice(page * pageSize, page * pageSize + pageSize);
 
   const valuationQ = useQuery({
     queryKey: ["inventory-valuation", productsQ.dataUpdatedAt],
-    queryFn: () => GET<{ value?: number; quantity?: number }>("/inventory-valuation"),
+    queryFn: () => GET<{ value?: number; quantity?: number; costing_incomplete?: boolean; products_needing_review?: number }>("/inventory-valuation"),
     enabled: seeCost,
   });
   const totalValue = seeCost && valuationQ.data && typeof valuationQ.data.value === "number"
     ? valuationQ.data.value
-    : products.reduce((s, p) => s + Number(p.stock || 0) * Number(p.cost_price || 0), 0);
+    : null;
   const lowCount = products.filter(
     (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.min_stock ?? 5),
   ).length;
@@ -282,12 +306,18 @@ function Inventory() {
     };
     if (canRemove) body.is_active = editForm.is_active === "0" ? 0 : 1;
     if (seeCost) {
-      const cost = Number(editForm.cost_price || 0);
-      if (!Number.isFinite(cost) || cost < 0) {
-        setEditMsg("Enter a cost of zero or more.");
-        return;
+      const rawCost = editForm.cost_price.trim();
+      if (!rawCost) {
+        body.cost_price = null;
+      } else {
+        const cost = Number(rawCost);
+        if (!Number.isFinite(cost) || cost < 0) {
+          setEditMsg("Enter a buying price, or leave it blank when the price is unknown. Type 0 only for free stock.");
+          return;
+        }
+        body.cost_price = cost;
+        if (cost === 0) body.explicit_zero = true;
       }
-      body.cost_price = cost;
     }
     setEditBusy(true);
     try {
@@ -341,6 +371,7 @@ function Inventory() {
       {seeCost ? (
         <label className="text-xs font-semibold text-text2">Cost
           <Input aria-label="Cost price" className="mt-1 h-11" type="number" min={0} step="0.01" value={editForm.cost_price} onChange={(e) => setEditForm({ ...editForm, cost_price: e.target.value })} />
+          <span className="mt-1 block text-[11px] text-text2">Leave blank if the buying price is unknown. Type 0 only for free stock.</span>
         </label>
       ) : null}
       <label className="text-xs font-semibold text-text2">SKU
@@ -665,6 +696,32 @@ function Inventory() {
                 />
               </label>
               <label className="text-xs font-semibold text-text2">
+                Ordered quantity
+                <Input
+                  aria-label="Ordered quantity"
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={recvOrdered}
+                  onChange={(e) => setRecvOrdered(e.target.value)}
+                  className="mt-1 h-11"
+                  placeholder="Blank if not tracking an order"
+                />
+              </label>
+              <label className="text-xs font-semibold text-text2">
+                Rejected quantity
+                <Input
+                  aria-label="Rejected quantity"
+                  type="number"
+                  min={0}
+                  step="any"
+                  value={recvRejected}
+                  onChange={(e) => setRecvRejected(e.target.value)}
+                  className="mt-1 h-11"
+                  placeholder="Damaged or refused. Not added to stock"
+                />
+              </label>
+              <label className="text-xs font-semibold text-text2">
                 Supplier
                 <select
                   aria-label="Supplier"
@@ -733,6 +790,7 @@ function Inventory() {
               ) : null}
             </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {canReceive ? (
               <label className="text-xs font-semibold text-text2">
                 Purchase cost
                 <Input
@@ -744,7 +802,9 @@ function Inventory() {
                   onChange={(e) => setRecvCost(e.target.value)}
                   className="mt-1 h-11"
                 />
+                <span className="mt-1 block text-[11px] text-text2">Leave blank to use a saved buying price above zero. Type 0 only with Free stock.</span>
               </label>
+              ) : null}
               <label className="text-xs font-semibold text-text2">
                 Additional delivery cost
                 <Input
@@ -757,6 +817,16 @@ function Inventory() {
                   className="mt-1 h-11"
                   placeholder="0 if none. Split by buy value."
                 />
+              </label>
+              {canReceive ? (
+                <label className="flex items-center gap-2 text-sm text-text">
+                  <input aria-label="Free stock" type="checkbox" checked={recvFree} onChange={(e) => setRecvFree(e.target.checked)} />
+                  Free stock (explicit zero buying price)
+                </label>
+              ) : null}
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input aria-label="Confirm extra quantity" type="checkbox" checked={recvExcess} onChange={(e) => setRecvExcess(e.target.checked)} />
+                Confirm extra quantity above the order
               </label>
               </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -782,15 +852,41 @@ function Inventory() {
               variant="secondary"
               onClick={() => {
                 const productForQty = products.find((p) => p.id === Number(recvId));
-                const parsedQty = parseQuantity(recvQty, productForQty?.unit);
+                const parsedQty = parseQuantity(recvQty || "0", productForQty?.unit, { allowZero: true });
+                const parsedRejected = parseQuantity(recvRejected.trim() === "" ? "0" : recvRejected, productForQty?.unit, { allowZero: true });
+                const parsedOrdered = recvOrdered.trim() === ""
+                  ? null
+                  : parseQuantity(recvOrdered, productForQty?.unit, { allowZero: true });
                 if (!recvId || "error" in parsedQty) {
                   setRecvMsg("error" in parsedQty ? parsedQty.error : "Select a product and a quantity before adding a line.");
                   return;
                 }
+                if ("error" in parsedRejected) {
+                  setRecvMsg(parsedRejected.error);
+                  return;
+                }
+                if (parsedOrdered && "error" in parsedOrdered) {
+                  setRecvMsg(parsedOrdered.error);
+                  return;
+                }
                 const qty = parsedQty.quantity;
+                const rejected = parsedRejected.quantity;
+                const ordered = parsedOrdered && !("error" in parsedOrdered) ? parsedOrdered.quantity : null;
+                if (qty <= 0 && rejected <= 0) {
+                  setRecvMsg("Enter a quantity received, or a rejected quantity for goods that must not enter stock.");
+                  return;
+                }
+                if (ordered && qty + rejected - ordered > 0.00001 && !recvExcess) {
+                  setRecvMsg("Received plus rejected is above the ordered quantity. Confirm the extra quantity, or reduce the line.");
+                  return;
+                }
                 const cost = recvCost.trim() === "" ? null : Number(recvCost);
+                if (cost === 0 && !recvFree) {
+                  setRecvMsg("Enter a buying price, or tick Free stock. A blank or accidental zero is not posted.");
+                  return;
+                }
                 if (cost !== null && !Number.isFinite(cost)) {
-                  setRecvMsg("Enter a valid purchase cost, or leave it blank to keep the current cost.");
+                  setRecvMsg("Enter a valid purchase cost, or leave it blank when the product already has a buying price.");
                   return;
                 }
                 if (recvLines.some((line) => line.product_id === Number(recvId))) {
@@ -806,9 +902,17 @@ function Inventory() {
                     sku: product?.sku || "",
                     unit: product?.unit || "pcs",
                     quantity: qty,
-                    unit_cost: cost,
+                    unit_cost: recvFree ? 0 : cost,
+                    rejected_qty: rejected,
+                    ordered_qty: ordered && ordered > 0 ? ordered : null,
+                    explicit_zero: Boolean(recvFree && cost === 0),
+                    allow_excess: recvExcess,
                   },
                 ]);
+                setRecvRejected("");
+                setRecvOrdered("");
+                setRecvFree(false);
+                setRecvExcess(false);
                 setRecvMsg("");
               }}
             >
@@ -822,6 +926,7 @@ function Inventory() {
                       <th className="px-3 py-2">#</th>
                       <th className="px-3 py-2">Product</th>
                       <th className="px-3 py-2">Qty received</th>
+                      <th className="px-3 py-2">Rejected</th>
                       <th className="px-3 py-2">Unit cost</th>
                       <th className="px-3 py-2 text-right">Line total</th>
                       <th className="px-3 py-2" />
@@ -851,6 +956,10 @@ function Inventory() {
                               }}
                               className="h-10 w-28"
                             />
+                          </td>
+                          <td className="px-3 py-2 tabular-nums text-text2">
+                            {Number(line.rejected_qty || 0)}
+                            {line.ordered_qty ? ` · ordered ${line.ordered_qty}` : ""}
                           </td>
                           <td className="px-3 py-2">
                             <Input
@@ -942,7 +1051,9 @@ function Inventory() {
                   const lines = [];
                   if (recvLines.length) {
                     for (const line of recvLines) {
-                      const parsed = parseQuantity(String(line.quantity), line.unit);
+                      const parsed = parseQuantity(String(line.quantity), line.unit, {
+                        allowZero: Number(line.rejected_qty || 0) > 0,
+                      });
                       if ("error" in parsed) {
                         setRecvMsg(`${line.name}: ${parsed.error}`);
                         return;
@@ -951,6 +1062,10 @@ function Inventory() {
                         product_id: line.product_id,
                         quantity: parsed.quantity,
                         unit_cost: line.unit_cost,
+                        rejected_qty: Number(line.rejected_qty || 0),
+                        ordered_qty: line.ordered_qty,
+                        explicit_zero: Boolean(line.explicit_zero),
+                        allow_excess: Boolean(line.allow_excess),
                       });
                     }
                   } else {
@@ -1034,12 +1149,18 @@ function Inventory() {
                       status: "posted",
                       grouped: true,
                       username: user?.username || user?.full_name,
+                      amount_paid: res.amount_paid,
+                      outstanding: res.outstanding,
+                      payment_status: res.payment_status,
+                      reference_note: savedReference,
                       lines: (res.lines || []).map((line: any) => ({
                         product_id: line.product_id,
                         product_name: line.product_name || line.name,
                         sku: line.sku,
                         unit: line.unit,
                         quantity: line.quantity,
+                        rejected_qty: line.rejected_qty,
+                        ordered_qty: line.ordered_qty,
                         unit_cost: line.unit_cost,
                         line_total: line.line_total,
                         old_stock: line.old_stock,
@@ -1084,9 +1205,12 @@ function Inventory() {
         eyebrow="Operations"
         title="Inventory"
         icon={<Package className="h-4 w-4" />}
-        description={showStockValue
-          ? `${products.length} SKUs · ${KES(totalValue, currency)} FIFO value${lowCount ? ` · ${lowCount} low` : ""}`
-          : `${products.length} SKUs${lowCount ? ` · ${lowCount} low` : ""}`}
+        description={(() => {
+          const warnings = products.filter((p) => (p.cost_health?.badges || []).some((badge) => badge.code !== "complete")).length;
+          const incomplete = warnings || valuationQ.data?.costing_incomplete ? " · valuation incomplete where a buying price or FIFO layer is missing" : "";
+          const valueText = showStockValue && totalValue != null ? ` · ${KES(totalValue, currency)} FIFO value` : "";
+          return `${products.length} SKUs${valueText}${lowCount ? ` · ${lowCount} low` : ""}${warnings ? ` · ${warnings} costing warnings` : ""}${incomplete}`;
+        })()}
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Link
@@ -1341,7 +1465,21 @@ function Inventory() {
             className="pl-8 min-h-[44px]"
           />
         </div>
-        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => setQ("")}>Clear</Button>
+        <select
+          aria-label="Costing filter"
+          value={costFilter}
+          onChange={(e) => { setCostFilter(e.target.value); setPage(0); }}
+          className="h-11 rounded-xl border border-border bg-input px-3 text-sm text-text"
+        >
+          <option value="">All costing</option>
+          <option value="missing_price">Missing buying price</option>
+          <option value="zero_or_invalid">Zero or invalid cost</option>
+          <option value="missing_fifo">Missing FIFO layer</option>
+          <option value="stock_without_cost">Stock without cost</option>
+          <option value="inconsistent">Costing needs review</option>
+          <option value="complete">Costing complete</option>
+        </select>
+        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => { setQ(""); setCostFilter(""); }}>Clear</Button>
         <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => document.querySelector<HTMLInputElement>('input[placeholder="Search by product name…"]')?.focus()}>Search</Button>
       </div>
       <Card className="overflow-hidden">
@@ -1389,6 +1527,13 @@ function Inventory() {
                       >
                         {p.name}
                       </button>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {(p.cost_health?.badges || []).filter((badge) => badge.code !== "complete").map((badge) => (
+                          <Badge key={badge.code} tone={badge.tone === "err" ? "err" : badge.tone === "ok" ? "ok" : "warn"}>
+                            {badge.label}
+                          </Badge>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-text2">{p.sku || "—"}</td>
                     <td className="px-4 py-2.5 text-text2">{p.category || "General"}</td>
@@ -1397,7 +1542,7 @@ function Inventory() {
                     </td>
                     {seeCost ? (
                       <td className="px-4 py-2.5 tabular-nums text-text2">
-                        {KES(p.cost_price ?? 0, currency)}
+                        {p.cost_price == null ? "—" : KES(p.cost_price, currency)}
                       </td>
                     ) : null}
                     <td className="px-4 py-2.5 tabular-nums">
@@ -1502,7 +1647,8 @@ function Inventory() {
                         sku: newProduct.sku.trim(),
                         category: newProduct.category.trim(),
                         price: Number(newProduct.price || 0),
-                        cost_price: Number(newProduct.cost_price || 0),
+                        cost_price: newProduct.cost_price.trim() === "" ? null : Number(newProduct.cost_price),
+                        explicit_zero: newProduct.cost_price.trim() !== "" && Number(newProduct.cost_price) === 0,
                         stock: Number(newProduct.stock || 0),
                         unit: newProduct.unit.trim() || "pcs",
                         barcode: newProduct.barcode.trim(),
@@ -1664,7 +1810,7 @@ function Inventory() {
                 <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
                   <div>
                     <div className="text-xs font-semibold uppercase tracking-wide text-text2">
-                      Supplier delivery
+                      Goods received note
                     </div>
                     <div className="mt-1 text-lg font-extrabold text-text">
                       {receipt.receipt_number || "Delivery"}
@@ -1677,14 +1823,26 @@ function Inventory() {
                       {String(receipt.created_at || "").replace("T", " ").slice(0, 19)}
                     </div>
                   </div>
-                  <Button variant="ghost" onClick={() => setReceipt(null)}>
-                    Close
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      onClick={async () => {
+                        if (!receipt.id) return;
+                        const doc = await GET<{ text?: string; error?: string }>(`/stock-receipts/${receipt.id}/document`);
+                        if (doc?.text) setReceipt({ ...receipt, grn_text: doc.text });
+                      }}
+                    >
+                      Print / preview
+                    </Button>
+                    <Button variant="ghost" onClick={() => setReceipt(null)}>
+                      Close
+                    </Button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3 px-5 py-4 text-sm">
                   {[
                     ["Supplier", receipt.supplier_name || "No supplier"],
-                    ["Invoice reference", receipt.reference || "—"],
+                    ["Invoice reference", receipt.reference || receipt.reference_note || "—"],
                     ["Delivery note", receipt.notes || "—"],
                     ["Received by", receipt.username || "—"],
                   ].map(([label, value]) => (
@@ -1716,6 +1874,8 @@ function Inventory() {
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums text-text">
                             {Number(line.quantity || 0)}
+                            {line.ordered_qty != null ? ` · ordered ${Number(line.ordered_qty)}` : ""}
+                            {Number(line.rejected_qty || 0) > 0 ? ` · rejected ${Number(line.rejected_qty)} not stocked` : ""}
                             {Number(line.returned_qty || 0) > 0 ? ` · returned ${Number(line.returned_qty)}` : ""}
                           </td>
                           <td className="px-3 py-2 text-right tabular-nums text-text">{Number(line.unit_cost || 0).toFixed(2)}</td>
@@ -1742,6 +1902,9 @@ function Inventory() {
                         </div>
                       ))}
                     </div>
+                  ) : null}
+                  {receipt.grn_text ? (
+                    <pre className="mt-3 whitespace-pre-wrap rounded-xl border border-border bg-panel p-3 text-xs text-text">{receipt.grn_text}</pre>
                   ) : null}
                   <DeliveryActions
                     receipt={receipt}
@@ -1817,7 +1980,7 @@ function Inventory() {
           <span className="text-muted-fg mx-2">·</span>
           <span className="text-warn font-semibold">{lowCount}</span> low stock
         </div>
-        {showStockValue ? (
+        {showStockValue && totalValue != null ? (
           <div>
             Stock value:{" "}
             <span className="text-gold font-bold text-sm tabular-nums">

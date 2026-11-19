@@ -183,6 +183,7 @@ class BusinessDayBar(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._mode = None  # (compact, stacked, micro) — force first apply
+        self._tight = False
         self._date = None
         self._picker = _BizDayButton(self)
         self._warn = None
@@ -222,6 +223,25 @@ class BusinessDayBar(QFrame):
         self._apply_layout(force=True)
 
     bind = setup  # alias for callers/tests
+
+    def set_inline(self, enabled: bool) -> None:
+        """One date row sized to its buttons, so the catalog bar can sit beside search."""
+        self._inline = bool(enabled)
+        if enabled:
+            self._tight = True
+        self._mode = None
+        self._apply_layout(force=True)
+
+    def preferred_inline_width(self) -> int:
+        if self._date is None:
+            return 460
+        return max(300, min(430, int(self._row_need(short=False))))
+
+    def set_tight(self, enabled: bool) -> None:
+        """Checkout Pro: one short date row, no spare padding above the search."""
+        self._tight = bool(enabled)
+        self._mode = None
+        self._apply_layout(force=True)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -285,6 +305,8 @@ class BusinessDayBar(QFrame):
         Stay tight until the wider row fits with slack. A zero width is a
         layout in progress, not a reason to jump back to the wide row.
         """
+        if getattr(self, '_inline', False):
+            return (False, False, False)
         micro = 0 < w < self.MICRO_UNDER
         prev = self._mode
         if w <= 0:
@@ -344,7 +366,10 @@ class BusinessDayBar(QFrame):
             return
         self._mode = mode
 
-        margins = (8, 4, 8, 4) if micro else ((10, 6, 10, 6) if short else (16, 8, 16, 8))
+        if getattr(self, '_tight', False) and not stacked:
+            margins = (6, 1, 6, 1)
+        else:
+            margins = (8, 4, 8, 4) if micro else ((10, 6, 10, 6) if short else (16, 8, 16, 8))
         self._root.setContentsMargins(*margins)
         gap = 4 if micro else (6 if short else 8)
         self._row1.setSpacing(gap)
@@ -360,13 +385,15 @@ class BusinessDayBar(QFrame):
 
         self._picker.set_show_caption(not short)
         self._picker.apply_style(date_width=0, micro=micro)
-        if stacked:
+        if getattr(self, '_inline', False):
+            date_w = 156
+        elif stacked:
             date_w = 168
         elif w < 640:
             date_w = 200
         else:
             date_w = 240
-        self._picker.setFixedSize(date_w, 34)
+        self._picker.setFixedSize(date_w, 30 if getattr(self, '_tight', False) else 34)
         # Re-apply the caption after the stylesheet reset. Do this while
         # _applying is set so the caption cannot ask for another layout.
         if hasattr(self._picker, '_sync_label'):
@@ -382,7 +409,8 @@ class BusinessDayBar(QFrame):
                 btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
                 continue
             btn.setText(s if short else wide)
-            btn.setStyleSheet(btn_ss)
+            if btn_ss:
+                btn.setStyleSheet(btn_ss)
             btn.setMinimumWidth(0)
             btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             btn.show()
@@ -418,7 +446,16 @@ class BusinessDayBar(QFrame):
         else:
             self._note.hide()
 
-        self.setMinimumHeight((64 if warn_on else 40) + (28 if stacked else 0))
+        if getattr(self, '_inline', False) and not warn_on:
+            self.setMinimumHeight(36)
+            self.setMaximumHeight(36)
+            self.setFixedWidth(self.preferred_inline_width())
+        elif getattr(self, '_tight', False) and not stacked and not warn_on:
+            self.setMinimumHeight(32)
+            self.setMaximumHeight(34)
+        else:
+            self.setMaximumHeight(16777215)
+            self.setMinimumHeight((64 if warn_on else 40) + (28 if stacked else 0))
         self.setMinimumWidth(0)
         self.setMaximumWidth(16777215)
         self.updateGeometry()
@@ -456,6 +493,7 @@ class SearchToolbar(QFrame):
             f"border-bottom:1px solid {C['border']};}}")
         self._mode = None
         self._widgets = ()
+        self._single_row = False
         self._root = QVBoxLayout(self)
         self._root.setContentsMargins(16, 14, 16, 14)
         self._root.setSpacing(6)
@@ -468,6 +506,16 @@ class SearchToolbar(QFrame):
 
     def setup(self, search, category, layout, refresh, focus) -> None:
         self._widgets = (search, category, layout, refresh, focus)
+        self._apply_layout(force=True)
+
+    def set_single_row(self, enabled: bool) -> None:
+        """Checkout Pro: search and the layout switch share one short row.
+
+        The category, refresh, and focus controls are hidden there. Leaving
+        the switch on its own row reserved a tall empty band above the products.
+        """
+        self._single_row = bool(enabled)
+        self._mode = None
         self._apply_layout(force=True)
 
     def showEvent(self, event):
@@ -490,13 +538,57 @@ class SearchToolbar(QFrame):
             layout.takeAt(0)
 
     def _apply_layout(self, force: bool = False, width: int | None = None) -> None:
-        if len(self._widgets) != 5:
+        if getattr(self, '_yielded', False) or len(self._widgets) != 5:
             return
         w = int(width if width is not None else self.width())
         if w <= 0 and self.parentWidget() is not None:
             w = self.parentWidget().width()
         stacked = w < self.STACK_UNDER
         search, category, layout, refresh, focus = self._widgets
+        if getattr(self, '_single_row', False):
+            mode = ('single',)
+            if not force and mode == self._mode:
+                return
+            self._mode = mode
+            self._clear(self._row1)
+            self._clear(self._row2)
+            self._clear(self._row3)
+            self._root.setSpacing(0)
+            self._root.setContentsMargins(4, 0, 4, 0)
+            self._row1.setSpacing(6)
+            self._row2.setSpacing(0)
+            self._row3.setSpacing(0)
+            search.setMinimumWidth(0)
+            search.setMinimumHeight(32)
+            search.setMaximumHeight(32)
+            search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            layout.setFixedWidth(168)
+            layout.setMinimumHeight(32)
+            layout.setMaximumHeight(32)
+            layout.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            sheet = layout.styleSheet() or ''
+            if 'min-height:40px' in sheet or 'padding:6px 10px' in sheet:
+                self._layout_sheet = sheet
+                layout.setStyleSheet(
+                    sheet.replace('min-height:40px', 'min-height:22px').replace(
+                        'padding:6px 10px', 'padding:1px 8px'))
+            self._row1.addWidget(search, 1)
+            self._row1.addWidget(layout, 0, Qt.AlignVCenter)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.setFixedHeight(32)
+            self.updateGeometry()
+            return
+        search.setMaximumHeight(16777215)
+        search.setMinimumHeight(48)
+        layout.setMaximumHeight(16777215)
+        layout.setMinimumHeight(44)
+        saved = getattr(self, '_layout_sheet', None)
+        if saved:
+            layout.setStyleSheet(saved)
+            self._layout_sheet = None
+        self._root.setSpacing(6)
+        self.setMaximumHeight(16777215)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         combo_need = (
             int(category.sizeHint().width() or 0)
             + int(layout.sizeHint().width() or 0)
@@ -556,6 +648,146 @@ class SearchToolbar(QFrame):
         self.setMinimumWidth(0)
         self.setMinimumHeight(128 if split_combos else (92 if stacked else 72))
         self.updateGeometry()
+
+
+class CatalogBar(QFrame):
+    """Date, search, layout and categories on one line when the till is wide enough.
+
+    The product grid stays in the column below this bar, so the cards are not
+    pushed down by a stack of full-width toolbars.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('posCatalogBar')
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet(
+            f"QFrame#posCatalogBar{{background:transparent;"
+            f"border-bottom:1px solid {C['border']};}}")
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(6, 4, 6, 4)
+        self._root.setSpacing(4)
+        self._rows = []
+        for _ in range(3):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.setContentsMargins(0, 0, 0, 0)
+            self._root.addLayout(row)
+            self._rows.append(row)
+        self._pieces = ()
+        self._mode = None
+
+    def bind(self, biz, search, category, layout, refresh, focus, chips, toolbar) -> None:
+        self._pieces = (biz, search, category, layout, refresh, focus, chips)
+        self._toolbar = toolbar
+        if toolbar is not None:
+            toolbar._yielded = True
+            toolbar.hide()
+        if biz is not None and hasattr(biz, 'set_inline'):
+            biz.set_inline(True)
+        if chips is not None and hasattr(chips, 'set_packed'):
+            chips.set_packed(True)
+        if category is not None:
+            category.hide()
+        self.relayout(force=True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, '_applying', False):
+            return
+        self.relayout()
+
+    def _clear_rows(self) -> None:
+        for row in self._rows:
+            while row.count():
+                row.takeAt(0)
+
+    def relayout(self, force: bool = False) -> None:
+        if len(self._pieces) != 7 or getattr(self, '_applying', False):
+            return
+        biz, search, category, layout, refresh, focus, chips = self._pieces
+        w = int(self.width() or 0)
+        if w < 80 and self.parentWidget() is not None:
+            w = int(self.parentWidget().width() or 0)
+        biz_w = int(biz.preferred_inline_width()) if biz is not None and hasattr(biz, 'preferred_inline_width') else 380
+        extras = []
+        extra_w = 0
+        for widget, guess in ((refresh, 40), (focus, 88)):
+            if widget is None:
+                continue
+            extras.append(widget)
+            extra_w += int(widget.sizeHint().width() or guess) + 8
+        search_min = 200
+        layout_w = 156
+        reserved = biz_w + search_min + layout_w + extra_w + 32
+        chip_budget = max(0, w - reserved) if w >= 80 else 420
+        if chips is not None and hasattr(chips, 'pack_to'):
+            self._applying = True
+            try:
+                chips.pack_to(chip_budget if chip_budget >= 220 else 360)
+            finally:
+                self._applying = False
+            chip_w = max(180, int(chips.width() or 220))
+        else:
+            chip_w = 280
+        one_need = reserved + chip_w
+        if w < 80 or one_need <= w + 80:
+            mode = 'one'
+        elif w >= 900:
+            mode = 'chips'
+        else:
+            mode = 'stack'
+        if not force and mode == self._mode:
+            return
+        self._applying = True
+        self._mode = mode
+        try:
+            self._clear_rows()
+            for widget, height in ((search, 36), (layout, 36), (refresh, 36), (focus, 36)):
+                if widget is None:
+                    continue
+                widget.setMinimumHeight(height)
+                widget.setMaximumHeight(height)
+            if search is not None:
+                search.setMinimumWidth(160)
+            if layout is not None:
+                layout.setFixedWidth(layout_w)
+                sheet = layout.styleSheet() or ''
+                if 'min-height:40px' in sheet:
+                    layout.setStyleSheet(
+                        sheet.replace('min-height:40px', 'min-height:24px').replace(
+                            'padding:6px 10px', 'padding:2px 8px'))
+            if category is not None:
+                category.hide()
+            row_h = 40
+            if mode == 'one':
+                self._place(0, biz, search, layout, chips, *extras)
+                self.setFixedHeight(row_h + 8)
+            elif mode == 'chips':
+                self._place(0, biz, search, layout, *extras)
+                self._place(1, chips)
+                self.setFixedHeight(row_h * 2 + 12)
+            else:
+                self._place(0, biz)
+                self._place(1, search, layout, *extras)
+                self._place(2, chips)
+                self.setFixedHeight(row_h * 3 + 16)
+            self.updateGeometry()
+            parent = self.parentWidget()
+            if parent is not None and parent.layout() is not None:
+                parent.layout().activate()
+        finally:
+            self._applying = False
+
+    def _place(self, index: int, *widgets) -> None:
+        row = self._rows[index]
+        search = self._pieces[1] if self._pieces else None
+        for widget in widgets:
+            if widget is None:
+                continue
+            widget.show()
+            row.addWidget(widget, 1 if widget is search else 0, Qt.AlignVCenter)
 
 
 def build_shared_panels(tab) -> None:
@@ -632,7 +864,6 @@ def build_shared_panels(tab) -> None:
         (tab._biz_copy_btn, 'Copy', 'Copy sale…'),
     ), tab._biz_warn)
     tab._business_day_bar = biz
-    ll.addWidget(biz)
 
     search_bar = SearchToolbar(product)
     tab._search = PosSearchBar()
@@ -692,7 +923,24 @@ def build_shared_panels(tab) -> None:
         tab._search, tab._cat, tab._layout_combo, ref, tab._focus_btn)
     tab._theme_btn = None
     tab._search_bar = search_bar
-    ll.addWidget(search_bar)
+    search_bar.hide()
+
+    from desktop.pos.checkout_pro_chrome import (
+        CategoryChipBar, _on_chip_category, _on_view_all_categories,
+    )
+    chips = CategoryChipBar(stash)
+    chips.hide()
+    chips.categorySelected.connect(lambda name: _on_chip_category(tab, name))
+    chips.viewAllClicked.connect(lambda: _on_view_all_categories(tab))
+    tab._cat_chips = chips
+
+    bar = CatalogBar(stash)
+    bar.hide()
+    bar.bind(
+        biz, tab._search, tab._cat, tab._layout_combo,
+        ref, tab._focus_btn, chips, search_bar,
+    )
+    tab._catalog_bar = bar
 
     scroll = QScrollArea(product)
     scroll.setObjectName('posProductScroll')

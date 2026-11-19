@@ -3118,7 +3118,7 @@ class ProductGrid(QWidget):
         self._grid = QGridLayout(self._host)
         self._grid.setSpacing(GAP)
         # Symmetric side pad so right-column cards never clip against the rail
-        self._grid.setContentsMargins(PADDING - 2, PADDING - 4, PADDING - 2, PADDING - 4)
+        self._grid.setContentsMargins(PADDING - 2, 6, PADDING - 2, PADDING - 4)
         # AlignTop (not AlignLeft) lets an Expanding card fill its cell. AlignLeft
         # pinned every tile to 240px and left a gutter in a one-column catalog.
         self._grid.setAlignment(Qt.AlignTop)
@@ -3139,10 +3139,13 @@ class ProductGrid(QWidget):
     def set_pro_density(self, enabled: bool = True):
         """Checkout Pro: compact cards, tighter gaps, pagination hint under grid."""
         self._pro_density = bool(enabled)
-        gap = 14 if self._pro_density else max(GAP, 12)
-        pad = 10 if self._pro_density else max(PADDING - 4, 10)
+        gap = 8 if self._pro_density else max(GAP, 12)
+        pad = 8 if self._pro_density else max(PADDING - 4, 10)
         self._grid.setSpacing(gap)
-        self._grid.setContentsMargins(pad, pad, pad, pad)
+        if self._pro_density:
+            self._grid.setContentsMargins(pad, 2, pad, pad)
+        else:
+            self._grid.setContentsMargins(pad, pad, pad, pad)
         # AlignLeft pins the grid to its sizeHint, so Expanding cards never take
         # the width unlock_width asked for. Fill the cell in every layout.
         try:

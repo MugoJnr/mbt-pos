@@ -3,7 +3,7 @@ from desktop.utils.quiet_ui import info_toast
 
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QDoubleSpinBox,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QCheckBox, QTextEdit,
     QMessageBox, QFormLayout, QSizePolicy, QWidget, QSplitter,
 )
 from PyQt5.QtCore import Qt
@@ -42,11 +42,27 @@ class SuppliersDialog(QDialog):
         self._phone = QLineEdit()
         self._phone.setPlaceholderText('Phone')
         self._phone.setMinimumHeight(40)
+        self._contact = QLineEdit()
+        self._contact.setPlaceholderText('Contact person')
+        self._contact.setMinimumHeight(40)
+        self._email = QLineEdit()
+        self._email.setPlaceholderText('Email')
+        self._email.setMinimumHeight(40)
+        self._address = QLineEdit()
+        self._address.setPlaceholderText('Address')
+        self._address.setMinimumHeight(40)
+        self._tax = QLineEdit()
+        self._tax.setPlaceholderText('PIN or tax number')
+        self._tax.setMinimumHeight(40)
         self._notes = QLineEdit()
         self._notes.setPlaceholderText('Notes')
         self._notes.setMinimumHeight(40)
         form.addRow('Name', self._name)
+        form.addRow('Contact', self._contact)
         form.addRow('Phone', self._phone)
+        form.addRow('Email', self._email)
+        form.addRow('Address', self._address)
+        form.addRow('PIN / tax', self._tax)
         form.addRow('Notes', self._notes)
         lay.addLayout(form)
 
@@ -57,8 +73,8 @@ class SuppliersDialog(QDialog):
         add_row.addWidget(add_btn)
         lay.addLayout(add_row)
 
-        self._tbl = QTableWidget(0, 3)
-        self._tbl.setHorizontalHeaderLabels(['Name', 'Phone', 'Notes'])
+        self._tbl = QTableWidget(0, 4)
+        self._tbl.setHorizontalHeaderLabels(['Name', 'Phone', 'Contact', 'Notes'])
         self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -82,17 +98,26 @@ class SuppliersDialog(QDialog):
             self._tbl.insertRow(r)
             self._tbl.setItem(r, 0, QTableWidgetItem(str(s.get('name') or '')))
             self._tbl.setItem(r, 1, QTableWidgetItem(str(s.get('phone') or '')))
-            self._tbl.setItem(r, 2, QTableWidgetItem(str(s.get('notes') or '')))
+            self._tbl.setItem(r, 2, QTableWidgetItem(str(s.get('contact_name') or '')))
+            self._tbl.setItem(r, 3, QTableWidgetItem(str(s.get('notes') or '')))
 
     def _add(self):
         res = self.api.create_supplier({
             'name': self._name.text(),
             'phone': self._phone.text(),
+            'contact_name': self._contact.text(),
+            'email': self._email.text(),
+            'address': self._address.text(),
+            'tax_pin': self._tax.text(),
             'notes': self._notes.text(),
         })
         if res and res.get('success'):
             self._name.clear()
             self._phone.clear()
+            self._contact.clear()
+            self._email.clear()
+            self._address.clear()
+            self._tax.clear()
             self._notes.clear()
             self._reload()
         else:
@@ -148,6 +173,10 @@ class ReceiveStockDialog(QDialog):
         self._by_id = {int(p.get('id')): p for p in self.products if p.get('id') is not None}
         self._lines = []
         self._token = ''
+        from desktop.utils.security import client_actor, has_permission
+        actor = client_actor(self.api)
+        self._see_cost = True
+        self._can_excess = has_permission(actor, 'restock.manage')
         self.setWindowTitle('Receive stock')
         self.setMinimumSize(860, 560)
         self.resize(1120, 740)
@@ -288,12 +317,39 @@ class ReceiveStockDialog(QDialog):
         cost_label.setStyleSheet(f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
         cost_col.addWidget(cost_label)
         cost_col.addWidget(self._cost)
+        self._ordered = QDoubleSpinBox()
+        self._ordered.setRange(0, 999999)
+        self._ordered.setDecimals(4)
+        self._ordered.setSpecialValueText('—')
+        self._ordered.setMinimumHeight(40)
+        self._ordered.setMinimumWidth(110)
+        self._ordered.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._ordered.setToolTip('Ordered quantity. Leave at zero when this delivery is not tracking an order.')
+        self._rejected = QDoubleSpinBox()
+        self._rejected.setRange(0, 999999)
+        self._rejected.setDecimals(4)
+        self._rejected.setMinimumHeight(40)
+        self._rejected.setMinimumWidth(110)
+        self._rejected.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._rejected.setToolTip('Damaged or rejected quantity. It is recorded and is not added to sellable stock.')
+        self._free = QCheckBox('Free stock')
+        self._free.setToolTip('Record a buying price of zero on purpose. Leave this off when the price is simply unknown.')
+        self._excess = QCheckBox('Confirm extra quantity')
+        self._excess.setToolTip('A manager confirms goods that arrived above the ordered quantity.')
+        self._excess.setVisible(self._can_excess)
         add_btn = SecondaryBtn('Add product', 40)
         add_btn.clicked.connect(self._add_line)
         add_row.addWidget(self._prod, 1)
         add_row.addWidget(self._qty)
-        add_row.addWidget(cost_box)
+        add_row.addWidget(self._ordered)
+        add_row.addWidget(self._rejected)
+        if self._see_cost:
+            add_row.addWidget(cost_box)
+        add_row.addWidget(self._free)
+        add_row.addWidget(self._excess)
         add_row.addWidget(add_btn)
+        if not self._see_cost:
+            self._free.setVisible(False)
         lines_lay.addLayout(add_row)
 
         self._tbl = QTableWidget(0, 8)
@@ -405,19 +461,45 @@ class ReceiveStockDialog(QDialog):
             return
         product = self._product(pid) or {}
         qty = round(float(self._qty.value()), 4)
-        cost = round(float(self._cost.value()), 4)
-        if qty <= 0:
-            QMessageBox.warning(self, 'Required', 'Enter a quantity greater than zero.')
+        rejected = round(float(self._rejected.value()), 4)
+        ordered = round(float(self._ordered.value()), 4)
+        explicit = bool(self._see_cost and self._free.isChecked())
+        cost = round(float(self._cost.value()), 4) if self._see_cost else None
+        if qty <= 0 and rejected <= 0:
+            QMessageBox.warning(self, 'Required', 'Enter a quantity greater than zero, or a rejected quantity.')
             return
-        self._lines.append({
+        if self._see_cost and not explicit and (cost is None or cost <= 0):
+            QMessageBox.warning(
+                self, 'Buying price',
+                'Enter a buying price, or tick Free stock. A blank price is not saved as zero.',
+            )
+            return
+        if ordered > 0 and qty + rejected - ordered > 0.00001 and not self._excess.isChecked():
+            QMessageBox.warning(
+                self, 'Extra quantity',
+                'Received plus rejected is above the ordered quantity. Tick Confirm extra quantity, or reduce the line.',
+            )
+            return
+        line = {
             'product_id': int(pid),
             'name': product.get('name') or 'Product',
             'sku': product.get('sku') or '',
             'unit': product.get('unit') or '',
             'quantity': qty,
-            'unit_cost': cost,
-            'line_total': round(qty * cost, 2),
-        })
+            'rejected_qty': rejected,
+            'unit_cost': 0 if explicit else cost,
+            'explicit_zero': explicit,
+            'line_total': round(qty * (0 if explicit else float(cost or 0)), 2),
+        }
+        if ordered > 0:
+            line['ordered_qty'] = ordered
+        if self._excess.isChecked():
+            line['allow_excess'] = True
+        self._lines.append(line)
+        self._rejected.setValue(0)
+        self._ordered.setValue(0)
+        self._free.setChecked(False)
+        self._excess.setChecked(False)
         self._refresh_table()
 
     def _remove_line(self, idx):
@@ -437,7 +519,7 @@ class ReceiveStockDialog(QDialog):
 
     def _recalc(self, idx):
         line = self._lines[idx]
-        line['line_total'] = round(line['quantity'] * line['unit_cost'], 2)
+        line['line_total'] = round(line['quantity'] * float(line.get('unit_cost') or 0), 2)
         item = self._tbl.item(idx, 6)
         if item is not None:
             item.setText(_money(line['line_total']))
@@ -457,7 +539,17 @@ class ReceiveStockDialog(QDialog):
             number = QTableWidgetItem(str(i + 1))
             number.setTextAlignment(Qt.AlignCenter)
             self._tbl.setItem(i, 0, number)
-            self._tbl.setItem(i, 1, QTableWidgetItem(line['name']))
+            name = line['name']
+            rejected = float(line.get('rejected_qty') or 0)
+            ordered = line.get('ordered_qty')
+            if rejected or ordered:
+                extra = []
+                if ordered:
+                    extra.append(f"ordered {_qty(ordered)}")
+                if rejected:
+                    extra.append(f"rejected {_qty(rejected)}")
+                name = f"{name} ({', '.join(extra)})"
+            self._tbl.setItem(i, 1, QTableWidgetItem(name))
             self._tbl.setItem(i, 2, QTableWidgetItem(line.get('sku') or '—'))
             self._tbl.setItem(i, 3, QTableWidgetItem(line.get('unit') or '—'))
             qty = QDoubleSpinBox()
@@ -472,7 +564,7 @@ class ReceiveStockDialog(QDialog):
             cost = QDoubleSpinBox()
             cost.setRange(0, 9999999)
             cost.setDecimals(2)
-            cost.setValue(float(line['unit_cost']))
+            cost.setValue(float(line.get('unit_cost') or 0))
             cost.setPrefix('KES ')
             cost.setButtonSymbols(QDoubleSpinBox.NoButtons)
             cost.setMinimumHeight(36)
@@ -594,13 +686,13 @@ class DeliveryReceiptDialog(QDialog):
         self.api = api
         self.receipt = receipt or {}
         number = self.receipt.get('receipt_number') or 'Delivery'
-        self.setWindowTitle(number)
+        self.setWindowTitle(f"Goods received note {number}")
         self.setMinimumSize(980, 640)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(10)
         status = (self.receipt.get('status') or 'posted').replace('_', ' ')
-        lay.addWidget(H2(number))
+        lay.addWidget(H2(f"Goods received note  {number}"))
         supplier = self.receipt.get('supplier_name') or 'Supplier'
         reference = self.receipt.get('reference') or self.receipt.get('reference_note') or ''
         notes = self.receipt.get('notes') or ''
@@ -627,6 +719,12 @@ class DeliveryReceiptDialog(QDialog):
             table.setItem(i, 1, QTableWidgetItem(str(line.get('product_name') or line.get('name') or '')))
             qty_text = _qty(line.get('quantity'))
             returned = float(line.get('returned_qty') or 0)
+            rejected = float(line.get('rejected_qty') or 0)
+            ordered = line.get('ordered_qty')
+            if ordered not in (None, ''):
+                qty_text = f"{qty_text} received · ordered {_qty(ordered)}"
+            if rejected:
+                qty_text = f"{qty_text} · rejected {_qty(rejected)} not stocked"
             if returned:
                 qty_text = f"{qty_text} · returned {_qty(returned)}"
             table.setItem(i, 2, QTableWidgetItem(qty_text))
@@ -686,6 +784,9 @@ class DeliveryReceiptDialog(QDialog):
             ask_void.clicked.connect(self._ask_void)
             row.addWidget(ask_date)
             row.addWidget(ask_void)
+        preview = SecondaryBtn('Print / preview', 40)
+        preview.clicked.connect(self._preview)
+        row.addWidget(preview)
         row.addStretch(1)
         close = SecondaryBtn('Close', 40)
         close.clicked.connect(self.accept)
@@ -693,6 +794,41 @@ class DeliveryReceiptDialog(QDialog):
         lay.addLayout(row)
         lay.addWidget(table, 1)
         apply_themed_dialog(self)
+
+    def _preview(self):
+        from printing.sheet import goods_received_lines
+        from desktop.utils.security import client_actor, sees_product_cost
+        show_cost = sees_product_cost(client_actor(self.api))
+        text = "\n".join(goods_received_lines(self.receipt, 48, show_cost=show_cost))
+        printed = False
+        message = "No receipt printer is connected. The goods received note is saved and shown here."
+        try:
+            from printing.printer_engine import print_document_bytes
+            outcome = print_document_bytes(
+                {}, text.encode("utf-8"),
+                label=str(self.receipt.get("receipt_number") or "GRN"),
+                text=text,
+            )
+            printed = bool(outcome.get("printed"))
+            message = outcome.get("message") or message
+        except Exception:
+            printed = False
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Goods received note")
+        dialog.resize(520, 680)
+        layout = QVBoxLayout(dialog)
+        note = QLabel("Sent to the printer." if printed else message)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text)
+        layout.addWidget(view, 1)
+        close = SecondaryBtn("Close", 40)
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close, 0, Qt.AlignRight)
+        apply_themed_dialog(dialog)
+        dialog.exec_()
 
     def _reload(self):
         fresh = self.api.get_stock_receipt(self.receipt.get('id'))

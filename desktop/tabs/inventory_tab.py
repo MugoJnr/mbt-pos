@@ -82,6 +82,21 @@ class InventoryTab(QWidget):
         self._search = SearchBar('Search by product name\u2026')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)
+        self._cost_filter = QComboBox()
+        self._cost_filter.setMinimumHeight(40)
+        self._cost_filter.setMinimumWidth(220)
+        for label, code in (
+            ('All costing', ''),
+            ('Missing buying price', 'missing_price'),
+            ('Zero or invalid cost', 'zero_or_invalid'),
+            ('Missing FIFO layer', 'missing_fifo'),
+            ('Stock without cost', 'stock_without_cost'),
+            ('Costing needs review', 'inconsistent'),
+            ('Costing complete', 'complete'),
+        ):
+            self._cost_filter.addItem(label, code)
+        self._cost_filter.currentIndexChanged.connect(self._filter)
+        tb.addWidget(self._cost_filter)
         clear = GhostBtn('Clear', 40)
         clear.setToolTip('Show every product')
         clear.clicked.connect(lambda: self._search.clear())
@@ -239,16 +254,8 @@ class InventoryTab(QWidget):
             refresh_themed_widgets(self)
             self._apply_stats_style()
             # Rebuild visible rows from cached products so accents + buttons use live C
-            q = (self._search.text() or '').lower() if hasattr(self, '_search') else ''
-            if q:
-                prods = [p for p in (self.products or [])
-                         if q in (p.get('name') or '').lower()
-                         or q in (p.get('sku') or '').lower()
-                         or q in (p.get('category') or '').lower()]
-            else:
-                prods = list(self.products or [])
-            if prods:
-                self._populate(prods)
+            if self.products:
+                self._filter()
             else:
                 retint_table_items(self._tbl)
         except Exception as e:
@@ -309,14 +316,35 @@ class InventoryTab(QWidget):
             _log.exception('Inventory export failed')
             QMessageBox.critical(self, 'Export Failed', str(e))
 
+    def _cost_codes(self, product):
+        health = product.get('cost_health') or {}
+        return [item.get('code') for item in (health.get('badges') or [])]
+
+    def _matches_cost_filter(self, product, code):
+        if not code:
+            return True
+        codes = set(self._cost_codes(product))
+        if code == 'zero_or_invalid':
+            return bool(codes & {'explicit_zero', 'invalid_price', 'zero_review'})
+        if code == 'inconsistent':
+            return bool(codes & {'inconsistent', 'zero_review', 'stock_without_cost'})
+        return code in codes
+
     def _filter(self):
         from desktop.utils.pos_search import inventory_name_matches
         q = self._search.text()
+        code = self._cost_filter.currentData() if hasattr(self, '_cost_filter') else ''
         try:
-            matched = [p for p in self.products if inventory_name_matches(q, p)]
+            matched = [
+                p for p in self.products
+                if inventory_name_matches(q, p) and self._matches_cost_filter(p, code)
+            ]
             self._populate(matched)
-            if str(q or '').strip() and not matched and self.products:
-                self._stats.setText('  No products match that name. Clear the search to see every product.')
+            if not matched and self.products:
+                if str(q or '').strip():
+                    self._stats.setText('  No products match that name. Clear the search to see every product.')
+                elif code:
+                    self._stats.setText('  No products match that costing filter.')
         except Exception as e:
             _log.exception('Inventory filter error')
             self._stats.setText(f"  Could not filter inventory: {e}")
@@ -350,6 +378,12 @@ class InventoryTab(QWidget):
                 self._tbl.setItem(i, 5, tbl_center('\u2014', C['warn']))
 
         stats = f"  {len(prods)} products  \u00b7  {low} low stock"
+        review = 0
+        for product in (self.products or prods):
+            if any(code != 'complete' for code in self._cost_codes(product)):
+                review += 1
+        if review:
+            stats += f"  \u00b7  {review} costing warnings \u00b7 valuation incomplete where a buying price or FIFO layer is missing"
         if has_permission(self.user, 'inventory.view_cost'):
             try:
                 value = float((self.api.inventory_value() or {}).get('value') or 0)
@@ -397,6 +431,25 @@ class InventoryTab(QWidget):
             name_label = QLabel(name)
             name_label.setStyleSheet(f"color:{C['text']}; background:transparent; font-size:13px;")
             name_lay.addWidget(name_label, 1)
+            badge_codes = [code for code in self._cost_codes(p) if code != 'complete']
+            if badge_codes:
+                health = p.get('cost_health') or {}
+                label = ''
+                tone = 'warn'
+                for item in health.get('badges') or []:
+                    if item.get('code') == badge_codes[0]:
+                        label = item.get('label') or badge_codes[0]
+                        tone = item.get('tone') or 'warn'
+                        break
+                colour = {'err': C.get('err', '#b42318'), 'ok': C.get('ok', '#067647')}.get(
+                    tone, C.get('warn', '#b54708'),
+                )
+                badge = QLabel(label)
+                badge.setStyleSheet(
+                    f"color:{colour}; background:transparent; font-size:11px; font-weight:700;"
+                )
+                name_lay.addWidget(badge)
+                name_item.setToolTip(label)
             self._tbl.setCellWidget(i, 0, name_wrap)
         except Exception:
             _log.exception('Product photo tile failed')

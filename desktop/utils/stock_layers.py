@@ -539,6 +539,13 @@ def inventory_valuation(db) -> dict:
         result['unlayered_units'] = round(max(product_units - layered_qty, 0), 4)
     except Exception:
         pass
+    try:
+        from desktop.utils.cost_health import summary_counts
+        result.update(summary_counts(db))
+    except Exception:
+        logger.exception('cost health summary')
+    if float(result.get('unlayered_units') or 0) > 0.05:
+        result['costing_incomplete'] = True
     return result
 
 

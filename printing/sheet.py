@@ -225,6 +225,65 @@ def restock_lines(detail: dict, width: int) -> list[str]:
     return lines
 
 
+def goods_received_lines(receipt: dict, width: int = 48, *, show_cost: bool = True) -> list[str]:
+    """Supplier goods-received note. This is not a customer sale receipt."""
+    width = max(32, int(width or 48))
+    lines = ["=" * width, "GOODS RECEIVED NOTE".center(width)[:width]]
+    shop = str(receipt.get("shop_name") or "").strip()
+    if shop:
+        lines.extend(_wrap(shop, width))
+    lines.extend(_wrap("Supplier delivery. Not a customer sale.", width))
+    lines.append("=" * width)
+    lines.extend(_wrap(f"GRN: {receipt.get('receipt_number') or ''}", width))
+    lines.extend(_wrap(f"Supplier: {receipt.get('supplier_name') or ''}", width))
+    invoice = receipt.get("reference") or receipt.get("reference_note") or ""
+    if str(invoice).strip():
+        lines.extend(_wrap(f"Supplier invoice: {invoice}", width))
+    when = str(receipt.get("effective_date") or receipt.get("created_at") or "")[:19].replace("T", " ")
+    if when:
+        lines.extend(_wrap(f"Received: {when}", width))
+    who = receipt.get("username") or ""
+    if who:
+        lines.extend(_wrap(f"Received by: {who}", width))
+    status = str(receipt.get("status") or "posted")
+    lines.extend(_wrap(f"Status: {status}", width))
+    notes = str(receipt.get("notes") or "").strip()
+    if notes:
+        lines.extend(_wrap(f"Notes: {notes}", width))
+    lines.append("-" * width)
+    for index, line in enumerate(receipt.get("lines") or [], start=1):
+        name = line.get("product_name") or line.get("name") or "Product"
+        unit = str(line.get("unit") or "").strip()
+        lines.extend(_wrap(f"{index}. {name}", width))
+        ordered = line.get("ordered_qty")
+        received = line.get("quantity")
+        rejected = line.get("rejected_qty") or 0
+        lines.extend(_wrap(f"Received: {qty_text(received)} {unit}".strip(), width))
+        if ordered not in (None, ""):
+            lines.extend(_wrap(f"Ordered: {qty_text(ordered)} {unit}".strip(), width))
+            try:
+                outstanding = max(0.0, float(ordered) - float(received or 0) - float(rejected or 0))
+            except (TypeError, ValueError):
+                outstanding = 0
+            lines.extend(_wrap(f"Outstanding: {qty_text(outstanding)} {unit}".strip(), width))
+        if float(rejected or 0) > 0:
+            lines.extend(_wrap(f"Rejected: {qty_text(rejected)} {unit} (not added to stock)".strip(), width))
+        if show_cost and line.get("unit_cost") is not None:
+            lines.extend(_wrap(f"Buying price: {money(line.get('unit_cost'))}", width))
+            lines.extend(_wrap(f"Line total: {money(line.get('line_total'))}", width))
+        lines.append("-" * width)
+    if show_cost:
+        lines.extend(_wrap(f"Invoice total: {money(receipt.get('grand_total'))}", width))
+    lines.extend(_wrap(f"Paid: {money(receipt.get('amount_paid'))}", width))
+    lines.extend(_wrap(f"Outstanding balance: {money(receipt.get('outstanding'))}", width))
+    pay_status = receipt.get("payment_status") or ""
+    if pay_status:
+        lines.extend(_wrap(f"Payment status: {pay_status}", width))
+    lines.extend(_wrap("Rejected goods are not sellable stock.", width))
+    lines.extend(_wrap("Printing this note does not post the delivery again.", width))
+    return [line[:width] for line in lines]
+
+
 def centre_lines(detail: dict, width: int) -> list[str]:
     """Plain reading of a receipt-centre document that is not a sale."""
     header = detail.get("header") or {}

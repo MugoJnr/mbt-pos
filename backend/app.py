@@ -1429,8 +1429,15 @@ def delete_user(uid):
 @token_required
 def list_products():
     db = get_db()
-    products = db.execute("SELECT * FROM products WHERE is_active=1 ORDER BY name").fetchall()
-    return jsonify([_redact_cost(dict(p)) for p in products])
+    products = [dict(p) for p in db.execute(
+        "SELECT * FROM products WHERE is_active=1 ORDER BY name"
+    ).fetchall()]
+    try:
+        from desktop.utils.cost_health import annotate
+        annotate(db, products)
+    except Exception:
+        logger.exception('cost health annotate')
+    return jsonify([_redact_cost(p) for p in products])
 
 
 @app.route('/api/products', methods=['POST'])
@@ -2614,6 +2621,7 @@ def list_backdate_requests_http():
         'business_date': request.args.get('business_date') or '',
         'q': request.args.get('q') or '',
         'cashier_id': request.args.get('cashier_id') or '',
+        'date': request.args.get('date') or '',
     }
     return _backdate_call(list_requests, filters)
 
@@ -2672,6 +2680,20 @@ def reject_backdate_request_http(request_id):
 def approve_backdate_request_http(request_id):
     from backend.backdate_requests import approve_request
     return _backdate_call(approve_request, request_id, request.json or {})
+
+
+@app.route('/api/backdate-requests/bulk-approve', methods=['POST'])
+@token_required
+def bulk_approve_backdate_http():
+    from backend.backdate_requests import bulk_approve
+    return _backdate_call(bulk_approve, request.json or {})
+
+
+@app.route('/api/backdate-requests/<int:request_id>/disapprove', methods=['POST'])
+@token_required
+def disapprove_backdate_request_http(request_id):
+    from backend.backdate_requests import disapprove_request
+    return _backdate_call(disapprove_request, request_id, request.json or {})
 
 
 def _dated_api():

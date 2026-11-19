@@ -96,6 +96,10 @@ def ensure_schema(conn) -> None:
     line_cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_receipt_lines)").fetchall()}
     if line_cols and "returned_qty" not in line_cols:
         conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN returned_qty REAL DEFAULT 0")
+    if line_cols and "rejected_qty" not in line_cols:
+        conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN rejected_qty REAL DEFAULT 0")
+    if line_cols and "ordered_qty" not in line_cols:
+        conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN ordered_qty REAL")
 
 
 def payment_status(total, paid, due, delivery_status, today=None) -> str:

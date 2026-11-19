@@ -485,3 +485,95 @@ class BackdateRequestTests(unittest.TestCase):
         })
         self.assertEqual(allowed.status_code, 200, allowed.get_json())
         self.assertEqual(self._counts()[0], 0)
+
+    def _submit(self, headers, created):
+        response = self.client.post(
+            f"/api/backdate-requests/{created['id']}/submit",
+            headers=headers, json={"version": created["version"]},
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        return response.get_json()
+
+    def test_bulk_approve_and_disapprove_reverse_once(self):
+        cashier = self._login("cashier")
+        manager = self._login("manager")
+        first = self._submit(cashier, self._create(cashier, [self._sale(self.sugar, 2, 100)]))
+        second = self._submit(cashier, self._create(cashier, [self._sale(self.sugar, 1, 100)]))
+        older = self._submit(cashier, self._create(
+            cashier, [self._sale(self.sugar, 1, 100)], day=self.older,
+        ))
+        listed = self.client.get(
+            "/api/backdate-requests",
+            headers=manager,
+            query_string={"status": "submitted", "date": "yesterday"},
+        )
+        self.assertEqual(listed.status_code, 200, listed.get_json())
+        body = listed.get_json()
+        self.assertEqual(body["pending_count"], 3)
+        yesterday_group = next(item for item in body["groups"] if item["business_date"] == self.yesterday)
+        self.assertEqual(yesterday_group["eligible_count"], 2)
+        self.assertEqual(yesterday_group["eligible_total"], 300)
+        denied = self.client.post(
+            "/api/backdate-requests/bulk-approve",
+            headers=cashier, json={"scope": "day", "business_date": self.yesterday},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(self._counts(), (0, 20, 0))
+        posted = self.client.post(
+            "/api/backdate-requests/bulk-approve",
+            headers=manager, json={"scope": "day", "business_date": self.yesterday},
+        )
+        self.assertEqual(posted.status_code, 200, posted.get_json())
+        self.assertEqual(posted.get_json()["approved"], 2)
+        self.assertEqual(posted.get_json()["failed"], 0)
+        self.assertEqual(self._counts(), (2, 17, 0))
+        still = self.client.get(f"/api/backdate-requests/{older['id']}", headers=manager)
+        self.assertEqual(still.get_json()["status"], "submitted")
+        again = self.client.post(
+            "/api/backdate-requests/bulk-approve",
+            headers=manager, json={"scope": "day", "business_date": self.yesterday},
+        )
+        self.assertEqual(again.status_code, 200, again.get_json())
+        self.assertEqual(again.get_json()["approved"], 0)
+        self.assertEqual(self._counts()[0], 2)
+        own = self.client.post(
+            f"/api/backdate-requests/{first['id']}/disapprove",
+            headers=cashier, json={"version": 1, "reason": "Posted to the wrong day"},
+        )
+        self.assertIn(own.status_code, (403, 400))
+        current = self.client.get(f"/api/backdate-requests/{first['id']}", headers=manager).get_json()
+        reversed_sale = self.client.post(
+            f"/api/backdate-requests/{first['id']}/disapprove",
+            headers=manager,
+            json={"version": current["version"], "reason": "Posted to the wrong day"},
+        )
+        self.assertEqual(reversed_sale.status_code, 200, reversed_sale.get_json())
+        pending = reversed_sale.get_json()
+        self.assertEqual(pending["status"], "submitted")
+        self.assertEqual(pending["disapproval"]["headline"], "PREVIOUSLY APPROVED — SUBSEQUENTLY DISAPPROVED")
+        self.assertIn("wrong day", pending["disapproval"]["reason"])
+        self.assertTrue(any(event["action"] == "approved" for event in pending["events"]))
+        self.assertTrue(any(event["action"] == "disapproved" for event in pending["events"]))
+        self.assertEqual(self._counts(), (2, 19, 0))
+        db = self.ac._db()
+        try:
+            voided = db.execute(
+                "SELECT COUNT(*) AS c FROM sales WHERE status='voided'"
+            ).fetchone()["c"]
+            live = db.execute(
+                "SELECT COUNT(*) AS c FROM sales WHERE COALESCE(status, 'completed')!='voided'"
+            ).fetchone()["c"]
+        finally:
+            db.close()
+        self.assertEqual(voided, 1)
+        self.assertEqual(live, 1)
+        reposted = self.client.post(
+            f"/api/backdate-requests/{first['id']}/approve",
+            headers=manager, json={"version": pending["version"]},
+        )
+        self.assertEqual(reposted.status_code, 200, reposted.get_json())
+        self.assertEqual(reposted.get_json()["status"], "approved")
+        self.assertEqual(self._counts(), (3, 17, 0))
+        receipts = {sale["posted_receipt"] for sale in reposted.get_json()["sales"]}
+        self.assertEqual(len(receipts), 1)
+        self.assertNotIn(pending["disapproval"]["sale_reference"], receipts)

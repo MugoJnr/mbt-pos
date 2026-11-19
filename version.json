@@ -1,8 +1,8 @@
 {
-    "version": "3.1.88",
-    "build": "RC-2026-11-18-v3.1.88",
-    "released": "2026-11-18",
-    "release_notes": "Every quantity keeps the decimals you type, including pieces, on the till and the web. That includes sales, internal consumption, and supplier deliveries. A backdated record accepts the reason you choose.",
-    "checksum_sha256": "76526901ee56405c41a0e19abd7c990fc47f8e7254bd75aeeb356d104e6c2dee",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.88/MBT_POS_Setup.exe"
+    "version": "3.1.89",
+    "build": "RC-2026-11-19-v3.1.89",
+    "released": "2026-11-19",
+    "release_notes": "When you choose Other for a backdated record, you can write the reason yourself. A reviewer can approve every pending backdated sale for a day, or reverse an approved one so it waits for review again. A supplier delivery can record goods that were rejected, and inventory marks a product whose buying price is missing.",
+    "checksum_sha256": "52008d36ec9f2447d1f367f5eb6e3133d9b39a82c1ed1da76313b6629ccd7bee",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.89/MBT_POS_Setup.exe"
 }

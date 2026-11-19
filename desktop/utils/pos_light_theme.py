@@ -580,6 +580,17 @@ def apply_light(sales_tab) -> None:
             t._refresh_cart()
         except Exception:
             pass
+    _keep_pro_catalog_tight(t)
+
+
+def _keep_pro_catalog_tight(sales_tab) -> None:
+    """Theme refresh rebuilds the search stylesheet. Checkout Pro stays one short row."""
+    bar = getattr(sales_tab, '_search_bar', None)
+    if bar is not None and getattr(bar, '_single_row', False):
+        bar.set_single_row(True)
+    biz = getattr(sales_tab, '_business_day_bar', None)
+    if biz is not None and getattr(biz, '_tight', False) and hasattr(biz, 'set_tight'):
+        biz.set_tight(True)
 
 
 def apply_dark(sales_tab) -> None:
@@ -774,3 +785,4 @@ def apply_dark(sales_tab) -> None:
             t._refresh_cart()
         except Exception:
             pass
+    _keep_pro_catalog_tight(t)

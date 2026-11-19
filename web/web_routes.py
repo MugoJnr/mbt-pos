@@ -3807,6 +3807,32 @@ def correct_stock_receipt_line_http(rid, pid):
     return _inner()
 
 
+@web.route('/api/stock-receipts/<int:rid>/document', methods=['GET'])
+def stock_receipt_document_http(rid):
+    """Goods-received note text. Printing does not post stock again."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _user_can('inventory'):
+            return jsonify({'error': 'Inventory access required'}), 403
+        api = _inventory_api()
+        receipt = api.get_stock_receipt(int(rid))
+        if receipt.get('error'):
+            return jsonify(receipt), int(receipt.get('status') or 404)
+        from desktop.utils.security import sees_product_cost
+        show_cost = sees_product_cost(g.current_user or {})
+        from printing.sheet import goods_received_lines
+        text = "\n".join(goods_received_lines(receipt, 48, show_cost=show_cost))
+        return jsonify({
+            'receipt_id': receipt.get('id'),
+            'receipt_number': receipt.get('receipt_number'),
+            'text': text,
+        })
+
+    return _inner()
+
+
 @web.route('/api/stock-receipts/<int:rid>', methods=['GET'])
 def get_stock_receipt_http(rid):
     from backend.app import token_required

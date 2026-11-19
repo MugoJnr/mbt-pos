@@ -947,6 +947,24 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER")
         if prod_cols and 'image_path' not in prod_cols:
             conn.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
+        if prod_cols and 'cost_confirmed' not in prod_cols:
+            conn.execute("ALTER TABLE products ADD COLUMN cost_confirmed INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        supplier_cols = {r[1] for r in conn.execute("PRAGMA table_info(suppliers)").fetchall()}
+        if supplier_cols and 'contact_name' not in supplier_cols:
+            conn.execute("ALTER TABLE suppliers ADD COLUMN contact_name TEXT")
+        if supplier_cols and 'tax_pin' not in supplier_cols:
+            conn.execute("ALTER TABLE suppliers ADD COLUMN tax_pin TEXT")
+    except Exception:
+        pass
+    try:
+        line_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_receipt_lines)").fetchall()}
+        if line_cols and 'rejected_qty' not in line_cols:
+            conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN rejected_qty REAL DEFAULT 0")
+        if line_cols and 'ordered_qty' not in line_cols:
+            conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN ordered_qty REAL")
     except Exception:
         pass
     # Cash rounding adjustment ledger (does not inflate product revenue)
@@ -2147,11 +2165,18 @@ class APIClient:
             # Narrow columns — SELECT * was a main-thread stall on large catalogs
             cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
             image_sql = ", image_path" if "image_path" in cols else ""
-            return _rows(db.execute(
+            confirmed_sql = ", COALESCE(cost_confirmed,0) AS cost_confirmed" if "cost_confirmed" in cols else ""
+            rows = _rows(db.execute(
                 "SELECT id, name, sku, barcode, category, price, cost_price, "
-                f"stock, min_stock, unit, is_active{image_sql} "
+                f"stock, min_stock, unit, is_active{image_sql}{confirmed_sql} "
                 "FROM products WHERE is_active=1 ORDER BY name"
             ))
+            try:
+                from desktop.utils.cost_health import annotate
+                annotate(db, rows)
+            except Exception:
+                logger.exception('cost health annotate')
+            return rows
         finally:
             db.close()
 
@@ -2192,15 +2217,34 @@ class APIClient:
         try:
             initial_stock = round(float(data.get('stock', 0) or 0), 4)
             sku = (data.get('sku') or '').strip() or None
+            raw_cost = data.get('cost_price', None)
+            if raw_cost in (None, ''):
+                cost_value = None
+                cost_confirmed = 0
+            else:
+                try:
+                    cost_value = round(float(raw_cost), 4)
+                except (TypeError, ValueError):
+                    return {'error': 'Enter a valid buying price.', 'status': 400}
+                if cost_value < 0:
+                    return {'error': 'Buying price cannot be negative.', 'status': 400}
+                cost_confirmed = 1 if cost_value > 0 or data.get('explicit_zero') else 0
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
                 " VALUES (?,?,?,?,?,?,?,?,?)",
                 (name, sku, data.get('category'),
-                 float(data.get('price') or 0), float(data.get('cost_price') or 0),
+                 float(data.get('price') or 0), cost_value,
                  initial_stock, int(data.get('min_stock', 5) or 5),
                  data.get('unit') or 'pcs', data.get('barcode'))
             )
             pid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            try:
+                db.execute(
+                    "UPDATE products SET cost_confirmed=? WHERE id=?",
+                    (int(cost_confirmed), pid),
+                )
+            except sqlite3.OperationalError:
+                pass
             if initial_stock > 0:
                 try:
                     db.execute(
@@ -2213,7 +2257,7 @@ class APIClient:
                     )
                 except Exception as e:
                     logger.warning(f"Stock movement log skipped: {e}")
-                card_cost = float(data.get('cost_price') or 0)
+                card_cost = float(cost_value or 0)
                 if card_cost > 0:
                     from desktop.utils.stock_layers import add_layer
                     layer = add_layer(
@@ -2340,7 +2384,7 @@ class APIClient:
         if 'name' in data and not str(data.get('name') or '').strip():
             return {'error': 'Product name is required.', 'status': 400}
         for key in ('price', 'cost_price'):
-            if key not in data:
+            if key not in data or data[key] in (None, ''):
                 continue
             try:
                 if float(data[key]) < 0:
@@ -2371,8 +2415,30 @@ class APIClient:
                         'status': 403,
                     }
 
+            if 'cost_price' in data:
+                raw_cost = data.get('cost_price')
+                if raw_cost in (None, ''):
+                    data['cost_price'] = None
+                    data['cost_confirmed'] = 0
+                else:
+                    cost_value = round(float(raw_cost), 4)
+                    old_cost = old['cost_price'] if old is not None and 'cost_price' in old.keys() else None
+                    try:
+                        old_number = None if old_cost is None else float(old_cost)
+                    except (TypeError, ValueError):
+                        old_number = None
+                    if cost_value == 0 and not data.get('explicit_zero'):
+                        if old_number is not None and old_number > 0:
+                            return {
+                                'error': 'Enter a buying price, or mark this product as free stock.',
+                                'status': 400,
+                            }
+                        data['cost_confirmed'] = 0
+                    else:
+                        data['cost_confirmed'] = 1
+                    data['cost_price'] = cost_value
             fields, values = [], []
-            for field in ('name','sku','category','price','cost_price',
+            for field in ('name','sku','category','price','cost_price','cost_confirmed',
                           'min_stock','unit','barcode','is_active'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
@@ -2730,12 +2796,28 @@ class APIClient:
             return {'error': 'Supplier name is required.'}
         db = _db()
         try:
+            existing = db.execute(
+                "SELECT id, name FROM suppliers WHERE lower(trim(name))=lower(trim(?))",
+                (name,),
+            ).fetchone()
+            if existing:
+                return {
+                    'error': (
+                        f"A supplier named {existing['name']} already exists. "
+                        "A similar name is kept as its own supplier. This exact name is not merged."
+                    ),
+                    'id': existing['id'],
+                    'status': 409,
+                }
             db.execute(
-                "INSERT INTO suppliers (name,phone,email,address,notes) VALUES (?,?,?,?,?)",
+                "INSERT INTO suppliers (name,phone,email,address,notes,contact_name,tax_pin) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (name, (data.get('phone') or '').strip(),
                  (data.get('email') or '').strip(),
                  (data.get('address') or '').strip(),
-                 (data.get('notes') or '').strip()),
+                 (data.get('notes') or '').strip(),
+                 (data.get('contact_name') or '').strip(),
+                 (data.get('tax_pin') or '').strip()),
             )
             db.commit()
             sid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -2753,14 +2835,15 @@ class APIClient:
         db = _db()
         try:
             before = _row(db.execute(
-                "SELECT name, phone, email, address, notes FROM suppliers WHERE id=?",
+                "SELECT name, phone, email, address, notes, contact_name, tax_pin, is_active "
+                "FROM suppliers WHERE id=?",
                 (sid,),
             ))
             if not before:
                 return {'error': 'Supplier not found.', 'status': 404}
             fields, vals = [], []
             changes = []
-            for field in ('name', 'phone', 'email', 'address', 'notes', 'is_active'):
+            for field in ('name', 'phone', 'email', 'address', 'notes', 'contact_name', 'tax_pin', 'is_active'):
                 if field not in data or data[field] is None:
                     continue
                 fields.append(f"{field}=?")
@@ -2817,8 +2900,13 @@ class APIClient:
                          delivery_extra=None, offline: bool = False,
                          backdate_reason: str = '') -> dict:
         """One supplier delivery, many products, one receipt. Atomic."""
-        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
-            return {'error': 'You cannot receive supplier stock.'}
+        from desktop.utils.security import client_actor, has_permission
+        actor = client_actor(self)
+        role = (self._role or '').lower()
+        if role and role not in ('cashier', 'manager', 'admin', 'superadmin'):
+            return {'error': 'You cannot receive supplier stock.', 'status': 403}
+        if role and not has_permission(actor, 'inventory.receive'):
+            return {'error': 'You cannot receive supplier stock.', 'status': 403}
         try:
             supplier_id = int(supplier_id) if supplier_id not in (None, '', 0, '0') else None
         except (TypeError, ValueError):
@@ -2831,13 +2919,30 @@ class APIClient:
             from desktop.utils.quantities import QuantityError, parse_quantity
             try:
                 pid = int(raw.get('product_id'))
-                qty = parse_quantity(raw.get('quantity'))
+                qty = parse_quantity(raw.get('quantity'), allow_zero=True)
             except QuantityError as exc:
                 return {'error': str(exc), 'status': 400}
             except (TypeError, ValueError, AttributeError):
                 return {'error': 'Each line needs a product and a quantity.'}
-            if qty <= 0 or qty > 999999:
+            if qty < 0 or qty > 999999:
                 return {'error': 'Quantity to receive must be greater than zero.'}
+            try:
+                rejected = parse_quantity(raw.get('rejected_qty') or 0, allow_zero=True)
+            except QuantityError as exc:
+                return {'error': str(exc), 'status': 400}
+            if rejected < 0:
+                return {'error': 'Rejected quantity cannot be negative.'}
+            if qty <= 0 and rejected <= 0:
+                return {'error': 'Quantity to receive must be greater than zero.'}
+            ordered_raw = raw.get('ordered_qty')
+            ordered = None
+            if ordered_raw not in (None, ''):
+                try:
+                    ordered = parse_quantity(ordered_raw, allow_zero=True)
+                except QuantityError as exc:
+                    return {'error': str(exc), 'status': 400}
+                if ordered < 0:
+                    return {'error': 'Ordered quantity cannot be negative.'}
             if pid in seen:
                 return {'error': 'Each product can appear once on a delivery.'}
             seen.add(pid)
@@ -2848,6 +2953,11 @@ class APIClient:
                 return {'error': 'Enter a valid purchase cost.'}
             if cost is not None and cost < 0:
                 return {'error': 'Purchase cost cannot be negative.'}
+            if cost == 0 and not raw.get('explicit_zero'):
+                return {
+                    'error': 'Enter a buying price, or mark the line as free stock.',
+                    'status': 400,
+                }
             try:
                 extra = round(float(raw.get('extra_unit_cost') or 0), 4)
             except (TypeError, ValueError):
@@ -2857,6 +2967,10 @@ class APIClient:
             cleaned.append({
                 'product_id': pid, 'quantity': qty,
                 'unit_cost': cost, 'extra_unit_cost': extra,
+                'rejected_qty': rejected,
+                'ordered_qty': ordered,
+                'explicit_zero': bool(raw.get('explicit_zero')) and cost == 0,
+                'allow_excess': bool(raw.get('allow_excess')),
             })
         if not cleaned:
             return {'error': 'Add at least one product.'}
@@ -2879,12 +2993,35 @@ class APIClient:
                 if not prod:
                     return {'error': 'Product was not found.'}
                 try:
-                    line['quantity'] = parse_quantity(line['quantity'], prod['unit'])
+                    line['quantity'] = parse_quantity(line['quantity'], prod['unit'], allow_zero=True)
+                    line['rejected_qty'] = parse_quantity(
+                        line.get('rejected_qty') or 0, prod['unit'], allow_zero=True,
+                    )
+                    if line.get('ordered_qty') is not None:
+                        line['ordered_qty'] = parse_quantity(
+                            line['ordered_qty'], prod['unit'], allow_zero=True,
+                        )
                 except QuantityError as exc:
                     message = str(exc)
                     if 'whole units' in message:
                         message = f"'{prod['name']}' is sold in whole units."
                     return {'error': message, 'status': 400}
+                ordered = line.get('ordered_qty')
+                arrived = float(line['quantity']) + float(line.get('rejected_qty') or 0)
+                if ordered is not None and arrived - float(ordered) > 0.00001:
+                    if not line.get('allow_excess'):
+                        return {
+                            'error': (
+                                f"{prod['name']} is more than ordered. "
+                                "Confirm the extra quantity before saving."
+                            ),
+                            'status': 400,
+                        }
+                    if role and not has_permission(actor, 'restock.manage'):
+                        return {
+                            'error': 'A manager must confirm a quantity above what was ordered.',
+                            'status': 403,
+                        }
             from desktop.utils.shop_time import shop_today
             delivery_day = (str(effective_date or '').strip()[:10] or shop_today().isoformat())
             held = self._maybe_hold_backdate('supplier_delivery', delivery_day, {
@@ -3008,61 +3145,93 @@ class APIClient:
                     db.rollback()
                     return {'error': f"{row['name']} is not active."}
                 old_stock = round(float(row['stock'] or 0), 4)
-                new_stock = round(old_stock + line['quantity'], 4)
+                received_qty = round(float(line['quantity'] or 0), 4)
+                rejected_qty = round(float(line.get('rejected_qty') or 0), 4)
+                explicit_zero = bool(line.get('explicit_zero'))
                 unit_cost = line['unit_cost']
-                if unit_cost is None:
-                    unit_cost = round(float(row['cost_price'] or 0), 4)
-                line_total = round(line['quantity'] * float(unit_cost), 2)
+                if explicit_zero:
+                    unit_cost = 0.0
+                elif unit_cost is None:
+                    card = row['cost_price']
+                    card_cost = 0.0 if card is None else round(float(card or 0), 4)
+                    if card_cost <= 0:
+                        db.rollback()
+                        return {
+                            'error': (
+                                f"Enter a buying price for {row['name']}. "
+                                "The product card has no buying price."
+                            ),
+                            'status': 400,
+                        }
+                    unit_cost = card_cost
+                new_stock = round(old_stock + received_qty, 4)
+                line_total = round(received_qty * float(unit_cost), 2)
                 grand = round(grand + line_total, 2)
-                changed = db.execute(
-                    "UPDATE products SET stock=?, updated_at=? WHERE id=? AND COALESCE(stock,0)=?",
-                    (new_stock, now, row['id'], float(row['stock'] or 0)),
-                )
-                if changed.rowcount != 1:
-                    db.rollback()
-                    return {'error': 'Stock changed while this delivery was saving. Try again.'}
-                if not row['supplier_id']:
+                mov_id = None
+                if received_qty > 0:
+                    changed = db.execute(
+                        "UPDATE products SET stock=?, updated_at=? WHERE id=? AND COALESCE(stock,0)=?",
+                        (new_stock, now, row['id'], float(row['stock'] or 0)),
+                    )
+                    if changed.rowcount != 1:
+                        db.rollback()
+                        return {'error': 'Stock changed while this delivery was saving. Try again.'}
+                    if not row['supplier_id']:
+                        db.execute(
+                            "UPDATE products SET supplier_id=? WHERE id=?",
+                            (supplier_id, row['id']),
+                        )
+                    if explicit_zero:
+                        db.execute(
+                            "UPDATE products SET cost_price=0, cost_confirmed=1 WHERE id=?",
+                            (row['id'],),
+                        )
+                    elif line['unit_cost'] is not None:
+                        db.execute(
+                            "UPDATE products SET cost_price=?, cost_confirmed=1 WHERE id=?",
+                            (float(unit_cost), row['id']),
+                        )
+                    db.execute(
+                        "INSERT INTO stock_movements "
+                        "(product_id,product_name,movement_type,qty_before,qty_change,"
+                        "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (row['id'], row['name'], 'PURCHASE',
+                         old_stock, received_qty, new_stock,
+                         f"RECEIVE_sup={supplier_id}|RCV={receipt_number}", reason,
+                         self._user_id, self._username or self._role),
+                    )
+                    mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    if not explicit_zero:
+                        extra_cost = round(float(line.get('extra_unit_cost') or 0), 4)
+                        landed = round(float(unit_cost) + extra_cost, 4)
+                        layer = add_layer(
+                            db, row['id'], received_qty, landed,
+                            'purchase', f'{receipt_number}:{row["id"]}',
+                            supplier_id=supplier_id,
+                            supplier_name=supplier_name,
+                            reference_note=ref_note,
+                            purchase_unit_cost=float(unit_cost),
+                            extra_unit_cost=extra_cost,
+                            product_name=row['name'],
+                            username=self._username or self._role or '',
+                        )
+                        if layer.get('error'):
+                            db.rollback()
+                            return {'error': layer['error']}
+                elif not row['supplier_id']:
                     db.execute(
                         "UPDATE products SET supplier_id=? WHERE id=?",
                         (supplier_id, row['id']),
                     )
-                if line['unit_cost'] is not None:
-                    db.execute(
-                        "UPDATE products SET cost_price=? WHERE id=?",
-                        (float(line['unit_cost']), row['id']),
-                    )
-                db.execute(
-                    "INSERT INTO stock_movements "
-                    "(product_id,product_name,movement_type,qty_before,qty_change,"
-                    "qty_after,reference,reason,user_id,username) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (row['id'], row['name'], 'PURCHASE',
-                     old_stock, line['quantity'], new_stock,
-                     f"RECEIVE_sup={supplier_id}|RCV={receipt_number}", reason,
-                     self._user_id, self._username or self._role),
-                )
-                mov_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-                extra_cost = round(float(line.get('extra_unit_cost') or 0), 4)
-                landed = round(float(unit_cost) + extra_cost, 4)
-                layer = add_layer(
-                    db, row['id'], line['quantity'], landed,
-                    'purchase', f'{receipt_number}:{row["id"]}',
-                    supplier_id=supplier_id,
-                    supplier_name=supplier_name,
-                    reference_note=ref_note,
-                    purchase_unit_cost=float(unit_cost),
-                    extra_unit_cost=extra_cost,
-                    product_name=row['name'],
-                    username=self._username or self._role or '',
-                )
-                if layer.get('error'):
-                    db.rollback()
-                    return {'error': layer['error']}
                 saved.append({
                     'product_id': row['id'], 'product_name': row['name'],
                     'sku': row['sku'] or '', 'unit': row['unit'] or '',
-                    'quantity': line['quantity'], 'unit_cost': float(unit_cost),
+                    'quantity': received_qty, 'rejected_qty': rejected_qty,
+                    'ordered_qty': line.get('ordered_qty'),
+                    'unit_cost': float(unit_cost),
                     'line_total': line_total, 'old_stock': old_stock,
-                    'new_stock': new_stock, 'movement_id': mov_id,
+                    'new_stock': new_stock if received_qty > 0 else old_stock,
+                    'movement_id': mov_id,
                 })
             from desktop.utils.supplier_payables import ensure_schema as _supplier_schema
             _supplier_schema(db)
@@ -3081,11 +3250,13 @@ class APIClient:
             for line in saved:
                 db.execute(
                     "INSERT INTO stock_receipt_lines "
-                    "(receipt_id,product_id,product_name,quantity,unit_cost,line_total,movement_id) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "(receipt_id,product_id,product_name,quantity,unit_cost,line_total,movement_id,"
+                    "rejected_qty,ordered_qty) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (receipt_id, line['product_id'], line['product_name'],
                      line['quantity'], line['unit_cost'], line['line_total'],
-                     line['movement_id']),
+                     line['movement_id'], line.get('rejected_qty') or 0,
+                     line.get('ordered_qty')),
                 )
             paid_now = 0.0
             try:
@@ -3123,7 +3294,7 @@ class APIClient:
             _audit(self._user_id, self._username, 'RECEIVE_STOCK', 'inventory',
                    f"receipt={receipt_number} supplier={supplier_id} lines={len(saved)} total={grand}")
             outstanding = round(grand - min(paid_now, grand), 2)
-            return {
+            result = {
                 'success': True, 'receipt_id': receipt_id,
                 'receipt_number': receipt_number, 'supplier_id': supplier_id,
                 'supplier_name': supplier_name, 'reference': ref_note,
@@ -3132,6 +3303,10 @@ class APIClient:
                 'outstanding': outstanding,
                 'payment': payment,
             }
+            from desktop.utils.security import client_actor, redact_cost_fields, sees_product_cost
+            if (self._role or '') and not sees_product_cost(client_actor(self)):
+                redact_cost_fields(result)
+            return result
         except sqlite3.IntegrityError:
             try:
                 db.rollback()
@@ -3171,6 +3346,7 @@ class APIClient:
             lines = db.execute(
                 "SELECT l.product_id, l.product_name, l.quantity, l.unit_cost, l.line_total, "
                 "COALESCE(l.returned_qty,0) AS returned_qty, "
+                "COALESCE(l.rejected_qty,0) AS rejected_qty, l.ordered_qty, "
                 "p.sku, p.unit, m.qty_before AS old_stock, m.qty_after AS new_stock "
                 "FROM stock_receipt_lines l "
                 "LEFT JOIN products p ON p.id=l.product_id "
@@ -4202,6 +4378,14 @@ class APIClient:
     def approve_backdate_request(self, request_id: int, version=None, note: str = '') -> dict:
         from backend.backdate_requests import approve_request
         return self._backdate(approve_request, int(request_id), {'version': version, 'note': note})
+
+    def bulk_approve_backdate_requests(self, scope: str = 'all', business_date: str = '') -> dict:
+        from backend.backdate_requests import bulk_approve
+        return self._backdate(bulk_approve, {'scope': scope, 'business_date': business_date})
+
+    def disapprove_backdate_request(self, request_id: int, reason: str, version=None) -> dict:
+        from backend.backdate_requests import disapprove_request
+        return self._backdate(disapprove_request, int(request_id), {'reason': reason, 'version': version})
 
     def list_requests_centre(self, filters=None) -> dict:
         from backend.requests_centre import list_centre

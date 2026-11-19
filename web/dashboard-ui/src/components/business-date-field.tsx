@@ -1,5 +1,22 @@
 import { getUser } from "@/lib/api";
+import {
+  BACKDATE_REASONS,
+  catalogReasonValue,
+  normalizeBackdateReason,
+  otherReasonDraft,
+  reasonFromOtherDraft,
+  showsOtherReasonField,
+} from "@/lib/backdate-reason";
 import { shopTodayISO } from "@/lib/format";
+
+export {
+  BACKDATE_REASONS,
+  catalogReasonValue,
+  normalizeBackdateReason,
+  otherReasonDraft,
+  reasonFromOtherDraft,
+  showsOtherReasonField,
+};
 
 export function canPostBusinessDay() {
   const user = getUser();
@@ -22,15 +39,45 @@ export function backdateWarning(iso: string) {
   return `You're recording this transaction for ${when}, not today's date. This is a backdated transaction and requires administrator approval before it is posted.`;
 }
 
-export const BACKDATE_REASONS = [
-  "Network or system downtime",
-  "Transaction entered late",
-  "Previous transaction was missed",
-  "Supplier delivery recorded late",
-  "Correction of an earlier recording error",
-  "Supporting documents received late",
-  "Other",
-];
+export function BackdateReasonPicker({
+  reason,
+  onReason,
+  compact = false,
+}: {
+  reason: string;
+  onReason: (value: string) => void;
+  compact?: boolean;
+}) {
+  const writing = showsOtherReasonField(reason);
+  const control = compact
+    ? "h-8 w-full rounded-lg border border-border bg-input px-2 text-xs text-text"
+    : "mt-1 h-11 w-full rounded-lg border border-border bg-input px-3 text-sm text-text";
+  return (
+    <div className={compact ? "flex w-full min-w-0 basis-full flex-col gap-1" : "mt-2 block text-text"}>
+      <span className={compact ? "sr-only" : undefined}>Why this past date</span>
+      <select
+        aria-label="Backdating reason"
+        value={catalogReasonValue(reason)}
+        onChange={(event) => onReason(event.target.value)}
+        className={control}
+      >
+        <option value="">Choose a reason</option>
+        {BACKDATE_REASONS.map((item) => (
+          <option key={item} value={item}>{item}</option>
+        ))}
+      </select>
+      {writing ? (
+        <input
+          aria-label="Write the reason"
+          value={otherReasonDraft(reason)}
+          placeholder="Write the reason"
+          onChange={(event) => onReason(reasonFromOtherDraft(event.target.value))}
+          className={control}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 export function BusinessDateField({
   value,
@@ -88,29 +135,7 @@ export function BusinessDateField({
         </span>
       ) : null}
       {past && onReason ? (
-        <div className="mt-2 block text-text">
-          <span>Why this past date</span>
-          <select
-            aria-label="Backdating reason"
-            value={BACKDATE_REASONS.includes(reason) ? reason : reason ? "Other" : ""}
-            onChange={(event) => onReason(event.target.value)}
-            className="mt-1 h-11 w-full rounded-lg border border-border bg-input px-3 text-sm text-text"
-          >
-            <option value="">Choose a reason</option>
-            {BACKDATE_REASONS.map((item) => (
-              <option key={item} value={item}>{item}</option>
-            ))}
-          </select>
-          {reason === "Other" || (reason && !BACKDATE_REASONS.includes(reason)) ? (
-            <input
-              aria-label="Backdating explanation"
-              value={reason === "Other" ? "" : BACKDATE_REASONS.includes(reason) ? "" : reason.replace(/^Other:\s*/, "")}
-              placeholder="What happened"
-              onChange={(event) => onReason(event.target.value.trim() ? `Other: ${event.target.value.trim()}` : "Other")}
-              className="mt-2 h-11 w-full rounded-lg border border-border bg-input px-3 text-sm text-text"
-            />
-          ) : null}
-        </div>
+        <BackdateReasonPicker reason={reason} onReason={onReason} />
       ) : null}
     </div>
   );

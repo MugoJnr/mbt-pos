@@ -1,9 +1,9 @@
 """Request list for backdated sales. New sales use the normal till cart."""
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import QDate, Qt, QTimer
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QTextEdit,
-    QVBoxLayout,
+    QCheckBox, QComboBox, QDateEdit, QDialog, QFrame, QHBoxLayout, QHeaderView,
+    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea,
+    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from desktop.utils.theme import apply_themed_dialog
@@ -23,19 +23,35 @@ def _status_label(status: str) -> str:
     return _LABELS.get((status or '').strip().lower(), status or '')
 
 
+def _ksh(amount) -> str:
+    return f"KSh {float(amount or 0):,.2f}"
+
+
 def receipt_text(detail: dict) -> str:
     """Readable proposed receipt. This is the request, not a completed sale."""
     if not detail:
         return 'Select a request to see the proposed receipt.'
     summary = detail.get('summary') or {}
-    lines = [
+    lines = []
+    banner = detail.get('disapproval') or {}
+    if banner:
+        lines.extend([
+            banner.get('headline') or 'PREVIOUSLY APPROVED — SUBSEQUENTLY DISAPPROVED',
+            f"Originally approved: {banner.get('approved_at') or '—'} by {banner.get('approved_by') or '—'}",
+            f"Disapproved: {banner.get('disapproved_at') or '—'} by {banner.get('disapproved_by') or '—'}",
+            f"Disapproval reason: {banner.get('reason') or '—'}",
+            f"Original transaction: {banner.get('sale_reference') or '—'}",
+            'The previous posting was reversed. The request is waiting for review again.',
+            '',
+        ])
+    lines.extend([
         f"{detail.get('reference') or 'Request'}  ·  {_status_label(detail.get('status'))}",
         f"Cashier: {detail.get('cashier_name') or '—'}",
         f"Requested business date: {detail.get('business_date') or '—'}",
         f"Submitted: {detail.get('submitted_at') or 'Not submitted'}",
         f"Created: {detail.get('created_at') or '—'}",
         f"Reason: {detail.get('reason') or '—'}",
-    ]
+    ])
     if detail.get('reviewer_name') or detail.get('review_note'):
         lines.append(
             f"Reviewer: {detail.get('reviewer_name') or '—'}  "
@@ -173,6 +189,26 @@ class BackdateDialog(QDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText('Search reference, cashier, or reason')
         self.search.textChanged.connect(self._apply_filter)
+        self.date_filter = QComboBox()
+        for value, label in (
+            ('all', 'All dates'),
+            ('today', 'Today'),
+            ('yesterday', 'Yesterday'),
+            ('date', 'Selected date'),
+        ):
+            self.date_filter.addItem(label, value)
+        self.date_filter.currentIndexChanged.connect(self._date_mode_changed)
+        self.day_edit = QDateEdit()
+        self.day_edit.setCalendarPopup(True)
+        self.day_edit.setDisplayFormat('dd MMM yyyy')
+        self.day_edit.setDate(QDate.currentDate().addDays(-1))
+        self.day_edit.setVisible(False)
+        self.day_edit.dateChanged.connect(lambda *_: self._reload())
+        self.reset_dates = QPushButton('Reset date filter')
+        self.reset_dates.clicked.connect(self._reset_dates)
+        self.group_toggle = QCheckBox('Group by requested sales date')
+        self.group_toggle.setChecked(True)
+        self.group_toggle.toggled.connect(lambda *_: self._apply_filter())
         self.status_filter = QComboBox()
         for value, label in (
             ('', 'All'),
@@ -191,12 +227,33 @@ class BackdateDialog(QDialog):
         refresh.clicked.connect(self._reload)
         tools.addWidget(self.search, 1)
         tools.addWidget(self.status_filter)
+        tools.addWidget(self.date_filter)
+        tools.addWidget(self.day_edit)
+        tools.addWidget(self.reset_dates)
         tools.addWidget(refresh)
         tools.addWidget(new_btn)
         root.addLayout(tools)
+        group_tools = QHBoxLayout()
+        group_tools.addWidget(self.group_toggle)
+        self.approve_all_btn = QPushButton('Approve all pending')
+        self.approve_all_btn.clicked.connect(self._approve_all)
+        self.approve_day_btn = QPushButton('Approve all for selected day')
+        self.approve_day_btn.clicked.connect(self._approve_selected_day)
+        group_tools.addWidget(self.approve_all_btn)
+        group_tools.addWidget(self.approve_day_btn)
+        group_tools.addStretch(1)
+        root.addLayout(group_tools)
 
         body = QHBoxLayout()
         left = QVBoxLayout()
+        self.group_host = QWidget()
+        self.group_layout = QVBoxLayout(self.group_host)
+        self.group_layout.setContentsMargins(0, 0, 0, 0)
+        self.group_layout.addStretch(1)
+        self.group_scroll = QScrollArea()
+        self.group_scroll.setWidgetResizable(True)
+        self.group_scroll.setWidget(self.group_host)
+        left.addWidget(self.group_scroll, 1)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
             ['Reference', 'Cashier', 'Business date', 'Amount', 'Status']
@@ -231,11 +288,16 @@ class BackdateDialog(QDialog):
         self.reject_btn = QPushButton('Reject')
         self.return_btn = QPushButton('Return for correction')
         self.withdraw_btn = QPushButton('Withdraw')
+        self.disapprove_btn = QPushButton('Disapprove approved sale')
         self.approve_btn.clicked.connect(self._approve)
         self.reject_btn.clicked.connect(lambda: self._decide('reject'))
         self.return_btn.clicked.connect(lambda: self._decide('return'))
         self.withdraw_btn.clicked.connect(self._withdraw)
-        for button in (self.approve_btn, self.return_btn, self.reject_btn, self.withdraw_btn):
+        self.disapprove_btn.clicked.connect(self._disapprove)
+        for button in (
+            self.approve_btn, self.return_btn, self.reject_btn,
+            self.disapprove_btn, self.withdraw_btn,
+        ):
             actions.addWidget(button)
         right.addLayout(actions)
         close = QPushButton('Back to till')
@@ -249,10 +311,27 @@ class BackdateDialog(QDialog):
         """While this list is open, pick up a decision made on the web. A closed dialog does not poll."""
         self._reload(quiet=True)
 
+    def _date_params(self) -> dict:
+        mode = self.date_filter.currentData() or 'all'
+        if mode == 'date':
+            day = self.day_edit.date()
+            return {'business_date': f"{day.year():04d}-{day.month():02d}-{day.day():02d}"}
+        if mode in ('today', 'yesterday'):
+            return {'date': mode}
+        return {'date': 'all'}
+
+    def _date_mode_changed(self):
+        self.day_edit.setVisible((self.date_filter.currentData() or '') == 'date')
+        self._reload()
+
+    def _reset_dates(self):
+        self.date_filter.setCurrentIndex(0)
+        self.day_edit.setDate(QDate.currentDate().addDays(-1))
+
     def _reload(self, quiet=False):
-        result = self.api.list_backdate_requests({
-            'status': self.status_filter.currentData() or '',
-        }) or {}
+        filters = {'status': self.status_filter.currentData() or ''}
+        filters.update(self._date_params())
+        result = self.api.list_backdate_requests(filters) or {}
         if result.get('error'):
             self.freshness.setText('Could not refresh. This list may be out of date.')
             if not quiet:
@@ -261,6 +340,9 @@ class BackdateDialog(QDialog):
         open_id = (self._current or {}).get('id')
         open_status = (self._current or {}).get('status')
         self._rows = result.get('requests') or []
+        self._groups = result.get('groups') or []
+        self._pending_count = int(result.get('pending_count') or 0)
+        self._pending_total = float(result.get('pending_total') or 0)
         self.freshness.setText('Updated just now.')
         self.table.blockSignals(True)
         try:
@@ -312,8 +394,19 @@ class BackdateDialog(QDialog):
             ]
             for column, value in enumerate(values):
                 self.table.setItem(index, column, QTableWidgetItem(str(value)))
-        self.empty.setVisible(not rows)
+        self.empty.setVisible(not rows and not self.group_toggle.isChecked())
         self._shown = rows
+        self._render_groups(rows)
+        reviewing = self._role() in _REVIEW_ROLES
+        self.approve_all_btn.setEnabled(reviewing and self._pending_count > 0)
+        selected_day = (self._date_params().get('business_date') or '')
+        if self._date_params().get('date') == 'yesterday':
+            selected_day = next((group.get('business_date') for group in self._groups), '')
+        day_group = next((group for group in self._groups if group.get('business_date') == selected_day), None)
+        self.approve_day_btn.setEnabled(bool(reviewing and day_group and day_group.get('eligible_count')))
+        self.approve_day_btn.setText(
+            f"Approve all for {selected_day}" if selected_day else 'Approve all for selected day'
+        )
 
     def _open_row(self, index):
         rows = getattr(self, '_shown', [])
@@ -339,10 +432,16 @@ class BackdateDialog(QDialog):
         self.withdraw_btn.setEnabled(
             bool(detail) and own and status in ('draft', 'submitted', 'returned')
         )
+        self.disapprove_btn.setEnabled(
+            self._role() in _REVIEW_ROLES and status == 'approved' and not own
+        )
         if own and status == 'submitted':
             self.approve_btn.setToolTip('You cannot approve your own request.')
         else:
             self.approve_btn.setToolTip('Posts the sale once. Stock and debt change only after this succeeds.')
+        self.disapprove_btn.setToolTip(
+            'Reverses the posted sale and returns the request to pending review.'
+        )
 
     def _new_sale(self):
         parent = self.parent()
@@ -353,6 +452,105 @@ class BackdateDialog(QDialog):
                 'Backdating',
                 'Point of Sale is not open, so the past-day cart could not start.',
             )
+
+    def _render_groups(self, rows):
+        while self.group_layout.count():
+            item = self.group_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        if not self.group_toggle.isChecked():
+            self.group_scroll.setVisible(False)
+            return
+        self.group_scroll.setVisible(True)
+        buckets = {}
+        for item in rows:
+            if item.get('status') != 'submitted':
+                continue
+            day = item.get('business_date') or 'No date'
+            bucket = buckets.setdefault(day, {'count': 0, 'total': 0.0})
+            bucket['count'] += 1
+            bucket['total'] += float((item.get('summary') or {}).get('total_sales') or 0)
+        if not buckets:
+            empty = QLabel('No pending requests in this list to group.')
+            empty.setWordWrap(True)
+            self.group_layout.addWidget(empty)
+        for day in sorted(buckets, reverse=True):
+            bucket = buckets[day]
+            label = QLabel(f"{day}  ·  {bucket['count']} pending  ·  {_ksh(bucket['total'])}")
+            label.setWordWrap(True)
+            self.group_layout.addWidget(label)
+        self.group_layout.addStretch(1)
+
+    def _approve_all(self):
+        if self._pending_count <= 0:
+            return
+        if QMessageBox.question(
+            self, 'Approve all pending',
+            f"Approve {self._pending_count} pending request(s) totalling {_ksh(self._pending_total)}?\n"
+            'Each request is posted on its own. A failure does not undo the ones that already posted.',
+        ) != QMessageBox.Yes:
+            return
+        self._after_bulk(self.api.bulk_approve_backdate_requests('all', ''))
+
+    def _approve_selected_day(self):
+        params = self._date_params()
+        day = params.get('business_date') or ''
+        if params.get('date') == 'yesterday':
+            day = next(
+                (group.get('business_date') for group in self._groups if group.get('eligible_count')),
+                '',
+            )
+        group = next((item for item in self._groups if item.get('business_date') == day), None)
+        if not group or not group.get('eligible_count'):
+            QMessageBox.warning(
+                self, 'Backdating',
+                'Choose a requested sales date that still has requests you can approve.',
+            )
+            return
+        if QMessageBox.question(
+            self, 'Approve one day',
+            f"Approve {group.get('eligible_count')} request(s) for {day} "
+            f"totalling {_ksh(group.get('eligible_total'))}?\n"
+            'Each request is posted on its own.',
+        ) != QMessageBox.Yes:
+            return
+        self._after_bulk(self.api.bulk_approve_backdate_requests('day', day))
+
+    def _after_bulk(self, result):
+        if not result or result.get('error'):
+            QMessageBox.warning(self, 'Backdating', (result or {}).get('error') or 'Nothing was approved.')
+            self._reload()
+            return
+        self._reload()
+        QMessageBox.information(
+            self, 'Backdating',
+            f"Approved {result.get('approved', 0)}. "
+            f"Failed {result.get('failed', 0)}. "
+            f"Skipped {result.get('skipped', 0)}. "
+            f"Posted {_ksh(result.get('approved_total'))}.",
+        )
+
+    def _disapprove(self):
+        detail = self._current
+        if not detail or detail.get('status') != 'approved':
+            return
+        reason, ok = QInputDialog.getText(
+            self, 'Disapprove approved sale', 'Why is this approved sale being reversed?',
+        )
+        reason = (reason or '').strip()
+        if not ok or len(reason) < 3:
+            QMessageBox.warning(self, 'Backdating', 'Enter a reason of at least 3 characters.')
+            return
+        if QMessageBox.question(
+            self, 'Disapprove approved sale',
+            'This reverses the posted sale, stock, and debt, and returns the request to pending. '
+            'The original receipt stays in history.',
+        ) != QMessageBox.Yes:
+            return
+        result = self.api.disapprove_backdate_request(detail['id'], reason, detail.get('version'))
+        self._after(result, 'Disapproved. The posted sale was reversed and the request is pending again.')
 
     def _approve(self):
         detail = self._current
