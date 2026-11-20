@@ -169,8 +169,6 @@ class ReceiptsTab(QWidget):
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         _fit_receipt_columns(self._table)
-        self._table.cellClicked.connect(self._open_row)
-        self._table.itemClicked.connect(lambda item: self._open_row(item.row(), item.column()))
         self._table.setMinimumHeight(360)
         root.addWidget(self._table, 1)
         self.reload()
@@ -257,7 +255,10 @@ class ReceiptsTab(QWidget):
             self._rows = []
         else:
             self._rows = list(data.get("receipts") or [])
-            self._status_line.setText(f"{data.get('total', len(self._rows))} receipts")
+            shown = f"{data.get('total', len(self._rows))} receipts"
+            if data.get("searched_all_dates"):
+                shown += " — search includes every business date"
+            self._status_line.setText(shown)
         self._table.setRowCount(len(self._rows))
         for index, row in enumerate(self._rows):
             values = [
@@ -295,16 +296,22 @@ class ReceiptsTab(QWidget):
         _fit_receipt_columns(self._table)
 
     def _open_row(self, index: int, _column: int = 0):
+        if getattr(self, "_opening", False):
+            return
         if index < 0 or index >= len(self._rows):
             return
-        row = self._rows[index]
-        detail = self.api.centre_receipt(row.get("kind"), row.get("id"))
-        if not detail or detail.get("error"):
-            QMessageBox.warning(self, "Receipt", (detail or {}).get("error") or "That receipt could not be opened.")
-            return
-        dlg = ReceiptDetailDialog(self, self.api, self.user, row, detail)
-        dlg.exec_()
-        self.reload()
+        self._opening = True
+        try:
+            row = self._rows[index]
+            detail = self.api.centre_receipt(row.get("kind"), row.get("id"))
+            if not detail or detail.get("error"):
+                QMessageBox.warning(self, "Receipt", (detail or {}).get("error") or "That receipt could not be opened.")
+                return
+            dlg = ReceiptDetailDialog(self, self.api, self.user, row, detail)
+            dlg.exec_()
+            self.reload()
+        finally:
+            self._opening = False
 
 
 class ReceiptDetailDialog(QDialog):
@@ -358,7 +365,7 @@ class ReceiptDetailDialog(QDialog):
         lay.addWidget(banner)
         meta = QLabel(
             f"When {header.get('created_at') or row.get('at') or '—'}\n"
-            f"Business date {header.get('sale_date') or header.get('date') or '—'}\n"
+            f"Business date {header.get('sale_date') or header.get('effective_date') or header.get('business_date') or header.get('date') or '—'}\n"
             f"Who {who}"
         )
         meta.setWordWrap(True)
@@ -412,13 +419,18 @@ class ReceiptDetailDialog(QDialog):
                 f"Debt {debt.get('invoice_number') or ''} · balance {_money(debt.get('balance'))} · {debt.get('status') or ''}"
             ))
         self._slip_text = ""
+        from desktop.utils.security import has_permission
         role = str(((user.get("user") or user) if isinstance(user, dict) else {}).get("role") or "").lower()
         stored = str(header.get("status") or "").lower()
         if kind == "sale" and stored == "completed" and role == "superadmin":
             void = QPushButton("Void receipt")
             void.clicked.connect(self._void_now)
             lay.addWidget(void)
-        elif kind == "sale" and stored == "completed" and role in ("cashier", "manager", "admin"):
+        elif (
+            kind == "sale" and stored == "completed"
+            and has_permission(user, "sales.request_void")
+            and role != "superadmin"
+        ):
             ask = QPushButton("Request void")
             ask.clicked.connect(self._request_void)
             lay.addWidget(ask)

@@ -32,6 +32,11 @@ class ProductPhotoTests(unittest.TestCase):
     def test_save_replace_and_remove_keep_one_file(self):
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
+        os.environ['MBT_TEST_INSTANCE'] = '1'
+        os.environ['MBT_DATA_ROOT'] = tmp.name
+        os.environ['APPDATA'] = os.path.join(tmp.name, 'appdata')
+        os.environ['LOCALAPPDATA'] = os.path.join(tmp.name, 'local')
+        os.environ['PROGRAMDATA'] = os.path.join(tmp.name, 'programdata')
         db_path = os.path.join(tmp.name, 'shop.db')
         data_root = tmp.name
         patches = [
@@ -55,37 +60,73 @@ class ProductPhotoTests(unittest.TestCase):
         )
         db.commit()
         db.close()
-        jpg = os.path.join(tmp.name, 'shop photo.jpg')
-        png = os.path.join(tmp.name, 'صورة.png')
-        with open(jpg, 'wb') as handle:
-            handle.write(JPEG)
-        with open(png, 'wb') as handle:
-            handle.write(PNG)
+        import io
+        from PIL import Image
+        folder = os.path.join(data_root, 'data', 'product-images')
+
+        def _file(kind, size, color):
+            image = Image.new('RGB', size, color)
+            buf = io.BytesIO()
+            image.save(buf, format='JPEG' if kind == 'jpg' else 'PNG')
+            path = os.path.join(tmp.name, f'shop-{kind}-{size[0]}.{kind}')
+            with open(path, 'wb') as handle:
+                handle.write(buf.getvalue())
+            return path
+
+        jpg = _file('jpg', (1800, 900), (180, 40, 40))
+        png = _file('png', (80, 240), (20, 80, 180))
         api._role = 'guest'
         denied = api.save_product_image(1, jpg)
         self.assertEqual(denied.get('status'), 403)
         api._role = 'cashier'
         saved = api.save_product_image(1, jpg)
         self.assertTrue(saved.get('success'), saved)
-        self.assertEqual(saved.get('image_path'), 'product-1.jpg')
+        self.assertTrue(str(saved.get('image_path') or '').startswith('product-1-'))
+        self.assertTrue(str(saved.get('image_path') or '').endswith('.jpg'))
+        display = os.path.join(folder, saved['image_path'])
+        thumb = os.path.join(folder, saved['thumb'])
+        self.assertTrue(os.path.isfile(display))
+        self.assertTrue(os.path.isfile(thumb))
+        self.assertLessEqual(max(Image.open(display).size), 1600)
+        self.assertLessEqual(max(Image.open(thumb).size), 256)
+        first_name = saved['image_path']
         replaced = api.save_product_image(1, png)
-        self.assertEqual(replaced.get('image_path'), 'product-1.png')
-        folder = os.path.join(data_root, 'data', 'product-images')
-        self.assertFalse(os.path.exists(os.path.join(folder, 'product-1.jpg')))
-        self.assertTrue(os.path.isfile(os.path.join(folder, 'product-1.png')))
+        self.assertTrue(str(replaced.get('image_path') or '').endswith('.png'))
+        self.assertFalse(os.path.exists(os.path.join(folder, first_name)))
+        self.assertTrue(os.path.isfile(os.path.join(folder, replaced['image_path'])))
         heic = os.path.join(tmp.name, 'phone.heic')
         with open(heic, 'wb') as handle:
             handle.write(HEIC)
         blocked = api.save_product_image(1, heic)
         self.assertIn('HEIC', blocked.get('error') or '')
-        self.assertTrue(os.path.isfile(os.path.join(folder, 'product-1.png')))
+        self.assertTrue(os.path.isfile(os.path.join(folder, replaced['image_path'])))
+        corrupt = api.save_product_image_bytes(1, b'\xff\xd8\xff\xe0' + b'\x00' * 64)
+        self.assertIn('could not be shown', corrupt.get('error') or '')
+        escaped = api.save_product_image_bytes(1, open(jpg, 'rb').read(), upload_name='../evil.jpg')
+        self.assertEqual(escaped.get('status'), 400)
+        self.assertFalse(os.path.exists(os.path.join(tmp.name, 'evil.jpg')))
+        db = ac._db()
+        db.execute(
+            "INSERT INTO products (name,sku,price,cost_price,stock,min_stock) VALUES ('Second','PHOTO-2',10,5,3,1)"
+        )
+        db.commit()
+        second_id = db.execute("SELECT id FROM products WHERE sku='PHOTO-2'").fetchone()['id']
+        db.close()
+        other = api.save_product_image(second_id, jpg)
+        self.assertTrue(other.get('success'), other)
+        self.assertNotEqual(other.get('image_path'), replaced.get('image_path'))
+        self.assertTrue(os.path.isfile(os.path.join(folder, replaced['image_path'])))
+        self.assertTrue(os.path.isfile(os.path.join(folder, other['image_path'])))
         cleared = api.clear_product_image(1)
         self.assertTrue(cleared.get('success'), cleared)
-        self.assertFalse(os.path.exists(os.path.join(folder, 'product-1.png')))
+        self.assertFalse(os.path.exists(os.path.join(folder, replaced['image_path'])))
+        self.assertTrue(os.path.isfile(os.path.join(folder, other['image_path'])))
         db = ac._db()
         path = db.execute("SELECT image_path FROM products WHERE id=1").fetchone()['image_path']
+        other_path = db.execute("SELECT image_path FROM products WHERE id=?", (second_id,)).fetchone()['image_path']
         db.close()
         self.assertFalse(path)
+        self.assertEqual(other_path, other['image_path'])
         ac._SCHEMA_READY = False
 
 

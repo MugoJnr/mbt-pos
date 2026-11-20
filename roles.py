@@ -74,5 +74,26 @@ def sanitize_tab_permissions(role: str, perms) -> list:
     return out
 
 
+def visible_tabs(role: str, stored) -> list:
+    """Tabs this account may see. Super Admin keeps the full shop menu.
+
+    Every other role sees only the tabs saved on the account. A role name
+    does not add tabs that were not granted, and an unknown role sees none.
+    """
+    role = (role or '').strip().lower()
+    if role == ROLE_SUPERADMIN:
+        return list(ALL_DESKTOP_TABS)
+    if role not in TAB_PERMISSIONS_BY_ROLE:
+        return []
+    if not isinstance(stored, (list, tuple)):
+        stored = []
+    allowed = set(ALL_DESKTOP_TABS)
+    out = []
+    for tab in sanitize_tab_permissions(role, stored):
+        if tab in allowed and tab not in out:
+            out.append(tab)
+    return out
+
+
 def role_display_name(role: str) -> str:
     return ROLE_DISPLAY.get((role or '').strip().lower(), role or 'User')

@@ -176,6 +176,21 @@ def revoke_web_session(conn, sid: str) -> dict:
     return {'success': True}
 
 
+def invalidate_user_sessions(conn, user_id: int) -> None:
+    """End every web and till session for this account. Does not change the role."""
+    ensure(conn)
+    now = datetime.now().isoformat(timespec='seconds')
+    conn.execute(
+        "UPDATE web_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",
+        (now, int(user_id)),
+    )
+    conn.execute(
+        "UPDATE till_sessions SET end_requested=1, state='pending' "
+        "WHERE user_id=? AND ended_at IS NULL AND state!='signed_out'",
+        (int(user_id),),
+    )
+
+
 def revoke_other_web_sessions(conn, user_id, keep_sid: str = '') -> None:
     ensure(conn)
     conn.execute(

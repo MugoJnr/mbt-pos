@@ -1283,37 +1283,23 @@ class SalesTab(QWidget):
                 self._on_customer_changed()
         except Exception:
             pass
-        cats = sorted({p.get('category') or 'General' for p in self.products})
-        # Prefer managed category list when available; drop supplier-tag noise
-        try:
-            from desktop.utils.display_category import (
-                looks_like_supplier_tag, display_category,
-            )
-            cleaned = set()
-            for p in self.products:
-                lab, _ = display_category(p.get('category') or '', p.get('name') or '')
-                if lab and lab != 'Uncategorized':
-                    cleaned.add(lab)
-                elif p.get('category') and not looks_like_supplier_tag(p.get('category') or ''):
-                    cleaned.add(p.get('category'))
-            if cleaned:
-                cats = sorted(cleaned)
+        cats = set()
+        has_blank = False
+        for p in self.products:
+            raw = (p.get('category') or '').strip()
+            if raw:
+                cats.add(raw)
             else:
-                cats = [c for c in cats if not looks_like_supplier_tag(c)]
-        except Exception:
-            pass
+                has_blank = True
         try:
             managed = [c.get('name') for c in (self.api.get_categories() or []) if c.get('name')]
-            if managed:
-                try:
-                    from desktop.utils.display_category import looks_like_supplier_tag as _slt
-                    managed = [c for c in managed if not _slt(c)]
-                except Exception:
-                    pass
-                cats = sorted(set(cats) | set(managed))
+            cats.update(name for name in managed if (name or '').strip())
         except Exception:
             pass
-        self._rebuild_category_combo(cats)
+        labels = sorted(cats, key=str.casefold)
+        if has_blank:
+            labels.append('Uncategorised')
+        self._rebuild_category_combo(labels)
         try:
             from desktop.pos.checkout_pro_chrome import sync_category_chips
             sync_category_chips(self)
@@ -1436,13 +1422,19 @@ class SalesTab(QWidget):
             def _cat_match(p):
                 if cat in ('All Categories', 'All', ''):
                     return True
-                lab, _ = _dcat(p.get('category') or '', p.get('name') or '')
-                raw = (p.get('category') or 'General')
-                return lab == cat or raw == cat
+                raw = (p.get('category') or '').strip()
+                if cat == 'Uncategorised':
+                    return not raw
+                lab, _ = _dcat(raw, p.get('name') or '')
+                return raw == cat or lab == cat
         except Exception:
             def _cat_match(p):
-                return (cat in ('All Categories', 'All', '')
-                        or (p.get('category') or 'General') == cat)
+                raw = (p.get('category') or '').strip()
+                if cat in ('All Categories', 'All', ''):
+                    return True
+                if cat == 'Uncategorised':
+                    return not raw
+                return raw == cat
 
         filtered = filter_pos_products(
             self.products, q, category=cat, cat_match=_cat_match,
@@ -1675,7 +1667,7 @@ class SalesTab(QWidget):
             'product_id':   p['id'],
             'product_name': p.get('name', ''),
             'sku':          p.get('sku', '') or '',
-            'category':     p.get('category') or 'General',
+            'category':     (p.get('category') or '').strip(),
             'quantity':     1.0,
             'unit':         p.get('unit') or 'pcs',
             'unit_price':   p.get('price', 0),
@@ -2190,42 +2182,54 @@ class SalesTab(QWidget):
         self._sync_business_day_warn()
 
     def _open_business_day_sales(self):
-        from desktop.dialogs.business_day_dialog import (
-            open_business_day_sales, BusinessDaySalesDialog,
-        )
-        mode, items, sale_id = open_business_day_sales(
+        from desktop.dialogs.business_day_dialog import open_business_day_sales
+
+        def _on_lines(items, meta):
+            self._apply_copied_sale_lines(
+                items,
+                source_sale_id=(meta or {}).get('sale_id'),
+                copy_day=bool((meta or {}).get('copy_day')),
+                replace=bool((meta or {}).get('replace')),
+                customer_id=(meta or {}).get('customer_id'),
+                receipt=(meta or {}).get('receipt') or '',
+            )
+
+        open_business_day_sales(
             self.api, self,
             day=self._business_day_iso(),
             currency=getattr(self, '_currency', 'KES'),
             user=self.user,
+            on_lines=_on_lines,
         )
-        if mode in (
-            BusinessDaySalesDialog.RESULT_COPY,
-            BusinessDaySalesDialog.RESULT_COPY_DAY,
-        ) and items:
-            self._apply_copied_sale_lines(
-                items,
-                source_sale_id=sale_id,
-                copy_day=(mode == BusinessDaySalesDialog.RESULT_COPY_DAY),
-            )
 
-    def _apply_copied_sale_lines(self, items, *, source_sale_id=None, copy_day=False):
-        """Load copied line items into cart; confirm if cart not empty."""
-        import copy
-        from PyQt5.QtWidgets import QMessageBox
-        if self.cart:
-            r = QMessageBox.question(
-                self, 'Replace Cart?',
-                'Current cart is not empty. Replace it with the copied sale lines?',
-                QMessageBox.Yes | QMessageBox.No)
-            if r != QMessageBox.Yes:
-                return
-        self.cart = copy.deepcopy(items)
+    def _apply_copied_sale_lines(
+        self, items, *, source_sale_id=None, copy_day=False,
+        replace=False, customer_id=None, receipt='',
+    ):
+        """Load copied lines into the cart. A later copy is added, not wiped."""
+        from desktop.utils.copy_sale import copied_cart_lines, place_copied_lines
+        products = {}
+        for product in self.products or []:
+            try:
+                products[int(product.get('id') or 0)] = product
+            except (TypeError, ValueError):
+                continue
+        lines = copied_cart_lines(items, products)
+        if not lines:
+            return
+        was_empty = not self.cart or replace
+        self.cart = place_copied_lines(self.cart, lines, replace=replace)
         for it in self.cart:
             self._apply_line_total(it)
+        if was_empty and customer_id and hasattr(self, '_customer'):
+            try:
+                self._customer.select_customer(int(customer_id))
+                self._on_customer_changed()
+            except Exception:
+                pass
         note = getattr(self, '_note', None)
         if note is not None:
-            tag = 'Copied day totals' if copy_day else f'Copied sale #{source_sale_id or "?"}'
+            tag = receipt or ('Copied day' if copy_day else f'Copied sale #{source_sale_id or "?"}')
             prev = (note.text() or '').strip()
             note.setText(f'{prev} | {tag}'.strip(' |') if prev else tag)
         self._refresh_cart()
@@ -2412,15 +2416,22 @@ class SalesTab(QWidget):
 
     def _qty(self, idx, v):
         if 0 <= idx < len(self.cart):
+            from PyQt5.QtWidgets import QMessageBox
+            from desktop.utils.quantities import QuantityError, parse_quantity
+            unit = self.cart[idx].get('unit')
             try:
-                requested = float(v)
-            except (TypeError, ValueError):
-                return
-            if requested <= 0:
+                q = parse_quantity(v, unit)
+            except QuantityError as exc:
+                message = str(exc)
+                if 'whole units' in message:
+                    name = self.cart[idx].get('product_name') or 'This product'
+                    message = f"'{name}' is sold in whole units."
+                if hasattr(self, '_cart_list'):
+                    self._cart_list.update_row(idx, self.cart[idx])
+                QMessageBox.warning(self, 'Quantity', message)
                 return
             self._cart_select_idx = idx
-            q = round_qty(requested, qty_step_for_unit(self.cart[idx].get('unit')), minimum=0.01)
-            self.cart[idx]['quantity'] = round(q, 2)
+            self.cart[idx]['quantity'] = q
             self._apply_line_total(self.cart[idx])
             if hasattr(self, '_cart_list'):
                 self._cart_list.update_row(idx, self.cart[idx])

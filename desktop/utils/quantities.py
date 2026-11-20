@@ -1,7 +1,7 @@
 """Shop quantities.
 
-Every unit keeps the decimals the cashier typed, including pieces.
-Nothing here turns 0.75 into 1 or 0.
+Measured goods keep the decimals the cashier typed.
+Piece goods stay whole units. 0.5 pieces is refused, not rounded to 1 or 0.
 """
 from __future__ import annotations
 
@@ -36,12 +36,14 @@ def unit_key(unit) -> str:
 
 
 def allows_fraction(unit) -> bool:
-    """Decimals are accepted for every unit, including pieces."""
-    return True
+    """Piece goods are whole units. Every other unit keeps decimals."""
+    return unit_key(unit) not in PIECE_UNITS
 
 
 def qty_step(unit, fallback=None) -> float:
     name = unit_key(unit)
+    if name in PIECE_UNITS:
+        return 1.0
     if name in MEASURED_UNITS:
         try:
             step = float(0.25 if fallback is None else fallback)
@@ -85,6 +87,8 @@ def parse_quantity(raw, unit=None, *, allow_zero=False, maximum=999999):
     if not number.is_finite():
         raise QuantityError("Enter a valid quantity.")
     number = number.quantize(_QTY, rounding=ROUND_HALF_UP)
+    if unit is not None and not allows_fraction(unit) and number != number.to_integral_value():
+        raise QuantityError("Quantity must be in whole units.")
     if number < 0:
         raise QuantityError("Quantity cannot be negative.")
     if number == 0 and not allow_zero:

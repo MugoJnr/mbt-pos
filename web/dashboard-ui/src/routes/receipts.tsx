@@ -97,7 +97,12 @@ function ReceiptsPage() {
       ? "completed"
       : String(header.display_status || open?.display_status || header.status || (Number(header.voided || 0) === 1 ? "voided" : open?.status) || "");
   const canVoidNow = user?.role === "superadmin" && open?.kind === "sale" && storedStatus === "completed";
-  const canRequestVoid = Boolean(open && open.kind === "sale" && storedStatus === "completed" && user?.role && !["superadmin", "viewer"].includes(user.role));
+  const grantedActions = Array.isArray(user?.effective_permissions) ? user.effective_permissions : [];
+  const canRequestVoid = Boolean(
+    open && open.kind === "sale" && storedStatus === "completed"
+    && grantedActions.includes("sales.request_void")
+    && user?.role !== "superadmin",
+  );
   const tenders = Array.isArray(detailQ.data?.tenders) ? detailQ.data.tenders : [];
   const payments = detailQ.data?.payments;
   const paidWith = Array.from(new Set(
@@ -148,6 +153,9 @@ function ReceiptsPage() {
           </Select>
           <Input aria-label="Status" placeholder="Status" value={status} onChange={(e) => { setPage(0); setStatus(e.target.value); }} />
           <Input aria-label="Search receipts" placeholder="Receipt, product, user" value={q} onChange={(e) => { setPage(0); setQ(e.target.value); }} />
+          {q.trim() ? (
+            <p className="w-full text-xs text-text2">Search looks through every business date. The date range applies when the search box is empty.</p>
+          ) : null}
         </div>
       </Card>
       <Card className="overflow-hidden">

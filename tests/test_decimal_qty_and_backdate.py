@@ -26,14 +26,24 @@ class QuantityRuleTests(unittest.TestCase):
         from desktop.utils.quantities import QuantityError, parse_quantity, money_amount
         self.assertEqual(parse_quantity("0.75", "kg"), 0.75)
         self.assertEqual(parse_quantity("0.25", "litres"), 0.25)
+        self.assertEqual(parse_quantity("0.5", "kg"), 0.5)
+        self.assertEqual(parse_quantity("1.25", "kg"), 1.25)
+        self.assertEqual(parse_quantity("2.50", "kg"), 2.5)
         self.assertEqual(parse_quantity("1.50", "metres"), 1.5)
         self.assertEqual(parse_quantity(1, "pcs"), 1.0)
-        self.assertEqual(parse_quantity("0.5", "pcs"), 0.5)
-        self.assertEqual(parse_quantity("2.25", "piece"), 2.25)
+        self.assertEqual(parse_quantity("2", "piece"), 2.0)
         self.assertEqual(money_amount("10.005"), __import__("decimal").Decimal("10.01"))
-        for raw, unit in (("0", "kg"), ("-1", "kg"), ("abc", "kg"), ("1.23456", "pcs")):
+        for raw, unit in (("0", "kg"), ("-1", "kg"), ("abc", "kg"), ("1.23456", "pcs"),
+                          ("0.5", "pcs"), ("1.25", "piece"), ("2.25", "pieces")):
             with self.assertRaises(QuantityError):
                 parse_quantity(raw, unit)
+        refused = None
+        try:
+            parse_quantity("1.25", "pcs")
+        except QuantityError as exc:
+            refused = str(exc)
+        self.assertIn("whole", (refused or "").lower())
+        self.assertEqual(parse_quantity("1.25", "kg"), 1.25)
 
     def test_sale_line_keeps_three_quarter_kilos(self):
         from backend.sale_lines import fill_sale_line
@@ -47,9 +57,12 @@ class QuantityRuleTests(unittest.TestCase):
         })
         self.assertEqual(line["quantity"], 0.75)
         self.assertEqual(line["total"], 140.0)
-        pieces = fill_sale_line(db, {"product_id": 2, "quantity": "0.5", "unit_price": "20"})
-        self.assertEqual(pieces["quantity"], 0.5)
-        self.assertEqual(pieces["total"], 10.0)
+        with self.assertRaises(ValueError) as refused_pieces:
+            fill_sale_line(db, {"product_id": 2, "quantity": "0.5", "unit_price": "20"})
+        self.assertIn("whole", str(refused_pieces.exception).lower())
+        with self.assertRaises(ValueError) as refused_quarters:
+            fill_sale_line(db, {"product_id": 2, "quantity": "1.25", "unit_price": "20"})
+        self.assertIn("whole", str(refused_quarters.exception).lower())
         db.close()
 
 
@@ -194,8 +207,13 @@ class DatedActionTests(unittest.TestCase):
         pieces = cashier.create_consumption(
             self._consumption(self.today, qty="0.5", product=self.cup, token="piece")
         )
-        self.assertTrue(pieces.get("success") or pieces.get("id"), pieces)
-        self.assertAlmostEqual(self._stock(self.cup), 7.5, places=2)
+        self.assertIn("whole", pieces.get("error", "").lower())
+        self.assertEqual(self._stock(self.cup), 8)
+        quarters = cashier.create_consumption(
+            self._consumption(self.today, qty="1.25", product=self.cup, token="piece-125")
+        )
+        self.assertIn("whole", quarters.get("error", "").lower())
+        self.assertEqual(self._stock(self.cup), 8)
         explained = cashier.create_consumption({
             **self._consumption(self.yesterday, token="other-written"),
             "backdate_reason": "Other: the shop was closed",
@@ -220,16 +238,27 @@ class DatedActionTests(unittest.TestCase):
         db.commit()
         supplier = db.execute("SELECT id FROM suppliers").fetchone()["id"]
         db.close()
-        delivered = self._api(self.admin, "admin", "Boss Admin").receive_delivery(
+        refused_delivery = self._api(self.admin, "admin", "Boss Admin").receive_delivery(
             supplier,
             [
                 {"product_id": self.cup, "quantity": "0.5", "unit_cost": 6},
                 {"product_id": self.sugar, "quantity": "1.25", "unit_cost": 90},
             ],
+            client_token="recv-piece-fraction",
+        )
+        self.assertIn("whole", refused_delivery.get("error", "").lower())
+        self.assertEqual(self._stock(self.cup), 8)
+        self.assertEqual(self._stock(self.sugar), 10)
+        delivered = self._api(self.admin, "admin", "Boss Admin").receive_delivery(
+            supplier,
+            [
+                {"product_id": self.cup, "quantity": "2", "unit_cost": 6},
+                {"product_id": self.sugar, "quantity": "1.25", "unit_cost": 90},
+            ],
             client_token="recv-decimal",
         )
         self.assertTrue(delivered.get("success") or delivered.get("receipt_id"), delivered)
-        self.assertAlmostEqual(self._stock(self.cup), 8.0, places=2)
+        self.assertAlmostEqual(self._stock(self.cup), 10.0, places=2)
         self.assertAlmostEqual(self._stock(self.sugar), 11.25, places=2)
 
     def test_closed_period_and_future_date_are_refused(self):
@@ -275,8 +304,13 @@ class DatedActionTests(unittest.TestCase):
         self.assertTrue(again.get("duplicate"))
         self.assertAlmostEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.sugar,)).fetchone()["stock"], 11.5, places=2)
         piece_take = start_stocktake(db, "Piece count")
+        db.commit()
         piece = record_count(db, piece_take["id"], self.cup, "1.5")
-        self.assertTrue(piece.get("success"), piece)
+        self.assertIn("whole", piece.get("error", "").lower())
+        self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.cup,)).fetchone()["stock"], 8)
+        whole = record_count(db, piece_take["id"], self.cup, "2")
+        self.assertTrue(whole.get("success"), whole)
+        self.assertEqual(db.execute("SELECT stock FROM products WHERE id=?", (self.cup,)).fetchone()["stock"], 8)
         stranger = self._api(self.cashier, "cashier", "Ada Cashier").apply_stocktake(opened["id"])
         self.assertEqual(stranger.get("status"), 403)
         db.close()

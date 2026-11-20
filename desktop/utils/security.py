@@ -23,6 +23,7 @@ _PERMISSIONS = {
     ROLE_CASHIER: {
         'sales.create', 'sales.view_own', 'sales.request_void', 'sales.request_backdate',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'categories.create',
         'reports.view_basic',
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',
@@ -46,6 +47,7 @@ _PERMISSIONS = {
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'categories.create',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view',
@@ -67,6 +69,7 @@ _PERMISSIONS = {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.delete',
+        'categories.create', 'categories.manage', 'categories.delete',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
         'users.view', 'users.create', 'users.edit', 'users.delete',
@@ -92,6 +95,7 @@ _PERMISSIONS = {
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.delete',
+        'categories.create', 'categories.manage', 'categories.delete',
         'inventory.adjust_stock',          # ONLY superadmin can change stock directly
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -120,6 +124,7 @@ _PERMISSIONS = {
 
 # These stay with the role. A checkbox cannot add them to a lower role.
 NOT_GRANTABLE = {
+    'categories.delete',
     'inventory.adjust_stock', 'audit.clear', 'license.manage', 'security.override',
     'debt.delete', 'ai_ops.developer', 'sales.edit',
     'users.view', 'users.create', 'users.edit', 'users.delete',
@@ -144,6 +149,9 @@ _ACTION_LABELS = {
     'inventory.receive': 'Receive supplier stock',
     'inventory.delete': 'Remove products',
     'inventory.adjust_stock': 'Adjust stock directly',
+    'categories.create': 'Create shop categories',
+    'categories.manage': 'Rename shop categories',
+    'categories.delete': 'Delete shop categories',
     'reports.view_basic': 'View the basic report',
     'reports.view_all': 'View management reports and profit',
     'reports.export': 'Export reports',

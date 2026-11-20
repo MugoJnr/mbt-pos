@@ -6,6 +6,9 @@
 PyQt5>=5.15
 PyQt5-sip>=12.11
 
+# Product photographs — decode, reject corrupt files, and write thumbnails
+Pillow>=10.0
+
 # Auth & security
 pyjwt>=2.8
 bcrypt>=4.0

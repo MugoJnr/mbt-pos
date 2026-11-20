@@ -55,6 +55,7 @@ import { Route as AdminAdminSystemHealthRouteImport } from './routes/_admin.admi
 import { Route as AdminAdminUpdatesRouteImport } from './routes/_admin.admin.updates'
 import { Route as AdminAdminUsersRouteImport } from './routes/_admin.admin.users'
 import { Route as AuthAuthCallbackRouteImport } from './routes/_auth.auth.callback'
+import { Route as AdminAdminMbtPosPasswordRecoveryRouteImport } from './routes/_admin.admin.mbt-pos.password-recovery'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -283,6 +284,12 @@ const AuthAuthCallbackRoute = AuthAuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => AuthRoute,
 } as any)
+const AdminAdminMbtPosPasswordRecoveryRoute =
+  AdminAdminMbtPosPasswordRecoveryRouteImport.update({
+    id: '/admin/mbt-pos/password-recovery',
+    path: '/admin/mbt-pos/password-recovery',
+    getParentRoute: () => AdminRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -328,6 +335,7 @@ export interface FileRoutesByFullPath {
   '/admin/users': typeof AdminAdminUsersRoute
   '/auth/callback': typeof AuthAuthCallbackRoute
   '/admin/': typeof AdminAdminIndexRoute
+  '/admin/mbt-pos/password-recovery': typeof AdminAdminMbtPosPasswordRecoveryRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -373,6 +381,7 @@ export interface FileRoutesByTo {
   '/admin/users': typeof AdminAdminUsersRoute
   '/auth/callback': typeof AuthAuthCallbackRoute
   '/admin': typeof AdminAdminIndexRoute
+  '/admin/mbt-pos/password-recovery': typeof AdminAdminMbtPosPasswordRecoveryRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -422,6 +431,7 @@ export interface FileRoutesById {
   '/_admin/admin/users': typeof AdminAdminUsersRoute
   '/_auth/auth/callback': typeof AuthAuthCallbackRoute
   '/_admin/admin/': typeof AdminAdminIndexRoute
+  '/_admin/admin/mbt-pos/password-recovery': typeof AdminAdminMbtPosPasswordRecoveryRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -469,6 +479,7 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/auth/callback'
     | '/admin/'
+    | '/admin/mbt-pos/password-recovery'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -514,6 +525,7 @@ export interface FileRouteTypes {
     | '/admin/users'
     | '/auth/callback'
     | '/admin'
+    | '/admin/mbt-pos/password-recovery'
   id:
     | '__root__'
     | '/'
@@ -562,6 +574,7 @@ export interface FileRouteTypes {
     | '/_admin/admin/users'
     | '/_auth/auth/callback'
     | '/_admin/admin/'
+    | '/_admin/admin/mbt-pos/password-recovery'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -895,6 +908,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthAuthCallbackRouteImport
       parentRoute: typeof AuthRoute
     }
+    '/_admin/admin/mbt-pos/password-recovery': {
+      id: '/_admin/admin/mbt-pos/password-recovery'
+      path: '/admin/mbt-pos/password-recovery'
+      fullPath: '/admin/mbt-pos/password-recovery'
+      preLoaderRoute: typeof AdminAdminMbtPosPasswordRecoveryRouteImport
+      parentRoute: typeof AdminRoute
+    }
   }
 }
 
@@ -913,6 +933,7 @@ interface AdminRouteChildren {
   AdminAdminUpdatesRoute: typeof AdminAdminUpdatesRoute
   AdminAdminUsersRoute: typeof AdminAdminUsersRoute
   AdminAdminIndexRoute: typeof AdminAdminIndexRoute
+  AdminAdminMbtPosPasswordRecoveryRoute: typeof AdminAdminMbtPosPasswordRecoveryRoute
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
@@ -930,6 +951,7 @@ const AdminRouteChildren: AdminRouteChildren = {
   AdminAdminUpdatesRoute: AdminAdminUpdatesRoute,
   AdminAdminUsersRoute: AdminAdminUsersRoute,
   AdminAdminIndexRoute: AdminAdminIndexRoute,
+  AdminAdminMbtPosPasswordRecoveryRoute: AdminAdminMbtPosPasswordRecoveryRoute,
 }
 
 const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)

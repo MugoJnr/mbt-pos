@@ -1,8 +1,8 @@
 {
-    "version": "3.1.89",
-    "build": "RC-2026-11-19-v3.1.89",
-    "released": "2026-11-19",
-    "release_notes": "When you choose Other for a backdated record, you can write the reason yourself. A reviewer can approve every pending backdated sale for a day, or reverse an approved one so it waits for review again. A supplier delivery can record goods that were rejected, and inventory marks a product whose buying price is missing.",
-    "checksum_sha256": "52008d36ec9f2447d1f367f5eb6e3133d9b39a82c1ed1da76313b6629ccd7bee",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.89/MBT_POS_Setup.exe"
+    "version": "3.1.90",
+    "build": "RC-2026-11-20-v3.1.90",
+    "released": "2026-11-20",
+    "release_notes": "Inventory keeps Remove and More on screen at a normal width, and the horizontal bar remains for a narrow window. Restock lists and business-issue names are readable. Shop categories, product photos, copy sale, receipt permissions, and a short Super Admin recovery code are included.",
+    "checksum_sha256": "d2fcb1c1f287a387513cc8c3c57637e6565f5e16f919eaff20d3912e9c20d989",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.90/MBT_POS_Setup.exe"
 }

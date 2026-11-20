@@ -778,7 +778,7 @@ def category_dict_from_product(product: dict, categories_by_name: dict = None) -
     Resolve visual for a product: product image → category image → category icon → placeholder.
     """
     product = product or {}
-    cat_name = product.get('category') or 'General'
+    cat_name = (product.get('category') or '').strip()
     cat = {}
     if categories_by_name:
         cat = dict(categories_by_name.get(cat_name) or categories_by_name.get(cat_name.lower()) or {})
@@ -789,7 +789,8 @@ def category_dict_from_product(product: dict, categories_by_name: dict = None) -
 
     # Product-level image wins. The stored value is the file name beside the database.
     from desktop.utils.product_photo import resolve_product_image
-    pimg = resolve_product_image(product.get('image_path') or product.get('image') or '')
+    pimg = resolve_product_image(
+        product.get('image_path') or product.get('image') or '', prefer_thumb=True)
     if pimg:
         return {
             'name': cat_name,

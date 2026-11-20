@@ -677,6 +677,9 @@ def _migrate_columns(conn: sqlite3.Connection):
         "UPDATE users SET role='superadmin' WHERE username='admin' AND role='admin'"
     )
     # Admin role must not keep owner-only tabs (security / license)
+    receipts_backfill = conn.execute(
+        "SELECT value FROM system_settings WHERE key='receipts_tab_backfill'"
+    ).fetchone()
     for row in conn.execute(
         "SELECT id, role, tab_permissions FROM users WHERE role IN ('admin','manager','cashier','viewer')"
     ).fetchall():
@@ -685,9 +688,8 @@ def _migrate_columns(conn: sqlite3.Connection):
             import json as _json
             perms = _json.loads(row['tab_permissions'] or '[]')
             fixed = sanitize_tab_permissions(row['role'], perms)
-            if (row['role'] or '').lower() == 'cashier' and 'consumption' not in fixed:
-                fixed.append('consumption')
-            if 'sales' in fixed and 'receipts' not in fixed:
+            # Older tills had no Receipts tab. Add it once. A later removal must stay removed.
+            if not receipts_backfill and 'sales' in fixed and 'receipts' not in fixed:
                 fixed.insert(fixed.index('sales') + 1, 'receipts')
             if fixed != perms:
                 conn.execute(
@@ -696,6 +698,10 @@ def _migrate_columns(conn: sqlite3.Connection):
                 )
         except Exception:
             pass
+    if not receipts_backfill:
+        conn.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('receipts_tab_backfill', '1')"
+        )
     # Ensure consumption void / taken_by columns on upgrades
     try:
         sc_cols = {r[1] for r in conn.execute("PRAGMA table_info(stock_consumptions)").fetchall()}
@@ -732,29 +738,30 @@ def _migrate_columns(conn: sqlite3.Connection):
                 "ALTER TABLE customers ADD COLUMN customer_type TEXT DEFAULT 'Retail'")
     except Exception:
         pass
-    # Grant Internal Consumption to staff who record it, and to viewers who may read it.
-    for row in conn.execute(
-        "SELECT id, role, tab_permissions FROM users "
-        "WHERE role IN ('superadmin','admin','manager','viewer','cashier')"
-    ).fetchall():
-        try:
-            import json as _json
-            perms = _json.loads(row['tab_permissions'] or '[]')
-            if 'consumption' not in perms and (
-                'inventory' in perms or row['role'] in ('superadmin', 'admin', 'manager', 'viewer', 'cashier')
-            ):
-                # Insert after inventory when present
-                if 'inventory' in perms:
+    # Grant Internal Consumption once. A later removal must stay removed.
+    consumption_backfill = conn.execute(
+        "SELECT value FROM system_settings WHERE key='consumption_tab_backfill'"
+    ).fetchone()
+    if not consumption_backfill:
+        for row in conn.execute(
+            "SELECT id, role, tab_permissions FROM users "
+            "WHERE role IN ('superadmin','admin','manager','viewer','cashier')"
+        ).fetchall():
+            try:
+                import json as _json
+                perms = _json.loads(row['tab_permissions'] or '[]')
+                if 'consumption' not in perms and 'inventory' in perms:
                     i = perms.index('inventory') + 1
                     perms.insert(i, 'consumption')
-                else:
-                    perms.append('consumption')
-                conn.execute(
-                    "UPDATE users SET tab_permissions=? WHERE id=?",
-                    (_json.dumps(perms), row['id']),
-                )
-        except Exception:
-            pass
+                    conn.execute(
+                        "UPDATE users SET tab_permissions=? WHERE id=?",
+                        (_json.dumps(perms), row['id']),
+                    )
+            except Exception:
+                pass
+        conn.execute(
+            "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('consumption_tab_backfill', '1')"
+        )
     # Viewers may read inventory and customer debt. Older menus omitted those tabs.
     for row in conn.execute(
         "SELECT id, tab_permissions FROM users WHERE role='viewer'"
@@ -1114,58 +1121,11 @@ def _ensure_categories_table(conn: sqlite3.Connection):
                 conn.execute(ddl)
             except Exception:
                 pass
-    # Seed from distinct product categories + sensible defaults
     try:
-        from desktop.utils.category_suggest import suggest_visual_for_category_name
+        from desktop.utils.shop_categories import sync_shop_categories
+        sync_shop_categories(conn)
     except Exception:
-        suggest_visual_for_category_name = None
-    names = set()
-    try:
-        for row in conn.execute(
-            "SELECT DISTINCT category FROM products "
-            "WHERE category IS NOT NULL AND TRIM(category) != ''"
-        ).fetchall():
-            names.add((row[0] or '').strip())
-    except Exception:
-        pass
-    for default_name in (
-        'General', 'Grocery', 'Pharmacy', 'Electronics', 'Clothing',
-        'Hardware', 'Beverages', 'Beauty',
-    ):
-        names.add(default_name)
-    for name in sorted(n for n in names if n):
-        existing = conn.execute(
-            "SELECT id, icon_name FROM categories WHERE LOWER(name)=LOWER(?)",
-            (name,),
-        ).fetchone()
-        if existing:
-            # Fill missing icon via smart match
-            if not (existing['icon_name'] if isinstance(existing, sqlite3.Row)
-                    else existing[1]) and suggest_visual_for_category_name:
-                vis = suggest_visual_for_category_name(name)
-                conn.execute(
-                    "UPDATE categories SET icon_name=?, accent_color=?, "
-                    "visual_type='icon', updated_at=? WHERE id=?",
-                    (vis.get('icon_name'), vis.get('accent_color'),
-                     datetime.now().isoformat(),
-                     existing['id'] if isinstance(existing, sqlite3.Row) else existing[0]),
-                )
-            continue
-        vis = suggest_visual_for_category_name(name) if suggest_visual_for_category_name else {
-            'visual_type': 'icon',
-            'icon_name': 'generic/general-product',
-            'accent_color': '#3B82F6',
-        }
-        try:
-            conn.execute(
-                "INSERT INTO categories "
-                "(name, visual_type, icon_name, accent_color, is_active) "
-                "VALUES (?,?,?,?,1)",
-                (name, vis.get('visual_type', 'icon'),
-                 vis.get('icon_name'), vis.get('accent_color', '#3B82F6')),
-            )
-        except sqlite3.IntegrityError:
-            pass
+        logger.exception('shop category sync')
     _protect_audit_log(conn)
 
 
@@ -1760,6 +1720,26 @@ class APIClient:
             logger.error(f"reset_admin_via_license_key: {e}")
             return {'error': f"Verification error: {e}"}
 
+    def developer_recovery_context(self) -> dict:
+        """Shop and device shown on the login screen. No secrets and no network."""
+        from backend.emergency_recovery import local_recovery_profile, public_recovery_profile
+        try:
+            return public_recovery_profile(local_recovery_profile(), developer=False)
+        except Exception:
+            logger.exception('developer recovery context')
+            return {'error': 'This computer could not show its shop identity.'}
+
+    def developer_emergency_recover(self, token: str, new_password: str, confirm_password: str) -> dict:
+        """Offline Super Admin reset. The same record is what the Live Dashboard checks."""
+        from backend.emergency_recovery import redeem_superadmin
+        db = _db()
+        try:
+            return redeem_superadmin(
+                db, token, new_password, confirm_password, via='till',
+            )
+        finally:
+            db.close()
+
     # ── SETTINGS ────────────────────────────────────────────────────────────────
 
     def get_settings(self) -> dict:
@@ -2018,13 +1998,18 @@ class APIClient:
     # ── CATEGORIES (visual management) ─────────────────────────────────────────
 
     def get_categories(self, active_only: bool = True) -> list:
+        from desktop.utils.shop_categories import category_key, product_counts
         db = _db()
         try:
             q = "SELECT * FROM categories"
             if active_only:
                 q += " WHERE is_active=1"
             q += " ORDER BY sort_order, name"
-            return _rows(db.execute(q))
+            rows = _rows(db.execute(q))
+            counts = product_counts(db)
+            for row in rows:
+                row['product_count'] = counts.get(category_key(row.get('name') or ''), 0)
+            return rows
         finally:
             db.close()
 
@@ -2037,12 +2022,11 @@ class APIClient:
             db.close()
 
     def get_category_by_name(self, name: str) -> dict:
+        from desktop.utils.shop_categories import find_category
         db = _db()
         try:
-            return _row(db.execute(
-                "SELECT * FROM categories WHERE LOWER(name)=LOWER(?)",
-                ((name or '').strip(),),
-            )) or {}
+            found = find_category(db, name)
+            return dict(found) if found else {}
         finally:
             db.close()
 
@@ -2056,9 +2040,19 @@ class APIClient:
         return out
 
     def create_category(self, data: dict) -> dict:
-        name = (data.get('name') or '').strip()
-        if not name:
-            return {'error': 'Category name is required.'}
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.shop_categories import (
+            category_name_error, find_category, normalize_category_name,
+        )
+        if not has_permission(client_actor(self), 'categories.create'):
+            return {'error': 'You cannot create a shop category.', 'status': 403}
+        name = normalize_category_name(data.get('name') or '')
+        error = category_name_error(name)
+        if error:
+            return {'error': error, 'status': 400}
+        description = normalize_category_name(data.get('description') or '')
+        if len(description) > 240:
+            return {'error': 'The description is too long.', 'status': 400}
         from desktop.utils.category_suggest import suggest_visual_for_category_name
         vis = suggest_visual_for_category_name(name)
         vt = (data.get('visual_type') or vis.get('visual_type') or 'icon').lower()
@@ -2069,12 +2063,14 @@ class APIClient:
         accent = data.get('accent_color') or vis.get('accent_color') or '#3B82F6'
         db = _db()
         try:
+            if find_category(db, name):
+                return {'error': 'A category with that name already exists.', 'status': 409}
             db.execute(
                 "INSERT INTO categories "
                 "(name, description, visual_type, icon_name, image_path, "
                 " accent_color, sort_order, is_active, updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
-                (name, data.get('description') or '',
+                (name, description,
                  vt, icon_name, image_path, accent,
                  int(data.get('sort_order') or 0), 1,
                  datetime.now().isoformat()),
@@ -2082,26 +2078,45 @@ class APIClient:
             cid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_CATEGORY', 'inventory',
-                   f'category={name}')
-            return _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+                   f'user_id={self._user_id} category={name}')
+            row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,))) or {}
+            row['product_count'] = 0
+            return row
         except sqlite3.IntegrityError:
-            return {'error': 'Category name already exists'}
+            return {'error': 'A category with that name already exists.', 'status': 409}
         finally:
             db.close()
 
     def update_category(self, cid: int, data: dict) -> dict:
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.shop_categories import (
+            category_key, category_name_error, find_category, normalize_category_name,
+            product_counts,
+        )
+        if not has_permission(client_actor(self), 'categories.manage'):
+            return {'error': 'You cannot rename a shop category.', 'status': 403}
         db = _db()
         try:
             row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
             if not row:
-                return {'error': 'Category not found'}
-            name = (data.get('name') or row['name'] or '').strip()
-            vt = (data.get('visual_type') or row.get('visual_type') or 'icon').lower()
+                return {'error': 'Category not found', 'status': 404}
+            name = normalize_category_name(data.get('name') if 'name' in data else row['name'])
+            error = category_name_error(name)
+            if error:
+                return {'error': error, 'status': 400}
+            description = data.get('description', row.get('description'))
+            description = normalize_category_name(description or '')
+            if len(description) > 240:
+                return {'error': 'The description is too long.', 'status': 400}
+            other = find_category(db, name)
+            if other is not None and int(other['id']) != int(cid):
+                return {'error': 'A category with that name already exists.', 'status': 409}
+            vt = str(data.get('visual_type') or row.get('visual_type') or 'icon').lower()
             if vt not in ('icon', 'image'):
                 vt = 'icon'
             fields = {
                 'name': name,
-                'description': data.get('description', row.get('description')),
+                'description': description,
                 'visual_type': vt,
                 'icon_name': data.get('icon_name', row.get('icon_name')),
                 'image_path': data.get('image_path', row.get('image_path')),
@@ -2119,43 +2134,97 @@ class APIClient:
                  fields['icon_name'], fields['image_path'], fields['accent_color'],
                  fields['sort_order'], fields['is_active'], fields['updated_at'], cid),
             )
-            # Rename product.category free-text when category renamed
-            if old_name and name and old_name != name:
+            if old_name and name and category_key(old_name) != category_key(name):
+                old_key = category_key(old_name)
+                for product in db.execute("SELECT id, category FROM products").fetchall():
+                    if category_key(product['category'] or '') == old_key:
+                        db.execute(
+                            "UPDATE products SET category=? WHERE id=?",
+                            (name, product['id']),
+                        )
+            elif old_name and name and old_name != name:
                 db.execute(
                     "UPDATE products SET category=? WHERE category=?",
                     (name, old_name),
                 )
             db.commit()
             _audit(self._user_id, self._username, 'UPDATE_CATEGORY', 'inventory',
-                   f'id={cid} name={name}')
-            return _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
+                   f'user_id={self._user_id} id={cid} name={name}')
+            saved = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,))) or {}
+            saved['product_count'] = product_counts(db).get(category_key(name), 0)
+            return saved
         except sqlite3.IntegrityError:
-            return {'error': 'Category name already exists'}
+            return {'error': 'A category with that name already exists.', 'status': 409}
         finally:
             db.close()
 
-    def delete_category(self, cid: int) -> dict:
+    def delete_category(self, cid: int, leave_uncategorised: bool = False) -> dict:
+        """Remove a category. Products stay. Their label is cleared only when asked."""
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.shop_categories import (
+            category_key, clear_products_in_category, product_counts,
+        )
+        if not has_permission(client_actor(self), 'categories.delete'):
+            return {
+                'error': 'You cannot delete a shop category.',
+                'status': 403,
+            }
         db = _db()
         try:
             row = _row(db.execute("SELECT * FROM categories WHERE id=?", (cid,)))
             if not row:
-                return {'error': 'Category not found'}
-            db.execute("UPDATE categories SET is_active=0, updated_at=? WHERE id=?",
-                       (datetime.now().isoformat(), cid))
+                return {'error': 'Category not found', 'status': 404}
+            name = row.get('name') or ''
+            count = product_counts(db).get(category_key(name), 0)
+            if count and not leave_uncategorised:
+                return {
+                    'error': (
+                        f'This category is used by {count} product'
+                        f'{"s" if count != 1 else ""}. Reassign them, or remove the '
+                        'category and leave those products uncategorised. '
+                        'Products are not deleted.'
+                    ),
+                    'status': 409,
+                    'product_count': count,
+                }
+            cleared = clear_products_in_category(db, name) if count else 0
+            db.execute("DELETE FROM categories WHERE id=?", (cid,))
             db.commit()
-            return {'success': True}
+            _audit(self._user_id, self._username, 'DELETE_CATEGORY', 'inventory',
+                   f'user_id={self._user_id} id={cid} category={name} '
+                   f'products_left={count} uncategorised={cleared}')
+            return {'success': True, 'products_uncategorised': cleared, 'product_count': count}
         finally:
             db.close()
 
-    def ensure_category_for_product_name(self, name: str) -> dict:
-        """When saving a product with a new category string, ensure a categories row."""
-        name = (name or '').strip()
+    def resolve_product_category(self, raw) -> dict:
+        """Empty is uncategorised. An existing name is reused. A new name needs permission."""
+        from desktop.utils.shop_categories import category_name_error, normalize_category_name
+        name = normalize_category_name(raw or '')
         if not name:
-            return {}
+            return {'category': ''}
+        error = category_name_error(name)
+        if error:
+            return {'error': error, 'status': 400}
         existing = self.get_category_by_name(name)
         if existing:
-            return existing
-        return self.create_category({'name': name})
+            if int(existing.get('is_active') or 0) == 0:
+                return {
+                    'error': 'That category is archived. Choose another or leave the product uncategorised.',
+                    'status': 400,
+                }
+            return {'category': existing.get('name') or name}
+        created = self.create_category({'name': name})
+        if created.get('error'):
+            return {'error': created['error'], 'status': int(created.get('status') or 400)}
+        return {'category': created.get('name') or name}
+
+    def ensure_category_for_product_name(self, name: str) -> dict:
+        """Compatibility wrapper. Does not invent a category for a blank name."""
+        resolved = self.resolve_product_category(name)
+        if resolved.get('error') or not resolved.get('category'):
+            return resolved
+        return self.get_category_by_name(resolved['category']) or resolved
 
     # ── PRODUCTS ─────────────────────────────────────────────────────────────────
 
@@ -2211,7 +2280,10 @@ class APIClient:
         name = (data.get('name') or '').strip()
         if not name:
             return {'error': 'Product name is required.'}
-        cat_name = (data.get('category') or '').strip()
+        resolved = self.resolve_product_category(data.get('category'))
+        if resolved.get('error'):
+            return resolved
+        stored_category = resolved.get('category') or ''
         result = None
         db = _db()
         try:
@@ -2232,7 +2304,7 @@ class APIClient:
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
                 " VALUES (?,?,?,?,?,?,?,?,?)",
-                (name, sku, data.get('category'),
+                (name, sku, stored_category,
                  float(data.get('price') or 0), cost_value,
                  initial_stock, int(data.get('min_stock', 5) or 5),
                  data.get('unit') or 'pcs', data.get('barcode'))
@@ -2288,44 +2360,27 @@ class APIClient:
             return {'error': f'Could not save product: {e}'}
         finally:
             db.close()
-        if result and cat_name:
-            try:
-                self.ensure_category_for_product_name(cat_name)
-            except Exception:
-                pass
         return result or {'error': 'Could not save product'}
 
-    def save_product_image(self, product_id: int, source_path: str) -> dict:
-        """Store a product photograph beside the shop database and link it."""
-        from desktop.utils.product_photo import MAX_IMAGE_BYTES, image_error, sniff_image
+    def save_product_image_bytes(self, product_id: int, data: bytes, upload_name: str = '') -> dict:
+        """Store photograph bytes under an app-chosen name. The upload name is not a path."""
+        from desktop.utils.product_photo import store_image_bytes, unsafe_filename
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
         if role not in known or not has_permission(client_actor(self), 'inventory.edit_info'):
             return {'error': 'You cannot change a product photograph.', 'status': 403}
-        source_path = (source_path or '').strip()
-        if not source_path or not os.path.isfile(source_path):
-            return {'error': 'Choose a photograph first.'}
-        try:
-            with open(source_path, 'rb') as handle:
-                data = handle.read(MAX_IMAGE_BYTES + 1)
-        except OSError:
-            return {'error': 'That photograph could not be read.'}
-        error = image_error(data)
-        if error:
-            return {'error': error}
-        ext = sniff_image(data)
+        if upload_name and unsafe_filename(upload_name):
+            return {'error': 'That file name is not allowed.', 'status': 400}
+        if not isinstance(data, (bytes, bytearray)):
+            return {'error': 'Choose a photograph.'}
         from mbt_paths import get_data_dir
         folder = os.path.join(get_data_dir(), 'product-images')
-        os.makedirs(folder, exist_ok=True)
-        filename = f"product-{int(product_id)}{ext}"
-        dest = os.path.join(folder, filename)
-        for old_ext in ('.jpg', '.png', '.webp'):
-            old = os.path.join(folder, f"product-{int(product_id)}{old_ext}")
-            if old != dest and os.path.isfile(old):
-                os.remove(old)
-        with open(dest, 'wb') as handle:
-            handle.write(data)
+        stored = store_image_bytes(folder, int(product_id), bytes(data))
+        if stored.get('error'):
+            code = 413 if '8 MB' in stored['error'] else 400
+            return {'error': stored['error'], 'status': code}
+        filename = stored['filename']
         db = _db()
         try:
             cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
@@ -2337,13 +2392,46 @@ class APIClient:
             )
             if changed.rowcount != 1:
                 db.rollback()
+                from desktop.utils.product_photo import remove_product_images
+                remove_product_images(folder, int(product_id))
                 return {'error': 'Product not found.', 'status': 404}
             db.commit()
+            keep = {filename, stored.get('thumb') or ''}
+            prefix = f'product-{int(product_id)}'
+            if os.path.isdir(folder):
+                for name in os.listdir(folder):
+                    if name in keep:
+                        continue
+                    if name.startswith(prefix + '.') or name.startswith(prefix + '-'):
+                        try:
+                            os.remove(os.path.join(folder, name))
+                        except OSError:
+                            pass
             _audit(self._user_id, self._username, 'PRODUCT_IMAGE', 'inventory',
-                   f"pid={product_id} image={filename}")
-            return {'success': True, 'image_path': filename}
+                   f"user_id={self._user_id} pid={product_id} image={filename} "
+                   f"{stored.get('width')}x{stored.get('height')}")
+            return {
+                'success': True,
+                'image_path': filename,
+                'thumb': stored.get('thumb') or '',
+                'width': stored.get('width'),
+                'height': stored.get('height'),
+            }
         finally:
             db.close()
+
+    def save_product_image(self, product_id: int, source_path: str) -> dict:
+        """Store a product photograph beside the shop database and link it."""
+        from desktop.utils.product_photo import MAX_IMAGE_BYTES
+        source_path = (source_path or '').strip()
+        if not source_path or not os.path.isfile(source_path):
+            return {'error': 'Choose a photograph first.'}
+        try:
+            with open(source_path, 'rb') as handle:
+                data = handle.read(MAX_IMAGE_BYTES + 1)
+        except OSError:
+            return {'error': 'That photograph could not be read.'}
+        return self.save_product_image_bytes(int(product_id), data)
 
     def clear_product_image(self, product_id: int) -> dict:
         """Remove a product photograph and show the empty photo tile again."""
@@ -2353,11 +2441,9 @@ class APIClient:
         if role not in known or not has_permission(client_actor(self), 'inventory.edit_info'):
             return {'error': 'You cannot change a product photograph.', 'status': 403}
         from mbt_paths import get_data_dir
+        from desktop.utils.product_photo import remove_product_images
         folder = os.path.join(get_data_dir(), 'product-images')
-        for ext in ('.jpg', '.png', '.webp'):
-            path = os.path.join(folder, f"product-{int(product_id)}{ext}")
-            if os.path.isfile(path):
-                os.remove(path)
+        remove_product_images(folder, int(product_id))
         db = _db()
         try:
             changed = db.execute(
@@ -2369,7 +2455,7 @@ class APIClient:
                 return {'error': 'Product not found.', 'status': 404}
             db.commit()
             _audit(self._user_id, self._username, 'PRODUCT_IMAGE_CLEAR', 'inventory',
-                   f"pid={product_id}")
+                   f"user_id={self._user_id} pid={product_id}")
             return {'success': True, 'image_path': ''}
         finally:
             db.close()
@@ -2383,6 +2469,12 @@ class APIClient:
             return {'error': 'You cannot change this product.', 'status': 403}
         if 'name' in data and not str(data.get('name') or '').strip():
             return {'error': 'Product name is required.', 'status': 400}
+        if 'category' in data:
+            resolved = self.resolve_product_category(data.get('category'))
+            if resolved.get('error'):
+                return resolved
+            data = dict(data)
+            data['category'] = resolved.get('category') or ''
         for key in ('price', 'cost_price'):
             if key not in data or data[key] in (None, ''):
                 continue
@@ -2479,11 +2571,6 @@ class APIClient:
             return {'error': f'Could not update product: {e}'}
         finally:
             db.close()
-        if result_ok and 'category' in data and (data.get('category') or '').strip():
-            try:
-                self.ensure_category_for_product_name(data['category'])
-            except Exception:
-                pass
         return {'success': True}
 
     def adjust_stock(self, pid: int, new_qty, reason: str = '',
@@ -3851,10 +3938,17 @@ class APIClient:
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock FROM products WHERE id=?", (int(product_id),)
+                "SELECT id, name, stock, unit FROM products WHERE id=?", (int(product_id),)
             ).fetchone()
             if not row:
                 return {'error': 'Product not found'}
+            try:
+                requested_qty = parse_quantity(requested_qty, row['unit'], allow_zero=True)
+            except QuantityError as exc:
+                message = str(exc)
+                if 'whole units' in message:
+                    message = f"'{row['name']}' is sold in whole units."
+                return {'error': message, 'status': 400}
             day = datetime.now().strftime('%Y%m%d')
             count = db.execute(
                 "SELECT COUNT(*) FROM stock_adjustment_requests WHERE request_number LIKE ?",
@@ -11304,6 +11398,7 @@ _SHOP_LICENCE_WRITES = (
     'delete_category',
     'create_product',
     'save_product_image',
+    'save_product_image_bytes',
     'update_product',
     'delete_product',
     'adjust_stock',

@@ -3,6 +3,8 @@ import { useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, Package, Download } from "lucide-react";
 import { ProductPhoto } from "@/components/product-photo";
+import { CategoryField } from "@/components/category-field";
+import { ShopCategories } from "@/components/shop-categories";
 import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
@@ -101,6 +103,9 @@ function Inventory() {
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canAdjust = actions ? actions.includes("inventory.adjust_stock") : role === "superadmin";
   const canEdit = actions ? actions.includes("inventory.edit_info") : ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canCreateCategory = actions ? actions.includes("categories.create") : ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canManageCategories = actions ? actions.includes("categories.manage") : role === "admin" || role === "superadmin";
+  const canDeleteCategory = actions ? actions.includes("categories.delete") : role === "admin" || role === "superadmin";
   const canRemove = actions ? actions.includes("inventory.delete") : role === "admin" || role === "superadmin";
   const canReceive = actions
     ? actions.includes("inventory.receive")
@@ -381,7 +386,11 @@ function Inventory() {
         <Input aria-label="Barcode" className="mt-1 h-11" value={editForm.barcode} onChange={(e) => setEditForm({ ...editForm, barcode: e.target.value })} />
       </label>
       <label className="text-xs font-semibold text-text2">Category
-        <Input aria-label="Category" className="mt-1 h-11" value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} />
+        <CategoryField
+          value={editForm.category}
+          canCreate={canCreateCategory}
+          onChange={(category) => setEditForm({ ...editForm, category })}
+        />
       </label>
       <label className="text-xs font-semibold text-text2">Unit
         <Input aria-label="Unit" className="mt-1 h-11" value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} />
@@ -441,6 +450,13 @@ function Inventory() {
 
   return (
     <AppShell title="Inventory">
+      {canManageCategories || canCreateCategory ? (
+        <ShopCategories
+          canCreate={canCreateCategory}
+          canManage={canManageCategories}
+          canDelete={canDeleteCategory}
+        />
+      ) : null}
       <ExportLockDialog
         open={invLock != null}
         kind={invLock === "csv" ? "CSV" : "Excel workbook"}
@@ -587,12 +603,19 @@ function Inventory() {
             <Button
               onClick={async () => {
                 setAdjMsg("");
-                const qty = Number(adjQty);
                 if (!adjId) {
                   setAdjMsg("Select a product.");
                   return;
                 }
-                if (!Number.isFinite(qty) || qty < 0 || (adjDir !== "set" && qty === 0)) {
+                const parsedAdj = parseQuantity(adjQty, selectedProduct?.unit, { allowZero: adjDir === "set" });
+                if ("error" in parsedAdj) {
+                  setAdjMsg(parsedAdj.error.includes("whole units")
+                    ? `${selectedProduct?.name || "This product"} is sold in whole units.`
+                    : parsedAdj.error);
+                  return;
+                }
+                const qty = parsedAdj.quantity;
+                if (qty < 0 || (adjDir !== "set" && qty === 0)) {
                   setAdjMsg("Enter a quantity greater than zero.");
                   return;
                 }
@@ -1080,7 +1103,7 @@ function Inventory() {
                       unit_cost: recvCost.trim() === "" ? null : Number(recvCost),
                     });
                   }
-                  if (recvDate < shopTodayISO() && !recvDateConfirmed) {
+                  if (recvDate < shopTodayISO() && !canPostBusinessDay() && !recvDateConfirmed) {
                     setRecvMsg("Confirm the backdated delivery date. Stock is not received until a different administrator approves it.");
                     return;
                   }
@@ -1176,11 +1199,11 @@ function Inventory() {
               {recvBusy ? "Saving delivery…" : "Save supplier delivery"}
             </Button>
             {recvMsg ? <div className="text-sm text-text2">{recvMsg}</div> : null}
-            {(receiptsQ.data || []).slice(0, 6).length ? (
+            {(Array.isArray(receiptsQ.data) ? receiptsQ.data : []).slice(0, 6).length ? (
               <div className="border-t border-border pt-3">
                 <div className="text-xs font-semibold uppercase tracking-wide text-text2">Recent deliveries</div>
                 <div className="mt-2 space-y-1">
-                  {(receiptsQ.data || []).slice(0, 6).map((row) => (
+                  {(Array.isArray(receiptsQ.data) ? receiptsQ.data : []).slice(0, 6).map((row) => (
                     <button
                       key={`${row.receipt_number}-${row.id}`}
                       type="button"
@@ -1284,9 +1307,19 @@ function Inventory() {
               id = Number(opened.id);
               setStocktakeId(id);
             }
+            const countedProduct = products.find((p) => p.id === Number(stocktakeProduct));
+            const counted = parseQuantity(stocktakeQty, countedProduct?.unit, { allowZero: true });
+            if (!stocktakeProduct || "error" in counted) {
+              setStocktakeMsg("error" in counted
+                ? (counted.error.includes("whole units")
+                  ? `${countedProduct?.name || "This product"} is sold in whole units.`
+                  : counted.error)
+                : "Choose a product and a counted quantity.");
+              return;
+            }
             const saved = await POST<any>(`/stocktakes/${id}/counts`, {
               product_id: Number(stocktakeProduct),
-              counted_qty: Number(stocktakeQty),
+              counted_qty: counted.quantity,
             });
             setStocktakeMsg(saved?.success
               ? "Count saved. Stock is unchanged until a Super-Admin applies it."
@@ -1372,9 +1405,17 @@ function Inventory() {
             onSubmit={async (e) => {
               e.preventDefault();
               const data = new FormData(e.currentTarget);
+              const askProduct = products.find((p) => p.id === Number(data.get("product_id")));
+              const asked = parseQuantity(String(data.get("requested_qty") || ""), askProduct?.unit, { allowZero: true });
+              if ("error" in asked) {
+                setRecvMsg(asked.error.includes("whole units")
+                  ? `${askProduct?.name || "This product"} is sold in whole units.`
+                  : asked.error);
+                return;
+              }
               const res = await POST<any>("/stock-adjustment-requests", {
                 product_id: Number(data.get("product_id")),
-                requested_qty: Number(data.get("requested_qty")),
+                requested_qty: asked.quantity,
                 reason: String(data.get("reason") || ""),
               });
               setRecvMsg(res?.error || `${res?.request_number || "Request"} sent. Stock was not changed.`);
@@ -1536,7 +1577,7 @@ function Inventory() {
                       </div>
                     </td>
                     <td className="px-4 py-2.5 font-mono text-xs text-text2">{p.sku || "—"}</td>
-                    <td className="px-4 py-2.5 text-text2">{p.category || "General"}</td>
+                    <td className="px-4 py-2.5 text-text2">{p.category || "Uncategorised"}</td>
                     <td className="px-4 py-2.5 tabular-nums text-gold font-semibold">
                       {KES(p.price, currency)}
                     </td>
@@ -1608,8 +1649,12 @@ function Inventory() {
                 <label className="text-xs text-text2">Unit
                   <Input className="mt-1 h-11" value={newProduct.unit} onChange={(e) => setNewProduct({ ...newProduct, unit: e.target.value })} />
                 </label>
-                <label className="text-xs text-text2">Category
-                  <Input className="mt-1 h-11" value={newProduct.category} onChange={(e) => setNewProduct({ ...newProduct, category: e.target.value })} />
+                <label className="text-xs text-text2 sm:col-span-2">Category
+                  <CategoryField
+                    value={newProduct.category}
+                    canCreate={canCreateCategory}
+                    onChange={(category) => setNewProduct({ ...newProduct, category })}
+                  />
                 </label>
                 <label className="text-xs text-text2">SKU
                   <Input className="mt-1 h-11" value={newProduct.sku} onChange={(e) => setNewProduct({ ...newProduct, sku: e.target.value })} />
@@ -1919,7 +1964,7 @@ function Inventory() {
               const product = products.find((p) => p.id === receipt.product_id);
               const name = receipt.product_name || product?.name || "Product";
               const sku = receipt.sku || product?.sku || "—";
-              const category = receipt.category || product?.category || "General";
+              const category = receipt.category || product?.category || "Uncategorised";
               const barcode = receipt.barcode || "—";
               const unit = receipt.unit || product?.unit || "pcs";
               const price = receipt.price ?? product?.price;

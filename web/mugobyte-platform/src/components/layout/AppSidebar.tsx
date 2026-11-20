@@ -90,6 +90,13 @@ const workspaceNav: NavGroup[] = [
 
 const adminNav: NavGroup[] = [
   {
+    label: "MBT POS",
+    markActive: true,
+    items: [
+      { title: "Password Recovery", url: "/admin/mbt-pos/password-recovery", icon: KeyRound },
+    ],
+  },
+  {
     label: "Platform Admin",
     markActive: true,
     items: [

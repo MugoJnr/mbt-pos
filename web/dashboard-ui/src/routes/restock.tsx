@@ -349,29 +349,19 @@ function RestockPage() {
         <div className="space-y-4">
           {!current ? <Card className="p-6 text-text2">Open a list or create a new one. Lists stay saved when you close the till.</Card> : (
             <Card className="p-4 space-y-4">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs text-text2">{current.reference}</p>
-                  <input
-                    className="w-full bg-transparent text-xl font-semibold text-text outline-none"
-                    value={current.name}
-                    disabled={current.status !== "draft" || !canCreate}
-                    onChange={(event) => setCurrent({ ...current, name: event.target.value })}
-                    onBlur={() => saveHeader({ name: current.name })}
-                  />
-                  <p className="text-sm text-text2">{saveState} · {current.status_label} · {current.created_name}</p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {canManage && current.status === "draft" ? <Button onClick={() => act("submit")}>Mark Ready</Button> : null}
-                  {canManage && (current.status === "ready" || current.status === "assigned") ? <Button variant="secondary" onClick={() => act("return-to-draft")}>Return to draft</Button> : null}
-                  <Button variant="secondary" onClick={() => printReceipt("58")}>Print 58 mm</Button>
-                  <Button variant="secondary" onClick={() => printReceipt("80")}>Print 80 mm</Button>
-                  <Button variant="ghost" onClick={() => savePdf()}>Save as PDF</Button>
-                  {canCreate ? <Button variant="ghost" onClick={() => act("duplicate")}>Duplicate</Button> : null}
-                  {canManage || current.status === "draft" ? <Button variant="ghost" onClick={() => act("archive")}>Archive</Button> : null}
-                </div>
+              <div>
+                <p className="text-xs text-text2">{current.reference}</p>
+                <input
+                  className="w-full bg-transparent text-xl font-semibold text-text outline-none"
+                  value={current.name}
+                  disabled={current.status !== "draft" || !canCreate}
+                  onChange={(event) => setCurrent({ ...current, name: event.target.value })}
+                  onBlur={() => saveHeader({ name: current.name })}
+                />
+                <p className="text-sm text-text2">{saveState} · {current.status_label} · {current.created_name}</p>
               </div>
               <textarea
+                rows={2}
                 className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm"
                 placeholder="Instructions for the buyer"
                 value={current.instructions || ""}
@@ -379,6 +369,23 @@ function RestockPage() {
                 onChange={(event) => setCurrent({ ...current, instructions: event.target.value })}
                 onBlur={() => saveHeader({ instructions: current.instructions || "" })}
               />
+              <div className="space-y-2">
+                {canManage || canCreate || current.status === "draft" ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-text2">List</span>
+                    {canManage && current.status === "draft" ? <Button onClick={() => act("submit")}>Mark Ready</Button> : null}
+                    {canManage && (current.status === "ready" || current.status === "assigned") ? <Button variant="secondary" onClick={() => act("return-to-draft")}>Return to draft</Button> : null}
+                    {canCreate ? <Button variant="ghost" onClick={() => act("duplicate")}>Duplicate</Button> : null}
+                    {canManage || current.status === "draft" ? <Button variant="ghost" onClick={() => act("archive")}>Archive</Button> : null}
+                  </div>
+                ) : null}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-text2">Output</span>
+                  <Button variant="secondary" onClick={() => printReceipt("58")}>Print 58 mm</Button>
+                  <Button variant="secondary" onClick={() => printReceipt("80")}>Print 80 mm</Button>
+                  <Button variant="ghost" onClick={() => savePdf()}>Save as PDF</Button>
+                </div>
+              </div>
               <p className="text-sm text-text2">{summary.count} products{summary.mixed ? ". Quantities use different units, so there is no single total." : "."}</p>
               {current.status === "draft" && canCreate ? (
                 <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
@@ -396,20 +403,31 @@ function RestockPage() {
                   ))}
                 </div>
               ) : null}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="min-h-[240px]">
+                <table className="w-full table-fixed text-sm">
                   <thead>
                     <tr className="text-left text-text2">
-                      <th className="py-2">Product</th><th>Requested</th><th>Purchased</th><th>Outstanding</th><th>Received</th><th>Rejected</th><th>Notes</th>
+                      <th className="w-[28%] py-2 pr-2">Product</th>
+                      <th className="w-[12%]">Requested</th>
+                      <th className="w-[10%]">Purchased</th>
+                      <th className="w-[12%]">Outstanding</th>
+                      <th className="w-[14%]">Received</th>
+                      <th className="w-[10%]">Rejected</th>
+                      <th className="w-[14%]">Notes</th>
                     </tr>
                   </thead>
                   <tbody>
+                    {(current.lines || []).length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="py-16 text-center text-text2">No products have been added yet.</td>
+                      </tr>
+                    ) : null}
                     {(current.lines || []).map((line) => (
                       <tr key={line.id} className="border-t border-border">
                         <td className="py-2 pr-2">{line.product_name}<div className="text-xs text-text2">{line.sku}</div></td>
                         <td>
                           {current.status === "draft" && canCreate ? (
-                            <Input className="h-8 w-24" defaultValue={String(line.quantity_text || line.quantity || "")} onBlur={(event) => changeQty(line.line_id || line.id, event.target.value)} />
+                            <Input className="h-8 w-full max-w-[6.5rem]" defaultValue={String(line.quantity_text || line.quantity || "")} onBlur={(event) => changeQty(line.line_id || line.id, event.target.value)} />
                           ) : (
                             <>{line.quantity_text} {line.unit}</>
                           )}

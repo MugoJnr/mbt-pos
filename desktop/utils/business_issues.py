@@ -319,11 +319,20 @@ def _detect(db) -> tuple[list, set]:
                         evidence={**evidence_base, "cost_price": float(cost_raw)},
                         destination=dest,
                     )
+                elif cost_raw is None:
+                    accept(
+                        "INV-NO-BUYING-PRICE",
+                        title=f"{name} — missing buying price",
+                        explanation="No buying price is saved on this product. It can still be sold. Profit for those units stays incomplete until a real buying price is saved.",
+                        entity_type="product", entity_id=pid,
+                        evidence=evidence_base,
+                        destination=dest,
+                    )
                 else:
                     accept(
                         "INV-NO-BUYING-PRICE",
-                        title=f"{name} has no buying price",
-                        explanation="This product can still be sold. Profit for those units stays incomplete until a real buying price is saved. Zero is not treated as a cost.",
+                        title=f"{name} — zero buying price",
+                        explanation="The product card stores a buying price of zero. Zero is not treated as a cost. It can still be sold. Profit stays incomplete until a real buying price is saved.",
                         entity_type="product", entity_id=pid,
                         evidence=evidence_base,
                         destination=dest,
@@ -695,18 +704,24 @@ def scan(db, actor: str = "system") -> dict:
         same = current["evidence_hash"] == evidence_hash
         if status == "dismissed" and same:
             db.execute(
-                "UPDATE business_issues SET last_detected=?, updated_at=?, mode=? WHERE id=?",
-                (now, now, item["mode"], issue_id),
+                """UPDATE business_issues
+                   SET last_detected=?, updated_at=?, mode=?, title=?, explanation=?
+                   WHERE id=?""",
+                (now, now, item["mode"], item["title"], item["explanation"], issue_id),
             )
         elif status == "snoozed" and (current["snooze_until"] or "") > now and same:
             db.execute(
-                "UPDATE business_issues SET last_detected=?, updated_at=?, mode=? WHERE id=?",
-                (now, now, item["mode"], issue_id),
+                """UPDATE business_issues
+                   SET last_detected=?, updated_at=?, mode=?, title=?, explanation=?
+                   WHERE id=?""",
+                (now, now, item["mode"], item["title"], item["explanation"], issue_id),
             )
         elif status == "open" and same:
             db.execute(
-                "UPDATE business_issues SET last_detected=?, updated_at=?, mode=? WHERE id=?",
-                (now, now, item["mode"], issue_id),
+                """UPDATE business_issues
+                   SET last_detected=?, updated_at=?, mode=?, title=?, explanation=?
+                   WHERE id=?""",
+                (now, now, item["mode"], item["title"], item["explanation"], issue_id),
             )
             updated += 1
         else:

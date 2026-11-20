@@ -112,6 +112,12 @@ def list_receipts(
     kind = (kind or "").strip().lower()
     status = (status or "").strip().lower()
     query = (query or "").strip()
+    # The open list is the selected business dates, which the tills default to
+    # today. A search is a different action: the receipt number or customer
+    # may belong to an earlier day, so the date window does not hide it.
+    searched_all_dates = bool(query)
+    if searched_all_dates:
+        start, end = "", ""
     rows: list[dict] = []
 
     def keep(item: dict) -> bool:
@@ -125,7 +131,7 @@ def list_receipts(
         if query:
             blob = " ".join(
                 str(item.get(key) or "")
-                for key in ("reference", "user", "summary", "payment", "kind")
+                for key in ("reference", "user", "summary", "payment", "kind", "note")
             ).lower()
             if query.lower() not in blob:
                 return False
@@ -214,8 +220,10 @@ def list_receipts(
 
     if can_inventory and _has(tables, "stock_receipts"):
         clause, params = _day("r.created_at", start, end)
+        receipt_cols = {item[1] for item in db.execute("PRAGMA table_info(stock_receipts)").fetchall()}
+        effective_sql = "r.effective_date" if "effective_date" in receipt_cols else "NULL AS effective_date"
         found = db.execute(
-            f"""SELECT r.id, r.receipt_number, r.created_at, r.username,
+            f"""SELECT r.id, r.receipt_number, r.created_at, {effective_sql}, r.username,
                        r.grand_total, r.reference_note,
                        GROUP_CONCAT(l.product_name, ', ') AS products
                 FROM stock_receipts r
@@ -230,12 +238,14 @@ def list_receipts(
                 "kind": "supplier",
                 "id": row["id"],
                 "reference": row["receipt_number"],
-                "at": row["created_at"],
+                "at": row["effective_date"] or row["created_at"],
+                "business_date": row["effective_date"] or "",
                 "user": row["username"] or "",
                 "amount": row["grand_total"],
                 "status": "received",
                 "payment": "",
                 "summary": row["products"] or row["reference_note"] or "",
+                "note": row["reference_note"] or "",
             })
 
     if can_debt and _has(tables, "debt_payments"):
@@ -344,7 +354,11 @@ def list_receipts(
     )
     limit = max(1, min(int(limit or 50), 200))
     offset = max(0, int(offset or 0))
-    return {"total": len(kept), "receipts": kept[offset:offset + limit]}
+    return {
+        "total": len(kept),
+        "receipts": kept[offset:offset + limit],
+        "searched_all_dates": searched_all_dates,
+    }
 
 
 def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) -> dict | None:
@@ -358,7 +372,7 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
         if not sale:
             return None
         items = db.execute(
-            """SELECT product_name, sku, quantity, unit_price, discount, total
+            """SELECT product_id, product_name, sku, quantity, unit_price, discount, total
                FROM sale_items WHERE sale_id=? ORDER BY id""",
             (record_id,),
         ).fetchall()

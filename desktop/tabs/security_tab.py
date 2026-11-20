@@ -495,7 +495,7 @@ class SecurityTab(QWidget):
         for col, w2 in [(0,140),(1,110),(2,160),(3,100)]:
             self._audit_tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
             self._audit_tbl.setColumnWidth(col, w2)
-        self._audit_tbl.cellDoubleClicked.connect(self._open_audit)
+        self._audit_tbl.cellClicked.connect(self._open_audit)
         lay.addWidget(self._audit_tbl)
         return w
 
@@ -504,30 +504,7 @@ class SecurityTab(QWidget):
         payload = item.data(Qt.UserRole) if item is not None else None
         if not payload:
             return
-        from backend.audit_detail import describe_event
-        event = describe_event(payload)
-        lines = [
-            f"Event {event['id']}",
-            f"Action: {event['action']}",
-            f"Area: {event['module']}",
-            f"User: {event['username']}",
-            f"Role at the time: {event['role_at_event']}",
-            f"Outcome: {event['outcome']}",
-            f"Recorded: {event['recorded_at']}",
-            f"When it happened: {event['occurred_at']}",
-            f"Request address: {event['ip_address']}",
-            "",
-            str(event['details']),
-        ]
-        if event['changes']:
-            lines.append("")
-            lines.append("Before and after")
-            for change in event['changes']:
-                lines.append(f"{change['field']}: {change['before']} -> {change['after']}")
-        else:
-            lines.append("")
-            lines.append("This event did not record a before-and-after value.")
-        QMessageBox.information(self, 'Audit event', "\n".join(lines))
+        audit_event_dialog(self, payload).exec_()
 
     def _export_audit(self):
         if not self.api.can_view_audit():
@@ -610,3 +587,26 @@ class SecurityTab(QWidget):
         self._load_audit()
         self._load_stock_log()
         self._load_edits()
+
+
+def audit_event_dialog(parent, payload):
+    """The till's audit detail. Sections stay separate from the list row."""
+    from backend.audit_detail import audit_sections, describe_event
+    event = describe_event(payload or {})
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(f"Audit event {event.get('id') or ''}".strip())
+    dialog.resize(560, 520)
+    layout = QVBoxLayout(dialog)
+    for title, rows in audit_sections(event):
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        for label, value in rows:
+            shown = QLabel(str(value))
+            shown.setWordWrap(True)
+            shown.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            form.addRow(label, shown)
+        layout.addWidget(box)
+    close = QPushButton("Close")
+    close.clicked.connect(dialog.accept)
+    layout.addWidget(close)
+    return dialog

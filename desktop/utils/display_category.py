@@ -63,16 +63,9 @@ def display_category(raw_category: str, product_name: str = '') -> tuple[str, st
             tip = f'{raw}\n{name}'
         return raw, tip
 
-    inferred = infer_category_from_name(name)
-    if inferred:
-        tip = f'Category inferred from product name'
-        if raw:
-            tip += f'\nSupplier / source tag: {raw}'
-        return inferred, tip
-
     if raw:
-        return 'General', f'Supplier / source tag: {raw}'
-    return 'General', 'No category set'
+        return 'Uncategorised', f'Supplier / source tag: {raw}'
+    return 'Uncategorised', 'No category set'
 
 
 def normalize_product_name(name: str) -> str:

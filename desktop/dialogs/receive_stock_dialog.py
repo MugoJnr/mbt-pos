@@ -460,9 +460,18 @@ class ReceiveStockDialog(QDialog):
             QMessageBox.warning(self, 'Already added', 'That product is already on this delivery. Edit its quantity in the list.')
             return
         product = self._product(pid) or {}
-        qty = round(float(self._qty.value()), 4)
-        rejected = round(float(self._rejected.value()), 4)
-        ordered = round(float(self._ordered.value()), 4)
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        unit = product.get('unit') or ''
+        try:
+            qty = parse_quantity(self._qty.value(), unit, allow_zero=True)
+            rejected = parse_quantity(self._rejected.value(), unit, allow_zero=True)
+            ordered = parse_quantity(self._ordered.value(), unit, allow_zero=True)
+        except QuantityError as exc:
+            message = str(exc)
+            if 'whole units' in message:
+                message = f"'{product.get('name') or 'This product'}' is sold in whole units."
+            QMessageBox.warning(self, 'Quantity', message)
+            return
         explicit = bool(self._see_cost and self._free.isChecked())
         cost = round(float(self._cost.value()), 4) if self._see_cost else None
         if qty <= 0 and rejected <= 0:
@@ -508,9 +517,25 @@ class ReceiveStockDialog(QDialog):
             self._refresh_table()
 
     def _set_qty(self, idx, value):
-        if 0 <= idx < len(self._lines):
-            self._lines[idx]['quantity'] = round(float(value), 4)
-            self._recalc(idx)
+        if not (0 <= idx < len(self._lines)):
+            return
+        line = self._lines[idx]
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        try:
+            qty = parse_quantity(value, line.get('unit'))
+        except QuantityError as exc:
+            message = str(exc)
+            if 'whole units' in message:
+                message = f"'{line.get('name') or 'This product'}' is sold in whole units."
+            widget = self._tbl.cellWidget(idx, 4)
+            if widget is not None:
+                widget.blockSignals(True)
+                widget.setValue(float(line['quantity']))
+                widget.blockSignals(False)
+            QMessageBox.warning(self, 'Quantity', message)
+            return
+        line['quantity'] = qty
+        self._recalc(idx)
 
     def _set_cost(self, idx, value):
         if 0 <= idx < len(self._lines):

@@ -181,6 +181,48 @@ class SaleBusinessDayTests(unittest.TestCase):
         self.assertEqual(only['quantity'], 3.0)
         self.assertAlmostEqual(only['total'], 150.0, places=2)
 
+    def test_two_copies_stay_separate_and_editable(self):
+        from desktop.utils.copy_sale import copied_cart_lines, place_copied_lines
+        from desktop.utils.shop_time import shop_today
+        yesterday = (shop_today() - timedelta(days=1)).isoformat()
+        db = self.ac._db()
+        db.execute("UPDATE products SET unit=?, category=? WHERE id=1", ('kg', 'Grocery'))
+        db.execute(
+            "INSERT INTO products (name, sku, price, cost_price, stock, min_stock, unit, category) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ('Second Widget', 'BW2', 40.0, 10.0, 50, 1, 'pcs', 'Hardware'),
+        )
+        db.commit()
+        db.close()
+        first = self.api.create_sale(self._payload(100.0, qty=2, sale_date=yesterday))
+        second = self.api.create_sale({
+            'items': [{
+                'product_id': 2, 'product_name': 'Second Widget', 'sku': 'BW2',
+                'quantity': 2, 'unit_price': 40.0, 'discount': 5, 'total': 75.0,
+            }],
+            'subtotal': 80.0, 'discount': 5, 'tax': 0, 'total': 75.0,
+            'payment_method': 'Cash', 'amount_paid': 75.0, 'change_amount': 0,
+            'sale_date': yesterday,
+        })
+        self.assertTrue(first.get('success') and second.get('success'), (first, second))
+        products = {1: {'name': 'Biz Widget', 'sku': 'BW1', 'unit': 'kg', 'category': 'Grocery'},
+                    2: {'name': 'Second Widget', 'sku': 'BW2', 'unit': 'pcs', 'category': 'Hardware'}}
+        one = copied_cart_lines(self.api.get_sale(int(first['sale_id'])).get('items'), products)
+        two = copied_cart_lines(self.api.get_sale(int(second['sale_id'])).get('items'), products)
+        cart = place_copied_lines([], one)
+        cart = place_copied_lines(cart, two)
+        self.assertEqual(len(cart), 2)
+        self.assertEqual(cart[0]['unit'], 'kg')
+        self.assertEqual(cart[0]['category'], 'Grocery')
+        self.assertEqual(cart[0]['quantity'], 2.0)
+        self.assertEqual(cart[1]['quantity'], 2.0)
+        self.assertEqual(cart[1]['discount'], 5.0)
+        self.assertAlmostEqual(cart[1]['total'], 75.0, places=2)
+        cart[0]['quantity'] = 3
+        cart[1]['unit_price'] = 30
+        self.assertEqual(cart[0]['product_id'], 1)
+        self.assertEqual(cart[1]['product_name'], 'Second Widget')
+
     def test_permission_matrix_business_day(self):
         from desktop.utils.security import can_set_business_day, has_permission
         from roles import ROLE_CASHIER, ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPERADMIN, ROLE_VIEWER

@@ -137,8 +137,10 @@ def _request_context():
 _LICENSE_WRITE_EXEMPT_PREFIXES = (
     '/api/auth/login',
     '/api/auth/logout',
+    '/api/auth/recovery/',
     '/api/cloud/auth/',
     '/api/cloud/licenses',
+    '/api/cloud/mbt-pos/recovery/',
     '/api/daraja/stk/callback',
 )
 
@@ -698,39 +700,10 @@ def init_db():
             except Exception:
                 pass
     try:
-        from desktop.utils.category_suggest import suggest_visual_for_category_name as _sug_cat
-    except Exception:
-        _sug_cat = None
-    seed_names = {'General', 'Grocery', 'Pharmacy', 'Electronics', 'Clothing',
-                  'Hardware', 'Beverages', 'Beauty'}
-    try:
-        for row in cur.execute(
-            "SELECT DISTINCT category FROM products "
-            "WHERE category IS NOT NULL AND TRIM(category) != ''"
-        ).fetchall():
-            seed_names.add((row[0] or '').strip())
+        from desktop.utils.shop_categories import sync_shop_categories
+        sync_shop_categories(db)
     except Exception:
         pass
-    for _cname in sorted(n for n in seed_names if n):
-        exists = cur.execute(
-            "SELECT id, icon_name FROM categories WHERE LOWER(name)=LOWER(?)",
-            (_cname,),
-        ).fetchone()
-        if exists:
-            continue
-        vis = _sug_cat(_cname) if _sug_cat else {
-            'visual_type': 'icon', 'icon_name': 'generic/general-product',
-            'accent_color': '#3B82F6',
-        }
-        try:
-            cur.execute(
-                "INSERT INTO categories (name, visual_type, icon_name, accent_color, is_active) "
-                "VALUES (?,?,?,?,1)",
-                (_cname, vis.get('visual_type', 'icon'),
-                 vis.get('icon_name'), vis.get('accent_color', '#3B82F6')),
-            )
-        except Exception:
-            pass
 
     # Cloud backup sync columns (non-breaking)
     for table in ('products', 'sales', 'customers'):
@@ -852,9 +825,40 @@ def init_db():
     logger.info("Database initialized")
 
 
+def _test_developer_user():
+    """Loopback developer session for disposable QA. Production never sets these flags."""
+    if os.environ.get('MBT_TEST_INSTANCE') != '1':
+        return None
+    if os.environ.get('MBT_RECOVERY_TEST_AUTH') != '1':
+        return None
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return None
+    expected = os.environ.get('MBT_RECOVERY_TEST_TOKEN') or ''
+    if len(expected) < 32:
+        return None
+    supplied = (request.headers.get('Authorization') or '').replace('Bearer ', '', 1).strip()
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        return None
+    return {
+        'id': 'developer',
+        'username': 'developer',
+        'full_name': 'MugoByte Developer',
+        'email': '',
+        'role': 'platform_admin',
+        'tab_permissions': '[]',
+        'is_active': 1,
+    }
+
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        developer = _test_developer_user()
+        if developer:
+            g.current_user = developer
+            g.auth_provider = 'test-developer'
+            g.session_id = ''
+            return f(*args, **kwargs)
         token = request.headers.get('Authorization', '').replace('Bearer ', '')
         if not token:
             return jsonify({'error': 'Token required'}), 401
@@ -966,6 +970,20 @@ def _shop_can(action: str) -> bool:
     if not user.get('role'):
         return False
     return has_permission(user, action)
+
+
+def _tab_open(tab: str) -> bool:
+    """The saved tab list, not the role name, opens a module."""
+    import json
+    from roles import visible_tabs
+    user = getattr(g, 'current_user', None) or {}
+    raw = user.get('tab_permissions') or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or '[]')
+        except (TypeError, ValueError):
+            raw = []
+    return tab in visible_tabs(user.get('role') or '', raw)
 
 
 def _sees_cost() -> bool:
@@ -1443,6 +1461,8 @@ def list_products():
 @app.route('/api/products', methods=['POST'])
 @token_required
 def create_product():
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
     data = request.json or {}
     user = g.current_user or {}
     from desktop.utils.api_client import APIClient
@@ -1458,6 +1478,8 @@ def create_product():
 @app.route('/api/products/<int:pid>', methods=['PUT'])
 @token_required
 def update_product(pid):
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
     data = request.json or {}
     user = g.current_user or {}
     from desktop.utils.api_client import APIClient
@@ -1470,9 +1492,65 @@ def update_product(pid):
     return jsonify(result), code
 
 
+def _category_api():
+    from desktop.utils.api_client import APIClient
+    user = g.current_user or {}
+    api = APIClient()
+    api._user_id = user.get('id')
+    api._username = user.get('username') or user.get('full_name') or 'web'
+    api._role = (user.get('role') or '').lower()
+    return api
+
+
+@app.route('/api/categories', methods=['GET'])
+@token_required
+def list_shop_categories():
+    if not _shop_can('inventory.view'):
+        return jsonify({'error': 'You cannot view shop categories.'}), 403
+    active_only = request.args.get('all') != '1'
+    return jsonify(_category_api().get_categories(active_only=active_only))
+
+
+@app.route('/api/categories', methods=['POST'])
+@token_required
+def create_shop_category():
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
+    result = _category_api().create_category(request.json or {})
+    if result.get('error'):
+        return jsonify(result), int(result.get('status') or 400)
+    return jsonify(result)
+
+
+@app.route('/api/categories/<int:cid>', methods=['PUT'])
+@token_required
+def update_shop_category(cid):
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
+    result = _category_api().update_category(cid, request.json or {})
+    if result.get('error'):
+        return jsonify(result), int(result.get('status') or 400)
+    return jsonify(result)
+
+
+@app.route('/api/categories/<int:cid>', methods=['DELETE'])
+@token_required
+def delete_shop_category(cid):
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
+    payload = request.get_json(silent=True) or {}
+    flag = str(request.args.get('leave_uncategorised') or '').lower() in ('1', 'true', 'yes')
+    flag = flag or bool(payload.get('leave_uncategorised'))
+    result = _category_api().delete_category(cid, leave_uncategorised=flag)
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
+
+
 @app.route('/api/products/<int:pid>', methods=['DELETE'])
 @token_required
 def delete_product(pid):
+    if not _tab_open('inventory'):
+        return jsonify({'error': 'Inventory access required'}), 403
     user = g.current_user or {}
     from desktop.utils.api_client import APIClient
     api = APIClient()

@@ -858,6 +858,24 @@ class _CreatePane(QWidget):
         item = self._prod_list.currentItem() or self._prod_list.item(0)
         self._add_from_list(item)
 
+    def _fifo_preview_cost(self, product_id, qty, fallback):
+        """Show the oldest-batch cost. The card price is only a fallback."""
+        try:
+            from desktop.utils.api_client import _db
+            from desktop.utils.stock_layers import quote_available_cost
+            db = _db()
+            try:
+                quote = quote_available_cost(db, int(product_id), float(qty))
+            finally:
+                db.close()
+        except Exception:
+            return fallback
+        covered = float(quote.get("covered") or 0)
+        unit = quote.get("unit_cost")
+        if covered > 0 and unit is not None:
+            return float(unit)
+        return fallback
+
     def _add_product(self, prod, qty=1.0):
         if not prod:
             return
@@ -882,7 +900,7 @@ class _CreatePane(QWidget):
                 f"{prod.get('name')}: only {_fmt_qty(stock)} available.\n"
                 f"Cannot add {_fmt_qty(qty)}.")
             return
-        cost = _safe_float(prod.get('cost_price'), 0)
+        cost = self._fifo_preview_cost(pid, qty, _safe_float(prod.get('cost_price'), 0))
         self._lines.append({
             'product_id': pid,
             'product_name': prod.get('name') or '',

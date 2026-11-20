@@ -97,8 +97,12 @@ def filter_pos_products(
             try:
                 return bool(cat_match(p))
             except Exception:
-                return (p.get('category') or 'General') == cat
-        return (p.get('category') or 'General') == cat
+                raw = (p.get('category') or '').strip()
+                return (not raw) if cat == 'Uncategorised' else raw == cat
+        raw = (p.get('category') or '').strip()
+        if cat == 'Uncategorised':
+            return not raw
+        return raw == cat
 
     if not q:
         if not browse_cat:

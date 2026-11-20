@@ -136,15 +136,23 @@ def _product_image_dir() -> str:
 
 
 @web.route('/product-images/<path:filename>')
+@web.route('/api/product-images/<path:filename>')
 def product_image_file(filename):
     """Local product photograph. The filename is the saved basename only."""
-    safe = os.path.basename(filename)
-    if not safe or safe != filename or '..' in filename:
+    from desktop.utils.product_photo import ensure_thumbnail_file, unsafe_filename
+    safe = os.path.basename(str(filename or '').replace('\\', '/'))
+    if not safe or safe != filename or unsafe_filename(safe):
         abort(404)
     folder = _product_image_dir()
-    if not os.path.isfile(os.path.join(folder, safe)):
+    path = os.path.join(folder, safe)
+    if not os.path.isfile(path) and '.thumb.' in safe:
+        ensure_thumbnail_file(folder, safe)
+    if not os.path.isfile(path):
         abort(404)
-    return send_from_directory(folder, safe)
+    response = send_from_directory(folder, safe)
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 
 @web.route('/licenses')
@@ -625,6 +633,167 @@ def cloud_auth_forgot():
         return jsonify({'ok': True, 'sent': ok, 'message': 'If that email exists, a reset link was sent.'})
     except Exception as e:
         return jsonify({'ok': True, 'sent': False, 'message': 'If that email exists, a reset link was sent.'})
+
+
+def _recovery_test_developer() -> bool:
+    """Loopback test session. Production never sets MBT_TEST_INSTANCE."""
+    if os.environ.get('MBT_TEST_INSTANCE') != '1':
+        return False
+    if os.environ.get('MBT_RECOVERY_TEST_AUTH') != '1':
+        return False
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return False
+    expected = os.environ.get('MBT_RECOVERY_TEST_TOKEN') or ''
+    if len(expected) < 32:
+        return False
+    import secrets as _secrets
+    supplied = (request.headers.get('Authorization') or '').replace('Bearer ', '', 1).strip()
+    if not supplied or not _secrets.compare_digest(supplied, expected):
+        return False
+    g.current_user = {
+        'id': 'developer',
+        'username': 'developer',
+        'role': 'platform_admin',
+        'email': '',
+    }
+    g.auth_provider = 'test-developer'
+    return True
+
+
+def _recovery_denied():
+    from backend.emergency_recovery import developer_recovery_decision
+    user = getattr(g, 'current_user', None) or {}
+    decision = developer_recovery_decision(
+        str(user.get('role') or ''),
+        str(getattr(g, 'auth_provider', '') or ''),
+    )
+    if decision.get('allowed'):
+        return None
+    return jsonify({'error': decision['error']}), int(decision['status'])
+
+
+def _recovery_developer_call(body):
+    if _recovery_test_developer():
+        return body()
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        return body()
+
+    return _inner()
+
+
+@web.route('/api/cloud/mbt-pos/recovery/lookup', methods=['GET'])
+def developer_recovery_lookup():
+    """MBT POS developer search by the shop's real device identity."""
+    def _body():
+        denied = _recovery_denied()
+        if denied:
+            return denied
+        from backend.emergency_recovery import lookup_recovery_target, public_recovery_profile
+        device_id = (request.args.get('device_id') or '').strip()
+        try:
+            profile = lookup_recovery_target(device_id)
+        except PermissionError as exc:
+            return jsonify({'error': str(exc)}), 403
+        except LookupError as exc:
+            return jsonify({'error': str(exc)}), 404
+        return jsonify(public_recovery_profile(profile, developer=True))
+
+    return _recovery_developer_call(_body)
+
+
+@web.route('/api/cloud/mbt-pos/recovery/issue', methods=['POST'])
+def developer_recovery_issue():
+    """Sign a single-use code. This does not change the shop password."""
+    def _body():
+        denied = _recovery_denied()
+        if denied:
+            return denied
+        from backend.emergency_recovery import (
+            RecoveryError,
+            issue_for_target,
+            lookup_recovery_target,
+        )
+        data = request.json or {}
+        if data.get('confirm') is not True:
+            return jsonify({
+                'error': 'Confirm the shop, device, licence, and Super Admin before generating a code.',
+            }), 400
+        device_id = (data.get('device_id') or '').strip()
+        try:
+            user_id = int(data.get('user_id') or 0)
+        except (TypeError, ValueError):
+            user_id = 0
+        try:
+            profile = lookup_recovery_target(device_id)
+            if str(data.get('shop_id') or '') != str(profile.get('shop_id') or ''):
+                return jsonify({
+                    'error': 'Search this shop again before generating a code.',
+                }), 409
+            issued = issue_for_target(profile, user_id)
+        except PermissionError as exc:
+            return jsonify({'error': str(exc)}), 403
+        except LookupError as exc:
+            return jsonify({'error': str(exc)}), 404
+        except RecoveryError as exc:
+            status = 403 if exc.code == 'key' and 'not configured' in exc.message else 400
+            if exc.code == 'key' and 'not configured' in exc.message:
+                status = 503
+            return jsonify({'error': exc.message}), status
+        return jsonify({
+            'token_id': issued['token_id'],
+            'expires_at': issued['expires_at'],
+            'shop_id': issued['shop_id'],
+            'device_id': issued['device_id'],
+            'username': issued['username'],
+            'shop_name': issued.get('shop_name') or '',
+            'licence_state': issued.get('licence_state') or '',
+            'portal_changes_password': False,
+            'token': issued['token'],
+            'note': (
+                'Read this short code to the shop once. The owner types it on the till or '
+                'Live Dashboard, with or without the dashes. This portal has not changed '
+                'the password. The reference id is not a code and cannot be typed in again.'
+            ),
+        })
+
+    return _recovery_developer_call(_body)
+
+
+@web.route('/api/auth/recovery/context', methods=['GET'])
+def shop_recovery_context():
+    """Public login-screen facts. No passwords, keys, or licence secrets."""
+    from backend.emergency_recovery import local_recovery_profile, public_recovery_profile
+    try:
+        return jsonify(public_recovery_profile(local_recovery_profile(), developer=False))
+    except Exception:
+        current_app.logger.exception('shop recovery context')
+        return jsonify({'error': 'This computer could not show its shop identity.'}), 400
+
+
+@web.route('/api/auth/recovery/redeem', methods=['POST'])
+def shop_recovery_redeem():
+    """Same local check and single-use record as the till. No developer authority."""
+    from backend.app import get_db
+    from backend.emergency_recovery import redeem_superadmin
+    data = request.json or {}
+    result = redeem_superadmin(
+        get_db(),
+        data.get('token') or '',
+        data.get('new_password') or '',
+        data.get('confirm_password') or '',
+        via='web',
+    )
+    if result.get('success'):
+        return jsonify({
+            'success': True,
+            'username': result.get('username') or '',
+            'token_id': result.get('token_id') or '',
+        })
+    code = 400
+    return jsonify({'success': False, 'error': result.get('error') or 'Recovery failed.'}), code
 
 
 @web.route('/api/cloud/auth/resend-verification', methods=['POST'])
@@ -2333,17 +2502,9 @@ def _user_tabs(user=None):
             raw = []
     if not isinstance(raw, list):
         raw = []
-    role = (user.get('role') or 'cashier').lower()
-    extra = set()
-    if role in ('admin', 'superadmin', 'manager'):
-        extra = {'dashboard', 'sales', 'inventory', 'reports', 'debt', 'users', 'accounting'}
-    if role in ('admin', 'superadmin'):
-        extra |= {'settings', 'backup'}
-    if role == 'superadmin':
-        extra |= {'security'}
-    if extra:
-        return set(raw) | extra
-    return set(raw or ['dashboard', 'sales'])
+    role = (user.get('role') or '').lower()
+    from roles import visible_tabs
+    return set(visible_tabs(role, raw))
 
 
 def _user_can(module, user=None):
@@ -2353,7 +2514,7 @@ def _user_can(module, user=None):
     if module == 'inventory_value':
         from desktop.utils.security import sees_product_cost
         return sees_product_cost(user)
-    if role in ('admin', 'superadmin'):
+    if role == 'superadmin':
         return True
     tabs = _user_tabs(user)
     # Keep POS ops usable for cashiers (sales → product lookup) without granting
@@ -3122,7 +3283,7 @@ def cloud_analytics_stock_receipts():
                 ))
             except Exception as e:
                 return _cloud_exception(e, 502)
-        if not _user_can('inventory'):
+        if 'inventory' not in _user_tabs():
             return jsonify({'error': 'Inventory access required'}), 403
         return jsonify({
             'receipts': stock_receipt_rows(_get_db()),
@@ -3138,7 +3299,7 @@ def list_stock_receipts():
 
     @token_required
     def _inner():
-        if not _user_can('inventory'):
+        if 'inventory' not in _user_tabs():
             return jsonify({'error': 'Inventory access required'}), 403
         rows = stock_receipt_rows(_get_db())
         if not _sees_cost():
@@ -3187,6 +3348,25 @@ def create_department_http():
         if result.get('error'):
             return jsonify(result), int(result.get('status') or 400)
         return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/products/<int:product_id>/cost-quote', methods=['GET'])
+def product_cost_quote(product_id):
+    """FIFO cost of a quantity. Read only. Cost stays hidden from cashiers."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if not _sees_cost():
+            return jsonify({'error': 'Forbidden'}), 403
+        try:
+            qty = float(request.args.get('qty') or 0)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Quantity must be a number.'}), 400
+        from desktop.utils.stock_layers import quote_available_cost
+        return jsonify(quote_available_cost(_get_db(), int(product_id), qty))
 
     return _inner()
 
@@ -3399,7 +3579,7 @@ def product_history_http(pid):
 
     @token_required
     def _inner():
-        if not _user_can('inventory'):
+        if 'inventory' not in _user_tabs():
             return jsonify({'error': 'Inventory access required'}), 403
         return jsonify(_inventory_api().get_product_history(int(pid)))
 
@@ -3412,6 +3592,8 @@ def adjust_stock(pid):
     from backend.app import token_required
     @token_required
     def _inner():
+        if 'inventory' not in _user_tabs():
+            return jsonify({'error': 'Inventory access required'}), 403
         data = request.json or {}
         result = _inventory_api().adjust_stock(
             pid,
@@ -3451,7 +3633,7 @@ def list_suppliers_http():
 
     @token_required
     def _inner():
-        if not _user_can('inventory'):
+        if 'inventory' not in _user_tabs():
             return jsonify({'error': 'Inventory access required'}), 403
         from desktop.utils.api_client import APIClient
         return jsonify(APIClient().get_suppliers() or [])
@@ -3526,6 +3708,8 @@ def receive_stock_http(pid):
         user = g.current_user or {}
         role = (user.get('role') or '').lower()
         from desktop.utils.security import has_permission
+        if 'inventory' not in _user_tabs(user):
+            return jsonify({'error': 'Inventory access required'}), 403
         if not has_permission(user, 'inventory.receive'):
             return jsonify({'error': 'You cannot receive supplier stock.'}), 403
         try:
@@ -3735,6 +3919,8 @@ def create_stock_receipt():
         data = request.json or {}
         user = g.current_user or {}
         from desktop.utils.security import has_permission
+        if 'inventory' not in _user_tabs(user):
+            return jsonify({'error': 'Inventory access required'}), 403
         if not has_permission(user, 'inventory.receive'):
             return jsonify({'error': 'You cannot receive supplier stock.'}), 403
         from desktop.utils.api_client import APIClient
@@ -4031,6 +4217,11 @@ def _inventory_api():
     return api
 
 
+def _receipts_tab_allowed(user) -> bool:
+    """Receipts opens only when that tab is saved on the account. Super Admin keeps it."""
+    return 'receipts' in _user_tabs(user)
+
+
 @web.route('/api/receipts', methods=['GET'])
 def list_receipts_http():
     from backend.app import token_required
@@ -4039,6 +4230,8 @@ def list_receipts_http():
     def _inner():
         from backend.receipts_centre import list_receipts
         user = g.current_user or {}
+        if not _receipts_tab_allowed(user):
+            return jsonify({'error': 'You cannot open receipts.'}), 403
         role = (user.get('role') or '').lower()
         try:
             limit = int(request.args.get('limit') or 50)
@@ -4076,6 +4269,8 @@ def receipt_detail_http(kind, record_id):
     def _inner():
         from backend.receipts_centre import receipt_detail
         user = g.current_user or {}
+        if not _receipts_tab_allowed(user):
+            return jsonify({'error': 'You cannot open receipts.'}), 403
         role = (user.get('role') or '').lower()
         gates = {
             'sale': _user_can('sales', user),
@@ -4147,37 +4342,19 @@ def upload_product_image(pid):
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
         if role not in known or not has_permission(user, 'inventory.edit_info'):
             return jsonify({'error': 'You cannot change a product photograph.'}), 403
-        from desktop.utils.product_photo import MAX_IMAGE_BYTES, image_error, sniff_image
+        from desktop.utils.product_photo import MAX_IMAGE_BYTES
+        from desktop.utils.api_client import APIClient
         upload = request.files.get('image')
         if not upload or not upload.filename:
             return jsonify({'error': 'Choose a photograph.'}), 400
         data = upload.read(MAX_IMAGE_BYTES + 1)
-        error = image_error(data)
-        if error:
-            code = 413 if '8 MB' in error else 400
-            return jsonify({'error': error}), code
-        db = _get_db()
-        cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
-        if 'image_path' not in cols:
-            db.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
-        row = db.execute("SELECT id FROM products WHERE id=?", (pid,)).fetchone()
-        if not row:
-            return jsonify({'error': 'Product not found.'}), 404
-        ext = sniff_image(data)
-        filename = f"product-{pid}{ext}"
-        folder = _product_image_dir()
-        for old_ext in ('.jpg', '.png', '.webp'):
-            old = os.path.join(folder, f"product-{pid}{old_ext}")
-            if os.path.isfile(old):
-                os.remove(old)
-        with open(os.path.join(folder, filename), 'wb') as handle:
-            handle.write(data)
-        db.execute(
-            "UPDATE products SET image_path=?, updated_at=? WHERE id=?",
-            (filename, datetime.now().isoformat(), pid),
-        )
-        db.commit()
-        return jsonify({'success': True, 'image_path': filename})
+        client = APIClient()
+        client._role = role
+        client._user_id = user.get('id')
+        client._username = user.get('username') or user.get('full_name') or ''
+        result = client.save_product_image_bytes(pid, data, upload_name=upload.filename)
+        code = 200 if result.get('success') else int(result.get('status') or 400)
+        return jsonify(result), code
 
     return _inner()
 

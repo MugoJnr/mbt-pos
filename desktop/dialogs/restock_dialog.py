@@ -1,14 +1,15 @@
 """Restock lists for the desktop till. This window does not touch the sale cart."""
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QGridLayout, QSplitter, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractScrollArea, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QFrame,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPushButton, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem,
+    QTextEdit, QVBoxLayout, QWidget,
 )
 
-from desktop.utils.theme import apply_themed_dialog
+from desktop.utils.theme import C, apply_themed_dialog
 from desktop.utils.security import has_permission
 
 
@@ -53,9 +54,12 @@ class RestockDialog(QDialog):
         self.actor = _actor(user)
         self.current = None
         self.setWindowTitle("Restock Lists")
-        self.resize(980, 640)
+        self.resize(1100, 720)
+        self.setMinimumSize(920, 600)
         apply_themed_dialog(self)
         root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(8)
         intro = QLabel(
             "Create lists of products the shop needs to buy. A list does not change stock. "
             "The till and the dashboard on this shop read the same saved lists."
@@ -63,55 +67,132 @@ class RestockDialog(QDialog):
         intro.setWordWrap(True)
         root.addWidget(intro)
         split = QSplitter()
+        split.setChildrenCollapsible(False)
         self.list = QListWidget()
-        self.list.setMinimumWidth(340)
+        self.list.setMinimumWidth(200)
+        self.list.setMaximumWidth(260)
         self.list.setWordWrap(True)
         self.list.setTextElideMode(Qt.ElideNone)
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list.currentRowChanged.connect(self._open_selected)
         split.addWidget(self.list)
         right = QWidget()
         form = QVBoxLayout(right)
+        form.setContentsMargins(8, 0, 0, 0)
+        form.setSpacing(8)
         self.name = QLineEdit()
         self.name.setPlaceholderText("List name")
         self.priority = QComboBox()
         self.priority.addItem("Normal", "normal")
         self.priority.addItem("Urgent", "urgent")
+        self.priority.setFixedWidth(150)
         self.instructions = QTextEdit()
         self.instructions.setPlaceholderText("Instructions for the buyer")
-        self.instructions.setFixedHeight(70)
+        self.instructions.setFixedHeight(52)
         self.status = QLabel("No list open")
-        form.addWidget(self.name)
-        form.addWidget(self.priority)
-        form.addWidget(self.instructions)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        title_label = QLabel("Title")
+        title_label.setFixedWidth(96)
+        priority_label = QLabel("Priority")
+        title_row.addWidget(title_label)
+        title_row.addWidget(self.name, 1)
+        title_row.addWidget(priority_label)
+        title_row.addWidget(self.priority)
+        form.addLayout(title_row)
+        note_row = QHBoxLayout()
+        note_row.setSpacing(8)
+        note_label = QLabel("Instructions")
+        note_label.setFixedWidth(96)
+        note_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        note_row.addWidget(note_label)
+        note_row.addWidget(self.instructions, 1)
+        form.addLayout(note_row)
         form.addWidget(self.status)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
             ["Product", "Requested", "Unit", "Purchased", "Received", "Notes"]
         )
-        form.addWidget(self.table, 1)
-        buttons = QGridLayout()
-        labels = (
-            ("New list", self._new), ("Save", self._save), ("Add product", self._add_product),
-            ("Mark ready", self._submit), ("Record purchase", self._purchase), ("Print", self._print),
-            ("Archive", self._archive), ("Remove", self._remove), ("Change qty", self._change_qty),
-            ("Duplicate", self._duplicate), ("Return to draft", self._return_draft), ("Assign", self._assign),
-            ("Receive", self._receive), ("Cancel", self._cancel), ("Low stock", self._low_stock),
-            ("Save PDF", self._save_pdf),
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.table.setMinimumHeight(280)
+        self.table.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+        self.table.setFrameShape(QFrame.NoFrame)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setWordWrap(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(64)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col, width in ((1, 108), (2, 72), (3, 112), (4, 104)):
+            header.setSectionResizeMode(col, QHeaderView.Fixed)
+            self.table.setColumnWidth(col, width)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.setStyleSheet(
+            f"QTableWidget {{ background:{C['card']}; color:{C['text']};"
+            f"border:1px solid {C['border']}; border-radius:0px; }}"
+            f"QTableWidget::item {{ padding:4px 8px; border:none;"
+            f"border-bottom:1px solid {C['border']}; }}"
+            f"QHeaderView::section {{ background:{C['panel']}; color:{C['text2']};"
+            f"padding:6px 8px; border:none; border-bottom:1px solid {C['border']};"
+            f"font-size:11px; font-weight:700; }}"
         )
-        for index, (label, handler) in enumerate(labels):
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            buttons.addWidget(button, index // 5, index % 5)
-        form.addLayout(buttons)
+        viewport = self.table.viewport()
+        viewport.setAutoFillBackground(True)
+        viewport.setStyleSheet(f"background:{C['card']};")
+        self._empty = QLabel("No products have been added yet.", viewport)
+        self._empty.setAlignment(Qt.AlignCenter)
+        self._empty.setWordWrap(True)
+        self._empty.setStyleSheet(f"color:{C['text2']}; background:transparent; font-size:13px;")
+        viewport.installEventFilter(self)
+        form.addWidget(self.table, 1)
+        actions = QWidget()
+        actions.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        actions.setStyleSheet(
+            "QPushButton { min-height: 32px; max-height: 36px; padding: 4px 12px; }"
+        )
+        actions_lay = QVBoxLayout(actions)
+        actions_lay.setContentsMargins(0, 4, 0, 0)
+        actions_lay.setSpacing(6)
+        actions_lay.addLayout(self._action_row("List", (
+            ("New list", self._new),
+            ("Save", self._save),
+            ("Mark ready", self._submit),
+            ("Return to draft", self._return_draft),
+            ("Duplicate", self._duplicate),
+            ("Archive", self._archive),
+        )))
+        actions_lay.addLayout(self._action_row("Lines", (
+            ("Add product", self._add_product),
+            ("Change qty", self._change_qty),
+            ("Remove", self._remove),
+            ("Low stock", self._low_stock),
+        )))
+        actions_lay.addLayout(self._action_row("Buying", (
+            ("Record purchase", self._purchase),
+            ("Receive", self._receive),
+            ("Assign", self._assign),
+            ("Cancel", self._cancel),
+        )))
+        actions_lay.addLayout(self._action_row("Output", (
+            ("Print", self._print),
+            ("Save PDF", self._save_pdf),
+            ("Close", self.accept),
+        )))
+        form.addWidget(actions, 0)
         split.addWidget(right)
+        split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
-        split.setSizes([320, 760])
+        split.setSizes([230, 840])
         root.addWidget(split, 1)
-        close = QPushButton("Close")
-        close.clicked.connect(self.accept)
-        root.addWidget(close)
         self._reload()
+        self._sync_empty()
         if product_id:
             self._quick_product = int(product_id)
         else:
@@ -121,6 +202,47 @@ class RestockDialog(QDialog):
         button = QPushButton(label)
         button.clicked.connect(handler)
         layout.addWidget(button)
+
+    def _action_row(self, title, actions):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        label = QLabel(title)
+        label.setFixedWidth(72)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(label)
+        for text, handler in actions:
+            button = QPushButton(text)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            button.clicked.connect(handler)
+            row.addWidget(button)
+        row.addStretch(1)
+        return row
+
+    def eventFilter(self, obj, event):
+        table = getattr(self, "table", None)
+        if table is not None and obj is table.viewport() and event.type() in (QEvent.Resize, QEvent.Show):
+            self._position_empty()
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_empty()
+
+    def _position_empty(self):
+        label = getattr(self, "_empty", None)
+        table = getattr(self, "table", None)
+        if label is None or table is None:
+            return
+        label.setGeometry(table.viewport().rect())
+
+    def _sync_empty(self):
+        label = getattr(self, "_empty", None)
+        table = getattr(self, "table", None)
+        if label is None or table is None:
+            return
+        label.setVisible(table.rowCount() == 0)
+        self._position_empty()
 
     def _reload(self):
         from backend import restock_requests as restock
@@ -164,6 +286,7 @@ class RestockDialog(QDialog):
         self.status.setText(
             f"Saved · {request.get('reference')} · {request.get('status_label')} · version {request.get('version')}"
         )
+        self._sync_empty()
 
     def _new(self):
         from backend import restock_requests as restock

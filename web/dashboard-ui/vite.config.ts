@@ -56,6 +56,10 @@ export default defineConfig({
         target: process.env.MBT_API_PROXY || "http://127.0.0.1:5050",
         changeOrigin: true,
       },
+      "/product-images": {
+        target: process.env.MBT_API_PROXY || "http://127.0.0.1:5050",
+        changeOrigin: true,
+      },
     },
   },
 });

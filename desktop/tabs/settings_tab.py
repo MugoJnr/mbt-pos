@@ -538,7 +538,7 @@ class SettingsTab(QWidget):
             ('Default placeholder', self.cv_placeholder),
         ]:
             FormRow(lbl, w, cvf)
-        manage_cats = SecondaryBtn('Manage Category Visuals…', 40)
+        manage_cats = SecondaryBtn('Shop categories', 40)
         manage_cats.clicked.connect(self._open_category_manager)
         cvf.addRow(QLabel(''), manage_cats)
         cv_hint = QLabel(

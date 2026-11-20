@@ -9,12 +9,18 @@ const MEASURED = new Set([
   "cm", "centimetre", "centimeter", "centimetres", "centimeters",
 ]);
 
-export function allowsFraction(_unit: string | undefined | null) {
-  return true;
+const PIECE = new Set([
+  "pcs", "pc", "piece", "pieces", "unit", "units",
+  "item", "items", "each", "ea", "nos", "no",
+]);
+
+export function allowsFraction(unit: string | undefined | null) {
+  return !PIECE.has(String(unit || "").trim().toLowerCase());
 }
 
 export function quantityStep(unit: string | undefined | null, wheel = 0.25) {
   const name = String(unit || "").trim().toLowerCase();
+  if (PIECE.has(name)) return 1;
   if (MEASURED.has(name)) return wheel > 0 ? wheel : 0.25;
   return 0.01;
 }
@@ -31,9 +37,13 @@ export function parseQuantity(
   }
   const quantity = Number(text);
   if (!Number.isFinite(quantity)) return { error: "Enter a valid quantity." };
+  const kept = Math.round(quantity * 10000) / 10000;
+  if (unit && !allowsFraction(unit) && Math.abs(kept - Math.round(kept)) > 1e-9) {
+    return { error: "Quantity must be in whole units." };
+  }
   if (quantity < 0) return { error: "Quantity cannot be negative." };
   if (quantity === 0 && !options?.allowZero) return { error: "Quantity must be greater than zero." };
-  return { quantity: Math.round(quantity * 10000) / 10000 };
+  return { quantity: kept };
 }
 
 export function formatQuantity(value: number) {

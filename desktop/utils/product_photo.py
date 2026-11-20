@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import os
+import secrets
 
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QFileDialog, QFrame, QSizePolicy
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_EDGE = 8000
+DISPLAY_EDGE = 1600
+THUMB_EDGE = 256
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp'}
 
 
 def sniff_image(data: bytes) -> str:
@@ -40,19 +45,206 @@ def image_error(data: bytes) -> str:
     return ''
 
 
-def resolve_product_image(path: str) -> str:
+def unsafe_filename(name: str) -> bool:
+    """True when a client file name could escape the image folder."""
+    raw = str(name or '')
+    if not raw or raw in ('.', '..') or '\x00' in raw or '..' in raw:
+        return True
+    if '/' in raw or '\\' in raw or raw.startswith('.'):
+        return True
+    return os.path.basename(raw) != raw
+
+
+def _clean_name(path: str) -> str:
+    raw = str(path or '').split('?', 1)[0].replace('\\', '/')
+    return os.path.basename(raw)
+
+
+def thumbnail_filename(image_path: str) -> str:
+    """Card file that sits beside the stored photograph."""
+    base = _clean_name(image_path)
+    if not base or unsafe_filename(base):
+        return ''
+    root, ext = os.path.splitext(base)
+    if ext.lower() not in _IMAGE_EXTS:
+        return ''
+    if root.endswith('.thumb'):
+        return base
+    suffix = '.jpg' if ext.lower() == '.jpeg' else ext.lower()
+    return f'{root}.thumb{suffix}'
+
+
+def display_name_for_thumb(thumb_name: str) -> str:
+    base = _clean_name(thumb_name)
+    if '.thumb.' not in base:
+        return ''
+    return base.replace('.thumb.', '.', 1)
+
+
+def _encode(image, edge: int, ext: str) -> bytes:
+    import io
+    from PIL import Image
+    copy = image.copy()
+    resampling = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
+    copy.thumbnail((edge, edge), resampling)
+    if ext == '.png':
+        if copy.mode not in ('RGB', 'RGBA'):
+            copy = copy.convert('RGBA')
+        kind, params = 'PNG', {'optimize': True}
+    elif ext == '.webp':
+        if copy.mode not in ('RGB', 'RGBA'):
+            copy = copy.convert('RGBA')
+        kind, params = 'WEBP', {'quality': 80, 'method': 4}
+    else:
+        if copy.mode != 'RGB':
+            copy = copy.convert('RGB')
+        kind, params = 'JPEG', {'quality': 85, 'optimize': True}
+    buf = io.BytesIO()
+    copy.save(buf, format=kind, **params)
+    return buf.getvalue()
+
+
+def prepare_product_image(data: bytes) -> dict:
+    """Check the bytes are a real picture and build a display copy plus a thumbnail.
+
+    The caller stores those bytes under an app-chosen name. The original upload
+    path is never kept, and the bytes are never executed.
+    """
+    error = image_error(data)
+    if error:
+        return {'error': error}
+    ext = sniff_image(data)
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            width, height = image.size
+            if width < 1 or height < 1 or width > MAX_EDGE or height > MAX_EDGE:
+                return {
+                    'error': 'That photograph is an unusual size. Use a picture under 8000 pixels on each side.',
+                }
+            display = _encode(image, DISPLAY_EDGE, ext)
+            thumb = _encode(image, THUMB_EDGE, ext)
+    except Exception:
+        return {'error': 'That file could not be shown. Use a real JPEG, PNG, or WebP photograph.'}
+    if not display or not thumb:
+        return {'error': 'That file could not be shown. Use a real JPEG, PNG, or WebP photograph.'}
+    return {
+        'ext': ext, 'display': display, 'thumb': thumb,
+        'width': width, 'height': height,
+    }
+
+
+def _product_image_names(folder: str, product_id: int) -> list:
+    prefix = f'product-{int(product_id)}'
+    if not os.path.isdir(folder):
+        return []
+    found = []
+    for name in os.listdir(folder):
+        if name.startswith(prefix + '.') or name.startswith(prefix + '-'):
+            found.append(name)
+    return found
+
+
+def store_image_bytes(folder: str, product_id: int, data: bytes) -> dict:
+    """Write a stable display file and a thumbnail. Old files for this product are removed."""
+    prepared = prepare_product_image(data)
+    if prepared.get('error'):
+        return prepared
+    os.makedirs(folder, exist_ok=True)
+    token = secrets.token_hex(4)
+    filename = f'product-{int(product_id)}-{token}{prepared["ext"]}'
+    thumb = thumbnail_filename(filename)
+    display_path = os.path.join(folder, filename)
+    thumb_path = os.path.join(folder, thumb)
+    try:
+        with open(display_path, 'wb') as handle:
+            handle.write(prepared['display'])
+        with open(thumb_path, 'wb') as handle:
+            handle.write(prepared['thumb'])
+    except OSError:
+        for path in (display_path, thumb_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        return {'error': 'The photograph could not be saved.'}
+    return {
+        'filename': filename,
+        'thumb': thumb,
+        'width': prepared['width'],
+        'height': prepared['height'],
+    }
+
+
+def remove_product_images(folder: str, product_id: int) -> None:
+    for name in _product_image_names(folder, product_id):
+        try:
+            os.remove(os.path.join(folder, name))
+        except OSError:
+            pass
+
+
+def ensure_thumbnail_file(folder: str, thumb_name: str) -> str:
+    """Build a missing thumbnail from the stored photograph. Returns the thumb path or ''."""
+    thumb_name = _clean_name(thumb_name)
+    if not thumb_name or unsafe_filename(thumb_name):
+        return ''
+    thumb_path = os.path.join(folder, thumb_name)
+    if os.path.isfile(thumb_path):
+        return thumb_path
+    source_name = display_name_for_thumb(thumb_name)
+    source = os.path.join(folder, source_name) if source_name else ''
+    if not source or not os.path.isfile(source):
+        return ''
+    try:
+        with open(source, 'rb') as handle:
+            data = handle.read(MAX_IMAGE_BYTES + 1)
+        prepared = prepare_product_image(data)
+    except OSError:
+        return ''
+    if prepared.get('error'):
+        return ''
+    try:
+        with open(thumb_path, 'wb') as handle:
+            handle.write(prepared['thumb'])
+    except OSError:
+        return ''
+    return thumb_path if os.path.isfile(thumb_path) else ''
+
+
+def resolve_product_image(path: str, prefer_thumb: bool = False) -> str:
     """Find a stored product photograph. The database keeps the file name only."""
     raw = (path or '').strip()
     if not raw:
         return ''
-    if os.path.isfile(raw):
-        return raw
-    try:
-        from mbt_paths import get_data_dir
-        candidate = os.path.join(get_data_dir(), 'product-images', os.path.basename(raw))
-    except Exception:
+    base = _clean_name(raw)
+    if unsafe_filename(base):
         return ''
-    return candidate if os.path.isfile(candidate) else ''
+    candidate = raw if os.path.isfile(raw) else ''
+    folder = ''
+    if not candidate:
+        try:
+            from mbt_paths import get_data_dir
+            folder = os.path.join(get_data_dir(), 'product-images')
+            candidate = os.path.join(folder, base)
+        except Exception:
+            return ''
+        if not os.path.isfile(candidate):
+            return ''
+    else:
+        folder = os.path.dirname(candidate)
+    if not prefer_thumb:
+        return candidate
+    thumb_name = thumbnail_filename(base)
+    if not thumb_name:
+        return candidate
+    thumb_path = os.path.join(folder, thumb_name)
+    if os.path.isfile(thumb_path):
+        return thumb_path
+    built = ensure_thumbnail_file(folder, thumb_name)
+    return built or candidate
 
 
 class ProductPhotoTile(QFrame):
@@ -68,7 +260,7 @@ class ProductPhotoTile(QFrame):
         self._source = ''
         self._cleared = False
         self._pix = QPixmap()
-        existing = resolve_product_image(image_path)
+        existing = resolve_product_image(image_path, prefer_thumb=self._size <= 64)
         if existing:
             self._pix = QPixmap(existing)
         self._refresh_tip()

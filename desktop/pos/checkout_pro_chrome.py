@@ -988,20 +988,23 @@ class CategoryChipBar(QWidget):
         for name in labels:
             try:
                 fm = self.fontMetrics()
-                elide_px = 96 if avail < 320 else (110 if avail < 420 else (120 if len(name) > 10 else 132))
-                text = fm.elidedText(name, Qt.ElideRight, elide_px)
-                chip_w = min(elide_px + 20, max(56, fm.horizontalAdvance(text) + 28))
+                natural = fm.horizontalAdvance(name) + 36
+                if natural > 176:
+                    text = fm.elidedText(name, Qt.ElideRight, 148)
+                    chip_w = fm.horizontalAdvance(text) + 36
+                else:
+                    text = name
+                    chip_w = max(52, natural)
             except Exception:
                 text = name
                 chip_w = 88
             need = chip_w + (spacing if shown else 0)
-            if shown and used + need > budget and len(shown) >= 2:
+            # Keep every name whole. A chip that does not fit moves to More
+            # instead of being clipped to "Be".
+            if shown and used + need > budget:
                 break
             shown.append((name, text, chip_w))
             used += need
-            cap = 2 if avail < 300 else (3 if avail < 420 else 4)
-            if len(shown) >= cap:
-                break
         insert_at = 0
         for name, text, chip_w in shown:
             b = QPushButton()
@@ -1012,6 +1015,7 @@ class CategoryChipBar(QWidget):
             b.setToolTip(name)
             b.setText(text)
             b.setFixedWidth(chip_w)
+            b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             b.clicked.connect(lambda _=False, n=name: self.select(n, emit=True))
             self._flow.insertWidget(insert_at, b, 0)
             insert_at += 1
@@ -1032,10 +1036,9 @@ class CategoryChipBar(QWidget):
             b.clicked.connect(lambda _=False, n=self._selected: self.select(n, emit=True))
             self._flow.insertWidget(insert_at, b, 0)
             self._chips[self._selected] = b
-        # Keep More on the right with a gap, not overlapping chips.
-        # Packed mode sits in the one-line catalog bar, so a stretch would eat the search field.
-        if not getattr(self, '_packed', False):
-            self._flow.insertStretch(max(0, self._flow.count() - 1), 1)
+        # Names stay together on the left. Spare width stays after More,
+        # so the row does not crush the pills or scatter them.
+        self._flow.addStretch(1)
         overflow = max(0, len(labels) - len(shown))
         self._view_all.setVisible(True)
         if overflow:
@@ -1049,15 +1052,9 @@ class CategoryChipBar(QWidget):
             self._selected in self._chips or self._selected == 'All') else 'All'
         self.select(keep, emit=False)
         self.refresh_theme()
-        if getattr(self, '_packed', False):
-            used = 8
-            for i in range(self._flow.count()):
-                item = self._flow.itemAt(i)
-                widget = item.widget() if item is not None else None
-                if widget is not None and not widget.isHidden():
-                    used += int(widget.width() or widget.sizeHint().width() or 0) + 10
-            self.setFixedWidth(max(160, used))
-            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(16777215)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def select(self, name: str, emit=True):
         name = name or 'All'
@@ -1093,13 +1090,13 @@ class CategoryChipBar(QWidget):
             if on:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['gold']};color:#1A1A1A;"
-                    f"border:none;border-radius:{self.CHIP_PILL_H // 2}px;padding:0 12px;margin:0;"
+                    f"border:none;border-radius:{self.CHIP_PILL_H // 2}px;padding:0 8px;margin:0;"
                     f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:800;}}")
             else:
                 b.setStyleSheet(
                     f"QPushButton#posCatChip{{background:{C['card2']};color:{C['text2']};"
-                    f"border:1px solid {C['border']};border-radius:{self.CHIP_PILL_H // 2}px;padding:0 12px;margin:0;"
+                    f"border:1px solid {C['border']};border-radius:{self.CHIP_PILL_H // 2}px;padding:0 8px;margin:0;"
                     f"min-height:{self.CHIP_PILL_H}px;max-height:{self.CHIP_PILL_H}px;"
                     f"font-size:11px;font-weight:700;}}"
                     f"QPushButton#posCatChip:hover{{border-color:{C['gold']};color:{C['text']};}}")

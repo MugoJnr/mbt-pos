@@ -133,7 +133,7 @@ function ConsumptionPage() {
   const available = Number(product?.stock || 0);
   const unitCost = Number(product?.cost_price || 0);
 
-  function addLine(chosen?: any) {
+  async function addLine(chosen?: any) {
     setError("");
     const picked = chosen && typeof chosen.id !== "undefined" && chosen.name ? chosen : product;
     const parsed = parseQuantity(qty, String(picked?.unit || ""));
@@ -143,7 +143,20 @@ function ConsumptionPage() {
     }
     const amount = parsed.quantity;
     const pickedStock = Number(picked.stock || 0);
-    const pickedCost = Number(picked.cost_price || 0);
+    let pickedCost = Number(picked.cost_price || 0);
+    if (canSeeCost) {
+      try {
+        const quote = await GET<{ unit_cost?: number | null; covered?: number; error?: string }>(
+          `/products/${picked.id}/cost-quote`,
+          { qty: String(amount) },
+        );
+        if (quote && !quote.error && quote.unit_cost != null && Number(quote.covered || 0) > 0) {
+          pickedCost = Number(quote.unit_cost);
+        }
+      } catch {
+        /* The card price stays as the preview when the quote cannot be read. */
+      }
+    }
     if (amount > pickedStock) return setError(`Only ${pickedStock} available for ${picked.name}.`);
     if (lines.some((line) => line.id === Number(picked.id))) {
       return setError("That product is already on this consumption.");
@@ -457,7 +470,7 @@ function ConsumptionPage() {
         </div>
         <p className="mt-3 text-sm text-text2">
           {product
-            ? `${product.name} · ${available} ${product.unit || "pcs"} available${canSeeCost ? ` · estimated ${KES(unitCost * (Number(qty) || 0))} from purchase cost` : ""}`
+            ? `${product.name} · ${available} ${product.unit || "pcs"} available${canSeeCost ? ` · card price ${KES(unitCost)} each. The saved cost uses the oldest batches.` : ""}`
             : "Select a product, enter a quantity, then add it. Earlier lines stay on the list."}
         </p>
         <div className="mt-3">

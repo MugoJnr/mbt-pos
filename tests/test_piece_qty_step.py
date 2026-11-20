@@ -22,6 +22,18 @@ class PieceQuantityTests(unittest.TestCase):
         self.assertEqual(round(1 + qty_step_for_unit("pcs"), 2), 2)
         self.assertEqual(round(1 + qty_step_for_unit("kg"), 2), 1.25)
 
+    def test_piece_fractions_are_refused_and_kilograms_stay_exact(self):
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        for raw in ("0.25", "0.5", "0.75", "1.25", "2.50"):
+            self.assertEqual(parse_quantity(raw, "kg"), float(raw))
+        for raw in ("0.5", "1.25"):
+            with self.assertRaises(QuantityError) as refused:
+                parse_quantity(raw, "pcs")
+            self.assertIn("whole", str(refused.exception).lower())
+            self.assertNotEqual(str(refused.exception), "1")
+        self.assertEqual(parse_quantity("2", "pcs"), 2.0)
+        self.assertEqual(parse_quantity("2.0", "piece"), 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

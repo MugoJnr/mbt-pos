@@ -466,6 +466,9 @@ class DashboardTab(QWidget):
             ('debt',      'Debt',      'info', 'debt'),
         ]
         from desktop.utils.security import dashboard_locked_to_today as _qa_locked, has_permission as _qa_can
+        from roles import visible_tabs
+        shown = set(visible_tabs((self.user or {}).get('role'), (self.user or {}).get('tab_permissions')))
+        actions = [row for row in actions if row[3] in shown]
         actions = [row for row in actions if row[3] != 'sales' or _qa_can(self.user, 'sales.create')]
         if not _qa_locked(self.user):
             actions.append(('reports', 'Reports', 'warn', 'reports'))

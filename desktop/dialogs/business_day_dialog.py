@@ -32,6 +32,8 @@ class BusinessDaySalesDialog(QDialog):
         self.selected_sale_id = None
         self.copy_items = []  # list of cart line dicts
         self.copy_mode = self.RESULT_NONE
+        self.on_lines = None
+        self._added_ids = set()
         self.setWindowTitle(f'Sales — {self.day}')
         self.setMinimumSize(780, 480)
         apply_themed_dialog(self)
@@ -80,22 +82,32 @@ class BusinessDaySalesDialog(QDialog):
         row = QHBoxLayout()
         self._view_btn = SecondaryBtn('View / Adjust', 36)
         self._view_btn.clicked.connect(self._view_selected)
-        self._copy_btn = PrimaryBtn('Copy Sale → Cart', 36)
+        self._copy_btn = PrimaryBtn('Add this sale', 36)
         self._copy_btn.setToolTip(
-            'Copy line items (product, qty, price, discount) into the POS cart')
-        self._copy_btn.clicked.connect(self._copy_selected)
-        self._copy_day_btn = SecondaryBtn('Copy Day Totals → Cart', 36)
+            'Put this receipt’s lines into the cart. You can change quantity, '
+            'price and discount, then add another receipt as well.')
+        self._copy_btn.clicked.connect(lambda: self._copy_selected(replace=False))
+        self._replace_btn = SecondaryBtn('Replace cart', 36)
+        self._replace_btn.setToolTip('Clear the cart and use only this receipt’s lines')
+        self._replace_btn.clicked.connect(lambda: self._copy_selected(replace=True))
+        self._copy_day_btn = SecondaryBtn('Add every sale this day', 36)
         self._copy_day_btn.setToolTip(
-            'Merge all completed sales lines from this day into the cart')
+            'Add each completed sale from this day. Lines already copied are not added twice.')
         self._copy_day_btn.clicked.connect(self._copy_day)
         close_btn = SecondaryBtn('Close', 36)
         close_btn.clicked.connect(self.reject)
         row.addWidget(self._view_btn)
         row.addWidget(self._copy_btn)
+        row.addWidget(self._replace_btn)
         row.addWidget(self._copy_day_btn)
         row.addStretch()
         row.addWidget(close_btn)
         lay.addLayout(row)
+        self._added = QLabel('Pick a receipt. Added lines stay in the cart, where you can edit them.')
+        self._added.setWordWrap(True)
+        self._added.setStyleSheet(
+            f"color:{C['muted']};font-size:12px;background:transparent;")
+        lay.addWidget(self._added)
 
     def _reload(self):
         sales = []
@@ -160,75 +172,83 @@ class BusinessDaySalesDialog(QDialog):
             self._reload()
 
     def _lines_from_sale(self, sale: dict) -> list:
-        out = []
-        for it in sale.get('items') or []:
-            qty = float(it.get('quantity') or 0)
-            if qty <= 0:
-                continue
-            unit = float(it.get('unit_price') or 0)
-            disc = float(it.get('discount') or 0)
-            total = float(it.get('total') or max(0.0, qty * unit - disc))
-            out.append({
-                'product_id': it.get('product_id'),
-                'product_name': it.get('product_name') or '',
-                'sku': it.get('sku') or '',
-                'quantity': qty,
-                'unit_price': unit,
-                'discount': disc,
-                'total': total,
-            })
-        return out
+        from desktop.utils.copy_sale import copied_cart_lines
+        return copied_cart_lines(sale.get('items') or [])
 
-    def _copy_selected(self):
+    def _deliver(self, items, *, sale_id, copy_day, replace, customer_id, receipt):
+        self.selected_sale_id = sale_id
+        self.copy_items = items
+        self.copy_mode = self.RESULT_COPY_DAY if copy_day else self.RESULT_COPY
+        if callable(self.on_lines):
+            self.on_lines(items, {
+                'sale_id': sale_id,
+                'copy_day': copy_day,
+                'replace': replace,
+                'customer_id': customer_id,
+                'receipt': receipt or '',
+            })
+            if sale_id:
+                self._added_ids.add(int(sale_id))
+            label = receipt or (f'sale #{sale_id}' if sale_id else 'those sales')
+            self._added.setText(
+                f'Added {label}. Change the quantity, price or discount in the cart, '
+                'or pick another receipt.')
+            return
+        self.accept()
+
+    def _copy_selected(self, replace=False):
         sid = self._selected_sale_id()
         if not sid:
             soft_warn(self, 'Choose a sale to copy.')
             return
         sale = self.api.get_sale(sid) or {}
+        status = (sale.get('status') or 'completed').lower()
+        if status not in ('completed', ''):
+            soft_warn(self, 'Only a completed sale can be copied.')
+            return
         items = self._lines_from_sale(sale)
         if not items:
             soft_warn(self, 'That sale has no line items to copy.')
             return
-        self.selected_sale_id = sid
-        self.copy_items = items
-        self.copy_mode = self.RESULT_COPY
-        self.accept()
+        self._deliver(
+            items, sale_id=sid, copy_day=False, replace=bool(replace),
+            customer_id=sale.get('customer_id'),
+            receipt=sale.get('receipt_number') or '',
+        )
 
     def _copy_day(self):
         items = []
+        added = []
         for s in self._rows or []:
-            status = (s.get('status') or '').lower()
-            if status not in ('completed', 'return', ''):
+            status = (s.get('status') or 'completed').lower()
+            if status not in ('completed', ''):
                 continue
             sid = s.get('id')
-            if not sid:
+            if not sid or int(sid) in self._added_ids:
                 continue
             sale = self.api.get_sale(int(sid)) or {}
-            items.extend(self._lines_from_sale(sale))
+            if (sale.get('status') or 'completed').lower() not in ('completed', ''):
+                continue
+            lines = self._lines_from_sale(sale)
+            if not lines:
+                continue
+            items.extend(lines)
+            added.append(int(sid))
         if not items:
-            info_toast(self, 'No completed sale lines on this business day.')
+            info_toast(self, 'No further completed sales to add from this day.')
             return
-        # Merge identical product lines (same product_id + unit_price)
-        merged = {}
-        for it in items:
-            key = (it.get('product_id'), round(float(it.get('unit_price') or 0), 4))
-            if key not in merged:
-                merged[key] = dict(it)
-            else:
-                m = merged[key]
-                m['quantity'] = round(float(m['quantity']) + float(it['quantity']), 2)
-                m['discount'] = round(float(m['discount']) + float(it['discount']), 2)
-                m['total'] = round(float(m['total']) + float(it['total']), 2)
-        self.copy_items = list(merged.values())
-        self.selected_sale_id = None
-        self.copy_mode = self.RESULT_COPY_DAY
-        self.accept()
+        self._deliver(
+            items, sale_id=None, copy_day=True, replace=False,
+            customer_id=None, receipt=f'{len(added)} sales',
+        )
+        self._added_ids.update(added)
 
 
-def open_business_day_sales(api, parent, *, day=None, currency='KES', user=None):
+def open_business_day_sales(api, parent, *, day=None, currency='KES', user=None, on_lines=None):
     """Show dialog; returns (mode, items, sale_id) or (0, [], None)."""
     dlg = BusinessDaySalesDialog(
         parent, api, day=day, currency=currency, user=user)
+    dlg.on_lines = on_lines
     if dlg.exec_() != QDialog.Accepted:
         return BusinessDaySalesDialog.RESULT_NONE, [], None
     return dlg.copy_mode, dlg.copy_items, dlg.selected_sale_id

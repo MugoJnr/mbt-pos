@@ -3,11 +3,18 @@ import { useState } from "react";
 
 const SIZES = { sm: "h-10 w-10", md: "h-16 w-16", lg: "h-24 w-24" };
 
-export function productPhotoSrc(path?: string | null): string {
-  const name = String(path || "").split(/[/\\]/).pop() || "";
-  if (!name || name.includes("..")) return "";
-  const base = name.split("?")[0];
-  return base ? `/product-images/${base}` : "";
+export function productPhotoSrc(path?: string | null, variant: "full" | "thumb" = "full"): string {
+  const raw = String(path || "");
+  const [namePart, query] = raw.split("?");
+  const name = namePart.split(/[/\\]/).pop() || "";
+  if (!name || name.includes("..") || name.includes("/") || name.includes("\\")) return "";
+  let file = name;
+  if (variant === "thumb" && !name.includes(".thumb.")) {
+    const dot = name.lastIndexOf(".");
+    file = dot > 0 ? `${name.slice(0, dot)}.thumb${name.slice(dot)}` : "";
+  }
+  if (!file) return "";
+  return `/product-images/${file}${query ? `?${query}` : ""}`;
 }
 
 export function ProductPhoto({
@@ -28,7 +35,9 @@ export function ProductPhoto({
   busy?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const photo = failed ? "" : (preview || productPhotoSrc(src));
+  const [useFull, setUseFull] = useState(false);
+  const variant = size === "lg" || useFull ? "full" : "thumb";
+  const photo = failed ? "" : (preview || productPhotoSrc(src, variant));
   const label = photo ? "Change photograph" : "Add photograph";
   const tile = (
     <span
@@ -39,7 +48,10 @@ export function ProductPhoto({
           src={photo}
           alt=""
           className="h-full w-full object-cover"
-          onError={() => setFailed(true)}
+          onError={() => {
+            if (variant === "thumb") setUseFull(true);
+            else setFailed(true);
+          }}
         />
       ) : (
         <ImagePlus className="h-5 w-5" aria-hidden="true" />

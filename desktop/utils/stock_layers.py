@@ -247,6 +247,38 @@ def consume_available_cost(db, product_id: int, qty: float, sale_id=None, refere
     }
 
 
+def quote_available_cost(db, product_id: int, qty: float) -> dict:
+    """Read the FIFO cost of a quantity. Does not write a layer or a use."""
+    ensure_cost_layers(db)
+    need = round(float(qty), 4)
+    if need <= 0:
+        return {'error': 'Quantity must be greater than zero', 'cogs': 0, 'covered': 0, 'uncosted': 0, 'unit_cost': None}
+    left = need
+    cogs = 0.0
+    covered = 0.0
+    rows = db.execute(
+        "SELECT remaining_qty, unit_cost FROM cost_layers "
+        "WHERE product_id=? AND remaining_qty>0 ORDER BY created_at, id",
+        (int(product_id),),
+    ).fetchall()
+    for row in rows:
+        if left <= 0.0001:
+            break
+        take = round(min(left, float(row[0] or 0)), 4)
+        if take <= 0:
+            continue
+        cogs = round(cogs + take * float(row[1] or 0), 4)
+        covered = round(covered + take, 4)
+        left = round(left - take, 4)
+    unit = round(cogs / covered, 4) if covered > 0 else None
+    return {
+        'cogs': cogs,
+        'covered': covered,
+        'uncosted': round(max(left, 0), 4),
+        'unit_cost': unit,
+    }
+
+
 def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
     """Record the FIFO cost that exists. Missing coverage stays unknown."""
     return consume_available_cost(

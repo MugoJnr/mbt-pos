@@ -651,10 +651,10 @@ class SearchToolbar(QFrame):
 
 
 class CatalogBar(QFrame):
-    """Date, search, layout and categories on one line when the till is wide enough.
+    """Date, search and layout on one line. Categories sit on the next line, full width.
 
-    The product grid stays in the column below this bar, so the cards are not
-    pushed down by a stack of full-width toolbars.
+    Category names stay whole. They are not packed into the gap beside search.
+    The product grid starts immediately under that category line.
     """
 
     def __init__(self, parent=None):
@@ -721,23 +721,16 @@ class CatalogBar(QFrame):
         search_min = 200
         layout_w = 156
         reserved = biz_w + search_min + layout_w + extra_w + 32
-        chip_budget = max(0, w - reserved) if w >= 80 else 420
+        # Categories take the full width of their own row. Packing them into
+        # the leftover gap beside search crushed "Beauty" down to "Be".
         if chips is not None and hasattr(chips, 'pack_to'):
             self._applying = True
             try:
-                chips.pack_to(chip_budget if chip_budget >= 220 else 360)
+                chips.pack_to(max(320, w - 16) if w >= 80 else 640)
             finally:
                 self._applying = False
-            chip_w = max(180, int(chips.width() or 220))
-        else:
-            chip_w = 280
-        one_need = reserved + chip_w
-        if w < 80 or one_need <= w + 80:
-            mode = 'one'
-        elif w >= 900:
-            mode = 'chips'
-        else:
-            mode = 'stack'
+        controls_need = biz_w + search_min + layout_w + extra_w + 24
+        mode = 'bar' if (w < 80 or controls_need <= w) else 'stack'
         if not force and mode == self._mode:
             return
         self._applying = True
@@ -760,19 +753,19 @@ class CatalogBar(QFrame):
                             'padding:6px 10px', 'padding:2px 8px'))
             if category is not None:
                 category.hide()
+            if chips is not None:
+                chips.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             row_h = 40
-            if mode == 'one':
-                self._place(0, biz, search, layout, chips, *extras)
-                self.setFixedHeight(row_h + 8)
-            elif mode == 'chips':
+            chip_h = 36
+            if mode == 'bar':
                 self._place(0, biz, search, layout, *extras)
                 self._place(1, chips)
-                self.setFixedHeight(row_h * 2 + 12)
+                self.setFixedHeight(row_h + chip_h + 8)
             else:
                 self._place(0, biz)
                 self._place(1, search, layout, *extras)
                 self._place(2, chips)
-                self.setFixedHeight(row_h * 3 + 16)
+                self.setFixedHeight(row_h * 2 + chip_h + 12)
             self.updateGeometry()
             parent = self.parentWidget()
             if parent is not None and parent.layout() is not None:
@@ -782,12 +775,14 @@ class CatalogBar(QFrame):
 
     def _place(self, index: int, *widgets) -> None:
         row = self._rows[index]
-        search = self._pieces[1] if self._pieces else None
+        search = self._pieces[1] if len(self._pieces) > 1 else None
+        chips = self._pieces[6] if len(self._pieces) > 6 else None
         for widget in widgets:
             if widget is None:
                 continue
             widget.show()
-            row.addWidget(widget, 1 if widget is search else 0, Qt.AlignVCenter)
+            fill = widget is search or widget is chips
+            row.addWidget(widget, 1 if fill else 0, Qt.AlignVCenter)
 
 
 def build_shared_panels(tab) -> None:
@@ -850,7 +845,9 @@ def build_shared_panels(tab) -> None:
     tab._biz_view_btn.setToolTip('View / adjust / copy sales for the selected business day')
     tab._biz_view_btn.clicked.connect(tab._open_business_day_sales)
     tab._biz_copy_btn = SecondaryBtn('Copy sale…', 32)
-    tab._biz_copy_btn.setToolTip('Copy a past sale’s lines into the cart for this business day')
+    tab._biz_copy_btn.setToolTip(
+        'Copy one or more receipts from this business day into the cart. '
+        'Each line keeps its quantity, price and discount, and you can change them.')
     tab._biz_copy_btn.clicked.connect(tab._open_business_day_sales)
     tab._biz_warn = QLabel('')
     tab._biz_warn.setObjectName('posBizDayWarn')

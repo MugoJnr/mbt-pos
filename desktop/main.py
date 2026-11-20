@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-19-v3.1.89"
-APP_VERSION   = "3.1.89"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-20-v3.1.90"
+APP_VERSION   = "3.1.90"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -183,7 +183,7 @@ class LoginDialog(QDialog):
         self.user_data = None
         self.setWindowTitle("MBT POS")
         self.setWindowIcon(icon)
-        self.setFixedSize(460, 580)
+        self.setFixedSize(460, 630)
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         # Inherit live QApplication ThemeManager sheet ? do NOT freeze a copy
         # (stale DARK QSS on the dialog caused light-mode hybrid on login).
@@ -321,6 +321,16 @@ class LoginDialog(QDialog):
             f" border:none; font-size:12px; font-weight:600; padding:6px; }}"
             f"QPushButton#loginForgotBtn:hover {{ color:{C['gold']}; text-decoration:underline; }}")
         fl.addWidget(self._forgot_btn, 0, Qt.AlignCenter)
+
+        self._recovery_btn = QPushButton("Developer emergency recovery")
+        self._recovery_btn.setObjectName("loginRecoveryBtn")
+        self._recovery_btn.setCursor(Qt.PointingHandCursor)
+        self._recovery_btn.clicked.connect(self._developer_emergency_recovery)
+        self._recovery_btn.setStyleSheet(
+            f"QPushButton#loginRecoveryBtn {{ background:transparent; color:{C['text2']};"
+            f" border:none; font-size:12px; font-weight:600; padding:4px; }}"
+            f"QPushButton#loginRecoveryBtn:hover {{ color:{C['gold']}; text-decoration:underline; }}")
+        fl.addWidget(self._recovery_btn, 0, Qt.AlignCenter)
 
         fl.addStretch()
         fl.addWidget(foot)
@@ -628,6 +638,150 @@ class LoginDialog(QDialog):
         btn_box.addWidget(submit_btn)
         layout.addLayout(btn_box)
 
+        dlg.exec_()
+
+    def _developer_emergency_recovery(self):
+        """Offline Super Admin reset. The portal only issued the code."""
+        dlg = QDialog(self)
+        dlg.setObjectName("developerRecoveryDialog")
+        dlg.setWindowTitle("Developer Emergency Recovery")
+        dlg.setMinimumWidth(480)
+        from desktop.utils.theme import apply_themed_dialog
+        apply_themed_dialog(dlg)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(10)
+
+        title = QLabel("Developer Emergency Recovery")
+        title.setStyleSheet(f"color:{C['gold']}; font-size:16px; font-weight:700;")
+        layout.addWidget(title)
+
+        ctx = {}
+        try:
+            ctx = self.api.developer_recovery_context() or {}
+        except Exception:
+            ctx = {'error': 'This computer could not show its shop identity.'}
+
+        desc = QLabel(ctx.get('explanation') or (
+            "A MugoByte developer issues a one-time code for this shop and this computer. "
+            "The portal does not change the password. This till checks the code here, "
+            "with no network, then sets a new Super Admin password."
+        ))
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
+        layout.addWidget(desc)
+
+        admins = ctx.get('superadmins') if isinstance(ctx.get('superadmins'), list) else []
+        active = [row for row in admins if row.get('active', True) and row.get('username')]
+        admin_text = ', '.join(
+            f"{row.get('full_name') or row.get('username')} ({row.get('username')})"
+            for row in active
+        ) or 'No active Super Admin'
+
+        facts = QLabel(
+            f"Shop: {ctx.get('shop_name') or '—'}\n"
+            f"Shop id: {ctx.get('shop_id') or '—'}\n"
+            f"Device: {ctx.get('device_id') or '—'}\n"
+            f"Licence: {ctx.get('licence_state') or '—'}\n"
+            f"Super Admin: {admin_text}"
+        )
+        facts.setObjectName("developerRecoveryFacts")
+        facts.setWordWrap(True)
+        facts.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        facts.setStyleSheet(
+            f"color:{C['text']}; background:{C['card']}; border:1px solid {C['border2']};"
+            f" border-radius:10px; padding:10px; font-size:12px;"
+        )
+        layout.addWidget(facts)
+        if ctx.get('error'):
+            err_lbl = QLabel(str(ctx.get('error')))
+            err_lbl.setWordWrap(True)
+            err_lbl.setStyleSheet(f"color:{C['err']}; font-size:12px; font-weight:600;")
+            layout.addWidget(err_lbl)
+
+        field_ss = (
+            f"QLineEdit, QPlainTextEdit {{"
+            f" background:{C['input']}; color:{C['text']};"
+            f" border:1.5px solid {C['border2']}; border-radius:10px;"
+            f" padding:8px 12px; font-size:13px; }}"
+            f"QLineEdit:focus, QPlainTextEdit:focus {{ border-color:{C['gold']}; }}"
+        )
+        token_hint = QLabel("Type the 12-character code. Dashes and spaces are optional.")
+        token_hint.setStyleSheet(f"color:{C['text2']}; font-size:11px;")
+        layout.addWidget(token_hint)
+        token_input = QLineEdit()
+        token_input.setObjectName("developerRecoveryToken")
+        token_input.setPlaceholderText("K7NP-4RWM-9QHD")
+        token_input.setMaxLength(20)
+        token_input.setAlignment(Qt.AlignCenter)
+        token_input.setMinimumHeight(44)
+        token_input.setStyleSheet(
+            field_ss + "QLineEdit { font-family: Consolas, monospace; font-size: 20px; letter-spacing: 2px; }"
+        )
+        layout.addWidget(token_input)
+
+        new_pw = QLineEdit()
+        new_pw.setObjectName("developerRecoveryPassword")
+        new_pw.setPlaceholderText("New Super Admin password")
+        new_pw.setEchoMode(QLineEdit.Password)
+        new_pw.setMinimumHeight(40)
+        new_pw.setStyleSheet(field_ss)
+        layout.addWidget(new_pw)
+
+        confirm_pw = QLineEdit()
+        confirm_pw.setObjectName("developerRecoveryConfirm")
+        confirm_pw.setPlaceholderText("Confirm new password")
+        confirm_pw.setEchoMode(QLineEdit.Password)
+        confirm_pw.setMinimumHeight(40)
+        confirm_pw.setStyleSheet(field_ss)
+        layout.addWidget(confirm_pw)
+
+        err_lbl = QLabel("")
+        err_lbl.setObjectName("developerRecoveryError")
+        err_lbl.setWordWrap(True)
+        err_lbl.setStyleSheet(f"color:{C['err']}; font-size:12px; font-weight:600;")
+        err_lbl.hide()
+        layout.addWidget(err_lbl)
+
+        buttons = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setMinimumHeight(40)
+        cancel_btn.clicked.connect(dlg.reject)
+        submit_btn = QPushButton("SET SUPER ADMIN PASSWORD")
+        submit_btn.setObjectName("developerRecoverySubmit")
+        submit_btn.setMinimumHeight(40)
+        gold_fg = C.get('gold_fg', '#0A0F1A')
+        submit_btn.setStyleSheet(
+            f"QPushButton {{ background:{C['gold']}; color:{gold_fg}; border:none;"
+            f" border-radius:10px; font-size:12px; font-weight:800; padding:8px 14px; }}"
+        )
+
+        def _apply():
+            token = token_input.text()
+            result = self.api.developer_emergency_recover(
+                token, new_pw.text(), confirm_pw.text(),
+            ) or {}
+            if result.get('success'):
+                token_input.clear()
+                QMessageBox.information(
+                    dlg,
+                    "Password updated",
+                    f"The Super Admin password for '{result.get('username')}' was updated.\n"
+                    "Sign in with the new password. The old password was not shown.",
+                )
+                if result.get('username'):
+                    self._u.setText(result.get('username'))
+                self._set_msg("Super Admin password updated. Sign in with the new password.")
+                dlg.accept()
+                return
+            err_lbl.setText(result.get('error') or "Recovery failed.")
+            err_lbl.show()
+
+        submit_btn.clicked.connect(_apply)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(submit_btn)
+        layout.addLayout(buttons)
         dlg.exec_()
 
     def _set_msg(self, txt, err=False):
@@ -1744,6 +1898,8 @@ class MainWindow(QMainWindow):
         self._nav = {}
         perms = self.user_data.get('user', {}).get('tab_permissions', [])
         role  = self.user_data.get('user', {}).get('role', '')
+        from roles import visible_tabs
+        shown = set(visible_tabs(role, perms))
         # Painted vector icons (no emoji / ASCII glyph placeholders)
         from desktop.utils.nav_icons import nav_icon
         from PyQt5.QtCore import QSize
@@ -1781,16 +1937,17 @@ class MainWindow(QMainWindow):
         nv.setContentsMargins(0, 6, 0, 6)
         nv.setSpacing(2)
         for tid, lbl in tabs:
-            if tid == 'license' and role != 'superadmin':
-                continue
-            if tid == 'security' and role != 'superadmin':
-                from desktop.utils.security import has_permission
-                if not has_permission({'role': role}, 'audit.view'):
+            if tid == 'license':
+                if role != 'superadmin':
                     continue
-            # AI Operations: manager / admin / superadmin (even if legacy tab_permissions omit it)
-            if tid == 'ai_ops' and role not in ('manager', 'admin', 'superadmin'):
-                continue
-            if tid != 'ai_ops' and role != 'admin' and role != 'superadmin' and tid not in perms:
+            elif tid == 'security':
+                # Security cannot be assigned below Super Admin. Shop managers
+                # who may read the audit trail still reach it through that permission.
+                if role != 'superadmin':
+                    from desktop.utils.security import has_permission
+                    if not has_permission(self.user_data.get('user') or {'role': role}, 'audit.view'):
+                        continue
+            elif tid not in shown:
                 continue
             btn = QPushButton(f"  {lbl}")
             btn.setObjectName("navBtn")
@@ -2248,6 +2405,8 @@ class MainWindow(QMainWindow):
     }
 
     def _goto(self, tid: str):
+        if tid not in getattr(self, '_nav', {}):
+            return
         prev = getattr(self, '_active_tab_id', None)
         if prev == 'settings' and tid != 'settings':
             settings = (getattr(self, '_tabs', {}) or {}).get('settings')

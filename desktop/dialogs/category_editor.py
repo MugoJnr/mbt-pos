@@ -37,7 +37,7 @@ class CategoryEditorDialog(QDialog):
 
         form = QFormLayout()
         form.setSpacing(10)
-        self.name = Field('e.g. Grocery, Pharmacy…')
+        self.name = Field('Name used in this shop')
         self.name.setMinimumHeight(40)
         self.name.textChanged.connect(self._on_name_changed)
         form.addRow('Name *', self.name)
@@ -266,13 +266,16 @@ class CategoryEditorDialog(QDialog):
         if self.api:
             try:
                 if payload.get('id'):
-                    self.api.update_category(payload['id'], payload)
+                    saved = self.api.update_category(payload['id'], payload)
                 else:
-                    created = self.api.create_category(payload)
-                    self._result = created if isinstance(created, dict) else payload
+                    saved = self.api.create_category(payload)
             except Exception as e:
                 QMessageBox.warning(self, 'Save', str(e))
                 return
+            if isinstance(saved, dict) and saved.get('error'):
+                QMessageBox.warning(self, 'Category', str(saved.get('error')))
+                return
+            self._result = saved if isinstance(saved, dict) else payload
         self.accept()
 
     def result_data(self) -> dict:

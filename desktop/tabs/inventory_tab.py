@@ -41,6 +41,14 @@ def _safe_float(v, default=0.0):
         return default
 
 
+def _issue_since_label(raw):
+    """Show a full minute, not an elided year-month stub."""
+    text = str(raw or '').strip().replace('T', ' ')
+    if len(text) >= 16 and text[4:5] == '-' and text[7:8] == '-':
+        return text[:16]
+    return text
+
+
 def _fmt_stock(v, unit=None):
     """Display stock to the stored precision, without trailing zeros."""
     text = f"{_safe_float(v, 0):.4f}".rstrip('0').rstrip('.')
@@ -58,6 +66,121 @@ def _stock_item(label, tone, tooltip=''):
     return item
 
 
+class _ElideLabel(QLabel):
+    """Single-line label. The full text stays in the tooltip.
+
+    ``cap`` limits how much width a warning badge may claim so the product
+    name keeps the cell. A cap of 0 means the label prefers its own text.
+    """
+
+    def __init__(self, text, parent=None, cap=0):
+        super().__init__(parent)
+        self._full = text or ''
+        self._cap = int(cap or 0)
+        self.setToolTip(self._full)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setText(self._full)
+
+    def _height(self):
+        return max(18, self.fontMetrics().height())
+
+    def _text_width(self):
+        return self.fontMetrics().horizontalAdvance(self._full) + 4
+
+    def minimumSizeHint(self):
+        if self._cap:
+            return QSize(min(56, self._text_width()), self._height())
+        return QSize(min(96, self._text_width()), self._height())
+
+    def sizeHint(self):
+        width = self._text_width()
+        if self._cap:
+            width = min(width, self._cap)
+        return QSize(width, self._height())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        width = max(0, self.contentsRect().width())
+        elided = self.fontMetrics().elidedText(self._full, Qt.ElideRight, width)
+        if self.text() != elided:
+            self.setText(elided)
+
+
+class _FlowLayout(QLayout):
+    """Wrap toolbar buttons so they cannot force the inventory page wider than the window."""
+
+    def __init__(self, parent=None, spacing=10):
+        super().__init__(parent)
+        self._items = []
+        self.setSpacing(spacing)
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x = rect.x()
+        y = rect.y()
+        line_height = 0
+        spacing = self.spacing()
+        for item in self._items:
+            hint = item.sizeHint()
+            next_x = x + hint.width() + spacing
+            if next_x - spacing > rect.right() and line_height > 0:
+                x = rect.x()
+                y = y + line_height + spacing
+                next_x = x + hint.width() + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y()
+
+
+# Floors stay readable. Caps stop one long SKU or category from pushing Actions off-screen.
+_COL_FLOOR = {0: 168, 1: 96, 2: 112, 3: 156, 4: 156, 5: 76, 6: 64, 7: 204}
+_COL_CAP = {1: 168, 2: 188, 3: 220, 4: 220, 5: 120, 6: 96, 7: 220}
+
+
 class InventoryTab(QWidget):
     def __init__(self, api, user, db_path, config_getter):
         super().__init__()
@@ -70,7 +193,10 @@ class InventoryTab(QWidget):
         return (self.user.get('user') or self.user).get('role', 'cashier')
 
     def _build(self):
-        lay, _ = page_layout(self)  # 20/18 rhythm
+        lay, self._page_scroll = page_layout(self)  # 20/18 rhythm
+        page = self._page_scroll.widget()
+        if page is not None:
+            page.setMinimumWidth(0)
 
         chrome, _ = PageChrome(
             'Inventory',
@@ -101,43 +227,50 @@ class InventoryTab(QWidget):
         clear.setToolTip('Show every product')
         clear.clicked.connect(lambda: self._search.clear())
         tb.addWidget(clear)
+        lay.addLayout(tb)
+
+        # Buttons wrap onto extra rows. A single non-wrapping bar was wider than
+        # the till and pushed the product table, including Actions, past the window.
+        tools = _FlowLayout(spacing=10)
+        self._tool_flow = tools
 
         if has_permission(self.user, 'inventory.create'):
             add = PrimaryBtn('+ Add Product', 40)
             add.clicked.connect(self._add)
-            tb.addWidget(add)
+            tools.addWidget(add)
 
-        cats_btn = SecondaryBtn('Category Visuals', 40)
-        cats_btn.setToolTip('Assign offline icons or images to product categories')
-        cats_btn.clicked.connect(self._manage_categories)
-        tb.addWidget(cats_btn)
+        if has_permission(self.user, 'categories.manage'):
+            cats_btn = SecondaryBtn('Shop categories', 40)
+            cats_btn.setToolTip('Add, rename, or remove categories for this shop')
+            cats_btn.clicked.connect(self._manage_categories)
+            tools.addWidget(cats_btn)
 
         if has_permission(self.user, 'inventory.receive'):
             recv = SecondaryBtn('Receive Stock', 40)
             recv.setToolTip('Receive a supplier delivery. No extra PIN.')
             recv.clicked.connect(self._receive_stock_dialog)
-            tb.addWidget(recv)
+            tools.addWidget(recv)
         if has_permission(self.user, 'inventory.view'):
             from desktop.dialogs.restock_dialog import can_open_restock
             if can_open_restock(self.user):
                 restock_btn = SecondaryBtn('Restock Lists', 40)
                 restock_btn.setToolTip('Lists of products to buy. This does not change stock or the open sale.')
                 restock_btn.clicked.connect(self._open_restock)
-                tb.addWidget(restock_btn)
+                tools.addWidget(restock_btn)
             issues_btn = SecondaryBtn('Issues', 40)
             issues_btn.setToolTip('Business issues for stock and products. A sale is not blocked.')
             issues_btn.clicked.connect(self._open_issues)
-            tb.addWidget(issues_btn)
+            tools.addWidget(issues_btn)
             count_btn = SecondaryBtn('Stocktake', 40)
             count_btn.setToolTip('Count stock. Applying the count is Super-Admin only.')
             count_btn.clicked.connect(self._open_stocktake)
-            tb.addWidget(count_btn)
+            tools.addWidget(count_btn)
 
         if has_permission(self.user, 'inventory.receive') and self._role() != ROLE_SUPERADMIN:
             ask = SecondaryBtn('Request Adjustment', 40)
             ask.setToolTip('Ask a Super-Admin to change stock. This does not change stock.')
             ask.clicked.connect(self._request_adjustment_dialog)
-            tb.addWidget(ask)
+            tools.addWidget(ask)
         if self._role() == ROLE_SUPERADMIN:
             adj = SecondaryBtn('Adjust Stock', 40)
             try:
@@ -146,19 +279,19 @@ class InventoryTab(QWidget):
             except Exception:
                 pass
             adj.clicked.connect(self._adjust_stock_dialog)
-            tb.addWidget(adj)
+            tools.addWidget(adj)
             pending = SecondaryBtn('Adjustment Requests', 40)
             pending.setToolTip('Approve or reject cashier stock-adjustment requests')
             pending.clicked.connect(self._review_adjustment_requests)
-            tb.addWidget(pending)
+            tools.addWidget(pending)
             sups = SecondaryBtn('Suppliers', 40)
             sups.clicked.connect(self._suppliers_dialog)
-            tb.addWidget(sups)
+            tools.addWidget(sups)
 
         exp = SecondaryBtn('Export Excel', 40)
         exp.setToolTip('Export inventory snapshot and stock movements to Excel')
         exp.clicked.connect(self._export_inventory)
-        tb.addWidget(exp)
+        tools.addWidget(exp)
 
         ref = GhostBtn('Refresh', 40)
         try:
@@ -167,8 +300,11 @@ class InventoryTab(QWidget):
         except Exception:
             pass
         ref.clicked.connect(self.refresh)
-        tb.addWidget(ref)
-        lay.addLayout(tb)
+        tools.addWidget(ref)
+        tool_host = QWidget()
+        tool_host.setLayout(tools)
+        tool_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        lay.addWidget(tool_host)
 
         # â”€â”€ Table in card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         wrap = Card()
@@ -187,21 +323,9 @@ class InventoryTab(QWidget):
             f"font-size:11px; font-weight:700; letter-spacing:0.6px; "
             f"padding:10px 12px; border:none; border-bottom:2px solid {C['border2']}; }}")
         # Category shows retail category (not supplier tags); tooltips carry source.
-        widths = {
-            1: 88,    # SKU
-            2: 200,   # Category — wider so labels don't mid-word truncate
-            3: 122,   # Price
-            4: 122,   # Cost — room for KES 4,450.00
-            5: 100,   # Stock — OUT / numeric pills, right-aligned
-            6: 100,   # Unit — avoid "per ..." truncation
-            7: 240,   # Actions — Remove and More centered as a pair
-        }
-        for col, w in widths.items():
-            mode = QHeaderView.Interactive if col == 2 else QHeaderView.Fixed
-            hdr.setSectionResizeMode(col, mode)
-            self._tbl.setColumnWidth(col, w)
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        hdr.setMinimumSectionSize(72)
+        # Widths are applied in _fit_columns so Actions stays inside a 1920 till
+        # and the horizontal bar only appears when the window is too narrow.
+        hdr.setMinimumSectionSize(56)
         if not has_permission(self.user, 'inventory.view_cost'):
             self._tbl.setColumnHidden(4, True)
         hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -213,8 +337,17 @@ class InventoryTab(QWidget):
         self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._tbl.setWordWrap(False)
         self._tbl.setTextElideMode(Qt.ElideRight)
+        self._tbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self._tbl.setMinimumWidth(0)
         # Keep Actions header fully painted (avoid right-edge clip into scrollbar)
         self._tbl.horizontalHeader().setStretchLastSection(False)
+        self._tbl.setStyleSheet(
+            "QScrollBar:horizontal{height:14px;background:#142033;margin:0;}"
+            f"QScrollBar::handle:horizontal{{background:{C['gold']};"
+            "min-width:72px;border-radius:5px;}"
+            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;height:0;}"
+            "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:#142033;}"
+        )
         wl.addWidget(self._tbl)
         lay.addWidget(wrap, 1)
         # Sticky-style footer card — clear gap so last table row never looks overlapped
@@ -241,6 +374,10 @@ class InventoryTab(QWidget):
             f"padding:12px 16px; min-height:22px; }}")
 
     def on_show(self): self.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._fit_columns)
 
     def apply_theme(self, is_light=None):
         """Retint chrome + table after ThemeManager.apply (no DB reload).
@@ -277,6 +414,136 @@ class InventoryTab(QWidget):
             self.products = []
             self._tbl.setRowCount(0)
             self._stats.setText(f"  Could not load inventory: {e}")
+        self._fit_columns()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_columns)
+
+    def _lock_page_width(self):
+        """Keep the inventory page inside the window.
+
+        A wide size hint used to stretch the page past the till. The window then
+        clipped Actions, and the page scrollbar is intentionally off, so the row
+        buttons could not be reached. The table's own bar is what scrolls them.
+        """
+        scroll = getattr(self, '_page_scroll', None)
+        if scroll is None or scroll.viewport() is None:
+            return 0
+        inner = scroll.widget()
+        visible = scroll.viewport().width()
+        if inner is None or visible < 80:
+            return 0
+        inner.setMinimumWidth(0)
+        if inner.maximumWidth() != visible:
+            inner.setMaximumWidth(visible)
+        if inner.width() != visible:
+            inner.resize(visible, max(inner.height(), scroll.viewport().height()))
+        return visible
+
+    def _visible_width(self):
+        """Width the cashier can actually see, not the table's inflated size hint."""
+        table = self._tbl
+        width = table.viewport().width()
+        scroll = getattr(self, '_page_scroll', None)
+        if scroll is not None and scroll.viewport() is not None:
+            page = scroll.viewport().width() - 40
+            if page > 80 and (width < 80 or width > page + 24):
+                width = page
+        return width
+
+    def _column_pref(self, col):
+        floor = _COL_FLOOR[col]
+        cap = _COL_CAP.get(col, floor)
+        if col == 0:
+            return floor
+        if col == 7:
+            width = floor
+            for row in range(min(self._tbl.rowCount(), 40)):
+                widget = self._tbl.cellWidget(row, 7)
+                if widget is not None:
+                    width = max(width, widget.sizeHint().width() + 12)
+            return min(cap, max(floor, width))
+        fm = self._tbl.fontMetrics()
+        width = floor
+        header = self._tbl.horizontalHeaderItem(col)
+        if header is not None:
+            width = max(width, fm.horizontalAdvance(header.text()) + 36)
+        for row in range(self._tbl.rowCount()):
+            item = self._tbl.item(row, col)
+            if item is None:
+                continue
+            width = max(width, fm.horizontalAdvance(item.text()) + 36)
+            if width >= cap:
+                return cap
+        return min(cap, width)
+
+    def _fit_columns(self):
+        """Put Name, price, stock, SKU and the row buttons in the visible window.
+
+        A narrow window keeps the horizontal scrollbar so the buttons can still
+        be reached. Names ellipsize; the cell tooltip keeps the full name.
+        """
+        table = getattr(self, '_tbl', None)
+        if table is None or table.columnCount() < 8 or getattr(self, '_fitting', False):
+            return
+        visible_page = self._lock_page_width()
+        viewport = self._visible_width()
+        if visible_page and abs(table.viewport().width() - (visible_page - 40)) > 48:
+            tries = getattr(self, '_fit_tries', 0)
+            if tries < 4:
+                self._fit_tries = tries + 1
+                QTimer.singleShot(0, self._fit_columns)
+                return
+        self._fit_tries = 0
+        if viewport < 240:
+            return
+        cols = [col for col in range(table.columnCount()) if not table.isColumnHidden(col)]
+        if 0 not in cols or 7 not in cols:
+            return
+        floors = {col: _COL_FLOOR[col] for col in cols}
+        prefs = {col: max(floors[col], self._column_pref(col)) for col in cols}
+        prefs[0] = floors[0]
+        floor_sum = sum(floors.values())
+        pref_sum = sum(prefs.values())
+        if viewport >= pref_sum:
+            widths = dict(prefs)
+            widths[0] = floors[0] + (viewport - pref_sum)
+        elif viewport >= floor_sum:
+            extra = viewport - floor_sum
+            grow = [col for col in cols if col != 0 and prefs[col] > floors[col]]
+            room = sum(prefs[col] - floors[col] for col in grow)
+            widths = dict(floors)
+            given = 0
+            if room:
+                for col in grow:
+                    share = int(extra * (prefs[col] - floors[col]) / room)
+                    widths[col] = floors[col] + share
+                    given += share
+            widths[0] = floors[0] + (extra - given)
+        else:
+            widths = dict(floors)
+        planned = {col: int(widths[col]) for col in cols}
+        if (
+            all(table.columnWidth(col) == planned[col] for col in cols)
+            and table.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        ):
+            if sum(planned.values()) <= viewport + 4:
+                table.horizontalScrollBar().setValue(0)
+            return
+        self._fitting = True
+        try:
+            header = table.horizontalHeader()
+            header.setStretchLastSection(False)
+            header.setMinimumSectionSize(56)
+            for col, width in planned.items():
+                header.setSectionResizeMode(col, QHeaderView.Fixed)
+                table.setColumnWidth(col, width)
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            if sum(planned.values()) <= viewport + 4:
+                table.horizontalScrollBar().setValue(0)
+        finally:
+            self._fitting = False
 
     def _manage_categories(self):
         from desktop.dialogs.category_manager import CategoryManagerDialog
@@ -424,11 +691,14 @@ class InventoryTab(QWidget):
             tile.choose = lambda pid=p.get('id'): self._edit(pid) if can_edit else None
             name_wrap = QWidget()
             name_wrap.setStyleSheet('background:transparent;')
+            name_wrap.setMinimumWidth(0)
+            name_wrap.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+            name_wrap.setToolTip(raw_name if raw_name else name)
             name_lay = QHBoxLayout(name_wrap)
-            name_lay.setContentsMargins(4, 0, 4, 0)
+            name_lay.setContentsMargins(4, 0, 8, 0)
             name_lay.setSpacing(8)
             name_lay.addWidget(tile)
-            name_label = QLabel(name)
+            name_label = _ElideLabel(name)
             name_label.setStyleSheet(f"color:{C['text']}; background:transparent; font-size:13px;")
             name_lay.addWidget(name_label, 1)
             badge_codes = [code for code in self._cost_codes(p) if code != 'complete']
@@ -444,7 +714,7 @@ class InventoryTab(QWidget):
                 colour = {'err': C.get('err', '#b42318'), 'ok': C.get('ok', '#067647')}.get(
                     tone, C.get('warn', '#b54708'),
                 )
-                badge = QLabel(label)
+                badge = _ElideLabel(label, cap=120)
                 badge.setStyleSheet(
                     f"color:{colour}; background:transparent; font-size:11px; font-weight:700;"
                 )
@@ -458,10 +728,7 @@ class InventoryTab(QWidget):
         sku_item.setToolTip(sku or 'No SKU')
         self._tbl.setItem(i, 1, sku_item)
 
-        # Always a real category label — prefer inferred; soft "General" over Uncategorized spam
-        if not cat_label or cat_label in ('—', '-', 'N/A', 'Uncategorized'):
-            cat_label = 'General'
-        cat_tone = 'text'
+        cat_tone = 'text2' if cat_label == 'Uncategorised' else 'text'
         cat_item = tbl_item(cat_label, tone=cat_tone)
         cat_item.setToolTip(cat_tip or cat_label)
         self._tbl.setItem(i, 2, cat_item)
@@ -509,10 +776,10 @@ class InventoryTab(QWidget):
         self._tbl.setItem(i, 7, action)
         actions = QWidget()
         actions.setStyleSheet('background:transparent;')
-        actions.setMinimumWidth(self._tbl.columnWidth(7))
+        actions.setMinimumWidth(0)
         actions.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         actions_row = QHBoxLayout(actions)
-        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setContentsMargins(6, 0, 6, 0)
         actions_row.setSpacing(8)
         actions_row.setAlignment(Qt.AlignCenter)
         pair = (
@@ -756,7 +1023,17 @@ class InventoryTab(QWidget):
                     return
                 holder['id'] = opened.get('id')
             pid = product.currentData()
-            saved = self.api.record_stocktake_count(holder['id'], pid, qty.value())
+            from desktop.utils.quantities import QuantityError, parse_quantity
+            chosen = next((item for item in (self.products or []) if item.get('id') == pid), {})
+            try:
+                counted = parse_quantity(qty.value(), chosen.get('unit'), allow_zero=True)
+            except QuantityError as exc:
+                message = str(exc)
+                if 'whole units' in message:
+                    message = f"'{chosen.get('name') or 'This product'}' is sold in whole units."
+                status.setText(message)
+                return
+            saved = self.api.record_stocktake_count(holder['id'], pid, counted)
             status.setText(
                 'Count saved. Stock is unchanged.' if saved.get('success')
                 else (saved.get('error') or 'Could not save the count')
@@ -1031,7 +1308,8 @@ class InventoryTab(QWidget):
             db.close()
         dlg = QDialog(self)
         dlg.setWindowTitle('Business issues')
-        dlg.resize(760, 480)
+        dlg.setMinimumSize(1040, 480)
+        dlg.resize(1120, 520)
         apply_themed_dialog(dlg)
         lay = QVBoxLayout(dlg)
         lay.addWidget(Caption(
@@ -1039,12 +1317,31 @@ class InventoryTab(QWidget):
             f"Attention {counts['attention']}  ·  Critical {counts['critical']}"
         ))
         lay.addWidget(Caption('Opening a row does not resolve it. Saving the real correction does.'))
-        table = make_table(['Severity', 'Issue', 'Since'])
+        table = make_table(['Severity', 'Issue', 'Since'], stretch_col=1)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Fixed)
+        table.setColumnWidth(2, 188)
+        table.setTextElideMode(Qt.ElideRight)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         table.setRowCount(len(items))
         for i, item in enumerate(items):
+            title = item.get('title') or ''
+            since_raw = item.get('first_detected') or ''
+            since = _issue_since_label(since_raw)
+            issue_item = tbl_item(title)
+            tip = title
+            explanation = (item.get('explanation') or '').strip()
+            if explanation and explanation not in title:
+                tip = f"{title}\n{explanation}"
+            issue_item.setToolTip(tip)
+            since_item = tbl_item(since)
+            since_item.setToolTip(since_raw or since)
             table.setItem(i, 0, tbl_item(item['severity'].title()))
-            table.setItem(i, 1, tbl_item(item['title']))
-            table.setItem(i, 2, tbl_item((item.get('first_detected') or '')[:16]))
+            table.setItem(i, 1, issue_item)
+            table.setItem(i, 2, since_item)
             table.item(i, 0).setData(Qt.UserRole, item)
         lay.addWidget(table, 1)
         buttons = QHBoxLayout()
@@ -1163,8 +1460,11 @@ class _ProdDlg(QDialog):
         self.name  = QLineEdit(); self.name.setMinimumHeight(42); self.name.setPlaceholderText('Product name *')
         self.sku   = QLineEdit(); self.sku.setMinimumHeight(42);  self.sku.setPlaceholderText('e.g. UNG-2KG')
         self.barcode = QLineEdit(); self.barcode.setMinimumHeight(42); self.barcode.setPlaceholderText('Scan or type the barcode')
-        self.cat   = QLineEdit(); self.cat.setMinimumHeight(42);  self.cat.setPlaceholderText('e.g. Flour, Dairy')
-        self.cat.textChanged.connect(self._on_cat_preview)
+        self.cat = QComboBox()
+        self.cat.setMinimumHeight(42)
+        self.cat.setAccessibleName('Category')
+        self._fill_categories((prod or {}).get('category') or '')
+        self.cat.currentIndexChanged.connect(lambda _i: self._on_cat_preview())
         self.price = QDoubleSpinBox(); self.price.setRange(0, 9999999); self.price.setDecimals(2); self.price.setMinimumHeight(42)
         self.cost  = QDoubleSpinBox(); self.cost.setRange(0, 9999999);  self.cost.setDecimals(2); self.cost.setMinimumHeight(42)
         self.mins  = QSpinBox();       self.mins.setRange(0, 999999);   self.mins.setValue(5);    self.mins.setMinimumHeight(42)
@@ -1176,7 +1476,6 @@ class _ProdDlg(QDialog):
             self.name.setText(prod.get('name') or '')
             self.sku.setText(prod.get('sku') or '')
             self.barcode.setText(prod.get('barcode') or '')
-            self.cat.setText(prod.get('category') or '')
             self.price.setValue(_safe_float(prod.get('price')))
             self.cost.setValue(_safe_float(prod.get('cost_price')))
             self.mins.setValue(_safe_int(prod.get('min_stock'), 5))
@@ -1208,6 +1507,12 @@ class _ProdDlg(QDialog):
         cat_hl.setContentsMargins(0, 0, 0, 0)
         cat_hl.setSpacing(8)
         cat_hl.addWidget(self.cat, 1)
+        self._add_cat_btn = SecondaryBtn('Add new category', 42)
+        self._add_cat_btn.setToolTip('Create a category and select it without leaving this product')
+        self._add_cat_btn.clicked.connect(self._add_category)
+        if not has_permission(actor, 'categories.create'):
+            self._add_cat_btn.setVisible(False)
+        cat_hl.addWidget(self._add_cat_btn)
         try:
             from desktop.utils.category_visuals import CategoryVisual
             self._cat_vis = CategoryVisual(size=40, show_label=False)
@@ -1215,7 +1520,7 @@ class _ProdDlg(QDialog):
         except Exception:
             self._cat_vis = None
         lay.addRow(lbl('Category'),          cat_wrap)
-        self._on_cat_preview(self.cat.text())
+        self._on_cat_preview()
         lay.addRow(lbl('Selling Price'),     self.price)
         self._enter_cost = self._see_cost or prod is None
         if self._enter_cost:
@@ -1296,10 +1601,106 @@ class _ProdDlg(QDialog):
         else:
             StateResetManager.clear_modal_on_close(self)
 
+    def _category_value(self) -> str:
+        data = self.cat.currentData()
+        if data is None:
+            return (self.cat.currentText() or '').strip()
+        return str(data or '').strip()
+
+    def _fill_categories(self, current: str = ''):
+        current = (current or '').strip()
+        self.cat.blockSignals(True)
+        self.cat.clear()
+        self.cat.addItem('Uncategorised', '')
+        names = []
+        try:
+            parent = self.parent()
+            api = getattr(parent, 'api', None)
+            for row in (api.get_categories() if api else []) or []:
+                name = (row.get('name') or '').strip()
+                if name:
+                    names.append(name)
+        except Exception:
+            names = []
+        seen = set()
+        for name in names:
+            key = name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            self.cat.addItem(name, name)
+        if current and current.casefold() not in seen:
+            self.cat.addItem(current, current)
+        index = 0
+        for i in range(self.cat.count()):
+            if str(self.cat.itemData(i) or '').casefold() == current.casefold():
+                index = i
+                break
+        self.cat.setCurrentIndex(index)
+        self.cat.blockSignals(False)
+
+    def _add_category(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('New Category')
+        dlg.setMinimumWidth(420)
+        form = QFormLayout(dlg)
+        form.setContentsMargins(16, 16, 16, 16)
+        name = QLineEdit()
+        name.setMinimumHeight(40)
+        name.setAccessibleName('New category name')
+        name.setPlaceholderText('Category name')
+        desc = QLineEdit()
+        desc.setMinimumHeight(40)
+        desc.setAccessibleName('New category description')
+        desc.setPlaceholderText('Optional description')
+        form.addRow('Name', name)
+        form.addRow('Description', desc)
+        buttons = QHBoxLayout()
+        cancel = SecondaryBtn('Cancel', 40)
+        create = PrimaryBtn('Create category', 40)
+        cancel.clicked.connect(dlg.reject)
+        buttons.addWidget(cancel)
+        buttons.addWidget(create)
+        wrap = QWidget()
+        wrap.setLayout(buttons)
+        form.addRow(wrap)
+
+        def _save():
+            parent = self.parent()
+            api = getattr(parent, 'api', None)
+            if api is None:
+                QMessageBox.warning(dlg, 'Category', 'Categories are not available.')
+                return
+            result = api.create_category({
+                'name': name.text(),
+                'description': desc.text(),
+            })
+            if result.get('error'):
+                existing = api.get_category_by_name(name.text()) if 'already exists' in (result.get('error') or '').lower() else {}
+                if existing.get('name'):
+                    self._fill_categories(existing['name'])
+                    self._on_cat_preview()
+                    dlg.accept()
+                    return
+                QMessageBox.warning(dlg, 'Category', result.get('error') or 'The category was not created.')
+                return
+            self._fill_categories(result.get('name') or name.text())
+            self._on_cat_preview()
+            dlg.accept()
+
+        create.clicked.connect(_save)
+        dlg.exec_()
+
     def _on_cat_preview(self, text=''):
         if not getattr(self, '_cat_vis', None):
             return
-        name = (text or self.cat.text() or '').strip() or 'General'
+        name = (text or self._category_value() or '').strip()
+        if not name:
+            try:
+                self._cat_vis.set_category({'name': 'Uncategorised', 'visual_type': 'icon'})
+            except Exception:
+                pass
+            return
         meta = {}
         try:
             parent = self.parent()
@@ -1347,7 +1748,7 @@ class _ProdDlg(QDialog):
             'name':       self.name.text().strip(),
             'sku':        self.sku.text().strip() or None,
             'barcode':    self.barcode.text().strip() or None,
-            'category':   self.cat.text().strip() or None,
+            'category':   self._category_value(),
             'price':      self.price.value(),
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',

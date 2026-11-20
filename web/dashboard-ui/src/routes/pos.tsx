@@ -30,12 +30,13 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/app-shell";
 import { ProductPhoto, productPhotoSrc } from "@/components/product-photo";
 import { Button, Card, EmptyState, Input, Select, Skeleton } from "@/components/ui-kit";
+import { CopySaleDialog, type CopiedLine } from "@/components/copy-sale-dialog";
 import { SaleDocumentPanel } from "@/components/sale-document-panel";
 import { GET, POST } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { BackdateReasonPicker, backdateWarning, normalizeBackdateReason } from "@/components/business-date-field";
 import { KES, saleDayCaption, shopTodayISO } from "@/lib/format";
-import { quantityStep } from "@/lib/quantity";
+import { parseQuantity, quantityStep } from "@/lib/quantity";
 import { wheelStep } from "@/lib/wheel-steps";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +70,7 @@ type Customer = {
 };
 
 type Line = {
+  line_id?: string;
   product_id: number;
   product_name: string;
   sku: string;
@@ -78,6 +80,14 @@ type Line = {
   discount: number;
   total: number;
 };
+
+function lineKey(line: Line) {
+  return line.line_id || `p${line.product_id}`;
+}
+
+function lineTotal(price: number, quantity: number, discount: number) {
+  return Math.round((price * quantity - Math.max(0, discount)) * 100) / 100;
+}
 
 const HELD_KEY = "mbt-pos-held-sale";
 function saleQtyStep(unit: string | undefined, wheel: number) {
@@ -151,7 +161,8 @@ function POS() {
     { method: "M-Pesa", amount: "", reference: "" },
   ]);
   const [remainderOnCredit, setRemainderOnCredit] = useState(false);
-  const [qtyDraft, setQtyDraft] = useState<Record<number, string>>({});
+  const [qtyDraft, setQtyDraft] = useState<Record<string, string>>({});
+  const [copyOpen, setCopyOpen] = useState(false);
   const [cartWide, setCartWide] = useState(false);
   const [note, setNote] = useState("");
   const [lastSaleId, setLastSaleId] = useState<number | null>(null);
@@ -222,13 +233,24 @@ function POS() {
     || (payment === "Split" && (remainderOnCredit || splitLines.some((row) => isCreditMethod(row.method))));
 
   const categories = useMemo(() => {
-    const set = new Set(products.map((p) => p.category || "General").filter(Boolean));
-    return ["", ...Array.from(set).sort()];
+    const names = new Set<string>();
+    let blank = false;
+    for (const product of products) {
+      const name = (product.category || "").trim();
+      if (name) names.add(name);
+      else blank = true;
+    }
+    return [
+      "",
+      ...Array.from(names).sort((a, b) => a.localeCompare(b)),
+      ...(blank ? ["Uncategorised"] : []),
+    ];
   }, [products]);
 
   const filtered = useMemo(() => {
     return products.filter((p) => {
-      const matchCat = !cat || (p.category || "General") === cat;
+      const rawCategory = (p.category || "").trim();
+      const matchCat = !cat || (cat === "Uncategorised" ? !rawCategory : rawCategory === cat);
       const qq = q.toLowerCase();
       const matchQ =
         !qq ||
@@ -290,20 +312,18 @@ function POS() {
     if (Number(p.stock) <= 0) return;
     setRecentIds((ids) => [p.id, ...ids.filter((id) => id !== p.id)].slice(0, 24));
     setCart((c) => {
-      const ex = c.find((l) => l.product_id === p.id);
-      if (ex) {
+      const idx = c.findIndex((l) => l.product_id === p.id);
+      if (idx >= 0) {
+        const ex = c[idx];
         const quantity = snapQty(ex.quantity + saleQtyStep(p.unit, qtyStep));
-        if (quantity > Number(p.stock) + 0.0001) {
+        const already = c.reduce((sum, l) => sum + (l.product_id === p.id ? l.quantity : 0), 0);
+        if (already - ex.quantity + quantity > Number(p.stock) + 0.0001) {
           toast.error(`Only ${p.stock} in stock`);
           return c;
         }
-        return c.map((l) =>
-          l.product_id === p.id
-            ? {
-                ...l,
-                quantity,
-                total: Math.round((quantity * l.unit_price - (l.discount || 0)) * 100) / 100,
-              }
+        return c.map((l, i) =>
+          i === idx
+            ? { ...l, quantity, total: lineTotal(l.unit_price, quantity, l.discount || 0) }
             : l,
         );
       }
@@ -323,39 +343,65 @@ function POS() {
     });
   };
 
-  const setQty = (product_id: number, quantity: number, stock?: number) => {
-    const next = quantity <= 0 ? 0 : snapQty(quantity);
-    if (stock != null && next > Number(stock) + 0.0001) {
+  const setQty = (key: string, productId: number, quantity: number, stock?: number) => {
+    const line = cart.find((l) => lineKey(l) === key);
+    const parsed = parseQuantity(quantity, line?.unit, { allowZero: true });
+    if ("error" in parsed) {
+      const name = line?.product_name || "This product";
+      toast.error(parsed.error.includes("whole units") ? `${name} is sold in whole units.` : parsed.error);
+      return;
+    }
+    const next = parsed.quantity <= 0 ? 0 : parsed.quantity;
+    const others = cart
+      .filter((l) => lineKey(l) !== key && l.product_id === productId)
+      .reduce((sum, l) => sum + l.quantity, 0);
+    if (stock != null && others + next > Number(stock) + 0.0001) {
       toast.error(`Only ${stock} in stock`);
       return;
     }
     setCart((c) =>
       next <= 0
-        ? c.filter((l) => l.product_id !== product_id)
+        ? c.filter((l) => lineKey(l) !== key)
         : c.map((l) =>
-            l.product_id === product_id
-              ? {
-                  ...l,
-                  quantity: next,
-                  total: Math.round((next * l.unit_price - (l.discount || 0)) * 100) / 100,
-                }
+            lineKey(l) === key
+              ? { ...l, quantity: next, total: lineTotal(l.unit_price, next, l.discount || 0) }
               : l,
           ),
     );
   };
 
-  const setLineDiscount = (product_id: number, d: number) =>
+  const setLineDiscount = (key: string, d: number) =>
     setCart((c) =>
       c.map((l) => {
-        if (l.product_id !== product_id) return l;
+        if (lineKey(l) !== key) return l;
         const discountAmt = Math.max(0, Math.min(d, l.unit_price * l.quantity));
-        return {
-          ...l,
-          discount: discountAmt,
-          total: Math.round((l.unit_price * l.quantity - discountAmt) * 100) / 100,
-        };
+        return { ...l, discount: discountAmt, total: lineTotal(l.unit_price, l.quantity, discountAmt) };
       }),
     );
+
+  const setLinePrice = (key: string, price: number) =>
+    setCart((c) =>
+      c.map((l) => {
+        if (lineKey(l) !== key) return l;
+        const unit = Math.max(0, Math.round((Number(price) || 0) * 100) / 100);
+        const discountAmt = Math.max(0, Math.min(l.discount || 0, unit * l.quantity));
+        return { ...l, unit_price: unit, discount: discountAmt, total: lineTotal(unit, l.quantity, discountAmt) };
+      }),
+    );
+
+  const applyCopiedLines = (
+    lines: CopiedLine[],
+    meta: { replace: boolean; customerId?: number; receipt: string },
+  ) => {
+    setCart((current) => (meta.replace || current.length === 0 ? lines : [...current, ...lines]));
+    if ((meta.replace || cart.length === 0) && meta.customerId) setCustomerId(meta.customerId);
+    setNote((prev) => {
+      const tag = meta.receipt;
+      return prev.trim() ? `${prev.trim()} | ${tag}` : tag;
+    });
+    setCartWide(true);
+    toast.success(`${meta.receipt} added. Edit any line before completing the sale.`);
+  };
 
   const toggleFavorite = (id: number, e: MouseEvent) => {
     e.stopPropagation();
@@ -862,18 +908,28 @@ function POS() {
             ) : (
               <div className="divide-y divide-border">
                 {cart.map((l) => (
-                  <div key={l.product_id} className="px-2 py-1.5 flex items-center gap-1.5">
+                  <div key={lineKey(l)} className="px-2 py-1.5 flex items-center gap-1.5">
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-semibold text-text truncate">{l.product_name}</div>
                       <div className="text-[10px] text-muted-fg font-mono truncate">
-                        {l.sku || `#${l.product_id}`} · {KES(l.unit_price, currency)}
+                        {l.sku || `#${l.product_id}`}
                       </div>
                     </div>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={l.unit_price}
+                      onChange={(e) => setLinePrice(lineKey(l), parseFloat(e.target.value) || 0)}
+                      className="h-8 w-16 rounded-lg border border-border bg-input px-1 text-[12px] font-bold text-right text-text tabular-nums shrink-0"
+                      title={`Price (${currency})`}
+                      aria-label={`Price for ${l.product_name}`}
+                    />
                     <div className="inline-flex items-center rounded-lg border border-border bg-input shrink-0">
                       <button
                         type="button"
                         aria-label="Decrease"
-                        onClick={() => setQty(l.product_id, l.quantity - saleQtyStep(l.unit, qtyStep))}
+                        onClick={() => setQty(lineKey(l), l.product_id, l.quantity - saleQtyStep(l.unit, qtyStep), products.find((p) => p.id === l.product_id)?.stock)}
                         className="h-8 w-8 grid place-items-center text-text hover:bg-hover"
                       >
                         <Minus className="h-3.5 w-3.5" />
@@ -887,30 +943,37 @@ function POS() {
                           e.preventDefault();
                           const dir = e.deltaY < 0 ? 1 : -1;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
-                          setQty(l.product_id, l.quantity + dir * saleQtyStep(l.unit, qtyStep), stock);
+                          setQty(lineKey(l), l.product_id, l.quantity + dir * saleQtyStep(l.unit, qtyStep), stock);
                         }}
                         aria-label={`Quantity for ${l.product_name}`}
-                        value={qtyDraft[l.product_id] ?? formatQty(l.quantity)}
+                        value={qtyDraft[lineKey(l)] ?? formatQty(l.quantity)}
                         onChange={(e) => {
                           const raw = e.target.value;
-                          setQtyDraft((draft) => ({ ...draft, [l.product_id]: raw }));
-                          const n = parseFloat(raw);
-                          if (!Number.isFinite(n)) return;
+                          const key = lineKey(l);
+                          setQtyDraft((draft) => ({ ...draft, [key]: raw }));
+                          const parsed = parseQuantity(raw, l.unit);
+                          if ("error" in parsed) return;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
-                          setQty(l.product_id, n, stock);
+                          setQty(key, l.product_id, parsed.quantity, stock);
                         }}
                         onBlur={(e) => {
                           const raw = e.currentTarget.value;
+                          const key = lineKey(l);
                           setQtyDraft((draft) => {
                             const next = { ...draft };
-                            delete next[l.product_id];
+                            delete next[key];
                             return next;
                           });
                           if (raw == null || raw.trim() === "") return;
-                          const n = parseFloat(raw);
-                          if (!Number.isFinite(n)) return;
+                          const parsed = parseQuantity(raw, l.unit);
+                          if ("error" in parsed) {
+                            toast.error(parsed.error.includes("whole units")
+                              ? `${l.product_name} is sold in whole units.`
+                              : parsed.error);
+                            return;
+                          }
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
-                          setQty(l.product_id, n, stock);
+                          setQty(key, l.product_id, parsed.quantity, stock);
                         }}
                         className="h-8 w-14 border-0 bg-transparent text-center text-[13px] font-bold tabular-nums text-text"
                       />
@@ -919,6 +982,7 @@ function POS() {
                         aria-label="Increase"
                         onClick={() =>
                           setQty(
+                            lineKey(l),
                             l.product_id,
                             l.quantity + saleQtyStep(l.unit, qtyStep),
                             products.find((p) => p.id === l.product_id)?.stock,
@@ -934,7 +998,7 @@ function POS() {
                       min={0}
                       step={10}
                       value={l.discount || ""}
-                      onChange={(e) => setLineDiscount(l.product_id, parseFloat(e.target.value) || 0)}
+                      onChange={(e) => setLineDiscount(lineKey(l), parseFloat(e.target.value) || 0)}
                       className="h-8 w-14 rounded-lg border border-border bg-input px-1 text-[12px] font-bold text-right text-text tabular-nums shrink-0"
                       placeholder="Disc"
                       title={`Line discount (${currency})`}
@@ -946,7 +1010,7 @@ function POS() {
                     <button
                       type="button"
                       aria-label="Remove"
-                      onClick={() => setQty(l.product_id, 0)}
+                      onClick={() => setQty(lineKey(l), l.product_id, 0)}
                       className="h-8 w-8 grid place-items-center rounded-lg text-err hover:bg-err/10 shrink-0"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -975,6 +1039,13 @@ function POS() {
               </Select>
               {canRequestDate ? (
                 <>
+                  <button
+                    type="button"
+                    className="h-8 rounded-lg border border-border px-2 text-xs font-semibold"
+                    onClick={() => setCopyOpen(true)}
+                  >
+                    Copy sale
+                  </button>
                   <button
                     type="button"
                     aria-label="Sale date"
@@ -1399,6 +1470,15 @@ function POS() {
           onClose={() => setDocOpen(false)}
         />
       ) : null}
+      {copyOpen ? (
+        <CopySaleDialog
+          date={saleDate}
+          currency={currency}
+          products={products}
+          onAdd={applyCopiedLines}
+          onClose={() => setCopyOpen(false)}
+        />
+      ) : null}
     </AppShell>
   );
 }
@@ -1460,7 +1540,7 @@ function ToolToggle({
 }
 
 function Thumb({ name, image, small }: { name: string; image?: string; small?: boolean }) {
-  const src = productPhotoSrc(image);
+  const src = productPhotoSrc(image, "thumb");
   if (src) {
     return <img src={src} alt="" title={name} className={cn("shrink-0 rounded-xl object-cover", small ? "h-8 w-8" : "h-12 w-12")} />;
   }
@@ -1526,8 +1606,8 @@ function ProductCard({
       )}
     >
       <div className="relative h-16 bg-gradient-to-br from-panel via-[#121c30] to-card2 border-b border-border/50 grid place-items-center overflow-hidden">
-        {productPhotoSrc(p.image_path || p.image_url) ? (
-          <img src={productPhotoSrc(p.image_path || p.image_url)} alt="" className="h-full w-full object-cover" />
+        {productPhotoSrc(p.image_path || p.image_url, "thumb") ? (
+          <img src={productPhotoSrc(p.image_path || p.image_url, "thumb")} alt="" className="h-full w-full object-cover" />
         ) : (
           <ProductPhoto size="sm" />
         )}

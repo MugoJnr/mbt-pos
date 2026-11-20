@@ -58,6 +58,73 @@ type NavItem = {
   roles?: string[];
 };
 
+const ROUTE_TAB: Record<string, string> = {
+  "/": "dashboard",
+  "/requests": "sales",
+  "/live": "dashboard",
+  "/approvals": "dashboard",
+  "/void-requests": "sales",
+  "/backdating": "sales",
+  "/pos": "sales",
+  "/receipts": "receipts",
+  "/inventory": "inventory",
+  "/restock": "inventory",
+  "/issues": "inventory",
+  "/consumption": "consumption",
+  "/debt": "debt",
+  "/reports": "reports",
+  "/finance": "accounting",
+  "/mpesa": "sales",
+  "/notifications": "dashboard",
+  "/health": "diagnostics",
+  "/backup": "settings",
+  "/branches": "settings",
+  "/ai": "ai_ops",
+  "/notes": "notes",
+  "/users": "admin",
+  "/settings": "settings",
+  "/security": "security",
+  "/license": "license",
+  "/diagnostics": "diagnostics",
+};
+
+const ALL_TABS = [
+  "dashboard", "sales", "receipts", "inventory", "consumption", "debt", "accounting",
+  "reports", "notes", "settings", "admin", "license", "diagnostics", "security", "ai_ops",
+];
+
+function grantedTabs(user: { role?: string; tab_permissions?: unknown } | null): Set<string> {
+  const role = String(user?.role || "").toLowerCase();
+  if (role === "superadmin") return new Set(ALL_TABS);
+  const raw = Array.isArray(user?.tab_permissions) ? user.tab_permissions.map(String) : [];
+  const blocked = new Set(role === "cashier" || role === "viewer" ? ["security", "license", "ai_ops"] : ["security", "license"]);
+  return new Set(raw.filter((tab) => !blocked.has(tab)));
+}
+
+function routeTab(path: string): string | undefined {
+  if (ROUTE_TAB[path]) return ROUTE_TAB[path];
+  const match = Object.keys(ROUTE_TAB)
+    .filter((key) => key !== "/" && path.startsWith(key))
+    .sort((a, b) => b.length - a.length)[0];
+  return match ? ROUTE_TAB[match] : undefined;
+}
+
+function pageAllowed(user: { role?: string; tab_permissions?: unknown; effective_permissions?: unknown } | null, path: string): boolean {
+  const role = String(user?.role || "").toLowerCase();
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  // License is Super Admin only. Security cannot be stored on a lower role,
+  // but a shop manager who may read the audit trail still reaches it.
+  if (path === "/license") return role === "superadmin";
+  if (path === "/security") return role === "superadmin" || !!(actions && actions.includes("audit.view"));
+  const tab = routeTab(path);
+  if (tab && !grantedTabs(user).has(tab)) return false;
+  if (["/live", "/approvals", "/notifications"].includes(path) && !["manager", "admin", "superadmin"].includes(role)) return false;
+  if (["/health", "/backup", "/branches"].includes(path) && !["admin", "superadmin"].includes(role)) return false;
+  if (path === "/restock" && !["viewer", "manager", "admin", "superadmin"].includes(role)) return false;
+  if (path === "/reports" && actions && !actions.includes("reports.view_all")) return false;
+  return true;
+}
+
 const NAV: NavItem[] = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, group: "Overview", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/requests", label: "Requests Centre", icon: Inbox, group: "Overview", roles: ["cashier", "manager", "admin", "superadmin"] },
@@ -157,15 +224,13 @@ function SidebarContent({
           const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
           const items = NAV.filter((n) => {
             if (n.group !== group) return false;
+            if (!pageAllowed(user, n.to)) return false;
             if (actions) {
-              if (n.to === "/reports") return actions.includes("reports.view_all");
               if (n.to === "/restock") return actions.some((action) => ["restock.view", "restock.create", "restock.manage", "restock.purchase"].includes(action));
               if (n.to === "/users") return actions.includes("users.view");
               if (n.to === "/finance") {
                 return actions.includes("accounting.view") || actions.includes("accounting.create_expenses") || actions.includes("reports.view_all");
               }
-              if (n.to === "/security") return actions.includes("audit.view");
-              if (n.to === "/license") return actions.includes("license.manage");
             }
             if (n.roles && !n.roles.includes(roleKey)) return false;
             if (n.super && roleKey !== "superadmin") return false;
@@ -851,7 +916,11 @@ export function AppShell({
               )}
             >
               <div className={isPos ? "min-h-0 flex-1" : undefined}>
-                {children}
+                {pageAllowed(user, location.pathname) ? children : (
+                  <div className="rounded-xl border border-border bg-card p-6 text-sm text-text">
+                    You cannot open this page. It is not in this account&apos;s tabs.
+                  </div>
+                )}
               </div>
             </div>
           </main>
@@ -896,7 +965,7 @@ export function AppShell({
                   { to: "/notes", label: "Notes", icon: NotebookPen },
                 ]
               : MOBILE_NAV
-          ).map((item) => {
+          ).filter((item) => pageAllowed(user, item.to)).map((item) => {
             const active =
               item.to === "/"
                 ? location.pathname === "/"

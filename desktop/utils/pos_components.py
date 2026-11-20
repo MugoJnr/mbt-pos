@@ -322,11 +322,11 @@ class ProductCard(QFrame):
             name = normalize_product_name(raw_name)
             cat, _cat_tip = display_category(
                 self._product.get('category') or '', raw_name)
-            if cat == 'Uncategorized':
-                cat = 'General'
+            if not cat:
+                cat = 'Uncategorised'
         except Exception:
             name = (self._product.get('name') or '').strip()
-            cat = self._product.get('category') or 'General'
+            cat = (self._product.get('category') or '').strip() or 'Uncategorised'
         sku = (self._product.get('sku') or '').strip()
         price = self._product.get('price', 0)
         stock = self._product.get('stock', 0) or 0
@@ -357,7 +357,8 @@ class ProductCard(QFrame):
         photo_meta = dict(self._category_meta or {})
         try:
             from desktop.utils.product_photo import resolve_product_image
-            photo = resolve_product_image(self._product.get('image_path') or '')
+            photo = resolve_product_image(
+                self._product.get('image_path') or '', prefer_thumb=True)
         except Exception:
             photo = ''
         if photo:
@@ -778,6 +779,7 @@ class QuantityControl(QWidget):
             le.setAlignment(Qt.AlignCenter)
             le.setFrame(False)
 
+        self._last_good = float(self._spin.value())
         self._spin.valueChanged.connect(self._on_spin)
         self._minus.clicked.connect(lambda: self._bump(-self._step))
         self._plus.clicked.connect(lambda: self._bump(self._step))
@@ -786,9 +788,28 @@ class QuantityControl(QWidget):
         lay.addWidget(self._plus)
         self.refresh_theme()
 
+    def _on_step(self, number: float) -> bool:
+        from decimal import Decimal, InvalidOperation
+        try:
+            step = Decimal(str(self._step))
+            value = Decimal(str(number))
+        except (InvalidOperation, ValueError):
+            return False
+        if step <= 0:
+            return True
+        units = value / step
+        return units == units.to_integral_value()
+
     def _coerce(self, v) -> float:
+        try:
+            number = float(v)
+        except (TypeError, ValueError):
+            return self._minimum
+        number = max(self._minimum, min(self._maximum, number))
+        if self._snap and not self._on_step(number):
+            return float(getattr(self, "_last_good", self._minimum))
         if self._snap:
-            return round_qty(v, self._step, minimum=self._minimum)
+            return round(number, 4)
         try:
             return max(self._minimum, min(self._maximum, round(float(v), 2)))
         except (TypeError, ValueError):
@@ -807,7 +828,16 @@ class QuantityControl(QWidget):
         self.valueChanged.emit(self.value())
 
     def _on_spin(self, v):
+        if self._snap and not self._on_step(float(v)):
+            self._spin.blockSignals(True)
+            self._spin.setValue(float(getattr(self, "_last_good", self._minimum)))
+            self._spin.blockSignals(False)
+            self.setToolTip("This product is sold in whole units.")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Quantity", "This product is sold in whole units.")
+            return
         q = self._coerce(v)
+        self._last_good = q
         if abs(q - float(v)) > 1e-9:
             self._spin.blockSignals(True)
             self._spin.setValue(q)
@@ -3313,7 +3343,7 @@ class ProductGrid(QWidget):
     def _add_product_cards(self, batch, cols, card_size, cmap, start: int = 0):
         for i, p in enumerate(batch):
             idx = start + i
-            cat = p.get('category') or 'General'
+            cat = (p.get('category') or '').strip()
             meta = cmap.get(cat) or cmap.get(str(cat).lower()) or {}
             card = ProductCard(
                 p, currency=self._currency, card_size=card_size,

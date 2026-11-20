@@ -19,7 +19,7 @@ class CategoryManagerDialog(QDialog):
     def __init__(self, api, parent=None):
         super().__init__(parent)
         self.api = api
-        self.setWindowTitle('Category Visuals')
+        self.setWindowTitle('Shop categories')
         self.setMinimumSize(640, 480)
         self.resize(720, 540)
         self._build()
@@ -43,10 +43,18 @@ class CategoryManagerDialog(QDialog):
         lay.addLayout(top)
 
         hint = QLabel(
-            'Assign offline icons or custom images. Used on POS tiles, inventory, and search.')
+            'Categories belong to this shop. An empty category is allowed. '
+            'Removing one never deletes its products.')
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{C['muted']}; font-size:12px;")
         lay.addWidget(hint)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText('Search categories')
+        self._search.setAccessibleName('Search categories')
+        self._search.setMinimumHeight(36)
+        self._search.textChanged.connect(self.refresh)
+        lay.addWidget(self._search)
 
         self._list = QListWidget()
         self._list.setSpacing(4)
@@ -62,7 +70,7 @@ class CategoryManagerDialog(QDialog):
         edit = SecondaryBtn('Edit Visual…', 36)
         edit.clicked.connect(self._edit_selected)
         bot.addWidget(edit)
-        dele = DangerBtn('Deactivate', 36)
+        dele = DangerBtn('Delete category', 36)
         dele.clicked.connect(self._deactivate)
         bot.addWidget(dele)
         bot.addStretch(1)
@@ -79,17 +87,27 @@ class CategoryManagerDialog(QDialog):
             cats = self.api.get_categories(active_only=True) or []
         except Exception:
             cats = []
-        # Cap initial paint for large shops; text list stays complete
+        query = ''
+        try:
+            query = (self._search.text() or '').strip().casefold()
+        except Exception:
+            query = ''
+        if query:
+            cats = [
+                c for c in cats
+                if query in (c.get('name') or '').casefold()
+                or query in (c.get('description') or '').casefold()
+            ]
         for c in cats:
             item = QListWidgetItem()
             item.setData(Qt.UserRole, c)
             # Prefer text row for speed; visual loaded on selection / edit
             accent = c.get('accent_color') or '#3B82F6'
+            count = int(c.get('product_count') or 0)
             label = (
                 f"{c.get('name') or ''}\n"
-                f"{(c.get('visual_type') or 'icon').title()}"
-                + (f" · {c.get('icon_name')}" if c.get('icon_name') else '')
-                + (f" · image" if c.get('image_path') else '')
+                f"{count} product{'s' if count != 1 else ''}"
+                + (f" · {c.get('description')}" if c.get('description') else '')
             )
             item.setText(label)
             item.setSizeHint(QSize(200, 52))
@@ -110,10 +128,10 @@ class CategoryManagerDialog(QDialog):
             name.setStyleSheet(
                 f"color:{C['text']}; font-weight:700; font-size:14px; background:transparent;")
             col.addWidget(name)
+            count = int(c.get('product_count') or 0)
             meta = QLabel(
-                f"{(c.get('visual_type') or 'icon').title()}"
-                + (f" · {c.get('icon_name')}" if c.get('icon_name') else '')
-                + (f" · {c.get('accent_color')}" if c.get('accent_color') else '')
+                f"{count} product{'s' if count != 1 else ''}"
+                + (f" · {c.get('description')}" if c.get('description') else ' · No description')
             )
             meta.setStyleSheet(
                 f"color:{C['text2']}; font-size:11px; background:transparent;")
@@ -147,10 +165,25 @@ class CategoryManagerDialog(QDialog):
         cat = self._selected()
         if not cat:
             return
-        if QMessageBox.question(
-            self, 'Deactivate',
-            f"Deactivate category “{cat.get('name')}”?\nProducts keep their category text."
-        ) != QMessageBox.Yes:
+        count = int(cat.get('product_count') or 0)
+        if count:
+            answer = QMessageBox.question(
+                self, 'Delete category',
+                f"Remove “{cat.get('name')}” and leave {count} product"
+                f"{'s' if count != 1 else ''} uncategorised?\n\n"
+                "The products stay in the shop. Only the category is removed.",
+            )
+            if answer != QMessageBox.Yes:
+                return
+            result = self.api.delete_category(cat['id'], leave_uncategorised=True)
+        else:
+            if QMessageBox.question(
+                self, 'Delete category',
+                f"Remove the empty category “{cat.get('name')}”?",
+            ) != QMessageBox.Yes:
+                return
+            result = self.api.delete_category(cat['id'])
+        if result.get('error'):
+            QMessageBox.warning(self, 'Delete category', result['error'])
             return
-        self.api.delete_category(cat['id'])
         self.refresh()

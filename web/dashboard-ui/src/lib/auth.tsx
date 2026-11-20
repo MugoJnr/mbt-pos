@@ -15,6 +15,7 @@ import {
   setSession,
   type MbtUser,
 } from "./api";
+import { DeveloperRecovery } from "@/components/developer-recovery";
 
 type AuthCtx = {
   token: string;
@@ -45,9 +46,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .catch(() => {});
     };
     refresh();
+    const timer = window.setInterval(refresh, 15000);
     window.addEventListener("focus", refresh);
     return () => {
       live = false;
+      window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
   }, [token]);
@@ -105,8 +108,17 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recovery, setRecovery] = useState(false);
 
   if (isAuthed) return <>{children}</>;
+
+  if (recovery) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-app px-4 py-8">
+        <DeveloperRecovery onBack={() => setRecovery(false)} />
+      </div>
+    );
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -175,6 +187,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
           className="w-full min-h-11 rounded-xl bg-gold py-3 text-sm font-extrabold tracking-wide text-[color:var(--gold-fg)] hover:brightness-110 disabled:opacity-60 transition-all active:scale-[0.99]"
         >
           {busy ? "Signing in…" : "SIGN IN"}
+        </button>
+        <button
+          type="button"
+          className="mt-4 w-full text-sm font-semibold text-text2 hover:text-gold"
+          onClick={() => setRecovery(true)}
+        >
+          Developer emergency recovery
         </button>
       </form>
     </div>

@@ -45,6 +45,49 @@ def like_pattern(text: str) -> str:
     return f"%{escaped}%"
 
 
+def _shown(value) -> str:
+    if value is None or value == "":
+        return "Not recorded"
+    return str(value)
+
+
+def audit_sections(event: dict) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Labeled groups for one audit event. Missing values stay marked as not recorded."""
+    event = event or {}
+    sections = [
+        ("Event", [
+            ("Event ID", _shown(event.get("id"))),
+            ("Action", _shown(event.get("action"))),
+            ("Area", _shown(event.get("module"))),
+            ("Outcome", _shown(event.get("outcome"))),
+            ("Recorded", _shown(event.get("recorded_at") or event.get("created_at"))),
+        ]),
+        ("Staff", [
+            ("Account", _shown(event.get("username"))),
+            ("Account ID", _shown(event.get("user_id"))),
+            ("Role at the time", _shown(event.get("role_at_event"))),
+            ("Source", _shown(event.get("source"))),
+        ]),
+        ("What was recorded", [
+            ("Details", _shown(event.get("details"))),
+        ]),
+    ]
+    changes = event.get("changes") or []
+    if changes:
+        rows = []
+        for change in changes:
+            if not isinstance(change, dict):
+                continue
+            rows.append((
+                _shown(change.get("field")),
+                f"{_shown(change.get('before'))} -> {_shown(change.get('after'))}",
+            ))
+        sections.append(("Before and after", rows or [("Change", "Not recorded")]))
+    else:
+        sections.append(("Before and after", [("Change", "This event did not record a before-and-after value.")]))
+    return sections
+
+
 def describe_event(row: dict, related: list | None = None, linked: dict | None = None) -> dict:
     """Fields the audit row actually contains, plus parsed before/after text."""
     details = redact(row.get("details") or "")

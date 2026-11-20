@@ -219,6 +219,6 @@ class CloseDefectTests(unittest.TestCase):
             info = handle.read()
         with open(os.path.join(ROOT, "version.json"), encoding="utf-8") as handle:
             version = json.load(handle)
-        self.assertIn("3.1.89.0", info)
-        self.assertNotIn("3.1.88.0", info)
-        self.assertEqual(version["version"], "3.1.89")
+        self.assertIn("3.1.90.0", info)
+        self.assertNotIn("3.1.89.0", info)
+        self.assertEqual(version["version"], "3.1.90")
