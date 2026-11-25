@@ -157,6 +157,8 @@ class ShopDayMoneyTests(unittest.TestCase):
         self.assertTrue(voided.get("success") and live.get("success"), (voided, live))
         reversed_row = self.api.reverse_stock_receipt(voided["receipt_id"], pin="135790")
         self.assertTrue(reversed_row.get("success"), reversed_row)
+        summary = self.api.supplier_payable_summary()
+        self.assertAlmostEqual(float(summary.get("invoiced_period") or 0), 2000.0, places=2)
         refused = self.api.record_supplier_payment(supplier["id"], 40000, method="cash")
         self.assertEqual(refused.get("status"), 409)
         paid = self.api.record_supplier_payment(supplier["id"], 2000, method="M-Pesa", reference="QA1")
