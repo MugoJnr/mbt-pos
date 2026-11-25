@@ -96,6 +96,9 @@ create table if not exists public.cloud_sale_items (
   quantity numeric(14,4) not null default 0,
   unit_price numeric(14,4) not null default 0,
   unit_cost numeric(14,4),
+  costed_qty numeric(14,4),
+  line_cost numeric(14,4),
+  returned_qty numeric(14,4) not null default 0,
   discount numeric(14,4) not null default 0,
   total numeric(14,4) not null default 0,
   source_created_at timestamptz,
@@ -423,7 +426,8 @@ begin
   elsif p_entity_type = 'sale_item' then
     insert into public.cloud_sale_items(
       org_id, device_id, branch_id, source_id, sale_source_id, product_source_id,
-      product_name, sku, category, quantity, unit_price, unit_cost, discount,
+      product_name, sku, category, quantity, unit_price, unit_cost, costed_qty,
+      line_cost, returned_qty, discount,
       total, source_created_at, source_updated_at, deleted, synced_at
     ) values (
       p_org_id, p_device_id, p_branch_id, p_source_id,
@@ -435,6 +439,9 @@ begin
       public._cloud_num(v_payload, 'quantity'),
       public._cloud_num(v_payload, 'unit_price'),
       nullif(v_payload ->> 'unit_cost', '')::numeric,
+      nullif(v_payload ->> 'costed_qty', '')::numeric,
+      nullif(v_payload ->> 'line_cost', '')::numeric,
+      coalesce(nullif(v_payload ->> 'returned_qty', '')::numeric, 0),
       public._cloud_num(v_payload, 'discount'),
       public._cloud_num(v_payload, 'total'),
       v_created, v_updated, v_deleted, now()
@@ -449,6 +456,9 @@ begin
       quantity = excluded.quantity,
       unit_price = excluded.unit_price,
       unit_cost = excluded.unit_cost,
+      costed_qty = excluded.costed_qty,
+      line_cost = excluded.line_cost,
+      returned_qty = excluded.returned_qty,
       discount = excluded.discount,
       total = excluded.total,
       source_created_at = excluded.source_created_at,

@@ -14,7 +14,9 @@ _TYPE_LABELS = {
     "consumption_void": "Consumption void",
     "refund": "Refund",
     "large_discount": "Large discount",
-    "price_override": "Price change",
+    "price_override": "Price correction",
+    "product_publish": "New product",
+    "product_change": "Product or price change",
     "expense": "Expense",
     "credit": "Credit",
     "stock_adjust": "Stock adjustment",
@@ -73,7 +75,7 @@ def _label(status: str) -> str:
 
 
 def _reviewers_for(kind: str) -> set[str]:
-    if kind in ("supplier_void", "supplier_backdate"):
+    if kind in ("supplier_void", "supplier_backdate", "product_publish", "product_change"):
         return {"admin", "superadmin"}
     return _REVIEW_ROLES
 

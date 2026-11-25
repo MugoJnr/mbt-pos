@@ -169,7 +169,7 @@ def approve(db, actor: dict, request_id: int, poster, note: str = "") -> dict:
     if not row:
         db.rollback()
         raise DatedActionError("Request was not found.", 404)
-    if int(row["requester_id"] or 0) == int(actor.get("id") or 0):
+    if _blocks_own_review(actor, row["requester_id"]):
         db.rollback()
         raise DatedActionError("You cannot review your own request.", 403)
     try:
@@ -262,7 +262,7 @@ def reject(db, actor: dict, request_id: int, reason: str) -> dict:
     if not row:
         db.rollback()
         raise DatedActionError("Request was not found.", 404)
-    if int(row["requester_id"] or 0) == int(actor.get("id") or 0):
+    if _blocks_own_review(actor, row["requester_id"]):
         db.rollback()
         raise DatedActionError("You cannot review your own request.", 403)
     if row["status"] == "rejected":
@@ -458,6 +458,13 @@ def _closed(db, day: str):
 def _can_post(actor: dict) -> bool:
     from desktop.utils.security import has_permission
     return has_permission(actor or {}, "sales.business_day")
+
+
+def _blocks_own_review(actor: dict, requester_id) -> bool:
+    """A Super Admin may decide a request they created. Other roles may not."""
+    if _role(actor) == "superadmin":
+        return False
+    return int(requester_id or 0) == int((actor or {}).get("id") or 0)
 
 
 def _require_review(actor: dict) -> None:

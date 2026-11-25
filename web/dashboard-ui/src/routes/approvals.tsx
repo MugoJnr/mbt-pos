@@ -196,9 +196,11 @@ function ApprovalsPage() {
       </div>
       {canRequest ? (
         <Card className="mb-4 p-4">
-          <div className="text-sm font-semibold text-text">Request a void</div>
+          <div className="text-sm font-semibold text-text">{sessionSuper ? "Void a receipt" : "Request a void"}</div>
           <p className="mt-1 text-xs text-text2">
-            Enter the receipt number. The sale stays completed until a manager approves it.
+            {sessionSuper
+              ? "This voids the receipt now. It does not wait in this queue."
+              : "Enter the receipt number. The sale stays completed until a manager approves it."}
           </p>
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_1fr_auto]">
             <Input
@@ -229,9 +231,13 @@ function ApprovalsPage() {
                     setVoidNote(data?.error || "The void request was not sent.");
                     return;
                   }
-                  setVoidNote(data.duplicate
-                    ? "That sale is already waiting for approval. It is still completed."
-                    : "Request sent. The sale is still completed.");
+                  setVoidNote(
+                    data.executed || data.sale_status === "voided"
+                      ? "Voided. The receipt is no longer completed, and no approval request was created."
+                      : data.duplicate
+                        ? "That sale is already waiting for approval. It is still completed."
+                        : "Request sent. The sale is still completed.",
+                  );
                   setVoidReceipt("");
                   setVoidReason("");
                   qc.invalidateQueries({ queryKey: ["approvals"] });
@@ -240,7 +246,7 @@ function ApprovalsPage() {
                 }
               }}
             >
-              {sendingVoid ? "Sending…" : "Send request"}
+              {sendingVoid ? "Sending…" : sessionSuper ? "Void now" : "Send request"}
             </Button>
           </div>
           {voidNote ? <div className="mt-2 text-sm text-text">{voidNote}</div> : null}

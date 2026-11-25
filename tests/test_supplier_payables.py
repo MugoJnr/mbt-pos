@@ -285,3 +285,78 @@ class SupplierPayableTests(unittest.TestCase):
         self.assertEqual(len(admin["requests"]), 1)
         self.assertEqual(admin["requests"][0]["next_action"], "Awaiting your review")
         self.assertEqual(own["requests"], [])
+
+    def test_sagana_four_receipts_keep_their_own_balances(self):
+        supplier = self.api.create_supplier({
+            "name": "Sagana Farmcare",
+            "phone": "0711000111",
+            "contact_name": "Peter",
+        })
+        self.assertTrue(supplier.get("id"), supplier)
+        supplier_id = supplier["id"]
+        meal = self._product("Dairy Meal", 0, 1)
+        pellets = self._product("Calf Pellets", 0, 1)
+        salt = self._product("Mineral Salt", 0, 1)
+        first = self.api.receive_delivery(supplier_id, [
+            {"product_id": meal, "quantity": 50, "unit_cost": 2000},
+            {"product_id": pellets, "quantity": 60, "unit_cost": 1500},
+        ], reference="SFC-001")
+        second = self.api.receive_delivery(supplier_id, [
+            {"product_id": meal, "quantity": 30, "unit_cost": 2100},
+            {"product_id": salt, "quantity": 20, "unit_cost": 500},
+        ], reference="SFC-002")
+        third = self.api.receive_delivery(supplier_id, [
+            {"product_id": pellets, "quantity": 40, "unit_cost": 1550},
+        ], reference="SFC-003")
+        fourth = self.api.receive_delivery(supplier_id, [
+            {"product_id": meal, "quantity": 20, "unit_cost": 2200},
+            {"product_id": salt, "quantity": 50, "unit_cost": 500},
+        ], reference="SFC-004")
+        receipts = [first, second, third, fourth]
+        self.assertEqual(len({row["receipt_id"] for row in receipts}), 4)
+        self.assertEqual(len({row["receipt_number"] for row in receipts}), 4)
+        self.assertEqual(sum(row["grand_total"] for row in receipts), 394000)
+        cash = self.api.record_supplier_payment(
+            supplier_id, 100000, method="cash", reference="CASH-1", mode="manual",
+            allocations=[{"receipt_id": first["receipt_id"], "amount": 100000}],
+        )
+        mpesa = self.api.record_supplier_payment(
+            supplier_id, 90000, method="mpesa", reference="MPESA-1", mode="manual",
+            allocations=[{"receipt_id": first["receipt_id"], "amount": 90000}],
+        )
+        bank = self.api.record_supplier_payment(
+            supplier_id, 30000, method="bank", reference="BANK-2", mode="manual",
+            allocations=[{"receipt_id": second["receipt_id"], "amount": 30000}],
+        )
+        last = self.api.record_supplier_payment(
+            supplier_id, 69000, method="cash", reference="CASH-4", mode="manual",
+            allocations=[{"receipt_id": fourth["receipt_id"], "amount": 69000}],
+        )
+        for saved in (cash, mpesa, bank, last):
+            self.assertTrue(saved.get("success"), saved)
+        self.assertEqual(self._balance(first["receipt_id"])["payment_status"], "PAID")
+        self.assertEqual(self._balance(first["receipt_id"])["outstanding"], 0)
+        self.assertEqual(len(self._balance(first["receipt_id"])["payments"]), 2)
+        self.assertEqual(self._balance(second["receipt_id"])["outstanding"], 43000)
+        self.assertEqual(self._balance(second["receipt_id"])["payment_status"], "PARTIALLY PAID")
+        self.assertEqual(self._balance(third["receipt_id"])["outstanding"], 62000)
+        self.assertEqual(self._balance(third["receipt_id"])["payment_status"], "UNPAID")
+        self.assertEqual(self._balance(fourth["receipt_id"])["payment_status"], "PAID")
+        statement = self.api.supplier_statement(supplier_id)
+        self.assertEqual(len(statement["invoices"]), 4)
+        self.assertEqual(statement["charged"], 394000)
+        self.assertEqual(statement["outstanding"], 105000)
+        self.assertEqual(round(sum(row["amount"] for row in statement["payments"]), 2), 289000)
+        from backend.cloud_backup.sync_manager import stock_receipt_cloud_payload
+        db = self.ac._db()
+        try:
+            payload = stock_receipt_cloud_payload(db, first["receipt_id"])
+        finally:
+            db.close()
+        self.assertEqual(payload["record_kind"], "stock_receipt")
+        self.assertEqual(payload["reference"], "SFC-001")
+        self.assertEqual(len(payload["lines"]), 2)
+        self.assertEqual(len(payload["batches"]), 2)
+        self.assertEqual(payload["payment_status"], "PAID")
+        self.assertEqual(len(payload["payments"]), 2)
+        self.assertEqual(payload["supplier_name"], "Sagana Farmcare")

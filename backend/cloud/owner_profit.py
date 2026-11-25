@@ -1,9 +1,10 @@
 """Owner-portal profit splits built from synced sale lines.
 
-The till copies FIFO cost onto each sale line at the time of the sale
-(``unit_cost``). The portal uses that snapshot. It does not recompute
-batches, and a later debt repayment does not create a new sale or a
-second profit.
+The till copies the FIFO cost actually consumed onto each sale line
+(``unit_cost``, ``costed_qty``, ``line_cost``). The portal uses that
+snapshot. It does not recompute batches, and a later debt repayment does
+not create a new sale or a second profit. A missing cost is not treated
+as zero. Quantity that was returned is not profit and is not uncosted.
 
 Allocation for one sale
 -----------------------
@@ -65,6 +66,12 @@ def _round2(value: float) -> float:
 
 def sale_is_void(sale: dict) -> bool:
     return str(sale.get('status') or '').lower() in _VOID
+
+
+def sale_counts_toward_profit(sale: dict) -> bool:
+    """Same sales the till's FIFO profit counts: completed receipts only."""
+    status = str(sale.get('status') or 'completed').strip().lower()
+    return status in ('', 'completed')
 
 
 def tender_collected(sale: dict) -> float:
@@ -142,32 +149,116 @@ def _lines_for(sale: dict, items: list[dict]) -> list[dict]:
     return out
 
 
+def _present(value: Any) -> bool:
+    return value not in (None, '')
+
+
 def line_is_uncosted(item: dict) -> bool:
     """A missing or zero synced cost is not a buying price.
 
     The portal must not turn that sale into profit. A later sync that
-    carries the till's unit cost is what makes the line count.
+    carries the till's FIFO snapshot is what makes the line count.
     """
-    raw = item.get('unit_cost')
-    if raw in (None, ''):
-        raw = item.get('cost_price')
-    if raw in (None, ''):
-        return True
-    try:
-        return float(raw) <= 0
-    except (TypeError, ValueError):
-        return True
+    parts = line_economics(item)
+    return parts['revenue'] <= 0 and parts['uncosted'] > 0
+
+
+def line_economics(item: dict) -> dict:
+    """Revenue that has a FIFO cost, that cost, and the unsold-cost remainder.
+
+    Returned quantity is dropped from both sides. A line with no snapshot
+    contributes its net selling amount as uncosted, never as profit.
+    ``costed_qty`` and ``line_cost`` are the till's snapshot. An older cloud
+    row that only has ``unit_cost`` is treated as fully costed.
+    """
+    empty = {'revenue': 0.0, 'cost': 0.0, 'profit': 0.0, 'uncosted': 0.0}
+    quantity = _num(item.get('quantity'))
+    if quantity < 0:
+        return empty
+    revenue_total = _num(item.get('total'))
+    returned = min(quantity, max(0.0, _num(item.get('returned_qty')))) if quantity else 0.0
+    net = _round2(quantity - returned) if quantity else 0.0
+    if quantity <= 0 or net <= 0:
+        return empty
+
+    def _positive(value: Any) -> float | None:
+        if not _present(value):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if number > 0 else None
+
+    has_cover = _present(item.get('costed_qty')) or _present(item.get('line_cost'))
+    # The product-card buying price is not a sale cost. A stored zero with no
+    # coverage is unknown. A covered line whose cost is zero is free stock.
+    unit = _positive(item.get('unit_cost')) or 0.0
+    explicit_zero = (
+        _present(item.get('line_cost'))
+        and _num(item.get('line_cost')) == 0
+        and _present(item.get('costed_qty'))
+        and _num(item.get('costed_qty')) > 0
+        and unit <= 0
+    )
+    if has_cover:
+        if _present(item.get('costed_qty')):
+            costed_qty = min(net, max(0.0, _num(item.get('costed_qty'))))
+        else:
+            costed_qty = net
+        if _present(item.get('line_cost')):
+            cost = _num(item.get('line_cost'))
+        else:
+            cost = costed_qty * unit
+    elif unit > 0:
+        costed_qty = net
+        cost = costed_qty * unit
+    else:
+        costed_qty = 0.0
+        cost = 0.0
+
+    counted = revenue_total * (costed_qty / quantity) if costed_qty > 0 else 0.0
+    uncovered = max(0.0, net - costed_qty)
+    uncosted = revenue_total * (uncovered / quantity) if uncovered > 0 else 0.0
+    if explicit_zero and costed_qty > 0:
+        return {
+            'revenue': _round2(counted),
+            'cost': 0.0,
+            'profit': _round2(counted),
+            'uncosted': _round2(uncosted),
+            'cost_state': 'genuine_zero',
+        }
+    if costed_qty <= 0 or cost <= 0:
+        return {
+            'revenue': 0.0,
+            'cost': 0.0,
+            'profit': 0.0,
+            'uncosted': _round2(revenue_total * (net / quantity)),
+            'cost_state': 'unknown',
+        }
+    return {
+        'revenue': _round2(counted),
+        'cost': _round2(cost),
+        'profit': _round2(counted - cost),
+        'uncosted': _round2(uncosted),
+        'cost_state': 'verified_fifo',
+    }
 
 
 def line_profit(item: dict) -> tuple[float, float, float]:
-    revenue = _num(item.get('total'))
-    if line_is_uncosted(item):
-        return _round2(revenue), 0.0, 0.0
-    raw = item.get('unit_cost')
-    if raw in (None, ''):
-        raw = item.get('cost_price')
-    cost = _num(item.get('quantity')) * float(raw)
-    return _round2(revenue), _round2(cost), _round2(revenue - cost)
+    parts = line_economics(item)
+    return parts['revenue'], parts['cost'], parts['profit']
+
+
+def apply_product_card_costs(items: list[dict], products: list[dict]) -> int:
+    """Do not copy the product-card buying price onto a sale.
+
+    A new delivery can change that one card price while older stock is still
+    on hand. Sale cost comes only from the FIFO snapshot on the sale line.
+    The arguments stay so existing callers do not break.
+    """
+    del items, products
+    return 0
 
 
 def allocate_sale_profits(
@@ -192,21 +283,23 @@ def allocate_sale_profits(
     by_day: dict[str, float] = {}
     details = []
     for sale in sales:
-        if sale_is_void(sale) or str(sale.get('deleted') or '').lower() in ('1', 'true'):
+        if (
+            not sale_counts_toward_profit(sale)
+            or str(sale.get('deleted') or '').lower() in ('1', 'true')
+        ):
             continue
         lines = _lines_for(sale, items)
         revenue = 0.0
         cost = 0.0
         for line in lines:
-            if line_is_uncosted(line):
+            parts = line_economics(line)
+            if parts['uncosted']:
                 buckets['uncosted_sales'] = _round2(
-                    buckets['uncosted_sales'] + _num(line.get('total'))
+                    buckets['uncosted_sales'] + parts['uncosted']
                 )
                 buckets['uncosted_lines'] += 1
-                continue
-            line_revenue, line_cost, _gp = line_profit(line)
-            revenue += line_revenue
-            cost += line_cost
+            revenue += parts['revenue']
+            cost += parts['cost']
         profit = _round2(revenue - cost)
         kind = sale_kind(sale)
         invoice = _invoice_for(sale, invoices)

@@ -57,6 +57,14 @@ class QuantityRuleTests(unittest.TestCase):
         })
         self.assertEqual(line["quantity"], 0.75)
         self.assertEqual(line["total"], 140.0)
+        db.execute("ALTER TABLE products ADD COLUMN allow_decimal_qty INTEGER")
+        db.execute("UPDATE products SET allow_decimal_qty=1 WHERE id=2")
+        half_bag = fill_sale_line(db, {
+            "product_id": 2, "quantity": "0.5", "unit_price": "20",
+        })
+        self.assertEqual(half_bag["quantity"], 0.5)
+        self.assertEqual(half_bag["total"], 10.0)
+        db.execute("UPDATE products SET allow_decimal_qty=NULL WHERE id=2")
         with self.assertRaises(ValueError) as refused_pieces:
             fill_sale_line(db, {"product_id": 2, "quantity": "0.5", "unit_price": "20"})
         self.assertIn("whole", str(refused_pieces.exception).lower())
@@ -314,6 +322,98 @@ class DatedActionTests(unittest.TestCase):
         stranger = self._api(self.cashier, "cashier", "Ada Cashier").apply_stocktake(opened["id"])
         self.assertEqual(stranger.get("status"), 403)
         db.close()
+
+
+class DairyMealDecimalSaleTests(unittest.TestCase):
+    """A bag counted as pieces can still be sold in fractions when that product allows it."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self._db_path = os.path.join(self._tmpdir.name, "shop.db")
+        self._patches = [
+            patch("mbt_paths.get_db_path", return_value=self._db_path),
+            patch("desktop.utils.api_client.get_db_path", return_value=self._db_path),
+        ]
+        for item in self._patches:
+            item.start()
+        import desktop.utils.api_client as ac
+        ac._SCHEMA_READY = False
+        self.ac = ac
+        self.api = ac.APIClient()
+        self.api._role = "superadmin"
+        self.api._user_id = 1
+        self.api._username = "owner"
+        db = ac._db()
+        db.execute(
+            "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
+            ("owner", "x", "superadmin", "Shop Owner"),
+        )
+        db.commit()
+        db.close()
+
+    def tearDown(self):
+        for item in self._patches:
+            item.stop()
+        self._tmpdir.cleanup()
+        self.ac._SCHEMA_READY = False
+
+    def test_dairy_meal_fractions_keep_stock_and_a_whole_piece_stays_whole(self):
+        meal = self.api.create_product({
+            "name": "Dairy Meal", "sku": "DM-70", "price": 3200, "cost_price": 2800,
+            "stock": 10, "unit": "pcs", "allow_decimal_qty": 1,
+        })
+        self.assertTrue(meal.get("success"), meal)
+        bran = self.api.create_product({
+            "name": "Wheat Bran", "sku": "WB-1", "price": 80, "cost_price": 50,
+            "stock": 20, "unit": "kg",
+        })
+        milk = self.api.create_product({
+            "name": "Cooking Oil", "sku": "OIL-1", "price": 200, "cost_price": 150,
+            "stock": 8, "unit": "litre",
+        })
+        nails = self.api.create_product({
+            "name": "Nails", "sku": "NL-1", "price": 10, "cost_price": 4,
+            "stock": 100, "unit": "pcs",
+        })
+        self.assertTrue(bran.get("success") and milk.get("success") and nails.get("success"))
+        sold = 0.0
+        for raw in (0.25, 0.5, 0.75, 1.5, 2.5):
+            total = round(3200 * raw, 2)
+            result = self.api.create_sale({
+                "items": [{"product_id": meal["id"], "quantity": raw, "unit_price": 3200, "discount": 0}],
+                "subtotal": total, "discount": 0, "tax": 0, "total": total,
+                "payment_method": "Cash", "amount_paid": total, "change_amount": 0, "status": "completed",
+            })
+            self.assertTrue(result.get("ok") or result.get("id") or result.get("sale_id"), result)
+            sold = round(sold + raw, 4)
+        kg = self.api.create_sale({
+            "items": [{"product_id": bran["id"], "quantity": 1.25, "unit_price": 80, "discount": 0}],
+            "subtotal": 100, "discount": 0, "tax": 0, "total": 100,
+            "payment_method": "Cash", "amount_paid": 100, "change_amount": 0, "status": "completed",
+        })
+        litre = self.api.create_sale({
+            "items": [{"product_id": milk["id"], "quantity": 0.5, "unit_price": 200, "discount": 0}],
+            "subtotal": 100, "discount": 0, "tax": 0, "total": 100,
+            "payment_method": "Cash", "amount_paid": 100, "change_amount": 0, "status": "completed",
+        })
+        self.assertTrue(kg.get("ok") or kg.get("id") or kg.get("sale_id"), kg)
+        self.assertTrue(litre.get("ok") or litre.get("id") or litre.get("sale_id"), litre)
+        refused = self.api.create_sale({
+            "items": [{"product_id": nails["id"], "quantity": 0.5, "unit_price": 10, "discount": 0}],
+            "subtotal": 5, "discount": 0, "tax": 0, "total": 5,
+            "payment_method": "Cash", "amount_paid": 5, "change_amount": 0, "status": "completed",
+        })
+        self.assertIn("whole", str(refused.get("error", "")).lower())
+        db = self.ac._db()
+        meal_stock = db.execute("SELECT stock, unit, allow_decimal_qty FROM products WHERE id=?", (meal["id"],)).fetchone()
+        lines = db.execute(
+            "SELECT quantity FROM sale_items WHERE product_id=? ORDER BY id", (meal["id"],)
+        ).fetchall()
+        db.close()
+        self.assertEqual(meal_stock["unit"], "pcs")
+        self.assertEqual(meal_stock["allow_decimal_qty"], 1)
+        self.assertAlmostEqual(float(meal_stock["stock"]), round(10 - sold, 4), places=4)
+        self.assertEqual([float(row["quantity"]) for row in lines], [0.25, 0.5, 0.75, 1.5, 2.5])
 
 
 if __name__ == "__main__":

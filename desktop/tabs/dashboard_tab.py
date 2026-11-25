@@ -256,6 +256,12 @@ class DashboardTab(QWidget):
         self._sticky_lay = QVBoxLayout(self._sticky)
         self._sticky_lay.setContentsMargins(20, 14, 20, 8)
         self._sticky_lay.setSpacing(10)
+        self._pending_banner = QLabel('')
+        self._pending_banner.setWordWrap(True)
+        self._pending_banner.setCursor(Qt.PointingHandCursor)
+        self._pending_banner.mousePressEvent = self._open_pending_requests
+        self._pending_banner.hide()
+        self._sticky_lay.addWidget(self._pending_banner)
         outer.addWidget(self._sticky)
 
         self._page_scroll = QScrollArea()
@@ -1107,7 +1113,27 @@ class DashboardTab(QWidget):
         self._period_key = key
         self._load()
 
+    def _open_pending_requests(self, _event):
+        from desktop.tabs.requests_centre_dialog import RequestsCentreDialog
+        RequestsCentreDialog(self.api, self.user, self).exec_()
+        self._refresh_pending_banner()
+
+    def _refresh_pending_banner(self):
+        banner = getattr(self, '_pending_banner', None)
+        if banner is None:
+            return
+        try:
+            pending = int((self.api.pending_reviews() or {}).get('pending') or 0)
+        except Exception:
+            pending = 0
+        if pending <= 0:
+            banner.hide()
+            return
+        banner.setText(f'{pending} request{"s" if pending != 1 else ""} waiting. Open Request Centre.')
+        banner.show()
+
     def _load(self):
+        self._refresh_pending_banner()
         if not is_alive(self) or not is_alive(getattr(self, '_k_sales', None)):
             return
         from desktop.utils.security import dashboard_locked_to_today

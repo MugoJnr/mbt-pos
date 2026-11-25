@@ -64,7 +64,7 @@ class ReleaseRepoHelpersTests(unittest.TestCase):
     def test_pick_best_prefers_higher_version_with_an_installer(self):
         from backend.release_repos import pick_best_release
         best = pick_best_release([
-            {"version": "3.1.90", "asset_url": "", "repo": PUBLIC},
+            {"version": "3.1.91", "asset_url": "", "repo": PUBLIC},
             {"version": "3.1.84", "asset_url": "https://example/setup.exe", "repo": LEGACY},
         ])
         self.assertEqual(best["version"], "3.1.84")

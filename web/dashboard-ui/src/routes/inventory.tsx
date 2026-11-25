@@ -34,6 +34,7 @@ type Product = {
   stock: number;
   min_stock?: number;
   unit?: string;
+  allow_decimal_qty?: number | null;
   image_path?: string;
   is_active?: number;
   cost_confirmed?: number;
@@ -102,7 +103,8 @@ function Inventory() {
   const role = String(user?.role || "").toLowerCase();
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   const canAdjust = actions ? actions.includes("inventory.adjust_stock") : role === "superadmin";
-  const canEdit = actions ? actions.includes("inventory.edit_info") : ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canEdit = actions ? actions.includes("inventory.edit_info") : ["manager", "admin", "superadmin"].includes(role);
+  const canCreate = actions ? actions.includes("inventory.create") : ["manager", "admin", "superadmin"].includes(role);
   const canCreateCategory = actions ? actions.includes("categories.create") : ["cashier", "manager", "admin", "superadmin"].includes(role);
   const canManageCategories = actions ? actions.includes("categories.manage") : role === "admin" || role === "superadmin";
   const canDeleteCategory = actions ? actions.includes("categories.delete") : role === "admin" || role === "superadmin";
@@ -110,6 +112,9 @@ function Inventory() {
   const canReceive = actions
     ? actions.includes("inventory.receive")
     : ["cashier", "manager", "admin", "superadmin"].includes(role);
+  const canBatchPrice = actions
+    ? actions.includes("inventory.batch_price")
+    : ["manager", "admin", "superadmin"].includes(role);
   const [adjId, setAdjId] = useState("");
   const [adjDir, setAdjDir] = useState("add");
   const [adjQty, setAdjQty] = useState("1");
@@ -119,6 +124,7 @@ function Inventory() {
   const [adjBackdate, setAdjBackdate] = useState("");
   const [adjMsg, setAdjMsg] = useState("");
   const [adjPin, setAdjPin] = useState("");
+  const [adjPinUser, setAdjPinUser] = useState("");
   const [reviewPin, setReviewPin] = useState("");
   const seeCost = actions
     ? actions.includes("inventory.view_cost")
@@ -138,9 +144,15 @@ function Inventory() {
   const [recvBusy, setRecvBusy] = useState(false);
   const recvTokenRef = useRef("");
   const [recvLines, setRecvLines] = useState<
-    { product_id: number; name: string; sku?: string; unit?: string; quantity: number | string; unit_cost: number | null; rejected_qty?: number; ordered_qty?: number | null; explicit_zero?: boolean; allow_excess?: boolean }[]
+    { product_id: number; name: string; sku?: string; unit?: string; quantity: number | string; unit_cost: number | null; sell_price?: number | null; rejected_qty?: number; ordered_qty?: number | null; explicit_zero?: boolean; allow_excess?: boolean }[]
   >([]);
+  const [batchSearch, setBatchSearch] = useState("");
+  const batchesQ = useQuery({
+    queryKey: ["batches", batchSearch],
+    queryFn: () => GET<any>("/batches", batchSearch ? { q: batchSearch } : undefined),
+  });
   const [recvCost, setRecvCost] = useState("");
+  const [recvSell, setRecvSell] = useState("");
   const [recvRejected, setRecvRejected] = useState("");
   const [recvOrdered, setRecvOrdered] = useState("");
   const [recvFree, setRecvFree] = useState(false);
@@ -162,7 +174,7 @@ function Inventory() {
   const [editId, setEditId] = useState("");
   const [editForm, setEditForm] = useState({
     name: "", sku: "", barcode: "", category: "", price: "", cost_price: "",
-    unit: "pcs", min_stock: "5", is_active: "1",
+    unit: "pcs", decimal_qty: "", min_stock: "5", is_active: "1",
   });
   const [editMsg, setEditMsg] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -175,7 +187,7 @@ function Inventory() {
   const [stocktakeBackdate, setStocktakeBackdate] = useState("");
   const [stocktakeMsg, setStocktakeMsg] = useState("");
   const [newProduct, setNewProduct] = useState({
-    name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "",
+    name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", decimal_qty: "", barcode: "",
   });
   const [newPhoto, setNewPhoto] = useState<File | null>(null);
   const [newPhotoUrl, setNewPhotoUrl] = useState("");
@@ -279,6 +291,7 @@ function Inventory() {
       price: String(p.price ?? ""),
       cost_price: String(p.cost_price ?? ""),
       unit: p.unit || "pcs",
+      decimal_qty: p.allow_decimal_qty == null || p.allow_decimal_qty === undefined ? "" : String(p.allow_decimal_qty),
       min_stock: String(p.min_stock ?? 5),
       is_active: Number(p.is_active ?? 1) === 0 ? "0" : "1",
     });
@@ -307,6 +320,7 @@ function Inventory() {
       category: editForm.category.trim(),
       price,
       unit: editForm.unit.trim() || "pcs",
+      allow_decimal_qty: editForm.decimal_qty === "" ? null : Number(editForm.decimal_qty),
       min_stock: Number(editForm.min_stock || 0),
     };
     if (canRemove) body.is_active = editForm.is_active === "0" ? 0 : 1;
@@ -326,12 +340,17 @@ function Inventory() {
     }
     setEditBusy(true);
     try {
-      const res = await PUT<{ success?: boolean; error?: string }>(`/products/${editId}`, body);
+      const res = await PUT<{ success?: boolean; error?: string; pending_approval?: boolean; message?: string }>(`/products/${editId}`, body);
       if (!res?.success) {
         setEditMsg(res?.error || "The product was not saved.");
         return;
       }
-      setEditMsg("Product details saved. Stock quantity was not changed.");
+      if (res.pending_approval) {
+        setEditMsg(res.message || "Waiting for an administrator. The live product was not changed.");
+        qc.invalidateQueries({ queryKey: ["products"] });
+        return;
+      }
+      setEditMsg(res.message || "Product details saved. Stock quantity was not changed.");
       qc.invalidateQueries({ queryKey: ["products"] });
       if (productDetail && String(productDetail.id) === editId) {
         setProductDetail({
@@ -394,6 +413,13 @@ function Inventory() {
       </label>
       <label className="text-xs font-semibold text-text2">Unit
         <Input aria-label="Unit" className="mt-1 h-11" value={editForm.unit} onChange={(e) => setEditForm({ ...editForm, unit: e.target.value })} />
+      </label>
+      <label className="text-xs font-semibold text-text2">Decimal quantities
+        <select aria-label="Decimal quantities" className="mt-1 h-11 w-full rounded-xl border border-border bg-input px-3 text-sm text-text" value={editForm.decimal_qty} onChange={(e) => setEditForm({ ...editForm, decimal_qty: e.target.value })}>
+          <option value="">Follow the unit</option>
+          <option value="1">Allow decimal quantities</option>
+          <option value="0">Whole quantities only</option>
+        </select>
       </label>
       <label className="text-xs font-semibold text-text2">Low-stock alert
         <Input aria-label="Low-stock alert" className="mt-1 h-11" type="number" min={0} value={editForm.min_stock} onChange={(e) => setEditForm({ ...editForm, min_stock: e.target.value })} />
@@ -579,8 +605,18 @@ function Inventory() {
               {user?.role === "superadmin" ? (
                 <div className="text-xs text-text2">Signed in as Super Admin. No PIN is required.</div>
               ) : (
+              <>
               <label className="text-xs font-semibold text-text2">
-                Super-Admin PIN
+                Super Admin username
+                <Input
+                  aria-label="Super Admin username"
+                  value={adjPinUser}
+                  onChange={(e) => setAdjPinUser(e.target.value)}
+                  className="mt-1 h-11"
+                />
+              </label>
+              <label className="text-xs font-semibold text-text2">
+                That Super Admin's PIN
                 <Input
                   aria-label="Super-Admin PIN"
                   type="password"
@@ -591,6 +627,7 @@ function Inventory() {
                   className="mt-1 h-11"
                 />
               </label>
+              </>
               )}
               <BusinessDateField label="Adjustment date" value={adjDate} onChange={setAdjDate} confirmed={adjDateConfirmed} onConfirm={setAdjDateConfirmed} reason={adjBackdate} onReason={setAdjBackdate} />
               <div className="text-xs font-semibold text-text2">
@@ -639,6 +676,7 @@ function Inventory() {
                   expected_stock: current,
                   reason: adjReason || "Correction",
                   pin: adjPin,
+                  pin_username: adjPinUser,
                   business_date: adjDate,
                   backdate_reason: adjBackdate.trim(),
                   client_token: `adj-${adjId}-${adjDate}-${newQty}`,
@@ -661,6 +699,50 @@ function Inventory() {
           </div>
         </Card>
       ) : null}
+      <Card className="mb-3">
+        <div className="p-4 space-y-3">
+          <div className="text-sm font-extrabold text-text">Batches</div>
+          <div className="text-xs text-text2">Every delivery batch, including finished batches. Open a product history row to change a selling price.</div>
+          <Input
+            aria-label="Search batches"
+            value={batchSearch}
+            placeholder="Search product, batch, or supplier"
+            onChange={(e) => setBatchSearch(e.target.value)}
+            className="h-11 max-w-md"
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-text2">
+                <tr>
+                  <th className="px-2 py-2">Batch</th>
+                  <th className="px-2 py-2">Product</th>
+                  <th className="px-2 py-2">Supplier</th>
+                  <th className="px-2 py-2">Left</th>
+                  <th className="px-2 py-2">Selling</th>
+                  <th className="px-2 py-2">Price</th>
+                  <th className="px-2 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(batchesQ.data?.batches || []).map((batch: any) => (
+                  <tr key={batch.id} className="border-t border-border">
+                    <td className="px-2 py-2">{batch.batch_ref}</td>
+                    <td className="px-2 py-2">{batch.product_name}</td>
+                    <td className="px-2 py-2">{batch.supplier_name || "—"}</td>
+                    <td className="px-2 py-2 tabular-nums">{batch.remaining_qty}</td>
+                    <td className="px-2 py-2 tabular-nums">{batch.effective_sell_price == null ? "—" : KES(batch.effective_sell_price)}</td>
+                    <td className="px-2 py-2">{batch.price_mode === "custom" ? "Custom" : "Normal"}</td>
+                    <td className="px-2 py-2">{batch.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {batchesQ.data && !(batchesQ.data.batches || []).length ? (
+              <div className="py-3 text-sm text-text2">No batches match that search.</div>
+            ) : null}
+          </div>
+        </div>
+      </Card>
       {canReceive ? (
         <Card className="mb-3">
           <div className="p-4 space-y-3">
@@ -828,6 +910,22 @@ function Inventory() {
                 <span className="mt-1 block text-[11px] text-text2">Leave blank to use a saved buying price above zero. Type 0 only with Free stock.</span>
               </label>
               ) : null}
+              {canBatchPrice ? (
+              <label className="text-xs font-semibold text-text2">
+                Batch selling price
+                <Input
+                  aria-label="Batch selling price"
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={recvSell}
+                  placeholder="Normal product price"
+                  onChange={(e) => setRecvSell(e.target.value)}
+                  className="mt-1 h-11"
+                />
+                <span className="mt-1 block text-[11px] text-text2">Optional. Blank uses the normal product price for this batch only.</span>
+              </label>
+              ) : null}
               <label className="text-xs font-semibold text-text2">
                 Additional delivery cost
                 <Input
@@ -904,6 +1002,11 @@ function Inventory() {
                   return;
                 }
                 const cost = recvCost.trim() === "" ? null : Number(recvCost);
+                const sell = recvSell.trim() === "" ? null : Number(recvSell);
+                if (sell !== null && (!Number.isFinite(sell) || sell < 0)) {
+                  setRecvMsg("Enter a valid batch selling price, or leave it blank.");
+                  return;
+                }
                 if (cost === 0 && !recvFree) {
                   setRecvMsg("Enter a buying price, or tick Free stock. A blank or accidental zero is not posted.");
                   return;
@@ -930,9 +1033,11 @@ function Inventory() {
                     ordered_qty: ordered && ordered > 0 ? ordered : null,
                     explicit_zero: Boolean(recvFree && cost === 0),
                     allow_excess: recvExcess,
+                    sell_price: sell,
                   },
                 ]);
                 setRecvRejected("");
+                setRecvSell("");
                 setRecvOrdered("");
                 setRecvFree(false);
                 setRecvExcess(false);
@@ -951,6 +1056,7 @@ function Inventory() {
                       <th className="px-3 py-2">Qty received</th>
                       <th className="px-3 py-2">Rejected</th>
                       <th className="px-3 py-2">Unit cost</th>
+                      {canBatchPrice ? <th className="px-3 py-2">Batch price</th> : null}
                       <th className="px-3 py-2 text-right">Line total</th>
                       <th className="px-3 py-2" />
                     </tr>
@@ -1003,6 +1109,25 @@ function Inventory() {
                               className="h-10 w-32"
                             />
                           </td>
+                          {canBatchPrice ? <td className="px-3 py-2">
+                            <Input
+                              aria-label={`Batch selling price for ${line.name}`}
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={line.sell_price ?? ""}
+                              placeholder="Normal"
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setRecvLines((lines) => lines.map((item) => (
+                                  item.product_id === line.product_id
+                                    ? { ...item, sell_price: raw.trim() === "" ? null : Number(raw) }
+                                    : item
+                                )));
+                              }}
+                              className="h-10 w-28"
+                            />
+                          </td> : null}
                           <td className="px-3 py-2 text-right tabular-nums font-semibold text-text">
                             {((Number(line.quantity) || 0) * cost).toFixed(2)}
                           </td>
@@ -1089,6 +1214,7 @@ function Inventory() {
                         ordered_qty: line.ordered_qty,
                         explicit_zero: Boolean(line.explicit_zero),
                         allow_excess: Boolean(line.allow_excess),
+                        sell_price: line.sell_price ?? null,
                       });
                     }
                   } else {
@@ -1101,6 +1227,7 @@ function Inventory() {
                       product_id: Number(recvId),
                       quantity: parsed.quantity,
                       unit_cost: recvCost.trim() === "" ? null : Number(recvCost),
+                      sell_price: recvSell.trim() === "" ? null : Number(recvSell),
                     });
                   }
                   if (recvDate < shopTodayISO() && !canPostBusinessDay() && !recvDateConfirmed) {
@@ -1248,6 +1375,7 @@ function Inventory() {
             >
               Issues
             </Link>
+            {canCreate ? (
             <Button
               variant="primary"
               onClick={() => setShowAdd(true)}
@@ -1255,6 +1383,7 @@ function Inventory() {
             >
               Add product
             </Button>
+            ) : null}
             <Button
               variant="secondary"
               disabled={exporting}
@@ -1649,6 +1778,13 @@ function Inventory() {
                 <label className="text-xs text-text2">Unit
                   <Input className="mt-1 h-11" value={newProduct.unit} onChange={(e) => setNewProduct({ ...newProduct, unit: e.target.value })} />
                 </label>
+                <label className="text-xs text-text2">Decimal quantities
+                  <select aria-label="Decimal quantities" className="mt-1 h-11 w-full rounded-xl border border-border bg-input px-3 text-sm text-text" value={newProduct.decimal_qty} onChange={(e) => setNewProduct({ ...newProduct, decimal_qty: e.target.value })}>
+                    <option value="">Follow the unit</option>
+                    <option value="1">Allow decimal quantities</option>
+                    <option value="0">Whole quantities only</option>
+                  </select>
+                </label>
                 <label className="text-xs text-text2 sm:col-span-2">Category
                   <CategoryField
                     value={newProduct.category}
@@ -1687,7 +1823,7 @@ function Inventory() {
                     }
                     setSavingProduct(true);
                     try {
-                      const created = await POST<{ success?: boolean; id?: number; error?: string }>("/products", {
+                      const created = await POST<{ success?: boolean; id?: number; error?: string; pending_approval?: boolean; message?: string }>("/products", {
                         name: newProduct.name.trim(),
                         sku: newProduct.sku.trim(),
                         category: newProduct.category.trim(),
@@ -1696,10 +1832,16 @@ function Inventory() {
                         explicit_zero: newProduct.cost_price.trim() !== "" && Number(newProduct.cost_price) === 0,
                         stock: Number(newProduct.stock || 0),
                         unit: newProduct.unit.trim() || "pcs",
+                        allow_decimal_qty: newProduct.decimal_qty === "" ? null : Number(newProduct.decimal_qty),
                         barcode: newProduct.barcode.trim(),
                       });
-                      if (!created || created.error || !created.id) {
+                      if (!created || created.error || (!created.id && !created.pending_approval)) {
                         toast.error(created?.error || "The product was not saved.");
+                        return;
+                      }
+                      if (created.pending_approval) {
+                        toast.success(created.message || "Waiting for an administrator. The product was not published.");
+                        setShowAdd(false);
                         return;
                       }
                       if (newPhoto) {
@@ -1716,7 +1858,7 @@ function Inventory() {
                         }
                       }
                       setShowAdd(false);
-                      setNewProduct({ name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", barcode: "" });
+                      setNewProduct({ name: "", sku: "", category: "", price: "", cost_price: "", stock: "0", unit: "pcs", decimal_qty: "", barcode: "" });
                       setNewPhoto(null);
                       setNewPhotoUrl("");
                       qc.invalidateQueries({ queryKey: ["products"] });
@@ -1807,17 +1949,66 @@ function Inventory() {
                     {(historyQ.data?.batches || []).map((batch: any) => (
                       <div key={batch.id} className="flex justify-between gap-3 text-text2">
                         <span>
-                          #{batch.id} {batch.supplier_name || (batch.legacy ? "Opening stock" : "Batch")}
+                          {batch.batch_ref || `#${batch.id}`} {batch.supplier_name || (batch.legacy ? "Opening stock" : "Batch")}
                           {batch.cost_origin === "inherited" ? " · inherited" : ""}
                           {batch.reference_note ? ` · ${batch.reference_note}` : ""} · left {batch.remaining_qty}
                         </span>
+                        <span className="flex items-center gap-3">
                         {historyQ.data?.see_cost ? (
                           <span>
                             buy {KES(batch.purchase_unit_cost || batch.unit_cost || 0)}
                             {Number(batch.extra_unit_cost) ? ` + ${KES(batch.extra_unit_cost)}` : ""}
                             {" · landed "}{KES(batch.unit_cost || 0)}
+                            {batch.price_mode === "custom"
+                              ? ` · sells ${KES(batch.effective_sell_price || 0)} (custom)`
+                              : batch.effective_sell_price != null
+                                ? ` · sells ${KES(batch.effective_sell_price)}`
+                                : ""}
+                          </span>
+                        ) : batch.effective_sell_price != null ? (
+                          <span>
+                            sells {KES(batch.effective_sell_price)}
+                            {batch.price_mode === "custom" ? " (custom)" : ""}
                           </span>
                         ) : null}
+                        {historyQ.data?.can_set_batch_price && batch.status !== "exhausted" ? (
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-primary"
+                            onClick={async () => {
+                              const current = batch.sell_price == null ? "" : String(batch.sell_price);
+                              const entered = window.prompt(
+                                "Selling price for this batch. Leave blank to use the normal product price.",
+                                current,
+                              );
+                              if (entered === null) return;
+                              const trimmed = entered.trim();
+                              if (trimmed !== "") {
+                                const number = Number(trimmed);
+                                if (!Number.isFinite(number) || number < 0) {
+                                  toast.error("Enter a valid selling price.");
+                                  return;
+                                }
+                                const normal = Number(productDetail?.price || 0);
+                                if (number > normal + 0.001 && !window.confirm(
+                                  `This batch price is above the normal product price of ${KES(normal)}. Save it?`,
+                                )) return;
+                              }
+                              const res = await POST<any>(`/cost-layers/${batch.id}/sell-price`, {
+                                sell_price: trimmed === "" ? null : Number(trimmed),
+                              });
+                              if (!res || res.error) toast.error(res?.error || "The price was not saved.");
+                              else {
+                                if (res.warning) toast.warning(res.warning);
+                                else toast.success("Batch selling price saved.");
+                                qc.invalidateQueries({ queryKey: ["product-history", productDetail?.id] });
+                              }
+                            }}
+                          >
+                            Set price
+                          </button>
+                        ) : null}
+                        </span>
                       </div>
                     ))}
                     {historyQ.data && !(historyQ.data.batches || []).length ? (

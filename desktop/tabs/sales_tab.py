@@ -117,7 +117,9 @@ class SalesTab(QWidget):
         try:
             cfg = self.api.get_settings() or {}
             from desktop.utils.pos_components import set_pos_qty_step
+            from desktop.utils.wheel_scroll import apply_saved_interval
             set_pos_qty_step(cfg.get('wheel_pos_qty') or 0.25)
+            apply_saved_interval(self.api)
             layout_id = normalize_layout_id(cfg.get(CHECKOUT_LAYOUT_KEY))
         except Exception:
             layout_id = DEFAULT_CHECKOUT_LAYOUT
@@ -129,6 +131,43 @@ class SalesTab(QWidget):
     def _open_backdate_requests(self):
         from desktop.tabs.backdate_dialog import BackdateDialog
         BackdateDialog(self.api, self.user, self).exec_()
+
+    def _request_price_correction(self):
+        from PyQt5.QtWidgets import QDialog, QFormLayout, QComboBox, QLineEdit, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Request a discount or price correction')
+        form = QFormLayout(dlg)
+        kind = QComboBox()
+        kind.addItem('Price correction', 'price_override')
+        kind.addItem('Discount', 'large_discount')
+        product = QLineEdit()
+        product.setPlaceholderText('Product or receipt')
+        amount = QLineEdit()
+        amount.setPlaceholderText('Amount')
+        reason = QLineEdit()
+        reason.setPlaceholderText('Why this should change')
+        form.addRow('Request', kind)
+        form.addRow('About', product)
+        form.addRow('Amount', amount)
+        form.addRow('Reason', reason)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText('Submit request')
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        result = self.api.request_sale_correction({
+            'type': kind.currentData(),
+            'product_name': product.text().strip(),
+            'title': product.text().strip(),
+            'amount': amount.text().strip(),
+            'reason': reason.text().strip(),
+        })
+        if result.get('success'):
+            QMessageBox.information(self, 'Request sent', result.get('message') or 'Waiting for approval.')
+            return
+        QMessageBox.warning(self, 'Request not sent', result.get('error') or 'The request was not saved.')
 
     def _open_requests_centre(self, kind=''):
         from desktop.tabs.requests_centre_dialog import RequestsCentreDialog
@@ -1656,26 +1695,14 @@ class SalesTab(QWidget):
                 _sfx('low_stock')
         except (TypeError, ValueError):
             pass
-        for idx, item in enumerate(self.cart):
-            if item['product_id'] == p['id']:
-                item['quantity'] = round(item['quantity'] + qty_step_for_unit(item.get('unit') or p.get('unit')), 2)
-                self._apply_line_total(item)
-                self._cart_select_idx = idx
-                self._refresh_cart()
-                return
-        self.cart.append({
-            'product_id':   p['id'],
-            'product_name': p.get('name', ''),
-            'sku':          p.get('sku', '') or '',
-            'category':     (p.get('category') or '').strip(),
-            'quantity':     1.0,
-            'unit':         p.get('unit') or 'pcs',
-            'unit_price':   p.get('price', 0),
-            'discount':     0.0,
-            'total':        p.get('price', 0),
-        })
-        self._cart_select_idx = len(self.cart) - 1
-        self._refresh_cart()
+        current = round(sum(
+            float(item.get('quantity') or 0)
+            for item in self.cart
+            if item.get('product_id') == p['id'] and not item.get('fifo_override')
+        ), 4)
+        step = qty_step_for_unit(p.get('unit'), decimal_qty=p.get('allow_decimal_qty'))
+        quantity = 1.0 if current <= 0 else round(current + step, 4)
+        self._replace_product_lines(p, quantity)
 
     def _cart_fg(self):
         """High-contrast cart text — never inherit a stale light-mode dark fg on dark bg."""
@@ -2420,7 +2447,7 @@ class SalesTab(QWidget):
             from desktop.utils.quantities import QuantityError, parse_quantity
             unit = self.cart[idx].get('unit')
             try:
-                q = parse_quantity(v, unit)
+                q = parse_quantity(v, unit, decimal_qty=self.cart[idx].get('allow_decimal_qty'))
             except QuantityError as exc:
                 message = str(exc)
                 if 'whole units' in message:
@@ -2428,28 +2455,49 @@ class SalesTab(QWidget):
                     message = f"'{name}' is sold in whole units."
                 if hasattr(self, '_cart_list'):
                     self._cart_list.update_row(idx, self.cart[idx])
-                QMessageBox.warning(self, 'Quantity', message)
+                from PyQt5.QtWidgets import QWidget
+                if isinstance(self, QWidget):
+                    QMessageBox.warning(self, 'Quantity', message)
                 return
             self._cart_select_idx = idx
             self.cart[idx]['quantity'] = q
-            self._apply_line_total(self.cart[idx])
-            if hasattr(self, '_cart_list'):
-                self._cart_list.update_row(idx, self.cart[idx])
-                self._cart_list.select_index(idx, focus_qty=False, scroll=False)
-            self._recalc()
+            if self.cart[idx].get('fifo_override'):
+                self._apply_line_total(self.cart[idx])
+                self._refresh_cart()
+                return
+            product_id = self.cart[idx].get('product_id')
+            total = round(sum(
+                float(item.get('quantity') or 0)
+                for item in self.cart
+                if item.get('product_id') == product_id and not item.get('fifo_override')
+            ), 4)
+            self._replace_product_lines(self.cart[idx], total)
+            return
 
     def _change_qty(self, idx, delta):
         if not (0 <= idx < len(self.cart)):
             return
         new_q = round_qty(
             self.cart[idx]['quantity'] + delta,
-            qty_step_for_unit(self.cart[idx].get('unit')),
+            qty_step_for_unit(
+                self.cart[idx].get('unit'),
+                decimal_qty=self.cart[idx].get('allow_decimal_qty'),
+            ),
             minimum=0.01,
         )
         self.cart[idx]['quantity'] = round(new_q, 2)
-        self._apply_line_total(self.cart[idx])
         self._cart_select_idx = idx
-        self._refresh_cart()
+        if self.cart[idx].get('fifo_override'):
+            self._apply_line_total(self.cart[idx])
+            self._refresh_cart()
+            return
+        product_id = self.cart[idx].get('product_id')
+        total = round(sum(
+            float(item.get('quantity') or 0)
+            for item in self.cart
+            if item.get('product_id') == product_id and not item.get('fifo_override')
+        ), 4)
+        self._replace_product_lines(self.cart[idx], total)
 
     def _rm(self, idx):
         if 0 <= idx < len(self.cart):
@@ -3085,11 +3133,196 @@ class SalesTab(QWidget):
                 self.sale_completed.emit()
             else:
                 err = (res or {}).get('error') if isinstance(res, dict) else None
+                if isinstance(res, dict) and res.get('code') == 'batch_price_review':
+                    self._apply_batch_price_lines(res.get('lines') or [])
                 _sfx('error')
                 soft_warn(self, err or 'Failed to record sale.')
         except Exception as e:
             _sfx('error')
             soft_warn(self, f'Sale failed: {e}')
+
+    def _choose_batch(self, idx):
+        """Sell one named batch instead of the oldest stock. The cart updates before payment."""
+        if not (0 <= idx < len(self.cart)):
+            return
+        from desktop.utils.security import has_permission
+        if not has_permission(self.user, 'inventory.sales.override_fifo'):
+            soft_warn(self, 'You cannot choose a batch.')
+            return
+        item = self.cart[idx]
+        if item.get('fifo_override'):
+            soft_warn(self, 'That line is already a chosen batch.')
+            return
+        pid = item.get('product_id')
+        history = self.api.get_product_history(pid) or {}
+        batches = [
+            batch for batch in (history.get('batches') or [])
+            if float(batch.get('remaining_qty') or 0) > 0.0001
+        ]
+        if not batches:
+            soft_warn(self, 'This product has no batch with stock left.')
+            return
+        labels = [
+            f"{batch.get('batch_ref')}   left {batch.get('remaining_qty')}   sells {float(batch.get('effective_sell_price') or 0):,.2f}"
+            for batch in batches
+        ]
+        choice, ok = QInputDialog.getItem(
+            self, 'Choose a batch',
+            'The oldest batch would sell first.\nChoose a different batch:',
+            labels, 0, False,
+        )
+        if not ok:
+            return
+        batch = batches[labels.index(choice)]
+        qty, ok = QInputDialog.getDouble(
+            self, 'Quantity', 'Quantity from this batch:',
+            min(float(item.get('quantity') or 1), float(batch.get('remaining_qty') or 1)),
+            0.01, float(batch.get('remaining_qty') or 1), 2,
+        )
+        if not ok:
+            return
+        reason, ok = QInputDialog.getText(self, 'Reason', 'Why is this batch being sold first?')
+        if not ok or len(str(reason).strip()) < 3:
+            soft_warn(self, 'Enter a reason. The batch was not chosen.')
+            return
+        result = self.api.quote_batch_override(
+            pid, [{'layer_id': batch.get('id'), 'quantity': qty}], reason,
+        ) or {}
+        if result.get('error'):
+            soft_warn(self, result['error'])
+            return
+        old = round(sum(
+            float(row.get('quantity') or 0)
+            for row in self.cart
+            if row.get('product_id') == pid and not row.get('fifo_override')
+        ), 4)
+        rest = round(old - float(qty), 4)
+        self.cart = [
+            row for row in self.cart
+            if not (row.get('product_id') == pid and not row.get('fifo_override'))
+        ]
+        if rest > 0.0001:
+            self._replace_product_lines(item, rest)
+        for line in result.get('lines') or []:
+            built = {
+                'product_id': pid,
+                'product_name': line.get('label') or item.get('base_name') or item.get('product_name'),
+                'base_name': item.get('base_name') or item.get('product_name'),
+                'sku': item.get('sku') or '',
+                'quantity': float(line.get('quantity') or 0),
+                'unit': item.get('unit') or 'pcs',
+                'allow_decimal_qty': item.get('allow_decimal_qty'),
+                'unit_price': float(line.get('unit_price') or 0),
+                'discount': 0.0,
+                'batch_priced': True,
+                'fifo_override': True,
+                'layer_id': line.get('layer_id'),
+                'override_reason': str(reason).strip(),
+                'batch_refs': line.get('batch_refs') or [],
+            }
+            self._apply_line_total(built)
+            self.cart.append(built)
+        self._refresh_cart()
+        fifo = result.get('fifo_lines') or []
+        fifo_text = ', '.join(
+            f"{line.get('quantity')} at {float(line.get('unit_price') or 0):,.2f}"
+            for line in fifo
+        ) or 'no older batch'
+        soft_warn(
+            self,
+            f"FIFO would have sold {fifo_text}.\n"
+            f"This sale takes {qty:g} from {batch.get('batch_ref')} "
+            f"at {float(line.get('unit_price') or 0):,.2f}.\n"
+            f"Reason: {str(reason).strip()}",
+        )
+
+    def _replace_product_lines(self, product, quantity):
+        """Price this product from its batches before payment."""
+        pid = int(product.get('id') or product.get('product_id') or 0)
+        quantity = round(float(quantity or 0), 4)
+        if not pid or quantity <= 0:
+            return
+        raw_name = product.get('base_name') or product.get('name') or product.get('product_name') or 'Product'
+        name = str(raw_name).split(' · B')[0]
+        quote = {}
+        try:
+            quote = self.api.quote_product_sale(pid, quantity) or {}
+        except Exception:
+            quote = {}
+        built = []
+        for line in quote.get('lines') or []:
+            item = {
+                'product_id': pid,
+                'product_name': line.get('label') or name,
+                'base_name': name,
+                'sku': product.get('sku') or '',
+                'category': (product.get('category') or '').strip(),
+                'quantity': float(line.get('quantity') or 0),
+                'unit': product.get('unit') or 'pcs',
+                'allow_decimal_qty': product.get('allow_decimal_qty'),
+                'unit_price': float(line.get('unit_price') or 0),
+                'discount': 0.0,
+                'batch_priced': bool(line.get('split')),
+                'batch_refs': line.get('batch_refs') or [],
+            }
+            self._apply_line_total(item)
+            built.append(item)
+        if not built:
+            price = float(product.get('price') or product.get('unit_price') or 0)
+            item = {
+                'product_id': pid,
+                'product_name': name,
+                'base_name': name,
+                'sku': product.get('sku') or '',
+                'category': (product.get('category') or '').strip(),
+                'quantity': quantity,
+                'unit': product.get('unit') or 'pcs',
+                'allow_decimal_qty': product.get('allow_decimal_qty'),
+                'unit_price': price,
+                'discount': 0.0,
+            }
+            self._apply_line_total(item)
+            built = [item]
+        new_cart = []
+        placed = False
+        for item in self.cart:
+            if int(item.get('product_id') or 0) == pid and not item.get('fifo_override'):
+                if not placed:
+                    new_cart.extend(built)
+                    placed = True
+                continue
+            new_cart.append(item)
+        if not placed:
+            new_cart.extend(built)
+        self.cart = new_cart
+        self._cart_select_idx = max(0, len(self.cart) - 1)
+        self._refresh_cart()
+
+    def _apply_batch_price_lines(self, lines):
+        """Replace one cart price with the FIFO batch prices the sale refused."""
+        product_ids = {int(line.get('product_id') or 0) for line in lines}
+        self.cart = [
+            item for item in self.cart
+            if int(item.get('product_id') or 0) not in product_ids
+        ]
+        for line in lines:
+            name = line.get('product_name') or 'Product'
+            for part in line.get('segments') or []:
+                qty = float(part.get('quantity') or 0)
+                unit = float(part.get('unit_price') or 0)
+                item = {
+                    'product_id': int(line.get('product_id') or 0),
+                    'product_name': f"{name} · {part.get('batch_ref') or part.get('layer_id')}",
+                    'sku': '',
+                    'quantity': qty,
+                    'unit_price': unit,
+                    'discount': 0.0,
+                    'batch_priced': True,
+                }
+                self._apply_line_total(item)
+                self.cart.append(item)
+        self._cart_select_idx = max(0, len(self.cart) - 1)
+        self._refresh_cart()
 
     def _get_printer(self):
         if self._printer_mgr is None:

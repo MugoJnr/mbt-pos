@@ -8,7 +8,7 @@ The till and the dashboard use the same `users` table. The signed-in role is rea
 | Request a void | Yes | No | Yes | Yes | Yes |
 | Void a sale | No | No | PIN | PIN | Signed-in session |
 | Restore a voided sale or consumption | No | No | No | No | Yes, once |
-| Add or edit a product, including price | Yes | Yes | Yes | Yes | Yes |
+| Publish a product or change its selling price, unit, or quantity precision | No. Can sell and request a discount or price correction | No | Request only, until an admin approves. A direct-price grant applies the selling price immediately and stops when the grant is removed | Yes, without rewriting old sales, receipts, batch costs, FIFO quantities, or stock | Yes, without rewriting old sales, receipts, batch costs, FIFO quantities, or stock |
 | Remove a product | No | No | No | Yes | Yes |
 | Deactivate another staff account | No | No | No | Yes, not Super Admin or yourself | Yes, not yourself |
 | Receive a supplier delivery | Yes | No | Yes | Yes | Yes |

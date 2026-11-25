@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
-import { GET, POST } from "@/lib/api";
+import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { UserCapabilities } from "@/components/user-capabilities";
 
@@ -40,6 +40,7 @@ function Users() {
     queryKey: ["users"],
     queryFn: () => GET<any[]>("/users"),
     enabled: canViewUsers,
+    refetchInterval: 4000,
   });
   const sessionsQ = useQuery({
     queryKey: ["sessions"],
@@ -294,7 +295,44 @@ function Users() {
                   </td>
                   <td className="px-4 py-2.5">
                     {canManageUsers ? (
-                      <Button variant="ghost" onClick={() => setCapabilities(u)}>Capabilities</Button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {String(u.role) !== "superadmin" ? (
+                          <select
+                            aria-label={`Role for ${u.username}`}
+                            value={String(u.role || "cashier")}
+                            className="h-9 rounded-lg border border-border bg-input px-2 text-xs text-text"
+                            onChange={async (e) => {
+                              const saved = await PUT<any>(`/users/${u.id}`, { role: e.target.value });
+                              if (!saved?.success) {
+                                setUserMsg(saved?.error || "The role was not changed.");
+                                return;
+                              }
+                              setUserMsg(`${u.username} is now ${e.target.value}.`);
+                              await qc.invalidateQueries({ queryKey: ["users"] });
+                            }}
+                          >
+                            <option value="cashier">Cashier</option>
+                            <option value="manager">Manager</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        ) : null}
+                        <Button variant="ghost" onClick={() => setCapabilities(u)}>Capabilities</Button>
+                        <Button
+                          variant="ghost"
+                          onClick={async () => {
+                            const turningOff = Boolean(u.is_active);
+                            const saved = await PUT<any>(`/users/${u.id}`, { is_active: turningOff ? 0 : 1 });
+                            if (!saved?.success) {
+                              setUserMsg(saved?.error || "This account was not changed.");
+                              return;
+                            }
+                            setUserMsg(turningOff ? `${u.username} is disabled.` : `${u.username} is active again.`);
+                            await qc.invalidateQueries({ queryKey: ["users"] });
+                          }}
+                        >
+                          {u.is_active ? "Disable" : "Reactivate"}
+                        </Button>
+                      </div>
                     ) : null}
                   </td>
                 </tr>

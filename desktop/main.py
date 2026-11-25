@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-20-v3.1.90"
-APP_VERSION   = "3.1.90"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-25-v3.1.92"
+APP_VERSION   = "3.1.92"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -805,6 +805,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.user_data = user_data
         self.api       = api
+        try:
+            from desktop.utils.wheel_scroll import apply_saved_interval
+            apply_saved_interval(self.api)
+        except Exception:
+            log.exception('Could not apply this account mouse-wheel interval')
         self.signals   = AppSignals()
         self._svc_net  = None
         self._svc_lic  = None
@@ -1976,6 +1981,11 @@ class MainWindow(QMainWindow):
         un.setObjectName("sidebarUserName")
         ur = QLabel(u.get('role', '').upper())
         ur.setObjectName("sidebarUserRole")
+        wheel = QPushButton("Mouse wheel"); wheel.setObjectName("logoutBtn")
+        wheel.setCursor(Qt.PointingHandCursor)
+        wheel.clicked.connect(self._edit_wheel_scroll)
+        wheel.setToolTip('How far one mouse-wheel notch scrolls. Saved for this account only.')
+        wheel.setAccessibleName('Mouse Wheel Scroll Interval')
         mine = QPushButton("My password"); mine.setObjectName("logoutBtn")
         mine.setCursor(Qt.PointingHandCursor)
         change_password = getattr(self, '_change_my_password', None)
@@ -1987,7 +1997,7 @@ class MainWindow(QMainWindow):
         lo.setCursor(Qt.PointingHandCursor); lo.clicked.connect(self._logout)
         lo.setToolTip('Sign out')
         lo.setAccessibleName('Sign out')
-        ul.addWidget(un); ul.addWidget(ur); ul.addWidget(mine); ul.addWidget(lo)
+        ul.addWidget(un); ul.addWidget(ur); ul.addWidget(wheel); ul.addWidget(mine); ul.addWidget(lo)
         sl.addWidget(uw)
         self._sidebar_user = uw
         self._sidebar_user_labels = (un, ur)
@@ -3175,6 +3185,37 @@ class MainWindow(QMainWindow):
         )
 
     # ?? Auth ????????????????????????????????????????????????????????????????????
+    def _edit_wheel_scroll(self):
+        from PyQt5.QtWidgets import QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QLabel
+        from desktop.utils.wheel_scroll import set_wheel_scroll_interval
+        current = 3
+        try:
+            current = int((self.api.read_wheel_scroll() or {}).get('wheel_scroll_interval') or 3)
+        except Exception:
+            current = 3
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Mouse Wheel Scroll Interval')
+        form = QFormLayout(dlg)
+        note = QLabel('Saved for this account. The till and the web use the same number. Another person is not changed.')
+        note.setWordWrap(True)
+        form.addRow(note)
+        spin = QSpinBox()
+        spin.setRange(1, 10)
+        spin.setValue(current)
+        form.addRow('Scroll interval (1 small, 10 fast)', spin)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        saved = self.api.save_wheel_scroll(spin.value())
+        if not saved.get('success'):
+            QMessageBox.warning(self, 'Mouse wheel', saved.get('error') or 'The interval was not saved.')
+            return
+        set_wheel_scroll_interval(saved.get('wheel_scroll_interval') or spin.value())
+        QMessageBox.information(self, 'Mouse wheel', 'Saved for this account.')
+
     def _change_my_password(self):
         from PyQt5.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
         dlg = QDialog(self)
@@ -3552,6 +3593,12 @@ def main():
         install_no_wheel_small_scroll(app)
     except Exception:
         log.exception('Failed to install no-wheel small-scroll filter')
+    try:
+        from desktop.utils.wheel_scroll import install_wheel_scroll, set_wheel_scroll_interval
+        install_wheel_scroll(app)
+        set_wheel_scroll_interval(3)
+    except Exception:
+        log.exception('Failed to install mouse-wheel scroll interval')
     try:
         from desktop.utils.quiet_ui import (
             install_dark_messagebox_style,

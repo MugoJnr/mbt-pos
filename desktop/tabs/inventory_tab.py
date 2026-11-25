@@ -260,6 +260,10 @@ class InventoryTab(QWidget):
             issues_btn = SecondaryBtn('Issues', 40)
             issues_btn.setToolTip('Business issues for stock and products. A sale is not blocked.')
             issues_btn.clicked.connect(self._open_issues)
+            batches_btn = SecondaryBtn('Batches', 40)
+            batches_btn.setToolTip('Every delivery batch, including finished batches')
+            batches_btn.clicked.connect(self._open_batches)
+            tools.addWidget(batches_btn)
             tools.addWidget(issues_btn)
             count_btn = SecondaryBtn('Stocktake', 40)
             count_btn.setToolTip('Count stock. Applying the count is Super-Admin only.')
@@ -1026,7 +1030,10 @@ class InventoryTab(QWidget):
             from desktop.utils.quantities import QuantityError, parse_quantity
             chosen = next((item for item in (self.products or []) if item.get('id') == pid), {})
             try:
-                counted = parse_quantity(qty.value(), chosen.get('unit'), allow_zero=True)
+                counted = parse_quantity(
+                    qty.value(), chosen.get('unit'), allow_zero=True,
+                    decimal_qty=chosen.get('allow_decimal_qty'),
+                )
             except QuantityError as exc:
                 message = str(exc)
                 if 'whole units' in message:
@@ -1279,7 +1286,11 @@ class InventoryTab(QWidget):
                 return
             res = self.api.create_product(dlg.data())
             if res and res.get('success'):
-                if dlg.photo_source() and res.get('id'):
+                if res.get('pending_approval'):
+                    QMessageBox.information(
+                        self, 'Waiting for approval',
+                        res.get('message') or 'The product was not published.')
+                elif dlg.photo_source() and res.get('id'):
                     saved = self.api.save_product_image(res['id'], dlg.photo_source())
                     if saved.get('error'):
                         QMessageBox.warning(
@@ -1381,6 +1392,12 @@ class InventoryTab(QWidget):
                 return
             res = self.api.update_product(pid, dlg.data(), pin_verified=False)
             if res and res.get('success'):
+                if res.get('pending_approval'):
+                    QMessageBox.information(
+                        self, 'Waiting for approval',
+                        res.get('message') or 'The live product was not changed.')
+                    self.refresh()
+                    return
                 if dlg.photo_source():
                     saved = self.api.save_product_image(pid, dlg.photo_source())
                     if saved.get('error'):
@@ -1428,6 +1445,44 @@ class InventoryTab(QWidget):
                 self, 'Product History',
                 f'Could not open history:\n\n{e}')
 
+    def _open_batches(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Batches')
+        dlg.resize(980, 640)
+        apply_themed_dialog(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 16, 16, 16)
+        search = QLineEdit()
+        search.setPlaceholderText('Search product, batch, or supplier')
+        search.setMinimumHeight(40)
+        table = make_table(
+            ['Batch', 'Product', 'Supplier', 'Received', 'Reference', 'In', 'Left', 'Selling', 'Price', 'Status'],
+            stretch_col=1, row_height=36,
+        )
+        lay.addWidget(search)
+        lay.addWidget(table, 1)
+
+        def load():
+            data = self.api.list_batches(search.text()) or {}
+            rows = data.get('batches') or []
+            table.setRowCount(0)
+            for i, batch in enumerate(rows):
+                table.insertRow(i)
+                table.setItem(i, 0, tbl_item(str(batch.get('batch_ref') or '')))
+                table.setItem(i, 1, tbl_item(str(batch.get('product_name') or '')))
+                table.setItem(i, 2, tbl_item(str(batch.get('supplier_name') or '')))
+                table.setItem(i, 3, tbl_item(str(batch.get('created_at') or '')))
+                table.setItem(i, 4, tbl_item(str(batch.get('reference_note') or '')))
+                table.setItem(i, 5, tbl_center(str(batch.get('original_qty') or 0)))
+                table.setItem(i, 6, tbl_center(str(batch.get('remaining_qty') or 0)))
+                table.setItem(i, 7, tbl_right(f"{float(batch.get('effective_sell_price') or 0):,.2f}"))
+                table.setItem(i, 8, tbl_item('Custom' if batch.get('price_mode') == 'custom' else 'Normal'))
+                table.setItem(i, 9, tbl_item(str(batch.get('status') or '')))
+
+        search.textChanged.connect(lambda _text: load())
+        load()
+        dlg.exec_()
+
 
 # â”€â”€ Product Dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1469,6 +1524,10 @@ class _ProdDlg(QDialog):
         self.cost  = QDoubleSpinBox(); self.cost.setRange(0, 9999999);  self.cost.setDecimals(2); self.cost.setMinimumHeight(42)
         self.mins  = QSpinBox();       self.mins.setRange(0, 999999);   self.mins.setValue(5);    self.mins.setMinimumHeight(42)
         self.unit  = QLineEdit();      self.unit.setMinimumHeight(42);  self.unit.setText('pcs')
+        self.decimals = QComboBox(); self.decimals.setMinimumHeight(42)
+        self.decimals.addItem('Follow the unit', None)
+        self.decimals.addItem('Allow decimal quantities', 1)
+        self.decimals.addItem('Whole quantities only', 0)
         self.status = Select(items=list(PRODUCT_STATUSES))
         self.status.setMinimumHeight(42)
 
@@ -1480,6 +1539,9 @@ class _ProdDlg(QDialog):
             self.cost.setValue(_safe_float(prod.get('cost_price')))
             self.mins.setValue(_safe_int(prod.get('min_stock'), 5))
             self.unit.setText(prod.get('unit') or 'pcs')
+            flag = prod.get('allow_decimal_qty')
+            flag_index = {None: 0, '': 0, 1: 1, '1': 1, True: 1, 0: 2, '0': 2, False: 2}.get(flag, 0)
+            self.decimals.setCurrentIndex(flag_index)
             st = prod.get('product_status') or (
                 'Active' if int(prod.get('is_active', 1) or 0) == 1 else 'Inactive')
             self.status.set_value(st)
@@ -1527,6 +1589,7 @@ class _ProdDlg(QDialog):
             lay.addRow(lbl('Cost Price' if self._see_cost else 'Buying price'), self.cost)
         lay.addRow(lbl('Min Stock Alert'),   self.mins)
         lay.addRow(lbl('Unit'),              self.unit)
+        lay.addRow(lbl('Decimal quantities'), self.decimals)
         if self._can_remove:
             lay.addRow(lbl('Status'),        self.status)
 
@@ -1752,6 +1815,7 @@ class _ProdDlg(QDialog):
             'price':      self.price.value(),
             'min_stock':  self.mins.value(),
             'unit':       self.unit.text().strip() or 'pcs',
+            'allow_decimal_qty': self.decimals.currentData(),
         }
         if self._enter_cost:
             d['cost_price'] = self.cost.value()
@@ -1807,9 +1871,13 @@ class _ProductHistoryDlg(QDialog):
         bw.addWidget(self._batch_meta)
         self._batch_tbl = make_table(
             ['Batch', 'Supplier', 'Received', 'Reference', 'In', 'Used', 'Left',
-             'Buy', 'Extra', 'Landed', 'Left value', 'Status'],
+             'Buy', 'Extra', 'Landed', 'Left value', 'Selling', 'Price', 'Status'],
             stretch_col=1, row_height=40)
         bw.addWidget(self._batch_tbl)
+        self._price_btn = SecondaryBtn('Set batch selling price', 36)
+        self._price_btn.clicked.connect(self._set_selling_price)
+        self._price_btn.setVisible(False)
+        bw.addWidget(self._price_btn)
         tabs.addTab(batches_w, 'Batches')
 
         # Sales tab
@@ -1879,12 +1947,15 @@ class _ProductHistoryDlg(QDialog):
         stock = _fmt_stock(prod.get('stock'))
         unit = prod.get('unit') or 'pcs'
         price = _safe_float(prod.get('price'))
+        self._product_price = price
+        self._price_btn.setVisible(bool(data.get('can_set_batch_price')))
         self._meta.setText(
             f"Entered inventory: {entered}  ·  SKU: {sku}  ·  Category: {cat}\n"
             f"Current stock: {stock} {unit}  ·  Price: {cur} {price:,.2f}"
         )
 
         batches = data.get('batches') or []
+        self._batches = batches
         summary = data.get('batch_summary') or {}
         see_cost = bool(data.get('see_cost'))
         bits = [
@@ -1902,7 +1973,7 @@ class _ProductHistoryDlg(QDialog):
         self._batch_tbl.setRowCount(0)
         for i, batch in enumerate(batches):
             self._batch_tbl.insertRow(i)
-            self._batch_tbl.setItem(i, 0, tbl_item(str(batch.get('id') or '')))
+            self._batch_tbl.setItem(i, 0, tbl_item(str(batch.get('batch_ref') or batch.get('id') or '')))
             supplier = batch.get('supplier_name') or ('Opening stock' if batch.get('legacy') else '-')
             self._batch_tbl.setItem(i, 1, tbl_item(str(supplier)))
             self._batch_tbl.setItem(i, 2, tbl_item(_fmt_dt(batch.get('created_at'))))
@@ -1918,11 +1989,17 @@ class _ProductHistoryDlg(QDialog):
             else:
                 for col in (7, 8, 9, 10):
                     self._batch_tbl.setItem(i, col, tbl_right('—', C['muted']))
+            selling = batch.get('effective_sell_price')
+            self._batch_tbl.setItem(
+                i, 11,
+                tbl_right('—' if selling is None else f"{_safe_float(selling):,.2f}"),
+            )
+            self._batch_tbl.setItem(i, 12, tbl_center('Custom' if batch.get('price_mode') == 'custom' else 'Normal'))
             origin = 'inherited' if batch.get('cost_origin') == 'inherited' else ''
             status = str(batch.get('status') or '')
             if origin:
                 status = f"{status} · {origin}"
-            self._batch_tbl.setItem(i, 11, tbl_center(status))
+            self._batch_tbl.setItem(i, 13, tbl_center(status))
 
         sales = data.get('sales') or []
         self._sales_tbl.setRowCount(0)
@@ -1971,3 +2048,52 @@ class _ProductHistoryDlg(QDialog):
             reason_item.setToolTip(str(reason))
             self._stock_tbl.setItem(i, 5, reason_item)
             self._stock_tbl.setItem(i, 6, tbl_item(str(m.get('username') or '-')))
+
+    def _set_selling_price(self):
+        batches = getattr(self, '_batches', []) or []
+        row = self._batch_tbl.currentRow()
+        if row < 0 or row >= len(batches):
+            QMessageBox.information(self, 'Batch price', 'Select a batch first.')
+            return
+        batch = batches[row]
+        if batch.get('status') == 'exhausted' or float(batch.get('remaining_qty') or 0) <= 0:
+            QMessageBox.information(
+                self, 'Batch price',
+                'That batch is finished. Its history stays, and it cannot be sold.',
+            )
+            return
+        current = batch.get('sell_price')
+        text, ok = QInputDialog.getText(
+            self, 'Batch selling price',
+            'Selling price for this batch. Leave blank to use the normal product price.',
+            text='' if current in (None, '') else str(current),
+        )
+        if not ok:
+            return
+        raw = str(text).strip()
+        price = None if raw == '' else raw
+        if price is not None:
+            try:
+                number = round(float(price), 4)
+            except ValueError:
+                QMessageBox.warning(self, 'Batch price', 'Enter a valid selling price.')
+                return
+            if number < 0:
+                QMessageBox.warning(self, 'Batch price', 'Selling price cannot be negative.')
+                return
+            normal = float(getattr(self, '_product_price', 0) or 0)
+            if number > normal + 0.001:
+                answer = QMessageBox.question(
+                    self, 'Above the normal price',
+                    f'This batch price is above the normal product price of {normal:,.2f}. Save it?',
+                )
+                if answer != QMessageBox.Yes:
+                    return
+            price = number
+        result = self.api.set_batch_selling_price(batch.get('id'), price) or {}
+        if result.get('error'):
+            QMessageBox.warning(self, 'Batch price', result['error'])
+            return
+        if result.get('warning'):
+            QMessageBox.information(self, 'Batch price', result['warning'])
+        self._load()

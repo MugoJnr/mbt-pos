@@ -29,7 +29,7 @@ export function SuppliersPanel({ orgId, record }: { orgId: string; record?: { na
     <div className="space-y-3">
       {missing ? <p className="rounded-lg border px-3 py-2 text-sm">That supplier is not in the synced deliveries.</p> : null}
       <p className="text-sm text-muted-foreground">
-        Suppliers are grouped from synced deliveries. Phone is shown only when the delivery record contains it. Supplier balances, payments and returns are not in that record, so this page does not show what the shop owes.
+        {String(query.data?.note || "Suppliers come from the uploaded shop copy. A delivery is not a payment.")}
       </p>
       <Card className="overflow-hidden">
         <ReportState
@@ -46,16 +46,18 @@ export function SuppliersPanel({ orgId, record }: { orgId: string; record?: { na
                 <TableHead>Supplier</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead className="text-right">Deliveries</TableHead>
-                <TableHead>Products</TableHead>
+                <TableHead className="text-right">Purchases uploaded</TableHead>
+                <TableHead>Payments</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((row, index) => (
                 <TableRow key={String(value(row, "name") || index)} className="cursor-pointer" onClick={() => setSelected(row)}>
                   <TableCell className="font-medium">{String(value(row, "name") || "Supplier")}</TableCell>
-                  <TableCell>{String(value(row, "phone") || "Not on the synced delivery")}</TableCell>
+                  <TableCell>{String(value(row, "phone") || "Not uploaded")}</TableCell>
                   <TableCell className="text-right">{String(value(row, "deliveries") || 0)}</TableCell>
-                  <TableCell className="max-w-xs truncate">{Array.isArray(row.products) ? (row.products as string[]).join(", ") : "—"}</TableCell>
+                  <TableCell className="text-right">{row.purchases_uploaded ? String(value(row, "purchase_total") || 0) : "Not uploaded"}</TableCell>
+                  <TableCell>{row.payments_uploaded ? String(value(row, "payment_total") || 0) : "Not uploaded"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -66,8 +68,30 @@ export function SuppliersPanel({ orgId, record }: { orgId: string; record?: { na
         <DialogContent className="max-h-[92vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{String(value(selected || {}, "name") || "Supplier")}</DialogTitle>
-            <DialogDescription>Recent synced deliveries. Stock cannot be changed from here.</DialogDescription>
+            <DialogDescription>
+              Shop copy of this supplier. A delivery is not the paper invoice, and a missing payment is not a zero balance.
+            </DialogDescription>
           </DialogHeader>
+          {selected ? (
+            <div className="grid gap-2 text-sm sm:grid-cols-2">
+              <p>Contact: {String(value(selected, "contact") || "Not uploaded")}</p>
+              <p>Phone: {String(value(selected, "phone") || "Not uploaded")}</p>
+              <p>Email: {String(value(selected, "email") || "Not uploaded")}</p>
+              <p>Address: {String(value(selected, "address") || "Not uploaded")}</p>
+              <p>Status: {String(value(selected, "status") || "Not uploaded")}</p>
+              <p>Added: {formatDateTime(value(selected, "created_at"))}</p>
+              <p>Updated: {formatDateTime(value(selected, "updated_at"))}</p>
+              <p>Deliveries: {String(value(selected, "deliveries") || 0)}</p>
+              <p>Purchases: {selected.purchases_uploaded ? String(value(selected, "purchase_total") || 0) : "Not uploaded"}</p>
+              <p>Payments: {selected.payments_uploaded ? String(value(selected, "payment_total") || 0) : "Not uploaded"}</p>
+              <p>Outstanding: {selected.payments_uploaded && selected.purchases_uploaded ? String(value(selected, "outstanding") ?? "Not uploaded") : "Not uploaded"}</p>
+            </div>
+          ) : null}
+          {selected ? (
+            <p className="text-sm text-muted-foreground">
+              Statement: this page lists the uploaded deliveries and any uploaded purchase totals. It does not invent a supplier invoice or a payment. Outstanding stays blank until both the purchases and the payments are on the uploaded record.
+            </p>
+          ) : null}
           {selected && Array.isArray(selected.recent) ? (
             <Table>
               <TableHeader>

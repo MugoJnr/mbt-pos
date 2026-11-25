@@ -85,14 +85,51 @@ export function SaleReceiptDialog({
   const [voiding, setVoiding] = useState(false);
   const [confirmCredit, setConfirmCredit] = useState(false);
   const [printMsg, setPrintMsg] = useState("");
+  const [goods, setGoods] = useState("sellable");
+  const [pinUser, setPinUser] = useState("");
+  const [pin, setPin] = useState("");
   const role = String(user?.role || "").toLowerCase();
-  const canReturn = ["admin", "superadmin", "manager"].includes(role);
+  const canReturnDirect = ["admin", "superadmin", "manager"].includes(role);
+  const canReturn = canReturnDirect || role === "cashier";
   const canVoidNow = role === "superadmin";
   const detailQ = useQuery({
     queryKey: ["sale-detail", saleId],
     enabled: saleId != null,
     queryFn: () => GET<SaleDetail>(`/sales/${saleId}`),
   });
+
+  async function submitReturn(withPin: boolean) {
+    setReturnMsg("");
+    if (!tokenRef.current) tokenRef.current = crypto.randomUUID();
+    const lines = Object.entries(qtyByLine)
+      .map(([id, qty]) => ({ sale_item_id: Number(id), quantity: Number(qty) }))
+      .filter((row) => row.quantity > 0);
+    const res = await POST<any>(`/sales/${saleId}/return`, {
+      items: lines,
+      reason,
+      refund_method: "cash",
+      client_token: tokenRef.current,
+      condition: goods,
+      pin: withPin ? pin : "",
+      pin_username: withPin ? pinUser : "",
+    });
+    if (res?.pending_approval) {
+      tokenRef.current = "";
+      setPin("");
+      setReturnMsg(res.message || "Return request sent. Stock and money are unchanged.");
+      return;
+    }
+    if (res?.success && res?.executed) {
+      tokenRef.current = "";
+      setReason("");
+      setQtyByLine({});
+      setPin("");
+      setReturnMsg(res.duplicate ? "That return was already saved." : `Return saved. Refund ${res.refund_total}.`);
+      await qc.invalidateQueries({ queryKey: ["sale-detail", saleId] });
+      return;
+    }
+    setReturnMsg(res?.error || "Could not save the return.");
+  }
 
   if (saleId == null) return null;
   const sale = detailQ.data || {};
@@ -282,33 +319,31 @@ export function SaleReceiptDialog({
                     })}
                   </div>
                   <Input className="mt-3" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Return reason" />
-                  <Button
-                    className="mt-3"
-                    onClick={async () => {
-                      setReturnMsg("");
-                      if (!tokenRef.current) tokenRef.current = crypto.randomUUID();
-                      const lines = Object.entries(qtyByLine)
-                        .map(([id, qty]) => ({ sale_item_id: Number(id), quantity: Number(qty) }))
-                        .filter((row) => row.quantity > 0);
-                      const res = await POST<any>(`/sales/${saleId}/return`, {
-                        items: lines,
-                        reason,
-                        refund_method: "cash",
-                        client_token: tokenRef.current,
-                      });
-                      if (res?.success) {
-                        tokenRef.current = "";
-                        setReason("");
-                        setQtyByLine({});
-                        setReturnMsg(res.duplicate ? "That return was already saved." : "Return saved.");
-                        await qc.invalidateQueries({ queryKey: ["sale-detail", saleId] });
-                        return;
-                      }
-                      setReturnMsg(res?.error || "Could not save the return.");
-                    }}
-                  >
-                    Save return
-                  </Button>
+                  <label className="mt-3 block text-xs text-text2">
+                    Goods
+                    <select
+                      className="mt-1 w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm text-text"
+                      value={goods}
+                      onChange={(e) => setGoods(e.target.value)}
+                    >
+                      <option value="sellable">Can be sold again</option>
+                      <option value="damaged">Damaged — do not restock</option>
+                    </select>
+                  </label>
+                  {!canReturnDirect ? (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <Input value={pinUser} onChange={(e) => setPinUser(e.target.value)} placeholder="Super Admin username" />
+                      <Input type="password" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="That Super Admin PIN" />
+                    </div>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {!canReturnDirect ? (
+                      <Button variant="ghost" onClick={() => submitReturn(false)}>Send Request</Button>
+                    ) : null}
+                    <Button onClick={() => submitReturn(canReturnDirect ? false : true)}>
+                      {canReturnDirect ? "Save return" : "Super Admin Authorisation"}
+                    </Button>
+                  </div>
                   {returnMsg ? <div className="mt-2 text-sm text-text2">{returnMsg}</div> : null}
                 </div>
               ) : null}

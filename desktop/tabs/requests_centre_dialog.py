@@ -134,7 +134,9 @@ class RequestsCentreDialog(QDialog):
             ("supplier_backdate", "Supplier delivery backdate"),
             ("refund", "Refund"),
             ("expense", "Expense"),
-            ("price_override", "Price change"),
+            ("price_override", "Price correction"),
+            ("product_publish", "New product"),
+            ("product_change", "Product or price change"),
             ("credit", "Credit"),
             ("large_discount", "Large discount"),
         ):
@@ -354,7 +356,7 @@ class RequestsCentreDialog(QDialog):
             requester_id = int(item.get("requester_id") or 0)
         except (TypeError, ValueError):
             requester_id = 0
-        own = bool(requester_id) and requester_id == self._user_id()
+        own = role != "superadmin" and bool(requester_id) and requester_id == self._user_id()
         awaiting = status in ("pending", "submitted", "escalated")
         can_approve = False
         can_reject = False
@@ -407,6 +409,16 @@ class RequestsCentreDialog(QDialog):
                 note = "An admin uses Approve or Reject. The consumption stays recorded until then."
             else:
                 note = f"This request is {status or 'closed'}. The buttons stay visible and do nothing further."
+        elif kind in ("product_publish", "product_change"):
+            can_approve = can_reject = role in ("admin", "superadmin") and awaiting and not own
+            if own and awaiting:
+                note = "You cannot approve your own product or price change."
+            elif can_approve:
+                note = "Approve publishes this once. Reject leaves the live product and price unchanged."
+            elif awaiting:
+                note = "An admin uses Approve or Reject. The live product and price stay as they are."
+            else:
+                note = f"This request is {status or 'closed'}. The buttons stay visible and do nothing further."
         elif kind in ("void", "stock_adjust"):
             can_approve = (role == "superadmin" if kind == "stock_adjust" else reviewer) and awaiting
             can_reject = (role == "superadmin" if kind == "stock_adjust" else reviewer) and awaiting
@@ -421,9 +433,11 @@ class RequestsCentreDialog(QDialog):
             else:
                 note = f"This request is {status or 'closed'}. The buttons stay visible and do nothing further."
         else:
-            can_approve = can_reject = reviewer and awaiting
-            if can_approve:
-                note = "Approve records the decision. It does not post a sale or change stock."
+            can_approve = can_reject = reviewer and awaiting and not own
+            if own and awaiting:
+                note = "You cannot approve your own request. The permanent price is not changed."
+            elif can_approve:
+                note = "Approve records the decision. It does not change the permanent product price."
             elif not reviewer:
                 note = "A manager uses Approve or Reject."
             else:

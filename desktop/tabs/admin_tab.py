@@ -176,7 +176,39 @@ class AdminTab(QWidget):
         # Clearance so Copilot FAB never covers Deactivate / audit footer
         lay.addSpacing(72)
 
-    def on_show(self): self.refresh()
+    def on_show(self):
+        self.refresh()
+        if not hasattr(self, '_poll'):
+            self._poll = QTimer(self)
+            self._poll.timeout.connect(self._quiet_refresh)
+        self._poll.start(4000)
+
+    def hideEvent(self, event):
+        if hasattr(self, '_poll'):
+            self._poll.stop()
+        super().hideEvent(event)
+
+    def _quiet_refresh(self):
+        """Pick up account changes made on the other screen without a manual Refresh."""
+        if not self.isVisible() or not hasattr(self, '_tbl'):
+            return
+        if self._uid and hasattr(self, '_role_cb'):
+            current = next((u for u in self.users if u.get('id') == self._uid), None)
+            chosen = self._role_cb.current_value()
+            if current and chosen and str(chosen) != str(current.get('role') or ''):
+                return
+        fresh = self.api.get_users() or []
+        def signature(rows):
+            return [
+                (u.get('id'), u.get('username'), u.get('role'), u.get('is_active'), u.get('full_name'))
+                for u in rows
+            ]
+        if signature(fresh) == signature(self.users):
+            return
+        self.users = fresh
+        self._populate(self.users)
+        self._load_audit()
+
     def refresh(self):
         if self.user.get('user',{}).get('role','') not in ('admin', 'superadmin'): return
         self.users=self.api.get_users() or []; self._populate(self.users); self._load_audit()
@@ -197,19 +229,13 @@ class AdminTab(QWidget):
             self._tbl.setItem(i,2,role_it)
             self._tbl.setItem(i,3,tbl_center('Active' if active else 'Inactive', C['ok'] if active else C['err']))
             self._tbl.setItem(i,4,tbl_item(_fmt_last_login(u.get('last_login'))))
-        # Size table to fill the card when staffed; only hug when truly sparse
-        try:
-            n = max(1, self._tbl.rowCount())
-            if n < 3:
-                hdr = self._tbl.horizontalHeader().height() if self._tbl.horizontalHeader() else 28
-                h = hdr + n * 44 + 8
-                self._tbl.setFixedHeight(min(420, max(96, h)))
-            else:
-                self._tbl.setMinimumHeight(200)
-                self._tbl.setMaximumHeight(16777215)
-                self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        except Exception:
-            pass
+        # A short fixed height left one or two accounts inside a stretched empty
+        # card, so the list looked blank until a later refresh unlocked it.
+        self._tbl.setMinimumHeight(160)
+        self._tbl.setMaximumHeight(16777215)
+        self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._tbl.resizeRowsToContents()
+        self._tbl.viewport().update()
         sparse = len(users) < 3
         if hasattr(self, '_users_sparse'):
             if sparse and users:
@@ -223,8 +249,21 @@ class AdminTab(QWidget):
                 self._users_sparse.show()
             else:
                 self._users_sparse.hide()
-        # Auto-select first row when none chosen so permissions panel isn't blank
-        if users and not self._uid and self._tbl.rowCount() > 0:
+        # Keep the open account selected so Deactivate/Activate matches the new status.
+        kept = False
+        if self._uid and self._tbl.rowCount() > 0:
+            for row in range(self._tbl.rowCount()):
+                item = self._tbl.item(row, 0)
+                name = item.text() if item else ''
+                if any(u.get('id') == self._uid and u.get('username') == name for u in users):
+                    self._tbl.selectRow(row)
+                    try:
+                        self._on_sel(self._tbl.currentIndex())
+                    except Exception:
+                        pass
+                    kept = True
+                    break
+        if users and not kept and not self._uid and self._tbl.rowCount() > 0:
             self._tbl.selectRow(0)
             try:
                 self._on_sel(self._tbl.currentIndex())
@@ -309,6 +348,10 @@ class AdminTab(QWidget):
         res=self.api.update_user(self._uid,{'role':new_role,'tab_permissions':perms})
         if res and res.get('success'):
             QMessageBox.information(self,'Saved','Permissions updated.'); self.refresh()
+            return
+        QMessageBox.warning(
+            self, 'Not Allowed',
+            (res or {}).get('error') or 'The permissions were not saved.')
 
     def _capabilities(self):
         if not self._uid:

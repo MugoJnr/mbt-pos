@@ -273,6 +273,26 @@ def _db_light() -> sqlite3.Connection:
     return _db(ensure_schema=False)
 
 
+def _scroll_interval(value, strict: bool = False) -> int:
+    """Whole number from 1 to 10. An empty saved value stays at 3."""
+    if value is None or value == '':
+        if strict:
+            raise ValueError('Mouse Wheel Scroll Interval must be a whole number from 1 to 10.')
+        return 3
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        if strict:
+            raise ValueError('Mouse Wheel Scroll Interval must be a whole number from 1 to 10.')
+        return 3
+    interval = int(number)
+    if number != interval or interval < 1 or interval > 10:
+        if strict:
+            raise ValueError('Mouse Wheel Scroll Interval must be a whole number from 1 to 10.')
+        return 3
+    return interval
+
+
 def _ensure_permission_columns(conn) -> None:
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -284,6 +304,8 @@ def _ensure_permission_columns(conn) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN permission_grants TEXT DEFAULT '[]'")
     if "permission_denials" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN permission_denials TEXT DEFAULT '[]'")
+    if "wheel_scroll_interval" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN wheel_scroll_interval INTEGER")
 
 
 def _rows(cursor) -> list:
@@ -636,6 +658,7 @@ def _ensure_schema(conn: sqlite3.Connection):
         ('after_sale_reset_discounts', '1'),
         ('after_sale_reset_notes', '1'),
         ('pos_checkout_layout', 'product_explorer'),
+        ('wheel_scroll_interval', '3'),
         ('document_policy', 'C'),
         ('printer_connection', 'USB'),
         ('printer_host', ''),
@@ -956,6 +979,8 @@ def _migrate_columns(conn: sqlite3.Connection):
             conn.execute("ALTER TABLE products ADD COLUMN image_path TEXT")
         if prod_cols and 'cost_confirmed' not in prod_cols:
             conn.execute("ALTER TABLE products ADD COLUMN cost_confirmed INTEGER DEFAULT 0")
+        if prod_cols and 'allow_decimal_qty' not in prod_cols:
+            conn.execute("ALTER TABLE products ADD COLUMN allow_decimal_qty INTEGER")
     except Exception:
         pass
     try:
@@ -1800,11 +1825,112 @@ class APIClient:
         finally:
             db.close()
 
+    def read_wheel_scroll(self) -> dict:
+        """This account's mouse-wheel interval. Another account is not read."""
+        if not self._user_id:
+            return {'wheel_scroll_interval': 3}
+        db = _db()
+        try:
+            row = db.execute(
+                "SELECT wheel_scroll_interval FROM users WHERE id=?",
+                (int(self._user_id),),
+            ).fetchone()
+        finally:
+            db.close()
+        raw = None if row is None else row['wheel_scroll_interval']
+        return {'wheel_scroll_interval': _scroll_interval(raw)}
+
+    def save_wheel_scroll(self, value) -> dict:
+        """Save this account's interval. Shop settings and other users stay put."""
+        if not self._user_id:
+            return {'error': 'Sign in before changing the mouse-wheel interval.', 'status': 401}
+        try:
+            interval = _scroll_interval(value, strict=True)
+        except ValueError as exc:
+            return {'error': str(exc), 'status': 400}
+        db = _db()
+        try:
+            changed = db.execute(
+                "UPDATE users SET wheel_scroll_interval=? WHERE id=?",
+                (interval, int(self._user_id)),
+            )
+            if changed.rowcount != 1:
+                db.rollback()
+                return {'error': 'This account could not be updated.', 'status': 404}
+            db.commit()
+        finally:
+            db.close()
+        return {'success': True, 'wheel_scroll_interval': interval}
+
+    def request_sale_correction(self, data: dict) -> dict:
+        """Ask for a discount or a one-sale price correction. The product card stays."""
+        from desktop.utils.security import client_actor, has_permission
+        role = (self._role or '').lower()
+        if role == 'viewer' or not has_permission(client_actor(self), 'sales.create'):
+            return {'error': 'You cannot request a discount or price correction.', 'status': 403}
+        kind = str((data or {}).get('type') or 'price_override').strip().lower()
+        if kind not in ('large_discount', 'price_override'):
+            return {'error': 'Choose a discount or a price correction.', 'status': 400}
+        reason = str((data or {}).get('reason') or (data or {}).get('details') or '').strip()
+        if len(reason) < 3:
+            return {'error': 'Enter a reason for this request.', 'status': 400}
+        try:
+            amount = round(float((data or {}).get('amount') or 0), 2)
+        except (TypeError, ValueError):
+            return {'error': 'Enter the discount or corrected amount.', 'status': 400}
+        if amount < 0:
+            return {'error': 'The amount cannot be negative.', 'status': 400}
+        subject = str((data or {}).get('title') or (data or {}).get('product_name') or '').strip()
+        title = subject or ('Discount' if kind == 'large_discount' else 'Price correction')
+        db = _db()
+        try:
+            before = {
+                tuple(row) for row in db.execute(
+                    "SELECT id, price, unit, stock, cost_price FROM products"
+                ).fetchall()
+            }
+            self._ensure_approval_table(db)
+            db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+                "VALUES (?,?,?,?, 'pending',?,?,?)",
+                (
+                    kind, title, reason, amount,
+                    self._username or '', self._user_id,
+                    json.dumps({
+                        'product_id': (data or {}).get('product_id'),
+                        'product_name': (data or {}).get('product_name') or '',
+                        'sale_id': (data or {}).get('sale_id'),
+                    }),
+                ),
+            )
+            request_id = int(db.execute('SELECT last_insert_rowid()').fetchone()[0])
+            db.commit()
+            after = {
+                tuple(row) for row in db.execute(
+                    "SELECT id, price, unit, stock, cost_price FROM products"
+                ).fetchall()
+            }
+        finally:
+            db.close()
+        if before != after:
+            return {'error': 'The product card changed and the request was not kept.', 'status': 409}
+        return {
+            'success': True,
+            'pending_approval': True,
+            'id': request_id,
+            'message': 'Waiting for approval. The permanent price, unit, and product were not changed.',
+        }
+
     def update_settings(self, data: dict) -> dict:
         db = _db()
         try:
             from backend.settings_service import apply_changes
             payload = dict(data or {})
+            if 'wheel_scroll_interval' in payload:
+                saved = self.save_wheel_scroll(payload.pop('wheel_scroll_interval'))
+                if not saved.get('success'):
+                    return saved
             payload.setdefault('source', 'desktop')
             result = apply_changes(
                 db, payload,
@@ -1874,7 +2000,8 @@ class APIClient:
         db = _db()
         try:
             target = db.execute(
-                "SELECT id, role FROM users WHERE id=?", (uid,)
+                "SELECT id, username, role, full_name, is_active FROM users WHERE id=?",
+                (uid,),
             ).fetchone()
             if not target:
                 return {'error': 'User not found'}
@@ -1927,6 +2054,10 @@ class APIClient:
                 values.append(json.dumps(
                     sanitize_tab_permissions(new_role, data['tab_permissions'])
                 ))
+            elif 'role' in data and str(data.get('role') or '') != str(target['role'] or ''):
+                from roles import default_tab_permissions
+                fields.append("tab_permissions=?")
+                values.append(json.dumps(default_tab_permissions(new_role)))
             if 'permission_grants' in data or 'permission_denials' in data:
                 from desktop.utils.security import clean_permission_change
                 if int(uid) == int(self._user_id or 0):
@@ -1952,7 +2083,25 @@ class APIClient:
                 values.append(uid)
                 db.execute(f"UPDATE users SET {','.join(fields)} WHERE id=?", values)
                 db.commit()
-            _audit(self._user_id, self._username, 'UPDATE_USER', 'admin', f"id={uid}")
+            def _cell(key):
+                try:
+                    return '' if target[key] is None else target[key]
+                except Exception:
+                    return ''
+            changed = []
+            if 'role' in data and str(data.get('role') or '') != str(_cell('role')):
+                changed.append(f"role {_cell('role')} -> {data.get('role')}")
+            if 'full_name' in data and str(data.get('full_name') or '') != str(_cell('full_name')):
+                changed.append('name updated')
+            if 'is_active' in data:
+                was = int(_cell('is_active') or 0)
+                now = 0 if data.get('is_active') in (0, '0', False) else 1
+                if was != now:
+                    changed.append('deactivated' if now == 0 else 'reactivated')
+            _audit(
+                self._user_id, self._username, 'UPDATE_USER', 'admin',
+                f"id={uid} user={_cell('username')} " + ('; '.join(changed) or 'saved'),
+            )
             return {'success': True}
         finally:
             db.close()
@@ -2235,9 +2384,10 @@ class APIClient:
             cols = {row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()}
             image_sql = ", image_path" if "image_path" in cols else ""
             confirmed_sql = ", COALESCE(cost_confirmed,0) AS cost_confirmed" if "cost_confirmed" in cols else ""
+            decimal_sql = ", allow_decimal_qty" if "allow_decimal_qty" in cols else ""
             rows = _rows(db.execute(
                 "SELECT id, name, sku, barcode, category, price, cost_price, "
-                f"stock, min_stock, unit, is_active{image_sql}{confirmed_sql} "
+                f"stock, min_stock, unit, is_active{image_sql}{confirmed_sql}{decimal_sql} "
                 "FROM products WHERE is_active=1 ORDER BY name"
             ))
             try:
@@ -2274,6 +2424,8 @@ class APIClient:
     def create_product(self, data: dict) -> dict:
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
+        if role == 'viewer':
+            return {'error': 'You cannot add a product.', 'status': 403}
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
         if role not in known or not has_permission(client_actor(self), 'inventory.create'):
             return {'error': 'You cannot add a product.', 'status': 403}
@@ -2301,6 +2453,28 @@ class APIClient:
                 if cost_value < 0:
                     return {'error': 'Buying price cannot be negative.', 'status': 400}
                 cost_confirmed = 1 if cost_value > 0 or data.get('explicit_zero') else 0
+            decimal_flag = None
+            if 'allow_decimal_qty' in data:
+                from desktop.utils.quantities import decimal_choice
+                choice = decimal_choice(data.get('allow_decimal_qty'))
+                decimal_flag = None if choice is None else (1 if choice else 0)
+            if not getattr(self, '_approved_product_write', False):
+                from backend.product_requests import hold_create
+                held = hold_create(self, {
+                    'name': name,
+                    'sku': sku,
+                    'category': stored_category,
+                    'price': float(data.get('price') or 0),
+                    'cost_price': cost_value,
+                    'stock': initial_stock,
+                    'min_stock': int(data.get('min_stock', 5) or 5),
+                    'unit': data.get('unit') or 'pcs',
+                    'barcode': data.get('barcode'),
+                    'allow_decimal_qty': decimal_flag,
+                    'explicit_zero': bool(data.get('explicit_zero')),
+                }, db)
+                if held is not None:
+                    return held
             db.execute(
                 "INSERT INTO products (name,sku,category,price,cost_price,stock,min_stock,unit,barcode)"
                 " VALUES (?,?,?,?,?,?,?,?,?)",
@@ -2310,6 +2484,17 @@ class APIClient:
                  data.get('unit') or 'pcs', data.get('barcode'))
             )
             pid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+            if 'allow_decimal_qty' in data:
+                from desktop.utils.quantities import decimal_choice
+                choice = decimal_choice(data.get('allow_decimal_qty'))
+                stored_flag = None if choice is None else (1 if choice else 0)
+                try:
+                    db.execute(
+                        "UPDATE products SET allow_decimal_qty=? WHERE id=?",
+                        (stored_flag, pid),
+                    )
+                except sqlite3.OperationalError:
+                    pass
             try:
                 db.execute(
                     "UPDATE products SET cost_confirmed=? WHERE id=?",
@@ -2464,6 +2649,8 @@ class APIClient:
         """Update a product. Stock changes go through adjust_stock only."""
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
+        if role == 'viewer':
+            return {'error': 'You cannot change this product.', 'status': 403}
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
         if role not in known or not has_permission(client_actor(self), 'inventory.edit_info'):
             return {'error': 'You cannot change this product.', 'status': 403}
@@ -2529,9 +2716,18 @@ class APIClient:
                     else:
                         data['cost_confirmed'] = 1
                     data['cost_price'] = cost_value
+            if 'allow_decimal_qty' in data:
+                from desktop.utils.quantities import decimal_choice
+                choice = decimal_choice(data.get('allow_decimal_qty'))
+                data['allow_decimal_qty'] = None if choice is None else (1 if choice else 0)
+            if not getattr(self, '_approved_product_write', False):
+                from backend.product_requests import hold_update
+                held = hold_update(self, db, old, data)
+                if held is not None:
+                    return held
             fields, values = [], []
             for field in ('name','sku','category','price','cost_price','cost_confirmed',
-                          'min_stock','unit','barcode','is_active'):
+                          'min_stock','unit','barcode','is_active','allow_decimal_qty'):
                 if field in data:
                     fields.append(f"{field}=?"); values.append(data[field])
 
@@ -2543,7 +2739,7 @@ class APIClient:
 
             changes = []
             if old is not None:
-                for key in ('name', 'sku', 'barcode', 'category', 'price', 'cost_price', 'unit', 'min_stock', 'is_active'):
+                for key in ('name', 'sku', 'barcode', 'category', 'price', 'cost_price', 'unit', 'min_stock', 'is_active', 'allow_decimal_qty'):
                     if key not in data:
                         continue
                     before = old[key] if key in old.keys() else ''
@@ -2574,7 +2770,7 @@ class APIClient:
         return {'success': True}
 
     def adjust_stock(self, pid: int, new_qty, reason: str = '',
-                     fourth=None, *, pin=None, expected_stock=None,
+                     fourth=None, *, pin=None, pin_username: str = '', expected_stock=None,
                      idempotency_key: str = '', business_date: str = '',
                      offline: bool = False, backdate_reason: str = '') -> dict:
         """
@@ -2603,14 +2799,14 @@ class APIClient:
                 expected_stock = fourth
         return self._apply_stock_adjustment(
             pid, direction, quantity, absolute, str(reason or ''),
-            pin=pin, expected_stock=expected_stock,
+            pin=pin, pin_username=pin_username, expected_stock=expected_stock,
             idempotency_key=idempotency_key,
             business_date=business_date, offline=offline,
             backdate_reason=backdate_reason,
         )
 
     def _apply_stock_adjustment(self, pid, direction, quantity, absolute, reason, *,
-                                pin, expected_stock, idempotency_key='',
+                                pin, pin_username='', expected_stock, idempotency_key='',
                                 business_date='', offline=False,
                                 backdate_reason='') -> dict:
         import math
@@ -2655,13 +2851,15 @@ class APIClient:
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock, cost_price, unit FROM products WHERE id=?", (pid,)
+                "SELECT id, name, stock, cost_price, unit, allow_decimal_qty FROM products WHERE id=?",
+                (pid,),
             ).fetchone()
             if not row:
                 return {'error': 'Product not found', 'status': 404}
             try:
                 amount = parse_quantity(
                     amount, row['unit'], allow_zero=direction in (None, 'set'),
+                    decimal_qty=row['allow_decimal_qty'] if 'allow_decimal_qty' in row.keys() else None,
                 )
             except QuantityError as exc:
                 message = str(exc)
@@ -2711,24 +2909,16 @@ class APIClient:
                         'status': 429,
                         'retry_after': retry_after,
                     }
-                stored = db.execute(
-                    "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-                ).fetchone()
-                stored_hash = str(stored['value'] if stored else '')
-                supplied = '' if pin is None else str(pin)
-                if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
-                    _pin_failure_record(self._user_id)
+                from desktop.utils.superadmin_pin import gate_personal_pin
+                supplied_name = pin_username or getattr(self, '_authoriser_username', '') or ''
+                gate = gate_personal_pin(db, '' if pin is None else str(pin), supplied_name)
+                if gate:
                     _audit(
                         self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
-                        f'stock_adjust pid={pid} result=fail',
+                        f'stock_adjust pid={pid} result=fail authoriser={supplied_name}',
                     )
-                    message = (
-                        'Incorrect Super-Admin PIN.'
-                        if supplied else
-                        'Super-Admin PIN is required to reduce stock.'
-                    )
-                    return {'error': message, 'status': 403}
-                _pin_failures_clear(self._user_id)
+                    db.commit()
+                    return gate
 
             from desktop.utils.shop_time import shop_today
             move_day = (str(business_date or '').strip()[:10] or shop_today().isoformat())
@@ -3051,6 +3241,15 @@ class APIClient:
                 return {'error': 'Enter a valid extra delivery cost.'}
             if extra < 0:
                 return {'error': 'Extra delivery cost cannot be negative.'}
+            raw_sell = raw.get('sell_price')
+            sell_price = None
+            if raw_sell not in (None, ''):
+                try:
+                    sell_price = round(float(raw_sell), 4)
+                except (TypeError, ValueError):
+                    return {'error': 'Enter a valid batch selling price, or leave it blank.'}
+                if sell_price < 0:
+                    return {'error': 'Batch selling price cannot be negative.'}
             cleaned.append({
                 'product_id': pid, 'quantity': qty,
                 'unit_cost': cost, 'extra_unit_cost': extra,
@@ -3058,6 +3257,7 @@ class APIClient:
                 'ordered_qty': ordered,
                 'explicit_zero': bool(raw.get('explicit_zero')) and cost == 0,
                 'allow_excess': bool(raw.get('allow_excess')),
+                'sell_price': sell_price,
             })
         if not cleaned:
             return {'error': 'Add at least one product.'}
@@ -3074,19 +3274,22 @@ class APIClient:
             from desktop.utils.quantities import QuantityError, parse_quantity
             for line in cleaned:
                 prod = db.execute(
-                    "SELECT name, unit FROM products WHERE id=?",
+                    "SELECT name, unit, allow_decimal_qty FROM products WHERE id=?",
                     (line['product_id'],),
                 ).fetchone()
                 if not prod:
                     return {'error': 'Product was not found.'}
+                flag = prod['allow_decimal_qty'] if 'allow_decimal_qty' in prod.keys() else None
                 try:
-                    line['quantity'] = parse_quantity(line['quantity'], prod['unit'], allow_zero=True)
+                    line['quantity'] = parse_quantity(
+                        line['quantity'], prod['unit'], allow_zero=True, decimal_qty=flag,
+                    )
                     line['rejected_qty'] = parse_quantity(
-                        line.get('rejected_qty') or 0, prod['unit'], allow_zero=True,
+                        line.get('rejected_qty') or 0, prod['unit'], allow_zero=True, decimal_qty=flag,
                     )
                     if line.get('ordered_qty') is not None:
                         line['ordered_qty'] = parse_quantity(
-                            line['ordered_qty'], prod['unit'], allow_zero=True,
+                            line['ordered_qty'], prod['unit'], allow_zero=True, decimal_qty=flag,
                         )
                 except QuantityError as exc:
                     message = str(exc)
@@ -3301,6 +3504,7 @@ class APIClient:
                             extra_unit_cost=extra_cost,
                             product_name=row['name'],
                             username=self._username or self._role or '',
+                            sell_price=line.get('sell_price'),
                         )
                         if layer.get('error'):
                             db.rollback()
@@ -3569,7 +3773,7 @@ class APIClient:
             client_token=client_token,
         )
 
-    def _stock_reduce_authorized(self, db, pin, action: str):
+    def _stock_reduce_authorized(self, db, pin, action: str, pin_username: str = ''):
         """None when this user may reduce received stock. Otherwise an error dict."""
         role = (self._role or '').lower()
         if role not in ('admin', 'superadmin'):
@@ -3590,18 +3794,13 @@ class APIClient:
                 'error': 'Too many PIN attempts. Wait and try again.',
                 'status': 429, 'retry_after': retry_after,
             }
-        stored = db.execute(
-            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-        ).fetchone()
-        stored_hash = str(stored['value'] if stored else '')
-        supplied = '' if pin is None else str(pin)
-        if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
-            _pin_failure_record(self._user_id)
-            return {
-                'error': 'Incorrect Super-Admin PIN.' if supplied else 'Super-Admin PIN is required.',
-                'status': 403,
-            }
-        _pin_failures_clear(self._user_id)
+        from desktop.utils.superadmin_pin import gate_personal_pin
+        gate = gate_personal_pin(
+            db, '' if pin is None else str(pin),
+            pin_username or getattr(self, '_authoriser_username', '') or '',
+        )
+        if gate:
+            return gate
         return None
 
     def _shift_purchase_layer(self, db, product_id, source_id, qty_delta, *,
@@ -3920,12 +4119,24 @@ class APIClient:
             db.close()
 
     def request_stock_adjustment(self, product_id: int, requested_qty, reason: str) -> dict:
-        """Cashier asks an administrator to change stock. Does not change stock."""
-        if (self._role or '').lower() not in ('cashier', 'manager', 'admin', 'superadmin'):
+        """Cashier asks an administrator to change stock. Does not change stock.
+
+        A signed-in Super Admin already has that authority, so the quantity
+        changes now and no request is queued.
+        """
+        role = (self._role or '').lower()
+        if role not in ('cashier', 'manager', 'admin', 'superadmin'):
             return {'error': 'You cannot request a stock adjustment.'}
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'A reason is required.'}
+        if role == 'superadmin':
+            done = self.adjust_stock(int(product_id), requested_qty, reason)
+            if not isinstance(done, dict):
+                return {'error': 'Could not adjust stock.', 'status': 500, 'pending_approval': False, 'executed': False}
+            done['pending_approval'] = False
+            done['executed'] = bool(done.get('success'))
+            return done
         from desktop.utils.quantities import QuantityError, parse_quantity
         try:
             requested_qty = parse_quantity(requested_qty, allow_zero=True)
@@ -3938,12 +4149,16 @@ class APIClient:
         db = _db()
         try:
             row = db.execute(
-                "SELECT id, name, stock, unit FROM products WHERE id=?", (int(product_id),)
+                "SELECT id, name, stock, unit, allow_decimal_qty FROM products WHERE id=?",
+                (int(product_id),),
             ).fetchone()
             if not row:
                 return {'error': 'Product not found'}
             try:
-                requested_qty = parse_quantity(requested_qty, row['unit'], allow_zero=True)
+                requested_qty = parse_quantity(
+                    requested_qty, row['unit'], allow_zero=True,
+                    decimal_qty=row['allow_decimal_qty'] if 'allow_decimal_qty' in row.keys() else None,
+                )
             except QuantityError as exc:
                 message = str(exc)
                 if 'whole units' in message:
@@ -4115,10 +4330,33 @@ class APIClient:
             db.close()
 
     def request_sale_void(self, sale_id: int, reason: str) -> dict:
-        """Ask for a void. The sale stays completed until a manager approves it."""
+        """Ask for a void. The sale stays completed until a manager approves it.
+
+        A signed-in Super Admin voids the sale now. No approval row is created.
+        """
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Enter a reason for the void request.', 'status': 400}
+        if (self._role or '').lower() == 'superadmin':
+            done = self.void_sale(int(sale_id), reason)
+            if not isinstance(done, dict):
+                return {'error': 'Could not void the sale.', 'status': 500, 'pending_approval': False, 'executed': False}
+            done['pending_approval'] = False
+            done['executed'] = bool(done.get('success'))
+            if done.get('success'):
+                done['sale_status'] = 'voided'
+                try:
+                    from backend.void_requests import close_open_for_sale
+                    link = _db()
+                    try:
+                        self._ensure_approval_table(link)
+                        close_open_for_sale(link, int(sale_id), self._username or 'superadmin')
+                        link.commit()
+                    finally:
+                        link.close()
+                except Exception:
+                    logger.exception('close void requests after superadmin void')
+            return done
         from desktop.utils.security import client_actor, has_permission
         if not has_permission(client_actor(self), 'sales.request_void'):
             return {'error': 'You cannot request a void.', 'status': 403}
@@ -4191,10 +4429,20 @@ class APIClient:
             db.close()
 
     def request_consumption_void(self, consumption_id: int, reason: str) -> dict:
-        """Ask an admin to void internal consumption. Stock stays reduced until approval."""
+        """Ask an admin to void internal consumption. Stock stays reduced until approval.
+
+        A signed-in Super Admin restores the stock now. No approval row is created.
+        """
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Enter a reason for the void request.', 'status': 400}
+        if (self._role or '').lower() == 'superadmin':
+            done = self.void_consumption(int(consumption_id), reason)
+            if not isinstance(done, dict):
+                return {'error': 'Could not void the consumption.', 'status': 500, 'pending_approval': False, 'executed': False}
+            done['pending_approval'] = False
+            done['executed'] = bool(done.get('success'))
+            return done
         from desktop.utils.security import client_actor, has_permission
         if not has_permission(client_actor(self), 'consumption.request_void'):
             return {'error': 'You cannot request this void.', 'status': 403}
@@ -4513,7 +4761,9 @@ class APIClient:
                 ):
                     pin_error = self._approval_pin_error(db, pin, int(approval_id))
                     if pin_error:
+                        db.commit()
                         return pin_error
+                    db.commit()
             db.execute('BEGIN IMMEDIATE')
             row = db.execute(
                 "SELECT * FROM cc_approvals WHERE id=?", (int(approval_id),)
@@ -4526,9 +4776,21 @@ class APIClient:
                 own_requester = int(row['requested_by_id'] or 0)
             except (TypeError, ValueError):
                 own_requester = 0
-            if own_requester and own_requester == int(self._user_id or 0):
+            reviewer_role = (self._role or '').lower()
+            if (
+                reviewer_role != 'superadmin'
+                and own_requester
+                and own_requester == int(self._user_id or 0)
+            ):
                 db.rollback()
                 return {'error': 'You cannot review your own request.', 'status': 403}
+            if (row['type'] or '').lower() in ('product_publish', 'product_change'):
+                if reviewer_role not in ('admin', 'superadmin'):
+                    db.rollback()
+                    return {
+                        'error': 'Only an admin can approve a product or price change.',
+                        'status': 403,
+                    }
             if action == 'approve' and status == 'approved':
                 db.rollback()
                 return {'success': True, 'duplicate': True, 'status': 'approved'}
@@ -4567,10 +4829,35 @@ class APIClient:
                 requester_id = int(row['requested_by_id'] or 0)
             except (TypeError, ValueError):
                 requester_id = 0
-            if atype == 'consumption_void' and requester_id and requester_id == int(self._user_id or 0):
+            if (
+                atype == 'consumption_void'
+                and reviewer_role != 'superadmin'
+                and requester_id
+                and requester_id == int(self._user_id or 0)
+            ):
                 db.rollback()
                 return {'error': 'You cannot approve your own consumption void.', 'status': 403}
-            if atype not in ('void', 'stock_adjust', 'consumption_void'):
+            try:
+                route_meta = json.loads(row['meta_json'] or '{}')
+            except json.JSONDecodeError:
+                route_meta = {}
+            if not isinstance(route_meta, dict):
+                route_meta = {}
+            linked_items = route_meta.get('items')
+            linked_return = (
+                atype == 'refund'
+                and bool(route_meta.get('sale_id'))
+                and isinstance(linked_items, list)
+                and bool(linked_items)
+            )
+            if atype in ('product_publish', 'product_change'):
+                if (self._role or '').lower() not in ('admin', 'superadmin'):
+                    db.rollback()
+                    return {
+                        'error': 'Only an admin can approve a product or price change.',
+                        'status': 403,
+                    }
+            elif atype not in ('void', 'stock_adjust', 'consumption_void') and not linked_return:
                 if status not in ('pending', 'escalated'):
                     db.rollback()
                     return {'error': f'Already {row["status"]}', 'status': 400}
@@ -4652,6 +4939,85 @@ class APIClient:
                 'duplicate': bool(result.get('duplicate')),
             }
         return finished
+
+    def apply_owner_action(self, atype: str, title: str, details: str, amount) -> dict:
+        """Run a Super Admin decision now. Nothing is left pending in Approvals."""
+        if (self._role or '').lower() != 'superadmin':
+            return {'error': 'Manager or admin access required', 'status': 403, 'pending_approval': False, 'executed': False}
+        atype = (atype or '').strip().lower()
+        title = (title or atype.replace('_', ' ').title()).strip()
+        details = (details or '').strip()
+        try:
+            amount = round(float(amount or 0), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if atype == 'expense':
+            posted = self.accounting_create_expense({
+                'amount': amount,
+                'description': details or title,
+                'vendor_name': title,
+            })
+            if not isinstance(posted, dict):
+                return {'error': 'Could not record the expense.', 'status': 500, 'pending_approval': False, 'executed': False}
+            posted['pending_approval'] = bool(posted.get('pending_approval'))
+            posted['executed'] = bool(posted.get('success')) and not posted['pending_approval']
+            return posted
+        if atype == 'refund':
+            if amount <= 0:
+                return {
+                    'error': 'Enter a refund amount before it can be paid.',
+                    'status': 400, 'pending_approval': False, 'executed': False,
+                }
+            db = _db()
+            try:
+                db.execute('BEGIN IMMEDIATE')
+                outcome = self._post_recorded_approval(
+                    db, {'id': 0, 'amount': amount, 'title': title, 'details': details}, 'refund',
+                )
+                if outcome.get('error'):
+                    db.rollback()
+                    outcome['pending_approval'] = False
+                    outcome['executed'] = False
+                    return outcome
+                db.commit()
+                outcome['success'] = True
+                outcome['pending_approval'] = False
+                outcome['executed'] = True
+                return outcome
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                logger.exception('superadmin refund failed')
+                return {'error': 'Could not record the refund.', 'status': 500, 'pending_approval': False, 'executed': False}
+            finally:
+                db.close()
+        if atype in ('large_discount', 'price_override', 'credit'):
+            db = _db()
+            try:
+                self._ensure_approval_table(db)
+                db.execute(
+                    "INSERT INTO cc_approvals "
+                    "(type, title, details, amount, status, requested_by, requested_by_id, "
+                    "reviewed_by, reviewed_by_id, review_note) "
+                    "VALUES (?,?,?,?, 'approved',?,?,?,?,?)",
+                    (
+                        atype, title, details, amount,
+                        self._username or '', self._user_id,
+                        self._username or '', self._user_id,
+                        'Recorded by Super Admin. It did not wait for approval.',
+                    ),
+                )
+                approval_id = int(db.execute('SELECT last_insert_rowid()').fetchone()[0])
+                db.commit()
+            finally:
+                db.close()
+            return {
+                'success': True, 'id': approval_id, 'status': 'approved',
+                'pending_approval': False, 'executed': False,
+            }
+        return {'error': 'You cannot submit that request.', 'status': 403, 'pending_approval': False, 'executed': False}
 
     def _post_recorded_approval(self, db, row, atype: str) -> dict:
         """Turn an approved expense or refund into a shop record. Other requests stay a decision."""
@@ -4765,7 +5131,7 @@ class APIClient:
                 return True
         return datetime.now() > deadline
 
-    def _approval_pin_error(self, db, pin: str, approval_id: int):
+    def _approval_pin_error(self, db, pin: str, approval_id: int, pin_username: str = ''):
         if (self._role or '').lower() == 'superadmin':
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
@@ -4780,28 +5146,38 @@ class APIClient:
                 'status': 429,
                 'retry_after': retry_after,
             }
-        stored = db.execute(
-            "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-        ).fetchone()
-        stored_hash = str(stored['value'] if stored else '')
-        supplied = '' if pin is None else str(pin)
-        if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
-            _pin_failure_record(self._user_id)
+        from desktop.utils.superadmin_pin import gate_personal_pin
+        gate = gate_personal_pin(
+            db, '' if pin is None else str(pin),
+            pin_username or getattr(self, '_authoriser_username', '') or '',
+        )
+        if gate:
+            try:
+                db.commit()
+            except sqlite3.Error:
+                pass
+            try:
+                _pin_failure_record(self._user_id)
+            except sqlite3.Error:
+                logger.exception('could not record the PIN attempt')
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_PIN_FAIL', 'security',
                 f'approval id={approval_id} result=fail',
             )
-            message = (
-                'Incorrect Super-Admin PIN.'
-                if supplied else
-                'Super-Admin PIN is required.'
-            )
-            return {'error': message, 'status': 403}
-        _pin_failures_clear(self._user_id)
+            return gate
         return None
 
     def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '',
                              approval_id: int = 0, confirm_credit_payments: bool = False) -> dict:
+        if atype == 'refund' and meta.get('sale_id'):
+            return self.return_sale(
+                int(meta.get('sale_id') or 0),
+                meta.get('items') or [],
+                meta.get('reason') or note or 'Approved return',
+                refund_method=meta.get('refund_method') or 'cash',
+                client_token=f"approval-{int(approval_id or 0)}",
+                condition=meta.get('condition') or 'sellable',
+            )
         if atype == 'void':
             try:
                 sale_id = int(meta.get('sale_id') or 0)
@@ -4842,6 +5218,9 @@ class APIClient:
             if 'already voided' in str(outcome.get('error') or '').lower():
                 return {'success': True, 'duplicate': True}
             return outcome
+        if atype in ('product_publish', 'product_change'):
+            from backend.product_requests import apply_approved
+            return apply_approved(self, int(approval_id or 0), atype, meta or {})
         if atype == 'stock_adjust':
             try:
                 product_id = int(meta.get('product_id') or 0)
@@ -5172,17 +5551,31 @@ class APIClient:
 
     def create_sale(self, data: dict) -> dict:
         from desktop.utils.security import client_actor, has_permission
-        if not has_permission(client_actor(self), 'sales.create'):
+        if (self._role or '').lower() == 'viewer' or not has_permission(client_actor(self), 'sales.create'):
             return {'error': 'You cannot take a payment.', 'status': 403}
         items = data.get('items') or []
         if not items:
             return {'error': 'Cart is empty — add at least one product before charging.'}
+        if any(item.get('layer_id') or item.get('fifo_override') for item in items):
+            if not has_permission(client_actor(self), 'inventory.sales.override_fifo'):
+                return {'error': 'You cannot choose a batch. The sale was not recorded.', 'status': 403}
+            for item in items:
+                if not (item.get('layer_id') or item.get('fifo_override')):
+                    continue
+                if not item.get('layer_id'):
+                    return {'error': 'Choose the batch to sell. The sale was not recorded.'}
+                if len(str(item.get('override_reason') or '').strip()) < 3:
+                    return {'error': 'Enter a reason for selling a chosen batch. The sale was not recorded.'}
         try:
             sale_date_s, is_backdated, created_at_s = self._resolve_sale_date(data)
         except ValueError as e:
             return {'error': str(e)}
         db = _db()
         try:
+            from desktop.utils.stock_layers import batch_price_sale_review
+            review = batch_price_sale_review(db, items)
+            if review:
+                return review
             db.execute("BEGIN IMMEDIATE")
             # Allow sale line items even if a product was later removed from inventory.
             db.execute("PRAGMA foreign_keys=OFF")
@@ -5380,7 +5773,16 @@ class APIClient:
                         from desktop.utils.stock_layers import record_sale_cost
                         layer = record_sale_cost(
                             db, pid, qty_requested, sale_id=sale_id, reference=rn,
+                            layer_id=item.get('layer_id'),
                         )
+                        if item.get('layer_id'):
+                            _audit(
+                                self._user_id, self._username or 'staff',
+                                'FIFO_OVERRIDE', 'sales',
+                                f"receipt pending batch {item.get('layer_id')} "
+                                f"qty {qty_requested} reason {item.get('override_reason') or ''}",
+                                conn=db,
+                            )
                         if layer.get('error'):
                             db.rollback()
                             raise ValueError(layer['error'])
@@ -6050,6 +6452,10 @@ class APIClient:
                  f"Sale edit deduct: {rn}",
                  self._user_id, self._username or 'admin')
             )
+            from desktop.utils.stock_layers import record_sale_cost
+            layer = record_sale_cost(db, int(pid), qty, sale_id=sale_id, reference=rn)
+            if layer.get('error'):
+                raise ValueError(layer['error'])
 
     def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False,
                   pin: str = '') -> dict:
@@ -6522,17 +6928,111 @@ class APIClient:
         finally:
             db.close()
 
+    def _submit_return_request(self, sale_id: int, items: list, reason: str,
+                               refund_method: str, condition: str) -> dict:
+        """Record a return request. Stock, money, and the original receipt stay as they are."""
+        db = _db()
+        try:
+            self._ensure_approval_table(db)
+            sale = db.execute("SELECT * FROM sales WHERE id=?", (int(sale_id),)).fetchone()
+            if not sale:
+                return {'error': 'Sale not found', 'status': 404, 'executed': False}
+            if (sale['status'] or '').lower() != 'completed':
+                return {
+                    'error': f'Cannot return sale with status "{sale["status"]}".',
+                    'status': 400,
+                    'executed': False,
+                }
+            refund_total = 0.0
+            described = []
+            for spec in items:
+                line = db.execute(
+                    "SELECT * FROM sale_items WHERE id=? AND sale_id=?",
+                    (int(spec['sale_item_id']), int(sale_id)),
+                ).fetchone()
+                if not line:
+                    return {
+                        'error': f'Sale line #{spec["sale_item_id"]} not found on this receipt.',
+                        'status': 400,
+                        'executed': False,
+                    }
+                sold = float(line['quantity'] or 0)
+                already = float(line['returned_qty'] or 0) if 'returned_qty' in line.keys() else 0.0
+                qty = float(spec['quantity'])
+                if qty > round(sold - already, 4) + 0.0001:
+                    return {
+                        'error': (
+                            f'Cannot return {qty} of {line["product_name"]} — '
+                            f'only {round(sold - already, 4)} remaining.'
+                        ),
+                        'status': 400,
+                        'executed': False,
+                    }
+                disc_share = round(float(line['discount'] or 0) * (qty / sold), 2) if sold else 0.0
+                line_total = round(qty * float(line['unit_price'] or 0) - disc_share, 2)
+                refund_total = round(refund_total + line_total, 2)
+                described.append(f"{qty:g} {line['product_name']}")
+            reference = f"RETREQ-{datetime.now().strftime('%Y%m%d%H%M%S')}-{int(sale_id)}"
+            meta = {
+                'sale_id': int(sale_id),
+                'receipt_number': sale['receipt_number'],
+                'items': items,
+                'reason': reason,
+                'refund_method': refund_method,
+                'condition': condition,
+                'reference': reference,
+            }
+            db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+                "VALUES ('refund', ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    f"Return {sale['receipt_number']}",
+                    f"{reason}. {', '.join(described)}. Goods: {condition}.",
+                    refund_total,
+                    self._username or '',
+                    self._user_id,
+                    json.dumps(meta),
+                ),
+            )
+            approval_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
+            _audit(
+                self._user_id, self._username, 'RETURN_REQUEST', 'sales',
+                f"sale_id={sale_id} approval={approval_id} reference={reference} "
+                f"refund={refund_total} executed=no",
+                conn=db,
+            )
+            db.commit()
+            return {
+                'success': True,
+                'pending_approval': True,
+                'executed': False,
+                'id': approval_id,
+                'reference': reference,
+                'refund_total': refund_total,
+                'message': 'Return request sent. Stock and money are unchanged.',
+            }
+        finally:
+            db.close()
+
     def return_sale(self, sale_id: int, items: list, reason: str,
                     *, refund_method: str = 'cash', client_token: str = '',
                     business_date: str = '', offline: bool = False,
-                    backdate_reason: str = '') -> dict:
+                    backdate_reason: str = '', pin: str = '',
+                    pin_username: str = '', condition: str = 'sellable') -> dict:
         """
         Partial product return against a completed sale.
-        Restocks inventory, records a status='return' sale (negative totals),
-        and bumps sale_items.returned_qty on the original.
+        Restocks sellable goods, records a status='return' sale (negative totals),
+        and bumps sale_items.returned_qty on the original. Damaged goods are
+        recorded and refunded without going back on the shelf.
+        A cashier without a Super Admin PIN sends a request and changes nothing.
         """
-        if self._role not in ('admin', 'superadmin', 'manager'):
-            return {'error': 'Insufficient permissions to process returns.'}
+        condition = (condition or 'sellable').strip().lower()
+        if condition not in ('sellable', 'damaged'):
+            return {
+                'error': 'Say whether the goods can be sold again or are damaged.',
+                'status': 400,
+            }
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'A return reason is required.'}
@@ -6558,6 +7058,41 @@ class APIClient:
             seen_lines.add(si_id)
             norm_items.append({'sale_item_id': si_id, 'quantity': qty})
         norm_items.sort(key=lambda row: row['sale_item_id'])
+        role = (self._role or '').lower()
+        authoriser = ''
+        if role not in ('admin', 'superadmin', 'manager'):
+            if str(pin or '').strip() or str(pin_username or '').strip():
+                pin_db = _db()
+                try:
+                    from desktop.utils.superadmin_pin import verify_superadmin_user_pin
+                    checked = verify_superadmin_user_pin(
+                        pin_db, pin_username, str(pin or ''),
+                    )
+                    if not checked.get('success'):
+                        _audit(
+                            self._user_id, self._username, 'AUTHORISE_PIN_FAILED', 'security',
+                            f"action=return sale_id={sale_id} authoriser={pin_username}",
+                            conn=pin_db,
+                        )
+                        pin_db.commit()
+                        return {
+                            'error': checked.get('error') or 'That Super Admin PIN was not accepted.',
+                            'status': 429 if checked.get('locked') else 403,
+                            'executed': False,
+                        }
+                    authoriser = checked.get('authoriser_username') or str(pin_username or '')
+                    _audit(
+                        self._user_id, self._username, 'AUTHORISE_PIN', 'security',
+                        f"action=return sale_id={sale_id} authoriser={authoriser} executed=pending",
+                        conn=pin_db,
+                    )
+                    pin_db.commit()
+                finally:
+                    pin_db.close()
+            else:
+                return self._submit_return_request(
+                    int(sale_id), norm_items, reason, method, condition,
+                )
         from desktop.utils.shop_time import shop_today
         return_day = (business_date or shop_today().isoformat())[:10]
         held = self._maybe_hold_backdate('customer_return', return_day, {
@@ -6664,32 +7199,47 @@ class APIClient:
                 if not prod:
                     continue
                 old_stock = float(prod['stock'] or 0)
-                new_stock = round(old_stock + qty, 4)
-                db.execute(
-                    "UPDATE products SET stock=?, updated_at=? WHERE id=?",
-                    (new_stock, now, pid),
-                )
-                db.execute(
-                    "INSERT INTO stock_movements "
-                    "(product_id,product_name,movement_type,qty_before,qty_change,"
-                    "qty_after,reference,reason,user_id,username) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (pid, prod['name'], 'RETURN_RESTORE',
-                     old_stock, qty, new_stock,
-                     f"RETURN_sale={sale_id}_item={rl['sale_item_id']}",
-                     f"Return from {orig_rn}: {reason}",
-                     self._user_id, self._username or 'staff'),
-                )
-                from desktop.utils.stock_layers import restore_sale_product_qty
-                restored = restore_sale_product_qty(db, sale_id, pid, qty)
-                if restored.get('error'):
-                    db.rollback()
-                    return {'error': restored['error']}
-                restored_cost = round(restored_cost + float(restored.get('cost') or 0), 2)
+                if condition == 'damaged':
+                    db.execute(
+                        "INSERT INTO stock_movements "
+                        "(product_id,product_name,movement_type,qty_before,qty_change,"
+                        "qty_after,reference,reason,user_id,username) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (pid, prod['name'], 'RETURN_DAMAGED',
+                         old_stock, 0, old_stock,
+                         f"RETURN_sale={sale_id}_item={rl['sale_item_id']}",
+                         f"Damaged return from {orig_rn}: {qty:g} not restocked. {reason}",
+                         self._user_id, self._username or 'staff'),
+                    )
+                else:
+                    new_stock = round(old_stock + qty, 4)
+                    db.execute(
+                        "UPDATE products SET stock=?, updated_at=? WHERE id=?",
+                        (new_stock, now, pid),
+                    )
+                    db.execute(
+                        "INSERT INTO stock_movements "
+                        "(product_id,product_name,movement_type,qty_before,qty_change,"
+                        "qty_after,reference,reason,user_id,username) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (pid, prod['name'], 'RETURN_RESTORE',
+                         old_stock, qty, new_stock,
+                         f"RETURN_sale={sale_id}_item={rl['sale_item_id']}",
+                         f"Return from {orig_rn}: {reason}",
+                         self._user_id, self._username or 'staff'),
+                    )
+                    from desktop.utils.stock_layers import restore_sale_product_qty
+                    restored = restore_sale_product_qty(db, sale_id, pid, qty)
+                    if restored.get('error'):
+                        db.rollback()
+                        return {'error': restored['error']}
+                    restored_cost = round(restored_cost + float(restored.get('cost') or 0), 2)
                 db.execute(
                     "UPDATE sale_items SET returned_qty=? WHERE id=?",
                     (round(rl['already'] + qty, 4), rl['sale_item_id']),
                 )
+            from desktop.utils.stock_layers import stamp_sale_costs
+            stamp_sale_costs(db, sale_id)
 
             debt_applied = 0.0
             inv = db.execute(
@@ -6765,12 +7315,16 @@ class APIClient:
                 'cash_refund': cash_refund,
                 'debt_reduced': debt_applied,
                 'original_receipt': orig_rn,
+                'executed': True,
+                'condition': condition,
+                'authoriser': authoriser,
             }
             _save_request_receipt(db, token, 'return_sale', digest, result)
             db.commit()
             _audit(self._user_id, self._username, 'RETURN_SALE', 'sales',
                    f"sale_id={sale_id} return_id={ret_id} receipt={ret_rn} "
-                   f"refund={refund_total} reason={reason}")
+                   f"refund={refund_total} condition={condition} "
+                   f"authoriser={authoriser or 'self'} reason={reason}")
             return result
         except Exception as e:
             db.rollback()
@@ -6954,6 +7508,8 @@ class APIClient:
                     movement_type='SALE_EDIT_RESTORE',
                     skip_if_restored=False,
                 )
+                from desktop.utils.stock_layers import restore_sale_layers
+                restore_sale_layers(db, sale_id)
             db.execute("DELETE FROM sale_items WHERE sale_id=?", (sale_id,))
             for it in normalized:
                 db.execute(
@@ -7172,6 +7728,7 @@ class APIClient:
             if not see_cost:
                 prod.pop('cost_price', None)
             view = product_batch_view(db, int(product_id), see_cost)
+            from desktop.utils.security import has_permission
             return {
                 'product': prod,
                 'movements': movements,
@@ -7179,7 +7736,140 @@ class APIClient:
                 'batches': view['batches'],
                 'batch_summary': view['batch_summary'],
                 'see_cost': see_cost,
+                'can_set_batch_price': has_permission(client_actor(self), 'inventory.batch_price'),
             }
+        finally:
+            db.close()
+
+    def set_my_superadmin_pin(self, pin: str) -> dict:
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        db = _db()
+        try:
+            result = set_superadmin_user_pin(db, self._user_id, pin)
+            if result.get('error'):
+                return result
+            _audit(
+                self._user_id, self._username, 'SET_SUPERADMIN_PIN', 'security',
+                'Super Admin PIN was replaced.', conn=db,
+            )
+            db.commit()
+            return result
+        finally:
+            db.close()
+
+    def authorise_with_superadmin_pin(self, username: str, pin: str, action: str) -> dict:
+        """Confirm one Super Admin's PIN for the action on screen. Does not run the action."""
+        from desktop.utils.superadmin_pin import verify_superadmin_user_pin
+        action_name = str(action or '').strip()
+        if len(action_name) < 3:
+            return {'error': 'The action to authorise is missing.'}
+        db = _db()
+        try:
+            result = verify_superadmin_user_pin(db, username, pin)
+            outcome = 'AUTHORISE_PIN' if result.get('success') else 'AUTHORISE_PIN_FAILED'
+            _audit(
+                self._user_id, self._username, outcome, 'security',
+                f"action={action_name} authoriser={result.get('authoriser_username') or username}",
+                conn=db,
+            )
+            db.commit()
+            if result.get('success'):
+                result.pop('success', None)
+                result['verified'] = True
+                result['executed'] = False
+                result['action'] = action_name
+                result['error'] = (
+                    'The PIN matched, but this call does not perform the action. '
+                    'Send the action itself with the PIN.'
+                )
+                result['status'] = 409
+            return result
+        finally:
+            db.close()
+
+    def pending_reviews(self) -> dict:
+        from backend.requests_centre import list_centre
+        from desktop.utils.security import client_actor
+        actor = client_actor(self)
+        if str(actor.get('role') or '').lower() not in ('manager', 'admin', 'superadmin'):
+            return {'pending': 0}
+        db = _db()
+        try:
+            data = list_centre(db, actor, {'limit': 1})
+            return {'pending': int((data.get('counts') or {}).get('pending') or 0)}
+        finally:
+            db.close()
+
+    def quote_batch_override(self, product_id, picks, reason: str = '') -> dict:
+        """Preview a chosen-batch sale. Does not take stock."""
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stock_layers import quote_chosen_batches
+        if not has_permission(client_actor(self), 'inventory.sales.override_fifo'):
+            return {'error': 'You cannot choose a batch.'}
+        if len(str(reason or '').strip()) < 3:
+            return {'error': 'Enter a reason for selling a chosen batch.'}
+        db = _db()
+        try:
+            row = _row(db.execute(
+                "SELECT name, price FROM products WHERE id=?", (int(product_id),),
+            ))
+            if not row:
+                return {'error': 'Product was not found.'}
+            result = quote_chosen_batches(
+                db, int(product_id), picks, row.get('price') or 0, row.get('name') or '',
+            )
+            if not result.get('error'):
+                result['reason'] = str(reason).strip()
+            return result
+        finally:
+            db.close()
+
+    def quote_product_sale(self, product_id, quantity) -> dict:
+        """Batch prices for a quantity, before the cashier takes payment."""
+        db = _db()
+        try:
+            row = _row(db.execute(
+                "SELECT name, price FROM products WHERE id=?", (int(product_id),),
+            ))
+            if not row:
+                return {'error': 'Product was not found.'}
+            from desktop.utils.stock_layers import quote_customer_lines
+            return quote_customer_lines(
+                db, int(product_id), quantity, row.get('price') or 0, row.get('name') or '',
+            )
+        finally:
+            db.close()
+
+    def list_batches(self, search: str = '') -> dict:
+        from desktop.utils.security import client_actor, sees_product_cost
+        db = _db()
+        try:
+            from desktop.utils.stock_layers import list_batches
+            see_cost = sees_product_cost(client_actor(self))
+            return {'batches': list_batches(db, search, see_cost), 'see_cost': see_cost}
+        finally:
+            db.close()
+
+    def set_batch_selling_price(self, layer_id, sell_price) -> dict:
+        """Set or clear one batch selling price. Cashiers do not have this permission."""
+        from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.stock_layers import set_batch_sell_price
+        if (self._role or '').lower() == 'viewer' or not has_permission(client_actor(self), 'inventory.batch_price'):
+            return {'error': 'You cannot change a batch selling price.', 'status': 403}
+        db = _db()
+        try:
+            result = set_batch_sell_price(
+                db, int(layer_id), sell_price, username=self._username or self._role or '',
+            )
+            if result.get('error'):
+                return result
+            _audit(
+                self._user_id, self._username, 'BATCH_SELL_PRICE', 'inventory',
+                f"batch {layer_id} selling price {result.get('old_sell_price')} -> {result.get('sell_price')}",
+                conn=db,
+            )
+            db.commit()
+            return result
         finally:
             db.close()
 
@@ -9324,14 +10014,13 @@ class APIClient:
         token = (client_token or '').strip()
         db = _db()
         try:
-            from desktop.utils.security import _pin_hash
-            stored = db.execute(
-                "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
-            ).fetchone()
-            stored_hash = str(stored['value'] if stored else '')
-            supplied = '' if pin is None else str(pin)
-            if not supplied or not stored_hash or _pin_hash(supplied) != stored_hash:
-                return {'error': 'Super-Admin PIN is required.', 'status': 403}
+            from desktop.utils.superadmin_pin import gate_personal_pin
+            gate = gate_personal_pin(
+                db, '' if pin is None else str(pin),
+                getattr(self, '_authoriser_username', '') or '',
+            )
+            if gate:
+                return gate
             db.execute(
                 """CREATE TABLE IF NOT EXISTS debt_write_offs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -9955,12 +10644,15 @@ class APIClient:
                 unit_row = None
                 if pid:
                     unit_row = db.execute(
-                        "SELECT unit, name FROM products WHERE id=?", (pid,)
+                        "SELECT unit, name, allow_decimal_qty FROM products WHERE id=?", (pid,)
                     ).fetchone()
                     if unit_row:
                         prod_unit = unit_row['unit']
                 try:
-                    qty = parse_quantity(item.get('quantity'), prod_unit)
+                    qty = parse_quantity(
+                        item.get('quantity'), prod_unit,
+                        decimal_qty=unit_row['allow_decimal_qty'] if unit_row and 'allow_decimal_qty' in unit_row.keys() else None,
+                    )
                 except QuantityError as exc:
                     db.rollback()
                     message = str(exc)
@@ -10236,7 +10928,7 @@ class APIClient:
                 pid = item['product_id']
                 qty = item['quantity']
                 prod = db.execute(
-                    "SELECT id, name, sku, unit, stock, cost_price, price "
+                    "SELECT id, name, sku, unit, stock, cost_price, price, allow_decimal_qty "
                     "FROM products WHERE id=? AND is_active=1",
                     (pid,),
                 ).fetchone()
@@ -10245,7 +10937,10 @@ class APIClient:
                     return {'error': f'Product id {pid} not found.', 'status': 404}
                 from desktop.utils.quantities import QuantityError, parse_quantity
                 try:
-                    qty = parse_quantity(qty, prod['unit'])
+                    qty = parse_quantity(
+                        qty, prod['unit'],
+                        decimal_qty=prod['allow_decimal_qty'] if 'allow_decimal_qty' in prod.keys() else None,
+                    )
                 except QuantityError as exc:
                     db.rollback()
                     message = str(exc)

@@ -374,25 +374,157 @@ class ExecutableApprovalTests(unittest.TestCase):
         self.assertTrue(applied.get('success'), applied)
         self.assertEqual(self._stock(), 19)
 
-    def test_requester_cannot_approve_their_own_request(self):
-        approval_id = self._request('expense', {})
+    def test_superadmin_can_review_own_request_and_other_roles_cannot(self):
+        approval_id = self._request('large_discount', {})
+        reject_id = self._request('price_override', {})
         db = self.ac._db()
         db.execute(
-            "UPDATE cc_approvals SET requested_by_id=1, amount=15, title='Own expense' WHERE id=?",
+            "UPDATE cc_approvals SET requested_by_id=1, title='Own discount' WHERE id=?",
             (approval_id,),
+        )
+        db.execute(
+            "UPDATE cc_approvals SET requested_by_id=1, title='Own price' WHERE id=?",
+            (reject_id,),
         )
         db.commit()
         db.close()
+        self.api._user_id = 1
+        self.api._role = 'cashier'
         denied = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertEqual(denied.get('status'), 403)
+        for role in ('manager', 'admin'):
+            self.api._role = role
+            denied = self.api.execute_approval(approval_id, 'approve', pin='')
+            self.assertEqual(denied.get('status'), 403, role)
+            self.assertIn('own request', denied.get('error', ''))
+            rejected = self.api.execute_approval(reject_id, 'reject', note='no')
+            self.assertEqual(rejected.get('status'), 403, role)
+            self.assertIn('own request', rejected.get('error', ''))
         db = self.ac._db()
         try:
-            status = db.execute(
+            still = db.execute(
                 "SELECT status FROM cc_approvals WHERE id=?", (approval_id,)
             ).fetchone()['status']
         finally:
             db.close()
-        self.assertEqual(status, 'pending')
+        self.assertEqual(still, 'pending')
+        self.api._role = 'superadmin'
+        approved = self.api.execute_approval(approval_id, 'approve', pin='')
+        self.assertTrue(approved.get('success'), approved)
+        rejected = self.api.execute_approval(reject_id, 'reject', note='Owner decision')
+        self.assertTrue(rejected.get('success'), rejected)
+        db = self.ac._db()
+        try:
+            statuses = {
+                row['id']: row['status']
+                for row in db.execute(
+                    "SELECT id, status FROM cc_approvals WHERE id IN (?,?)",
+                    (approval_id, reject_id),
+                )
+            }
+        finally:
+            db.close()
+        self.assertEqual(statuses[approval_id], 'approved')
+        self.assertEqual(statuses[reject_id], 'rejected')
+        self.assertEqual(self._stock(), 20)
+
+    def test_superadmin_action_executes_and_cashier_still_waits(self):
+        sale = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Approval Item', 'sku': 'APP-1',
+                'quantity': 1, 'unit_price': 80, 'discount': 0, 'total': 80,
+            }],
+            'subtotal': 80, 'discount': 0, 'tax': 0, 'total': 80,
+            'payment_method': 'Cash', 'amount_paid': 80, 'change_amount': 0,
+        })
+        self.assertTrue(sale.get('success'), sale)
+        self.assertEqual(self._stock(), 19)
+        self.api._role = 'superadmin'
+        self.api._user_id = 1
+        done = self.api.request_sale_void(sale['sale_id'], 'Owner void')
+        self.assertTrue(done.get('success'), done)
+        self.assertTrue(done.get('executed'))
+        self.assertFalse(done.get('pending_approval'))
+        self.assertEqual(done.get('sale_status'), 'voided')
+        self.assertEqual(self._stock(), 20)
+        db = self.ac._db()
+        try:
+            queued = db.execute(
+                "SELECT COUNT(*) FROM cc_approvals WHERE type='void'"
+            ).fetchone()[0]
+            status = db.execute(
+                "SELECT status FROM sales WHERE id=?", (sale['sale_id'],)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(int(queued), 0)
+        self.assertEqual(status, 'voided')
+
+        second = self.api.create_sale({
+            'items': [{
+                'product_id': 1, 'product_name': 'Approval Item', 'sku': 'APP-1',
+                'quantity': 1, 'unit_price': 80, 'discount': 0, 'total': 80,
+            }],
+            'subtotal': 80, 'discount': 0, 'tax': 0, 'total': 80,
+            'payment_method': 'Cash', 'amount_paid': 80, 'change_amount': 0,
+        })
+        self.api._role = 'cashier'
+        self.api._user_id = 1
+        asked = self.api.request_sale_void(second['sale_id'], 'Customer changed mind')
+        self.assertTrue(asked.get('success'), asked)
+        self.assertEqual(asked.get('sale_status'), 'completed')
+        self.assertFalse(asked.get('executed'))
+        self.assertEqual(self._stock(), 19)
+        blocked = self.api.execute_approval(asked['id'], 'approve', pin='')
+        self.assertEqual(blocked.get('status'), 403)
+        self.assertEqual(self._stock(), 19)
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        pin_db = self.ac._db()
+        try:
+            set_pin = set_superadmin_user_pin(pin_db, 1, self.PIN)
+            pin_db.commit()
+        finally:
+            pin_db.close()
+        self.assertTrue(set_pin.get('success'), set_pin)
+        self.api._role = 'manager'
+        self.api._authoriser_username = 'owner'
+        owned = self.api.execute_approval(asked['id'], 'approve', pin=self.PIN)
+        self.assertEqual(owned.get('status'), 403)
+        self.assertIn('own request', owned.get('error', ''))
+        self.api._user_id = 2
+        wrong = self.api.execute_approval(asked['id'], 'approve', pin='000000')
+        self.assertEqual(wrong.get('status'), 403)
+        self.assertNotIn(self.PIN, json.dumps(wrong))
+        self.assertNotIn('000000', json.dumps(wrong))
+        self.assertEqual(self._stock(), 19)
+        db = self.ac._db()
+        try:
+            pending = db.execute(
+                "SELECT COUNT(*) FROM cc_approvals WHERE type='void' AND status='pending'"
+            ).fetchone()[0]
+            sale_status = db.execute(
+                "SELECT status FROM sales WHERE id=?", (second['sale_id'],)
+            ).fetchone()['status']
+        finally:
+            db.close()
+        self.assertEqual(int(pending), 1)
+        self.assertEqual(sale_status, 'completed')
+
+        self.api._role = 'superadmin'
+        self.api._user_id = 1
+        adjusted = self.api.request_stock_adjustment(1, 18, 'Stock Count Correction')
+        self.assertTrue(adjusted.get('success'), adjusted)
+        self.assertTrue(adjusted.get('executed'))
+        self.assertFalse(adjusted.get('pending_approval'))
+        self.assertEqual(self._stock(), 18)
+        db = self.ac._db()
+        try:
+            stock_requests = db.execute(
+                "SELECT COUNT(*) FROM stock_adjustment_requests"
+            ).fetchone()[0]
+        finally:
+            db.close()
+        self.assertEqual(int(stock_requests), 0)
 
 
 if __name__ == '__main__':

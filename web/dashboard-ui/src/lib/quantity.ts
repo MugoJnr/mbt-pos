@@ -14,21 +14,32 @@ const PIECE = new Set([
   "item", "items", "each", "ea", "nos", "no",
 ]);
 
-export function allowsFraction(unit: string | undefined | null) {
+export function decimalChoice(value: unknown): boolean | null {
+  if (value == null || value === "") return null;
+  const text = String(value).trim().toLowerCase();
+  if (text === "1" || text === "true" || text === "yes" || text === "allow") return true;
+  if (text === "0" || text === "false" || text === "no" || text === "whole") return false;
+  return null;
+}
+
+export function allowsFraction(unit: string | undefined | null, decimalQty?: unknown) {
+  const choice = decimalChoice(decimalQty);
+  if (choice === true) return true;
+  if (choice === false) return false;
   return !PIECE.has(String(unit || "").trim().toLowerCase());
 }
 
-export function quantityStep(unit: string | undefined | null, wheel = 0.25) {
+export function quantityStep(unit: string | undefined | null, wheel = 0.25, decimalQty?: unknown) {
+  if (!allowsFraction(unit, decimalQty)) return 1;
   const name = String(unit || "").trim().toLowerCase();
-  if (PIECE.has(name)) return 1;
-  if (MEASURED.has(name)) return wheel > 0 ? wheel : 0.25;
+  if (MEASURED.has(name) || decimalChoice(decimalQty) === true) return wheel > 0 ? wheel : 0.25;
   return 0.01;
 }
 
 export function parseQuantity(
   raw: string | number,
   unit?: string | null,
-  options?: { allowZero?: boolean },
+  options?: { allowZero?: boolean; decimalQty?: unknown },
 ): { quantity: number } | { error: string } {
   const text = String(raw ?? "").trim().replace(/,/g, "");
   if (!/^-?\d+(\.\d+)?$/.test(text)) return { error: "Enter a valid quantity." };
@@ -38,7 +49,7 @@ export function parseQuantity(
   const quantity = Number(text);
   if (!Number.isFinite(quantity)) return { error: "Enter a valid quantity." };
   const kept = Math.round(quantity * 10000) / 10000;
-  if (unit && !allowsFraction(unit) && Math.abs(kept - Math.round(kept)) > 1e-9) {
+  if (!allowsFraction(unit, options?.decimalQty) && Math.abs(kept - Math.round(kept)) > 1e-9) {
     return { error: "Quantity must be in whole units." };
   }
   if (quantity < 0) return { error: "Quantity cannot be negative." };

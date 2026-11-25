@@ -731,7 +731,7 @@ function SupplierDebts({ currency }: { currency: string }) {
       {canPaySupplier() ? (
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs font-semibold text-text2">
-          Pay the selected supplier, oldest invoice first
+          Pay the open invoice. This amount is applied only to that receipt.
           <Input aria-label="Supplier payment" type="number" min={0} step={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="mt-1 h-11 w-48" />
         </label>
         <BusinessDateField label="Payment date" value={paidOn} onChange={setPaidOn} confirmed={paidConfirmed} onConfirm={setPaidConfirmed} reason={paidBackdate} onReason={setPaidBackdate} />
@@ -752,7 +752,8 @@ function SupplierDebts({ currency }: { currency: string }) {
             supplier_id: open.supplier_id,
             amount: Number(amount),
             method: "cash",
-            mode: "oldest",
+            mode: "manual",
+            allocations: [{ receipt_id: open.id, amount: Number(amount) }],
             paid_at: paidOn,
             backdate_reason: paidBackdate.trim(),
           });

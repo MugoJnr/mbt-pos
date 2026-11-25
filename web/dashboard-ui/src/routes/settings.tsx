@@ -747,7 +747,7 @@ function Settings() {
             <p className="text-sm sm:col-span-2"><Link to="/backup" className="text-gold font-semibold">Open Backup Center</Link> to run or inspect a backup on this computer.</p>
           </Section>
 
-          <Section id="wheels" icon={<SlidersHorizontal className="h-5 w-5" />} title="Numeric mouse-wheel steps" desc="How far one wheel notch moves a focused quantity">
+          <Section id="wheels" icon={<SlidersHorizontal className="h-5 w-5" />} title="Numeric mouse-wheel steps" desc="How far one wheel notch moves a focused quantity. Typing a decimal is still allowed.">
             <Field label="POS sale quantity">
               <Input type="number" min={0.001} step="0.001" value={form.wheel_pos_qty || WHEEL_DEFAULTS.wheel_pos_qty} onChange={(e) => set("wheel_pos_qty", e.target.value)} />
             </Field>

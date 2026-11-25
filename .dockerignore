@@ -11,6 +11,9 @@ exports/
 backups/
 build/
 dist/
+dist-*/
+build-*/
+qa_evidence/
 !web/mugobyte-platform/dist/
 !web/mugobyte-platform/dist/**
 !web/dashboard-ui/dist/

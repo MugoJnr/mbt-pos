@@ -605,7 +605,16 @@ class SettingsTab(QWidget):
             'Checkout Layout changes apply immediately on Save — no restart required.')
         wf_hint.setWordWrap(True)
         wf_hint.setStyleSheet(f"color:{C['text2']}; font-size:12px; background:transparent;")
+        self.wheel_scroll_interval = QSpinBox()
+        self.wheel_scroll_interval.setRange(1, 10)
+        self.wheel_scroll_interval.setValue(3)
+        self.wheel_scroll_interval.setMinimumHeight(42)
+        self.wheel_scroll_interval.setToolTip(
+            'How far one mouse-wheel notch scrolls lists, tables, and pages. '
+            '1 is the smallest movement and 10 is the fastest. '
+            'Touchpad scrolling is left unchanged. Quantity steps stay in their own settings.')
         FormRow('Checkout Layout', self.pos_checkout_layout, wform)
+        FormRow('Mouse Wheel Scroll Interval', self.wheel_scroll_interval, wform)
         FormRow('Default customer', self.after_sale_default_customer, wform)
         FormRow('Default payment', self.after_sale_default_payment, wform)
         FormRow('', self.after_sale_focus_barcode, wform)
@@ -1118,6 +1127,19 @@ class SettingsTab(QWidget):
             lid = normalize_layout_id(cfg.get('pos_checkout_layout'))
             lidx = self.pos_checkout_layout.findData(lid)
             self.pos_checkout_layout.setCurrentIndex(lidx if lidx >= 0 else 1)
+        if hasattr(self, 'wheel_scroll_interval'):
+            try:
+                interval = int((self.api.read_wheel_scroll() or {}).get('wheel_scroll_interval') or 3)
+            except Exception:
+                interval = 3
+            self.wheel_scroll_interval.blockSignals(True)
+            self.wheel_scroll_interval.setValue(min(10, max(1, interval)))
+            self.wheel_scroll_interval.blockSignals(False)
+            try:
+                self.wheel_scroll_interval.valueChanged.disconnect(self._save_wheel_interval)
+            except Exception:
+                pass
+            self.wheel_scroll_interval.valueChanged.connect(self._save_wheel_interval)
         if hasattr(self, 'cv_tile_size'):
             try:
                 from backend.category_visual_store import load_prefs
@@ -1845,6 +1867,18 @@ class SettingsTab(QWidget):
         QMessageBox.information(
             self, 'Finance',
             'Open Finance from the sidebar to view Overview, Money, and reports.')
+
+    def _save_wheel_interval(self, value):
+        if getattr(self, '_suspend_dirty', False):
+            return
+        saved = self.api.save_wheel_scroll(value)
+        if not saved.get('success'):
+            return
+        try:
+            from desktop.utils.wheel_scroll import set_wheel_scroll_interval
+            set_wheel_scroll_interval(saved.get('wheel_scroll_interval') or value)
+        except Exception:
+            pass
 
     def _save(self):
         if not self.shop_name.text().strip():

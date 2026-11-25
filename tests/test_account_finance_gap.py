@@ -134,6 +134,7 @@ class AccountFinanceGapTests(unittest.TestCase):
 
     def test_stock_reduction_review_requires_pin(self):
         self.api.change_superadmin_pin('', '246810', '246810')
+        self.api._role = 'cashier'
         asked = self.api.request_stock_adjustment(self.product_id, 7, 'Count was short')
         self.assertTrue(asked.get('success'), asked)
         self.api._role = 'manager'

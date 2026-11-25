@@ -53,6 +53,7 @@ type Product = {
   stock: number;
   min_stock?: number;
   unit?: string;
+  allow_decimal_qty?: number | null;
   image_url?: string;
   image_path?: string;
 };
@@ -75,10 +76,15 @@ type Line = {
   product_name: string;
   sku: string;
   unit?: string;
+  allow_decimal_qty?: number | null;
   quantity: number;
   unit_price: number;
   discount: number;
   total: number;
+  batch_priced?: boolean;
+  fifo_override?: boolean;
+  layer_id?: number;
+  override_reason?: string;
 };
 
 function lineKey(line: Line) {
@@ -90,8 +96,8 @@ function lineTotal(price: number, quantity: number, discount: number) {
 }
 
 const HELD_KEY = "mbt-pos-held-sale";
-function saleQtyStep(unit: string | undefined, wheel: number) {
-  return quantityStep(unit, wheel);
+function saleQtyStep(unit: string | undefined, wheel: number, decimalQty?: unknown) {
+  return quantityStep(unit, wheel, decimalQty);
 }
 
 function readHeldSale(): Line[] | null {
@@ -141,9 +147,40 @@ const QUICK_AMOUNTS = [500, 1000, 2000, 5000] as const;
 function POS() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  const canChooseBatch = actions
+    ? actions.includes("inventory.sales.override_fifo")
+    : ["admin", "superadmin"].includes(String(user?.role || "").toLowerCase());
   const role = String(user?.role || "");
   const canDate = ["admin", "superadmin", "manager"].includes(role);
   const canRequestDate = canDate || role === "cashier";
+  const canRequestPrice = role === "cashier" || role === "manager";
+  const [priceRequestOpen, setPriceRequestOpen] = useState(false);
+  const [priceRequestType, setPriceRequestType] = useState("price_override");
+  const [priceRequestAbout, setPriceRequestAbout] = useState("");
+  const [priceRequestAmount, setPriceRequestAmount] = useState("");
+  const [priceRequestReason, setPriceRequestReason] = useState("");
+  async function submitPriceRequest() {
+    if (priceRequestReason.trim().length < 3) {
+      toast.error("Enter a reason for this request.");
+      return;
+    }
+    const res = await POST<{ success?: boolean; error?: string; message?: string }>("/approvals", {
+      type: priceRequestType,
+      title: priceRequestAbout.trim() || (priceRequestType === "large_discount" ? "Discount" : "Price correction"),
+      details: priceRequestReason.trim(),
+      amount: Number(priceRequestAmount || 0),
+    });
+    if (!res?.success) {
+      toast.error(res?.error || "The request was not sent.");
+      return;
+    }
+    toast.success(res.message || "Waiting for approval. The permanent price was not changed.");
+    setPriceRequestOpen(false);
+    setPriceRequestAbout("");
+    setPriceRequestAmount("");
+    setPriceRequestReason("");
+  }
   const [backdateReason, setBackdateReason] = useState("");
   const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
@@ -308,44 +345,127 @@ function POS() {
     window.dispatchEvent(new CustomEvent("mbt-unsaved", { detail: dirty }));
   }, [cart, splitLines]);
 
-  const add = (p: Product) => {
-    if (Number(p.stock) <= 0) return;
-    setRecentIds((ids) => [p.id, ...ids.filter((id) => id !== p.id)].slice(0, 24));
-    setCart((c) => {
-      const idx = c.findIndex((l) => l.product_id === p.id);
-      if (idx >= 0) {
-        const ex = c[idx];
-        const quantity = snapQty(ex.quantity + saleQtyStep(p.unit, qtyStep));
-        const already = c.reduce((sum, l) => sum + (l.product_id === p.id ? l.quantity : 0), 0);
-        if (already - ex.quantity + quantity > Number(p.stock) + 0.0001) {
-          toast.error(`Only ${p.stock} in stock`);
-          return c;
-        }
-        return c.map((l, i) =>
-          i === idx
-            ? { ...l, quantity, total: lineTotal(l.unit_price, quantity, l.discount || 0) }
-            : l,
-        );
-      }
-      return [
-        ...c,
-        {
+  const placeProduct = async (
+    p: { id: number; name: string; sku?: string; unit?: string; price?: number; stock?: number; allow_decimal_qty?: number | null },
+    quantity: number,
+  ) => {
+    const quote = await GET<any>(`/products/${p.id}/sell-quote`, { qty: String(quantity) });
+    const quoted = Array.isArray(quote?.lines) ? quote.lines : [];
+    const built: Line[] = quoted.length
+      ? quoted.map((line: any) => ({
+          line_id: line.split ? `b${(line.batch_refs || []).join("-")}` : `p${p.id}`,
+          product_id: p.id,
+          product_name: line.label || p.name,
+          sku: p.sku || "",
+          unit: p.unit || "pcs",
+          allow_decimal_qty: p.allow_decimal_qty,
+          quantity: Number(line.quantity) || 0,
+          unit_price: Number(line.unit_price) || 0,
+          discount: 0,
+          total: lineTotal(Number(line.unit_price) || 0, Number(line.quantity) || 0, 0),
+          batch_priced: Boolean(line.split),
+        }))
+      : [{
           product_id: p.id,
           product_name: p.name,
           sku: p.sku || "",
           unit: p.unit || "pcs",
-          quantity: 1,
+          allow_decimal_qty: p.allow_decimal_qty,
+          quantity,
           unit_price: Number(p.price) || 0,
           discount: 0,
-          total: Number(p.price) || 0,
-        },
-      ];
+          total: lineTotal(Number(p.price) || 0, quantity, 0),
+        }];
+    setCart((current) => [
+      ...current.filter((line) => line.product_id !== p.id || line.fifo_override),
+      ...built,
+    ]);
+  };
+
+  const chooseBatch = async (line: Line) => {
+    const history = await GET<any>(`/products/${line.product_id}/history`);
+    const batches = (history?.batches || []).filter((batch: any) => Number(batch.remaining_qty) > 0);
+    if (!batches.length) {
+      toast.error("This product has no batch with stock left.");
+      return;
+    }
+    const fifo = await GET<any>(`/products/${line.product_id}/sell-quote`, { qty: String(line.quantity) });
+    const fifoText = (fifo?.lines || []).map((part: any) => `${part.quantity} at ${part.unit_price}`).join(", ") || "the oldest batch";
+    const listed = batches.map((batch: any) => `${batch.batch_ref} left ${batch.remaining_qty} sells ${batch.effective_sell_price}`).join("\n");
+    const picked = window.prompt(`FIFO would sell ${fifoText}.\n${listed}\n\nType the batch reference to sell instead.`, batches[0].batch_ref);
+    if (!picked) return;
+    const batch = batches.find((item: any) => String(item.batch_ref).toLowerCase() === picked.trim().toLowerCase());
+    if (!batch) {
+      toast.error("That batch was not found.");
+      return;
+    }
+    const qtyText = window.prompt("Quantity from this batch", String(Math.min(line.quantity, Number(batch.remaining_qty))));
+    if (qtyText == null) return;
+    const quantity = Number(qtyText);
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity > Number(batch.remaining_qty) + 0.0001) {
+      toast.error("That batch does not have enough stock left.");
+      return;
+    }
+    const reason = window.prompt("Why is this batch being sold first?");
+    if (!reason || reason.trim().length < 3) {
+      toast.error("Enter a reason. The batch was not chosen.");
+      return;
+    }
+    const result = await POST<any>(`/products/${line.product_id}/batch-allocation`, {
+      picks: [{ layer_id: batch.id, quantity }],
+      reason: reason.trim(),
     });
+    if (!result || result.error) {
+      toast.error(result?.error || "The batch was not chosen.");
+      return;
+    }
+    const rest = Math.round((line.quantity - quantity) * 10000) / 10000;
+    const chosen: Line[] = (result.lines || []).map((part: any) => ({
+      line_id: `o${part.layer_id}`,
+      product_id: line.product_id,
+      product_name: part.label || line.product_name,
+      sku: line.sku,
+      unit: line.unit,
+      quantity: Number(part.quantity) || 0,
+      unit_price: Number(part.unit_price) || 0,
+      discount: 0,
+      total: lineTotal(Number(part.unit_price) || 0, Number(part.quantity) || 0, 0),
+      batch_priced: true,
+      fifo_override: true,
+      layer_id: part.layer_id,
+      override_reason: reason.trim(),
+    }));
+    setCart((current) => current.filter((item) => lineKey(item) !== lineKey(line)));
+    if (rest > 0.0001) {
+      await placeProduct({
+        id: line.product_id,
+        name: line.product_name.split(" · B")[0],
+        sku: line.sku,
+        unit: line.unit,
+        price: line.unit_price,
+      }, rest);
+    }
+    setCart((current) => [...current, ...chosen]);
+    toast.success(`FIFO would sell ${fifoText}. This line sells ${batch.batch_ref} instead.`);
+  };
+
+  const add = (p: Product) => {
+    if (Number(p.stock) <= 0) return;
+    setRecentIds((ids) => [p.id, ...ids.filter((id) => id !== p.id)].slice(0, 24));
+    const current = cart
+      .filter((line) => line.product_id === p.id && !line.fifo_override)
+      .reduce((sum, line) => sum + line.quantity, 0);
+    const quantity = current ? snapQty(current + saleQtyStep(p.unit, qtyStep, p.allow_decimal_qty)) : 1;
+    if (quantity > Number(p.stock) + 0.0001) {
+      toast.error(`Only ${p.stock} in stock`);
+      return;
+    }
+    void placeProduct(p, quantity);
   };
 
   const setQty = (key: string, productId: number, quantity: number, stock?: number) => {
     const line = cart.find((l) => lineKey(l) === key);
-    const parsed = parseQuantity(quantity, line?.unit, { allowZero: true });
+    const parsed = parseQuantity(quantity, line?.unit, { allowZero: true, decimalQty: line?.allow_decimal_qty });
     if ("error" in parsed) {
       const name = line?.product_name || "This product";
       toast.error(parsed.error.includes("whole units") ? `${name} is sold in whole units.` : parsed.error);
@@ -359,15 +479,21 @@ function POS() {
       toast.error(`Only ${stock} in stock`);
       return;
     }
-    setCart((c) =>
-      next <= 0
-        ? c.filter((l) => lineKey(l) !== key)
-        : c.map((l) =>
-            lineKey(l) === key
-              ? { ...l, quantity: next, total: lineTotal(l.unit_price, next, l.discount || 0) }
-              : l,
-          ),
-    );
+    const total = others + next;
+    if (total <= 0) {
+      setCart((c) => c.filter((l) => l.product_id !== productId));
+      return;
+    }
+    const baseName = (line?.product_name || "Product").split(" · B")[0];
+    void placeProduct({
+      id: productId,
+      name: baseName,
+      sku: line?.sku,
+      unit: line?.unit,
+      allow_decimal_qty: line?.allow_decimal_qty,
+      price: line?.unit_price,
+      stock,
+    }, total);
   };
 
   const setLineDiscount = (key: string, d: number) =>
@@ -585,6 +711,26 @@ function POS() {
           client_token: saleTokenRef.current || (saleTokenRef.current = crypto.randomUUID()),
         },
       );
+      if (res && (res as { code?: string }).code === "batch_price_review") {
+        const lines = (res as { lines?: Array<{ product_id: number; product_name?: string; segments?: Array<{ layer_id: number; batch_ref?: string; quantity: number; unit_price: number }> }> }).lines || [];
+        const ids = new Set(lines.map((line) => line.product_id));
+        setCart((current) => {
+          const kept = current.filter((line) => !ids.has(line.product_id));
+          const added = lines.flatMap((line) => (line.segments || []).map((part) => ({
+            line_id: `b${part.layer_id}`,
+            product_id: line.product_id,
+            product_name: `${line.product_name || "Product"} · ${part.batch_ref || part.layer_id}`,
+            sku: "",
+            quantity: part.quantity,
+            unit_price: part.unit_price,
+            discount: 0,
+            total: Math.round(part.quantity * part.unit_price * 100) / 100,
+            batch_priced: true,
+          })));
+          return [...kept, ...added];
+        });
+        throw new Error(res.error || "Review the batch prices, then take payment again.");
+      }
       if (!res?.success) throw new Error(res?.error || "Sale failed");
       return { ...res, request: false as const };
     },
@@ -911,6 +1057,11 @@ function POS() {
                   <div key={lineKey(l)} className="px-2 py-1.5 flex items-center gap-1.5">
                     <div className="min-w-0 flex-1">
                       <div className="text-[13px] font-semibold text-text truncate">{l.product_name}</div>
+                      {canChooseBatch && !l.fifo_override ? (
+                        <button type="button" className="text-[10px] font-semibold text-primary" onClick={() => void chooseBatch(l)}>
+                          Choose batch
+                        </button>
+                      ) : null}
                       <div className="text-[10px] text-muted-fg font-mono truncate">
                         {l.sku || `#${l.product_id}`}
                       </div>
@@ -929,7 +1080,7 @@ function POS() {
                       <button
                         type="button"
                         aria-label="Decrease"
-                        onClick={() => setQty(lineKey(l), l.product_id, l.quantity - saleQtyStep(l.unit, qtyStep), products.find((p) => p.id === l.product_id)?.stock)}
+                        onClick={() => setQty(lineKey(l), l.product_id, l.quantity - saleQtyStep(l.unit, qtyStep, l.allow_decimal_qty), products.find((p) => p.id === l.product_id)?.stock)}
                         className="h-8 w-8 grid place-items-center text-text hover:bg-hover"
                       >
                         <Minus className="h-3.5 w-3.5" />
@@ -937,13 +1088,13 @@ function POS() {
                       <input
                         type="number"
                         min={0.01}
-                        step={saleQtyStep(l.unit, qtyStep)}
+                        step={saleQtyStep(l.unit, qtyStep, l.allow_decimal_qty)}
                         onWheel={(e) => {
                           if (document.activeElement !== e.currentTarget) return;
                           e.preventDefault();
                           const dir = e.deltaY < 0 ? 1 : -1;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
-                          setQty(lineKey(l), l.product_id, l.quantity + dir * saleQtyStep(l.unit, qtyStep), stock);
+                          setQty(lineKey(l), l.product_id, l.quantity + dir * saleQtyStep(l.unit, qtyStep, l.allow_decimal_qty), stock);
                         }}
                         aria-label={`Quantity for ${l.product_name}`}
                         value={qtyDraft[lineKey(l)] ?? formatQty(l.quantity)}
@@ -951,7 +1102,7 @@ function POS() {
                           const raw = e.target.value;
                           const key = lineKey(l);
                           setQtyDraft((draft) => ({ ...draft, [key]: raw }));
-                          const parsed = parseQuantity(raw, l.unit);
+                          const parsed = parseQuantity(raw, l.unit, { decimalQty: l.allow_decimal_qty });
                           if ("error" in parsed) return;
                           const stock = products.find((p) => p.id === l.product_id)?.stock;
                           setQty(key, l.product_id, parsed.quantity, stock);
@@ -965,7 +1116,7 @@ function POS() {
                             return next;
                           });
                           if (raw == null || raw.trim() === "") return;
-                          const parsed = parseQuantity(raw, l.unit);
+                          const parsed = parseQuantity(raw, l.unit, { decimalQty: l.allow_decimal_qty });
                           if ("error" in parsed) {
                             toast.error(parsed.error.includes("whole units")
                               ? `${l.product_name} is sold in whole units.`
@@ -984,7 +1135,7 @@ function POS() {
                           setQty(
                             lineKey(l),
                             l.product_id,
-                            l.quantity + saleQtyStep(l.unit, qtyStep),
+                            l.quantity + saleQtyStep(l.unit, qtyStep, l.allow_decimal_qty),
                             products.find((p) => p.id === l.product_id)?.stock,
                           )
                         }
@@ -1419,6 +1570,21 @@ function POS() {
               />
             ) : null}
           </div>
+          {priceRequestOpen ? (
+            <div className="shrink-0 space-y-1 border-t border-border bg-panel px-2 py-2">
+              <div className="text-xs font-semibold text-text">Request a discount or price correction. The product price stays as it is.</div>
+              <div className="flex flex-wrap gap-1">
+                <select aria-label="Request type" value={priceRequestType} onChange={(e) => setPriceRequestType(e.target.value)} className="h-9 rounded-md border border-border bg-card px-2 text-sm">
+                  <option value="price_override">Price correction</option>
+                  <option value="large_discount">Discount</option>
+                </select>
+                <input aria-label="Request about" value={priceRequestAbout} onChange={(e) => setPriceRequestAbout(e.target.value)} placeholder="Product or receipt" className="h-9 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm" />
+                <input aria-label="Request amount" value={priceRequestAmount} onChange={(e) => setPriceRequestAmount(e.target.value)} placeholder="Amount" className="h-9 w-24 rounded-md border border-border bg-card px-2 text-sm" />
+                <input aria-label="Request reason" value={priceRequestReason} onChange={(e) => setPriceRequestReason(e.target.value)} placeholder="Reason" className="h-9 min-w-0 flex-1 rounded-md border border-border bg-card px-2 text-sm" />
+                <button type="button" onClick={() => void submitPriceRequest()} className="h-9 rounded-md bg-gold px-3 text-sm font-semibold text-black">Submit request</button>
+              </div>
+            </div>
+          ) : null}
           <div className="flex shrink-0 items-center gap-1 border-t border-border bg-panel px-2 py-1.5">
               <button
                 type="button"
@@ -1444,6 +1610,16 @@ function POS() {
               >
                 <Printer className="h-4 w-4" />
               </button>
+              {canRequestPrice ? (
+                <button
+                  type="button"
+                  title="Request a discount or price correction"
+                  onClick={() => setPriceRequestOpen((open) => !open)}
+                  className="h-10 shrink-0 rounded-lg border border-border bg-card2 px-2 text-xs font-semibold text-text"
+                >
+                  Request price
+                </button>
+              ) : null}
               <Button
                 variant="primary"
                 className="h-10 min-h-0 flex-1 text-[14px] !bg-ok hover:!bg-ok/90 !text-[#04150e] border-ok"

@@ -40,9 +40,9 @@ class CertCheckoutMoney(unittest.TestCase):
             ('Cert Soap', 'CERT-SOAP', '6161999001', 110.50, 80.0, 20, 2),
         )
         db.execute(
-            "INSERT INTO products (name, sku, barcode, price, cost_price, stock, min_stock) "
-            "VALUES (?,?,?,?,?,?,?)",
-            ('Cert Oil', 'CERT-OIL', '6161999002', 40.0, 25.0, 10, 1),
+            "INSERT INTO products (name, sku, barcode, price, cost_price, stock, min_stock, unit) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ('Cert Oil', 'CERT-OIL', '6161999002', 40.0, 25.0, 10, 1, 'litre'),
         )
         db.execute(
             "INSERT INTO customers (name, phone, credit_limit) VALUES (?,?,?)",

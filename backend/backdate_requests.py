@@ -278,7 +278,7 @@ def approve_request(db, actor: dict, request_id: int, data: dict | None = None) 
         if row['status'] != 'submitted':
             raise BackdateError('Only a submitted request can be approved.')
         _check_version(row, data.get('version'))
-        if int(row['cashier_id']) == int(actor['id']):
+        if _blocks_own_review(actor, row['cashier_id']):
             raise BackdateError('You cannot approve your own request.', 403)
         problems = _blocking_problems(db, row)
         if problems:
@@ -392,7 +392,7 @@ def disapprove_request(db, actor: dict, request_id: int, data: dict | None = Non
             raise BackdateError('Request was not found.', 404)
         if row['status'] != 'approved':
             raise BackdateError('Only an approved request can be disapproved.')
-        if int(row['cashier_id']) == int(actor['id']):
+        if _blocks_own_review(actor, row['cashier_id']):
             raise BackdateError('You cannot disapprove your own request.', 403)
         _check_version(row, data.get('version'))
         sales = _sales_for(db, row['id'])
@@ -531,7 +531,7 @@ def _decide(db, actor, request_id, data, status, action, audit_action) -> dict:
             raise BackdateError('Request was not found.', 404)
         if row['status'] != 'submitted':
             raise BackdateError('Only a submitted request can be reviewed.')
-        if int(row['cashier_id']) == int(actor['id']):
+        if _blocks_own_review(actor, row['cashier_id']):
             raise BackdateError('You cannot review your own request.', 403)
         _check_version(row, data.get('version'))
         version = int(row['version']) + 1
@@ -1349,6 +1349,18 @@ def _may_request(actor) -> bool:
 def _require_request(actor) -> None:
     if not _may_request(actor):
         raise BackdateError('You cannot create a backdating request.', 403)
+
+
+def _blocks_own_review(actor, requester_id) -> bool:
+    """A Super Admin may decide a request they created. Other roles may not."""
+    if str((actor or {}).get('role') or '').strip().lower() == 'superadmin':
+        return False
+    try:
+        owner = int(requester_id or 0)
+        actor_id = int((actor or {}).get('id') or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(owner) and owner == actor_id
 
 
 def _require_review(actor) -> None:

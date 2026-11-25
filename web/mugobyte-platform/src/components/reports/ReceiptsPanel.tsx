@@ -37,6 +37,11 @@ export function ReceiptsPanel({ orgId, record }: { orgId: string; record?: { dev
   return (
     <div className="space-y-4">
       {missing ? <p className="rounded-lg border px-3 py-2 text-sm">That delivery is not in the latest synced records.</p> : null}
+      <p className="text-sm text-muted-foreground">
+        {rows.some((row) => row.record_kind === "stock_receipt")
+          ? "A delivery receipt is one drop from one supplier. Payments on that receipt are separate from the stock received. A stock movement without a receipt number is not the supplier invoice."
+          : "These are the shop stock movements for goods received. They are not the supplier paper invoice, and receiving stock is not a payment."}
+      </p>
       <Card className="overflow-hidden">
         <ReportState
           loading={query.isLoading}
@@ -71,7 +76,11 @@ export function ReceiptsPanel({ orgId, record }: { orgId: string; record?: { dev
                     <p className="font-medium">{String(value(row, "supplier_name") || "No supplier")}</p>
                     <p className="text-xs text-muted-foreground">{String(value(row, "supplier_phone") || "")}</p>
                   </TableCell>
-                  <TableCell>{String(value(row, "product_name", "name") || "—")}</TableCell>
+                  <TableCell>
+                    {row.record_kind === "stock_receipt"
+                      ? `${String(value(row, "receipt_number") || "Receipt")} · ${String(value(row, "payment_status") || "Unpaid")} · ${formatMoney(value(row, "total"))}`
+                      : String(value(row, "product_name", "name") || "—")}
+                  </TableCell>
                   <TableCell className="text-right font-semibold">
                     +{String(value(row, "qty_change") ?? 0)}
                   </TableCell>
@@ -90,12 +99,28 @@ export function ReceiptsPanel({ orgId, record }: { orgId: string; record?: { dev
       <Dialog open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{String(value(selected || {}, "product_name", "name") || "Product")}</DialogTitle>
+            <DialogTitle>
+              {selected?.record_kind === "stock_receipt"
+                ? String(value(selected, "receipt_number") || "Delivery receipt")
+                : String(value(selected || {}, "product_name", "name") || "Product")}
+            </DialogTitle>
             <DialogDescription>
               {formatDateTime(value(selected || {}, "created_at", "source_created_at"))}
             </DialogDescription>
           </DialogHeader>
-          {selected ? (
+          {selected?.record_kind === "stock_receipt" ? (
+            <div className="space-y-3 text-sm">
+              <p>{String(value(selected, "supplier_name") || "Supplier")} · {String(value(selected, "reference") || "No supplier invoice number")} · {String(value(selected, "payment_status") || "")}</p>
+              <p>Total {formatMoney(value(selected, "total"))} · Paid {formatMoney(value(selected, "amount_paid"))} · Outstanding {formatMoney(value(selected, "outstanding"))}</p>
+              <p>Received by {String(value(selected, "username") || "Not uploaded")}</p>
+              {Array.isArray(selected.lines) ? (selected.lines as AnalyticsRow[]).map((line, index) => (
+                <p key={index}>{String(value(line, "product_name") || "Product")} · {String(value(line, "quantity") || 0)} at {formatMoney(value(line, "unit_cost"))} · {formatMoney(value(line, "line_total"))}</p>
+              )) : null}
+              {Array.isArray(selected.payments) && (selected.payments as AnalyticsRow[]).length ? (selected.payments as AnalyticsRow[]).map((payment, index) => (
+                <p key={index}>{String(value(payment, "payment_number") || "Payment")} · {formatMoney(value(payment, "amount"))} · {String(value(payment, "method") || "")} · {String(value(payment, "reference") || "")}</p>
+              )) : <p>No payment has been recorded on this receipt.</p>}
+            </div>
+          ) : selected ? (
             <div className="space-y-4 text-sm">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Product</p>

@@ -38,6 +38,12 @@ class CartQtyDiscountUnit(unittest.TestCase):
         self.tab._qty = _qty
         self.tab._rm = _rm
         self.tab._change_qty = _change_qty
+        def _replace(_product, quantity):
+            if self.tab.cart:
+                self.tab.cart[0]['quantity'] = quantity
+                SalesTab._apply_line_total(self.tab, self.tab.cart[0])
+
+        self.tab._replace_product_lines = _replace
 
     def test_qty_edit_remove_discount(self):
         item = {

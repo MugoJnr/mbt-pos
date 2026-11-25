@@ -1,18 +1,15 @@
 """FIFO cost layers.
 
-A real delivery batch is used first. When that batch runs out, a product whose
-card buying price is above zero records that price for the remainder. A blank
-or zero buying price is left uncosted. Zero is never stored as a cost.
+Each delivery keeps its own buying price. A later delivery does not rewrite an
+older batch. A sale is costed only from the batches it actually consumes.
+The product-card buying price is a reference. It is not a substitute cost
+when a sale has no batch, and it does not fill a shortfall after a real batch.
 """
 from __future__ import annotations
 
 import logging
 
 logger = logging.getLogger(__name__)
-
-CARD_PRICE = "card_price"
-CARD_NOTE = "Product card buying price. Not a supplier invoice."
-_BUYING_PRICE_REPAIR_DONE = False
 
 
 def ensure_cost_layers(db) -> None:
@@ -41,6 +38,7 @@ def ensure_cost_layers(db) -> None:
         ("extra_unit_cost", "REAL DEFAULT 0"),
         ("product_name", "TEXT"),
         ("username", "TEXT"),
+        ("sell_price", "REAL"),
     ):
         if name not in have:
             db.execute(f"ALTER TABLE cost_layers ADD COLUMN {name} {decl}")
@@ -95,7 +93,7 @@ def add_layer(db, product_id: int, qty: float, unit_cost: float,
     values = []
     for key in (
         'supplier_id', 'supplier_name', 'reference_note', 'purchase_unit_cost',
-        'extra_unit_cost', 'product_name', 'username',
+        'extra_unit_cost', 'product_name', 'username', 'sell_price',
     ):
         if key in meta and meta[key] is not None:
             fields.append(f"{key}=?")
@@ -151,33 +149,11 @@ def consume_fifo(db, product_id: int, qty: float, sale_id=None, reference: str =
     return {'success': True, 'cogs': cogs, 'uses': uses}
 
 
-def _card_buying_price(db, product_id: int) -> float:
-    """The product card price for a quantity that has no supplier batch.
-
-    This does not rewrite older sales. A missing or zero price stays uncosted.
-    """
-    try:
-        row = db.execute(
-            "SELECT cost_price FROM products WHERE id=?", (int(product_id),)
-        ).fetchone()
-    except Exception:
-        return 0.0
-    if not row or row[0] in (None, ''):
-        return 0.0
-    try:
-        price = round(float(row[0]), 4)
-    except (TypeError, ValueError):
-        return 0.0
-    return price if price > 0 else 0.0
-
-
 def consume_available_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
-    """Apply recorded FIFO batches first.
+    """Consume the oldest remaining batches first.
 
-    When a product has no batch at all, the card buying price is used if it is
-    above zero. A sale that already used a real batch does not invent a second
-    price for the shortfall. A blank or zero card price stays uncosted.
-    Older sales are not rewritten.
+    Quantity with no batch stays uncosted. The product-card buying price is
+    not written onto the sale and does not create a batch.
     """
     ensure_cost_layers(db)
     need = round(float(qty), 4)
@@ -195,19 +171,7 @@ def consume_available_cost(db, product_id: int, qty: float, sale_id=None, refere
             (int(product_id),),
         ).fetchone()
         if not row:
-            if covered > 0.0001:
-                break
-            card = _card_buying_price(db, product_id)
-            if card <= 0:
-                break
-            import uuid
-            added = add_layer(
-                db, product_id, left, card, CARD_PRICE, uuid.uuid4().hex,
-                reference_note=CARD_NOTE,
-            )
-            if added.get('error') or not added.get('id'):
-                break
-            continue
+            break
         if row[0] in skipped:
             row = db.execute(
                 "SELECT id, remaining_qty, unit_cost FROM cost_layers "
@@ -279,11 +243,19 @@ def quote_available_cost(db, product_id: int, qty: float) -> dict:
     }
 
 
-def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
-    """Record the FIFO cost that exists. Missing coverage stays unknown."""
-    return consume_available_cost(
-        db, product_id, qty, sale_id=sale_id, reference=reference,
-    )
+def record_sale_cost(db, product_id: int, qty: float, sale_id=None, reference: str = '', layer_id=None) -> dict:
+    """Record the FIFO cost that exists. A chosen batch is used only when named."""
+    if layer_id:
+        result = consume_layer(
+            db, int(layer_id), qty, sale_id=sale_id, reference=reference,
+        )
+    else:
+        result = consume_available_cost(
+            db, product_id, qty, sale_id=sale_id, reference=reference,
+        )
+    if sale_id and not result.get('error'):
+        stamp_sale_costs(db, sale_id)
+    return result
 
 
 def consume_layer(db, layer_id: int, qty: float, sale_id=None, reference: str = '') -> dict:
@@ -428,6 +400,7 @@ def restore_sale_layers(db, sale_id: int) -> dict:
             )
             restored = round(restored + put, 4)
         db.execute("UPDATE cost_layer_uses SET reversed=1 WHERE id=?", (use[0],))
+    stamp_sale_costs(db, sale_id)
     return {'success': True, 'restored': restored}
 
 
@@ -478,12 +451,141 @@ def restore_sale_product_qty(db, sale_id: int, product_id: int, qty: float) -> d
                 (take, use[0]),
             )
         left = round(left - take, 4)
-    return {
+    result = {
         'success': True,
         'restored': restored,
         'cost': restored_cost,
         'uncosted': round(max(left, 0), 4),
     }
+    stamp_sale_costs(db, sale_id)
+    return result
+
+
+def ensure_sale_item_cost_columns(db) -> None:
+    """Sale lines keep the FIFO snapshot the portal syncs. Older shops gain the columns."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(sale_items)").fetchall()}
+    if not cols:
+        return
+    if 'returned_qty' not in cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN returned_qty REAL DEFAULT 0")
+    if 'unit_cost' not in cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN unit_cost REAL")
+    if 'costed_qty' not in cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN costed_qty REAL")
+    if 'line_cost' not in cols:
+        db.execute("ALTER TABLE sale_items ADD COLUMN line_cost REAL")
+
+
+def _cost_value(row, index: int, name: str):
+    if hasattr(row, 'keys') and name in row.keys():
+        return row[name]
+    return row[index]
+
+
+def _costs_match(current, unit_cost, costed_qty, line_cost) -> bool:
+    pairs = (
+        (_cost_value(current, 0, 'unit_cost'), unit_cost),
+        (_cost_value(current, 1, 'costed_qty'), costed_qty),
+        (_cost_value(current, 2, 'line_cost'), line_cost),
+    )
+    for old, new in pairs:
+        if old in (None, '') and new in (None, ''):
+            continue
+        if old in (None, '') or new in (None, ''):
+            return False
+        if abs(float(old) - float(new)) > 0.00005:
+            return False
+    return True
+
+
+def _write_sale_item_cost(db, item_id: int, unit_cost, costed_qty, line_cost) -> bool:
+    current = db.execute(
+        "SELECT unit_cost, costed_qty, line_cost FROM sale_items WHERE id=?",
+        (int(item_id),),
+    ).fetchone()
+    if current and _costs_match(current, unit_cost, costed_qty, line_cost):
+        return False
+    db.execute(
+        "UPDATE sale_items SET unit_cost=?, costed_qty=?, line_cost=? WHERE id=?",
+        (unit_cost, costed_qty, line_cost, int(item_id)),
+    )
+    return True
+
+
+def stamp_sale_costs(db, sale_id) -> int:
+    """Copy the FIFO uses still on this sale onto its lines.
+
+    Uses are stored per product, so they are shared across that product's lines
+    in line order after returns. Nothing is invented when no use remains.
+    A line that did not change is left untouched, so sync is not queued again.
+    """
+    ensure_cost_layers(db)
+    ensure_sale_item_cost_columns(db)
+    items = db.execute(
+        "SELECT id, product_id, quantity, COALESCE(returned_qty, 0) "
+        "FROM sale_items WHERE sale_id=? ORDER BY id",
+        (int(sale_id),),
+    ).fetchall()
+    if not items:
+        return 0
+    uses = db.execute(
+        "SELECT product_id, COALESCE(SUM(quantity), 0), "
+        "COALESCE(SUM(quantity * unit_cost), 0) "
+        "FROM cost_layer_uses "
+        "WHERE sale_id=? AND COALESCE(reversed, 0)=0 "
+        "GROUP BY product_id",
+        (int(sale_id),),
+    ).fetchall()
+    remaining = {
+        int(row[0]): [round(float(row[1] or 0), 4), round(float(row[2] or 0), 4)]
+        for row in uses
+    }
+    changed = 0
+    for item in items:
+        item_id = int(_cost_value(item, 0, 'id'))
+        product_id = _cost_value(item, 1, 'product_id')
+        quantity = float(_cost_value(item, 2, 'quantity') or 0)
+        returned = float(_cost_value(item, 3, 'returned_qty') or 0)
+        net = round(quantity - returned, 4) if quantity > 0 else 0.0
+        pool = remaining.get(int(product_id)) if product_id not in (None, '') else None
+        if net <= 0.0001 or not pool or pool[0] <= 0.0001:
+            if _write_sale_item_cost(db, item_id, None, 0.0, None):
+                changed += 1
+            continue
+        take = round(min(net, pool[0]), 4)
+        if take + 0.0001 >= pool[0]:
+            part_cost = pool[1]
+            pool[0] = 0.0
+            pool[1] = 0.0
+        else:
+            part_cost = round(pool[1] * (take / pool[0]), 4)
+            pool[0] = round(pool[0] - take, 4)
+            pool[1] = round(pool[1] - part_cost, 4)
+        unit = round(part_cost / take, 4) if take else None
+        if _write_sale_item_cost(db, item_id, unit, take, round(part_cost, 4)):
+            changed += 1
+    return changed
+
+
+def backfill_sale_line_costs(db) -> dict:
+    """Stamp every existing sale from the FIFO ledger. Safe to run more than once."""
+    tables = {
+        row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if 'sale_items' not in tables or 'cost_layer_uses' not in tables:
+        return {'sales': 0, 'updated': 0}
+    ensure_sale_item_cost_columns(db)
+    sale_ids = [
+        row[0] for row in db.execute(
+            "SELECT DISTINCT sale_id FROM sale_items WHERE sale_id IS NOT NULL"
+        ).fetchall()
+    ]
+    updated = 0
+    for sale_id in sale_ids:
+        updated += stamp_sale_costs(db, sale_id)
+    return {'sales': len(sale_ids), 'updated': updated}
 
 
 def period_profit(db, start: str, end: str) -> dict:
@@ -645,6 +747,15 @@ def product_batch_view(db, product_id: int, see_cost: bool = False) -> dict:
         "SELECT * FROM cost_layers WHERE product_id=? ORDER BY created_at, id",
         (int(product_id),),
     ).fetchall()
+    card_price = None
+    try:
+        product = db.execute(
+            "SELECT price FROM products WHERE id=?", (int(product_id),),
+        ).fetchone()
+        if product and product[0] not in (None, ''):
+            card_price = round(float(product[0]), 4)
+    except Exception:
+        card_price = None
     batches = []
     for row in rows:
         original = round(float(row['original_qty'] or 0), 4)
@@ -659,8 +770,11 @@ def product_batch_view(db, product_id: int, see_cost: bool = False) -> dict:
         if not supplier and legacy:
             supplier = 'Opening stock'
         origin = 'inherited' if legacy else ('adjustment' if source == 'adjust' else 'verified')
+        custom = row['sell_price']
+        custom_price = None if custom in (None, '') else round(float(custom), 4)
         item = {
             'id': row['id'],
+            'batch_ref': f"B{len(batches) + 1:03d}",
             'product_id': row['product_id'],
             'product_name': row['product_name'] or '',
             'source_type': source,
@@ -672,9 +786,16 @@ def product_batch_view(db, product_id: int, see_cost: bool = False) -> dict:
             'original_qty': original,
             'consumed_qty': round(original - remaining, 4),
             'remaining_qty': remaining,
-            'status': 'exhausted' if remaining <= 0.0001 else 'available',
+            'status': (
+                'exhausted' if remaining <= 0.0001
+                else 'partial' if remaining + 0.0001 < original
+                else 'available'
+            ),
             'legacy': legacy,
             'cost_origin': origin,
+            'sell_price': custom_price,
+            'price_mode': 'custom' if custom_price is not None else 'normal',
+            'effective_sell_price': custom_price if custom_price is not None else card_price,
         }
         if see_cost:
             item.update({
@@ -703,6 +824,331 @@ def product_batch_view(db, product_id: int, see_cost: bool = False) -> dict:
         )
         summary['latest_purchase_price'] = latest_cost
     return {'batches': batches, 'batch_summary': summary}
+
+
+def set_batch_sell_price(db, layer_id: int, sell_price, username: str = '') -> dict:
+    """Set or clear one batch's selling price. Blank returns it to the product price.
+
+    An exhausted batch stays in history and cannot be repriced for new sales.
+    """
+    ensure_cost_layers(db)
+    row = db.execute(
+        "SELECT id, remaining_qty, unit_cost, sell_price FROM cost_layers WHERE id=?",
+        (int(layer_id),),
+    ).fetchone()
+    if not row:
+        return {'error': 'Batch was not found.'}
+    if float(row['remaining_qty'] or 0) <= 0.0001:
+        return {'error': 'That batch is finished. Its history stays, and it cannot be sold.'}
+    old = row['sell_price']
+    old_price = None if old in (None, '') else round(float(old), 4)
+    if sell_price in (None, ''):
+        new_price = None
+    else:
+        try:
+            new_price = round(float(sell_price), 4)
+        except (TypeError, ValueError):
+            return {'error': 'Enter a valid selling price.'}
+        if new_price < 0:
+            return {'error': 'Selling price cannot be negative.'}
+    if old_price == new_price:
+        return {'success': True, 'unchanged': True, 'sell_price': new_price}
+    db.execute(
+        "UPDATE cost_layers SET sell_price=? WHERE id=?",
+        (new_price, int(layer_id)),
+    )
+    landed = round(float(row['unit_cost'] or 0), 4)
+    warning = ''
+    if new_price is not None and new_price + 0.0001 < landed:
+        warning = 'This selling price is below the landed cost of the batch.'
+    return {
+        'success': True,
+        'id': int(layer_id),
+        'old_sell_price': old_price,
+        'sell_price': new_price,
+        'price_mode': 'custom' if new_price is not None else 'normal',
+        'warning': warning,
+        'username': username or '',
+    }
+
+
+def quote_fifo_sell_prices(db, product_id: int, qty: float, product_price: float) -> dict:
+    """The prices a FIFO sale would charge. Does not consume stock."""
+    ensure_cost_layers(db)
+    need = round(float(qty), 4)
+    if need <= 0:
+        return {'error': 'Quantity must be greater than zero'}
+    try:
+        card = round(float(product_price), 4)
+    except (TypeError, ValueError):
+        return {'error': 'Enter a valid selling price.'}
+    if card < 0:
+        return {'error': 'Selling price cannot be negative.'}
+    refs = {
+        int(_cost_value(row, 0, 'id')): f"B{index:03d}"
+        for index, row in enumerate(db.execute(
+            "SELECT id FROM cost_layers WHERE product_id=? ORDER BY created_at, id",
+            (int(product_id),),
+        ).fetchall(), start=1)
+    }
+    rows = db.execute(
+        "SELECT id, remaining_qty, sell_price FROM cost_layers "
+        "WHERE product_id=? AND remaining_qty>0 ORDER BY created_at, id",
+        (int(product_id),),
+    ).fetchall()
+    left = need
+    segments = []
+    for row in rows:
+        if left <= 0.0001:
+            break
+        take = round(min(left, float(row['remaining_qty'] or 0)), 4)
+        if take <= 0:
+            continue
+        custom = row['sell_price']
+        price = card if custom in (None, '') else round(float(custom), 4)
+        segments.append({
+            'layer_id': row['id'],
+            'batch_ref': refs.get(int(row['id']), f"B{row['id']}"),
+            'quantity': take,
+            'unit_price': price,
+            'price_mode': 'normal' if custom in (None, '') else 'custom',
+        })
+        left = round(left - take, 4)
+    return {
+        'segments': segments,
+        'covered': round(need - max(left, 0), 4),
+        'uncovered': round(max(left, 0), 4),
+        'total': round(sum(part['quantity'] * part['unit_price'] for part in segments), 2),
+    }
+
+
+def quote_customer_lines(db, product_id: int, qty: float, product_price: float, product_name: str = '') -> dict:
+    """Customer lines before payment.
+
+    Different batch prices stay on separate lines, labelled with the batch
+    reference. The same price stays one line, with the batch allocations kept.
+    """
+    quote = quote_fifo_sell_prices(db, product_id, qty, product_price)
+    if quote.get('error'):
+        return quote
+    name = product_name or 'Product'
+    segments = quote.get('segments') or []
+    prices = {round(float(part['unit_price']), 4) for part in segments}
+    split = len(prices) > 1
+    lines = []
+    if split:
+        for part in segments:
+            lines.append({
+                'quantity': part['quantity'],
+                'unit_price': part['unit_price'],
+                'batch_refs': [part['batch_ref']],
+                'label': f"{name} · {part['batch_ref']}",
+                'allocations': [part],
+                'split': True,
+            })
+    elif segments:
+        lines.append({
+            'quantity': round(sum(part['quantity'] for part in segments), 4),
+            'unit_price': segments[0]['unit_price'],
+            'batch_refs': [part['batch_ref'] for part in segments],
+            'label': name,
+            'allocations': segments,
+            'split': False,
+        })
+    uncovered = round(float(quote.get('uncovered') or 0), 4)
+    if uncovered > 0.0001:
+        card = round(float(product_price), 4)
+        if lines and not split and abs(lines[0]['unit_price'] - card) < 0.0001:
+            lines[0]['quantity'] = round(lines[0]['quantity'] + uncovered, 4)
+        else:
+            lines.append({
+                'quantity': uncovered,
+                'unit_price': card,
+                'batch_refs': [],
+                'label': name,
+                'allocations': [],
+                'split': bool(lines),
+                'uncovered': True,
+            })
+    quote['lines'] = lines
+    quote['product_name'] = name
+    return quote
+
+
+def quote_chosen_batches(db, product_id: int, picks, product_price: float, product_name: str = '') -> dict:
+    """Price a sale that takes named batches instead of the oldest stock."""
+    cleaned = []
+    for pick in picks or []:
+        try:
+            layer_id = int(pick.get('layer_id') or 0)
+            qty = round(float(pick.get('quantity') or 0), 4)
+        except (TypeError, ValueError):
+            return {'error': 'Enter a valid batch and quantity.'}
+        if layer_id <= 0 or qty <= 0:
+            return {'error': 'Enter a valid batch and quantity.'}
+        cleaned.append((layer_id, qty))
+    if not cleaned:
+        return {'error': 'Choose at least one batch.'}
+    seen = set()
+    for layer_id, _qty in cleaned:
+        if layer_id in seen:
+            return {'error': 'That batch is already on this allocation.'}
+        seen.add(layer_id)
+    total_qty = round(sum(qty for _layer, qty in cleaned), 4)
+    fifo = quote_customer_lines(db, product_id, total_qty, product_price, product_name)
+    if fifo.get('error'):
+        return fifo
+    refs = {
+        int(_cost_value(row, 0, 'id')): f"B{index:03d}"
+        for index, row in enumerate(db.execute(
+            "SELECT id FROM cost_layers WHERE product_id=? ORDER BY created_at, id",
+            (int(product_id),),
+        ).fetchall(), start=1)
+    }
+    name = product_name or 'Product'
+    lines = []
+    for layer_id, qty in cleaned:
+        row = db.execute(
+            "SELECT id, product_id, remaining_qty, sell_price FROM cost_layers WHERE id=?",
+            (layer_id,),
+        ).fetchone()
+        if not row or int(_cost_value(row, 1, 'product_id') or 0) != int(product_id):
+            return {'error': 'That batch does not belong to this product.'}
+        remaining = round(float(_cost_value(row, 2, 'remaining_qty') or 0), 4)
+        if remaining + 0.0001 < qty:
+            return {'error': 'That batch does not have enough stock left.'}
+        custom = _cost_value(row, 3, 'sell_price')
+        price = round(float(product_price), 4) if custom in (None, '') else round(float(custom), 4)
+        ref = refs.get(layer_id, f"B{layer_id}")
+        lines.append({
+            'quantity': qty,
+            'unit_price': price,
+            'layer_id': layer_id,
+            'batch_refs': [ref],
+            'label': f"{name} · {ref}",
+            'split': True,
+            'fifo_override': True,
+        })
+    return {
+        'lines': lines,
+        'total': round(sum(line['quantity'] * line['unit_price'] for line in lines), 2),
+        'fifo_lines': fifo.get('lines') or [],
+        'fifo_total': fifo.get('total'),
+        'product_name': name,
+    }
+
+
+def list_batches(db, search: str = '', see_cost: bool = False, limit: int = 400) -> list:
+    """Every batch in the shop, oldest first within each product."""
+    ensure_cost_layers(db)
+    needle = (search or '').strip().lower()
+    rows = db.execute(
+        "SELECT c.id, c.product_id, c.created_at, c.supplier_name, c.reference_note, "
+        "c.original_qty, c.remaining_qty, c.unit_cost, c.purchase_unit_cost, "
+        "c.extra_unit_cost, c.sell_price, c.source_type, "
+        "p.name, p.price, p.sku "
+        "FROM cost_layers c LEFT JOIN products p ON p.id = c.product_id "
+        "ORDER BY p.name, c.created_at, c.id"
+    ).fetchall()
+    sequence = {}
+    found = []
+    for row in rows:
+        pid = int(_cost_value(row, 1, 'product_id') or 0)
+        sequence[pid] = sequence.get(pid, 0) + 1
+        name = _cost_value(row, 12, 'name') or ''
+        supplier = _cost_value(row, 3, 'supplier_name') or ''
+        note = _cost_value(row, 4, 'reference_note') or ''
+        batch_ref = f"B{sequence[pid]:03d}"
+        if needle and needle not in f"{name} {batch_ref} {supplier} {note} {_cost_value(row, 14, 'sku') or ''}".lower():
+            continue
+        original = round(float(_cost_value(row, 5, 'original_qty') or 0), 4)
+        remaining = round(float(_cost_value(row, 6, 'remaining_qty') or 0), 4)
+        custom = _cost_value(row, 10, 'sell_price')
+        custom_price = None if custom in (None, '') else round(float(custom), 4)
+        card = _cost_value(row, 13, 'price')
+        card_price = None if card in (None, '') else round(float(card), 4)
+        item = {
+            'id': int(_cost_value(row, 0, 'id')),
+            'batch_ref': batch_ref,
+            'product_id': pid,
+            'product_name': name,
+            'sku': _cost_value(row, 14, 'sku') or '',
+            'created_at': _cost_value(row, 2, 'created_at'),
+            'supplier_name': supplier,
+            'reference_note': note,
+            'original_qty': original,
+            'remaining_qty': remaining,
+            'status': 'exhausted' if remaining <= 0.0001 else 'available',
+            'sell_price': custom_price,
+            'price_mode': 'custom' if custom_price is not None else 'normal',
+            'effective_sell_price': custom_price if custom_price is not None else card_price,
+        }
+        if see_cost:
+            item['unit_cost'] = round(float(_cost_value(row, 7, 'unit_cost') or 0), 4)
+            item['purchase_unit_cost'] = round(float(_cost_value(row, 8, 'purchase_unit_cost') or item['unit_cost']), 4)
+            item['extra_unit_cost'] = round(float(_cost_value(row, 9, 'extra_unit_cost') or 0), 4)
+        found.append(item)
+        if len(found) >= int(limit):
+            break
+    return found
+
+
+def batch_price_sale_review(db, items) -> dict | None:
+    """Stop a sale that ignores a custom batch selling price.
+
+    A normal product price, including a cashier discount, is left alone.
+    A custom batch price must be charged on its own line. The sale is not posted.
+    """
+    grouped = {}
+    for item in items or []:
+        pid = item.get('product_id')
+        if not pid or item.get('layer_id') or item.get('fifo_override'):
+            continue
+        try:
+            qty = round(float(item.get('quantity') or 0), 4)
+            price = round(float(item.get('unit_price') or 0), 4)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        bucket = grouped.setdefault(int(pid), {'qty': 0.0, 'amount': 0.0})
+        bucket['qty'] = round(bucket['qty'] + qty, 4)
+        bucket['amount'] = round(bucket['amount'] + qty * price, 2)
+    reviews = []
+    for pid, bucket in grouped.items():
+        row = db.execute(
+            "SELECT name, price FROM products WHERE id=?", (pid,),
+        ).fetchone()
+        if not row:
+            continue
+        name = _cost_value(row, 0, 'name') or ''
+        card = _cost_value(row, 1, 'price') or 0
+        quote = quote_fifo_sell_prices(db, pid, bucket['qty'], card)
+        if quote.get('error') or float(quote.get('uncovered') or 0) > 0.0001:
+            continue
+        segments = quote.get('segments') or []
+        if not any(part.get('price_mode') == 'custom' for part in segments):
+            continue
+        if abs(bucket['amount'] - float(quote.get('total') or 0)) <= 0.05:
+            continue
+        reviews.append({
+            'product_id': pid,
+            'product_name': name,
+            'quantity': bucket['qty'],
+            'charged': bucket['amount'],
+            'expected': quote['total'],
+            'segments': segments,
+        })
+    if not reviews:
+        return None
+    return {
+        'error': (
+            'This sale uses batches with their own selling prices. '
+            'The cart has been split. Take payment again.'
+        ),
+        'code': 'batch_price_review',
+        'lines': reviews,
+    }
 
 
 def opening_backfill(db) -> list:

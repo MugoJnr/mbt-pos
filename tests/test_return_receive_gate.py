@@ -128,7 +128,7 @@ class ReturnSaleGate(_Base):
         )
         self.assertIn('error', deny)
 
-    def test_cashier_cannot_return(self):
+    def test_cashier_request_does_not_execute(self):
         created = self.api.create_sale({
             'items': [{
                 'product_id': 1, 'product_name': 'Ret Widget', 'sku': 'RW1',
@@ -139,13 +139,21 @@ class ReturnSaleGate(_Base):
         })
         lookup = self.api.get_sale_for_return(created['receipt_number'])
         line_id = int(lookup['items'][0]['id'])
+        before = float(self.ac._db().execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()['stock'])
+        self.ac._db().close()
         self.api._role = 'cashier'
-        denied = self.api.return_sale(
+        queued = self.api.return_sale(
             created['sale_id'],
             [{'sale_item_id': line_id, 'quantity': 1}],
             'nope',
         )
-        self.assertIn('error', denied)
+        self.assertTrue(queued.get('pending_approval'), queued)
+        self.assertFalse(queued.get('executed'))
+        stock = float(self.ac._db().execute(
+            "SELECT stock FROM products WHERE id=1").fetchone()['stock'])
+        self.ac._db().close()
+        self.assertEqual(stock, before)
 
 
 class ReceiveStockGate(_Base):

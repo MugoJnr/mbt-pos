@@ -35,26 +35,43 @@ def unit_key(unit) -> str:
     return str(unit or "").strip().lower()
 
 
-def allows_fraction(unit) -> bool:
-    """Piece goods are whole units. Every other unit keeps decimals."""
+def decimal_choice(value):
+    """None follows the unit. True allows fractions. False keeps whole quantities."""
+    if value is None or value == "":
+        return None
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "allow"):
+        return True
+    if text in ("0", "false", "no", "whole"):
+        return False
+    return None
+
+
+def allows_fraction(unit, decimal_qty=None) -> bool:
+    """Piece goods are whole units unless the product allows decimals.
+
+    Kilograms, litres, and other measured units keep the decimals typed.
+    A product can override that rule without changing its unit.
+    """
+    choice = decimal_choice(decimal_qty)
+    if choice is True:
+        return True
+    if choice is False:
+        return False
     return unit_key(unit) not in PIECE_UNITS
 
 
-def qty_step(unit, fallback=None) -> float:
-    name = unit_key(unit)
-    if name in PIECE_UNITS:
+def qty_step(unit, fallback=None, decimal_qty=None) -> float:
+    if not allows_fraction(unit, decimal_qty):
         return 1.0
-    if name in MEASURED_UNITS:
-        try:
-            step = float(0.25 if fallback is None else fallback)
-        except (TypeError, ValueError):
-            step = 0.25
-        return step if step > 0 else 0.25
+    name = unit_key(unit)
+    measured = name in MEASURED_UNITS or decimal_choice(decimal_qty) is True
+    default = 0.25 if measured else 0.01
     try:
-        step = float(0.01 if fallback is None else fallback)
+        step = float(default if fallback is None else fallback)
     except (TypeError, ValueError):
-        step = 0.01
-    return step if step > 0 else 0.01
+        step = default
+    return step if step > 0 else default
 
 
 def money_amount(value) -> Decimal:
@@ -67,7 +84,7 @@ def money_amount(value) -> Decimal:
     return amount.quantize(_MONEY, rounding=ROUND_HALF_UP)
 
 
-def parse_quantity(raw, unit=None, *, allow_zero=False, maximum=999999):
+def parse_quantity(raw, unit=None, *, allow_zero=False, maximum=999999, decimal_qty=None):
     """Return the quantity as a float rounded to 4 places, or raise QuantityError.
 
     The float is only the storage form. The value is decided with Decimal and
@@ -87,7 +104,7 @@ def parse_quantity(raw, unit=None, *, allow_zero=False, maximum=999999):
     if not number.is_finite():
         raise QuantityError("Enter a valid quantity.")
     number = number.quantize(_QTY, rounding=ROUND_HALF_UP)
-    if unit is not None and not allows_fraction(unit) and number != number.to_integral_value():
+    if not allows_fraction(unit, decimal_qty) and number != number.to_integral_value():
         raise QuantityError("Quantity must be in whole units.")
     if number < 0:
         raise QuantityError("Quantity cannot be negative.")

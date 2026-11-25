@@ -93,20 +93,25 @@ _MEASURED_UNITS = {
 }
 
 
-def qty_step_for_unit(unit, fallback=None) -> float:
+def qty_step_for_unit(unit, fallback=None, decimal_qty=None) -> float:
     """Piece goods move one at a time. Weight and volume use the shop wheel step.
 
     A blank unit has not been classified, so the cart keeps the decimals the cashier typed.
+    A product that allows decimal quantities uses the wheel step even when its unit is pieces.
     """
-    from desktop.utils.quantities import MEASURED_UNITS, qty_step, unit_key
+    from desktop.utils.quantities import (
+        MEASURED_UNITS, allows_fraction, decimal_choice, qty_step, unit_key,
+    )
+    if not allows_fraction(unit, decimal_qty):
+        return 1.0
     name = unit_key(unit)
-    if name in MEASURED_UNITS:
+    if name in MEASURED_UNITS or decimal_choice(decimal_qty) is True:
         try:
             step = float(_POS_QTY_STEP if fallback is None else fallback)
         except (TypeError, ValueError):
             step = 0.25
-        return qty_step(unit, step if step > 0 else 0.25)
-    return qty_step(unit)
+        return qty_step(unit, step if step > 0 else 0.25, decimal_qty)
+    return qty_step(unit, decimal_qty=decimal_qty)
 
 
 def round_qty(v, step=0.25, minimum=None) -> float:
@@ -1040,6 +1045,7 @@ class CartLineRow(QFrame):
     priceChanged = pyqtSignal(float)
     removeClicked = pyqtSignal()
     rowClicked = pyqtSignal()
+    chooseBatch = pyqtSignal()
 
     def __init__(self, item: dict, currency='KES', parent=None, *,
                  density='table', index=1):
@@ -1051,6 +1057,8 @@ class CartLineRow(QFrame):
         self._density = 'table'
         self._index = int(index)
         self.setObjectName('posCartLine')
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._batch_menu)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setCursor(Qt.PointingHandCursor)
         self._build_table()
@@ -1108,12 +1116,14 @@ class CartLineRow(QFrame):
         self._save_lbl = QLabel('')
         self._save_lbl.hide()
 
-        qty_step = qty_step_for_unit(self._item.get('unit'))
+        qty_step = qty_step_for_unit(
+            self._item.get('unit'), decimal_qty=self._item.get('allow_decimal_qty'))
         self._qty = QuantityControl(
             value=float(self._item.get('quantity') or 1),
             step=qty_step,
             minimum=1 if qty_step >= 1 else 0.01,
             snap=qty_step >= 1,
+            decimals=0 if qty_step >= 1 else 4,
             width=CART_COL_QTY_W, touch=False, height=CART_CTRL_H)
         self._qty.valueChanged.connect(self.qtyChanged.emit)
         root.addWidget(self._qty, 0)
@@ -1427,6 +1437,13 @@ class CartLineRow(QFrame):
             self._thumb.refresh_theme()
 
 
+    def _batch_menu(self, pos):
+        menu = QMenu(self)
+        action = menu.addAction('Sell a chosen batch')
+        if menu.exec_(self.mapToGlobal(pos)) == action:
+            self.chooseBatch.emit()
+
+
 class CartList(QWidget):
     """Scrollable stack of CartLineRow — card or compact table density."""
     qtyChanged = pyqtSignal(int, float)
@@ -1434,6 +1451,7 @@ class CartList(QWidget):
     priceChanged = pyqtSignal(int, float)
     removeClicked = pyqtSignal(int)
     selectionChanged = pyqtSignal(int)
+    chooseBatchClicked = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1715,6 +1733,7 @@ class CartList(QWidget):
             row.priceChanged.connect(lambda v, idx=i: self.priceChanged.emit(idx, v))
             row.removeClicked.connect(lambda idx=i: self.removeClicked.emit(idx))
             row.rowClicked.connect(lambda idx=i: self.select_index(idx, focus_qty=False))
+            row.chooseBatch.connect(lambda idx=i: self.chooseBatchClicked.emit(idx))
             self._lay.insertWidget(stretch_idx + i, row)
             try:
                 from PyQt5.QtCore import Qt as _Qt

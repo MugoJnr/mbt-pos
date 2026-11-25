@@ -100,6 +100,8 @@ def ensure_schema(conn) -> None:
         conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN rejected_qty REAL DEFAULT 0")
     if line_cols and "ordered_qty" not in line_cols:
         conn.execute("ALTER TABLE stock_receipt_lines ADD COLUMN ordered_qty REAL")
+    from backend.cloud_backup.sync_manager import ensure_stock_receipt_sync
+    ensure_stock_receipt_sync(conn)
 
 
 def payment_status(total, paid, due, delivery_status, today=None) -> str:
@@ -688,6 +690,16 @@ def request_delivery_action(api, receipt_id, kind, reason, requested_date="") ->
         return {"error": "A reason is required.", "status": 400}
     if kind == "backdate" and len(_day(requested_date)) != 10:
         return {"error": "Enter the requested date as YYYY-MM-DD.", "status": 400}
+    if role == "superadmin":
+        if kind == "void":
+            saved = api.reverse_stock_receipt(int(receipt_id), reason=reason)
+        else:
+            saved = backdate_receipt(api, int(receipt_id), requested_date, reason)
+        if not isinstance(saved, dict):
+            return {"error": "Could not apply that delivery change.", "status": 500, "pending_approval": False, "executed": False}
+        saved["pending_approval"] = False
+        saved["executed"] = bool(saved.get("success"))
+        return saved
     from desktop.utils.api_client import _db, _audit
     db = _db()
     try:
@@ -763,7 +775,10 @@ def review_delivery_request(api, request_id, decision, note="", pin="") -> dict:
         row = dict(found)
         if row["status"] != "pending":
             return {"error": "This request was already decided.", "status": 409}
-        if int(row["user_id"] or 0) == int(getattr(api, "_user_id", 0) or 0):
+        if (
+            (getattr(api, "_role", "") or "").lower() != "superadmin"
+            and int(row["user_id"] or 0) == int(getattr(api, "_user_id", 0) or 0)
+        ):
             return {"error": "You cannot approve your own request.", "status": 403}
     finally:
         db.close()

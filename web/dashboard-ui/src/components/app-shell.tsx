@@ -41,6 +41,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "./theme";
 import { useAuth } from "@/lib/auth";
 import { GET } from "@/lib/api";
+import { installWheelScroll, scrollInterval } from "@/lib/wheel-scroll";
+import { WheelScrollPreference } from "@/components/wheel-scroll-preference";
 import { updateSessionCopy } from "@/lib/update-session";
 import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -114,6 +116,10 @@ function pageAllowed(user: { role?: string; tab_permissions?: unknown; effective
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
   // License is Super Admin only. Security cannot be stored on a lower role,
   // but a shop manager who may read the audit trail still reaches it.
+  if (path === "/users") {
+    if (actions) return actions.includes("users.view");
+    return role === "manager" || role === "admin" || role === "superadmin";
+  }
   if (path === "/license") return role === "superadmin";
   if (path === "/security") return role === "superadmin" || !!(actions && actions.includes("audit.view"));
   const tab = routeTab(path);
@@ -315,6 +321,9 @@ function SidebarContent({
         ) : null}
         <div className="text-sm font-semibold text-text truncate">{displayName}</div>
         <div className="text-eyebrow text-gold mb-2.5 mt-0.5">{role}</div>
+        <div className="mb-2.5">
+          <WheelScrollPreference compact />
+        </div>
         <button
           type="button"
           onClick={() => {
@@ -667,6 +676,15 @@ export function AppShell({
   }
   const isPos = density === "pos";
 
+  const scrollQ = useQuery({
+    queryKey: ["account-scroll"],
+    queryFn: () => GET<{ wheel_scroll_interval?: number }>("/account/scroll"),
+    enabled: Boolean(user),
+    staleTime: 30_000,
+  });
+  useEffect(() => {
+    return installWheelScroll(scrollInterval(scrollQ.data?.wheel_scroll_interval));
+  }, [scrollQ.data?.wheel_scroll_interval]);
   const versionQ = useQuery({
     queryKey: ["app-version"],
     queryFn: () => GET<{ version?: string; build?: string; exe?: string }>("/version"),
@@ -698,6 +716,13 @@ export function AppShell({
     refetchInterval: 60_000,
     retry: 0,
   });
+  const pendingQ = useQuery({
+    queryKey: ["pending-requests"],
+    queryFn: () => GET<{ pending?: number }>("/requests-centre/pending-count"),
+    enabled: canNotify,
+    refetchInterval: 30_000,
+  });
+  const pendingReviews = Number(pendingQ.data?.pending || 0);
   const unread = Number(notifQ.data?.unread || 0);
   const ver = versionQ.isLoading ? "…" : versionQ.data?.version || "unavailable";
   const build = versionQ.data?.build || "";
@@ -915,6 +940,14 @@ export function AppShell({
                 isPos ? "flex h-full min-h-0 flex-col p-2 sm:p-2.5 max-w-none" : "p-3 sm:p-6 max-w-[1400px]",
               )}
             >
+              {canNotify && pendingReviews > 0 ? (
+                <Link
+                  to="/requests"
+                  className="mb-3 block rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-sm font-semibold text-text"
+                >
+                  {pendingReviews} request{pendingReviews === 1 ? "" : "s"} waiting. Open Request Centre.
+                </Link>
+              ) : null}
               <div className={isPos ? "min-h-0 flex-1" : undefined}>
                 {pageAllowed(user, location.pathname) ? children : (
                   <div className="rounded-xl border border-border bg-card p-6 text-sm text-text">

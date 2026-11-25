@@ -11,6 +11,7 @@ import { InventoryPanel } from "@/components/reports/InventoryPanel";
 import { ReceiptsPanel } from "@/components/reports/ReceiptsPanel";
 import { SavedReports } from "@/components/reports/SavedReports";
 import { SuppliersPanel } from "@/components/reports/SuppliersPanel";
+import { FinancePanel } from "@/components/reports/FinancePanel";
 import { CustomExport } from "@/components/reports/CustomExport";
 import { DateRangePicker } from "@/components/reports/ReportControls";
 import {
@@ -25,7 +26,7 @@ import { fetchOrganizations } from "@/lib/platform";
 
 export const Route = createFileRoute("/_app/reports")({
   validateSearch: (search: Record<string, unknown>): AnalyticsSearch => {
-    const validTabs = ["overview", "sales", "debts", "inventory", "receipts", "suppliers", "saved", "export"] as const;
+    const validTabs = ["overview", "sales", "debts", "inventory", "receipts", "suppliers", "finance", "saved", "export"] as const;
     const tab = validTabs.includes(search.tab as (typeof validTabs)[number])
       ? (search.tab as AnalyticsTab)
       : "overview";
@@ -118,6 +119,7 @@ function Reports() {
               <TabsTrigger value="inventory">Inventory</TabsTrigger>
               <TabsTrigger value="receipts">Supplier receipts</TabsTrigger>
               <TabsTrigger value="suppliers">Suppliers</TabsTrigger>
+              <TabsTrigger value="finance">Finance</TabsTrigger>
               <TabsTrigger value="saved">Saved Reports</TabsTrigger>
               <TabsTrigger value="export">Custom export</TabsTrigger>
             </TabsList>
@@ -139,6 +141,9 @@ function Reports() {
           </TabsContent>
           <TabsContent value="suppliers" className="mt-4">
             <SuppliersPanel orgId={orgId} record={search.focus === "supplier" ? { name: search.source || "" } : undefined} />
+          </TabsContent>
+          <TabsContent value="finance" className="mt-4">
+            <FinancePanel orgId={orgId} start={start} end={end} />
           </TabsContent>
           <TabsContent value="saved" className="mt-4">
             <SavedReports orgId={orgId} />

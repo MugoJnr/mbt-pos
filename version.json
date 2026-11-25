@@ -1,8 +1,8 @@
 {
-    "version": "3.1.90",
-    "build": "RC-2026-11-20-v3.1.90",
-    "released": "2026-11-20",
-    "release_notes": "Inventory keeps Remove and More on screen at a normal width, and the horizontal bar remains for a narrow window. Restock lists and business-issue names are readable. Shop categories, product photos, copy sale, receipt permissions, and a short Super Admin recovery code are included.",
-    "checksum_sha256": "d2fcb1c1f287a387513cc8c3c57637e6565f5e16f919eaff20d3912e9c20d989",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.90/MBT_POS_Setup.exe"
+    "version": "3.1.92",
+    "build": "RC-2026-11-25-v3.1.92",
+    "released": "2026-11-25",
+    "release_notes": "Piece-unit products can allow decimal quantities. Each signed-in account keeps its own mouse-wheel scroll interval. Product and selling-price changes follow the existing approval rules.",
+    "checksum_sha256": "5c53bde4fef0f4986a40c9bb1a4a2c703ae2255dd66fcbc3ad8aa9eaaeb2bf24",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.92/MBT_POS_Setup.exe"
 }

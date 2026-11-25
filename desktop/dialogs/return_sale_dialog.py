@@ -11,7 +11,7 @@ import uuid
 
 from desktop.utils.theme import C, ThemeManager
 from desktop.utils.widgets import PrimaryBtn, SecondaryBtn
-from desktop.utils.security import ask_superadmin_pin
+from desktop.utils.security import collect_superadmin_pin
 
 
 class ReturnSaleDialog(QDialog):
@@ -73,14 +73,38 @@ class ReturnSaleDialog(QDialog):
         method_row.addWidget(self._method, 1)
         lay.addLayout(method_row)
 
+        goods_row = QHBoxLayout()
+        goods_row.addWidget(QLabel('Goods'))
+        self._condition = QComboBox()
+        self._condition.addItem('Can be sold again', 'sellable')
+        self._condition.addItem('Damaged — do not restock', 'damaged')
+        self._condition.setMinimumHeight(40)
+        goods_row.addWidget(self._condition, 1)
+        lay.addLayout(goods_row)
+
+        self._preview = QLabel('')
+        self._preview.setWordWrap(True)
+        self._preview.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
+        lay.addWidget(self._preview)
+
+        self._can_direct = (getattr(api, '_role', '') or '').lower() in (
+            'admin', 'superadmin', 'manager',
+        )
         btns = QHBoxLayout()
         btns.addStretch(1)
         cancel = SecondaryBtn('Cancel', 40)
         cancel.clicked.connect(self.reject)
-        self._go = PrimaryBtn('Process Return', 44)
-        self._go.clicked.connect(self._submit)
+        self._request = SecondaryBtn('Send Request', 44)
+        self._request.clicked.connect(lambda: self._submit(use_pin=False))
+        self._request.setEnabled(False)
+        self._go = PrimaryBtn(
+            'Process Return' if self._can_direct else 'Super Admin Authorisation', 44,
+        )
+        self._go.clicked.connect(lambda: self._submit(use_pin=not self._can_direct))
         self._go.setEnabled(False)
         btns.addWidget(cancel)
+        if not self._can_direct:
+            btns.addWidget(self._request)
         btns.addWidget(self._go)
         from desktop.utils.dialog_keys import wire_dialog_keys
         wire_dialog_keys(self, primary=self._go, cancel=cancel, submit_exempt=(self._receipt,))
@@ -105,6 +129,8 @@ class ReturnSaleDialog(QDialog):
             self._items = []
             self._tbl.setRowCount(0)
             self._go.setEnabled(False)
+            self._request.setEnabled(False)
+            self._preview.setText('')
             return
         self._sale = res['sale']
         self._items = res['items']
@@ -129,39 +155,75 @@ class ReturnSaleDialog(QDialog):
             spin.setMinimumHeight(36)
             spin.setEnabled(rem > 0.0001)
             self._tbl.setCellWidget(r, 4, spin)
-        self._go.setEnabled(any(float(i.get('remaining_qty') or 0) > 0 for i in self._items))
+        open_lines = any(float(i.get('remaining_qty') or 0) > 0 for i in self._items)
+        self._go.setEnabled(open_lines)
+        self._request.setEnabled(open_lines)
 
-    def _submit(self):
+    def _chosen_lines(self):
+        payload = []
+        preview = 0.0
+        names = []
+        for r, it in enumerate(self._items):
+            spin = self._tbl.cellWidget(r, 4)
+            qty = float(spin.value()) if spin else 0.0
+            if qty <= 0.0001:
+                continue
+            sold = float(it.get('sold_qty') or it.get('quantity') or 0)
+            disc = float(it.get('discount') or 0)
+            share = round(disc * (qty / sold), 2) if sold else 0.0
+            line_total = round(qty * float(it.get('unit_price') or 0) - share, 2)
+            preview = round(preview + line_total, 2)
+            payload.append({'sale_item_id': it['id'], 'quantity': qty})
+            names.append(f"{qty:g} {it.get('product_name') or 'item'} at {line_total:,.2f}")
+        return payload, preview, names
+
+    def _submit(self, use_pin: bool = False):
         if not self._sale:
             return
         reason = self._reason.text().strip()
         if not reason:
             QMessageBox.warning(self, 'Required', 'Enter a return reason.')
             return
-        payload = []
-        for r, it in enumerate(self._items):
-            spin = self._tbl.cellWidget(r, 4)
-            qty = float(spin.value()) if spin else 0.0
-            if qty > 0.0001:
-                payload.append({
-                    'sale_item_id': it['id'],
-                    'quantity': qty,
-                })
+        payload, preview, names = self._chosen_lines()
         if not payload:
             QMessageBox.warning(self, 'Empty', 'Set at least one return quantity.')
             return
-        if not ask_superadmin_pin(
-                self.api, self, reason=f"Return {self._sale.get('receipt_number')}"):
-            return
+        goods = self._condition.currentText()
+        self._preview.setText(
+            f"Refund KSh {preview:,.2f} for {', '.join(names)}. Goods: {goods}."
+        )
+        pin = ''
+        pin_username = ''
+        if use_pin:
+            pin = collect_superadmin_pin(
+                self.api, self,
+                reason=(
+                    f"Return {self._sale.get('receipt_number')}: "
+                    f"{', '.join(names)}. Refund KSh {preview:,.2f}. {goods}."
+                ),
+            )
+            if not pin or pin == 'session-authorized':
+                return
+            pin_username = getattr(self.api, '_authoriser_username', '') or ''
         res = self.api.return_sale(
             int(self._sale['id']), payload, reason,
             refund_method=self._method.currentText(),
             client_token=self._client_token,
+            pin=pin,
+            pin_username=pin_username,
+            condition=self._condition.currentData() or 'sellable',
         )
-        if res and res.get('success'):
+        if res and res.get('pending_approval'):
             info_toast(
                 self,
-                f"Return recorded · {res.get('receipt_number') or 'ok'}",
+                res.get('message') or 'Return request sent. Nothing was refunded yet.',
+            )
+            self.accept()
+            return
+        if res and res.get('success') and res.get('executed'):
+            info_toast(
+                self,
+                f"Return recorded · {res.get('receipt_number') or 'ok'} · KSh {float(res.get('refund_total') or 0):,.2f}",
             )
             self.accept()
             return

@@ -1987,6 +1987,31 @@ def cloud_analytics_overview():
     return _inner()
 
 
+@web.route('/api/cloud/analytics/finance', methods=['GET'])
+def cloud_analytics_finance():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        try:
+            org_id, role, can_see_finance = _analytics_authorize()
+            args = _analytics_common_args()
+            default_start, default_end = _analytics_default_range()
+            from backend.cloud.platform_service import analytics_finance, analytics_redact_payload
+            payload = analytics_finance(
+                org_id,
+                start=args['start'] or default_start,
+                end=args['end'] or default_end,
+            )
+            return jsonify(analytics_redact_payload(
+                payload, can_see_finance=can_see_finance, role=role,
+            ))
+        except Exception as e:
+            return _cloud_exception(e, 502)
+
+    return _inner()
+
+
 @web.route('/api/cloud/analytics/sales', methods=['GET'])
 def cloud_analytics_sales():
     from backend.app import token_required
@@ -3586,6 +3611,134 @@ def product_history_http(pid):
     return _inner()
 
 
+@web.route('/api/products/<int:pid>/sell-quote', methods=['GET'])
+def product_sell_quote_http(pid):
+    """Prices a quantity from its batches before payment."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if 'sales' not in _user_tabs() and 'inventory' not in _user_tabs():
+            return jsonify({'error': 'Sales access required'}), 403
+        try:
+            qty = float(request.args.get('qty') or 0)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Enter a valid quantity.'}), 400
+        result = _inventory_api().quote_product_sale(pid, qty)
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/products/<int:pid>/batch-allocation', methods=['POST'])
+def product_batch_allocation_http(pid):
+    """Preview selling named batches instead of the oldest stock."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if 'sales' not in _user_tabs():
+            return jsonify({'error': 'Sales access required'}), 403
+        data = request.json or {}
+        result = _inventory_api().quote_batch_override(
+            pid, data.get('picks') or [], data.get('reason') or '',
+        )
+        if result.get('error'):
+            status = 403 if 'cannot' in result['error'].lower() else 400
+            return jsonify(result), status
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/security/superadmin-pin', methods=['POST'])
+def set_superadmin_pin_http():
+    """The logged-in Super Admin replaces their own PIN. The PIN is not returned."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _inventory_api().set_my_superadmin_pin(data.get('pin') or '')
+        if result.get('error'):
+            return jsonify(result), 400
+        return jsonify({'success': True})
+
+    return _inner()
+
+
+@web.route('/api/security/authorise', methods=['POST'])
+def authorise_superadmin_pin_http():
+    """Check one Super Admin PIN for the action on screen. This does not run the action."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        data = request.json or {}
+        result = _inventory_api().authorise_with_superadmin_pin(
+            data.get('username') or '', data.get('pin') or '', data.get('action') or '',
+        )
+        if result.get('error'):
+            status = int(result.get('status') or (429 if result.get('locked') else 403))
+            return jsonify({
+                'error': result['error'],
+                'locked': bool(result.get('locked')),
+                'executed': False,
+                'verified': bool(result.get('verified')),
+            }), status
+        return jsonify(result)
+
+    return _inner()
+
+
+@web.route('/api/requests-centre/pending-count', methods=['GET'])
+def pending_reviews_http():
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        return jsonify(_inventory_api().pending_reviews())
+
+    return _inner()
+
+
+@web.route('/api/batches', methods=['GET'])
+def list_batches_http():
+    """Shop-wide batch list. Same records as product history."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if 'inventory' not in _user_tabs():
+            return jsonify({'error': 'Inventory access required'}), 403
+        return jsonify(_inventory_api().list_batches(request.args.get('q') or ''))
+
+    return _inner()
+
+
+@web.route('/api/cost-layers/<int:layer_id>/sell-price', methods=['POST'])
+def set_batch_sell_price_http(layer_id):
+    """Same batch selling-price change the till history screen uses."""
+    from backend.app import token_required
+
+    @token_required
+    def _inner():
+        if 'inventory' not in _user_tabs():
+            return jsonify({'error': 'Inventory access required'}), 403
+        data = request.json or {}
+        if 'sell_price' not in data:
+            return jsonify({'error': 'Enter a selling price, or leave it blank to use the normal product price.'}), 400
+        result = _inventory_api().set_batch_selling_price(layer_id, data.get('sell_price'))
+        if result.get('error'):
+            status = 403 if 'cannot' in result['error'].lower() else 400
+            return jsonify(result), status
+        return jsonify(result)
+
+    return _inner()
+
+
 @web.route('/api/products/<int:pid>/adjust', methods=['POST'])
 def adjust_stock(pid):
     """Same adjustment rules as the till. This route does not write stock itself."""
@@ -3600,6 +3753,7 @@ def adjust_stock(pid):
             data.get('new_qty', 0),
             str(data.get('reason') or ''),
             pin=data.get('pin') or None,
+            pin_username=data.get('pin_username') or '',
             expected_stock=data.get('expected_stock'),
             idempotency_key=str(data.get('client_token') or ''),
             business_date=str(data.get('business_date') or ''),
@@ -3660,6 +3814,10 @@ def create_supplier_http():
         result = api.create_supplier({
             'name': data.get('name') or '',
             'phone': data.get('phone') or '',
+            'email': data.get('email') or '',
+            'address': data.get('address') or '',
+            'contact_name': data.get('contact_name') or '',
+            'tax_pin': data.get('tax_pin') or '',
             'notes': data.get('notes') or '',
         })
         if result.get('error'):
@@ -3769,6 +3927,9 @@ def return_sale_http(sale_id):
             business_date=str(data.get('business_date') or ''),
             offline=bool(data.get('offline')),
             backdate_reason=str(data.get('backdate_reason') or ''),
+            pin=str(data.get('pin') or ''),
+            pin_username=str(data.get('pin_username') or ''),
+            condition=str(data.get('condition') or 'sellable'),
         )
         if result.get('error'):
             return jsonify(result), int(result.get('status') or 400)
@@ -5406,6 +5567,15 @@ def create_approval():
         except (TypeError, ValueError):
             amount = 0.0
         user = g.current_user
+        if (user.get('role') or '').lower() == 'superadmin':
+            from desktop.utils.api_client import APIClient
+            client = APIClient()
+            client._role = 'superadmin'
+            client._user_id = user.get('id')
+            client._username = user.get('username') or user.get('full_name') or ''
+            posted = client.apply_owner_action(atype, title, details, amount)
+            code = 200 if posted.get('success') else int(posted.get('status') or 400)
+            return jsonify(posted), code
         db = _get_db()
         _ensure_command_center_schema(db)
         cur = db.execute(

@@ -22,7 +22,7 @@ from roles import (
 _PERMISSIONS = {
     ROLE_CASHIER: {
         'sales.create', 'sales.view_own', 'sales.request_void', 'sales.request_backdate',
-        'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.view', 'inventory.receive',
         'categories.create',
         'reports.view_basic',
         'notes.own',
@@ -47,6 +47,7 @@ _PERMISSIONS = {
     ROLE_MANAGER: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.batch_price',
         'categories.create',
         'reports.view_all', 'reports.export',
         'notes.own', 'notes.view_all',
@@ -68,6 +69,8 @@ _PERMISSIONS = {
     ROLE_ADMIN: {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.batch_price', 'inventory.direct_price',
+        'inventory.sales.override_fifo',
         'inventory.delete',
         'categories.create', 'categories.manage', 'categories.delete',
         'reports.view_all', 'reports.export',
@@ -94,6 +97,8 @@ _PERMISSIONS = {
         'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
+        'inventory.batch_price', 'inventory.direct_price',
+        'inventory.sales.override_fifo',
         'inventory.delete',
         'categories.create', 'categories.manage', 'categories.delete',
         'inventory.adjust_stock',          # ONLY superadmin can change stock directly
@@ -146,7 +151,10 @@ _ACTION_LABELS = {
     'inventory.view_cost': 'View product costs and valuation',
     'inventory.create': 'Create products',
     'inventory.edit_info': 'Edit product details',
+    'inventory.direct_price': 'Change a selling price without waiting for approval',
     'inventory.receive': 'Receive supplier stock',
+    'inventory.batch_price': 'Set a selling price on one delivery batch',
+    'inventory.sales.override_fifo': 'Sell a chosen batch instead of the oldest stock',
     'inventory.delete': 'Remove products',
     'inventory.adjust_stock': 'Adjust stock directly',
     'categories.create': 'Create shop categories',
@@ -456,31 +464,30 @@ def set_superadmin_pin(pin: str, api) -> bool:
 
 
 def verify_superadmin_pin(pin: str, api, parent_widget=None,
-                          log_attempt=True) -> bool:
+                          log_attempt=True, username: str = '') -> bool:
     """
     Verify the PIN. Returns True on success.
     Logs every attempt (success or fail) for audit trail.
     """
-    from PyQt5.QtWidgets import QMessageBox, QInputDialog, QLineEdit
+    from PyQt5.QtWidgets import QMessageBox
     try:
-        cfg = api.get_settings() or {}
-        stored_hash = cfg.get('superadmin_pin_hash', '')
-        if not stored_hash:
-            QMessageBox.warning(parent_widget, 'Not Set',
-                'Super-admin PIN has not been configured.\n'
-                'Go to Settings → Security to set it.')
-            return False
-        ok = (_pin_hash(pin) == stored_hash)
+        from desktop.utils.api_client import _audit, _db
+        from desktop.utils.superadmin_pin import verify_superadmin_user_pin
+        name = username or getattr(api, '_authoriser_username', '') or ''
+        db = _db()
+        try:
+            result = verify_superadmin_user_pin(db, name, pin)
+            db.commit()
+        finally:
+            db.close()
+        ok = bool(result.get('success'))
         if log_attempt:
-            from desktop.utils.api_client import _audit
-            result_str = 'ok' if ok else 'fail'
             _audit(None, 'SYSTEM',
                    'SUPERADMIN_PIN_SUCCESS' if ok else 'SUPERADMIN_PIN_FAIL',
                    'security',
-                   f'pin_attempt result={result_str}')
-        if not ok:
-            QMessageBox.critical(parent_widget, 'Wrong PIN',
-                'Incorrect Super-Admin PIN.')
+                   f"pin_attempt result={'ok' if ok else 'fail'} authoriser={name}")
+        if not ok and parent_widget is not None:
+            QMessageBox.critical(parent_widget, 'PIN', result.get('error') or 'That Super Admin PIN was not accepted.')
         return ok
     except Exception as e:
         logger.error(f"verify_superadmin_pin: {e}")
@@ -502,15 +509,21 @@ def collect_superadmin_pin(api, parent_widget=None, reason='') -> str:
     auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
     if auto:
         return auto if verify_superadmin_pin(auto, api, parent_widget, log_attempt=True) else ''
-    prompt = 'Enter Super-Admin PIN'
+    prompt = 'Enter that Super Admin PIN'
     if reason:
         prompt += f'\n({reason})'
+    username, ok = QInputDialog.getText(
+        parent_widget, 'Super-Admin Authorization', 'Super Admin username',
+    )
+    if not ok or not str(username).strip():
+        return ''
     pin, ok = QInputDialog.getText(
         parent_widget, 'Super-Admin Authorization', prompt,
         QLineEdit.Password)
     if not ok or not pin:
         return ''
-    if not verify_superadmin_pin(pin, api, parent_widget, log_attempt=True):
+    setattr(api, '_authoriser_username', str(username).strip())
+    if not verify_superadmin_pin(pin, api, parent_widget, log_attempt=True, username=str(username).strip()):
         return ''
     return pin
 
@@ -527,17 +540,26 @@ def ask_superadmin_pin(api, parent_widget=None, reason='') -> bool:
                'SUPERADMIN_SESSION_AUTH', 'security', f'pin_skipped reason={reason or "action"}')
         return True
     auto = (os.environ.get('MBT_AUTO_SUPERADMIN_PIN') or '').strip()
+    auto_user = (os.environ.get('MBT_AUTO_SUPERADMIN_USER') or '').strip()
     if auto:
-        return verify_superadmin_pin(auto, api, parent_widget, log_attempt=True)
-    prompt = 'Enter Super-Admin PIN'
+        return verify_superadmin_pin(auto, api, parent_widget, log_attempt=True, username=auto_user)
+    prompt = 'Enter that Super Admin PIN'
     if reason:
         prompt += f'\n({reason})'
+    username, ok = QInputDialog.getText(
+        parent_widget, 'Super-Admin Authorization', 'Super Admin username',
+    )
+    if not ok or not str(username).strip():
+        return False
+    setattr(api, '_authoriser_username', str(username).strip())
     pin, ok = QInputDialog.getText(
         parent_widget, 'Super-Admin Authorization', prompt,
         QLineEdit.Password)
     if not ok or not pin:
         return False
-    return verify_superadmin_pin(pin, api, parent_widget, log_attempt=True)
+    return verify_superadmin_pin(
+        pin, api, parent_widget, log_attempt=True, username=str(username).strip(),
+    )
 
 
 def can_edit_sales(user: dict) -> bool:

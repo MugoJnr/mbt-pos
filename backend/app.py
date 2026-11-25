@@ -783,6 +783,7 @@ def init_db():
         'debt_invoices': 'debt_invoice',
         'debt_payments': 'debt_payment',
         'stock_movements': 'stock_movement',
+        'stock_receipts': 'stock_receipt',
     }
     existing_tables = {
         row[0] for row in cur.execute(
@@ -819,6 +820,12 @@ def init_db():
                   );
                 END
             ''')
+
+    try:
+        from desktop.utils.stock_layers import backfill_sale_line_costs
+        backfill_sale_line_costs(db)
+    except Exception:
+        logger.exception('sale line cost backfill')
 
     db.commit()
     db.close()
@@ -1157,6 +1164,18 @@ def _manage_users():
     return _role_is('admin', 'superadmin', 'manager')
 
 
+@app.route('/api/account/scroll', methods=['GET', 'PUT'])
+@token_required
+def account_scroll():
+    """One mouse-wheel interval for the signed-in account, on the till and the web."""
+    api = _account_api()
+    if request.method == 'GET':
+        return jsonify(api.read_wheel_scroll())
+    result = api.save_wheel_scroll((request.json or {}).get('wheel_scroll_interval'))
+    code = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), code
+
+
 @app.route('/api/account/password', methods=['POST'])
 @token_required
 def change_own_password_http():
@@ -1367,6 +1386,10 @@ def update_user(uid):
         values.append(json.dumps(
             sanitize_tab_permissions(new_role, data['tab_permissions'])
         ))
+    elif 'role' in data and str(data.get('role') or '') != str(target.get('role') or ''):
+        from roles import default_tab_permissions
+        fields.append("tab_permissions=?")
+        values.append(json.dumps(default_tab_permissions(new_role)))
     if 'permission_grants' in data or 'permission_denials' in data:
         from desktop.utils.security import clean_permission_change
         if int(uid) == int((g.current_user or {}).get('id') or 0):
@@ -1393,7 +1416,14 @@ def update_user(uid):
         db.commit()
     role_changed = 'role' in data and data['role'] != target['role']
     elevated = role_changed and data.get('role') in ('admin', 'superadmin')
-    log_action('UPDATE_USER', 'admin', f"Updated user id={uid} role={new_role}")
+    bits = [f"id={uid}", f"user={target.get('username') or ''}"]
+    if 'role' in data and str(data.get('role') or '') != str(target.get('role') or ''):
+        bits.append(f"role {target.get('role') or ''} -> {data.get('role')}")
+    if data.get('is_active') in (0, '0', False) and int(target.get('is_active') or 0) == 1:
+        bits.append('deactivated')
+    elif 'is_active' in data and int(target.get('is_active') or 0) == 0:
+        bits.append('reactivated')
+    log_action('UPDATE_USER', 'admin', ' '.join(bits))
     if elevated or data.get('is_active') == 0:
         try:
             from backend.cloud.platform_service import publish_security_event
@@ -1700,12 +1730,23 @@ def void_sale_now(sale_id):
 @app.route('/api/sales', methods=['POST'])
 @token_required
 def create_sale():
-    if not _shop_can('sales.create'):
+    if _actor_role() == 'viewer' or not _shop_can('sales.create'):
         return jsonify({'error': 'You cannot take a payment.'}), 403
     data = request.json or {}
     items = data.get('items') or []
     if not items:
         return jsonify({'error': 'Cart is empty — add at least one product before charging.'}), 400
+    from desktop.utils.security import has_permission
+    if any(item.get('layer_id') or item.get('fifo_override') for item in items):
+        if not has_permission(g.current_user, 'inventory.sales.override_fifo'):
+            return jsonify({'error': 'You cannot choose a batch. The sale was not recorded.'}), 403
+        for item in items:
+            if not (item.get('layer_id') or item.get('fifo_override')):
+                continue
+            if not item.get('layer_id'):
+                return jsonify({'error': 'Choose the batch to sell. The sale was not recorded.'}), 400
+            if len(str(item.get('override_reason') or '').strip()) < 3:
+                return jsonify({'error': 'Enter a reason for selling a chosen batch. The sale was not recorded.'}), 400
     from desktop.utils.shop_time import parse_sale_date, shop_today
     from desktop.utils.security import has_permission
     raw_day = (data.get('sale_date') or data.get('business_day') or '').strip()
@@ -1724,6 +1765,10 @@ def create_sale():
     if method_name in ('credit sale', 'credit', 'part payment', 'part-payment') and not data.get('customer_id'):
         return jsonify({'error': 'Choose a customer before a credit or part payment.'}), 400
     db = get_db()
+    from desktop.utils.stock_layers import batch_price_sale_review
+    review = batch_price_sale_review(db, items)
+    if review:
+        return jsonify(review), 409
     user = g.current_user
     from desktop.utils.shop_time import (
         business_day_iso, parse_sale_date, sale_created_at_for_day, shop_today,
@@ -1904,7 +1949,16 @@ def create_sale():
                     from desktop.utils.stock_layers import record_sale_cost
                     layer = record_sale_cost(
                         db, pid, qty_requested, sale_id=sale_id, reference=receipt_number,
+                        layer_id=item.get('layer_id'),
                     )
+                    if item.get('layer_id'):
+                        from desktop.utils.api_client import _audit
+                        _audit(
+                            user.get('id'), user.get('username'), 'FIFO_OVERRIDE', 'sales',
+                            f"batch {item.get('layer_id')} qty {qty_requested} "
+                            f"reason {item.get('override_reason') or ''}",
+                            conn=db,
+                        )
                     if layer.get('error'):
                         db.rollback()
                         return jsonify({'error': layer['error']}), 400
@@ -2309,8 +2363,22 @@ def update_settings():
     if not _role_is('admin', 'superadmin'):
         return jsonify({'error': 'Admin only'}), 403
     data = dict(request.json or {})
+    if 'wheel_scroll_interval' in data:
+        saved = _account_api().save_wheel_scroll(data.pop('wheel_scroll_interval'))
+        if not saved.get('success'):
+            return jsonify(saved), int(saved.get('status') or 400)
+        if not data:
+            return jsonify(saved)
     for key, value in data.items():
         if not str(key).startswith('wheel_'):
+            continue
+        if str(key) == 'wheel_scroll_interval':
+            try:
+                interval = int(float(value))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Mouse Wheel Scroll Interval must be a whole number from 1 to 10.'}), 400
+            if float(value) != interval or interval < 1 or interval > 10:
+                return jsonify({'error': 'Mouse Wheel Scroll Interval must be a whole number from 1 to 10.'}), 400
             continue
         try:
             step = float(value)

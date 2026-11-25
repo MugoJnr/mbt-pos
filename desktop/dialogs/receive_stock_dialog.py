@@ -176,6 +176,7 @@ class ReceiveStockDialog(QDialog):
         from desktop.utils.security import client_actor, has_permission
         actor = client_actor(self.api)
         self._see_cost = True
+        self._can_batch_price = has_permission(actor, 'inventory.batch_price')
         self._can_excess = has_permission(actor, 'restock.manage')
         self.setWindowTitle('Receive stock')
         self.setMinimumSize(860, 560)
@@ -309,6 +310,23 @@ class ReceiveStockDialog(QDialog):
         self._cost.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self._cost.setPrefix('KES ')
         self._cost.setToolTip('Buying price for this delivery. It does not show older costs.')
+        self._sell = QDoubleSpinBox()
+        self._sell.setRange(0, 9999999)
+        self._sell.setDecimals(2)
+        self._sell.setMinimumHeight(40)
+        self._sell.setMinimumWidth(130)
+        self._sell.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self._sell.setPrefix('KES ')
+        self._sell.setSpecialValueText('Normal')
+        self._sell.setToolTip('Optional selling price for this batch only. Zero uses the normal product price.')
+        sell_box = QWidget()
+        sell_col = QVBoxLayout(sell_box)
+        sell_col.setContentsMargins(0, 0, 0, 0)
+        sell_col.setSpacing(2)
+        sell_label = QLabel('Batch selling price')
+        sell_label.setStyleSheet(f"color:{C['text2']};font-size:11px;font-weight:700;background:transparent;")
+        sell_col.addWidget(sell_label)
+        sell_col.addWidget(self._sell)
         cost_box = QWidget()
         cost_col = QVBoxLayout(cost_box)
         cost_col.setContentsMargins(0, 0, 0, 0)
@@ -345,6 +363,8 @@ class ReceiveStockDialog(QDialog):
         add_row.addWidget(self._rejected)
         if self._see_cost:
             add_row.addWidget(cost_box)
+        if self._can_batch_price:
+            add_row.addWidget(sell_box)
         add_row.addWidget(self._free)
         add_row.addWidget(self._excess)
         add_row.addWidget(add_btn)
@@ -502,6 +522,8 @@ class ReceiveStockDialog(QDialog):
         }
         if ordered > 0:
             line['ordered_qty'] = ordered
+        if self._can_batch_price and float(self._sell.value()) > 0:
+            line['sell_price'] = round(float(self._sell.value()), 4)
         if self._excess.isChecked():
             line['allow_excess'] = True
         self._lines.append(line)
@@ -509,6 +531,7 @@ class ReceiveStockDialog(QDialog):
         self._ordered.setValue(0)
         self._free.setChecked(False)
         self._excess.setChecked(False)
+        self._sell.setValue(0)
         self._refresh_table()
 
     def _remove_line(self, idx):

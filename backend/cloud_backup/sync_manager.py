@@ -89,6 +89,7 @@ ENTITY_TABLE_MAP = {
     'debt_invoice': 'debt_invoices',
     'debt_payment': 'debt_payments',
     'stock_movement': 'stock_movements',
+    'stock_receipt': 'stock_receipts',
 }
 
 # Historical backfill covers analytics-required entities only.
@@ -117,8 +118,8 @@ ENTITY_FIELD_ALLOWLIST = {
     },
     'sale_item': {
         'id', 'sale_id', 'product_id', 'product_name', 'sku', 'category',
-        'quantity', 'unit_price', 'unit_cost', 'discount', 'total',
-        'created_at', 'updated_at',
+        'quantity', 'unit_price', 'unit_cost', 'costed_qty', 'line_cost',
+        'returned_qty', 'discount', 'total', 'created_at', 'updated_at',
     },
     'customer': {
         'id', 'name', 'phone', 'email', 'credit_limit', 'customer_type',
@@ -145,7 +146,7 @@ ENTITY_FIELD_ALLOWLIST = {
         'tab_permissions', 'created_at', 'updated_at',
     },
     'supplier': {
-        'id', 'name', 'phone', 'email', 'address', 'is_active',
+        'id', 'name', 'phone', 'email', 'address', 'contact_name', 'is_active',
         'created_at', 'updated_at',
     },
     'expense': {
@@ -232,6 +233,8 @@ def serialize_entity_payload(entity_type: str, row: dict | None) -> dict:
     # Hard strip sensitive fields regardless of allowlist mistakes.
     for denied in ENTITY_FIELD_DENYLIST:
         out.pop(denied, None)
+    if entity_type == 'supplier' and raw.get('address') not in (None, ''):
+        out['address'] = raw.get('address')
     out.pop('password_hash', None)
     out.pop('national_id', None)
     out.pop('mpesa_ref', None)
@@ -738,6 +741,134 @@ class SyncManager:
         finally:
             conn.close()
 
+def stock_receipt_cloud_payload(conn, receipt_id) -> dict:
+    """One delivery receipt, its lines, batches and payments. Not a stock movement."""
+    header = conn.execute(
+        "SELECT * FROM stock_receipts WHERE id=?", (int(receipt_id),)
+    ).fetchone()
+    if not header:
+        return {}
+    header = dict(header)
+    supplier = conn.execute(
+        "SELECT id, name, phone, email, address, contact_name, is_active, created_at "
+        "FROM suppliers WHERE id=?",
+        (header.get('supplier_id'),),
+    ).fetchone()
+    supplier = dict(supplier) if supplier else {}
+    lines = []
+    for line in conn.execute(
+        "SELECT id, product_id, product_name, quantity, unit_cost, line_total, "
+        "COALESCE(returned_qty,0) AS returned_qty "
+        "FROM stock_receipt_lines WHERE receipt_id=? ORDER BY id",
+        (int(receipt_id),),
+    ).fetchall():
+        lines.append({
+            'id': line['id'],
+            'product_id': line['product_id'],
+            'product_name': line['product_name'],
+            'quantity': line['quantity'],
+            'unit_cost': line['unit_cost'],
+            'line_total': line['line_total'],
+            'returned_qty': line['returned_qty'],
+        })
+    number = str(header.get('receipt_number') or '')
+    batches = []
+    if number:
+        for layer in conn.execute(
+            "SELECT id, product_id, product_name, source_id, original_qty, remaining_qty, "
+            "unit_cost, purchase_unit_cost, extra_unit_cost "
+            "FROM cost_layers WHERE source_type='purchase' AND source_id LIKE ?",
+            (number + ':%',),
+        ).fetchall():
+            batches.append({
+                'id': layer['id'],
+                'product_id': layer['product_id'],
+                'product_name': layer['product_name'],
+                'batch_ref': layer['source_id'],
+                'original_qty': layer['original_qty'],
+                'remaining_qty': layer['remaining_qty'],
+                'landed_unit_cost': layer['unit_cost'],
+                'buying_price': layer['purchase_unit_cost'],
+                'extra_unit_cost': layer['extra_unit_cost'],
+            })
+    from desktop.utils.supplier_payables import receipt_money
+    money_row = receipt_money(conn, int(receipt_id))
+    payments = []
+    for payment in money_row.get('payments') or []:
+        payments.append({
+            'payment_number': payment.get('payment_number'),
+            'amount': payment.get('allocated') if payment.get('allocated') is not None else payment.get('amount'),
+            'method': payment.get('method'),
+            'reference': payment.get('reference'),
+            'paid_at': payment.get('paid_at') or payment.get('created_at'),
+            'username': payment.get('username'),
+            'status': 'reversed' if payment.get('reversed') else 'posted',
+        })
+    return {
+        'record_kind': 'stock_receipt',
+        'id': header.get('id'),
+        'receipt_number': number,
+        'supplier_id': header.get('supplier_id'),
+        'supplier_name': supplier.get('name') or '',
+        'supplier_phone': supplier.get('phone') or '',
+        'supplier_email': supplier.get('email') or '',
+        'supplier_address': supplier.get('address') or '',
+        'supplier_contact': supplier.get('contact_name') or '',
+        'reference': header.get('reference_note') or '',
+        'total': header.get('grand_total'),
+        'status': header.get('status') or 'posted',
+        'username': header.get('username') or '',
+        'created_at': header.get('created_at'),
+        'effective_date': header.get('effective_date') or '',
+        'amount_paid': money_row.get('amount_paid'),
+        'outstanding': money_row.get('outstanding'),
+        'payment_status': money_row.get('payment_status'),
+        'lines': lines,
+        'batches': batches,
+        'payments': payments,
+    }
+
+
+def ensure_stock_receipt_sync(conn) -> None:
+    """Queue the receipt itself. A payment re-queues the receipt it settles."""
+    tables = {
+        row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if 'stock_receipts' not in tables or 'sync_outbox' not in tables:
+        return
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS sync_stock_receipts_insert
+        AFTER INSERT ON stock_receipts
+        BEGIN
+          INSERT INTO sync_outbox(event_id, entity_type, row_id, operation)
+          VALUES (lower(hex(randomblob(16))), 'stock_receipt', CAST(NEW.id AS TEXT), 'upsert');
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS sync_stock_receipts_update
+        AFTER UPDATE ON stock_receipts
+        BEGIN
+          INSERT INTO sync_outbox(event_id, entity_type, row_id, operation)
+          VALUES (lower(hex(randomblob(16))), 'stock_receipt', CAST(NEW.id AS TEXT), 'upsert');
+        END
+    """)
+    if 'supplier_payment_allocations' not in tables:
+        return
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS sync_supplier_allocation_insert
+        AFTER INSERT ON supplier_payment_allocations
+        BEGIN
+          INSERT INTO sync_outbox(event_id, entity_type, row_id, operation)
+          VALUES (lower(hex(randomblob(16))), 'stock_receipt', CAST(NEW.receipt_id AS TEXT), 'upsert');
+        END
+    """)
+
+
+class _DoNotUse:
+    """Methods defined here are copied onto SyncManager at import."""
+
     def flush_entity_outbox(self, limit: int = OUTBOX_FLUSH_LIMIT) -> int:
         """Push one transactional, idempotent entity batch to the Portal API."""
         ident = load_identity()
@@ -793,6 +924,17 @@ class SyncManager:
                 elif deleted:
                     payload = serialize_entity_payload(entity_type, {})
 
+                cloud_type = entity_type
+                source_id = str(event['row_id'])
+                if entity_type == 'stock_receipt':
+                    cloud_type = 'purchase'
+                    source_id = f"grn-{event['row_id']}"
+                    if not deleted:
+                        payload = stock_receipt_cloud_payload(conn, event['row_id'])
+                        if not payload:
+                            deleted = True
+                            payload = {'record_kind': 'stock_receipt'}
+
                 source_updated_at = (
                     payload.get('updated_at')
                     or payload.get('created_at')
@@ -807,8 +949,8 @@ class SyncManager:
 
                 entities.append({
                     'branch_id': ident.get('branch_id') or '',
-                    'entity_type': entity_type,
-                    'source_id': str(event['row_id']),
+                    'entity_type': cloud_type,
+                    'source_id': source_id,
                     'source_version': int(event['id']),
                     'source_updated_at': source_updated_at,
                     'payload': payload,
@@ -1193,4 +1335,10 @@ class SyncManager:
             'reason': reason,
             'created_at': _utc_now(),
         }
+
+
+for _sync_name, _sync_value in list(_DoNotUse.__dict__.items()):
+    if _sync_name.startswith('__'):
+        continue
+    setattr(SyncManager, _sync_name, _sync_value)
 

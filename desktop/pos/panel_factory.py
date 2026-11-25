@@ -1022,6 +1022,7 @@ def build_shared_panels(tab) -> None:
     tab._cart_list.discChanged.connect(tab._set_line_disc)
     tab._cart_list.priceChanged.connect(tab._set_line_price)
     tab._cart_list.removeClicked.connect(tab._rm)
+    tab._cart_list.chooseBatchClicked.connect(tab._choose_batch)
     tab._cart_select_idx = None
     cbl.addWidget(tab._cart_list, 1)
     cart_scroll.setWidget(cart_host)
@@ -1430,6 +1431,14 @@ def build_shared_panels(tab) -> None:
         br.addWidget(tab._void_btn)
     else:
         tab._void_btn = None
+    from desktop.utils.security import has_permission
+    person = (tab.user or {}).get('user') or tab.user or {}
+    if has_permission(tab.user, 'sales.create') and str(person.get('role') or '').lower() in ('cashier', 'manager'):
+        tab._price_request_btn = SecondaryBtn('Request price correction', 40)
+        tab._price_request_btn.setToolTip(
+            'Ask for a discount or a price correction. The permanent product price is not changed.')
+        tab._price_request_btn.clicked.connect(tab._request_price_correction)
+        br.addWidget(tab._price_request_btn)
     tab._returns_help_btn = SecondaryBtn('Return / Exchange', 40)
     tab._returns_help_btn.setToolTip(
         'Return items from a completed receipt (restock + refund record)')

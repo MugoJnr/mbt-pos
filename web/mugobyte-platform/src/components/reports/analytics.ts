@@ -1,4 +1,4 @@
-export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "receipts" | "suppliers" | "saved" | "export";
+export type AnalyticsTab = "overview" | "sales" | "debts" | "inventory" | "receipts" | "suppliers" | "finance" | "saved" | "export";
 
 export type RecordFocus = "sale" | "debt" | "payment" | "delivery" | "product" | "supplier";
 

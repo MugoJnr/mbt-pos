@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 import math
 import re
@@ -2107,8 +2108,15 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         max_rows=ANALYTICS_EXPORT_MAX,
     )
 
-    active_sales = [s for s in sales if not analytics_is_void(s)]
     void_sales = [s for s in sales if analytics_is_void(s)]
+    return_sales = [
+        s for s in sales
+        if not analytics_is_void(s) and str(s.get('status') or '').lower() == 'return'
+    ]
+    active_sales = [
+        s for s in sales
+        if not analytics_is_void(s) and str(s.get('status') or '').lower() != 'return'
+    ]
     gross_sales = round(sum(_fnum(s.get('total')) for s in active_sales), 2)
     collected_from_sales = round(
         sum(analytics_sale_collected_amount(s) for s in active_sales), 2,
@@ -2156,16 +2164,11 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
             if key in sale_keys:
                 item_rows.append(item)
 
+    from backend.cloud.owner_profit import apply_product_card_costs
+    card_priced_lines = apply_product_card_costs(item_rows, products)
+
     items_sold = round(sum(_fnum(i.get('quantity')) for i in item_rows), 3)
     line_items = len(item_rows)
-    cost_of_goods = round(sum(
-        _fnum(i.get('quantity')) * _fnum(i.get('unit_cost', i.get('cost_price')))
-        for i in item_rows
-    ), 2)
-    # Prefer sale-time cost snapshot; fall back is already unit_cost/cost_price.
-    item_revenue = round(sum(_fnum(i.get('total')) for i in item_rows), 2)
-    gross_profit = round(item_revenue - cost_of_goods, 2)
-    gross_margin_pct = round((gross_profit / item_revenue) * 100, 2) if item_revenue else 0.0
 
     # Payment mix uses collected tender (not unpaid credit totals)
     pay_map: dict[str, dict] = {}
@@ -2204,18 +2207,15 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         cat = str(i.get('category') or '').strip() or 'Uncategorized'
         rev = _fnum(i.get('total'))
         qty = _fnum(i.get('quantity'))
-        from backend.cloud.owner_profit import line_is_uncosted
-        known = not line_is_uncosted(i)
-        raw_cost = i.get('unit_cost') if i.get('unit_cost') not in (None, '') else i.get('cost_price')
-        cost = qty * _fnum(raw_cost) if known else 0.0
+        from backend.cloud.owner_profit import line_economics
+        parts = line_economics(i)
         p = prod_map.setdefault(name, {
             'name': name, 'category': cat, 'qty': 0.0, 'revenue': 0.0, 'cost': 0.0, 'profit': 0.0,
         })
         p['qty'] = round(p['qty'] + qty, 3)
         p['revenue'] = round(p['revenue'] + rev, 2)
-        if known:
-            p['cost'] = round(p['cost'] + cost, 2)
-            p['profit'] = round(p['profit'] + (rev - cost), 2)
+        p['cost'] = round(p['cost'] + parts['cost'], 2)
+        p['profit'] = round(p['profit'] + parts['profit'], 2)
         c = cat_map.setdefault(cat, {'category': cat, 'qty': 0.0, 'revenue': 0.0})
         c['qty'] = round(c['qty'] + qty, 3)
         c['revenue'] = round(c['revenue'] + rev, 2)
@@ -2242,9 +2242,11 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         if _fnum(p.get('stock')) <= _fnum(p.get('min_stock'), 0) and _fnum(p.get('stock')) > 0
     ]
     out_stock = [p for p in active_products if _fnum(p.get('stock')) <= 0]
-    inventory_value = round(sum(
-        _fnum(p.get('stock')) * _fnum(p.get('cost_price')) for p in active_products
-    ), 2)
+    # Remaining value belongs to the batches still on hand. The product-card
+    # buying price is one number and is not that value. Until those batches
+    # are on this portal, the figure stays unverified rather than invented.
+    inventory_value = None
+    inventory_cost_state = 'unverified'
 
     last_sync = analytics_last_sync_at(org_id)
     summary = {
@@ -2252,6 +2254,9 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         'gross_sales': gross_sales,
         'sales_total': gross_sales,
         'revenue': gross_sales,
+        'refunds': round(sum(abs(_fnum(s.get('total'))) for s in return_sales), 2),
+        'return_transactions': len(return_sales),
+        'net_sales': round(gross_sales - sum(abs(_fnum(s.get('total'))) for s in return_sales), 2),
         'collected_revenue': collected_revenue,
         'collected': collected_revenue,
         'collected_from_sales': collected_from_sales,
@@ -2282,6 +2287,7 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         ) if (profit_split['gross_profit'] + profit_split['cost_of_goods']) else 0.0,
         'uncosted_sales': profit_split.get('uncosted_sales', 0.0),
         'uncosted_lines': profit_split.get('uncosted_lines', 0),
+        'card_priced_lines': card_priced_lines,
         'gross_profit_fully_paid': profit_split['gross_profit_fully_paid'],
         'gross_profit_credit': profit_split['gross_profit_credit'],
         'gross_profit_part_payment': profit_split['gross_profit_part_payment'],
@@ -2291,6 +2297,7 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         'debt_ageing': debt_ageing(outstanding_invoices),
         'sync': sync_freshness(last_sync),
         'inventory_value': inventory_value,
+        'inventory_cost_state': inventory_cost_state,
         'low_stock_count': len(low_stock) + len(out_stock),
         'out_of_stock_count': len(out_stock),
         'low_only_count': len(low_stock),
@@ -2460,36 +2467,296 @@ def analytics_list_deliveries(org_id: str, *, limit: int = 200) -> dict:
         max_rows=min(max(limit, 1), ANALYTICS_EXPORT_MAX),
     )
     deliveries = [_delivery_row(row) for row in rows if movement_is_delivery(row)]
+    receipts = []
+    for row in _synced_payloads(org_id, 'purchase'):
+        if row.get('record_kind') != 'stock_receipt':
+            continue
+        item = dict(row)
+        item['source'] = 'stock_receipt'
+        item['supplier_phone'] = row.get('supplier_phone') or ''
+        receipts.append(item)
+    combined = receipts + deliveries
     return {
         'org_id': org_id,
         'source': 'cloud',
-        'receipts': deliveries[:limit],
-        'items': deliveries[:limit],
+        'receipts': combined[:limit],
+        'items': combined[:limit],
+        'delivery_receipts': receipts[:limit],
+        'stock_movements': deliveries[:limit],
+    }
+
+
+def _synced_payloads(org_id: str, entity_type: str) -> list[dict]:
+    """Rows the shop uploaded. A missing table or entity comes back empty."""
+    rows = analytics_fetch_all(
+        'sync_entities',
+        (
+            f'{_org_eq(org_id)}&entity_type=eq.{entity_type}&deleted=eq.false'
+            '&select=device_id,source_id,payload,source_updated_at'
+            '&order=source_updated_at.desc,source_id.asc'
+        ),
+        max_rows=ANALYTICS_EXPORT_MAX,
+    )
+    out = []
+    for row in rows or []:
+        payload = row.get('payload') or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        if not isinstance(payload, dict):
+            continue
+        item = dict(payload)
+        item['device_id'] = row.get('device_id')
+        item['source_id'] = row.get('source_id')
+        item['source_updated_at'] = row.get('source_updated_at')
+        out.append(item)
+    return out
+
+
+def _money_field(row: dict, *keys: str) -> float | None:
+    for key in keys:
+        if row.get(key) not in (None, ''):
+            return round(_fnum(row.get(key)), 2)
+    return None
+
+
+def _row_day(row: dict) -> str:
+    raw = str(row.get('paid_at') or row.get('created_at') or row.get('date') or row.get('source_updated_at') or '')
+    day = raw[:10]
+    return day if len(day) == 10 and day[4] == '-' else ''
+
+
+def _period_total(rows: list[dict], start: str, end: str, *keys: str) -> dict:
+    """Sum dated rows in the range. Undated rows stay out and are not zero."""
+    if not rows:
+        return {'total': None, 'undated': 0, 'outside': 0, 'in_range': 0}
+    included = []
+    undated = 0
+    outside = 0
+    for row in rows:
+        day = _row_day(row)
+        if not day:
+            undated += 1
+            continue
+        if start <= day <= end:
+            included.append(row)
+        else:
+            outside += 1
+    if undated and not included:
+        return {'total': None, 'undated': undated, 'outside': outside, 'in_range': 0}
+    total = round(sum(_money_field(row, *keys) or 0 for row in included), 2)
+    return {'total': total, 'undated': undated, 'outside': outside, 'in_range': len(included)}
+
+
+def analytics_finance(org_id: str, *, start: str, end: str = '') -> dict:
+    """Separate the money categories. Supplier payments are not treated as cost."""
+    overview = analytics_overview(org_id, start=start, end=end, compare=False)
+    summary = overview.get('summary') or {}
+    expenses = _synced_payloads(org_id, 'expense')
+    purchases = _synced_payloads(org_id, 'purchase')
+    period_start = str(overview.get('start') or start)
+    period_end = str(overview.get('end') or end or period_start)
+    receipt_payments = []
+    for receipt in _synced_payloads(org_id, 'purchase'):
+        if receipt.get('record_kind') != 'stock_receipt':
+            continue
+        for payment in receipt.get('payments') or []:
+            if isinstance(payment, dict) and str(payment.get('status') or 'posted') != 'reversed':
+                receipt_payments.append(payment)
+    payment_period = _period_total(receipt_payments, period_start, period_end, 'amount')
+    expense_period = _period_total(expenses, period_start, period_end, 'amount', 'total')
+    purchase_period = _period_total(
+        purchases, period_start, period_end, 'total', 'grand_total', 'amount',
+    )
+    gross = _fnum(summary.get('gross_sales'))
+    refunds = _fnum(summary.get('refunds'))
+    cogs = _fnum(summary.get('cost_of_goods'))
+    profit = _fnum(summary.get('gross_profit'))
+    uncosted_lines = int(summary.get('uncosted_lines') or 0)
+    cost_unknown = uncosted_lines > 0 and cogs <= 0 and profit <= 0
+    return {
+        'org_id': org_id,
+        'start': overview.get('start'),
+        'end': overview.get('end'),
+        'currency': 'KES',
+        'sales_revenue': gross,
+        'returns': refunds,
+        'refunds': refunds,
+        'net_sales': round(gross - refunds, 2),
+        'cost_of_goods': None if cost_unknown else cogs,
+        'gross_profit': None if cost_unknown else profit,
+        'cost_state': 'unknown' if cost_unknown else ('partial' if uncosted_lines else 'verified'),
+        'uncosted_sales': summary.get('uncosted_sales'),
+        'uncosted_lines': summary.get('uncosted_lines'),
+        'expenses': expense_period['total'],
+        'expense_count': len(expenses),
+        'expenses_in_range': expense_period['in_range'],
+        'expenses_outside': expense_period['outside'],
+        'undated_expenses': expense_period['undated'],
+        'supplier_purchases': purchase_period['total'],
+        'purchase_count': len(purchases),
+        'purchases_in_range': purchase_period['in_range'],
+        'purchases_outside': purchase_period['outside'],
+        'undated_purchases': purchase_period['undated'],
+        'supplier_payments': payment_period['total'],
+        'supplier_payments_outside': payment_period['outside'],
+        'customer_credit_sales': summary.get('debt_issued'),
+        'debt_repayments': summary.get('debt_collected'),
+        'outstanding_customer_debts': summary.get('debt_outstanding'),
+        'cash_collected': summary.get('collected_from_sales'),
+        'note': (
+            'Profit is sales minus the uploaded batch cost. '
+            + ('No sale in this range has a batch cost, so cost and profit stay unknown. ' if cost_unknown else '')
+            + 'Supplier payments, expenses and inventory value are not subtracted from sales. '
+            'A blank figure was not uploaded, so it is not shown as zero.'
+        ),
     }
 
 
 def analytics_list_suppliers(org_id: str) -> dict:
     deliveries = analytics_list_deliveries(org_id, limit=ANALYTICS_EXPORT_MAX)['receipts']
+    uploaded = _synced_payloads(org_id, 'supplier')
+    purchases = _synced_payloads(org_id, 'purchase')
+    purchase_items = _synced_payloads(org_id, 'purchase_item')
+    by_source = {str(row.get('source_id') or row.get('id') or ''): row for row in uploaded}
     grouped: dict[str, dict] = {}
+    for row in uploaded:
+        name = str(row.get('name') or 'No supplier name')
+        grouped[name] = {
+            'name': name,
+            'phone': row.get('phone') or '',
+            'email': row.get('email') or '',
+            'address': row.get('address') or '',
+            'contact': row.get('contact_name') or row.get('contact') or '',
+            'status': 'Active' if row.get('is_active') in (None, '', 1, True, '1') else 'Inactive',
+            'source_id': row.get('source_id'),
+            'created_at': row.get('created_at') or row.get('source_updated_at'),
+            'updated_at': row.get('updated_at') or row.get('source_updated_at'),
+            'deliveries': 0,
+            'products': [],
+            'recent': [],
+            'purchase_total': 0.0,
+            'purchases_uploaded': False,
+            'payments_uploaded': False,
+            'payment_total': None,
+            'outstanding': None,
+        }
     for row in deliveries:
         name = str(row.get('supplier_name') or 'No supplier name')
         bucket = grouped.setdefault(name, {
             'name': name,
             'phone': row.get('supplier_phone') or '',
+            'email': '',
+            'address': '',
+            'contact': '',
+            'status': 'Seen on a delivery',
+            'source_id': '',
+            'created_at': row.get('source_created_at'),
+            'updated_at': row.get('source_created_at'),
             'deliveries': 0,
             'products': [],
             'recent': [],
+            'purchase_total': 0.0,
+            'purchases_uploaded': False,
+            'payments_uploaded': False,
+            'payment_total': None,
+            'outstanding': None,
         })
+        if not bucket.get('phone') and row.get('supplier_phone'):
+            bucket['phone'] = row.get('supplier_phone')
         bucket['deliveries'] += 1
         product = str(row.get('product_name') or '')
         if product and product not in bucket['products']:
             bucket['products'].append(product)
-        if len(bucket['recent']) < 8:
+        if len(bucket['recent']) < 12:
             bucket['recent'].append(row)
+    receipt_rows = [row for row in purchases if row.get('record_kind') == 'stock_receipt']
+    purchases = [row for row in purchases if row.get('record_kind') != 'stock_receipt']
+    for purchase in purchases:
+        supplier_id = str(purchase.get('supplier_id') or '')
+        supplier = by_source.get(supplier_id)
+        name = str((supplier or {}).get('name') or purchase.get('supplier_name') or 'No supplier name')
+        bucket = grouped.setdefault(name, {
+            'name': name,
+            'phone': '',
+            'email': '',
+            'address': '',
+            'contact': '',
+            'status': 'Seen on a purchase',
+            'source_id': supplier_id,
+            'created_at': purchase.get('created_at'),
+            'updated_at': purchase.get('updated_at'),
+            'deliveries': 0,
+            'products': [],
+            'recent': [],
+            'purchase_total': 0.0,
+            'purchases_uploaded': False,
+            'payments_uploaded': False,
+            'payment_total': None,
+            'outstanding': None,
+        })
+        amount = _money_field(purchase, 'total', 'grand_total', 'amount')
+        if amount is not None:
+            bucket['purchases_uploaded'] = True
+            bucket['purchase_total'] = round(bucket['purchase_total'] + amount, 2)
+    for receipt in receipt_rows:
+        name = str(receipt.get('supplier_name') or 'No supplier name')
+        bucket = grouped.setdefault(name, {
+            'name': name,
+            'phone': receipt.get('supplier_phone') or '',
+            'email': receipt.get('supplier_email') or '',
+            'address': receipt.get('supplier_address') or '',
+            'contact': receipt.get('supplier_contact') or '',
+            'status': 'Active',
+            'source_id': receipt.get('supplier_id'),
+            'created_at': receipt.get('created_at'),
+            'updated_at': receipt.get('created_at'),
+            'deliveries': 0,
+            'products': [],
+            'recent': [],
+            'purchase_total': 0.0,
+            'purchases_uploaded': False,
+            'payments_uploaded': False,
+            'payment_total': None,
+            'outstanding': None,
+        })
+        bucket['receipts_uploaded'] = True
+        bucket['deliveries'] += 1
+        amount = _money_field(receipt, 'total')
+        if amount is not None:
+            bucket['purchases_uploaded'] = True
+            bucket['purchase_total'] = round(float(bucket.get('purchase_total') or 0) + amount, 2)
+        paid = _money_field(receipt, 'amount_paid')
+        if paid is not None:
+            bucket['payments_uploaded'] = True
+            bucket['payment_total'] = round(float(bucket.get('payment_total') or 0) + paid, 2)
+        owed = receipt.get('outstanding')
+        if owed not in (None, '') and bucket.get('payments_uploaded'):
+            bucket['outstanding'] = round(float(bucket.get('outstanding') or 0) + _fnum(owed), 2)
+        if len(bucket['recent']) < 12:
+            bucket['recent'].append(receipt)
+    del purchase_items
     suppliers = sorted(grouped.values(), key=lambda item: (-item['deliveries'], item['name']))
-    return {'org_id': org_id, 'suppliers': suppliers, 'note': (
-        'Delivery history only. This portal does not track what the shop owes a supplier.'
-    )}
+    note = (
+        'A delivery movement is the shop record, not the supplier paper invoice. '
+        'No supplier payment has been uploaded, so a balance is not shown as paid or unpaid.'
+    )
+    if receipt_rows:
+        note = (
+            'Each uploaded delivery receipt stays separate. '
+            'Paid and outstanding amounts come from the payments recorded on those receipts. '
+            'A stock movement that is not one of those receipts is not a supplier invoice.'
+        )
+    return {
+        'org_id': org_id,
+        'suppliers': suppliers,
+        'purchase_records': len(purchases),
+        'delivery_receipts': len(receipt_rows),
+        'supplier_records': len(uploaded),
+        'note': note,
+    }
 
 
 def analytics_activity(org_id: str, *, limit: int = 8) -> dict:

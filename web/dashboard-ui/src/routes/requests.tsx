@@ -50,7 +50,9 @@ const TYPES = [
   ["supplier_backdate", "Supplier delivery backdate"],
   ["refund", "Refund"],
   ["expense", "Expense"],
-  ["price_override", "Price change"],
+  ["price_override", "Price correction"],
+  ["product_publish", "New product"],
+  ["product_change", "Product or price change"],
   ["credit", "Credit"],
   ["large_discount", "Large discount"],
 ] as const;
@@ -63,7 +65,7 @@ function decisionCopy(row: CentreRow | null, detail: any) {
   const source = String(row?.source || "");
   const awaiting = ["pending", "submitted", "escalated"].includes(status);
   const me = Number(getUser()?.id || 0);
-  const own = me > 0 && Number(row?.requester_id || 0) === me;
+  const own = role !== "superadmin" && me > 0 && Number(row?.requester_id || 0) === me;
   if (!row) {
     return { note: "Select a request. Approve and Reject are in this section.", approve: false, reject: false, back: false };
   }
@@ -142,10 +144,25 @@ function decisionCopy(row: CentreRow | null, detail: any) {
             : "A manager uses Approve or Reject. The sale stays completed until it is approved.",
     };
   }
-  const open = reviewer && awaiting;
+  if (kind === "product_publish" || kind === "product_change") {
+    const open = ["admin", "superadmin"].includes(role) && awaiting && !own;
+    return {
+      approve: open, reject: open, back: false,
+      note: own && awaiting
+        ? "You cannot approve your own product or price change."
+        : open
+          ? "Approve publishes this once. Reject leaves the live product and price unchanged."
+          : "An admin uses Approve or Reject. The live product stays as it is until then.",
+    };
+  }
+  const open = reviewer && awaiting && !own;
   return {
     approve: open, reject: open, back: false,
-    note: open ? "Approve records the decision. It does not post a sale or change stock." : "A manager uses Approve or Reject.",
+    note: own && awaiting
+      ? "You cannot approve your own request. The permanent price is not changed."
+      : open
+        ? "Approve records the decision. It does not change the permanent product price."
+        : "A manager uses Approve or Reject.",
   };
 }
 

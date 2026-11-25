@@ -140,10 +140,13 @@ def _apply_wheel_to_host(host, event) -> bool:
         sb = bar()
         if sb is not None and sb.maximum() > 0:
             delta = event.angleDelta().y()
-            if delta:
-                step = sb.singleStep() or 16
-                sb.setValue(sb.value() - int(delta / 120) * step * 3)
-                return True
+            pixel = event.pixelDelta().y() if hasattr(event, 'pixelDelta') else 0
+            if delta and not pixel:
+                from desktop.utils.wheel_scroll import wheel_notch_pixels, wheel_scroll_interval
+                move = wheel_notch_pixels(delta, 0, wheel_scroll_interval(), sb.singleStep() or 16)
+                if move:
+                    sb.setValue(sb.value() + move)
+                    return True
     return False
 
 
@@ -165,10 +168,13 @@ def _forward_wheel_past(blocked, event) -> bool:
                 if sb is not None and sb.isVisible() and sb.maximum() > 0:
                     if not is_small_scroll_host(w):
                         delta = event.angleDelta().y()
-                        if delta:
-                            step = sb.singleStep() or 16
-                            sb.setValue(sb.value() - int(delta / 120) * step * 3)
-                            return True
+                        pixel = event.pixelDelta().y() if hasattr(event, 'pixelDelta') else 0
+                        if delta and not pixel:
+                            from desktop.utils.wheel_scroll import wheel_notch_pixels, wheel_scroll_interval
+                            move = wheel_notch_pixels(delta, 0, wheel_scroll_interval(), sb.singleStep() or 16)
+                            if move:
+                                sb.setValue(sb.value() + move)
+                                return True
         w = w.parentWidget()
     return False
 
