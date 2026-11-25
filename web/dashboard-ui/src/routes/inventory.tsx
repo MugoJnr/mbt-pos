@@ -1534,7 +1534,7 @@ ${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cel
                       }}
                     >
                       <span className="min-w-0 truncate font-semibold text-text">{row.receipt_number || "Delivery"} · {row.supplier_name || "Supplier"}</span>
-                      <span className="shrink-0 tabular-nums text-text2">{row.payment_status || (row.status === "reversed" ? "VOIDED" : Number(row.grand_total || 0).toFixed(2))}</span>
+                      <span className="shrink-0 tabular-nums text-text2">{row.status === "reversed" ? "VOIDED" : (row.payment_status || Number(row.grand_total || 0).toFixed(2))}</span>
                     </button>
                   ))}
                 </div>
@@ -2403,7 +2403,7 @@ ${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cel
                 </div>
                 <div className="border-t border-border px-5 py-4 text-sm text-text">
                   <div className="text-base font-extrabold">
-                    Invoice {Number(receipt.grand_total || 0).toFixed(2)} · Paid {Number(receipt.amount_paid || 0).toFixed(2)} · Outstanding {Number(receipt.outstanding || 0).toFixed(2)} · {receipt.payment_status || "UNPAID"}
+                    Invoice {Number(receipt.grand_total || 0).toFixed(2)} · Paid {Number(receipt.amount_paid || 0).toFixed(2)} · Outstanding {receipt.status === "reversed" ? "0.00" : Number(receipt.outstanding || 0).toFixed(2)} · {receipt.status === "reversed" ? "VOIDED" : (receipt.payment_status || "UNPAID")}
                   </div>
                   {(receipt.payments || []).length ? (
                     <div className="mt-2 space-y-1 text-text2">

@@ -4,7 +4,7 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QDoubleSpinBox, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from desktop.utils.option_lists import SPLIT_LINE_METHODS
@@ -39,13 +39,15 @@ class TenderLines(QWidget):
         self._lines = QVBoxLayout(self._line_host)
         self._lines.setContentsMargins(0, 0, 0, 0)
         self._lines.setSpacing(6)
+        self._line_host.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(108)
-        scroll.setMaximumHeight(220)
+        scroll.setMinimumHeight(148)
+        scroll.setMaximumHeight(360)
         scroll.setWidget(self._line_host)
+        self._scroll = scroll
         root.addWidget(scroll)
         actions = QVBoxLayout()
         actions.setSpacing(4)
@@ -165,8 +167,19 @@ class TenderLines(QWidget):
         reference.textChanged.connect(lambda *_: self._refresh())
         self._rows.append(row)
         self._lines.addWidget(row["wrap"])
+        self._fit_lines()
         self._refresh()
         return len(self._rows) - 1
+
+    def _fit_lines(self):
+        """The scroll host must grow with each row. A fixed viewport hides new lines."""
+        height = 0
+        for row in self._rows:
+            height += max(row["wrap"].sizeHint().height(), 88)
+        height += 8
+        self._line_host.setMinimumHeight(height)
+        if hasattr(self, "_scroll"):
+            self._scroll.updateGeometry()
 
     def _remove_row(self, item: dict):
         if item not in self._rows:
@@ -214,7 +227,7 @@ class TenderLines(QWidget):
             return _r2(explicit + gap)
         return explicit
 
-    def rows_for_sale(self, due: float) -> list[dict]:
+    def rows_for_sale(self, due: float, *, credit_remainder: bool = False) -> list[dict]:
         self._due = _r2(due)
         lines = self.rows()
         paid = self.money_paid()
@@ -222,9 +235,14 @@ class TenderLines(QWidget):
             row["amount"] for row in lines if is_credit_method(row["method"])
         ))
         left = _r2(self._due - paid - explicit)
-        if self.remainder_on_credit() and left > 0.009:
+        if (credit_remainder or self.remainder_on_credit()) and left > 0.009:
             lines.append({"method": "Credit", "amount": left, "status": "outstanding"})
         return lines
+
+    def show_error(self, message: str):
+        self._customer_hint.setText(str(message or ""))
+        self._customer_hint.setStyleSheet(
+            "color:#e15b64;font-size:13px;font-weight:800;background:transparent;")
 
     def remaining(self) -> float:
         """Amount not yet covered by money or an explicit credit line."""

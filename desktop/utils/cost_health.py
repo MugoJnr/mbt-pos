@@ -12,7 +12,7 @@ BADGES = {
     "missing_price": ("Missing buying price", "err"),
     "explicit_zero": ("Explicit zero cost", "warn"),
     "invalid_price": ("Invalid buying price", "err"),
-    "zero_review": ("Zero buying price needs review", "warn"),
+    "zero_review": ("Zero buying price", "warn"),
     "missing_fifo": ("Missing FIFO cost layer", "warn"),
     "stock_without_cost": ("Stock without a cost basis", "warn"),
     "inconsistent": ("Costing requires review", "warn"),

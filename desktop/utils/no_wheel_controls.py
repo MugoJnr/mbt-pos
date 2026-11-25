@@ -92,10 +92,23 @@ class NoWheelControlsFilter(QObject):
         if isinstance(obj, (QDateEdit, QDateTimeEdit)):
             forward_wheel_to_scroll_parent(obj, event)
             return True
-        if isinstance(obj, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)):
-            if obj.hasFocus():
+        spin = obj if isinstance(obj, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)) else None
+        if spin is None:
+            parent = obj.parentWidget() if hasattr(obj, 'parentWidget') else None
+            while parent is not None and spin is None:
+                if isinstance(parent, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)):
+                    spin = parent
+                    break
+                parent = parent.parentWidget()
+        if isinstance(spin, (QDateEdit, QDateTimeEdit)):
+            forward_wheel_to_scroll_parent(spin, event)
+            return True
+        if spin is not None:
+            editor = spin.lineEdit() if hasattr(spin, 'lineEdit') else None
+            focused = spin.hasFocus() or (editor is not None and editor.hasFocus())
+            if focused:
                 return False
-            forward_wheel_to_scroll_parent(obj, event)
+            forward_wheel_to_scroll_parent(spin, event)
             return True
 
         # 3. Sliders

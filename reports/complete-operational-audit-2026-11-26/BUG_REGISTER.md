@@ -61,6 +61,19 @@ The remaining pytest failures are stale permission expectations (a cashier or th
 | B-032 | Medium | **Partial** | The suite is 1020 passed / 23 failed / 3 errors. The sidebar probe implements the update-banner handlers it was missing. Remaining reds are listed above and were not deleted. |
 | B-033 | Low | **Fixed** | Portal licence `activated_at`, `assigned_at`, `claimed_at`, `last_validated_at`, and `revoked_at` are stored as real UTC instants. |
 
+## Shop-day run (added after the first repair)
+
+These were seen on the installed v3.1.93 till (Wine on Linux) and fixed on the same branch.
+
+| ID | Sev | Status | What changed |
+|---|---|---|---|
+| N-4 | High | **Fixed** | Voiding a goods receipt now reverses its journal (Dr 2000 / Cr 1200), so accounts payable and ledger inventory come back down with the stock. Recent deliveries show VOIDED and outstanding 0 when `status` is `reversed`, on the till and the web. The void asks for confirmation and a Super Admin PIN, including for a signed-in Super Admin. The reversal only reduces the cost layer whose source id is that receipt and product. A regression test keeps an opening layer of 10 and an older purchase layer of 5 while the voided receipt's own layer goes to 0. |
+| N-split | High | **Fixed** | Part payment through the tender list adds the unpaid remainder as customer credit before the amounts are checked, so 3,000 cash on a 7,000 sale can complete as 4,000 credit. A mismatch stays on the payment panel instead of only a short toast. New "Add payment" rows grow the list instead of staying clipped in a 220px box. |
+| N-round | Medium | **Fixed** | A credit sale does not apply cash rounding. 732.50 stays 732.50. Rounding still applies to cash tender. |
+| N-6 | Medium | **Fixed** | The mouse wheel over a quantity or amount box, including its text field, does not change the value unless that box is focused. |
+| N-5 | Medium | **Fixed** | The POS quantity box uses a dot as the decimal separator, and a whole-unit rejection no longer opens a dialog from inside the value-changed handler (that re-entry is a Wine page-fault). Typing 2.5 is kept. |
+| N-minor | Low | **Fixed** | Security already says "6 to 8 digits" (B-002). The Users screen labels the receipts tab "Receipts" instead of `receipts`. New supplier from Receive stock has a phone field. The zero-cost badge reads "Zero buying price" and is wide enough not to end in "ne…". Starting a shift on the till asks for the opening float and stores it on the till session. Automated tests skip that prompt. |
+
 ## Screen observations
 
 | ID | Status | Note |

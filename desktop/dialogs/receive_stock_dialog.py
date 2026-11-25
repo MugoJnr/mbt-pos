@@ -139,6 +139,10 @@ class _NewSupplierDialog(QDialog):
         self._name.setPlaceholderText('Supplier name')
         self._name.setMinimumHeight(40)
         lay.addWidget(self._name)
+        self._phone = QLineEdit()
+        self._phone.setPlaceholderText('Phone')
+        self._phone.setMinimumHeight(40)
+        lay.addWidget(self._phone)
         row = QHBoxLayout()
         cancel = SecondaryBtn('Cancel', 40)
         cancel.clicked.connect(self.reject)
@@ -161,6 +165,9 @@ class _NewSupplierDialog(QDialog):
 
     def supplier_name(self) -> str:
         return self._name.text().strip()
+
+    def supplier_phone(self) -> str:
+        return self._phone.text().strip()
 
 
 class ReceiveStockDialog(QDialog):
@@ -444,7 +451,7 @@ class ReceiveStockDialog(QDialog):
             if label.strip().lower() == name.lower():
                 self._reload_suppliers(sid)
                 return
-        res = self.api.create_supplier({'name': name})
+        res = self.api.create_supplier({'name': name, 'phone': dlg.supplier_phone()})
         if not (res and res.get('success')):
             QMessageBox.warning(self, 'Supplier', (res or {}).get('error', 'Could not add the supplier.'))
             return
@@ -658,8 +665,12 @@ class ReceiveStockDialog(QDialog):
             table.setItem(i, 1, QTableWidgetItem(str(row.get('supplier_name') or '')))
             table.setItem(i, 2, QTableWidgetItem(_money(row.get('grand_total'))))
             table.setItem(i, 3, QTableWidgetItem(_money(row.get('amount_paid'))))
-            table.setItem(i, 4, QTableWidgetItem(_money(row.get('outstanding'))))
             status = row.get('payment_status') or row.get('status') or 'posted'
+            outstanding = row.get('outstanding')
+            if str(row.get('status') or '').lower() == 'reversed':
+                status = 'VOIDED'
+                outstanding = 0
+            table.setItem(i, 4, QTableWidgetItem(_money(outstanding)))
             table.setItem(i, 5, QTableWidgetItem(str(status)))
             table.item(i, 0).setData(Qt.UserRole, row.get('id'))
         table.cellDoubleClicked.connect(lambda *_: open_selected())
@@ -782,9 +793,10 @@ class DeliveryReceiptDialog(QDialog):
             after = line.get('new_stock')
             table.setItem(i, 5, QTableWidgetItem('—' if before is None else _qty(before)))
             table.setItem(i, 6, QTableWidgetItem('—' if after is None else _qty(after)))
+        reversed_delivery = str(self.receipt.get('status') or '').lower() == 'reversed'
         paid = _money(self.receipt.get('amount_paid'))
-        outstanding = _money(self.receipt.get('outstanding'))
-        pay_status = self.receipt.get('payment_status') or 'UNPAID'
+        outstanding = '0.00' if reversed_delivery else _money(self.receipt.get('outstanding'))
+        pay_status = 'VOIDED' if reversed_delivery else (self.receipt.get('payment_status') or 'UNPAID')
         total = QLabel(
             f"Invoice {_money(self.receipt.get('grand_total'))}    "
             f"Paid {paid}    Outstanding {outstanding}    {pay_status}"
@@ -931,15 +943,23 @@ class DeliveryReceiptDialog(QDialog):
         self._reload()
 
     def _void(self):
-        from PyQt5.QtWidgets import QInputDialog, QLineEdit
+        from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMessageBox
+        number = self.receipt.get('receipt_number') or 'this delivery'
+        confirm = QMessageBox.question(
+            self, 'Void this delivery?',
+            f'Void {number}? Stock, the supplier balance, and the journal entry are reversed.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
         reason, ok = QInputDialog.getText(self, 'Void delivery', 'Reason')
         if not ok or not reason.strip():
             return
-        pin = ''
-        if (getattr(self.api, '_role', '') or '').lower() != 'superadmin':
-            pin, ok = QInputDialog.getText(self, 'Void delivery', 'Super-Admin PIN', QLineEdit.Password)
-            if not ok:
-                return
+        pin, ok = QInputDialog.getText(
+            self, 'Void delivery', 'Super Admin PIN', QLineEdit.Password,
+        )
+        if not ok or not str(pin or '').strip():
+            return
         res = self.api.reverse_stock_receipt(self.receipt.get('id'), reason=reason.strip(), pin=pin)
         if not res or not res.get('success'):
             QMessageBox.warning(self, 'Void', (res or {}).get('error', 'Could not void the delivery.'))

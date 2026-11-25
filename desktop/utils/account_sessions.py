@@ -21,7 +21,8 @@ def ensure(conn) -> None:
             started_at TEXT,
             ended_at TEXT,
             end_requested INTEGER DEFAULT 0,
-            state TEXT DEFAULT 'signed_in'
+            state TEXT DEFAULT 'signed_in',
+            opening_float REAL
         );
         CREATE TABLE IF NOT EXISTS web_sessions (
             id TEXT PRIMARY KEY,
@@ -40,6 +41,27 @@ def ensure(conn) -> None:
         );
         """
     )
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(till_sessions)").fetchall()}
+    if "opening_float" not in cols:
+        conn.execute("ALTER TABLE till_sessions ADD COLUMN opening_float REAL")
+
+
+def set_opening_float(conn, session_id: int, amount: float) -> dict:
+    """Record the cash in the drawer when this shift starts."""
+    ensure(conn)
+    try:
+        value = round(float(amount), 2)
+    except (TypeError, ValueError):
+        return {"error": "Enter the opening float as a number."}
+    if value < 0:
+        return {"error": "Opening float cannot be negative."}
+    changed = conn.execute(
+        "UPDATE till_sessions SET opening_float=? WHERE id=? AND ended_at IS NULL",
+        (value, int(session_id)),
+    )
+    if changed.rowcount != 1:
+        return {"error": "This shift is not open."}
+    return {"success": True, "opening_float": value, "session_id": int(session_id)}
 
 
 def open_till_session(conn, user: dict) -> int:

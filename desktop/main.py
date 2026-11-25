@@ -3412,6 +3412,39 @@ def _stop_web_dashboard():
         _web_svc = None
 
 
+def _ask_opening_float(api) -> None:
+    """Ask how much cash is in the drawer before the shift starts."""
+    if os.environ.get('MBT_TEST_INSTANCE') == '1':
+        return
+    if os.environ.get('QT_QPA_PLATFORM', '').lower() == 'offscreen':
+        return
+    from PyQt5.QtWidgets import QInputDialog
+    amount, ok = QInputDialog.getDouble(
+        None, 'Opening float',
+        'Cash in the drawer at the start of this shift',
+        0.0, 0.0, 99999999.0, 2,
+    )
+    if not ok:
+        amount = 0.0
+    try:
+        from desktop.utils.api_client import _db
+        from desktop.utils.account_sessions import set_opening_float
+        conn = _db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM till_sessions WHERE user_id=? AND ended_at IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (getattr(api, '_user_id', None),),
+            ).fetchone()
+            if row:
+                set_opening_float(conn, int(row[0]), amount)
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def _show_login(api: APIClient = None):
     """Show login; store MainWindow in global to prevent GC."""
     global _main_window
@@ -3432,6 +3465,7 @@ def _show_login(api: APIClient = None):
 
     ud = dlg.user_data
     api.set_token(ud['token'])
+    _ask_opening_float(api)
     _main_window = MainWindow(ud, api, icon)
     _main_window.show()
     try:

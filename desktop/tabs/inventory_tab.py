@@ -830,7 +830,7 @@ class InventoryTab(QWidget):
                 colour = {'err': C.get('err', '#b42318'), 'ok': C.get('ok', '#067647')}.get(
                     tone, C.get('warn', '#b54708'),
                 )
-                badge = _ElideLabel(label, cap=120)
+                badge = _ElideLabel(label, cap=220)
                 badge.setStyleSheet(
                     f"color:{colour}; background:transparent; font-size:11px; font-weight:700;"
                 )

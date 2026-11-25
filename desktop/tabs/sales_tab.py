@@ -927,6 +927,19 @@ class SalesTab(QWidget):
             cfg = {}
         method = self._pay.currentText() if hasattr(self, '_pay') else 'Cash'
         credit = float(self._credit_to_apply or 0)
+        # A credit sale has no cash tender. Rounding must not change that total.
+        if self._is_credit_sale():
+            cart_total = round(max(0.0, float(self._subtotal) - float(self._discount)) + float(self._tax), 2)
+            info = {
+                'adjustment': 0.0, 'applied': False, 'amount_due': cart_total,
+                'cart_total': cart_total, 'original_due': cart_total,
+                'original': cart_total, 'cash_original': 0.0, 'cash_rounded': 0.0,
+                'electronic': 0.0, 'rounded_total': cart_total,
+            }
+            self._rounding_info = info
+            self._original_total = cart_total
+            self._rounding_adj = 0.0
+            return info
         # Electronic portion only on Cash / Mixed (split tender)
         elec = self._elec_portion() if self._is_split_method(method) else 0.0
         # Mixed always applies cash-portion rounding rules
@@ -952,7 +965,8 @@ class SalesTab(QWidget):
         adj = float(info.get('adjustment') or 0)
         # Rounding badge/lines ONLY when Cash/Mixed + enabled + non-zero delta
         show_round = (
-            self._is_split_method(method)
+            not self._is_credit_sale()
+            and self._is_split_method(method)
             and bool(st.get('enabled'))
             and CashRoundingService.should_apply('cash', st)
             and abs(adj) > 0.009
@@ -2744,13 +2758,15 @@ class SalesTab(QWidget):
         is_debt = is_part or is_credit
         due = self._amount_due()
         self._pending_alloc = None
-        if pay_method == 'Mixed' and self._using_tender_lines():
+        if self._using_tender_lines() and (pay_method == 'Mixed' or is_part):
             from desktop.utils.payment_tenders import allocate_sale
-            rows = self._tender_lines.rows_for_sale(due)
+            rows = self._tender_lines.rows_for_sale(due, credit_remainder=is_part)
             alloc = allocate_sale(due, rows)
             if alloc.get('error'):
+                self._tender_lines.show_error(alloc['error'])
                 soft_warn(self, alloc['error'])
                 return
+            self._tender_lines.show_error('')
             if float(alloc.get('credit') or 0) > 0.009:
                 is_debt = True
                 is_part = True

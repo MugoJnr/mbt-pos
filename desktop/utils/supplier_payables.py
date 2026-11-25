@@ -677,7 +677,7 @@ def update_receipt_header(api, receipt_id, *, reference=None, notes=None, due_da
         db.close()
 
 
-def request_delivery_action(api, receipt_id, kind, reason, requested_date="") -> dict:
+def request_delivery_action(api, receipt_id, kind, reason, requested_date="", pin="") -> dict:
     from desktop.utils.security import has_permission
     role = (getattr(api, "_role", "") or "").lower()
     if not has_permission(_actor(api), "supplier.request"):
@@ -692,7 +692,7 @@ def request_delivery_action(api, receipt_id, kind, reason, requested_date="") ->
         return {"error": "Enter the requested date as YYYY-MM-DD.", "status": 400}
     if role == "superadmin":
         if kind == "void":
-            saved = api.reverse_stock_receipt(int(receipt_id), reason=reason)
+            saved = api.reverse_stock_receipt(int(receipt_id), reason=reason, pin=pin)
         else:
             saved = backdate_receipt(api, int(receipt_id), requested_date, reason)
         if not isinstance(saved, dict):

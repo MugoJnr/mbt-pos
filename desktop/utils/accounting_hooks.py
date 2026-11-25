@@ -549,6 +549,25 @@ def post_stock_receipt_journal(db, receipt_id: int, *, user_id=None, username=''
     return _safe_call(_run, safe=safe)
 
 
+def reverse_stock_receipt_journal(db, receipt_id: int, *, reason='', user_id=None,
+                                  username='', safe=True) -> dict:
+    """Undo the goods-receipt journal. Stock going back must take the AP with it."""
+    def _run():
+        existing = find_posted_entry(db, 'stock_receipts', str(receipt_id), 'receipt')
+        if not existing:
+            return {'skipped': True, 'reason': 'no journal'}
+        return reverse_journal(
+            db, existing['id'],
+            reason=reason or 'Goods receipt voided',
+            user_id=user_id,
+            username=username,
+            source_module='stock_receipts',
+            source_id=str(receipt_id),
+            entry_type='receipt_void',
+        )
+    return _safe_call(_run, safe=safe)
+
+
 def post_supplier_payment_journal(db, payment_id: int, *, amount=0, method='cash',
                                   number='', entry_date='', user_id=None,
                                   username='', safe=True) -> dict:

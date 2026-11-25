@@ -20,6 +20,7 @@ ALL_TABS = ALL_DESKTOP_TABS
 TAB_LABELS = {
     'dashboard': 'Dashboard',
     'sales': 'Point of Sale',
+    'receipts': 'Receipts',
     'inventory': 'Inventory',
     'consumption': 'Internal Consumption',
     'debt': 'Debt',
@@ -119,7 +120,7 @@ class AdminTab(QWidget):
         chk_lay.setContentsMargins(0, 0, 0, 0)
         chk_lay.setSpacing(2)
         ops = [
-            'dashboard', 'sales', 'inventory', 'consumption', 'debt',
+            'dashboard', 'sales', 'receipts', 'inventory', 'consumption', 'debt',
             'accounting', 'reports', 'notes', 'ai_ops', 'admin', 'settings',
         ]
         system = ['license', 'diagnostics', 'security']

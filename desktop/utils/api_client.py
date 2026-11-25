@@ -3794,9 +3794,11 @@ class APIClient:
         )
 
     def request_delivery_action(self, receipt_id: int, kind: str, reason: str,
-                                requested_date: str = '') -> dict:
+                                requested_date: str = '', pin: str = '') -> dict:
         from desktop.utils.supplier_payables import request_delivery_action
-        return request_delivery_action(self, receipt_id, kind, reason, requested_date)
+        return request_delivery_action(
+            self, receipt_id, kind, reason, requested_date, pin=pin,
+        )
 
     def list_delivery_requests(self, status: str = 'pending') -> list:
         db = _db()
@@ -3840,7 +3842,8 @@ class APIClient:
             client_token=client_token,
         )
 
-    def _stock_reduce_authorized(self, db, pin, action: str, pin_username: str = ''):
+    def _stock_reduce_authorized(self, db, pin, action: str, pin_username: str = '',
+                                 *, session_skip: bool = True):
         """None when this user may reduce received stock. Otherwise an error dict."""
         role = (self._role or '').lower()
         if role not in ('admin', 'superadmin'):
@@ -3848,7 +3851,7 @@ class APIClient:
                 'error': 'Only an administrator can correct or reverse a supplier delivery.',
                 'status': 403,
             }
-        if role == 'superadmin':
+        if role == 'superadmin' and session_skip:
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
                 f'{action} pin_skipped=session',
@@ -3930,7 +3933,9 @@ class APIClient:
         """Put the received quantities back once. Does not create a second receipt."""
         db = _db()
         try:
-            denied = self._stock_reduce_authorized(db, pin, 'reverse_receipt')
+            denied = self._stock_reduce_authorized(
+                db, pin, 'reverse_receipt', session_skip=False,
+            )
             if denied:
                 return denied
             reason = (reason or '').strip() or 'Delivery reversed'
@@ -4013,6 +4018,15 @@ class APIClient:
             if changed.rowcount != 1:
                 db.rollback()
                 return {'error': 'This delivery was already reversed.', 'status': 409}
+            from desktop.utils.accounting_hooks import reverse_stock_receipt_journal
+            posted = reverse_stock_receipt_journal(
+                db, header['id'], reason=reason,
+                user_id=self._user_id, username=self._username or '',
+                safe=False,
+            )
+            if isinstance(posted, dict) and posted.get('error') and not posted.get('skipped'):
+                db.rollback()
+                return {'error': posted.get('error') or 'Could not reverse the delivery journal.', 'status': 400}
             db.commit()
             _audit(self._user_id, self._username, 'REVERSE_STOCK_RECEIPT', 'inventory',
                    f"receipt={header['receipt_number']} lines={len(saved)}")

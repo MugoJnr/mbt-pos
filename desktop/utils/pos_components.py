@@ -771,6 +771,8 @@ class QuantityControl(QWidget):
 
         self._spin = QDoubleSpinBox()
         self._spin.setObjectName('qtyInput')
+        from PyQt5.QtCore import QLocale
+        self._spin.setLocale(QLocale.c())
         self._spin.setRange(self._minimum, self._maximum)
         self._spin.setDecimals(int(decimals))
         self._spin.setSingleStep(self._step)
@@ -833,13 +835,20 @@ class QuantityControl(QWidget):
         self.valueChanged.emit(self.value())
 
     def _on_spin(self, v):
+        if getattr(self, "_in_spin", False):
+            return
+        self._in_spin = True
+        try:
+            self._apply_spin(v)
+        finally:
+            self._in_spin = False
+
+    def _apply_spin(self, v):
         if self._snap and not self._on_step(float(v)):
             self._spin.blockSignals(True)
             self._spin.setValue(float(getattr(self, "_last_good", self._minimum)))
             self._spin.blockSignals(False)
             self.setToolTip("This product is sold in whole units.")
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Quantity", "This product is sold in whole units.")
             return
         q = self._coerce(v)
         self._last_good = q
