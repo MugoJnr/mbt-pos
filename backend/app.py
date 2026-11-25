@@ -2301,13 +2301,21 @@ def sales_summary():
     figures = compute_financials(db, start, end)
     if not sees_management_figures(g.current_user):
         safe = public_financials(figures, role)
+        cashier_top = db.execute("""
+            SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.id
+            WHERE """ + _sale_day_sql('s') + """ BETWEEN ? AND ?
+              AND s.status IN ('completed','return')""" + own_join + """
+            GROUP BY si.product_name ORDER BY revenue DESC LIMIT 10
+        """, (start, end, *own_params)).fetchall()
         return jsonify({
             'summary': {
                 'total_transactions': figures['completed_sale_count'],
                 'total_revenue': figures['total_sales'],
                 'total_sales': figures['total_sales'],
             },
-            'top_products': [],
+            'top_products': [dict(p) for p in cashier_top],
             'by_payment': [],
             'hourly': [],
             'finance': safe,

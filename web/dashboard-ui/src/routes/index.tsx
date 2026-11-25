@@ -295,8 +295,10 @@ function Dashboard() {
       .filter((p: any) => names.includes(String(p.payment_method || "").toLowerCase().replace(/\s+/g, "")))
       .reduce((sum: number, p: any) => sum + Number(p.total || 0), 0);
   const hasTenderRollup = s.cash_collected != null || s.mpesa_collected != null;
-  const cash = hasTenderRollup ? Number(s.cash_collected || 0) : payOf(["cash"]);
-  const mpesa = hasTenderRollup ? Number(s.mpesa_collected || 0) : payOf(["mpesa", "m-pesa"]);
+  const cashCollected = hasTenderRollup ? Number(s.cash_collected || 0) : payOf(["cash"]);
+  const mpesaCollected = hasTenderRollup ? Number(s.mpesa_collected || 0) : payOf(["mpesa", "m-pesa"]);
+  const cash = finance.cash_on_hand != null ? Number(finance.cash_on_hand) : cashCollected;
+  const mpesa = finance.mpesa_on_hand != null ? Number(finance.mpesa_on_hand) : mpesaCollected;
   const bank = hasTenderRollup
     ? Number(s.card_collected || 0) + Number(s.bank_collected || 0)
     : payOf(["bank", "card", "bank/card"]);
@@ -308,7 +310,8 @@ function Dashboard() {
       : [];
   const topCategories = Array.isArray(cc.top_categories) ? cc.top_categories : [];
   const bak = liveQ.data?.backup || {};
-  const syncPending = Number(liveQ.data?.sync?.pending || 0);
+  const syncFromStatus = Number(syncQ.data?.outbox_pending || 0) + Number(syncQ.data?.notification_queue || 0);
+  const syncPending = Math.max(syncFromStatus, Number(liveQ.data?.sync?.pending || 0));
   const liveOffline = liveQ.isError || (!liveQ.isLoading && !liveQ.data);
   const bakLabel = liveOffline
     ? "OFFLINE"
@@ -451,9 +454,9 @@ function Dashboard() {
           <div className="text-sm text-text2 mt-0.5">
             Welcome back, {name} · Live Dashboard · refreshes every {prefs.refreshIntervalSec}s
             {syncQ.data
-              ? ` · ${Number(syncQ.data.outbox_pending || 0) === 0
+              ? ` · ${syncPending === 0
                 ? "nothing waiting to upload"
-                : `${Number(syncQ.data.outbox_pending || 0)} record${Number(syncQ.data.outbox_pending || 0) === 1 ? "" : "s"} waiting for the portal`}`
+                : `${syncPending} record${syncPending === 1 ? "" : "s"} waiting for the portal`}`
               : ""}
           </div>
         </div>
@@ -636,14 +639,14 @@ function Dashboard() {
             <KpiCard
               label="Cash"
               value={KES(cash)}
-              sub={rangeLabel}
+              sub="Ledger cash after supplier payments and expenses"
               accent="ok"
               icon={<Banknote className="h-5 w-5" />}
             />
             <KpiCard
               label="M-Pesa"
               value={KES(mpesa)}
-              sub={rangeLabel}
+              sub="Ledger M-Pesa after expenses paid from M-Pesa"
               accent="gold"
               icon={<Smartphone className="h-5 w-5" />}
             />

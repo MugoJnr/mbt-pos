@@ -356,6 +356,9 @@ def effective_actions(user: dict) -> set:
         return set()
     extra = {item for item in grants if item in known and item not in NOT_GRANTABLE}
     removed = {item for item in denials if item in known}
+    # A viewer stays read-only. A tab or a grant cannot add a write.
+    if role == ROLE_VIEWER:
+        return base - removed
     return (base - removed) | (extra - removed)
 
 

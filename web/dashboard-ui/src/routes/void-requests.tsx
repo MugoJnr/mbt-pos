@@ -37,7 +37,6 @@ type VoidRequest = {
 function VoidRequestsPage() {
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
-  const sessionSuper = role === "superadmin";
   const canReview = ["manager", "admin", "superadmin"].includes(role);
   const qc = useQueryClient();
   const [status, setStatus] = useState("all");
@@ -94,7 +93,7 @@ function VoidRequestsPage() {
   });
   const decideM = useMutation({
     mutationFn: (action: "approve" | "reject") => {
-      if (action === "approve" && !sessionSuper && !pin.trim()) {
+      if (action === "approve" && !pin.trim()) {
         return Promise.resolve({
           error: "Enter the Super-Admin PIN. The receipt stays completed until the server accepts it.",
         });
@@ -106,7 +105,11 @@ function VoidRequestsPage() {
     },
     onSuccess: async (data) => {
       setMsg(data?.error || data?.message || "Review saved.");
-      if (!data?.error) await refresh();
+      if (!data?.error) {
+        setOpenId(null);
+        setPin("");
+        await refresh();
+      }
     },
   });
 
@@ -212,13 +215,14 @@ function VoidRequestsPage() {
           {canReview && (event?.status === "pending" || event?.status === "escalated") ? (
             <div className="space-y-2">
               <Input aria-label="Review comment" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Review comment" />
-              {sessionSuper ? (
-                <div className="text-xs text-text2">Signed in as Super Admin. This approval does not ask for the PIN again.</div>
-              ) : (
-                <Input type="password" autoComplete="off" aria-label="Super-Admin PIN" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Super-Admin PIN" />
-              )}
+              <Input type="password" autoComplete="off" aria-label="Super-Admin PIN" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Super-Admin PIN" />
+              <div className="text-xs text-text2">Voiding asks for confirmation and the Super Admin PIN. The receipt stays completed until the server accepts it.</div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="primary" onClick={() => decideM.mutate("approve")}>Approve and void</Button>
+                <Button size="sm" variant="primary" onClick={() => {
+                  const receipt = event?.receipt?.receipt_number || event?.receipt_number || "this receipt";
+                  if (!window.confirm(`Void ${receipt}? Stock and the journal entry are reversed.`)) return;
+                  decideM.mutate("approve");
+                }}>Approve and void</Button>
                 <Button size="sm" variant="secondary" onClick={() => returnM.mutate()}>Return for correction</Button>
                 <Button size="sm" variant="ghost" onClick={() => decideM.mutate("reject")}>Reject</Button>
               </div>

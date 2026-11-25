@@ -275,7 +275,8 @@ function Settings() {
     mutationFn: async () => {
       savePrefs(prefs);
       const currency = (form.currency_code || form.currency_symbol || "KES").toUpperCase();
-      const payload: Record<string, string> = {
+      const loaded = settingsQ.data || {};
+      const full: Record<string, string> = {
         config_version: String(version),
         source: "dashboard",
         shop_name: form.shop_name || "",
@@ -351,6 +352,19 @@ function Settings() {
         wheel_receive_qty: form.wheel_receive_qty || WHEEL_DEFAULTS.wheel_receive_qty,
         wheel_dashboard_qty: form.wheel_dashboard_qty || WHEEL_DEFAULTS.wheel_dashboard_qty,
       };
+      const payload: Record<string, string> = {
+        config_version: String(version),
+        source: "dashboard",
+      };
+      Object.entries(full).forEach(([key, value]) => {
+        if (key === "config_version" || key === "source") return;
+        const previous = loaded[key];
+        if (previous == null || previous === "") {
+          return;
+        }
+        if (String(previous) !== String(value)) payload[key] = value;
+      });
+      if (payload.inventory_costing) payload.confirm_inventory_costing = "1";
       const res = await PUT<{ success?: boolean; error?: string; conflict?: boolean; config_version?: number }>(
         "/settings",
         payload,

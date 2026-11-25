@@ -241,7 +241,8 @@ def _actor(api) -> dict:
 
 
 def record_payment(api, supplier_id, amount, *, method="cash", reference="", notes="",
-                   mode="oldest", allocations=None, client_token="", paid_at="") -> dict:
+                   mode="oldest", allocations=None, client_token="", paid_at="",
+                   allow_overpay=False) -> dict:
     from desktop.utils.security import has_permission
     if not has_permission(_actor(api), "supplier.pay"):
         return {"error": "You cannot record a supplier payment.", "status": 403}
@@ -312,6 +313,19 @@ def record_payment(api, supplier_id, amount, *, method="cash", reference="", not
                     continue
                 chosen.append((int(invoice["id"]), part))
                 left = money(left - part)
+        owed = money(sum(money(part) for _receipt_id, part in chosen))
+        extra = money(amount - owed)
+        if extra > 0.009 and not allow_overpay:
+            db.rollback()
+            return {
+                "error": (
+                    f"This payment is {extra:,.2f} more than {supplier['name']} is owed. "
+                    "Confirm it to leave the extra as supplier credit."
+                ),
+                "status": 409,
+                "overpayment": extra,
+                "supplier_name": supplier["name"],
+            }
         who = getattr(api, "_username", "") or getattr(api, "_role", "") or "staff"
         saved = _insert_payment(
             db, supplier_id=supplier_id, amount=amount, method=method,

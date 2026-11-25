@@ -92,15 +92,24 @@ def parse_quantity(raw, unit=None, *, allow_zero=False, maximum=999999, decimal_
     """
     if isinstance(raw, bool) or raw is None:
         raise QuantityError("Enter a valid quantity.")
-    text = str(raw).strip().replace(",", "")
-    if not text or not _TOKEN.fullmatch(text):
-        raise QuantityError("Enter a valid quantity.")
-    if "." in text and len(text.split(".", 1)[1]) > 4:
-        raise QuantityError("Too many decimal places in the quantity.")
-    try:
-        number = Decimal(text)
-    except InvalidOperation:
-        raise QuantityError("Enter a valid quantity.") from None
+    # A spin box hands back a binary float. 0.01 stepped up to 0.5 is not a
+    # typed string, so that noise is rounded to 4 places instead of rejected.
+    if isinstance(raw, (int, float)):
+        try:
+            number = Decimal(str(raw)).quantize(_QTY, rounding=ROUND_HALF_UP)
+        except InvalidOperation:
+            raise QuantityError("Enter a valid quantity.") from None
+        text = format(number, "f")
+    else:
+        text = str(raw).strip().replace(",", "")
+        if not text or not _TOKEN.fullmatch(text):
+            raise QuantityError("Enter a valid quantity.")
+        if "." in text and len(text.split(".", 1)[1]) > 4:
+            raise QuantityError("Too many decimal places in the quantity.")
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            raise QuantityError("Enter a valid quantity.") from None
     if not number.is_finite():
         raise QuantityError("Enter a valid quantity.")
     number = number.quantize(_QTY, rounding=ROUND_HALF_UP)

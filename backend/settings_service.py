@@ -151,6 +151,9 @@ def apply_changes(db, data: dict, *, role: str = '', username: str = '',
     if actor and actor not in ('admin', 'superadmin'):
         return {'success': False, 'error': 'Admin only'}
 
+    confirm_costing = str(incoming.pop('confirm_inventory_costing', '') or '').strip().lower() in (
+        '1', 'true', 'yes', 'on',
+    )
     expected = incoming.pop('config_version', None)
     device = str(incoming.pop('device_id', None) or device_id or '')[:80]
     origin = str(incoming.pop('source', None) or source or 'api')[:40]
@@ -161,6 +164,10 @@ def apply_changes(db, data: dict, *, role: str = '', username: str = '',
     cleaned, error = _prepare(incoming)
     if error:
         return {'success': False, 'error': error}
+    if 'inventory_costing' in cleaned and not confirm_costing:
+        stored_costing = _value(db, 'inventory_costing')
+        if stored_costing is None or str(stored_costing) != cleaned['inventory_costing']:
+            cleaned.pop('inventory_costing', None)
 
     version = current_version(db)
     if expected is not None and str(expected).strip() != '':

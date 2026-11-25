@@ -898,16 +898,25 @@ class DeliveryReceiptDialog(QDialog):
             self.accept()
 
     def _pay(self):
-        from PyQt5.QtWidgets import QInputDialog
-        amount, ok = QInputDialog.getDouble(
-            self, 'Supplier payment', 'Amount to pay on this invoice',
-            float(self.receipt.get('outstanding') or 0), 0, 99999999, 2,
-        )
-        if not ok or amount <= 0:
+        from desktop.dialogs.supplier_payment_dialog import prompt_supplier_payment
+        if str(self.receipt.get('status') or '').lower() == 'reversed':
+            QMessageBox.warning(self, 'Payment', 'A voided delivery cannot be paid.')
             return
+        chosen = prompt_supplier_payment(
+            self,
+            supplier_name=str(self.receipt.get('supplier_name') or 'Supplier'),
+            outstanding=float(self.receipt.get('outstanding') or 0),
+        )
+        if not chosen:
+            return
+        amount = chosen['amount']
         res = self.api.record_supplier_payment(
-            self.receipt.get('supplier_id'), amount, method='cash', mode='manual',
-            allocations=[{'receipt_id': self.receipt.get('id'), 'amount': amount}],
+            self.receipt.get('supplier_id'), amount,
+            method=chosen['method'], reference=chosen['reference'],
+            mode='manual', allow_overpay=bool(chosen.get('allow_overpay')),
+            allocations=[{'receipt_id': self.receipt.get('id'), 'amount': min(
+                amount, float(self.receipt.get('outstanding') or 0),
+            )}],
         )
         if not res or not res.get('success'):
             QMessageBox.warning(self, 'Payment', (res or {}).get('error', 'Could not record the payment.'))

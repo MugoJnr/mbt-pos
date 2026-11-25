@@ -146,17 +146,28 @@ class SupplierDebtPanel(QWidget):
         dialog.exec_()
 
     def _pay(self):
-        receipt_id, supplier_id = self._current()
+        from desktop.dialogs.supplier_payment_dialog import prompt_supplier_payment
+        row = self._table.currentRow()
+        _receipt_id, supplier_id = self._current()
         if not supplier_id:
             QMessageBox.warning(self, 'Payment', 'Select a supplier invoice first.')
             return
-        amount, ok = QInputDialog.getDouble(
-            self, 'Supplier payment', 'Amount to pay. Oldest open invoices are settled first.',
-            0, 0, 99999999, 2,
+        name = self._table.item(row, 1).text() if row >= 0 else 'Supplier'
+        outstanding = 0.0
+        try:
+            outstanding = float(str(self._table.item(row, 4).text()).replace(',', ''))
+        except (TypeError, ValueError, AttributeError):
+            outstanding = 0.0
+        chosen = prompt_supplier_payment(
+            self, supplier_name=name, outstanding=outstanding,
         )
-        if not ok or amount <= 0:
+        if not chosen:
             return
-        res = self.api.record_supplier_payment(supplier_id, amount, method='cash', mode='oldest')
+        res = self.api.record_supplier_payment(
+            supplier_id, chosen['amount'], method=chosen['method'],
+            reference=chosen['reference'], mode='oldest',
+            allow_overpay=bool(chosen.get('allow_overpay')),
+        )
         if not res or not res.get('success'):
             QMessageBox.warning(self, 'Payment', (res or {}).get('error', 'Could not record the payment.'))
             return

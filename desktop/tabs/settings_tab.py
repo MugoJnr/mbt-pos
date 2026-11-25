@@ -999,6 +999,9 @@ class SettingsTab(QWidget):
     def refresh(self):
         self._suspend_dirty = True
         cfg = self.api.get_settings() or {}
+        self._loaded_settings = {
+            key: '' if value is None else str(value) for key, value in cfg.items()
+        }
         try:
             from config.deploy import load_deploy_config
             load_deploy_config()
@@ -1891,10 +1894,32 @@ class SettingsTab(QWidget):
         except Exception:
             pass
 
+    def _changed_settings(self, payload: dict) -> dict:
+        """Send keys the form actually changed. A missing costing value stays put."""
+        loaded = getattr(self, '_loaded_settings', None) or {}
+        changed = {
+            'config_version': payload.get('config_version', getattr(self, '_config_version', 0)),
+            'source': payload.get('source') or 'desktop',
+        }
+        for key, value in payload.items():
+            if key in ('config_version', 'source', 'device_id'):
+                continue
+            previous = loaded.get(key)
+            if previous is None and key == 'inventory_costing':
+                continue
+            if previous is not None and str(previous) == str(value):
+                continue
+            if previous is None:
+                continue
+            changed[key] = value
+        if 'inventory_costing' in changed:
+            changed['confirm_inventory_costing'] = '1'
+        return changed
+
     def _save(self):
         if not self.shop_name.text().strip():
             QMessageBox.warning(self, 'Required', 'Shop name is required.'); return
-        payload = self._common_payload()
+        payload = self._changed_settings(self._common_payload())
         payload['config_version'] = getattr(self, '_config_version', 0)
         payload['source'] = 'desktop'
         res = self.api.update_settings(payload)

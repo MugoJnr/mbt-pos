@@ -190,6 +190,21 @@ def collected_from_sales(sales: Iterable[dict]) -> dict:
     }
 
 
+def refund_method_label(method: str) -> str:
+    """The till's refund list label for the tender that paid the original sale."""
+    key = str(method or "").strip().lower().replace("_", " ")
+    compact = key.replace("-", "").replace(" ", "")
+    if "mpesa" in compact or "mobile" in key:
+        return "M-Pesa"
+    if "card" in key:
+        return "Card"
+    if "bank" in key or "cheque" in key or key == "check":
+        return "Bank Transfer"
+    if "store" in key:
+        return "Store Credit"
+    return "Cash"
+
+
 def credit_issued_from_sales(sales: Iterable[dict]) -> float:
     """Unpaid part of a sale. Missing amount_paid is not treated as credit."""
     issued = 0.0

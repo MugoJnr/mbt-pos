@@ -3508,6 +3508,7 @@ class SalesTab(QWidget):
         prefill = getattr(self, '_last_receipt', '') or ''
         if prompt_return_sale(self.api, self, receipt_prefill=prefill):
             _sfx('ok')
+            self.refresh()
             self.sale_completed.emit()
 
     def _create_debt_invoice(self, sale_id, receipt_number, total, paid, method,

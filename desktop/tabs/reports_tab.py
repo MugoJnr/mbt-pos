@@ -208,7 +208,7 @@ class ReportsTab(QWidget):
             stretch_col=0, row_height=40)
         self._vtbl = make_table(
             ['Date','Sale #','Cashier','Method','Sale Total','Received','Excess',
-             'Handling','Returned','Deposit','Tip','Transport','Mgr','Notes'],
+             'Handling','Change given','Deposit','Tip','Transport','Mgr','Notes'],
             stretch_col=13, row_height=38)
 
         for tbl, specs in [
@@ -233,7 +233,7 @@ class ReportsTab(QWidget):
         self._var_kpis = QWidget()
         vkr = QHBoxLayout(self._var_kpis); vkr.setContentsMargins(0, 0, 0, 0); vkr.setSpacing(10)
         self._vk_extra = KPICard('Extra Received', '—', '', C['warn'])
-        self._vk_ret   = KPICard('Returned',       '—', '', C['info'])
+        self._vk_ret   = KPICard('Returned',       '—', 'product returns', C['info'])
         self._vk_dep   = KPICard('Deposits',       '—', '', C['ok'])
         self._vk_tip   = KPICard('Tips',           '—', '', C['gold'])
         self._vk_tr    = KPICard('Transport',      '—', '', C['gold'])
@@ -351,6 +351,8 @@ class ReportsTab(QWidget):
         s = data.get('summary', {})
         self._k_txn.set_value(str(int(s.get('total_transactions', 0))))
         self._k_rev.set_value(f"{cur} {s.get('total_revenue', 0):,.2f}")
+        if hasattr(self, '_vk_ret'):
+            self._vk_ret.set_value(f"{cur} {float(s.get('returns_total') or 0):,.2f}")
         collected = float(s.get('collected_revenue', s.get('collected_from_sales', 0)) or 0)
         if hasattr(self._k_rev, 'set_sub'):
             self._k_rev.set_sub(f"Collected {cur} {collected:,.2f}")
@@ -391,7 +393,8 @@ class ReportsTab(QWidget):
             self._pay_chart.set_data([
                 {'label': row['method'], 'value': row['collected']}
                 for row in collection_by_method(sales_for_pay)
-                if float(row.get('collected') or 0) > 0.009
+                if row.get('method') != 'Credit issued'
+                and float(row.get('collected') or 0) > 0.009
             ])
             self._pay_card.set_title(f'Money collected by method  ·  {start} → {end}')
         except Exception as e:
@@ -508,7 +511,6 @@ class ReportsTab(QWidget):
             summary = vdata.get('summary') or {}
             if hasattr(self, '_vk_extra'):
                 self._vk_extra.set_value(f"{cur} {summary.get('extra_received', 0):,.2f}")
-                self._vk_ret.set_value(f"{cur} {summary.get('returned', 0):,.2f}")
                 self._vk_dep.set_value(
                     f"{cur} {summary.get('deposits', 0) + summary.get('advances', 0):,.2f}")
                 self._vk_tip.set_value(f"{cur} {summary.get('tips', 0):,.2f}")

@@ -1,0 +1,77 @@
+# Build MBT_POS_Setup.exe for this repair branch and keep it as a
+# workflow artifact. It does not publish a release, tag, or version.
+
+name: PR Windows installer artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/audit-defect-repairs-cec0
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6.0,<7.0" pyserial
+
+      - name: Download cloudflared
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "tools\cloudflared.exe"
+          if (-not (Test-Path "tools\cloudflared.exe")) { throw "cloudflared download failed" }
+
+      - name: Build web dashboards
+        shell: cmd
+        run: build_web.bat
+
+      - name: Confirm secrets are not bundled
+        run: |
+          python -c "from config.deploy import verify_installer_bundle; ok,msg=verify_installer_bundle(); print(msg); raise SystemExit(0 if ok else 1)"
+
+      - name: Build MBT_POS.exe
+        run: python -m PyInstaller --noconfirm --clean mbt_pos.spec
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Build MBT_POS_Setup.exe
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $makensis) { throw "makensis.exe was not installed" }
+          & $makensis installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed with exit $LASTEXITCODE" }
+          $setup = Get-Item "dist\MBT_POS_Setup.exe"
+          if ($setup.Length -lt 50000000) { throw "installer is too small ($($setup.Length) bytes)" }
+          Write-Host "installer bytes=$($setup.Length)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MBT_POS_Setup
+          path: dist/MBT_POS_Setup.exe
+          if-no-files-found: error
+          retention-days: 14

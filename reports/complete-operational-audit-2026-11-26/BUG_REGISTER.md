@@ -74,6 +74,23 @@ These were seen on the installed v3.1.93 till (Wine on Linux) and fixed on the s
 | N-5 | Medium | **Fixed** | The POS quantity box uses a dot as the decimal separator, and a whole-unit rejection no longer opens a dialog from inside the value-changed handler (that re-entry is a Wine page-fault). Typing 2.5 is kept. |
 | N-minor | Low | **Fixed** | Security already says "6 to 8 digits" (B-002). The Users screen labels the receipts tab "Receipts" instead of `receipts`. New supplier from Receive stock has a phone field. The zero-cost badge reads "Zero buying price" and is wide enough not to end in "ne…". Starting a shift on the till asks for the opening float and stores it on the till session. Automated tests skip that prompt. |
 
+## Second shop-day batch
+
+Seen on the same installed v3.1.93 build. B-001, B-003, B-004, B-007, and B-010 were already repaired on this branch.
+
+| ID | Sev | Status | What changed |
+|---|---|---|---|
+| N-return | High | **Fixed** | The return dialog starts on the original tender, so an M-Pesa receipt refunds to M-Pesa (1010), not Cash (1000). |
+| N-8 | Medium | **Fixed** | A quantity from the spin-box Up key is rounded to 4 places. Stepping to 0.5 is no longer "Too many decimal places". A typed value with more than 4 places is still refused. |
+| N-stock | Medium | **Fixed** | A completed return reloads the POS product tiles, so the stock number matches the database. |
+| N-void-web | High | **Fixed** | Web Approve and void asks for confirmation and a Super Admin PIN, including for a signed-in Super Admin. The receipt modal closes and the list refreshes after the server accepts it. |
+| N-supplier | High | **Fixed** | A payment is not applied to a reversed goods receipt. The payment form shows the payee, method, and reference. An amount above what that supplier is owed is refused until it is confirmed as supplier credit. Supplier invoices in the period total skip voided receipts. |
+| N-viewer | High | **Fixed** | A viewer account stays read-only on the server. Extra grants cannot add expense or sale writes. The New Sale button stays off a viewer. A cashier can still record an expense; that remains Eugene's open decision. |
+| N-7 | Medium | **Fixed** | The cashier dashboard Top Products list is the products sold that day, not an empty "No sales" panel. |
+| N-reports | High | **Fixed** | Till Reports "Returned" is product-return money, not change given. Sale value is net of returns. Payment-mix percents are shares of the chart and add up to 100. |
+| N-settings | High | **Fixed** | Settings save writes only keys that changed, and it does not replace FIFO with weighted average unless that control was changed on purpose. Each saved key gets a settings history row. |
+| N-web | High | **Fixed** | Paid sales is money taken on the sale, after refunds, and does not add later repayments. Dashboard, Reports, and Finance gross profit use the same sales-register figure. The Cash and M-Pesa cards are the ledger balances, so supplier payments and M-Pesa expenses reduce them. A local backup shows OK instead of UNKNOWN. The sync line and the sync badge use the same waiting count. |
+
 ## Screen observations
 
 | ID | Status | Note |
@@ -87,7 +104,7 @@ These were seen on the installed v3.1.93 till (Wine on Linux) and fixed on the s
 | S-07 | Not fixed | Developer recovery on the login screen was left. Removing it is a product decision. |
 | S-08 | Not fixed | Report notification timing was not changed. |
 | S-09 | Not fixed | Receipt subtotal-before-line-discount layout was not changed. |
-| S-10 | Not fixed | POS tile refresh after a refund was not changed. |
+| S-10 | **Fixed** | A completed return reloads the POS product tiles. |
 | S-11 | **Fixed** | Refund numbers are `RET-YYYYMMDD-####`. |
 | S-12 | Not fixed | Supplier dropdown empty-state copy was not changed. |
 | S-13 | Not fixed | Duplicate settings rows were not removed. |

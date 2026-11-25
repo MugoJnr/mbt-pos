@@ -4237,6 +4237,7 @@ def supplier_payment_http():
             paid_at=str(data.get('paid_at') or ''),
             offline=bool(data.get('offline')),
             backdate_reason=str(data.get('backdate_reason') or ''),
+            allow_overpay=bool(data.get('allow_overpay') or data.get('confirm_overpay')),
         )
         if result.get('pending_approval'):
             return jsonify(result), 202
@@ -5467,7 +5468,7 @@ def cc_summary():
 
         top_products = []
         top_categories = []
-        if sees_finance and (_user_can('reports', user) or _user_can('sales', user)):
+        if _user_can('reports', user) or _user_can('sales', user) or _user_can('dashboard', user):
             top_products = _trs(db.execute(f"""
                 SELECT si.product_name as name, SUM(si.quantity) as qty,
                        COALESCE(SUM(si.total),0) as revenue
@@ -6103,6 +6104,22 @@ def live_monitor():
         # Prefer last successful backup for the Live KPI when the newest row is a
         # failed Program-Files write (common on installed builds before AppData fix).
         bak_payload = last_bak or {'status': 'unknown'}
+        if str((bak_payload or {}).get('status') or '').lower() in ('', 'unknown'):
+            local_at = None
+            try:
+                local_at = db.execute(
+                    "SELECT value FROM system_settings WHERE key='last_local_backup_at'"
+                ).fetchone()
+            except Exception:
+                local_at = None
+            stamp = local_at[0] if local_at else ''
+            if stamp:
+                bak_payload = {
+                    'status': 'ok',
+                    'created_at': stamp,
+                    'kind': 'local',
+                    'detail': 'Local shop backup',
+                }
         if (
             isinstance(bak_payload, dict)
             and str(bak_payload.get('status') or '').lower() == 'error'
@@ -6620,15 +6637,19 @@ def _query_report_bundle(db, filt):
     summary['credit_issued'] = credit_issued_from_sales(sales)
     summary['outstanding_on_sales'] = 0.0
     summary['sales_value'] = summary['total_revenue']
-    if _user_can('reports'):
-        from desktop.utils.stock_layers import period_profit
-        detail = period_profit(db, filt['start'], filt['end'])
-        summary['profit'] = detail['profit']
-        summary['cogs'] = detail['cogs']
-        summary['uncosted_revenue'] = detail['uncosted_revenue']
-        summary['uncosted_lines'] = detail['uncosted_lines']
-        summary['uncosted_units'] = detail.get('uncosted_units', 0)
-        summary['uncosted_products'] = detail.get('uncosted_products', 0)
+    if _user_can('reports') and not filt.get('category') and not filt.get('customer'):
+        from desktop.utils.financials import compute_financials
+        figures = compute_financials(db, filt['start'], filt['end'])
+        summary['profit'] = figures['gross_profit']
+        summary['gross_profit'] = figures['gross_profit']
+        summary['cogs'] = figures['cogs']
+        summary['paid_sales'] = figures['paid_sales']
+        summary['total_revenue'] = figures['total_sales']
+        summary['sales_value'] = figures['total_sales']
+        summary['uncosted_revenue'] = figures['uncosted_sales']
+        summary['uncosted_lines'] = figures['uncosted_lines']
+        summary['uncosted_units'] = figures.get('uncosted_units', 0)
+        summary['uncosted_products'] = figures.get('uncosted_products', 0)
 
     # Rebuild aggregates from filtered sales ids when category/customer filters applied
     sale_ids = [s['id'] for s in sales]

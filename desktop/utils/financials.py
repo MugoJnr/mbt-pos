@@ -100,8 +100,11 @@ def compute_financials(db, start: str, end: str) -> dict:
         kept = money(collected_from_sales([row]).get("collected"))
         paid = money(min(value, kept + later_by_sale.get(int(row["id"]), 0.0)))
         sale_paid[int(row["id"])] = paid
-        paid_sales = money(paid_sales + paid)
-        new_credit = money(new_credit + max(0.0, value - paid))
+        # Paid sales is the money taken on the sale. A later repayment is
+        # debt_repayments, not another sale.
+        opening = money(min(value, kept))
+        paid_sales = money(paid_sales + opening)
+        new_credit = money(new_credit + max(0.0, value - opening))
     for row in sales:
         if (row.get("status") or "") != "return":
             continue
@@ -127,6 +130,8 @@ def compute_financials(db, start: str, end: str) -> dict:
     outstanding = _outstanding(db)
     inventory = _inventory(db)
     supplier = _supplier_figures(db, start, end)
+    cash_on_hand = _ledger_balance(db, "1000")
+    mpesa_on_hand = _ledger_balance(db, "1010")
     return {
         "period_start": start,
         "period_end": end,
@@ -160,6 +165,8 @@ def compute_financials(db, start: str, end: str) -> dict:
         "supplier_overdue": supplier["overdue_amount"],
         "supplier_invoiced": supplier["invoiced_period"],
         "supplier_paid": supplier["paid_period"],
+        "cash_on_hand": cash_on_hand,
+        "mpesa_on_hand": mpesa_on_hand,
         "inventory_cost_value": inventory["cost_value"],
         "inventory_layered_quantity": inventory["layered_quantity"],
         "inventory_unlayered_units": inventory["unlayered_units"],
@@ -171,7 +178,7 @@ def compute_financials(db, start: str, end: str) -> dict:
         "completed_sale_count": len(completed_ids),
         "definitions": {
             "total_sales": "Valid sales in the period, including credit. Repayments are not sales.",
-            "paid_sales": "Amount paid against those sales, including later repayments, after refunds.",
+            "paid_sales": "Money taken on those sales, after refunds. A later repayment is not a sale.",
             "total_collected": "Money received in the period, including repayments of older debts.",
             "outstanding_debt": "Current unpaid balances. This is not rebuilt for a past date.",
             "gross_profit": "Net sales minus the cost recorded when the goods were sold.",
@@ -297,6 +304,22 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         "uncosted_products": len(products),
         "note": note,
     }
+
+
+def _ledger_balance(db, code: str) -> float:
+    """Posted debits minus credits. Supplier payments and expenses reduce this."""
+    try:
+        row = db.execute(
+            """SELECT COALESCE(SUM(jl.debit),0) - COALESCE(SUM(jl.credit),0)
+               FROM journal_lines jl
+               JOIN journal_entries je ON je.id=jl.journal_id
+               WHERE jl.account_code=? AND je.status='posted'
+                 AND je.deleted_at IS NULL""",
+            (code,),
+        ).fetchone()
+    except Exception:
+        return 0.0
+    return money(row[0] if row else 0)
 
 
 def _expenses(db, start: str, end: str):

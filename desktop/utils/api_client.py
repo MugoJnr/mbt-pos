@@ -1183,6 +1183,16 @@ def _sale_day_expr(alias: str = '') -> str:
     return sale_day_sql(alias)
 
 
+def _returns_total(db, start: str, end: str) -> float:
+    """Money refunded on product returns in the period. Change given is not a return."""
+    row = db.execute(
+        f"""SELECT COALESCE(SUM(-total),0) FROM sales
+            WHERE {_sale_day_expr()} BETWEEN ? AND ? AND status='return'""",
+        (start, end),
+    ).fetchone()
+    return round(float(row[0] or 0), 2)
+
+
 def _next_receipt(conn=None, business_day=None) -> str:
     """Generate the next receipt number for a business day (default: shop today).
 
@@ -3737,7 +3747,7 @@ class APIClient:
     def record_supplier_payment(self, supplier_id, amount, *, method='cash', reference='',
                                 notes='', mode='oldest', allocations=None,
                                 client_token='', paid_at='', offline=False,
-                                backdate_reason='') -> dict:
+                                backdate_reason='', allow_overpay=False) -> dict:
         from desktop.utils.shop_time import shop_today
         day = (str(paid_at or '').strip()[:10] or shop_today().isoformat())
         held = self._maybe_hold_backdate('supplier_payment', day, {
@@ -3746,6 +3756,7 @@ class APIClient:
             'method': method,
             'reference': reference,
             'notes': notes,
+            'allow_overpay': bool(allow_overpay),
             'mode': mode,
             'allocations': allocations,
             'client_token': client_token,
@@ -3759,7 +3770,7 @@ class APIClient:
         return record_payment(
             self, supplier_id, amount, method=method, reference=reference,
             notes=notes, mode=mode, allocations=allocations,
-            client_token=client_token, paid_at=day,
+            client_token=client_token, paid_at=day, allow_overpay=bool(allow_overpay),
         )
 
     def supplier_payable_summary(self, start=None, end=None) -> dict:
@@ -4842,7 +4853,9 @@ class APIClient:
                     preview_type in ('void', 'stock_adjust')
                     and preview_status in ('pending', 'escalated', 'executing')
                 ):
-                    pin_error = self._approval_pin_error(db, pin, int(approval_id))
+                    pin_error = self._approval_pin_error(
+                        db, pin, int(approval_id), force=preview_type == 'void',
+                    )
                     if pin_error:
                         db.commit()
                         return pin_error
@@ -5214,8 +5227,9 @@ class APIClient:
                 return True
         return datetime.now() > deadline
 
-    def _approval_pin_error(self, db, pin: str, approval_id: int, pin_username: str = ''):
-        if (self._role or '').lower() == 'superadmin':
+    def _approval_pin_error(self, db, pin: str, approval_id: int, pin_username: str = '',
+                            force: bool = False):
+        if (self._role or '').lower() == 'superadmin' and not force:
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
                 f'approval id={approval_id} pin_skipped=session',
@@ -8158,6 +8172,7 @@ class APIClient:
             summary['collected_revenue'] = figures['total_collected']
             summary['total_sales'] = figures['total_sales']
             summary['total_revenue'] = figures['total_sales']
+            summary['returns_total'] = _returns_total(db, start, end)
             summary['paid_sales'] = figures['paid_sales']
             summary['new_credit'] = figures['new_credit']
             summary['debt_repayments'] = figures['debt_repayments']
@@ -8193,13 +8208,23 @@ class APIClient:
                         'status': 403,
                     }
                 safe = public_financials(figures, 'cashier')
+                top_products = _rows(db.execute(f"""
+                    SELECT si.product_name,
+                           SUM(si.quantity) as qty_sold,
+                           SUM(si.total)    as revenue,
+                           COUNT(si.id)     as transactions
+                    FROM sale_items si JOIN sales s ON si.sale_id=s.id
+                    WHERE {_sale_day_expr('s')} BETWEEN ? AND ?
+                      AND s.status IN ('completed','return')
+                    GROUP BY si.product_name ORDER BY revenue DESC LIMIT 20
+                """, (start, end)))
                 return {
                     'summary': {
                         'total_transactions': figures['completed_sale_count'],
                         'total_revenue': figures['total_sales'],
                         'total_sales': figures['total_sales'],
                     },
-                    'top_products': [],
+                    'top_products': top_products,
                     'by_payment': [],
                     'finance': safe,
                 }

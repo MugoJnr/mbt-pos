@@ -134,6 +134,11 @@ class ReturnSaleDialog(QDialog):
             return
         self._sale = res['sale']
         self._items = res['items']
+        from desktop.utils.payment_tenders import refund_method_label
+        label = refund_method_label(self._sale.get('payment_method'))
+        method_index = self._method.findText(label)
+        if method_index >= 0:
+            self._method.setCurrentIndex(method_index)
         self._meta.setText(
             f"Receipt {self._sale.get('receipt_number')} · "
             f"{self._sale.get('payment_method')} · "

@@ -166,7 +166,11 @@ class SupplierPayableTests(unittest.TestCase):
         self.assertEqual(self._balance(ids[2])["payment_status"], "PAID")
         self.assertEqual(self._balance(ids[1])["outstanding"], 5000)
 
-        over = self.api.record_supplier_payment(other, 7000, method="cash", mode="oldest")
+        blocked = self.api.record_supplier_payment(other, 7000, method="cash", mode="oldest")
+        self.assertEqual(blocked.get("status"), 409)
+        over = self.api.record_supplier_payment(
+            other, 7000, method="cash", mode="oldest", allow_overpay=True,
+        )
         self.assertTrue(over.get("success"), over)
         self.assertEqual(over["unapplied"], 2000)
         self.assertEqual(self.api.supplier_statement(other)["outstanding"], 0)
