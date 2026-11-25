@@ -27,9 +27,12 @@ class MixedCreditTenderTests(unittest.TestCase):
         ac._SCHEMA_READY = False
         self.ac = ac
         db = ac._db()
+        from roles import default_tab_permissions
         db.execute(
-            "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
-            ("cashier", ac._hash_pw("cashier-pass"), "cashier", "Cashier"),
+            "INSERT INTO users (username, password_hash, role, full_name, is_active, tab_permissions) "
+            "VALUES (?,?,?,?,1,?)",
+            ("cashier", ac._hash_pw("cashier-pass"), "cashier", "Cashier",
+             __import__("json").dumps(default_tab_permissions("cashier"))),
         )
         db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, is_active) VALUES (?,?,?,?,?,1)",

@@ -364,6 +364,79 @@ _DEBT_METHODS = {
 }
 
 
+_ELECTRONIC_METHODS = {
+    'm-pesa', 'mpesa', 'm pesa', 'mobile money', 'card',
+    'bank', 'bank transfer', 'bank payment', 'cheque',
+    'airtel money', 'airtel',
+}
+
+
+def normalize_sale_payment(data: Optional[dict]) -> dict:
+    """Make stored tenders match the method the cashier chose.
+
+    A single M-Pesa (or card, or bank) sale is electronic money, not cash.
+    A mixed sale that names the amount paid and the electronic part keeps the
+    rest as cash. A part-payment tender list that covers only what was paid
+    leaves the remainder as customer credit when a customer is named.
+    """
+    data = dict(data or {})
+    method = str(data.get('payment_method') or 'cash').strip().lower()
+    try:
+        total = _r2(data.get('total'))
+        paid = _r2(data.get('amount_paid'))
+        change = _r2(data.get('change_amount'))
+        credit_applied = _r2(data.get('credit_applied'))
+        cash_paid = _r2(data.get('cash_paid'))
+        electronic_paid = _r2(data.get('electronic_paid'))
+    except (TypeError, ValueError):
+        return data
+    tenders = data.get('payment_tenders')
+    if isinstance(tenders, str) and tenders.strip():
+        try:
+            tenders = json.loads(tenders)
+        except (TypeError, ValueError):
+            tenders = None
+    has_tenders = isinstance(tenders, list) and bool(tenders)
+    if method in _ELECTRONIC_METHODS and electronic_paid <= 0.009 and not has_tenders:
+        kept = _r2(paid - change) if paid > total + 0.02 else paid
+        if kept <= 0.009:
+            kept = total
+        data['electronic_paid'] = kept
+        data['cash_paid'] = 0.0
+        if not str(data.get('electronic_method') or '').strip():
+            data['electronic_method'] = str(data.get('payment_method') or '').strip()
+        return data
+    if method in ('mixed', 'split') and not has_tenders and cash_paid <= 0.009:
+        kept = _r2(paid - change) if paid > total + 0.02 else paid
+        derived = _r2(kept - electronic_paid - credit_applied)
+        if derived > 0.009:
+            data['cash_paid'] = derived
+        return data
+    if method in _DEBT_METHODS and has_tenders and data.get('customer_id'):
+        confirmed = 0.0
+        credit = 0.0
+        for row in tenders:
+            if not isinstance(row, dict):
+                continue
+            try:
+                amount = _r2(row.get('amount'))
+            except (TypeError, ValueError):
+                continue
+            status = str(row.get('status') or 'confirmed').strip().lower()
+            if is_credit_method(str(row.get('method') or '')) or status == 'outstanding':
+                credit = _r2(credit + amount)
+            elif status not in _UNCONFIRMED:
+                confirmed = _r2(confirmed + amount)
+        gap = _r2(total - confirmed - credit)
+        if gap > 0.02:
+            data['payment_tenders'] = list(tenders) + [{
+                'method': 'Credit',
+                'amount': gap,
+                'status': 'outstanding',
+            }]
+    return data
+
+
 def sale_collection_error(data: Optional[dict]) -> str:
     """Reject a sale that would reduce stock without matching money or a customer debt.
 
@@ -371,7 +444,7 @@ def sale_collection_error(data: Optional[dict]) -> str:
     A credit or part-payment sale may collect less than the total when a customer
     is named. Cash change is allowed. A list of tenders must add up to the total.
     """
-    data = data or {}
+    data = normalize_sale_payment(data)
     try:
         total = _r2(data.get('total'))
         paid = _r2(data.get('amount_paid'))
@@ -424,7 +497,7 @@ def sale_collection_error(data: Optional[dict]) -> str:
             f'Payments {covered:.2f} do not cover the sale total {total:.2f}. '
             'The sale was not saved.'
         )
-    if covered > total + 0.02:
+    if covered > total + 0.02 and not (data.get('variance') or data.get('variance_handling')):
         return 'Amount collected is more than the sale total.'
     return ''
 

@@ -147,6 +147,8 @@ class AccountFinanceGapTests(unittest.TestCase):
             db.close()
         self.assertEqual(float(stock), 10)
         self.api._role = 'superadmin'
+        self.api._user_id = 2
+        self.api._username = 'owner'
         approved = self.api.review_stock_adjustment(asked['id'], 'approved', 'ok', pin='')
         self.assertTrue(approved.get('success'), approved)
         db = self.ac._db()

@@ -140,7 +140,7 @@ def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None, bus
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (product_id, row[1], 'STOCKTAKE', old, round(new - old, 4), new,
              ref, (f'Stocktake {stocktake_id}. {backdate_reason}'.strip() if backdate_reason else f'Stocktake {stocktake_id}'),
-             None, (username or 'stocktake')[:40]),
+             user_id, (username or 'stocktake')[:40]),
         )
         if business_date:
             cols = {item[1] for item in db.execute("PRAGMA table_info(stock_movements)")}
@@ -164,6 +164,19 @@ def apply_stocktake(db, stocktake_id: int, username: str = '', user_id=None, bus
         if layer.get('error'):
             db.rollback()
             return {'error': layer['error'], 'status': 400}
+        cost_amount = round(float(layer.get('cogs') or 0), 2)
+        if cost_amount <= 0.009:
+            cost_amount = round(abs(delta) * float(row[3] or 0), 2)
+        if cost_amount > 0.009:
+            from desktop.utils.accounting_hooks import post_stocktake_journal
+            posted = post_stocktake_journal(
+                db, product_id=product_id, product_name=row[1],
+                qty_change=delta, amount=cost_amount, stocktake_id=stocktake_id,
+                user_id=user_id, username=username or '', safe=False,
+            )
+            if isinstance(posted, dict) and posted.get('error') and not posted.get('skipped'):
+                db.rollback()
+                return {'error': posted.get('error') or 'Could not record the stocktake.', 'status': 400}
         changed.append(product_id)
         described.append(f"pid={product_id} stock {old}->{new}")
     db.execute(

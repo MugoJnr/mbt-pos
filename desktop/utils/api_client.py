@@ -123,7 +123,7 @@ SECRET_KEY = get_jwt_secret()
 
 # Failed-login lockout (memory cache + system_settings persistence).
 LOGIN_MAX_FAILED_ATTEMPTS = 5
-LOGIN_LOCKOUT_SECONDS = 60
+LOGIN_LOCKOUT_SECONDS = 15 * 60
 RECOVERY_LOCKOUT_SECONDS = 15 * 60
 LOGIN_LOCKOUT_SETTING_KEY = 'login_lockout_state'
 _LOGIN_ATTEMPTS: dict[str, dict] = {}
@@ -1240,6 +1240,12 @@ def _audit(user_id, username, action, module='system', details='', conn=None, so
         if ip_address and 'ip_address' in cols:
             fields.append('ip_address')
             values.append(ip_address)
+        from desktop.utils.shop_time import shop_now
+        stamp = shop_now().replace(tzinfo=None).isoformat(timespec='seconds')
+        for column in ('timestamp', 'created_at'):
+            if column in cols:
+                fields.append(column)
+                values.append(stamp)
         placeholders = ','.join('?' for _ in fields)
         db.execute(
             f"INSERT INTO audit_log ({','.join(fields)}) VALUES ({placeholders})",
@@ -1435,6 +1441,15 @@ class APIClient:
             ))
             if not user or not _check_pw(password, user['password_hash']):
                 fails = int(state.get('fails') or 0) + 1
+                _audit(
+                    user['id'] if user else None,
+                    uname or 'unknown',
+                    'LOGIN_LOCKOUT' if fails >= LOGIN_MAX_FAILED_ATTEMPTS else 'LOGIN_FAIL',
+                    'auth',
+                    f'invalid credentials fails={fails}',
+                    conn=db,
+                    source='till',
+                )
                 if fails >= LOGIN_MAX_FAILED_ATTEMPTS:
                     _LOGIN_ATTEMPTS[key] = {
                         'fails': 0,
@@ -1551,34 +1566,73 @@ class APIClient:
         finally:
             db.close()
 
+    def _pin_authoriser_name(self, pin_username: str = '') -> str:
+        """Whose PIN is being offered. A signed-in Super Admin is that person."""
+        name = str(pin_username or getattr(self, '_authoriser_username', '') or '').strip()
+        if not name and (self._role or '').lower() == 'superadmin':
+            name = str(self._username or '').strip()
+        return name
+
     def change_superadmin_pin(self, current_pin: str, new_pin: str, confirm_pin: str) -> dict:
-        """Set or change the shop Super-Admin PIN. Superadmin only."""
+        """Set this Super Admin's PIN. Verification reads the same per-user hash."""
         if (self._role or '').lower() != 'superadmin':
             return {'error': 'Only the superadmin can change the Super-Admin PIN.', 'status': 403}
         new_pin = '' if new_pin is None else str(new_pin).strip()
         confirm_pin = '' if confirm_pin is None else str(confirm_pin).strip()
         current_pin = '' if current_pin is None else str(current_pin).strip()
-        if len(new_pin) < 6 or new_pin != confirm_pin:
-            return {'error': 'Enter a new PIN of at least 6 characters and confirm it.'}
-        if not new_pin.isdigit():
-            return {'error': 'The Super-Admin PIN must be digits only.'}
-        from desktop.utils.security import _pin_hash, set_superadmin_pin
-        cfg = self.get_settings() or {}
-        stored = str(cfg.get('superadmin_pin_hash') or '')
-        if stored:
-            blocked, retry_after = _pin_failures_blocked(self._user_id)
-            if blocked:
-                return {
-                    'error': 'Too many PIN attempts. Wait and try again.',
-                    'status': 429,
-                    'retry_after': retry_after,
-                }
-            if not current_pin or _pin_hash(current_pin) != stored:
+        if not new_pin.isdigit() or not 6 <= len(new_pin) <= 8 or new_pin != confirm_pin:
+            return {'error': 'Enter a new PIN of 6 to 8 digits and confirm it.'}
+        from desktop.utils.security import set_superadmin_pin
+        from desktop.utils.superadmin_pin import (
+            ensure_pin_columns, set_superadmin_user_pin, verify_superadmin_user_pin,
+        )
+        db = _db()
+        denied = None
+        try:
+            ensure_pin_columns(db)
+            existing = db.execute(
+                "SELECT pin_hash FROM users WHERE id=?", (self._user_id,),
+            ).fetchone()
+            has_personal = bool(existing and (existing['pin_hash'] if hasattr(existing, 'keys') else existing[0]))
+            legacy = db.execute(
+                "SELECT value FROM system_settings WHERE key='superadmin_pin_hash'"
+            ).fetchone()
+            legacy_hash = ''
+            if legacy is not None:
+                legacy_hash = str((legacy['value'] if hasattr(legacy, 'keys') else legacy[0]) or '')
+            if has_personal or legacy_hash:
+                blocked, retry_after = _pin_failures_blocked(self._user_id)
+                if blocked:
+                    denied = {
+                        'error': 'Too many PIN attempts. Wait and try again.',
+                        'status': 429,
+                        'retry_after': retry_after,
+                    }
+                else:
+                    checked = verify_superadmin_user_pin(db, self._username or '', current_pin)
+                    if not checked.get('success'):
+                        db.commit()
+                        denied = {
+                            'error': checked.get('error') or 'Current Super-Admin PIN is incorrect.',
+                            'status': 403,
+                            '_record_failure': True,
+                        }
+                    else:
+                        _pin_failures_clear(self._user_id)
+            if denied is None:
+                result = set_superadmin_user_pin(db, self._user_id, new_pin)
+                if result.get('error'):
+                    db.rollback()
+                    denied = result
+                else:
+                    db.commit()
+        finally:
+            db.close()
+        if denied:
+            if denied.pop('_record_failure', False):
                 _pin_failure_record(self._user_id)
-                return {'error': 'Current Super-Admin PIN is incorrect.', 'status': 403}
-            _pin_failures_clear(self._user_id)
-        if not set_superadmin_pin(new_pin, self):
-            return {'error': 'Could not save the Super-Admin PIN.'}
+            return denied
+        set_superadmin_pin(new_pin, self)
         _audit(self._user_id, self._username, 'SUPERADMIN_PIN_CHANGED', 'security', 'pin updated')
         return {'success': True}
 
@@ -2532,6 +2586,16 @@ class APIClient:
                     if layer.get('error'):
                         db.rollback()
                         return {'error': layer['error']}
+                    from desktop.utils.accounting_hooks import post_opening_inventory_journal
+                    posted = post_opening_inventory_journal(
+                        db, product_id=pid, product_name=name,
+                        quantity=initial_stock, unit_cost=card_cost,
+                        user_id=self._user_id, username=self._username or 'system',
+                        safe=False,
+                    )
+                    if isinstance(posted, dict) and posted.get('error') and not posted.get('skipped'):
+                        db.rollback()
+                        return {'error': posted.get('error') or 'Could not record opening stock.'}
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_PRODUCT', 'inventory',
                    f"name={name} stock={initial_stock}")
@@ -2913,7 +2977,7 @@ class APIClient:
                         'retry_after': retry_after,
                     }
                 from desktop.utils.superadmin_pin import gate_personal_pin
-                supplied_name = pin_username or getattr(self, '_authoriser_username', '') or ''
+                supplied_name = self._pin_authoriser_name(pin_username)
                 gate = gate_personal_pin(db, '' if pin is None else str(pin), supplied_name)
                 if gate:
                     _audit(
@@ -3800,7 +3864,7 @@ class APIClient:
         from desktop.utils.superadmin_pin import gate_personal_pin
         gate = gate_personal_pin(
             db, '' if pin is None else str(pin),
-            pin_username or getattr(self, '_authoriser_username', '') or '',
+            self._pin_authoriser_name(pin_username),
         )
         if gate:
             return gate
@@ -5154,7 +5218,7 @@ class APIClient:
         from desktop.utils.superadmin_pin import gate_personal_pin
         gate = gate_personal_pin(
             db, '' if pin is None else str(pin),
-            pin_username or getattr(self, '_authoriser_username', '') or '',
+            self._pin_authoriser_name(pin_username),
         )
         if gate:
             try:
@@ -5182,6 +5246,8 @@ class APIClient:
                 refund_method=meta.get('refund_method') or 'cash',
                 client_token=f"approval-{int(approval_id or 0)}",
                 condition=meta.get('condition') or 'sellable',
+                pin=pin,
+                pin_username=self._pin_authoriser_name(),
             )
         if atype == 'void':
             try:
@@ -5193,6 +5259,8 @@ class APIClient:
             outcome = self.void_sale(
                 sale_id, note or meta.get('reason') or 'Approved void',
                 force_with_payments=bool(confirm_credit_payments),
+                pin=pin,
+                pin_username=self._pin_authoriser_name(),
             )
             if outcome.get('error') == 'credit_payments_exist':
                 return {
@@ -5624,8 +5692,12 @@ class APIClient:
             if abs(cash_rounding_adj) > 0.009 and abs(total - original_total) < 0.009:
                 total = round(original_total + cash_rounding_adj, 2)
 
-            from desktop.utils.payment_tenders import allocate_sale, sale_collection_error
-            pay_error = sale_collection_error({**data, 'total': total})
+            from desktop.utils.payment_tenders import (
+                allocate_sale, normalize_sale_payment, sale_collection_error,
+            )
+            data = normalize_sale_payment({**data, 'total': total})
+            electronic_paid = round(float(data.get('electronic_paid') or 0), 2)
+            pay_error = sale_collection_error(data)
             if pay_error:
                 db.rollback()
                 return {'error': pay_error}
@@ -6465,7 +6537,7 @@ class APIClient:
                 raise ValueError(layer['error'])
 
     def void_sale(self, sale_id: int, reason: str, *, force_with_payments: bool = False,
-                  pin: str = '') -> dict:
+                  pin: str = '', pin_username: str = '') -> dict:
         """
         Void a completed sale. Manager / admin / superadmin.
         Restores stock for all items. Full audit trail.
@@ -6477,6 +6549,24 @@ class APIClient:
                    'VOID_SALE_DENIED', 'sales',
                    f"sale_id={sale_id} role={self._role}")
             return {'error': 'Insufficient permissions to void sales.'}
+
+        if (self._role or '').lower() in ('admin', 'manager'):
+            pin_db = _db()
+            try:
+                from desktop.utils.superadmin_pin import gate_personal_pin
+                gate = gate_personal_pin(
+                    pin_db, '' if pin is None else str(pin),
+                    self._pin_authoriser_name(pin_username),
+                )
+                if gate:
+                    try:
+                        pin_db.commit()
+                    except sqlite3.Error:
+                        pass
+                    return gate
+                pin_db.commit()
+            finally:
+                pin_db.close()
 
         db = _db()
         try:
@@ -7046,6 +7136,18 @@ class APIClient:
         if not items:
             return {'error': 'Select at least one item to return.'}
         method = (refund_method or 'cash').strip() or 'cash'
+        method_key = method.lower().replace('_', ' ')
+        method = {
+            'cash': 'cash',
+            'm-pesa': 'm-pesa',
+            'mpesa': 'm-pesa',
+            'm pesa': 'm-pesa',
+            'mobile money': 'm-pesa',
+            'card': 'card',
+            'bank': 'bank',
+            'bank transfer': 'bank',
+            'bank payment': 'bank',
+        }.get(method_key, method_key)
         token = (client_token or '').strip()
         norm_items = []
         seen_lines = set()
@@ -7067,13 +7169,15 @@ class APIClient:
         norm_items.sort(key=lambda row: row['sale_item_id'])
         role = (self._role or '').lower()
         authoriser = ''
-        if role not in ('admin', 'superadmin', 'manager'):
+        if role == 'superadmin':
+            authoriser = self._username or 'superadmin'
+        elif role in ('admin', 'manager', 'cashier'):
             if str(pin or '').strip() or str(pin_username or '').strip():
                 pin_db = _db()
                 try:
                     from desktop.utils.superadmin_pin import verify_superadmin_user_pin
                     checked = verify_superadmin_user_pin(
-                        pin_db, pin_username, str(pin or ''),
+                        pin_db, self._pin_authoriser_name(pin_username), str(pin or ''),
                     )
                     if not checked.get('success'):
                         _audit(
@@ -7096,10 +7200,22 @@ class APIClient:
                     pin_db.commit()
                 finally:
                     pin_db.close()
-            else:
+            elif role == 'cashier':
                 return self._submit_return_request(
                     int(sale_id), norm_items, reason, method, condition,
                 )
+            else:
+                return {
+                    'error': 'A Super Admin PIN is required to refund this sale.',
+                    'status': 403,
+                    'executed': False,
+                }
+        else:
+            return {
+                'error': 'You cannot refund a sale.',
+                'status': 403,
+                'executed': False,
+            }
         from desktop.utils.shop_time import shop_today
         return_day = (business_date or shop_today().isoformat())[:10]
         held = self._maybe_hold_backdate('customer_return', return_day, {
@@ -7189,6 +7305,27 @@ class APIClient:
                     'already': already,
                 })
 
+            lines_net = round(float((db.execute(
+                "SELECT COALESCE(SUM(total),0) FROM sale_items WHERE sale_id=?",
+                (sale_id,),
+            ).fetchone() or [0])[0] or 0), 2)
+            payable = round(float(sale['total'] or 0), 2)
+            factor = (payable / lines_net) if lines_net > 0.009 else 1.0
+            if restock_lines and abs(factor - 1.0) > 0.0000001:
+                refund_total = 0.0
+                returned_before = round(sum(float(rl['total'] or 0) for rl in restock_lines), 2)
+                for rl in restock_lines:
+                    net = round(float(rl['total'] or 0) * factor, 2)
+                    rl['discount'] = round(float(rl['discount'] or 0) + float(rl['total'] or 0) - net, 2)
+                    rl['total'] = net
+                    refund_total = round(refund_total + net, 2)
+                if abs(returned_before - lines_net) < 0.02 and restock_lines:
+                    drift = round(payable - refund_total, 2)
+                    if abs(drift) >= 0.01:
+                        restock_lines[-1]['total'] = round(restock_lines[-1]['total'] + drift, 2)
+                        restock_lines[-1]['discount'] = round(restock_lines[-1]['discount'] - drift, 2)
+                        refund_total = round(refund_total + drift, 2)
+
             if not restock_lines:
                 db.rollback()
                 return {'error': 'No valid return quantities.'}
@@ -7265,7 +7402,12 @@ class APIClient:
                     (new_bal, new_total, 'paid' if new_bal <= 0.009 else 'partial', inv['id']),
                 )
             cash_refund = round(refund_total - debt_applied, 2)
-            ret_rn = f"RET-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{sale_id}"
+            ret_day = datetime.now().strftime('%Y%m%d')
+            ret_seq = db.execute(
+                "SELECT COUNT(*) FROM sales WHERE receipt_number LIKE ?",
+                (f'RET-{ret_day}-%',),
+            ).fetchone()[0]
+            ret_rn = f"RET-{ret_day}-{int(ret_seq) + 1:04d}"
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
@@ -7993,6 +8135,12 @@ class APIClient:
             summary['debt_collected'] = debt_collected
             from desktop.utils.financials import compute_financials, public_financials
             figures = compute_financials(db, start, end)
+            summary['cash_sales_collected'] = figures['cash_collected']
+            summary['cash_collected'] = figures['cash_collected']
+            summary['mpesa_collected'] = figures['mpesa_collected']
+            summary['card_collected'] = figures['card_collected']
+            summary['bank_collected'] = figures['bank_collected']
+            summary['other_collected'] = figures['other_collected']
             summary['collected_revenue'] = figures['total_collected']
             summary['total_sales'] = figures['total_sales']
             summary['total_revenue'] = figures['total_sales']
@@ -10024,7 +10172,7 @@ class APIClient:
             from desktop.utils.superadmin_pin import gate_personal_pin
             gate = gate_personal_pin(
                 db, '' if pin is None else str(pin),
-                getattr(self, '_authoriser_username', '') or '',
+                self._pin_authoriser_name(),
             )
             if gate:
                 return gate
@@ -10724,12 +10872,11 @@ class APIClient:
                     return {'error': layer['error']}
                 known = round(float(layer.get('cogs') or 0), 2)
                 covered = float(layer.get('covered') or 0)
-                if covered > 0:
-                    unit_cost = round(known / covered, 4)
-                    line_total = known
-                else:
-                    unit_cost = 0.0
-                    line_total = 0.0
+                card_cost = round(float(prod['cost_price'] or 0), 4)
+                uncosted_qty = max(0.0, round(qty - covered, 4))
+                extra = round(uncosted_qty * card_cost, 2) if card_cost > 0 else 0.0
+                line_total = round(known + extra, 2)
+                unit_cost = round(line_total / qty, 4) if qty else 0.0
                 opportunity = round(qty * selling, 2)
                 foregone = round(opportunity - line_total, 2)
                 total_cost += line_total

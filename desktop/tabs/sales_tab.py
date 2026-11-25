@@ -3027,7 +3027,14 @@ class SalesTab(QWidget):
                 'cash_rounding_adj': round_adj,
                 'electronic_paid': elec,
                 'electronic_method': elec_method_name if elec > 0.009 else '',
-                'cash_paid':      cash_paid_now if (is_split or elec > 0.009) else paid_now,
+                'cash_paid':      (
+                    0.0 if (
+                        not is_split and not is_part and not is_credit
+                        and str(pay_method or '').strip().lower() not in ('', 'cash', 'part payment', 'mixed', 'credit sale')
+                        and elec <= 0.009
+                    )
+                    else (cash_paid_now if (is_split or elec > 0.009) else paid_now)
+                ),
                 'cash_original':  float(info.get('cash_original') or 0),
                 'cash_rounded':   float(info.get('cash_rounded') or 0),
                 'payment_method': pay_label,

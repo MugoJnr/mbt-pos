@@ -428,8 +428,8 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             [{'product_id': self.pid, 'quantity': 1}],
             client_token='qa-receive-cashier',
         )
-        self.assertTrue(cashier.get('success'), cashier)
-        self.assertEqual(self._stock(), 36)
+        self.assertIn('cannot receive', cashier.get('error', ''))
+        self.assertEqual(self._stock(), 35)
 
         self.api._role = 'viewer'
         denied = self.api.receive_delivery(
@@ -438,7 +438,7 @@ class StockReductionPinPolicyTests(StockAdjustmentWorkflowTests):
             client_token='qa-receive-viewer',
         )
         self.assertIn('error', denied)
-        self.assertEqual(self._stock(), 36)
+        self.assertEqual(self._stock(), 35)
 
     def test_cashier_cannot_add_stock_without_a_pin_prompt_to_bypass(self):
         for role in ('cashier', 'viewer', 'manager', 'admin', ''):

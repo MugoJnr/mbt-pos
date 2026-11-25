@@ -642,15 +642,40 @@ _CONSUMPTION_BOOKS = {
 
 
 def consumption_debit_account(reason: str) -> str:
-    """Staff and shop use stay an operating cost. Damage, expiry, and owner drawings do not."""
+    """Staff and shop use stay an operating cost. Damage, expiry, and owner drawings do not.
+
+    The chart's expiry account is 6300 Inventory Expiry. Wastage and damage
+    stay on 6200 Inventory Shrinkage. There is no separate wastage account.
+    """
     text = (reason or '').lower()
     if any(word in text for word in ('owner', 'drawing', 'personal use')):
         return '3300'
     if 'expir' in text:
         return '6300'
-    if any(word in text for word in ('damage', 'wastage', 'waste', 'spoil', 'broken')):
+    if any(word in text for word in ('damage', 'wastage', 'waste', 'spoil', 'broken', 'shrink')):
         return '6200'
     return '6100'
+
+
+def adjustment_debit_account(reason: str) -> str:
+    """Stock-adjustment write-downs. Internal use, samples, and staff stay on 6100.
+
+    Expiry posts to 6300 (the chart's expiry account). Wastage posts to 6200.
+    Owner consumption posts to 3300. A write-down with no recognised reason
+    stays on 6200 Inventory Shrinkage.
+    """
+    text = (reason or '').lower()
+    if any(word in text for word in ('owner', 'drawing', 'personal')):
+        return '3300'
+    if 'expir' in text:
+        return '6300'
+    if any(word in text for word in ('internal', 'staff', 'sample', 'consumption')):
+        return '6100'
+    if any(word in text for word in ('damage', 'wastage', 'waste', 'spoil', 'broken', 'shrink')):
+        return '6200'
+    if any(word in text for word in ('use', 'used')):
+        return '6100'
+    return '6200'
 
 
 def consumption_books_label(reason: str) -> str:
@@ -741,12 +766,8 @@ def post_stock_adjust_journal(db, *, product_id, product_name, qty_change,
         if existing:
             return {'success': True, 'journal_id': existing['id'], 'idempotent': True}
 
-        reason_l = (reason or '').lower()
         if qty < 0:
-            if 'expir' in reason_l:
-                exp_code = '6300'
-            else:
-                exp_code = '6200'
+            exp_code = adjustment_debit_account(reason)
             lines = [
                 {'account_code': exp_code, 'debit': amount,
                  'memo': f'{product_name}: {reason}'},
@@ -770,6 +791,74 @@ def post_stock_adjust_journal(db, *, product_id, product_name, qty_change,
             source_module='inventory',
             source_id=src_id,
             entry_type='stock_adjust',
+            user_id=user_id,
+            username=username,
+        )
+    return _safe_call(_run, safe=safe)
+
+
+def post_opening_inventory_journal(db, *, product_id, product_name, quantity,
+                                   unit_cost, user_id=None, username='',
+                                   safe=True) -> dict:
+    """Dr Inventory, Cr Opening Balance Equity. Opening stock is not income."""
+    def _run():
+        from desktop.utils.accounting_engine import seed_chart_of_accounts
+        seed_chart_of_accounts(db)
+        amount = D(abs(D(quantity or 0)) * D(unit_cost or 0))
+        if amount <= 0:
+            return {'skipped': True, 'reason': 'zero'}
+        return post_journal(
+            db,
+            [
+                {'account_code': '1200', 'debit': amount,
+                 'memo': f'Opening stock {product_name}'},
+                {'account_code': '3200', 'credit': amount,
+                 'memo': f'Opening balance {product_name}'},
+            ],
+            description=f'Opening stock {product_name}',
+            entry_date=date.today().isoformat(),
+            source_module='inventory',
+            source_id=f'opening:{product_id}',
+            entry_type='opening_stock',
+            user_id=user_id,
+            username=username,
+        )
+    return _safe_call(_run, safe=safe)
+
+
+def post_stocktake_journal(db, *, product_id, product_name, qty_change, amount,
+                           stocktake_id, user_id=None, username='', safe=True) -> dict:
+    """Count variance. A shortage debits 6200. A gain credits 6200."""
+    def _run():
+        from desktop.utils.accounting_engine import seed_chart_of_accounts
+        seed_chart_of_accounts(db)
+        value = D(amount or 0)
+        if value <= 0:
+            return {'skipped': True, 'reason': 'zero'}
+        src_id = f'stocktake:{stocktake_id}:{product_id}'
+        if D(qty_change or 0) < 0:
+            lines = [
+                {'account_code': '6200', 'debit': value,
+                 'memo': f'Stocktake shortage {product_name}'},
+                {'account_code': '1200', 'credit': value,
+                 'memo': f'Inventory count {product_name}'},
+            ]
+            desc = f'Stocktake shortage {product_name}'
+        else:
+            lines = [
+                {'account_code': '1200', 'debit': value,
+                 'memo': f'Stocktake gain {product_name}'},
+                {'account_code': '6200', 'credit': value,
+                 'memo': f'Inventory count {product_name}'},
+            ]
+            desc = f'Stocktake gain {product_name}'
+        return post_journal(
+            db, lines,
+            description=desc,
+            entry_date=date.today().isoformat(),
+            source_module='inventory',
+            source_id=src_id,
+            entry_type='stocktake',
             user_id=user_id,
             username=username,
         )

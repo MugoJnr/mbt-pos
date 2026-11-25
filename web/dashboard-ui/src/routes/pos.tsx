@@ -238,7 +238,10 @@ function POS() {
     if (mpesaProfile) return;
     const rows = mpesaProfilesQ.data?.profiles || [];
     const active = rows.filter((row) => row.status === "active");
-    const chosen = active.find((row) => row.is_default === true || row.is_default === "true" || row.is_default === "1") || active[0];
+    const chosen = active.find((row) => {
+      const flag = row.is_default;
+      return flag === true || String(flag) === "true" || String(flag) === "1";
+    }) || active[0];
     if (chosen?.id) setMpesaProfile(String(chosen.id));
   }, [mpesaProfilesQ.data, mpesaProfile]);
   useEffect(() => {

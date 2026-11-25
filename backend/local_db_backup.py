@@ -29,6 +29,36 @@ _last_error = ''
 _last_at = ''
 
 
+def _record_backup_history(status: str, reason: str, path: str, size: int, detail: str, when: str) -> None:
+    """The web Backup page reads cc_backup_history. Desktop backups must land there too."""
+    try:
+        import sqlite3
+        from mbt_paths import get_db_path
+        db = sqlite3.connect(get_db_path(), timeout=5)
+        try:
+            db.execute(
+                """CREATE TABLE IF NOT EXISTS cc_backup_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    status TEXT NOT NULL,
+                    reason TEXT DEFAULT 'manual',
+                    path TEXT DEFAULT '',
+                    size_bytes INTEGER DEFAULT 0,
+                    detail TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            db.execute(
+                "INSERT INTO cc_backup_history (status, reason, path, size_bytes, detail, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (status, reason or 'manual', path or '', int(size or 0), detail or '', when or None),
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug('backup history was not recorded: %s', exc)
+
+
 def get_local_backup_dir() -> str:
     root = ensure_data_dirs(get_project_root())
     path = os.path.join(root, 'backups')
@@ -67,6 +97,7 @@ def create_local_backup(reason: str = 'manual') -> dict:
             _last_error = ''
             _last_status = f'OK ({reason}) {size / 1024:.0f} KB hash={content_hash}'
             logger.info('Local DB backup saved: %s (%s)', dest, _last_status)
+            _record_backup_history('ok', reason, dest, size, 'Local shop backup', _last_at)
             return {
                 'ok': True,
                 'path': dest,

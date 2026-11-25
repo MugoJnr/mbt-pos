@@ -226,7 +226,7 @@ function Inventory() {
   const canManageSuppliers = actions ? actions.includes("supplier.manage") : role === "admin" || role === "superadmin";
   const canStocktake = role !== "viewer" && (actions ? actions.includes("inventory.view") : role !== "cashier");
   const canOpenRequests = canAdjust || (canReceive && role !== "viewer");
-  const [panel, setPanel] = useState<null | "categories" | "receive" | "batches" | "stocktake" | "adjust" | "requests" | "suppliers">(null);
+  const [panel, setPanel] = useState<null | "categories" | "edit" | "receive" | "batches" | "stocktake" | "adjust" | "requests" | "suppliers">(null);
   const [refreshing, setRefreshing] = useState(false);
   const canBatchPrice = actions
     ? actions.includes("inventory.batch_price")
@@ -1531,7 +1531,6 @@ ${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cel
                       onClick={async () => {
                         const full = row.id ? await GET<StockReceipt>(`/stock-receipts/${row.id}`) : row;
                         setReceipt(full && !("error" in (full as object)) ? full : row);
-                        setPayAmount("");
                       }}
                     >
                       <span className="min-w-0 truncate font-semibold text-text">{row.receipt_number || "Delivery"} · {row.supplier_name || "Supplier"}</span>

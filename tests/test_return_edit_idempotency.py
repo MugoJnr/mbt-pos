@@ -34,6 +34,8 @@ class ReturnAndEditIdempotency(unittest.TestCase):
         db.execute(
             "INSERT INTO users (username, password_hash, role) VALUES ('owner','x:y','superadmin')"
         )
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        set_superadmin_user_pin(db, 1, '135790')
         db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, min_stock) "
             "VALUES ('Widget','W1',100,40,50,1)"
@@ -115,7 +117,7 @@ class ReturnAndEditIdempotency(unittest.TestCase):
             api._username = 'owner'
             results.append(api.return_sale(
                 sale_id, [{'sale_item_id': line_id, 'quantity': 1}], 'once',
-                client_token='ret-race',
+                client_token='ret-race', pin='135790', pin_username='owner',
             ))
 
         threads = [threading.Thread(target=attempt) for _ in range(2)]

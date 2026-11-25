@@ -512,12 +512,31 @@ class ReceiptDetailDialog(QDialog):
         )
 
     def _void_now(self):
-        from PyQt5.QtWidgets import QInputDialog
+        from PyQt5.QtWidgets import QInputDialog, QMessageBox
         reason, ok = QInputDialog.getText(self, "Void receipt", "Reason for voiding this receipt")
         if not ok or len((reason or "").strip()) < 3:
             self._copy_state.setText("Enter a reason before voiding.")
             return
-        result = self.api.void_sale(self._sale_id(), reason.strip())
+        confirm = QMessageBox.question(
+            self, "Void this receipt?",
+            "This voids the sale and puts the stock back. It cannot be undone from this screen.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            self._copy_state.setText("Void cancelled.")
+            return
+        pin = ''
+        pin_username = ''
+        if (getattr(self.api, '_role', '') or '').lower() != 'superadmin':
+            from desktop.utils.security import collect_superadmin_pin
+            pin = collect_superadmin_pin(self.api, self, reason='Void this receipt')
+            if not pin:
+                self._copy_state.setText("A Super Admin PIN is required to void this receipt.")
+                return
+            pin_username = getattr(self.api, '_authoriser_username', '') or ''
+        result = self.api.void_sale(
+            self._sale_id(), reason.strip(), pin=pin, pin_username=pin_username,
+        )
         if result.get("error"):
             self._copy_state.setText(result["error"])
             return

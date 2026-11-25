@@ -237,7 +237,7 @@ def mask_phone(phone: str) -> str:
 
 
 def normalize_code(raw: str) -> str:
-    code = re.sub(r"\s+", "", (raw or "")).upper()
+    code = re.sub(r"[^A-Za-z0-9]", "", (raw or "")).upper()
     if not code:
         return ""
     if not _CODE.fullmatch(code):

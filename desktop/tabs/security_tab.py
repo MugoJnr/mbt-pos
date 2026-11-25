@@ -47,7 +47,7 @@ class SecurityTab(QWidget):
         # Status KPI strip
         kpi = QHBoxLayout(); kpi.setSpacing(12)
         for label, value, tone in (
-            ('PIN Policy', 'Strong', C['ok']),
+            ('PIN Policy', '6 to 8 digits', C['ok']),
             ('Auto-Lock', 'Session', C['info']),
             ('Audit Log', 'Enabled', C['ok']),
         ):

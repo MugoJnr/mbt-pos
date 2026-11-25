@@ -34,8 +34,8 @@ function FinancePage() {
   const [expenseConfirmed, setExpenseConfirmed] = useState(false);
   const [msg, setMsg] = useState("");
   const [journalDesc, setJournalDesc] = useState("");
-  const [debit, setDebit] = useState("6000");
-  const [credit, setCredit] = useState("1000");
+  const [debit, setDebit] = useState("");
+  const [credit, setCredit] = useState("");
   const [journalAmount, setJournalAmount] = useState("");
   const [transferFrom, setTransferFrom] = useState("1000");
   const [transferTo, setTransferTo] = useState("1020");

@@ -772,7 +772,8 @@ def init_db():
         'sale_items': 'sale_item',
         'customers': 'customer',
         'suppliers': 'supplier',
-        'expenses': 'expense',
+        'expense_entries': 'expense',
+        'supplier_payments': 'supplier_payment',
         'purchases': 'purchase',
         'purchase_items': 'purchase_item',
         'employees': 'employee',
@@ -2354,7 +2355,20 @@ def get_settings():
     db = get_db()
     rows = db.execute("SELECT key, value FROM system_settings").fetchall()
     from backend.settings_guard import public_settings
-    return jsonify(public_settings({r['key']: r['value'] for r in rows}))
+    visible = public_settings({r['key']: r['value'] for r in rows})
+    role = str((getattr(g, 'current_user', {}) or {}).get('role') or '').lower()
+    if role in ('cashier', 'viewer'):
+        allow = {
+            'currency_symbol', 'currency', 'shop_name', 'shop_address', 'shop_phone',
+            'shop_email', 'tax_rate', 'tax_enabled', 'receipt_footer', 'receipt_header',
+            'mpesa_business_name', 'mpesa_till', 'mpesa_paybill', 'mpesa_mode',
+            'business_name', 'pin_configured',
+        }
+        visible = {
+            key: value for key, value in visible.items()
+            if key in allow or str(key).startswith('wheel_')
+        }
+    return jsonify(visible)
 
 
 @app.route('/api/settings', methods=['PUT'])

@@ -40,7 +40,7 @@ class ReceiptReturn570(unittest.TestCase):
             )
             self.owner._user_id = int(db.execute("SELECT last_insert_rowid()").fetchone()[0])
         from desktop.utils.superadmin_pin import set_superadmin_user_pin
-        set_superadmin_user_pin(db, self.owner._user_id, "2468")
+        set_superadmin_user_pin(db, self.owner._user_id, "246810")
         db.execute(
             "INSERT INTO users (username, password_hash, role, full_name) VALUES (?,?,?,?)",
             ("qa_brian", "x:y", "cashier", "QA Cashier Brian"),
@@ -173,7 +173,7 @@ class ReceiptReturn570(unittest.TestCase):
             int(created["sale_id"]),
             [{"sale_item_id": by_name["Rice"]["id"], "quantity": 2}],
             "two rice bags were damaged",
-            pin="2468",
+            pin="246810",
             pin_username="admin",
             condition="damaged",
         )

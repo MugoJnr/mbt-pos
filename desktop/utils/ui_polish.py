@@ -565,10 +565,9 @@ def time_greeting(full_name: str) -> Tuple[str, str]:
     raw = (full_name or "there").strip()
     parts = raw.split()
     # Prefer a real given name; skip generic role words
-    skip = {"system", "administrator", "admin", "user", "cashier", "manager"}
-    first = next((p for p in parts if p.lower() not in skip), parts[0] if parts else "there")
-    if first.lower() in skip and len(parts) > 1:
-        first = parts[-1]
+    skip = {"system", "administrator", "admin", "user", "cashier", "manager", "shop", "owner"}
+    named = [p for p in parts if p.lower() not in skip]
+    first = named[0] if named else "there"
     today = date.today()
     headline = f"{hello}, {first}"
     sub = f"{today.strftime('%A, %B %d')}  ·  Here's what's happening today."

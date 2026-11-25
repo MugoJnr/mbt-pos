@@ -22,21 +22,23 @@ def _db():
 class SuperAdminPinTests(unittest.TestCase):
     def test_each_super_admin_pin_is_hashed_and_locks(self):
         db = _db()
-        denied = set_superadmin_user_pin(db, 2, "1234")
+        denied = set_superadmin_user_pin(db, 2, "135790")
         self.assertIn("Super Admin", denied["error"])
-        saved = set_superadmin_user_pin(db, 1, "1234")
+        short = set_superadmin_user_pin(db, 1, "1234")
+        self.assertIn("6 to 8", short["error"])
+        saved = set_superadmin_user_pin(db, 1, "135790")
         self.assertTrue(saved.get("success"))
         stored = db.execute("SELECT pin_hash FROM users WHERE id=1").fetchone()[0]
         self.assertNotEqual(stored, "1234")
         self.assertNotIn("1234", stored)
-        wrong = verify_superadmin_user_pin(db, "edmus", "9999")
+        wrong = verify_superadmin_user_pin(db, "edmus", "999999")
         self.assertIn("not accepted", wrong["error"])
-        ok = verify_superadmin_user_pin(db, "edmus", "1234")
+        ok = verify_superadmin_user_pin(db, "edmus", "135790")
         self.assertEqual(ok["authoriser_id"], 1)
         self.assertNotIn("pin_hash", ok)
         for _ in range(5):
             verify_superadmin_user_pin(db, "edmus", "0000")
-        locked = verify_superadmin_user_pin(db, "edmus", "1234")
+        locked = verify_superadmin_user_pin(db, "edmus", "135790")
         self.assertTrue(locked.get("locked"))
 
     def test_the_old_shop_pin_does_not_approve_a_stock_reduction(self):
@@ -46,8 +48,8 @@ class SuperAdminPinTests(unittest.TestCase):
             "INSERT INTO system_settings VALUES ('superadmin_pin_hash', ?)",
             (_pin_hash("246810"),),
         )
-        set_superadmin_user_pin(db, 1, "1234")
+        set_superadmin_user_pin(db, 1, "135790")
         rejected = gate_personal_pin(db, "246810", "edmus")
         self.assertEqual(rejected["status"], 403)
-        accepted = gate_personal_pin(db, "1234", "edmus")
+        accepted = gate_personal_pin(db, "135790", "edmus")
         self.assertIsNone(accepted)

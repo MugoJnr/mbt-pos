@@ -49,6 +49,20 @@ export function SaleDocumentPanel({
     if (reprint) await load(kind);
   }
 
+  function browserPrint() {
+    const text = String(doc?.text || doc?.title || "");
+    const win = window.open("", "mbt-print", "noopener,noreferrer,width=420,height=720");
+    if (!win) {
+      toast.error("The browser blocked the print window.");
+      return;
+    }
+    const safe = text.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[ch] || ch));
+    win.document.write(`<pre style="font-family:ui-monospace,monospace;white-space:pre-wrap">${safe}</pre>`);
+    win.document.close();
+    win.focus();
+    win.print();
+  }
+
   async function download() {
     if (paymentReceipt) {
       await downloadApi(`/documents/payment.pdf?receipt=${encodeURIComponent(paymentReceipt)}`, `${paymentReceipt}.pdf`);

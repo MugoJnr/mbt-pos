@@ -127,7 +127,7 @@ class QuickCustomerDialog(QDialog):
         br = QHBoxLayout()
         cancel = SecondaryBtn('Cancel', 42)
         cancel.clicked.connect(self.reject)
-        save = PrimaryBtn('Save & Continue', 42)
+        save = PrimaryBtn('Save && Continue', 42)
         save.clicked.connect(self._save)
         br.addWidget(cancel, 1)
         br.addWidget(save, 1)

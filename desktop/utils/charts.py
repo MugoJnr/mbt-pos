@@ -371,6 +371,34 @@ class GoldLineChart(QWidget):
         ]
 
 
+def payment_bar_rows(rows):
+    """Percent of every shown row, including credit, so the bars add up to 100."""
+    active = []
+    for r in (rows or []):
+        val = float(r.get('value') or r.get('total') or 0)
+        if val <= 0.009:
+            continue
+        active.append({
+            'label': r.get('label') or r.get('payment_method') or 'Other',
+            'value': val,
+            'color': r.get('color'),
+        })
+    active.sort(key=lambda x: x['value'], reverse=True)
+    if len(active) > 6:
+        head, tail = active[:6], active[6:]
+        other_val = sum(x['value'] for x in tail)
+        if other_val > 0.009:
+            head.append({'label': 'Other', 'value': other_val, 'color': None})
+        active = head
+    collected_base = sum(x['value'] for x in active) or 0.0
+    out = []
+    for r in active:
+        val = float(r['value'])
+        pct = (val / collected_base * 100.0) if collected_base > 0 else 0.0
+        out.append({'label': r['label'], 'pct': pct, 'value': val, 'color': r.get('color')})
+    return out
+
+
 class PaymentBars(QWidget):
     """Horizontal animated % bars for Cash / M-Pesa / Card."""
 
@@ -392,39 +420,10 @@ class PaymentBars(QWidget):
         self._timer.timeout.connect(self._tick)
 
     def set_data(self, rows):
-        # Percent of active (non-zero) mix only — avoids "Mixed 20%" with one bar
-        active = []
-        for r in (rows or []):
-            val = float(r.get('value') or r.get('total') or 0)
-            if val <= 0.009:
-                continue
-            active.append({
-                'label': r.get('label') or r.get('payment_method') or 'Other',
-                'value': val,
-                'color': r.get('color'),
-            })
-        # Keep the real methods visible. Only fold a long tail into Other.
-        active.sort(key=lambda x: x['value'], reverse=True)
-        if len(active) > 6:
-            head, tail = active[:6], active[6:]
-            other_val = sum(x['value'] for x in tail)
-            if other_val > 0.009:
-                head.append({'label': 'Other', 'value': other_val, 'color': None})
-            active = head
-        collected_base = sum(
-            x['value'] for x in active if x['label'] != 'Credit issued'
-        ) or sum(x['value'] for x in active) or 0.0
-        out = []
         palette = [C['gold'], C['ok'], C['info'], C['warn'], C['err']]
-        for i, r in enumerate(active):
-            val = float(r['value'])
-            pct = (val / collected_base * 100.0) if collected_base > 0 else 0.0
-            out.append({
-                'label': r['label'],
-                'pct': pct,
-                'value': val,
-                'color': r.get('color') or palette[i % len(palette)],
-            })
+        out = payment_bar_rows(rows)
+        for i, row in enumerate(out):
+            row['color'] = row.get('color') or palette[i % len(palette)]
         self._rows = out
         # Offscreen / QA captures: skip animation so % always sum to 100 in screenshots
         skip_anim = (os.environ.get('QT_QPA_PLATFORM') or '').lower() == 'offscreen'

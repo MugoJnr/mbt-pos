@@ -268,15 +268,37 @@ class CloudBackupPanel(QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def _fill_history(self, rows: list):
-        self._backups = rows or []
+        unique = []
+        seen = set()
+        for row in rows or []:
+            digest = str(row.get('content_hash') or row.get('checksum') or '')
+            key = digest or (
+                int(row.get('size_bytes') or 0),
+                str(row.get('created_at') or '')[:16],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        self._backups = unique
         self.table.setRowCount(0)
         for r in self._backups:
             i = self.table.rowCount()
             self.table.insertRow(i)
             size = int(r.get('size_bytes') or 0)
             size_s = f"{size / (1024 * 1024):.2f} MB" if size else '—'
+            shown = str(r.get('created_at') or '')
+            try:
+                from datetime import datetime, timedelta, timezone
+                text = shown.replace('Z', '+00:00')
+                parsed = datetime.fromisoformat(text)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(timezone(timedelta(hours=3)))
+                    shown = parsed.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                shown = shown[:19].replace('T', ' ')
             vals = [
-                str(r.get('created_at') or '')[:19].replace('T', ' '),
+                shown[:19].replace('T', ' '),
                 str(r.get('device_id') or ''),
                 size_s,
                 f"v{r.get('mbt_version') or '?'} / s{r.get('schema_version') or '?'}",

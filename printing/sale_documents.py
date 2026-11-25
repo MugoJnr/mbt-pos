@@ -352,8 +352,8 @@ def _render_lines(doc: dict, width: int) -> list:
     for bit in (doc["business"].get("address"), doc["business"].get("phone"), doc["business"].get("email")):
         if bit:
             lines.extend(_wrapped_center(str(bit), width))
-    if doc.get("logo"):
-        lines.append(center("[logo]", width))
+    if doc.get("logo") and doc.get("logo") not in (True, "logo", "[logo]"):
+        lines.append(center(str(doc.get("logo")), width))
     lines.append(center(doc["title"], width))
     lines.append("=" * width)
     lines.append(_fit("Number:", doc.get("number") or "", width))

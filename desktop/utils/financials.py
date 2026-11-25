@@ -102,6 +102,11 @@ def compute_financials(db, start: str, end: str) -> dict:
         sale_paid[int(row["id"])] = paid
         paid_sales = money(paid_sales + paid)
         new_credit = money(new_credit + max(0.0, value - paid))
+    for row in sales:
+        if (row.get("status") or "") != "return":
+            continue
+        refunded = abs(float(row.get("amount_paid") if row.get("amount_paid") is not None else row.get("total") or 0))
+        paid_sales = money(paid_sales - refunded)
 
     extra = repayment_method_totals(db, start, end)
     repayments = money(sum(extra.values()))
@@ -166,7 +171,7 @@ def compute_financials(db, start: str, end: str) -> dict:
         "completed_sale_count": len(completed_ids),
         "definitions": {
             "total_sales": "Valid sales in the period, including credit. Repayments are not sales.",
-            "paid_sales": "Amount paid against those sales, including later repayments of them.",
+            "paid_sales": "Amount paid against those sales, including later repayments, after refunds.",
             "total_collected": "Money received in the period, including repayments of older debts.",
             "outstanding_debt": "Current unpaid balances. This is not rebuilt for a past date.",
             "gross_profit": "Net sales minus the cost recorded when the goods were sold.",

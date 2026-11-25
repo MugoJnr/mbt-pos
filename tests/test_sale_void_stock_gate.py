@@ -35,6 +35,11 @@ class SaleVoidStockGate(unittest.TestCase):
             ('mgr', 'x:y', 'manager'),
         )
         db.execute(
+            "INSERT INTO users (id, username, password_hash, role) VALUES (2,'owner','x:y','superadmin')"
+        )
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        set_superadmin_user_pin(db, 2, '135790')
+        db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, min_stock) "
             "VALUES (?,?,?,?,?,?)",
             ('Gate Widget', 'GW1', 50.0, 20.0, 100, 5),
@@ -87,7 +92,9 @@ class SaleVoidStockGate(unittest.TestCase):
         summary = (self.api.get_report_summary(sale_day, sale_day) or {}).get('summary') or {}
         self.assertGreaterEqual(float(summary.get('collected_revenue') or 0), 200.0)
 
-        voided = self.api.void_sale(sale_id, 'gate test void')
+        voided = self.api.void_sale(
+            sale_id, 'gate test void', pin='135790', pin_username='owner',
+        )
         self.assertTrue(voided.get('success'), voided)
 
         db = self.ac._db()

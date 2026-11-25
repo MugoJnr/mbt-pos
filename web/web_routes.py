@@ -1075,6 +1075,8 @@ def cloud_licenses_list():
         org_id = request.args.get('org_id') or ''
         try:
             from backend.cloud.platform_service import list_licenses_for_org, list_all_licenses
+            if not _can_view_license_details():
+                return jsonify({'error': 'You cannot view licences.'}), 403
             if _is_platform_admin() and (request.args.get('all') in ('1', 'true', 'yes') or not org_id):
                 return jsonify({'licenses': list_all_licenses(), 'scope': 'all'})
             org_id = _resolve_request_org_id(org_id)
@@ -2691,17 +2693,19 @@ def _cc_today_snapshot(user=None):
     today = str(date.today())
     user = user or getattr(g, 'current_user', None) or {}
     role = (user.get('role') or '').lower()
-    sales_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed')='completed'"
+    net_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed') IN ('completed','return')"
+    completed_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed')='completed'"
     params = [today]
     if role == 'cashier' and user.get('id'):
-        sales_clause += " AND cashier_id=?"
+        net_clause += " AND cashier_id=?"
+        completed_clause += " AND cashier_id=?"
         params.append(user['id'])
 
     sales_n = int(db.execute(
-        f"SELECT COUNT(*) FROM sales WHERE {sales_clause}", params,
+        f"SELECT COUNT(*) FROM sales WHERE {completed_clause}", params,
     ).fetchone()[0])
     rev = float((db.execute(
-        f"SELECT COALESCE(SUM(total),0) FROM sales WHERE {sales_clause}", params,
+        f"SELECT COALESCE(SUM(total),0) FROM sales WHERE {net_clause}", params,
     ).fetchone() or [0])[0])
     try:
         low = int(db.execute(
@@ -2731,7 +2735,7 @@ def _cc_today_snapshot(user=None):
     if management_view(role) and (_user_can('payments', user) or _user_can('sales', user)):
         by_pay = _trs(db.execute(
             f"SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total),0) as total "
-            f"FROM sales WHERE {sales_clause} GROUP BY payment_method ORDER BY total DESC",
+            f"FROM sales WHERE {net_clause} GROUP BY payment_method ORDER BY total DESC",
             params,
         ).fetchall())
 
@@ -2740,7 +2744,7 @@ def _cc_today_snapshot(user=None):
         top = _trs(db.execute(f"""
             SELECT si.product_name, SUM(si.quantity) as qty_sold, SUM(si.total) as revenue
             FROM sale_items si JOIN sales s ON si.sale_id=s.id
-            WHERE {_sale_business_day('s')}=? AND COALESCE(s.status,'completed')='completed'
+            WHERE {_sale_business_day('s')}=? AND COALESCE(s.status,'completed') IN ('completed','return')
             GROUP BY si.product_name ORDER BY revenue DESC LIMIT 5
         """, (today,)).fetchall())
 
@@ -4998,6 +5002,56 @@ def _ensure_command_center_schema(db):
     db.commit()
 
 
+def _merged_backup_history(db):
+    """Web, desktop, and cloud backups in one list. Newest first."""
+    _ensure_command_center_schema(db)
+    history = _trs(db.execute(
+        "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 30"
+    ).fetchall())
+    seen = {str(row.get('created_at') or '')[:19] for row in history}
+
+    def add(when, reason, path, size, detail):
+        stamp = str(when or '')
+        if not stamp or stamp[:19] in seen:
+            return
+        seen.add(stamp[:19])
+        history.append({
+            'status': 'ok',
+            'reason': reason,
+            'path': path or '',
+            'size_bytes': int(size or 0),
+            'detail': detail,
+            'created_at': stamp,
+        })
+
+    try:
+        row = db.execute(
+            "SELECT value FROM system_settings WHERE key='last_local_backup_at'"
+        ).fetchone()
+        path = db.execute(
+            "SELECT value FROM system_settings WHERE key='last_local_backup_path'"
+        ).fetchone()
+        add(
+            row[0] if row else '', 'local',
+            path[0] if path else '', 0, 'Local shop backup',
+        )
+    except Exception:
+        pass
+    try:
+        from backend.cloud_backup.paths import load_json, backup_state_path
+        state = load_json(backup_state_path(), {}) or {}
+        add(
+            state.get('last_backup_at'), 'cloud',
+            state.get('last_storage_path') or '',
+            state.get('last_backup_size') or 0,
+            'Desktop cloud backup',
+        )
+    except Exception:
+        pass
+    history.sort(key=lambda row: str(row.get('created_at') or ''), reverse=True)
+    return history[:30]
+
+
 def _app_version_info():
     """Read version.json next to package root; fall back to known release."""
     ver_path = os.path.join(_BASE_DIR, 'version.json')
@@ -5014,7 +5068,9 @@ def _app_version_info():
                 data = json.load(f)
             info['version'] = data.get('version') or info['version']
             info['build'] = data.get('build') or info['build']
-            info['build_date'] = data.get('build_date') or info['build_date']
+            info['build_date'] = (
+                data.get('build_date') or str(data.get('released') or '')[:10] or info['build_date']
+            )
             if data.get('download_url'):
                 info['download_url'] = data['download_url']
             if data.get('release_notes'):
@@ -5115,7 +5171,7 @@ def _month_revenue(db):
     end = today.isoformat()
     row = db.execute(f"""
         SELECT COALESCE(SUM(total),0) FROM sales
-        WHERE {_sale_business_day()} BETWEEN ? AND ? AND status='completed'
+        WHERE {_sale_business_day()} BETWEEN ? AND ? AND status IN ('completed','return')
     """, (start, end)).fetchone()
     return float(row[0] if row else 0)
 
@@ -5137,6 +5193,16 @@ def _month_expenses_proxy(db):
                 JOIN acc_accounts a ON a.id = jl.account_id
                 JOIN acc_journal_entries je ON je.id = jl.entry_id
                 WHERE a.type='expense' AND date(je.entry_date) BETWEEN ? AND ?
+            """, (start, today.isoformat())).fetchone()
+            return float(row[0] if row else 0)
+        if 'expense_entries' in tables:
+            today = date.today()
+            start = today.replace(day=1).isoformat()
+            row = db.execute("""
+                SELECT COALESCE(SUM(amount),0) FROM expense_entries
+                WHERE date(COALESCE(expense_date, created_at)) BETWEEN ? AND ?
+                  AND deleted_at IS NULL
+                  AND COALESCE(status,'approved') NOT IN ('void','reversed','deleted')
             """, (start, today.isoformat())).fetchone()
             return float(row[0] if row else 0)
         if 'expenses' in tables:
@@ -5180,9 +5246,19 @@ def _seed_live_notifications(db):
             db, 'large_sale', f'Large sale {big[0]}',
             f'Receipt total {float(big[1]):,.2f}', 'info', '/reports',
         )
-    pending_sync = db.execute(
-        "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
-    ).fetchone()[0]
+    pending_sync = 0
+    try:
+        pending_sync += int(db.execute(
+            "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+        ).fetchone()[0] or 0)
+    except Exception:
+        pass
+    try:
+        pending_sync += int(db.execute(
+            "SELECT COUNT(*) FROM sync_outbox WHERE processed_at IS NULL"
+        ).fetchone()[0] or 0)
+    except Exception:
+        pass
     if pending_sync:
         _push_notification(
             db, 'sync', f'{pending_sync} sync item(s) pending',
@@ -5349,7 +5425,7 @@ def cc_summary():
         today = str(date.today())
         user = g.current_user or {}
         role = (user.get('role') or '').lower()
-        sales_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed')='completed'"
+        sales_clause = f"{_sale_business_day()} = ? AND COALESCE(status,'completed') IN ('completed','return')"
         params = [today]
         if role == 'cashier' and user.get('id'):
             sales_clause += " AND cashier_id=?"
@@ -6004,9 +6080,19 @@ def live_monitor():
             FROM users WHERE is_active=1
             ORDER BY last_login DESC LIMIT 20
         """).fetchall())
-        pending_sync = db.execute(
-            "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
-        ).fetchone()[0]
+        pending_sync = 0
+        try:
+            pending_sync += int(db.execute(
+                "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
+            ).fetchone()[0] or 0)
+        except Exception:
+            pass
+        try:
+            pending_sync += int(db.execute(
+                "SELECT COUNT(*) FROM sync_outbox WHERE processed_at IS NULL"
+            ).fetchone()[0] or 0)
+        except Exception:
+            pass
         last_bak = _tr(db.execute(
             "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 1"
         ).fetchone())
@@ -6073,9 +6159,7 @@ def backup_status():
             return jsonify({'error': 'Forbidden'}), 403
         db = _get_db()
         _ensure_command_center_schema(db)
-        history = _trs(db.execute(
-            "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 30"
-        ).fetchall())
+        history = _merged_backup_history(db)
         last = history[0] if history else None
         cloud = {'configured': False, 'logged_in': False, 'state': {}}
         try:

@@ -205,7 +205,7 @@ class RestoreManager:
             if int(r.get('size_bytes') or 0) >= 50_000
         ]
         pool = substantial or rows
-        return max(pool, key=lambda r: int(r.get('size_bytes') or 0))
+        return max(pool, key=lambda r: str(r.get('created_at') or r.get('uploaded_at') or ''))
 
     def restore_from_meta(
         self,

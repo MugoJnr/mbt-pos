@@ -1,4 +1,4 @@
-﻿"""S02: failed-login lockout (5 attempts → 60s), persisted in system_settings."""
+﻿"""S02: failed-login lockout (5 attempts → 15 minutes), persisted in system_settings."""
 from __future__ import annotations
 
 import os

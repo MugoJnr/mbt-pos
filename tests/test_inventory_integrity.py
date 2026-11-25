@@ -36,6 +36,10 @@ class InventoryIntegrityTests(unittest.TestCase):
             ('cashier', 'x:y', 'cashier'),
         )
         db.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
+            ('owner', 'x:y', 'superadmin'),
+        )
+        db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, min_stock) "
             "VALUES (?,?,?,?,?,?)",
             ('Audit Soap', 'SOAP1', 50.0, 20.0, 10, 1),
@@ -86,6 +90,10 @@ class InventoryIntegrityTests(unittest.TestCase):
         denied = self.api.adjust_stock(1, 99, 'guess')
         self.assertIn('Super-Admin', denied.get('error', ''))
         self.assertEqual(self._stock(1), 10)
+        refused = self.api.receive_delivery(1, [{'product_id': 1, 'quantity': 1}])
+        self.assertIn('cannot receive', refused.get('error', ''))
+        self.assertEqual(self._stock(1), 10)
+        self.api._role = 'manager'
 
         first = self.api.receive_delivery(
             1,
@@ -135,7 +143,8 @@ class InventoryIntegrityTests(unittest.TestCase):
         self.assertEqual(self._stock(1), 10)
 
         self.api._role = 'superadmin'
-        self.api._username = 'admin'
+        self.api._user_id = 2
+        self.api._username = 'owner'
         approved = self.api.review_stock_adjustment(1, 'approved', pin='246810')
         self.assertTrue(approved.get('success'), approved)
         self.assertEqual(approved.get('new_stock'), 7)
@@ -150,6 +159,8 @@ class InventoryIntegrityTests(unittest.TestCase):
         asked = self.api.request_stock_adjustment(1, 6, 'Count')
         self.assertTrue(asked.get('success'), asked)
         self.api._role = 'superadmin'
+        self.api._user_id = 2
+        self.api._username = 'owner'
         barrier = threading.Barrier(2)
         results = []
 
@@ -173,6 +184,8 @@ class InventoryIntegrityTests(unittest.TestCase):
         asked = self.api.request_stock_adjustment(1, 4, 'Shrink')
         self.assertTrue(asked.get('success'), asked)
         self.api._role = 'superadmin'
+        self.api._user_id = 2
+        self.api._username = 'owner'
 
         def boom(*_args, **_kwargs):
             raise RuntimeError('journal down')

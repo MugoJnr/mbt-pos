@@ -9,11 +9,16 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from runtime_security import get_activation_hmac_secret
 
 logger = logging.getLogger('cloud.license')
+
+
+def _utc_stamp() -> str:
+    """A real UTC instant. Naive local time was being stored with a +00:00 label."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 PLANS = {
     'trial': {'days': 30, 'max_devices': 1, 'max_products': 100, 'max_users': 2},
@@ -133,7 +138,7 @@ class CloudLicenseServer:
         }
         if email:
             row['assigned_email'] = email
-            row['assigned_at'] = datetime.now().isoformat()
+            row['assigned_at'] = _utc_stamp()
         if reserved:
             row['reserved_device_id'] = reserved
         if created_by:
@@ -265,7 +270,7 @@ class CloudLicenseServer:
             'assigned_email': email or None,
             'reserved_device_id': reserved or None,
             'claim_status': 'claimed' if has_seat else 'reserved',
-            'assigned_at': datetime.now().isoformat(),
+            'assigned_at': _utc_stamp(),
         }
         self._update('licenses', f'id=eq.{quote(license_id, safe="")}', patch)
         self._log_history(license_id, 'assigned', actor, {
@@ -412,9 +417,9 @@ class CloudLicenseServer:
             'claim_status': 'claimed',
         }
         if not lic.get('claimed_at'):
-            patch['claimed_at'] = datetime.now().isoformat()
+            patch['claimed_at'] = _utc_stamp()
         if not lic.get('activated_at'):
-            patch['activated_at'] = datetime.now().isoformat()
+            patch['activated_at'] = _utc_stamp()
         self._update('licenses', f'id=eq.{lic["id"]}', patch)
         self._log_history(lic['id'], 'reactivated', actor or None, {
             'device_id': token_device,
@@ -516,10 +521,10 @@ class CloudLicenseServer:
         seat_count = self._sync_activated_devices(lic['id'])
         patch = {
             'activated_devices': seat_count,
-            'activated_at': datetime.now().isoformat(),
+            'activated_at': _utc_stamp(),
             'status': 'active',
             'claim_status': 'claimed',
-            'claimed_at': datetime.now().isoformat(),
+            'claimed_at': _utc_stamp(),
         }
         self._update('licenses', f'id=eq.{lic["id"]}', patch)
         self._log_history(lic['id'], 'activated', actor or None, {
@@ -545,7 +550,7 @@ class CloudLicenseServer:
             return False, 'Device not activated', None
 
         self._update('license_activations', f'id=eq.{activations[0]["id"]}', {
-            'last_validated_at': datetime.now().isoformat(),
+            'last_validated_at': _utc_stamp(),
         })
         return True, 'Valid', {
             'plan': lic['plan'],
@@ -579,7 +584,7 @@ class CloudLicenseServer:
     def revoke(self, license_id: str, actor: str | None = None) -> bool:
         self._update('licenses', f'id=eq.{license_id}', {
             'status': 'revoked',
-            'revoked_at': datetime.now().isoformat(),
+            'revoked_at': _utc_stamp(),
             'activated_devices': 0,
         })
         try:

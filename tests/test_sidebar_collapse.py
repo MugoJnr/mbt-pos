@@ -19,6 +19,7 @@ from PyQt5.QtCore import QEvent, QSettings, Qt  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QWidget  # noqa: E402
 
 from desktop.utils import sidebar_prefs as prefs  # noqa: E402
+from roles import default_tab_permissions  # noqa: E402
 
 
 # PyQt5 keeps no Python reference to QApplication: drop it and the C++ object is
@@ -47,7 +48,7 @@ ADMIN = {
         'username': 'admin',
         'full_name': 'Shop Admin',
         'role': 'admin',
-        'tab_permissions': [],
+        'tab_permissions': default_tab_permissions('admin'),
     }
 }
 
@@ -93,6 +94,15 @@ def _probe_class():
             self._build_ui()
 
         # ── stubbed shell chrome ────────────────────────────────────────────
+        def _on_update_install_clicked(self):
+            pass
+
+        def _on_update_later(self):
+            pass
+
+        def _on_update_retry(self):
+            pass
+
         def _build_topbar(self):
             bar = QWidget()
             bar.setObjectName('topbar')

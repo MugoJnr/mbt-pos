@@ -41,6 +41,13 @@ class DebtLedgerTests(unittest.TestCase):
             ("admin", ac._hash_pw("admin-pass"), "admin", "Admin"),
         )
         db.execute(
+            "INSERT INTO users (username, password_hash, role, full_name, is_active) VALUES (?,?,?,?,1)",
+            ("owner", ac._hash_pw("owner-pass"), "superadmin", "Owner"),
+        )
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        owner_id = db.execute("SELECT id FROM users WHERE username='owner'").fetchone()["id"]
+        set_superadmin_user_pin(db, owner_id, "135790")
+        db.execute(
             "INSERT INTO products (name, sku, price, cost_price, stock, is_active) VALUES (?,?,?,?,?,1)",
             ("QA Debt", "QA-DEBT", 100, 40, 40),
         )
@@ -329,6 +336,8 @@ class DebtLedgerTests(unittest.TestCase):
             "reason": "Two units returned",
             "refund_method": "cash",
             "client_token": "return-once",
+            "pin": "135790",
+            "pin_username": "owner",
         })
         self.assertEqual(returned.status_code, 200, returned.get_json())
         db = self.ac._db()
@@ -442,6 +451,8 @@ class DebtLedgerTests(unittest.TestCase):
             "items": [{"sale_item_id": line_id, "quantity": 2}],
             "reason": "Unpaid credit return",
             "client_token": "ret-unpaid-1",
+            "pin": "135790",
+            "pin_username": "owner",
         })
         self.assertEqual(returned.status_code, 200, returned.get_json())
         self.assertEqual(returned.get_json().get("cash_refund"), 0)
@@ -449,6 +460,8 @@ class DebtLedgerTests(unittest.TestCase):
             "items": [{"sale_item_id": line_id, "quantity": 9}],
             "reason": "Too many",
             "client_token": "ret-unpaid-2",
+            "pin": "135790",
+            "pin_username": "owner",
         })
         self.assertEqual(again.status_code, 400, again.get_json())
         db = self.ac._db()
@@ -480,6 +493,8 @@ class DebtLedgerTests(unittest.TestCase):
             "items": [{"sale_item_id": line_id, "quantity": 1}],
             "reason": "Paid cash return",
             "client_token": "ret-paid-1",
+            "pin": "135790",
+            "pin_username": "owner",
         })
         self.assertEqual(cash_return.status_code, 200, cash_return.get_json())
         self.assertEqual(cash_return.get_json().get("cash_refund"), 100)

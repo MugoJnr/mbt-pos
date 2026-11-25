@@ -275,14 +275,44 @@ class DiagnosticsTab(QWidget):
 
     def _load_slog(self):
         import sqlite3
+
+        def cell(row, *names, default=''):
+            keys = set(row.keys())
+            for name in names:
+                if name in keys and row[name] is not None:
+                    return row[name]
+            return default
+
         try:
             db=sqlite3.connect(self.db_path,timeout=3); db.row_factory=sqlite3.Row
-            rows=db.execute("SELECT * FROM sync_queue ORDER BY created_at DESC LIMIT 100").fetchall(); db.close()
-            lines=["ID    STATUS       TYPE         CREATED               PAYLOAD","-"*70]
-            for r in rows:
-                p=(r['payload'] or '')[:40]+('...' if len(r['payload'] or '')>40 else '')
-                lines.append(f"{r['id']:<5} {r['status']:<12} {r.get('type','') or r.get('entity_type',''):<12} "
-                             f"{(r['created_at'] or '')[:19]:<21} {p}")
+            tables = {r[0] for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            lines=["ID    STATUS       TYPE         CREATED               DETAIL","-"*70]
+            if 'sync_outbox' in tables:
+                rows=db.execute(
+                    "SELECT id, entity_type, operation, created_at, processed_at, last_error "
+                    "FROM sync_outbox ORDER BY id DESC LIMIT 100"
+                ).fetchall()
+                for r in rows:
+                    status = 'sent' if cell(r, 'processed_at') else 'pending'
+                    detail = str(cell(r, 'last_error') or cell(r, 'operation') or '')
+                    detail = detail[:40] + ('...' if len(detail) > 40 else '')
+                    lines.append(
+                        f"{cell(r, 'id'):<5} {status:<12} {str(cell(r, 'entity_type')):<12} "
+                        f"{str(cell(r, 'created_at'))[:19]:<21} {detail}"
+                    )
+            elif 'sync_queue' in tables:
+                rows=db.execute("SELECT * FROM sync_queue ORDER BY created_at DESC LIMIT 100").fetchall()
+                for r in rows:
+                    payload = str(cell(r, 'payload') or '')
+                    payload = payload[:40] + ('...' if len(payload) > 40 else '')
+                    kind = cell(r, 'action_type', 'entity_type', 'type')
+                    lines.append(
+                        f"{cell(r, 'id'):<5} {str(cell(r, 'status')):<12} {str(kind):<12} "
+                        f"{str(cell(r, 'created_at'))[:19]:<21} {payload}"
+                    )
+            db.close()
             self._slog.setPlainText('\n'.join(lines) if len(lines)>2 else 'Queue empty.')
         except Exception as e:
             self._slog.setPlainText(f'No sync queue / {e}')

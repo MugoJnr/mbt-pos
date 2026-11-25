@@ -57,6 +57,8 @@ class SuperAdminUnvoidTests(unittest.TestCase):
             db.close()
 
     def _sell_and_void(self):
+        self.api._role = 'superadmin'
+        self.api._username = 'super'
         created = self.api.create_sale({
             'items': [{
                 'product_id': 1, 'product_name': 'Restore Oil', 'sku': 'UNVOID-OIL',

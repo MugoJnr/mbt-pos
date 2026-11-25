@@ -451,10 +451,23 @@ def _pin_hash(pin: str) -> str:
 
 
 def set_superadmin_pin(pin: str, api) -> bool:
-    """Hash and store the super-admin PIN."""
+    """Hash and store the super-admin PIN where verification reads it."""
     try:
         h = _pin_hash(pin)
         api.update_settings({'superadmin_pin_hash': h})
+        user_id = getattr(api, '_user_id', None)
+        if user_id and (getattr(api, '_role', '') or '').lower() == 'superadmin':
+            from desktop.utils.api_client import _db
+            from desktop.utils.superadmin_pin import set_superadmin_user_pin
+            db = _db()
+            try:
+                saved = set_superadmin_user_pin(db, int(user_id), pin)
+                if saved.get('error'):
+                    logger.error('set_superadmin_pin: %s', saved.get('error'))
+                    return False
+                db.commit()
+            finally:
+                db.close()
         return True
     except Exception as e:
         logger.error(f"set_superadmin_pin: {e}")
@@ -472,6 +485,8 @@ def verify_superadmin_pin(pin: str, api, parent_widget=None,
         from desktop.utils.api_client import _audit, _db
         from desktop.utils.superadmin_pin import verify_superadmin_user_pin
         name = username or getattr(api, '_authoriser_username', '') or ''
+        if not name and (getattr(api, '_role', '') or '').lower() == 'superadmin':
+            name = getattr(api, '_username', '') or ''
         db = _db()
         try:
             result = verify_superadmin_user_pin(db, name, pin)

@@ -78,7 +78,8 @@ ENTITY_TABLE_MAP = {
     'sale_item': 'sale_items',
     'customer': 'customers',
     'supplier': 'suppliers',
-    'expense': 'expenses',
+    'expense': 'expense_entries',
+    'supplier_payment': 'supplier_payments',
     'purchase': 'purchases',
     'purchase_item': 'purchase_items',
     'employee': 'employees',
@@ -989,15 +990,17 @@ class _DoNotUse:
             return len(event_ids)
         except Exception as error:
             if 'rows' in locals() and rows:
-                retry_at = datetime.now() + timedelta(
-                    seconds=min(3600, 30 * (2 ** min(int(rows[0]['attempts']), 7)))
-                )
+                retry_at = (
+                    datetime.now(timezone.utc) + timedelta(
+                        seconds=min(3600, 30 * (2 ** min(int(rows[0]['attempts']), 7)))
+                    )
+                ).strftime('%Y-%m-%d %H:%M:%S')
                 ids = [row['id'] for row in rows]
                 placeholders = ','.join('?' for _ in ids)
                 conn.execute(
                     f"UPDATE sync_outbox SET attempts=attempts+1, last_error=?, "
                     f"available_at=? WHERE id IN ({placeholders})",
-                    [str(error)[:500], retry_at.strftime('%Y-%m-%d %H:%M:%S'), *ids],
+                    [str(error)[:500], retry_at, *ids],
                 )
                 conn.commit()
             self._last_error = str(error)
@@ -1221,6 +1224,14 @@ class _DoNotUse:
             except Exception:
                 pass
 
+            try:
+                from backend.local_db_backup import _record_backup_history
+                _record_backup_history(
+                    'ok', reason or 'cloud', latest_path, enc_size,
+                    'Desktop cloud backup', _utc_now(),
+                )
+            except Exception:
+                logger.debug('cloud backup history was not recorded', exc_info=True)
             backup_id = (row or {}).get('id') if isinstance(row, dict) else ''
             # Merge into existing state so analytics_backfill / other checkpoints
             # survive every backup write.

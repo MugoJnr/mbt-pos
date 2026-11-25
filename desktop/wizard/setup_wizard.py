@@ -487,7 +487,7 @@ class SetupWizard(QDialog):
         self.w_admin_user = _field("admin")
         self.w_admin_pw   = _field("Minimum 8 characters", password=True)
         self.w_admin_pw2  = _field("Confirm password", password=True)
-        self.w_admin_pin  = _field("4-digit PIN for quick login  (optional)")
+        self.w_admin_pin  = _field("6 to 8 digit PIN  (optional)")
 
         self._pw_strength = QProgressBar()
         self._pw_strength.setRange(0, 4)
@@ -1384,6 +1384,12 @@ class SetupWizard(QDialog):
             if p != p2:
                 self._show_err("Passwords do not match.")
                 return False
+            pin = ''
+            if hasattr(self, 'w_admin_pin'):
+                pin = self.w_admin_pin.text().strip()
+            if pin and (not pin.isdigit() or not 6 <= len(pin) <= 8):
+                self._show_err("The Super Admin PIN must be 6 to 8 digits, or leave it blank.")
+                return False
         return True
 
     def _collect_step(self):
@@ -1438,7 +1444,7 @@ class SetupWizard(QDialog):
         else:
             user = self._data.get('admin_user', 'admin')
         prt  = self._data.get('printer_port', 'Not configured')
-        lic  = 'Activated' if self._data.get('license_key') else 'Pending'
+        lic  = 'Activated' if (self._data.get('license_key') or self._data.get('license_activated')) else 'Pending'
         notif = 'Portal + Email'
         if self._data.get('remote_web'):
             dom = self._data.get('remote_domain') or ''
@@ -1561,6 +1567,22 @@ class SetupWizard(QDialog):
                     "INSERT INTO users (username, password_hash, role, full_name, tab_permissions) "
                     "VALUES (?,?,?,?,?)",
                     (admin_user, pw_hash, 'superadmin', 'Shop Owner', perms))
+            pin = (self._data.get('admin_pin') or '').strip()
+            if pin and pin.isdigit() and 6 <= len(pin) <= 8:
+                owner = db.execute(
+                    "SELECT id FROM users WHERE username=?", (admin_user,)
+                ).fetchone()
+                if owner:
+                    from desktop.utils.superadmin_pin import set_superadmin_user_pin
+                    from desktop.utils.security import _pin_hash
+                    saved = set_superadmin_user_pin(db, int(owner[0]), pin)
+                    if saved.get('error'):
+                        raise ValueError(saved['error'])
+                    db.execute(
+                        "INSERT INTO system_settings (key, value, updated_at) VALUES (?,?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                        ('superadmin_pin_hash', _pin_hash(pin), datetime.now().isoformat()),
+                    )
 
             db.commit()
             db.close()
