@@ -2385,9 +2385,12 @@ class APIClient:
             image_sql = ", image_path" if "image_path" in cols else ""
             confirmed_sql = ", COALESCE(cost_confirmed,0) AS cost_confirmed" if "cost_confirmed" in cols else ""
             decimal_sql = ", allow_decimal_qty" if "allow_decimal_qty" in cols else ""
+            created_sql = ", created_at" if "created_at" in cols else ""
+            updated_sql = ", updated_at" if "updated_at" in cols else ""
             rows = _rows(db.execute(
                 "SELECT id, name, sku, barcode, category, price, cost_price, "
-                f"stock, min_stock, unit, is_active{image_sql}{confirmed_sql}{decimal_sql} "
+                f"stock, min_stock, unit, is_active{image_sql}{confirmed_sql}{decimal_sql}"
+                f"{created_sql}{updated_sql} "
                 "FROM products WHERE is_active=1 ORDER BY name"
             ))
             try:
@@ -4191,7 +4194,8 @@ class APIClient:
     def start_stocktake(self, name: str) -> dict:
         from desktop.utils.security import client_actor, has_permission
         from desktop.utils.stocktake import start_stocktake
-        if not has_permission(client_actor(self), 'inventory.view'):
+        actor = client_actor(self)
+        if (actor.get('user') or actor).get('role') == 'viewer' or not has_permission(actor, 'inventory.view'):
             return {'error': 'You cannot open a stocktake.', 'status': 403}
         db = _db()
         try:
@@ -4209,7 +4213,8 @@ class APIClient:
     def record_stocktake_count(self, stocktake_id: int, product_id: int, counted_qty) -> dict:
         from desktop.utils.security import client_actor, has_permission
         from desktop.utils.stocktake import record_count
-        if not has_permission(client_actor(self), 'inventory.view'):
+        actor = client_actor(self)
+        if (actor.get('user') or actor).get('role') == 'viewer' or not has_permission(actor, 'inventory.view'):
             return {'error': 'You cannot record a count.', 'status': 403}
         db = _db()
         try:
@@ -5291,6 +5296,8 @@ class APIClient:
             ).fetchone()
             if not req:
                 return {'error': 'Request not found'}
+            if req['user_id'] and int(req['user_id']) == int(self._user_id or 0):
+                return {'error': 'You cannot approve your own stock adjustment.', 'status': 403}
             if (req['status'] or '') != 'pending':
                 return {'success': True, 'status': req['status'], 'duplicate': True}
             now = datetime.now().isoformat()

@@ -22,8 +22,6 @@ from roles import (
 _PERMISSIONS = {
     ROLE_CASHIER: {
         'sales.create', 'sales.view_own', 'sales.request_void', 'sales.request_backdate',
-        'inventory.view', 'inventory.receive',
-        'categories.create',
         'reports.view_basic',
         'notes.own',
         'debt.create', 'debt.collect', 'debt.view_own',

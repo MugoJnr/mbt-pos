@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Search, RefreshCw, Package, Download } from "lucide-react";
 import { ProductPhoto } from "@/components/product-photo";
@@ -16,7 +16,15 @@ import { DeliveryActions } from "@/components/delivery-actions";
 import { BusinessDateField, canPostBusinessDay } from "@/components/business-date-field";
 import { KES, shopTodayISO, todayISO } from "@/lib/format";
 import { parseQuantity } from "@/lib/quantity";
-import { nameMatches } from "@/lib/name-search";
+import {
+  UNCATEGORISED,
+  assignedCategory,
+  catalogMatches,
+  categoryMatches,
+  sortInventory,
+  stockBand,
+  type InventorySort,
+} from "@/lib/inventory-filters";
 import { wheelStep } from "@/lib/wheel-steps";
 
 export const Route = createFileRoute("/inventory")({
@@ -37,6 +45,8 @@ type Product = {
   allow_decimal_qty?: number | null;
   image_path?: string;
   is_active?: number;
+  created_at?: string;
+  updated_at?: string;
   cost_confirmed?: number;
   cost_health?: {
     primary?: string;
@@ -97,6 +107,102 @@ type StockReceipt = {
   grn_text?: string;
 };
 
+function WorkPanel({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-3 sm:p-6" onClick={onClose}>
+      <div className="mx-auto w-full max-w-5xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="text-sm font-extrabold text-white">{title}</div>
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function SuppliersPanel({ canManage }: { canManage: boolean }) {
+  const qc = useQueryClient();
+  const suppliersQ = useQuery({
+    queryKey: ["suppliers"],
+    queryFn: () => GET<{ id: number; name?: string; phone?: string; notes?: string; error?: string }[]>("/suppliers"),
+  });
+  const rows = Array.isArray(suppliersQ.data) ? suppliersQ.data : [];
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [notes, setNotes] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function addSupplier() {
+    setMsg("");
+    setBusy(true);
+    try {
+      const created = await POST<{ id?: number; error?: string }>("/suppliers", { name, phone, notes });
+      if (!created || created.error || !created.id) {
+        setMsg(created?.error || "The supplier was not saved.");
+        return;
+      }
+      setName("");
+      setPhone("");
+      setNotes("");
+      setMsg("Supplier saved. New receipts can use this supplier.");
+      await qc.invalidateQueries({ queryKey: ["suppliers"] });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <div className="space-y-3 p-4">
+        <div className="text-sm font-extrabold text-text">Suppliers</div>
+        <div className="text-xs text-text2">The same suppliers used on stock receipts and batches.</div>
+        {canManage ? (
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+            <Input aria-label="Supplier name" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} className="h-11" />
+            <Input aria-label="Supplier phone" placeholder="Phone" value={phone} onChange={(e) => setPhone(e.target.value)} className="h-11" />
+            <Input aria-label="Supplier notes" placeholder="Notes" value={notes} onChange={(e) => setNotes(e.target.value)} className="h-11" />
+            <Button disabled={busy || !name.trim()} onClick={() => void addSupplier()}>{busy ? "Saving…" : "Add supplier"}</Button>
+          </div>
+        ) : (
+          <div className="text-xs text-text2">You can view suppliers. Adding or editing a supplier needs supplier management.</div>
+        )}
+        {msg ? <div className="text-sm text-text2">{msg}</div> : null}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs uppercase tracking-wide text-text2">
+              <tr>
+                <th className="px-2 py-2">Name</th>
+                <th className="px-2 py-2">Phone</th>
+                <th className="px-2 py-2">Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="border-t border-border">
+                  <td className="px-2 py-2 font-semibold text-text">{row.name || "Supplier"}</td>
+                  <td className="px-2 py-2 text-text2">{row.phone || "—"}</td>
+                  <td className="px-2 py-2 text-text2">{row.notes || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!rows.length ? <div className="py-3 text-sm text-text2">No suppliers yet.</div> : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function Inventory() {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -111,7 +217,17 @@ function Inventory() {
   const canRemove = actions ? actions.includes("inventory.delete") : role === "admin" || role === "superadmin";
   const canReceive = actions
     ? actions.includes("inventory.receive")
-    : ["cashier", "manager", "admin", "superadmin"].includes(role);
+    : ["manager", "admin", "superadmin"].includes(role);
+  const canRestock = actions ? actions.includes("restock.view") : ["viewer", "manager", "admin", "superadmin"].includes(role);
+  const canExport = actions ? actions.includes("reports.export") : ["manager", "admin", "superadmin"].includes(role);
+  const canViewSuppliers = actions
+    ? actions.includes("supplier.view") || actions.includes("supplier.manage")
+    : ["viewer", "manager", "admin", "superadmin"].includes(role);
+  const canManageSuppliers = actions ? actions.includes("supplier.manage") : role === "admin" || role === "superadmin";
+  const canStocktake = role !== "viewer" && (actions ? actions.includes("inventory.view") : role !== "cashier");
+  const canOpenRequests = canAdjust || (canReceive && role !== "viewer");
+  const [panel, setPanel] = useState<null | "categories" | "receive" | "batches" | "stocktake" | "adjust" | "requests" | "suppliers">(null);
+  const [refreshing, setRefreshing] = useState(false);
   const canBatchPrice = actions
     ? actions.includes("inventory.batch_price")
     : ["manager", "admin", "superadmin"].includes(role);
@@ -194,8 +310,9 @@ function Inventory() {
   const [savingProduct, setSavingProduct] = useState(false);
   const [q, setQ] = useState("");
   const [costFilter, setCostFilter] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("name");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sortMode, setSortMode] = useState<InventorySort>("name_asc");
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [invLock, setInvLock] = useState<"xlsx" | "csv" | null>(null);
@@ -206,6 +323,10 @@ function Inventory() {
   const productsQ = useQuery({
     queryKey: ["products"],
     queryFn: () => GET<Product[]>("/products"),
+  });
+  const categoriesQ = useQuery({
+    queryKey: ["categories"],
+    queryFn: () => GET<{ id: number; name?: string }[]>("/categories"),
   });
   const stocktakesQ = useQuery({
     queryKey: ["stocktakes"],
@@ -235,10 +356,24 @@ function Inventory() {
   const products = Array.isArray(productsQ.data) ? productsQ.data : [];
   const suppliers = Array.isArray(suppliersQ.data) ? suppliersQ.data : [];
   const selectedProduct = products.find((p) => String(p.id) === adjId);
+  const categoryOptions = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const row of categoriesQ.data || []) {
+      const label = assignedCategory({ category: row.name });
+      if (label) names.set(label.toLowerCase(), label);
+    }
+    for (const product of products) {
+      const label = assignedCategory(product);
+      if (label && !names.has(label.toLowerCase())) names.set(label.toLowerCase(), label);
+    }
+    return [...names.values()].sort((a, b) => a.localeCompare(b));
+  }, [categoriesQ.data, products]);
 
   const list = useMemo(() => {
     const filtered = products.filter((p) => {
-      if (!nameMatches(q, p.name)) return false;
+      if (!catalogMatches(q, p)) return false;
+      if (statusFilter !== "all" && stockBand(p) !== statusFilter) return false;
+      if (!categoryMatches(p, categoryFilter)) return false;
       const codes = new Set((p.cost_health?.badges || []).map((badge) => badge.code));
       if (!costFilter) return true;
       if (costFilter === "zero_or_invalid") {
@@ -249,25 +384,15 @@ function Inventory() {
       }
       return codes.has(costFilter);
     });
-    filtered.sort((a, b) => {
-      let av: string | number = a[sortKey] as any;
-      let bv: string | number = b[sortKey] as any;
-      if (sortKey === "stock" || sortKey === "price") {
-        av = Number(av || 0);
-        bv = Number(bv || 0);
-      } else {
-        av = String(av || "").toLowerCase();
-        bv = String(bv || "").toLowerCase();
-      }
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      if (av > bv) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-    return filtered;
-  }, [products, q, sortKey, sortDir, costFilter]);
+    return sortInventory(filtered, sortMode);
+  }, [products, q, statusFilter, categoryFilter, sortMode, costFilter]);
 
   const pageCount = Math.max(1, Math.ceil(list.length / pageSize));
-  const pageRows = list.slice(page * pageSize, page * pageSize + pageSize);
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = list.slice(safePage * pageSize, safePage * pageSize + pageSize);
+  useEffect(() => {
+    if (page !== safePage) setPage(safePage);
+  }, [page, safePage]);
 
   const valuationQ = useQuery({
     queryKey: ["inventory-valuation", productsQ.dataUpdatedAt],
@@ -277,9 +402,7 @@ function Inventory() {
   const totalValue = seeCost && valuationQ.data && typeof valuationQ.data.value === "number"
     ? valuationQ.data.value
     : null;
-  const lowCount = products.filter(
-    (p) => Number(p.stock) > 0 && Number(p.stock) <= Number(p.min_stock ?? 5),
-  ).length;
+  const lowCount = products.filter((p) => stockBand(p) === "low").length;
 
   function loadEdit(p: Product) {
     setEditId(String(p.id));
@@ -441,12 +564,22 @@ function Inventory() {
   );
 
   function toggleSort(key: SortKey) {
-    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(key);
-      setSortDir(key === "name" || key === "category" ? "asc" : "desc");
-    }
+    setSortMode((current) => {
+      if (key === "name") return current === "name_asc" ? "name_desc" : "name_asc";
+      if (key === "stock") return current === "stock_asc" ? "stock_desc" : "stock_asc";
+      if (key === "price") return current === "price_asc" ? "price_desc" : "price_asc";
+      return current === "category_asc" ? "category_desc" : "category_asc";
+    });
     setPage(0);
+  }
+
+  function sortActive(key: SortKey) {
+    return sortMode.startsWith(key);
+  }
+
+  function sortArrow(key: SortKey) {
+    if (!sortActive(key)) return "";
+    return sortMode.endsWith("desc") ? "↓" : "↑";
   }
 
   async function exportInv(format: "xlsx" | "csv", password: string) {
@@ -468,20 +601,71 @@ function Inventory() {
     }
   }
 
+  function exportVisible() {
+    const headers = ["Name", "SKU", "Barcode", "Category", "Selling price", ...(seeCost ? ["Buying price"] : []), "Stock", "Unit", "Reorder level"];
+    const esc = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const body = list.map((p) => [
+      p.name,
+      p.sku || "",
+      p.barcode || "",
+      p.category || "Uncategorised",
+      p.price,
+      ...(seeCost ? [p.cost_price ?? ""] : []),
+      p.stock ?? 0,
+      p.unit || "pcs",
+      p.min_stock ?? "",
+    ]);
+    const xml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet ss:Name="Inventory"><Table>
+<Row>${headers.map((cell) => `<Cell><Data ss:Type="String">${esc(cell)}</Data></Cell>`).join("")}</Row>
+${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cell === "number" ? "Number" : "String"}">${esc(cell)}</Data></Cell>`).join("")}</Row>`).join("")}
+</Table></Worksheet></Workbook>`;
+    const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `MBT_Inventory_${todayISO()}.xls`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast.success(`${list.length} product${list.length === 1 ? "" : "s"} exported.`);
+  }
+
+  async function refreshInventory() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["products"] }),
+        qc.invalidateQueries({ queryKey: ["categories"] }),
+        qc.invalidateQueries({ queryKey: ["batches"] }),
+        qc.invalidateQueries({ queryKey: ["suppliers"] }),
+        qc.invalidateQueries({ queryKey: ["stocktakes"] }),
+        qc.invalidateQueries({ queryKey: ["adjustment-requests"] }),
+        qc.invalidateQueries({ queryKey: ["stock-receipts"] }),
+      ]);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   const sortLabel = (key: SortKey, label: string) => (
     <button type="button" onClick={() => toggleSort(key)} className="hover:text-gold">
-      {label} {sortKey === key ? (sortDir === "asc" ? "↑" : "↓") : ""}
+      {label} {sortArrow(key)}
     </button>
   );
 
   return (
     <AppShell title="Inventory">
-      {canManageCategories || canCreateCategory ? (
+      {panel === "categories" && (canManageCategories || canCreateCategory) ? (
+        <WorkPanel title="Shop categories" onClose={() => setPanel(null)}>
         <ShopCategories
           canCreate={canCreateCategory}
           canManage={canManageCategories}
           canDelete={canDeleteCategory}
         />
+        </WorkPanel>
       ) : null}
       <ExportLockDialog
         open={invLock != null}
@@ -495,7 +679,8 @@ function Inventory() {
           if (invLock) void exportInv(invLock, password);
         }}
       />
-      {canEdit ? (
+      {panel === "edit" && canEdit ? (
+        <WorkPanel title="Edit product" onClose={() => setPanel(null)}>
         <Card className="mb-3" id="adjust-product">
           <div className="space-y-3 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -546,8 +731,10 @@ function Inventory() {
             ) : null}
           </div>
         </Card>
+        </WorkPanel>
       ) : null}
-      {canAdjust ? (
+      {panel === "adjust" && canAdjust ? (
+        <WorkPanel title="Adjust stock" onClose={() => setPanel(null)}>
         <Card className="mb-3">
           <div className="p-4 space-y-3">
             <div className="text-sm font-extrabold text-text">Adjust stock</div>
@@ -698,8 +885,11 @@ function Inventory() {
             {adjMsg ? <div className="text-sm text-text2">{adjMsg}</div> : null}
           </div>
         </Card>
+        </WorkPanel>
       ) : null}
-      <Card className="mb-3">
+      {panel === "batches" ? (
+        <WorkPanel title="Batches" onClose={() => setPanel(null)}>
+        <Card className="mb-3">
         <div className="p-4 space-y-3">
           <div className="text-sm font-extrabold text-text">Batches</div>
           <div className="text-xs text-text2">Every delivery batch, including finished batches. Open a product history row to change a selling price.</div>
@@ -743,7 +933,10 @@ function Inventory() {
           </div>
         </div>
       </Card>
-      {canReceive ? (
+        </WorkPanel>
+      ) : null}
+      {panel === "receive" && canReceive ? (
+        <WorkPanel title="Receive stock" onClose={() => setPanel(null)}>
         <Card className="mb-3">
           <div className="p-4 space-y-3">
             <div className="text-sm font-extrabold text-text">Receive stock</div>
@@ -1350,6 +1543,7 @@ function Inventory() {
             ) : null}
           </div>
         </Card>
+        </WorkPanel>
       ) : null}
       <PageHeader
         eyebrow="Operations"
@@ -1362,64 +1556,56 @@ function Inventory() {
           return `${products.length} SKUs${valueText}${lowCount ? ` · ${lowCount} low` : ""}${warnings ? ` · ${warnings} costing warnings` : ""}${incomplete}`;
         })()}
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              to="/restock"
-              className="inline-flex min-h-[44px] items-center rounded-md border border-gold/50 px-3 text-sm font-semibold text-gold"
-            >
-              Restock Lists
-            </Link>
-            <Link
-              to="/issues"
-              className="inline-flex min-h-[44px] items-center rounded-md border border-gold/50 px-3 text-sm font-semibold text-gold"
-            >
-              Issues
-            </Link>
-            {canCreate ? (
-            <Button
-              variant="primary"
-              onClick={() => setShowAdd(true)}
-              className="min-h-[44px]"
-            >
-              Add product
-            </Button>
-            ) : null}
-            <Button
-              variant="secondary"
-              disabled={exporting}
-              onClick={() => {
-                setInvLockError("");
-                setInvLock("csv");
-              }}
-              className="min-h-[44px]"
-            >
-              <Download className="h-4 w-4" /> CSV
-            </Button>
-            <Button
-              variant="secondary"
-              disabled={exporting}
-              onClick={() => {
-                setInvLockError("");
-                setInvLock("xlsx");
-              }}
-              className="min-h-[44px]"
-            >
-              <Download className="h-4 w-4" /> Excel
-            </Button>
-            <Button
-              variant="ghost"
-              onClick={() => {
-                qc.invalidateQueries({ queryKey: ["products"] });
-                qc.invalidateQueries({ queryKey: ["stock-receipts"] });
-              }}
-              className="min-h-[44px]"
-            >
-              <RefreshCw className="h-4 w-4" /> Refresh
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            disabled={refreshing}
+            onClick={() => void refreshInventory()}
+            className="min-h-[44px]"
+          >
+            <RefreshCw className="h-4 w-4" /> {refreshing ? "Refreshing…" : "Refresh"}
+          </Button>
         }
       />
 
+      <div className="mb-4 flex flex-wrap items-center gap-2" aria-label="Inventory actions">
+        {canCreate ? (
+          <Button variant="primary" className="min-h-[44px]" onClick={() => setShowAdd(true)}>+ Add Product</Button>
+        ) : null}
+        {canManageCategories || canCreateCategory ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("categories")}>Shop Categories</Button>
+        ) : null}
+        {canReceive ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("receive")}>Receive Stock</Button>
+        ) : null}
+        {canRestock ? (
+          <Link to="/restock" className="inline-flex min-h-[44px] items-center rounded-lg border border-border bg-card px-4 text-sm font-semibold text-text hover:bg-hover">Restock Lists</Link>
+        ) : null}
+        <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("batches")}>Batches</Button>
+        <Link to="/issues" className="inline-flex min-h-[44px] items-center rounded-lg border border-border bg-card px-4 text-sm font-semibold text-text hover:bg-hover">Issues</Link>
+        {canStocktake ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("stocktake")}>Stocktake</Button>
+        ) : null}
+        {canAdjust ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("adjust")}>Adjust Stock</Button>
+        ) : null}
+        {canOpenRequests ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("requests")}>Adjustment Requests</Button>
+        ) : null}
+        {canViewSuppliers ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={() => setPanel("suppliers")}>Suppliers</Button>
+        ) : null}
+        {canExport ? (
+          <Button variant="secondary" className="min-h-[44px]" onClick={exportVisible}>
+            <Download className="h-4 w-4" /> Export Excel
+          </Button>
+        ) : null}
+        <Button variant="ghost" className="min-h-[44px]" disabled={refreshing} onClick={() => void refreshInventory()}>
+          <RefreshCw className="h-4 w-4" /> Refresh
+        </Button>
+      </div>
+
+      {panel === "stocktake" && canStocktake ? (
+        <WorkPanel title="Stocktake" onClose={() => setPanel(null)}>
       <Card className="mb-3">
         <form
           className="space-y-3 p-4"
@@ -1526,8 +1712,10 @@ function Inventory() {
           </div>
         </form>
       </Card>
+        </WorkPanel>
+      ) : null}
 
-      {canReceive && !canAdjust ? (
+      {panel === "requests" && canReceive && !canAdjust ? (
         <Card className="mb-3">
           <form
             className="space-y-3 p-4"
@@ -1569,7 +1757,7 @@ function Inventory() {
           </form>
         </Card>
       ) : null}
-      {canAdjust ? (
+      {panel === "requests" && canAdjust ? (
         <Card className="mb-3">
           <div className="p-4 space-y-2">
             <div className="text-sm font-extrabold text-text">Pending adjustment requests</div>
@@ -1591,8 +1779,11 @@ function Inventory() {
               <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span>
                   {row.request_number} · {row.product_name} · {row.current_stock} → {row.requested_qty}
-                  <span className="text-text2"> · {row.reason}</span>
+                  <span className="text-text2"> · {row.reason} · {row.username || "Staff"} · {row.created_at || ""} · {row.status || "pending"}</span>
                 </span>
+                {user?.id != null && Number(row.user_id) === Number(user.id) ? (
+                  <span className="text-xs text-text2">You cannot approve your own request.</span>
+                ) : (
                 <span className="flex gap-2">
                   <Button
                     variant="secondary"
@@ -1616,17 +1807,25 @@ function Inventory() {
                     }}
                   >Approve</Button>
                 </span>
+                )}
               </div>
             ))}
           </div>
         </Card>
       ) : null}
 
+      {panel === "suppliers" && canViewSuppliers ? (
+        <WorkPanel title="Suppliers" onClose={() => setPanel(null)}>
+          <SuppliersPanel canManage={canManageSuppliers} />
+        </WorkPanel>
+      ) : null}
+
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="relative w-full max-w-md">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text2" />
           <Input
-            placeholder="Search by product name…"
+            aria-label="Search products"
+            placeholder="Search name, SKU, or barcode…"
             value={q}
             onChange={(e) => {
               setQ(e.target.value);
@@ -1635,6 +1834,44 @@ function Inventory() {
             className="pl-8 min-h-[44px]"
           />
         </div>
+        <select
+          aria-label="Product status"
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(0); }}
+          className="h-11 rounded-xl border border-border bg-input px-3 text-sm text-text"
+        >
+          <option value="all">All products</option>
+          <option value="in">In stock</option>
+          <option value="low">Low stock</option>
+          <option value="out">Out of stock</option>
+        </select>
+        <select
+          aria-label="Product category"
+          value={categoryOptions.some((name) => name.toLowerCase() === categoryFilter.toLowerCase()) || categoryFilter === "all" || categoryFilter === UNCATEGORISED ? categoryFilter : "all"}
+          onChange={(e) => { setCategoryFilter(e.target.value); setPage(0); }}
+          className="h-11 max-w-full rounded-xl border border-border bg-input px-3 text-sm text-text"
+        >
+          <option value="all">All categories</option>
+          {categoryOptions.map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+          <option value={UNCATEGORISED}>Uncategorised</option>
+        </select>
+        <select
+          aria-label="Sort products"
+          value={sortMode}
+          onChange={(e) => { setSortMode(e.target.value as InventorySort); setPage(0); }}
+          className="h-11 rounded-xl border border-border bg-input px-3 text-sm text-text"
+        >
+          <option value="name_asc">Name A–Z</option>
+          <option value="name_desc">Name Z–A</option>
+          <option value="stock_asc">Lowest stock first</option>
+          <option value="stock_desc">Highest stock first</option>
+          <option value="created">Recently added</option>
+          <option value="updated">Recently updated</option>
+          {sortMode === "price_asc" || sortMode === "price_desc" ? <option value={sortMode}>Price</option> : null}
+          {sortMode === "category_asc" || sortMode === "category_desc" ? <option value={sortMode}>Category</option> : null}
+        </select>
         <select
           aria-label="Costing filter"
           value={costFilter}
@@ -1649,16 +1886,32 @@ function Inventory() {
           <option value="inconsistent">Costing needs review</option>
           <option value="complete">Costing complete</option>
         </select>
-        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => { setQ(""); setCostFilter(""); }}>Clear</Button>
-        <Button type="button" variant="secondary" className="min-h-[44px]" onClick={() => document.querySelector<HTMLInputElement>('input[placeholder="Search by product name…"]')?.focus()}>Search</Button>
+        <span className="text-sm font-semibold text-text" aria-label="Matching products">
+          {list.length} {list.length === 1 ? "product" : "products"}
+        </span>
+        <Button
+          type="button"
+          variant="secondary"
+          className="min-h-[44px]"
+          onClick={() => {
+            setQ("");
+            setStatusFilter("all");
+            setCategoryFilter("all");
+            setSortMode("name_asc");
+            setCostFilter("");
+            setPage(0);
+          }}
+        >
+          Clear filters
+        </Button>
       </div>
       <Card className="overflow-hidden">
         {productsQ.isLoading ? (
           <div className="py-12 text-center text-sm text-text2">Loading inventory…</div>
         ) : (
           <>
-            {q.trim() && list.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-text2">No products match that name. Clear the search to see every product.</div>
+            {!productsQ.isLoading && list.length === 0 ? (
+              <div className="px-4 py-6 text-sm text-text2">No products match these filters.</div>
             ) : null}
             <Table
               head={[
@@ -1670,13 +1923,13 @@ function Inventory() {
                 ...(seeCost ? ["Cost"] : []),
                 sortLabel("stock", "Stock"),
                 "Unit",
-                ...(canRemove ? [""] : []),
+                ...(canEdit || canRemove ? ["Actions"] : []),
               ]}
             >
               {pageRows.map((p) => {
-                const stock = Number(p.stock) || 0;
-                const oos = stock === 0;
-                const low = stock > 0 && stock <= Number(p.min_stock ?? 5);
+                const band = stockBand(p);
+                const oos = band === "out";
+                const low = band === "low";
                 return (
                   <tr key={p.id}>
                     <td className="px-4 py-2.5">
@@ -1716,14 +1969,30 @@ function Inventory() {
                       </td>
                     ) : null}
                     <td className="px-4 py-2.5 tabular-nums">
-                      <Badge tone={oos ? "err" : low ? "warn" : "muted"}>{stock}</Badge>
+                      <Badge tone={oos ? "err" : low ? "warn" : "muted"}>{p.stock ?? 0}</Badge>
                     </td>
                     <td className="px-4 py-2.5 text-text2">{p.unit || "pcs"}</td>
-                    {canRemove ? (
+                    {canEdit || canRemove ? (
                       <td className="px-4 py-2.5">
-                        <Button variant="danger" size="sm" onClick={() => archiveProduct(p)}>
-                          Remove
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          {canEdit ? (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                loadEdit(p);
+                                setPanel("edit");
+                              }}
+                            >
+                              Edit
+                            </Button>
+                          ) : null}
+                          {canRemove ? (
+                            <Button variant="danger" size="sm" onClick={() => archiveProduct(p)}>
+                              Remove
+                            </Button>
+                          ) : null}
+                        </div>
                       </td>
                     ) : null}
                   </tr>
@@ -1732,13 +2001,13 @@ function Inventory() {
             </Table>
             <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border text-xs text-text2">
               <span>
-                Page {page + 1} / {pageCount} · {list.length} shown
+                Page {safePage + 1} / {pageCount} · {list.length} shown
               </span>
               <div className="flex gap-2">
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={page <= 0}
+                  disabled={safePage <= 0}
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
                 >
                   Prev
@@ -1746,7 +2015,7 @@ function Inventory() {
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={page >= pageCount - 1}
+                  disabled={safePage >= pageCount - 1}
                   onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
                 >
                   Next
@@ -1888,15 +2157,22 @@ function Inventory() {
                   <div className="text-xs font-semibold uppercase tracking-wide text-text2">Product</div>
                   <div className="mt-1 text-lg font-extrabold text-text">{productDetail.name}</div>
                 </div>
-                <Button variant="ghost" onClick={() => setProductDetail(null)}>
-                  Close
-                </Button>
+                <div className="flex gap-2">
+                  {canEdit ? (
+                    <Button variant="secondary" onClick={() => { setProductDetail(null); setPanel("edit"); }}>
+                      Edit product details
+                    </Button>
+                  ) : null}
+                  <Button variant="ghost" onClick={() => setProductDetail(null)}>
+                    Close
+                  </Button>
+                </div>
               </div>
               <div className="px-5 pt-4">
                 <ProductPhoto
                   src={productDetail.image_path}
                   size="lg"
-                  onFile={async (file) => {
+                  onFile={canEdit ? async (file) => {
                     const body = new FormData();
                     body.append("image", file);
                     const response = await fetch(`/api/products/${productDetail.id}/image`, {
@@ -1913,8 +2189,8 @@ function Inventory() {
                     setProductDetail({ ...productDetail, image_path: stamped });
                     qc.invalidateQueries({ queryKey: ["products"] });
                     toast.success("Photograph saved.");
-                  }}
-                  onRemove={productDetail.image_path ? async () => {
+                  } : undefined}
+                  onRemove={canEdit && productDetail.image_path ? async () => {
                     const response = await fetch(`/api/products/${productDetail.id}/image`, {
                       method: "DELETE",
                       headers: { Authorization: `Bearer ${getToken()}` },
@@ -2212,7 +2488,8 @@ function Inventory() {
 
       <div className="mt-3 flex items-center justify-between text-xs text-text2">
         <div>
-          <span className="text-text font-semibold">{products.length}</span> products
+          <span className="text-text font-semibold">{list.length}</span>
+          {list.length === products.length ? " products" : ` of ${products.length} products`}
           <span className="text-muted-fg mx-2">·</span>
           <span className="text-warn font-semibold">{lowCount}</span> low stock
         </div>

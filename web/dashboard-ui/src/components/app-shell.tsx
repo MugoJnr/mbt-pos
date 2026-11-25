@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import {
   LayoutDashboard,
@@ -42,7 +43,6 @@ import { useTheme } from "./theme";
 import { useAuth } from "@/lib/auth";
 import { GET } from "@/lib/api";
 import { installWheelScroll, scrollInterval } from "@/lib/wheel-scroll";
-import { WheelScrollPreference } from "@/components/wheel-scroll-preference";
 import { updateSessionCopy } from "@/lib/update-session";
 import { KES } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -111,9 +111,20 @@ function routeTab(path: string): string | undefined {
   return match ? ROUTE_TAB[match] : undefined;
 }
 
+function inventoryView(user: { effective_permissions?: unknown } | null): boolean | null {
+  const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  if (!actions) return null;
+  return actions.includes("inventory.view");
+}
+
 function pageAllowed(user: { role?: string; tab_permissions?: unknown; effective_permissions?: unknown } | null, path: string): boolean {
   const role = String(user?.role || "").toLowerCase();
   const actions = Array.isArray(user?.effective_permissions) ? user.effective_permissions.map(String) : null;
+  if (path === "/inventory" || path === "/issues") {
+    const view = inventoryView(user);
+    if (role === "cashier" || role === "viewer") return view === true;
+    if (view === false) return false;
+  }
   // License is Super Admin only. Security cannot be stored on a lower role,
   // but a shop manager who may read the audit trail still reaches it.
   if (path === "/users") {
@@ -321,9 +332,6 @@ function SidebarContent({
         ) : null}
         <div className="text-sm font-semibold text-text truncate">{displayName}</div>
         <div className="text-eyebrow text-gold mb-2.5 mt-0.5">{role}</div>
-        <div className="mb-2.5">
-          <WheelScrollPreference compact />
-        </div>
         <button
           type="button"
           onClick={() => {
@@ -675,6 +683,24 @@ export function AppShell({
     localStorage.setItem("mbt-sidebar", JSON.stringify(next));
   }
   const isPos = density === "pos";
+  const roleKey = String(user?.role || "").toLowerCase();
+
+  useEffect(() => {
+    if (!user) return;
+    const path = location.pathname;
+    const inventoryPage = path === "/inventory" || path === "/issues";
+    const blocked = (inventoryPage || path === "/restock") && !pageAllowed(user, path);
+    if (!blocked) return;
+    if (roleKey === "cashier") {
+      toast.message("Inventory is not on this cashier account.");
+      navigate({ to: "/pos" });
+      return;
+    }
+    if (roleKey === "viewer" && inventoryPage) {
+      toast.message("Inventory is not on this account.");
+      navigate({ to: "/" });
+    }
+  }, [location.pathname, navigate, roleKey, user]);
 
   const scrollQ = useQuery({
     queryKey: ["account-scroll"],
@@ -690,7 +716,6 @@ export function AppShell({
     queryFn: () => GET<{ version?: string; build?: string; exe?: string }>("/version"),
     staleTime: 60_000 * 10,
   });
-  const roleKey = String(user?.role || "").toLowerCase();
   const canNotify = ["manager", "admin", "superadmin"].includes(roleKey);
   const notifQ = useQuery({
     queryKey: ["notifications-badge"],

@@ -24,6 +24,12 @@ class SettingsTab(QWidget):
         self._jump_scroll_lock = False
         self._build()
 
+    def _open_my_password(self):
+        win = self.window()
+        opener = getattr(win, '_change_my_password', None)
+        if opener is not None:
+            opener()
+
     def _jump_section(self, key: str):
         w = (getattr(self, '_section_anchors', {}) or {}).get(key)
         scroll = getattr(self, '_scroll', None)
@@ -615,6 +621,11 @@ class SettingsTab(QWidget):
             'Touchpad scrolling is left unchanged. Quantity steps stay in their own settings.')
         FormRow('Checkout Layout', self.pos_checkout_layout, wform)
         FormRow('Mouse Wheel Scroll Interval', self.wheel_scroll_interval, wform)
+        change_password = SecondaryBtn('Change my password')
+        change_password.setMinimumHeight(42)
+        change_password.setToolTip('Change the password for the signed-in account')
+        change_password.clicked.connect(self._open_my_password)
+        wform.addRow(change_password)
         FormRow('Default customer', self.after_sale_default_customer, wform)
         FormRow('Default payment', self.after_sale_default_payment, wform)
         FormRow('', self.after_sale_focus_barcode, wform)

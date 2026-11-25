@@ -37,6 +37,8 @@ class PermissionMatrixTests(unittest.TestCase):
         self.assertFalse(has_permission(u, 'inventory.edit_info'))
         self.assertFalse(has_permission(u, 'inventory.direct_price'))
         self.assertFalse(has_permission(u, 'inventory.delete'))
+        self.assertFalse(has_permission(u, 'inventory.view'))
+        self.assertFalse(has_permission(u, 'inventory.receive'))
         self.assertFalse(has_permission(u, 'users.delete'))
         self.assertFalse(has_permission(u, 'inventory.adjust_stock'))
 
@@ -86,7 +88,7 @@ class PermissionMatrixTests(unittest.TestCase):
     def test_tab_defaults(self):
         self.assertEqual(
             default_tab_permissions(ROLE_CASHIER),
-            ['dashboard', 'sales', 'receipts', 'inventory', 'consumption'],
+            ['dashboard', 'sales', 'receipts', 'consumption'],
         )
         self.assertIn('security', default_tab_permissions(ROLE_SUPERADMIN))
         self.assertNotIn('security', default_tab_permissions(ROLE_ADMIN))

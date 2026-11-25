@@ -1,8 +1,8 @@
 {
-    "version": "3.1.92",
-    "build": "RC-2026-11-25-v3.1.92",
+    "version": "3.1.93",
+    "build": "RC-2026-11-25-v3.1.93",
     "released": "2026-11-25",
-    "release_notes": "Piece-unit products can allow decimal quantities. Each signed-in account keeps its own mouse-wheel scroll interval. Product and selling-price changes follow the existing approval rules.",
-    "checksum_sha256": "5c53bde4fef0f4986a40c9bb1a4a2c703ae2255dd66fcbc3ad8aa9eaaeb2bf24",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.92/MBT_POS_Setup.exe"
+    "release_notes": "Inventory can be filtered by category, stock status, and search on the till and the web dashboard. The web inventory page has the same stock actions as the till, and a cashier without inventory access opens the sales screen.",
+    "checksum_sha256": "57e1dcad26a2ff4f04c62a32f0deef5feb5cca93a0351f8347f1f9012c4f87e9",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.93/MBT_POS_Setup.exe"
 }

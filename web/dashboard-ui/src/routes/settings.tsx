@@ -10,6 +10,7 @@ import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type DashboardPrefs } from "@/lib/prefs";
 import { WHEEL_DEFAULTS } from "@/lib/wheel-steps";
+import { WheelScrollPreference } from "@/components/wheel-scroll-preference";
 
 export const Route = createFileRoute("/settings")({
   component: Settings,
@@ -747,7 +748,11 @@ function Settings() {
             <p className="text-sm sm:col-span-2"><Link to="/backup" className="text-gold font-semibold">Open Backup Center</Link> to run or inspect a backup on this computer.</p>
           </Section>
 
-          <Section id="wheels" icon={<SlidersHorizontal className="h-5 w-5" />} title="Numeric mouse-wheel steps" desc="How far one wheel notch moves a focused quantity. Typing a decimal is still allowed.">
+          <Section id="wheels" icon={<SlidersHorizontal className="h-5 w-5" />} title="Mouse wheel" desc="The scroll interval is saved for this signed-in account. The quantity steps below are shop settings. Typing a decimal is still allowed.">
+            <div className="sm:col-span-2">
+              <WheelScrollPreference />
+              <p className="mt-2 text-sm">Change this account&apos;s password in <Link to="/users" className="text-gold font-semibold">Users &amp; Access</Link>.</p>
+            </div>
             <Field label="POS sale quantity">
               <Input type="number" min={0.001} step="0.001" value={form.wheel_pos_qty || WHEEL_DEFAULTS.wheel_pos_qty} onChange={(e) => set("wheel_pos_qty", e.target.value)} />
             </Field>

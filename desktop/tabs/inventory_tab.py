@@ -205,7 +205,8 @@ class InventoryTab(QWidget):
 
         # Toolbar: search + primary + secondary + ghost
         tb = QHBoxLayout(); tb.setSpacing(10)
-        self._search = SearchBar('Search by product name\u2026')
+        self._search = SearchBar('Search name, SKU, or barcode\u2026')
+        self._search.setAccessibleName('Search products')
         self._search.textChanged.connect(self._filter)
         tb.addWidget(self._search, 1)
         self._cost_filter = QComboBox()
@@ -223,11 +224,56 @@ class InventoryTab(QWidget):
             self._cost_filter.addItem(label, code)
         self._cost_filter.currentIndexChanged.connect(self._filter)
         tb.addWidget(self._cost_filter)
-        clear = GhostBtn('Clear', 40)
-        clear.setToolTip('Show every product')
-        clear.clicked.connect(lambda: self._search.clear())
-        tb.addWidget(clear)
         lay.addLayout(tb)
+
+        filt = QHBoxLayout()
+        filt.setSpacing(10)
+        self._status_filter = QComboBox()
+        self._status_filter.setMinimumHeight(40)
+        self._status_filter.setAccessibleName('Product status')
+        for label, code in (
+            ('All products', 'all'),
+            ('In stock', 'in'),
+            ('Low stock', 'low'),
+            ('Out of stock', 'out'),
+        ):
+            self._status_filter.addItem(label, code)
+        self._status_filter.currentIndexChanged.connect(self._filter)
+        filt.addWidget(self._status_filter)
+
+        self._category_filter = QComboBox()
+        self._category_filter.setMinimumHeight(40)
+        self._category_filter.setMinimumWidth(180)
+        self._category_filter.setAccessibleName('Product category')
+        self._category_filter.addItem('All categories', 'all')
+        self._category_filter.addItem('Uncategorised', '__uncategorised__')
+        self._category_filter.currentIndexChanged.connect(self._filter)
+        filt.addWidget(self._category_filter, 1)
+
+        self._sort_filter = QComboBox()
+        self._sort_filter.setMinimumHeight(40)
+        self._sort_filter.setAccessibleName('Sort products')
+        for label, code in (
+            ('Name A\u2013Z', 'name_asc'),
+            ('Name Z\u2013A', 'name_desc'),
+            ('Lowest stock first', 'stock_asc'),
+            ('Highest stock first', 'stock_desc'),
+            ('Recently added', 'created'),
+            ('Recently updated', 'updated'),
+        ):
+            self._sort_filter.addItem(label, code)
+        self._sort_filter.currentIndexChanged.connect(self._filter)
+        filt.addWidget(self._sort_filter)
+
+        self._shown = Caption('0 products')
+        self._shown.setAccessibleName('Matching products')
+        filt.addWidget(self._shown)
+        clear = GhostBtn('Clear filters', 40)
+        clear.setAccessibleName('Clear filters')
+        clear.setToolTip('Show every product, sorted by name')
+        clear.clicked.connect(self._clear_filters)
+        filt.addWidget(clear)
+        lay.addLayout(filt)
 
         # Buttons wrap onto extra rows. A single non-wrapping bar was wider than
         # the till and pushed the product table, including Actions, past the window.
@@ -413,7 +459,8 @@ class InventoryTab(QWidget):
         except Exception:
             self._categories_by_name = {}
         try:
-            self._populate(self.products)
+            self._reload_category_choices()
+            self._filter()
         except Exception as e:
             self.products = []
             self._tbl.setRowCount(0)
@@ -601,21 +648,80 @@ class InventoryTab(QWidget):
             return bool(codes & {'inconsistent', 'zero_review', 'stock_without_cost'})
         return code in codes
 
-    def _filter(self):
-        from desktop.utils.pos_search import inventory_name_matches
-        q = self._search.text()
-        code = self._cost_filter.currentData() if hasattr(self, '_cost_filter') else ''
+    def _choice(self, box, default):
+        if not hasattr(self, box):
+            return default
+        value = getattr(self, box).currentData()
+        return default if value is None else value
+
+    def _reload_category_choices(self):
+        from desktop.utils.inventory_filters import assigned_category
+        box = self._category_filter
+        current = box.currentData()
+        names = []
+        seen = set()
         try:
-            matched = [
-                p for p in self.products
-                if inventory_name_matches(q, p) and self._matches_cost_filter(p, code)
-            ]
+            for row in self.api.get_categories() or []:
+                label = assigned_category({'category': row.get('name') or ''})
+                key = label.casefold()
+                if label and key not in seen:
+                    seen.add(key)
+                    names.append(label)
+        except Exception:
+            _log.exception('Could not load shop categories')
+        for product in self.products or []:
+            label = assigned_category(product)
+            key = label.casefold()
+            if label and key not in seen:
+                seen.add(key)
+                names.append(label)
+        names.sort(key=str.casefold)
+        box.blockSignals(True)
+        box.clear()
+        box.addItem('All categories', 'all')
+        for label in names:
+            box.addItem(label, label)
+        box.addItem('Uncategorised', '__uncategorised__')
+        index = box.findData(current if current is not None else 'all')
+        box.setCurrentIndex(index if index >= 0 else 0)
+        box.blockSignals(False)
+
+    def _clear_filters(self):
+        self._search.blockSignals(True)
+        self._search.clear()
+        self._search.blockSignals(False)
+        for box_name, data in (
+            ('_status_filter', 'all'),
+            ('_category_filter', 'all'),
+            ('_sort_filter', 'name_asc'),
+            ('_cost_filter', ''),
+        ):
+            box = getattr(self, box_name)
+            box.blockSignals(True)
+            index = box.findData(data)
+            box.setCurrentIndex(index if index >= 0 else 0)
+            box.blockSignals(False)
+        self._filter()
+
+    def _filter(self):
+        from desktop.utils.inventory_filters import filter_inventory, sort_inventory
+        q = self._search.text()
+        code = self._choice('_cost_filter', '')
+        try:
+            matched = filter_inventory(
+                self.products,
+                query=q,
+                status=self._choice('_status_filter', 'all'),
+                category=self._choice('_category_filter', 'all'),
+            )
+            matched = [p for p in matched if self._matches_cost_filter(p, code)]
+            matched = sort_inventory(matched, self._choice('_sort_filter', 'name_asc'))
             self._populate(matched)
+            shown = f"{len(matched)} product" if len(matched) == 1 else f"{len(matched)} products"
+            if hasattr(self, '_shown'):
+                self._shown.setText(shown)
             if not matched and self.products:
-                if str(q or '').strip():
-                    self._stats.setText('  No products match that name. Clear the search to see every product.')
-                elif code:
-                    self._stats.setText('  No products match that costing filter.')
+                self._stats.setText('  No products match these filters.')
         except Exception as e:
             _log.exception('Inventory filter error')
             self._stats.setText(f"  Could not filter inventory: {e}")
@@ -638,9 +744,8 @@ class InventoryTab(QWidget):
         for i, p in enumerate(prods):
             try:
                 self._populate_row(i, p, cur, can_edit, can_delete)
-                stock = _safe_float(p.get('stock'), 0)
-                mins = _safe_int(p.get('min_stock'), 5)
-                if stock <= mins:
+                from desktop.utils.inventory_filters import stock_band
+                if stock_band(p) == 'low':
                     low += 1
             except Exception as e:
                 _log.warning(f"Skipping product row {p.get('id')}: {e}")
@@ -671,16 +776,23 @@ class InventoryTab(QWidget):
 
     def _populate_row(self, i, p, cur, can_edit, can_delete):
         self._tbl.insertRow(i)
+        from desktop.utils.inventory_filters import stock_band
         stock = _safe_float(p.get('stock'), 0)
-        mins = _safe_int(p.get('min_stock'), 5)
-        is_low = stock <= mins
-        is_zero = stock <= 0
+        band = stock_band(p)
+        is_low = band == 'low'
+        is_zero = band == 'out'
 
         from desktop.utils.display_category import display_category, normalize_product_name
+        from desktop.utils.inventory_filters import assigned_category
         raw_name = p.get('name', '') or ''
         name = normalize_product_name(raw_name)
         sku = p.get('sku', '') or ''
-        cat_label, cat_tip = display_category(p.get('category', '') or '', raw_name)
+        raw_cat = assigned_category(p)
+        known = getattr(self, '_categories_by_name', {}) or {}
+        if raw_cat and raw_cat.casefold() in known:
+            cat_label, cat_tip = raw_cat, raw_cat
+        else:
+            cat_label, cat_tip = display_category(p.get('category', '') or '', raw_name)
         unit = p.get('unit', 'pcs') or 'pcs'
         price_s = f"{cur} {_safe_float(p.get('price')):,.2f}"
         cost_s = f"{cur} {_safe_float(p.get('cost_price')):,.2f}"
