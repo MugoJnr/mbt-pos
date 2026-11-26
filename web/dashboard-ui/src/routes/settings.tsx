@@ -237,9 +237,14 @@ function Settings() {
       }
       setPrintJob(job);
     }
+    if (!job?.id) {
+      setPrintBusy(false);
+      return;
+    }
+    const jobId = job.id;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const current = await GET<Record<string, string>>(`/settings/device-commands/${job.id}`);
+      const current = await GET<Record<string, string>>(`/settings/device-commands/${jobId}`);
       if (current && current.status && current.status !== "pending" && current.status !== "running") {
         setPrintJob(current);
         setPrintBusy(false);

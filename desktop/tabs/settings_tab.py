@@ -235,9 +235,10 @@ class SettingsTab(QWidget):
         # Hide stepper arrows — avoids clipped control next to "%" affix
         self.tax_rate.setButtonSymbols(QDoubleSpinBox.NoButtons)
         for lbl, w in [('Shop Name *', self.shop_name), ('Address', self.shop_address),
-                       ('Phone', self.shop_phone), ('Currency', self.currency),
-                       ('Tax Rate', self.tax_rate)]:
+                       ('Phone', self.shop_phone)]:
             FormRow(lbl, w, sf)
+        self.currency.hide()
+        self.tax_rate.hide()
         sf_body.addWidget(sf_w)
         lay.addWidget(sg)
 
@@ -621,11 +622,6 @@ class SettingsTab(QWidget):
             'Touchpad scrolling is left unchanged. Quantity steps stay in their own settings.')
         FormRow('Checkout Layout', self.pos_checkout_layout, wform)
         FormRow('Mouse Wheel Scroll Interval', self.wheel_scroll_interval, wform)
-        change_password = SecondaryBtn('Change my password')
-        change_password.setMinimumHeight(42)
-        change_password.setToolTip('Change the password for the signed-in account')
-        change_password.clicked.connect(self._open_my_password)
-        wform.addRow(change_password)
         FormRow('Default customer', self.after_sale_default_customer, wform)
         FormRow('Default payment', self.after_sale_default_payment, wform)
         FormRow('', self.after_sale_focus_barcode, wform)
@@ -640,6 +636,14 @@ class SettingsTab(QWidget):
         wform.addRow(wf_hint)
         wf_body.addWidget(wf_w)
         lay.addWidget(wg)
+
+        account_card, account_body = section_card('*', 'Account', 'Password for the person signed in now')
+        change_password = SecondaryBtn('Change my password')
+        change_password.setMinimumHeight(42)
+        change_password.setToolTip('Change the password for the signed-in account')
+        change_password.clicked.connect(self._open_my_password)
+        account_body.addWidget(change_password)
+        lay.addWidget(account_card)
 
         # ── Automatic reports ─────────────────────────────────────────────────
         rg, rf_body = section_card('*', 'Automatic Reports & Backups', 'Auto-schedule via MugoByte Platform notification center')

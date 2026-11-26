@@ -100,9 +100,7 @@ class ReceiptDetailDialog(QDialog):
             f"<b>Payment:</b> {self.sale.get('payment_method') or '—'} &nbsp; "
             f"<b>Customer:</b> {self.sale.get('customer_name') or 'Walk-in'} "
             f"{('· ' + self.sale.get('customer_phone')) if self.sale.get('customer_phone') else ''}<br>"
-            f"<b>Subtotal:</b> {self.currency} {float(self.sale.get('subtotal') or 0):,.2f} &nbsp; "
-            f"<b>Discount:</b> {self.currency} {float(self.sale.get('discount') or 0):,.2f} &nbsp; "
-            f"<b>Tax:</b> {self.currency} {float(self.sale.get('tax') or 0):,.2f}<br>"
+            f"{self._money_html()}"
             f"<b>Total:</b> <span style='color:{C.get('gold', C['text'])};font-size:15px'>"
             f"{self.currency} {float(self.sale.get('total') or 0):,.2f}</span> &nbsp; "
             f"<b>Paid:</b> {self.currency} {float(self.sale.get('amount_paid') or 0):,.2f}"
@@ -168,6 +166,7 @@ class ReceiptDetailDialog(QDialog):
 
         role = (self.user.get('role') or '').lower()
         is_voided = status in ('void', 'voided')
+        is_return = status in ('return', 'refund') or str(self.sale.get('receipt_number') or '').startswith('RET-')
 
         if role == 'superadmin' and is_voided:
             restore_b = PrimaryBtn('Un-void / Restore Receipt', 40)
@@ -180,7 +179,7 @@ class ReceiptDetailDialog(QDialog):
             edit_b.clicked.connect(self._edit)
             btns.addWidget(edit_b)
 
-        if not is_voided:
+        if not is_voided and not is_return:
             try:
                 from desktop.utils.security import can_request_void
                 if can_request_void(self.user):
@@ -194,6 +193,20 @@ class ReceiptDetailDialog(QDialog):
         close_b.clicked.connect(self.reject)
         btns.addWidget(close_b)
         lay.addLayout(btns)
+
+    def _money_html(self) -> str:
+        from printing.sale_documents import receipt_total_rows
+        bits = []
+        for label, amount in receipt_total_rows(
+            self.sale.get('subtotal'), self.sale.get('discount'),
+            self.sale.get('tax'), self.sale.get('total'),
+        ):
+            if label == "Total":
+                continue
+            shown = abs(amount) if label == "Discount" else amount
+            prefix = "-" if label == "Discount" else ""
+            bits.append(f"<b>{label}:</b> {prefix}{self.currency} {shown:,.2f}")
+        return " &nbsp; ".join(bits) + "<br>"
 
     def _unvoid(self):
         from PyQt5.QtWidgets import QInputDialog

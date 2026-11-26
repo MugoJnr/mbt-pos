@@ -115,7 +115,7 @@ ENTITY_FIELD_ALLOWLIST = {
         'discount', 'tax', 'total', 'payment_method', 'amount_paid',
         'change_amount', 'status', 'customer_id', 'credit_applied',
         'electronic_paid', 'original_total', 'cash_rounding_adj',
-        'variance_handling', 'created_at', 'updated_at',
+        'variance_handling', 'sale_date', 'created_at', 'updated_at',
     },
     'sale_item': {
         'id', 'sale_id', 'product_id', 'product_name', 'sku', 'category',
@@ -202,6 +202,14 @@ def _is_secret_setting_key(key: str) -> bool:
     return any(frag in k for frag in SETTING_SECRET_KEY_FRAGMENTS)
 
 
+def debt_payment_is_opening_or_reversed(row: dict | None) -> bool:
+    """An opening tender is already on the sale. A reversed payment is not money collected."""
+    raw = row or {}
+    if str(raw.get('notes') or '').startswith('Initial payment'):
+        return True
+    return str(raw.get('reversed') or '').lower() in ('1', 'true')
+
+
 def serialize_entity_payload(entity_type: str, row: dict | None) -> dict:
     """Return a redacted/allowlisted payload safe for cloud analytics sync."""
     if not row:
@@ -240,6 +248,12 @@ def serialize_entity_payload(entity_type: str, row: dict | None) -> dict:
     out.pop('national_id', None)
     out.pop('mpesa_ref', None)
     out.pop('payment_reference', None)
+    if entity_type == 'sale':
+        sale_day = str(out.get('sale_date') or '')[:10]
+        if len(sale_day) == 10 and sale_day[4] == '-' and sale_day[7] == '-':
+            # The portal dates a sale by this timestamp. Noon in Nairobi stays
+            # on the business day recorded at the till.
+            out['created_at'] = f'{sale_day}T12:00:00+03:00'
     return out
 
 
@@ -917,9 +931,16 @@ class _DoNotUse:
                         (event['row_id'],),
                     ).fetchone()
                     if current:
-                        payload = serialize_entity_payload(
-                            entity_type, dict(current)
-                        )
+                        if (
+                            entity_type == 'debt_payment'
+                            and debt_payment_is_opening_or_reversed(dict(current))
+                        ):
+                            deleted = True
+                            payload = {'record_kind': 'opening_or_reversed'}
+                        else:
+                            payload = serialize_entity_payload(
+                                entity_type, dict(current)
+                            )
                     else:
                         deleted = True
                 elif deleted:
@@ -1128,10 +1149,13 @@ class _DoNotUse:
             daily_path = f'{base}/daily/{day}.mbtenc'
             # Manual runs still refresh latest+daily; no unique timestamped blob.
             object_path = latest_path
+            staging_path = f'{base}/staging/{stamp}.mbtenc'
 
             client = SupabaseClient()
             self._emit('Uploading to MugoByte Platform…', 55)
             try:
+                # The current latest file stays in place until this copy is stored.
+                client.upload_file(staging_path, enc_path, content_type='application/octet-stream')
                 client.upload_file(latest_path, enc_path, content_type='application/octet-stream')
                 try:
                     client.upload_file(daily_path, enc_path, content_type='application/octet-stream')

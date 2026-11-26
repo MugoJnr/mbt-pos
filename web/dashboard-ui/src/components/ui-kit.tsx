@@ -6,14 +6,17 @@ export function Card({
   className = "",
   as: As = "div",
   padded = false,
+  id,
 }: {
   children: ReactNode;
   className?: string;
   as?: "div" | "section";
   padded?: boolean;
+  id?: string;
 }) {
   return (
     <As
+      id={id}
       className={cn(
         "rounded-xl border border-border bg-card shadow-card transition-ui",
         padded && "p-4 sm:p-5",
@@ -214,7 +217,7 @@ export function KpiCard({
   value: string;
   sub?: string;
   accent?: "ok" | "warn" | "err" | "info" | "gold";
-  icon: ReactNode;
+  icon?: ReactNode;
   className?: string;
 }) {
   const bar = {
@@ -241,32 +244,34 @@ export function KpiCard({
   return (
     <div
       className={cn(
-        "relative rounded-xl border border-border bg-card shadow-card overflow-hidden group hover:border-gold/25 transition-ui",
+        "mbt-kpi relative rounded-xl border border-border bg-card shadow-card overflow-hidden group hover:border-gold/25 transition-ui",
         className,
       )}
     >
       <span className={cn("absolute left-0 top-0 bottom-0 w-[3px]", bar)} />
       <div className="absolute inset-0 bg-gradient-to-br from-transparent via-transparent to-gold/[0.03] pointer-events-none" />
       <div className="relative p-3.5 sm:p-4 flex items-start gap-3">
-        <div
-          className={cn(
-            "h-10 w-10 rounded-xl grid place-items-center shrink-0 transition-ui group-hover:scale-105",
-            iconBg,
-          )}
-        >
-          {icon}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-eyebrow truncate">{label}</div>
+        {icon ? (
           <div
             className={cn(
-              "text-xl sm:text-2xl font-extrabold leading-tight mt-0.5 tabular-nums truncate tracking-tight",
+              "h-10 w-10 rounded-xl grid place-items-center shrink-0 transition-ui group-hover:scale-105",
+              iconBg,
+            )}
+          >
+            {icon}
+          </div>
+        ) : null}
+        <div className="flex-1">
+          <div className="text-eyebrow whitespace-normal">{label}</div>
+          <div
+            className={cn(
+              "mbt-kpi-value font-extrabold leading-tight mt-0.5 tabular-nums tracking-tight",
               valueColor,
             )}
           >
             {value}
           </div>
-          {sub ? <div className="text-xs text-text2 mt-0.5 truncate">{sub}</div> : null}
+          {sub ? <div className="text-xs text-text2 mt-0.5 whitespace-normal">{sub}</div> : null}
         </div>
       </div>
     </div>
@@ -283,15 +288,15 @@ export function Table({
   sticky?: boolean;
 }) {
   return (
-    <div className="overflow-x-auto scrollbar-thin">
-      <table className="w-full text-sm">
+    <div className="mbt-table-scroll overflow-x-auto scrollbar-thin">
+      <table className="mbt-data-table w-full text-sm">
         <thead>
           <tr className="text-left">
             {head.map((h, i) => (
               <th
                 key={i}
                 className={cn(
-                  "px-4 py-3 text-eyebrow border-b border-border bg-panel/50",
+                  "px-4 py-3 text-eyebrow border-b border-border bg-panel/50 whitespace-nowrap",
                   sticky && "sticky top-0 z-[1]",
                 )}
               >

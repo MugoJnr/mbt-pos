@@ -403,7 +403,7 @@ class ExistingRecoveryCase(unittest.TestCase):
             key: os.environ.get(key)
             for key in ('MBT_TEST_INSTANCE', 'MBT_DATA_ROOT', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA')
         }
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         root = self.tmp.name
         os.environ['MBT_TEST_INSTANCE'] = '1'
         os.environ['MBT_DATA_ROOT'] = root
@@ -466,8 +466,21 @@ class ExistingRecoveryCase(unittest.TestCase):
         )
         conn.commit()
         conn.close()
+        from unittest.mock import patch
+        self._patches = [
+            patch('mbt_paths.get_db_path', return_value=db_path),
+            patch('desktop.utils.api_client.get_db_path', return_value=db_path),
+        ]
+        for item in self._patches:
+            item.start()
+        import desktop.utils.api_client as ac
+        ac._SCHEMA_READY = False
 
     def tearDown(self):
+        for item in getattr(self, '_patches', []):
+            item.stop()
+        import desktop.utils.api_client as ac
+        ac._SCHEMA_READY = False
         for key, value in self._saved.items():
             if value is None:
                 os.environ.pop(key, None)

@@ -58,6 +58,23 @@ def _day(expr: str, start: str, end: str) -> tuple[str, list]:
     return "1=1", []
 
 
+def _like_any(query: str, expressions: list[str]) -> tuple[str, list]:
+    """Match a reference or name in SQL, including rows older than the open page."""
+    text = (query or "").strip()
+    if not text or not expressions:
+        return "", []
+    needle = _like(text)
+    parts = []
+    params: list = []
+    for expr in expressions:
+        parts.append(f"IFNULL({expr},'') LIKE ?")
+        params.append(needle)
+    # An exact reference must win even when the same digits appear inside a longer note.
+    parts.insert(0, f"IFNULL({expressions[0]},'') = ?")
+    params.insert(0, text)
+    return " AND (" + " OR ".join(parts) + ")", params
+
+
 def _sale_history(db, tables: set[str], sale_id: int) -> list:
     if not _has(tables, "sale_edits"):
         return []
@@ -128,10 +145,10 @@ def list_receipts(
             raw = (item.get("status") or "").lower()
             if status not in (shown, raw):
                 return False
-        if query:
+        if query and not item.get("sql_match"):
             blob = " ".join(
                 str(item.get(key) or "")
-                for key in ("reference", "user", "summary", "payment", "kind", "note")
+                for key in ("reference", "user", "summary", "payment", "kind", "note", "party")
             ).lower()
             if query.lower() not in blob:
                 return False
@@ -142,16 +159,43 @@ def list_receipts(
         sale_cols = {item[1] for item in db.execute("PRAGMA table_info(sales)").fetchall()}
         tender_sql = "s.payment_tenders" if "payment_tenders" in sale_cols else "NULL AS payment_tenders"
         sale_date_sql = "s.sale_date" if "sale_date" in sale_cols else "NULL AS sale_date"
+        sale_match, sale_params = "", []
+        if query:
+            expressions = [
+                "s.receipt_number", "s.cashier_name", "s.payment_method",
+            ]
+            exists = []
+            if _has(tables, "sale_items"):
+                exists.append(
+                    "EXISTS (SELECT 1 FROM sale_items qsi WHERE qsi.sale_id=s.id "
+                    "AND IFNULL(qsi.product_name,'') LIKE ?)"
+                )
+            if _has(tables, "customers"):
+                exists.append(
+                    "EXISTS (SELECT 1 FROM customers qc WHERE qc.id=s.customer_id "
+                    "AND (IFNULL(qc.name,'') LIKE ? OR IFNULL(qc.phone,'') LIKE ?))"
+                )
+            sale_match, sale_params = _like_any(query, expressions)
+            if exists:
+                needle = _like(query)
+                extra = []
+                for piece in exists:
+                    extra.append(piece)
+                    sale_params.append(needle)
+                    if "qc.phone" in piece:
+                        sale_params.append(needle)
+                sale_match = sale_match[:-1] + " OR " + " OR ".join(extra) + ")"
         found = db.execute(
             f"""SELECT s.id, s.receipt_number, s.created_at, {sale_date_sql}, s.cashier_name,
                        s.total, s.status, s.payment_method, {tender_sql},
                        GROUP_CONCAT(si.product_name, ', ') AS products
                 FROM sales s
                 LEFT JOIN sale_items si ON si.sale_id = s.id
-                WHERE {clause}
+                WHERE {clause}{sale_match}
                 GROUP BY s.id
-                ORDER BY s.id DESC LIMIT 1000""",
-            params,
+                ORDER BY CASE WHEN s.receipt_number = ? THEN 0 ELSE 1 END, s.id DESC
+                LIMIT ?""",
+            [*params, *sale_params, query, 500 if query else 1000],
         ).fetchall()
         for row in found:
             raw_status = (row["status"] or "completed").lower()
@@ -170,6 +214,7 @@ def list_receipts(
                 ),
                 "payment": _paid_with(row["payment_method"] or "", row["payment_tenders"]),
                 "summary": row["products"] or "",
+                "sql_match": bool(query),
             })
         if _has(tables, "sale_edits"):
             restored = {
@@ -183,13 +228,16 @@ def list_receipts(
 
     if can_consumption and _has(tables, "stock_consumptions"):
         clause, params = _day("COALESCE(c.date, c.created_at)", start, end)
+        match, match_params = _like_any(
+            query, ["c.reference_no", "c.created_by_name", "c.reason"],
+        ) if query else ("", [])
         found = db.execute(
             f"""SELECT c.id, c.reference_no, c.created_at, c.created_by_name,
                        c.total_cost, c.voided, c.reason
                 FROM stock_consumptions c
-                WHERE {clause}
-                ORDER BY c.id DESC LIMIT 1000""",
-            params,
+                WHERE {clause}{match}
+                ORDER BY c.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
         ).fetchall()
         for row in found:
             rows.append({
@@ -203,6 +251,7 @@ def list_receipts(
                 "display_status": "voided" if int(row["voided"] or 0) else "active",
                 "payment": "",
                 "summary": row["reason"] or "",
+                "sql_match": bool(query),
             })
         if _has(tables, "stock_movements"):
             restored_refs = {
@@ -222,16 +271,30 @@ def list_receipts(
         clause, params = _day("r.created_at", start, end)
         receipt_cols = {item[1] for item in db.execute("PRAGMA table_info(stock_receipts)").fetchall()}
         effective_sql = "r.effective_date" if "effective_date" in receipt_cols else "NULL AS effective_date"
+        supplier_name = (
+            "(SELECT name FROM suppliers qs WHERE qs.id=r.supplier_id)"
+            if _has(tables, "suppliers") else "''"
+        )
+        match, match_params = ("", [])
+        if query:
+            match, match_params = _like_any(
+                query, ["r.receipt_number", "r.username", "r.reference_note", supplier_name],
+            )
+            match = match[:-1] + (
+                " OR EXISTS (SELECT 1 FROM stock_receipt_lines ql "
+                "WHERE ql.receipt_id=r.id AND IFNULL(ql.product_name,'') LIKE ?))"
+            )
+            match_params.append(_like(query))
         found = db.execute(
             f"""SELECT r.id, r.receipt_number, r.created_at, {effective_sql}, r.username,
-                       r.grand_total, r.reference_note,
+                       r.grand_total, r.reference_note, {supplier_name} AS supplier_name,
                        GROUP_CONCAT(l.product_name, ', ') AS products
                 FROM stock_receipts r
                 LEFT JOIN stock_receipt_lines l ON l.receipt_id = r.id
-                WHERE {clause}
+                WHERE {clause}{match}
                 GROUP BY r.id
-                ORDER BY r.id DESC LIMIT 1000""",
-            params,
+                ORDER BY r.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
         ).fetchall()
         for row in found:
             rows.append({
@@ -241,22 +304,27 @@ def list_receipts(
                 "at": row["effective_date"] or row["created_at"],
                 "business_date": row["effective_date"] or "",
                 "user": row["username"] or "",
-                "amount": row["grand_total"],
+                "party": row["supplier_name"] or "",
+                "amount": row["grand_total"] if can_finance else None,
                 "status": "received",
                 "payment": "",
                 "summary": row["products"] or row["reference_note"] or "",
                 "note": row["reference_note"] or "",
+                "sql_match": bool(query),
             })
 
     if can_debt and _has(tables, "debt_payments"):
         clause, params = _day("p.created_at", start, end)
+        match, match_params = _like_any(
+            query, ["p.payment_receipt", "p.cashier_name", "p.payment_method"],
+        ) if query else ("", [])
         found = db.execute(
             f"""SELECT p.id, p.payment_receipt, p.created_at, p.cashier_name,
                        p.amount, p.payment_method
                 FROM debt_payments p
-                WHERE {clause}
-                ORDER BY p.id DESC LIMIT 1000""",
-            params,
+                WHERE {clause}{match}
+                ORDER BY p.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
         ).fetchall()
         for row in found:
             rows.append({
@@ -269,17 +337,21 @@ def list_receipts(
                 "status": "recorded",
                 "payment": row["payment_method"] or "",
                 "summary": "Customer repayment",
+                "sql_match": bool(query),
             })
 
     if can_finance and _has(tables, "expense_entries"):
         clause, params = _day("e.expense_date", start, end)
+        match, match_params = _like_any(
+            query, ["e.expense_number", "e.created_by_name", "e.description", "e.vendor_name"],
+        ) if query else ("", [])
         found = db.execute(
             f"""SELECT e.id, e.expense_number, e.created_at, e.created_by_name,
                        e.amount, e.status, e.description, e.vendor_name
                 FROM expense_entries e
-                WHERE e.deleted_at IS NULL AND {clause}
-                ORDER BY e.id DESC LIMIT 1000""",
-            params,
+                WHERE e.deleted_at IS NULL AND {clause}{match}
+                ORDER BY e.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
         ).fetchall()
         for row in found:
             rows.append({
@@ -292,18 +364,23 @@ def list_receipts(
                 "status": row["status"] or "approved",
                 "payment": "",
                 "summary": row["description"] or row["vendor_name"] or "",
+                "party": row["vendor_name"] or "",
+                "sql_match": bool(query),
             })
 
     if (can_inventory or can_adjustments) and _has(tables, "stock_adjustment_requests"):
         clause, params = _day("a.created_at", start, end)
+        match, match_params = _like_any(
+            query, ["a.request_number", "a.username", "a.product_name", "a.reason"],
+        ) if query else ("", [])
         found = db.execute(
             f"""SELECT a.id, a.request_number, a.created_at, a.username,
                        a.product_name, a.current_stock, a.requested_qty,
                        a.status, a.reason
                 FROM stock_adjustment_requests a
-                WHERE {clause}
-                ORDER BY a.id DESC LIMIT 1000""",
-            params,
+                WHERE {clause}{match}
+                ORDER BY a.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
         ).fetchall()
         for row in found:
             rows.append({
@@ -319,20 +396,26 @@ def list_receipts(
                     f"{row['product_name']}: {row['current_stock']} → "
                     f"{row['requested_qty']}. {row['reason'] or ''}"
                 ).strip(),
+                "sql_match": bool(query),
             })
 
     if can_approvals and _has(tables, "cc_approvals"):
         clause, params = _day("a.created_at", start, end)
+        match, match_params = _like_any(
+            query, ["a.title", "a.requested_by", "a.details", "a.type"],
+        ) if query else ("", [])
         sql = (
             f"""SELECT a.id, a.type, a.title, a.created_at, a.requested_by,
                        a.amount, a.status, a.details
                 FROM cc_approvals a
-                WHERE {clause}"""
+                WHERE {clause}{match}"""
         )
+        params.extend(match_params)
         if not can_inventory and username:
             sql += " AND a.requested_by=?"
             params.append(username)
-        sql += " ORDER BY a.id DESC LIMIT 1000"
+        sql += " ORDER BY a.id DESC LIMIT ?"
+        params.append(500 if query else 1000)
         found = db.execute(sql, params).fetchall()
         for row in found:
             rows.append({
@@ -345,9 +428,45 @@ def list_receipts(
                 "status": row["status"] or "pending",
                 "payment": "",
                 "summary": row["title"] or row["details"] or "",
+                "sql_match": bool(query),
+            })
+
+    if can_finance and _has(tables, "supplier_payments"):
+        clause, params = _day("COALESCE(p.paid_at, p.created_at)", start, end)
+        supplier_name = (
+            "(SELECT name FROM suppliers qs WHERE qs.id=p.supplier_id)"
+            if _has(tables, "suppliers") else "''"
+        )
+        match, match_params = _like_any(
+            query, ["p.payment_number", "p.reference", "p.notes", "p.username", supplier_name],
+        ) if query else ("", [])
+        found = db.execute(
+            f"""SELECT p.id, p.payment_number, p.created_at, p.username,
+                       p.amount, p.method, p.reference, p.status, {supplier_name} AS supplier_name
+                FROM supplier_payments p
+                WHERE COALESCE(p.reversed, 0)=0 AND {clause}{match}
+                ORDER BY p.id DESC LIMIT ?""",
+            [*params, *match_params, 500 if query else 1000],
+        ).fetchall()
+        for row in found:
+            rows.append({
+                "kind": "supplier_payment",
+                "id": row["id"],
+                "reference": row["payment_number"],
+                "at": row["created_at"],
+                "user": row["username"] or "",
+                "party": row["supplier_name"] or "",
+                "amount": row["amount"],
+                "status": row["status"] or "posted",
+                "payment": row["method"] or "",
+                "summary": row["supplier_name"] or row["reference"] or "Supplier payment",
+                "note": row["reference"] or "",
+                "sql_match": bool(query),
             })
 
     kept = [item for item in rows if keep(item)]
+    for item in kept:
+        item.pop("sql_match", None)
     kept.sort(
         key=lambda item: (_sort_stamp(item.get("at")), int(item.get("id") or 0)),
         reverse=True,
@@ -407,7 +526,9 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
         linked = []
         if _has(tables, "cc_approvals"):
             for approval in db.execute(
-                "SELECT id, type, status, title, details, review_note FROM cc_approvals"
+                """SELECT id, type, status, title, details, review_note,
+                          requested_by, reviewed_by, created_at
+                   FROM cc_approvals"""
             ).fetchall():
                 meta = {}
                 try:
@@ -423,6 +544,20 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
                     linked.append(item)
         from desktop.utils.payment_tenders import explain_sale_payments
         payments = explain_sale_payments(body)
+        history = _sale_history(db, tables, record_id) + _receipt_audit(
+            db, tables, sale["receipt_number"] or ""
+        )
+        for approval in linked:
+            history.append({
+                "at": approval.get("created_at") or "",
+                "action": f"{approval.get('type') or 'request'} {approval.get('status') or ''}".strip(),
+                "edited_by_name": approval.get("requested_by") or "",
+                "username": approval.get("reviewed_by") or "",
+                "reason": approval.get("current_reason") or approval.get("details") or "",
+                "old_value": "",
+                "new_value": approval.get("review_note") or "",
+                "status": approval.get("status") or "",
+            })
         return {
             "kind": "sale",
             "reference": sale["receipt_number"],
@@ -433,9 +568,7 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
             "customer": customer,
             "tenders": tenders,
             "debt": debt,
-            "history": _sale_history(db, tables, record_id) + _receipt_audit(
-                db, tables, sale["receipt_number"] or ""
-            ),
+            "history": history,
         }
 
     if kind == "consumption" and _has(tables, "stock_consumptions"):
@@ -482,11 +615,31 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
             cleaned.append(item)
         if not show_cost:
             header.pop("grand_total", None)
+            for key in ("unit_cost", "landed_cost", "extra_cost", "buying_price"):
+                header.pop(key, None)
+        events = []
+        if _has(tables, "supplier_delivery_events"):
+            events = [
+                {
+                    "at": event["created_at"],
+                    "action": event["kind"],
+                    "edited_by_name": event["username"] or "",
+                    "reason": event["detail"] or "",
+                    "old_value": "",
+                    "new_value": "",
+                }
+                for event in db.execute(
+                    """SELECT kind, detail, username, created_at
+                       FROM supplier_delivery_events WHERE receipt_id=? ORDER BY id""",
+                    (record_id,),
+                ).fetchall()
+            ]
         return {
             "kind": "supplier",
             "reference": row["receipt_number"],
             "header": header,
             "lines": cleaned,
+            "history": events + _receipt_audit(db, tables, row["receipt_number"] or ""),
         }
 
     if kind == "stock_adjustment" and _has(tables, "stock_adjustment_requests"):
@@ -511,6 +664,29 @@ def receipt_detail(db, kind: str, record_id: int, *, show_cost: bool = False) ->
             "reference": row["payment_receipt"],
             "header": dict(row),
             "lines": [],
+        }
+
+    if kind == "supplier_payment" and _has(tables, "supplier_payments"):
+        row = db.execute("SELECT * FROM supplier_payments WHERE id=?", (record_id,)).fetchone()
+        if not row:
+            return None
+        header = dict(row)
+        if not show_cost:
+            return None
+        supplier = None
+        if header.get("supplier_id") and _has(tables, "suppliers"):
+            found = db.execute(
+                "SELECT id, name, phone FROM suppliers WHERE id=?",
+                (header["supplier_id"],),
+            ).fetchone()
+            supplier = dict(found) if found else None
+        return {
+            "kind": "supplier_payment",
+            "reference": row["payment_number"],
+            "header": header,
+            "supplier": supplier,
+            "lines": [],
+            "history": _receipt_audit(db, tables, row["payment_number"] or ""),
         }
 
     if kind == "expense" and _has(tables, "expense_entries"):

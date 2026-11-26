@@ -190,6 +190,22 @@ def _qa_btn(icon_key, label, accent, bg_dim, is_light=False):
 # STATUS ROW
 # ---
 
+def printer_status_label(settings: dict | None) -> tuple:
+    """(text, ok). A missing printer is not Ready."""
+    cfg = settings or {}
+    name = str(cfg.get('printer_name') or cfg.get('receipt_printer') or '').strip()
+    if not name:
+        return 'Not configured', False
+    return 'Configured', True
+
+
+def backup_status_label(last_success_at: str | None) -> tuple:
+    """(text, ok). No successful backup is not OK."""
+    if not str(last_success_at or '').strip():
+        return 'No backup yet', False
+    return 'OK', True
+
+
 def _status_row(label, value, color, is_light=False):
     p = _palette(is_light)
     w = QWidget(); w.setStyleSheet("background:transparent;")
@@ -615,10 +631,10 @@ class DashboardTab(QWidget):
 
         self._st_db_w,   self._st_db,   self._st_db_dot   = _status_row('Database',     'OK',      p['ok'],   self._is_light)
         self._st_api_w,  self._st_api,  self._st_api_dot  = _status_row('API',           'Online',  p['ok'],   self._is_light)
-        self._st_prn_w,  self._st_prn,  self._st_prn_dot  = _status_row('Printer',       'Ready',   p['ok'],   self._is_light)
+        self._st_prn_w,  self._st_prn,  self._st_prn_dot  = _status_row('Printer',       'Not configured', p['muted'], self._is_light)
         self._st_net_w,  self._st_net,  self._st_net_dot  = _status_row('Internet',      'Online',  p['ok'],   self._is_light)
         self._st_lic_w,  self._st_lic,  self._st_lic_dot  = _status_row('License',       'Active',  p['ok'],   self._is_light)
-        self._st_bak_w,  self._st_bak,  self._st_bak_dot  = _status_row('Backup',        'OK',      p['ok'],   self._is_light)
+        self._st_bak_w,  self._st_bak,  self._st_bak_dot  = _status_row('Backup',        'No backup yet', p['muted'], self._is_light)
         self._st_sync_w, self._st_sync, self._st_sync_dot = _status_row('Cloud Sync',    '--',       p['muted'],self._is_light)
         self._st_ver_w,  self._st_ver,  self._st_ver_dot  = _status_row('Version',       'v2.3',    p['info'], self._is_light)
         for w in (self._st_db_w, self._st_api_w, self._st_prn_w, self._st_net_w,
@@ -1549,13 +1565,29 @@ class DashboardTab(QWidget):
         p2 = _palette(self._is_light)
         from datetime import datetime as _dt
         now_s = _dt.now().strftime('%H:%M')
+        printer_text, printer_ok = printer_status_label(
+            self.api.get_settings() if hasattr(self.api, 'get_settings') else {})
+        last_backup = ''
+        try:
+            from desktop.utils.api_client import _db as _open_db
+            link = _open_db()
+            try:
+                row = link.execute(
+                    "SELECT value FROM system_settings WHERE key='last_local_backup_at'"
+                ).fetchone()
+                last_backup = row[0] if row and row[0] else ''
+            finally:
+                link.close()
+        except Exception:
+            last_backup = ''
+        backup_text, backup_ok = backup_status_label(last_backup)
         for lbl, text, color in (
             (self._st_db, 'OK | ' + now_s, p2['ok']),
             (self._st_api, 'Online | <40ms', p2['ok']),
-            (self._st_prn, 'Ready', p2['ok']),
+            (self._st_prn, printer_text, p2['ok'] if printer_ok else p2['warn']),
             (self._st_net, 'Online', p2['ok']),
             (self._st_lic, 'Active', p2['ok']),
-            (self._st_bak, 'OK', p2['ok']),
+            (self._st_bak, backup_text, p2['ok'] if backup_ok else p2['warn']),
         ):
             lbl.setText(text)
             lbl.setStyleSheet(
@@ -1590,7 +1622,23 @@ class DashboardTab(QWidget):
             row.setStyleSheet(
                 f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
             lay.addWidget(row)
-        bak = QLabel('+  Database ready | Backup OK')
+        last_backup = ''
+        try:
+            from desktop.utils.api_client import _db as _open_db
+            link = _open_db()
+            try:
+                row = link.execute(
+                    "SELECT value FROM system_settings WHERE key='last_local_backup_at'"
+                ).fetchone()
+                last_backup = row[0] if row and row[0] else ''
+            finally:
+                link.close()
+        except Exception:
+            last_backup = ''
+        if backup_status_label(last_backup)[1]:
+            bak = QLabel('+  Database ready | Backup OK')
+        else:
+            bak = QLabel('+  Database ready | No successful backup yet')
         bak.setStyleSheet(
             f"color:{p['text2']}; font-size:12px; background:transparent; border:none;")
         lay.addWidget(bak)

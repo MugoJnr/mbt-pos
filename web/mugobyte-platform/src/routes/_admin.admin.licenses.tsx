@@ -6,6 +6,7 @@ import {
   Ban, CalendarPlus, ShieldAlert, ArrowRightLeft, Wifi, Link2, Eraser,
 } from "lucide-react";
 import { toast } from "sonner";
+import { formatLicenceTime } from "@/lib/nairobi-time";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -362,7 +363,7 @@ function AdminLicensesPage() {
                             {row.product_id || "mbt-pos"} · {row.plan} · {row.activated_devices ?? 0}/{row.max_devices ?? 1} devices
                             {row.org_id ? ` · org ${String(row.org_id).slice(0, 8)}…` : ""}
                           </div>
-                          <div className="text-xs text-muted-foreground">Expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}</div>
+                          <div className="text-xs text-muted-foreground">Expires {formatLicenceTime(row.expires_at)}</div>
                           <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                             <div>Email: <span className="font-mono text-foreground">{row.assigned_email || "—"}</span></div>
                             <div>Device: <span className="font-mono text-foreground">{row.reserved_device_id || "—"}</span></div>
@@ -493,7 +494,7 @@ function AdminLicensesPage() {
               ) : (histQ.data?.history || []).map((h: any, i: number) => (
                 <div key={h.id || i} className="rounded-lg border border-border/60 px-3 py-2 text-sm">
                   <div className="font-medium capitalize">{h.action}</div>
-                  <div className="text-xs text-muted-foreground">{h.created_at ? new Date(h.created_at).toLocaleString() : "—"}</div>
+                  <div className="text-xs text-muted-foreground">{formatLicenceTime(h.created_at)}</div>
                 </div>
               ))}
             </CardContent>

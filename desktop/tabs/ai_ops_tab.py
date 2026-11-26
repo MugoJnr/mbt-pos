@@ -360,9 +360,13 @@ class AiOpsTab(QWidget):
             '; '.join(alerts[:3]) if alerts else 'All weighted checks within tolerance.')
         self._health_list.clear()
         for name, chk in (data.get('checks') or {}).items():
-            stub = ' [stub]' if chk.get('stub') else ''
+            if chk.get('unavailable') or chk.get('score') is None:
+                self._health_list.addItem(
+                    f"{name.upper()}  ·  unavailable  —  {chk.get('detail', '')}"
+                )
+                continue
             self._health_list.addItem(
-                f"{name.upper()}  ·  {chk.get('score', '—')}/100{stub}  —  {chk.get('detail', '')}"
+                f"{name.upper()}  ·  {chk.get('score', '—')}/100  —  {chk.get('detail', '')}"
             )
         self._apply_theme_bits()
 

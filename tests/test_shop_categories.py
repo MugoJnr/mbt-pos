@@ -131,7 +131,7 @@ class ShopCategoryTests(unittest.TestCase):
         saved = self.api.create_product({
             'name': 'No Group', 'price': 15, 'cost_price': 5, 'stock': 1,
         })
-        self.assertTrue(saved.get('success'), saved)
+        self.assertEqual(saved.get('status'), 403, saved)
         renamed = self.api.update_category(made['id'], {'name': 'Snacks Renamed'})
         self.assertEqual(renamed.get('status'), 403, renamed)
 

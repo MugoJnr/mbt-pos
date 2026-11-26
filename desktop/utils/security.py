@@ -43,7 +43,7 @@ _PERMISSIONS = {
         'restock.view',
     },
     ROLE_MANAGER: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.refund', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.batch_price',
         'categories.create',
@@ -65,7 +65,7 @@ _PERMISSIONS = {
         'restock.view', 'restock.create', 'restock.manage', 'restock.purchase',
     },
     ROLE_ADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.refund', 'sales.request_void', 'sales.request_backdate', 'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.batch_price', 'inventory.direct_price',
         'inventory.sales.override_fifo',
@@ -92,7 +92,7 @@ _PERMISSIONS = {
         'restock.view', 'restock.create', 'restock.manage', 'restock.purchase',
     },
     ROLE_SUPERADMIN: {
-        'sales.create', 'sales.view_all', 'sales.void', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
+        'sales.create', 'sales.view_all', 'sales.void', 'sales.refund', 'sales.request_void', 'sales.request_backdate', 'sales.edit',
         'sales.business_day',
         'inventory.view', 'inventory.create', 'inventory.edit_info', 'inventory.receive',
         'inventory.batch_price', 'inventory.direct_price',
@@ -141,6 +141,7 @@ _ACTION_LABELS = {
     'sales.view_own': 'View own sales',
     'sales.view_all': 'View every sale',
     'sales.void': 'Void a sale',
+    'sales.refund': 'Refund a sale',
     'sales.request_void': 'Request a sale void',
     'sales.request_backdate': 'Request a backdated sale',
     'sales.business_day': 'Choose a business day',

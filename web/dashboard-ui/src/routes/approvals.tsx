@@ -86,13 +86,13 @@ function ApprovalsPage() {
   });
 
   const approveM = useMutation({
-    mutationFn: (item: { id: number; type: string; confirm?: boolean }) => {
+    mutationFn: async (item: { id: number; type: string; confirm?: boolean }) => {
       if (EXECUTABLE.has(item.type) && !sessionSuper && !pin.trim()) {
-        return Promise.resolve({
+        return {
           error: "Enter the Super-Admin PIN. The server checks it before anything changes.",
-        });
+        };
       }
-      return POST<{ success?: boolean; error?: string; message?: string; credit_payments_exist?: boolean }>(
+      return await POST<{ success?: boolean; error?: string; message?: string; credit_payments_exist?: boolean } | null>(
         `/approvals/${item.id}/approve`,
         {
           ...(EXECUTABLE.has(item.type) ? { pin } : {}),
@@ -223,7 +223,7 @@ function ApprovalsPage() {
                 }
                 setSendingVoid(true);
                 try {
-                  const data = await POST<{ success?: boolean; error?: string; duplicate?: boolean }>(
+                  const data = await POST<{ success?: boolean; error?: string; duplicate?: boolean; executed?: boolean; sale_status?: string }>(
                     "/sales/void-request",
                     { receipt_number: voidReceipt.trim(), reason: voidReason.trim() },
                   );
@@ -404,7 +404,7 @@ function ApprovalsPage() {
                         <button type="button" className="text-left" onClick={() => setReceiptFor(a)}>
                           <div className="font-medium text-text">{a.title}</div>
                           {a.details ? (
-                            <div className="text-xs text-text2 truncate max-w-xs">{a.details}</div>
+                            <div className="mbt-wrap text-xs text-text2 max-w-xs">{a.details}</div>
                           ) : null}
                           <div className="text-xs font-semibold text-gold">View receipt</div>
                         </button>

@@ -370,7 +370,7 @@ class InventoryTab(QWidget):
         hdr.setFixedHeight(40)
         hdr.setStyleSheet(
             f"QHeaderView::section {{ background:{C['card2']}; color:{C['text2']}; "
-            f"font-size:11px; font-weight:700; letter-spacing:0.6px; "
+            f"font-size:11px; font-weight:700; letter-spacing:0px; "
             f"padding:10px 12px; border:none; border-bottom:2px solid {C['border2']}; }}")
         # Category shows retail category (not supplier tags); tooltips carry source.
         # Widths are applied in _fit_columns so Actions stays inside a 1920 till
@@ -385,8 +385,8 @@ class InventoryTab(QWidget):
         align_header_right(self._tbl, 3, 4, 5)
         self._tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._tbl.setWordWrap(False)
-        self._tbl.setTextElideMode(Qt.ElideRight)
+        self._tbl.setWordWrap(True)
+        self._tbl.setTextElideMode(Qt.ElideNone)
         self._tbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self._tbl.setMinimumWidth(0)
         # Keep Actions header fully painted (avoid right-edge clip into scrollbar)

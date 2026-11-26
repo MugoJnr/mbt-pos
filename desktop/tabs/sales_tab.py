@@ -1390,7 +1390,7 @@ class SalesTab(QWidget):
                 stock_n = 0
             if stock_n <= 0:
                 _sfx('warning')
-                soft_warn(self, f'{(hit.get("name") or "Item")} is out of stock.')
+                self._stock_notice(f'{(hit.get("name") or "Item")} is out of stock. It was not added.')
             else:
                 self._add(hit, from_scan=True)
             self._search.clear()
@@ -1696,6 +1696,55 @@ class SalesTab(QWidget):
         item['total'] = round(gross - disc, 2)
         return item['total']
 
+    def _stock_notice(self, text: str = ''):
+        """Keep a stock message on the sale panel. A toast alone is not enough."""
+        lbl = getattr(self, '_stock_notice_lbl', None)
+        if lbl is None:
+            lbl = QLabel(self)
+            lbl.setWordWrap(True)
+            lbl.setObjectName('stockNotice')
+            self._stock_notice_lbl = lbl
+            host = getattr(self, '_cart_host', None) or self
+            lay = host.layout() if hasattr(host, 'layout') else None
+            if lay is not None:
+                lay.insertWidget(min(1, lay.count()), lbl)
+        if text:
+            lbl.setText(text)
+            lbl.setStyleSheet(
+                'color:#9B1C1C; background:#FEE2E2; font-size:14px; font-weight:700;'
+                ' padding:8px; border-radius:6px;')
+            lbl.show()
+        else:
+            lbl.clear()
+            lbl.hide()
+
+    def _stock_for(self, product_id):
+        for product in getattr(self, 'products', None) or []:
+            try:
+                if int(product.get('id') or 0) == int(product_id or 0):
+                    return float(product.get('stock') or 0)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _cart_stock_block(self) -> str:
+        lines = []
+        seen = {}
+        for item in getattr(self, 'cart', None) or []:
+            pid = item.get('product_id')
+            seen[pid] = seen.get(pid, 0) + float(item.get('quantity') or 0)
+        for pid, qty in seen.items():
+            stock = self._stock_for(pid)
+            if stock is None:
+                continue
+            if qty > stock + 1e-6:
+                name = next((
+                    str(i.get('base_name') or i.get('product_name') or 'Item')
+                    for i in self.cart if i.get('product_id') == pid
+                ), 'Item')
+                lines.append(f'{name} needs {qty:g} but only {stock:g} is in stock.')
+        return ' '.join(lines)
+
     def _add(self, p, from_scan: bool = False):
         if from_scan:
             _sfx('barcode_scan')
@@ -1716,6 +1765,18 @@ class SalesTab(QWidget):
         ), 4)
         step = qty_step_for_unit(p.get('unit'), decimal_qty=p.get('allow_decimal_qty'))
         quantity = 1.0 if current <= 0 else round(current + step, 4)
+        try:
+            stock_n = float(p.get('stock', 0) or 0)
+        except (TypeError, ValueError):
+            stock_n = 0
+        if quantity > stock_n + 1e-6:
+            name = p.get('name') or p.get('product_name') or 'Item'
+            self._stock_notice(
+                f'{name} is out of stock.' if stock_n <= 0
+                else f'{name} only has {stock_n:g} in stock. The sale was not increased.')
+            _sfx('warning')
+            return
+        self._stock_notice('')
         self._replace_product_lines(p, quantity)
 
     def _cart_fg(self):
@@ -2456,37 +2517,56 @@ class SalesTab(QWidget):
         self._recalc()
 
     def _qty(self, idx, v):
-        if 0 <= idx < len(self.cart):
-            from PyQt5.QtWidgets import QMessageBox
-            from desktop.utils.quantities import QuantityError, parse_quantity
-            unit = self.cart[idx].get('unit')
-            try:
-                q = parse_quantity(v, unit, decimal_qty=self.cart[idx].get('allow_decimal_qty'))
-            except QuantityError as exc:
-                message = str(exc)
-                if 'whole units' in message:
-                    name = self.cart[idx].get('product_name') or 'This product'
-                    message = f"'{name}' is sold in whole units."
-                if hasattr(self, '_cart_list'):
-                    self._cart_list.update_row(idx, self.cart[idx])
-                from PyQt5.QtWidgets import QWidget
-                if isinstance(self, QWidget):
-                    QMessageBox.warning(self, 'Quantity', message)
-                return
-            self._cart_select_idx = idx
-            self.cart[idx]['quantity'] = q
-            if self.cart[idx].get('fifo_override'):
-                self._apply_line_total(self.cart[idx])
-                self._refresh_cart()
-                return
-            product_id = self.cart[idx].get('product_id')
-            total = round(sum(
-                float(item.get('quantity') or 0)
-                for item in self.cart
-                if item.get('product_id') == product_id and not item.get('fifo_override')
-            ), 4)
-            self._replace_product_lines(self.cart[idx], total)
+        if not (0 <= idx < len(self.cart)):
             return
+        from PyQt5.QtCore import QTimer
+        from desktop.utils.quantities import QuantityError, parse_quantity
+        unit = self.cart[idx].get('unit')
+        try:
+            q = parse_quantity(v, unit, decimal_qty=self.cart[idx].get('allow_decimal_qty'))
+        except QuantityError as exc:
+            message = str(exc)
+            if 'whole units' in message:
+                name = self.cart[idx].get('product_name') or 'This product'
+                message = f"'{name}' is sold in whole units."
+            QTimer.singleShot(0, lambda i=idx, text=message: self._reject_qty(i, text))
+            return
+        self._cart_select_idx = idx
+        self.cart[idx]['quantity'] = q
+        self._apply_line_total(self.cart[idx])
+        self._recalc()
+        # Rebuilding the cart inside the spin signal deletes the box and crashes the till.
+        self._qty_pending = (idx, q)
+        QTimer.singleShot(0, self._flush_qty)
+
+    def _reject_qty(self, idx, message):
+        if hasattr(self, '_cart_list') and 0 <= idx < len(self.cart):
+            self._cart_list.update_row(idx, self.cart[idx])
+        from PyQt5.QtWidgets import QMessageBox, QWidget
+        if isinstance(self, QWidget):
+            QMessageBox.warning(self, 'Quantity', message)
+
+    def _flush_qty(self):
+        pending = getattr(self, '_qty_pending', None)
+        self._qty_pending = None
+        if not pending:
+            return
+        idx, q = pending
+        if not (0 <= idx < len(self.cart)):
+            return
+        if abs(float(self.cart[idx].get('quantity') or 0) - float(q)) > 0.0001:
+            return
+        if self.cart[idx].get('fifo_override'):
+            self._apply_line_total(self.cart[idx])
+            self._refresh_cart()
+            return
+        product_id = self.cart[idx].get('product_id')
+        total = round(sum(
+            float(item.get('quantity') or 0)
+            for item in self.cart
+            if item.get('product_id') == product_id and not item.get('fifo_override')
+        ), 4)
+        self._replace_product_lines(self.cart[idx], total)
 
     def _change_qty(self, idx, delta):
         if not (0 <= idx < len(self.cart)):
@@ -2757,6 +2837,11 @@ class SalesTab(QWidget):
         is_credit = self._is_credit_sale()
         is_debt = is_part or is_credit
         due = self._amount_due()
+        stock_block = self._cart_stock_block()
+        if stock_block:
+            self._stock_notice(stock_block + ' The sale was not completed.')
+            _sfx('warning')
+            return
         self._pending_alloc = None
         if self._using_tender_lines() and (pay_method == 'Mixed' or is_part):
             from desktop.utils.payment_tenders import allocate_sale
@@ -2764,7 +2849,6 @@ class SalesTab(QWidget):
             alloc = allocate_sale(due, rows)
             if alloc.get('error'):
                 self._tender_lines.show_error(alloc['error'])
-                soft_warn(self, alloc['error'])
                 return
             self._tender_lines.show_error('')
             if float(alloc.get('credit') or 0) > 0.009:
@@ -3159,10 +3243,18 @@ class SalesTab(QWidget):
                 if isinstance(res, dict) and res.get('code') == 'batch_price_review':
                     self._apply_batch_price_lines(res.get('lines') or [])
                 _sfx('error')
-                soft_warn(self, err or 'Failed to record sale.')
+                message = err or 'Failed to record sale.'
+                if 'stock' in str(message).lower() or 'insufficient' in str(message).lower():
+                    self._stock_notice(str(message))
+                else:
+                    soft_warn(self, message)
         except Exception as e:
             _sfx('error')
-            soft_warn(self, f'Sale failed: {e}')
+            message = f'Sale failed: {e}'
+            if 'stock' in str(e).lower() or 'insufficient' in str(e).lower():
+                self._stock_notice(message)
+            else:
+                soft_warn(self, message)
 
     def _choose_batch(self, idx):
         """Sell one named batch instead of the oldest stock. The cart updates before payment."""

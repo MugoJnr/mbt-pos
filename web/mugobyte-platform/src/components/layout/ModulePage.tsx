@@ -80,13 +80,21 @@ export function ModulePage({
                 emptyDescription ??
                 `Connect your MBT POS or add your first ${title.toLowerCase().replace(/s$/, "")} to see it here.`
               }
-              actionLabel={`Add ${primaryAction.replace(/^New\s*/i, "") || "item"}`}
+              actionLabel={emptyActionLabel(primaryAction)}
             />
           )}
         </CardContent>
       </Card>
     </PageShell>
   );
+}
+
+function emptyActionLabel(primaryAction: string): string {
+  const label = primaryAction.trim();
+  if (/^save\b/i.test(label)) return label.toLowerCase() === "save" ? "Save settings" : label;
+  const rest = label.replace(/^New\s*/i, "").trim();
+  if (!rest || /^save\b/i.test(rest)) return "Save settings";
+  return `Add ${rest}`;
 }
 
 /** Small helper card used by pages that want a lightweight info section. */

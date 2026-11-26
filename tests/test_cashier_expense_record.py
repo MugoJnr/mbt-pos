@@ -29,6 +29,13 @@ class CashierExpenseRecordTests(unittest.TestCase):
         self.api._role = 'cashier'
         self.api._user_id = 4
         self.api._username = 'mercy'
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (id, username, password_hash, role, is_active) "
+            "VALUES (4, 'mercy', 'x:y', 'cashier', 1)"
+        )
+        db.commit()
+        db.close()
 
     def tearDown(self):
         for item in self._patches:

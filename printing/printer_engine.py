@@ -166,9 +166,14 @@ class ReceiptBuilder:
                original_total=None, cash_rounding_adj=0,
                electronic_paid=0, electronic_method='', cash_paid=0):
         sym = self.currency
-        if discount > 0:
-            self._line(left_right(f"Subtotal:", format_currency(subtotal, sym)))
-            self._line(left_right(f"Discount:", f"-{format_currency(discount, sym)}"))
+        from printing.sale_documents import receipt_total_rows
+        for label, amount in receipt_total_rows(subtotal, discount, tax, total):
+            if label in ("Tax", "Total"):
+                continue
+            shown = format_currency(abs(amount) if label == "Discount" else amount, sym)
+            if label == "Discount":
+                shown = f"-{shown}"
+            self._line(left_right(f"{label}:", shown))
         if tax > 0:
             self._line(left_right(f"Tax:", format_currency(tax, sym)))
         adj = float(cash_rounding_adj or 0)
@@ -794,9 +799,15 @@ def generate_receipt_text(sale_data, shop_name='Shop name not set', currency='KE
         for cont in chunks[1:3]:
             lines.append(f"{cont:<20}")
     lines.append('-' * W)
-    if sale_data.get('discount', 0) > 0:
-        lines.append(left_right('Subtotal:', f"{sale_data.get('subtotal',0):.2f}"))
-        lines.append(left_right('Discount:', f"-{sale_data.get('discount',0):.2f}"))
+    from printing.sale_documents import receipt_total_rows
+    for label, amount in receipt_total_rows(
+        sale_data.get('subtotal', 0), sale_data.get('discount', 0),
+        sale_data.get('tax', 0), sale_data.get('total', 0),
+    ):
+        if label in ("Tax", "Total"):
+            continue
+        shown = f"-{abs(amount):.2f}" if label == "Discount" else f"{amount:.2f}"
+        lines.append(left_right(f"{label}:", shown))
     if sale_data.get('tax', 0) > 0:
         lines.append(left_right('Tax:', f"{sale_data.get('tax',0):.2f}"))
     adj = float(sale_data.get('cash_rounding_adj') or 0)

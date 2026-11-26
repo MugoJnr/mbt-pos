@@ -62,15 +62,16 @@ class ReleaseIntegrityTests(unittest.TestCase):
 
     def test_web_stock_adjust_matches_desktop_security_policy(self):
         routes = (ROOT / 'web' / 'web_routes.py').read_text(encoding='utf-8')
+        client = (ROOT / 'desktop' / 'utils' / 'api_client.py').read_text(encoding='utf-8')
         dashboard = (
             ROOT / 'web' / 'templates' / 'dashboard.html'
         ).read_text(encoding='utf-8')
-        self.assertIn("g.current_user.get('role') != 'superadmin'", routes)
-        self.assertIn("key='superadmin_pin_hash'", routes)
-        self.assertIn('hmac.compare_digest', routes)
-        self.assertIn("'SUPERADMIN_ADJUST'", routes)
-        self.assertIn('post_stock_adjust_journal', routes)
+        self.assertIn("_inventory_api().adjust_stock(", routes)
+        self.assertIn("(g.current_user or {}).get('role') != 'superadmin'", routes)
         self.assertIn('expected_stock', routes)
+        self.assertIn("key='superadmin_pin_hash'", client)
+        self.assertIn("'SUPERADMIN_ADJUST'", client)
+        self.assertIn('post_stock_adjust_journal', client)
         self.assertIn('id="adj-pin"', dashboard)
         self.assertIn('expected_stock:Number(product?.stock||0)', dashboard)
         self.assertIn("USER?.role === 'superadmin'", dashboard)

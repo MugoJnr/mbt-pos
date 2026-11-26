@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { GET, activateCloudLicense, listCloudLicenses, type CloudLicense } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { LICENSE_PRODUCTS } from "@/lib/platform";
+import { formatLicenceTime } from "@/lib/nairobi-time";
 
 export const Route = createFileRoute("/_app/license")({
   component: License,
@@ -322,7 +323,7 @@ function License() {
                       </div>
                     </div>
                     <div className="pt-1">
-                      Activation seats {seats} · expires {row.expires_at ? new Date(row.expires_at).toLocaleDateString() : "—"}
+                      Activation seats {seats} · expires {formatLicenceTime(row.expires_at)}
                       {row.claimed_at ? ` · claimed ${new Date(row.claimed_at).toLocaleDateString()}` : ""}
                       {row.assigned_at ? ` · assigned ${new Date(row.assigned_at).toLocaleDateString()}` : ""}
                     </div>

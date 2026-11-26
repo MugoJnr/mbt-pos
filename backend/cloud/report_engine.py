@@ -213,6 +213,8 @@ class ReportEngine:
             void_rev = float(voids['revenue'] or 0) if voids else 0.0
             units = float(items['units'] or 0) if items else 0.0
 
+            from desktop.utils.financials import compute_financials
+            figures = compute_financials(db, start, end)
             report = {
                 'type': report_type,
                 'period_start': start,
@@ -221,9 +223,16 @@ class ReportEngine:
                 'currency': currency,
                 'shop_name': shop,
                 'summary': {
-                    'transactions': txns,
-                    'revenue': revenue,
-                    'discounts': discounts,
+                    'transactions': figures['completed_sale_count'],
+                    'revenue': figures['total_sales'],
+                    'paid_sales': figures['paid_sales'],
+                    'new_credit': figures['new_credit'],
+                    'collected': figures['total_collected'],
+                    'debt_repayments': figures['debt_repayments'],
+                    'cash_collected': figures['cash_collected'],
+                    'mpesa_collected': figures['mpesa_collected'],
+                    'clock_revenue': round(revenue, 2),
+                    'discounts': figures['discounts'],
                     'tax': tax,
                     'subtotal': float(sales['subtotal'] or 0) if sales else 0.0,
                     'avg_ticket': round(avg_ticket, 2),
@@ -231,13 +240,15 @@ class ReportEngine:
                     'max_ticket': float(sales['max_ticket'] or 0) if sales else 0.0,
                     'items_sold': units,
                     'line_items': int(items['lines'] or 0) if items else 0,
-                    'void_transactions': void_txns,
-                    'void_revenue': void_rev,
-                    'cost_of_goods': round(sold_cost, 2),
-                    'gross_profit': round(gross_profit, 2),
-                    'gross_margin_pct': round((gross_profit / sold_rev * 100.0), 2) if sold_rev else 0.0,
-                    'uncosted_revenue': round(uncosted_revenue, 2),
-                    'uncosted_lines': uncosted_lines,
+                    'void_transactions': figures['void_count'],
+                    'void_revenue': figures['void_total'],
+                    'cost_of_goods': figures['cogs'],
+                    'gross_profit': figures['gross_profit'],
+                    'gross_margin_pct': round((figures['gross_profit'] / figures['total_sales'] * 100.0), 2) if figures['total_sales'] else 0.0,
+                    'uncosted_revenue': figures['uncosted_sales'],
+                    'uncosted_lines': figures['uncosted_lines'],
+                    'profit_note': figures['profit_note'],
+                    'source': 'compute_financials',
                 },
                 'top_products': [dict(r) for r in top_products],
                 'by_category': [dict(r) for r in by_category],
@@ -260,10 +271,12 @@ class ReportEngine:
         """
         try:
             report = self.generate_report(report_type)
+            txns = int((report.get('summary') or {}).get('transactions') or 0)
+            if report_type in ('daily', 'monthly') and txns <= 0:
+                return False, f'No sales for this {report_type} period yet'
             cfg = self.config_getter() or {}
             shop = cfg.get('shop_name', 'My Shop')
             rev = report['summary']['revenue']
-            txns = report['summary']['transactions']
             currency = report['currency']
 
             title = f'{report_type.title()} Report — {shop}'
@@ -508,9 +521,21 @@ def validate_report_config(cfg: dict) -> list[str]:
 
 
 def get_report_health(cfg: dict | None = None) -> dict:
+    connected = False
+    try:
+        from backend.cloud_backup.paths import is_cloud_configured
+        connected = bool(is_cloud_configured())
+    except Exception:
+        connected = False
     return {
         'engine': 'cloud_notification',
-        'connected': True,
+        'connected': connected,
         'auto_daily': (cfg or {}).get('auto_report_daily', '1') == '1',
         'auto_weekly': (cfg or {}).get('auto_report_weekly', '1') == '1',
+        'last_report_date': None,
+        'last_report_status': 'none',
+        'delivery_pending': 0,
+        'delivery_failed': 0,
+        'failed_attempts': 0,
+        'scheduler': 'not checked',
     }

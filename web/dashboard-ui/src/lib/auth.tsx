@@ -15,8 +15,6 @@ import {
   setSession,
   type MbtUser,
 } from "./api";
-import { DeveloperRecovery } from "@/components/developer-recovery";
-
 type AuthCtx = {
   token: string;
   user: MbtUser | null;
@@ -30,15 +28,18 @@ const Ctx = createContext<AuthCtx | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState(getToken);
   const [user, setUser] = useState<MbtUser | null>(getUser);
+  const sessionEpoch = useMemo(() => ({ current: 0 }), []);
 
   useEffect(() => {
     if (!token) return;
     let live = true;
+    const started = sessionEpoch.current;
     const refresh = () => {
       void fetch("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } })
         .then((res) => (res.ok ? res.json() : null))
         .then((me) => {
-          if (!live || !me || me.error || !me.id) return;
+          if (!live || started !== sessionEpoch.current || getToken() !== token) return;
+          if (!me || me.error || !me.id) return;
           const next = { ...(getUser() || {}), ...me };
           setSession(token, next);
           setUser(next);
@@ -53,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.clearInterval(timer);
       window.removeEventListener("focus", refresh);
     };
-  }, [token]);
+  }, [token, sessionEpoch]);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);
@@ -75,6 +76,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    sessionEpoch.current += 1;
     const token = getToken();
     clearSession();
     setToken("");
@@ -85,7 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${token}` },
       }).catch(() => undefined);
     }
-  }, []);
+  }, [sessionEpoch]);
 
   const value = useMemo(
     () => ({ token, user, isAuthed: Boolean(token), login, logout }),
@@ -108,17 +110,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [recovery, setRecovery] = useState(false);
 
   if (isAuthed) return <>{children}</>;
-
-  if (recovery) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-app px-4 py-8">
-        <DeveloperRecovery onBack={() => setRecovery(false)} />
-      </div>
-    );
-  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -187,13 +180,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
           className="w-full min-h-11 rounded-xl bg-gold py-3 text-sm font-extrabold tracking-wide text-[color:var(--gold-fg)] hover:brightness-110 disabled:opacity-60 transition-all active:scale-[0.99]"
         >
           {busy ? "Signing in…" : "SIGN IN"}
-        </button>
-        <button
-          type="button"
-          className="mt-4 w-full text-sm font-semibold text-text2 hover:text-gold"
-          onClick={() => setRecovery(true)}
-        >
-          Developer emergency recovery
         </button>
       </form>
     </div>

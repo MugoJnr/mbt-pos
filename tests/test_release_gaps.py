@@ -30,6 +30,13 @@ class RemovalAndProfitTests(unittest.TestCase):
         self.api._role = "admin"
         self.api._user_id = 1
         self.api._username = "admin"
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (id, username, password_hash, role, is_active) "
+            "VALUES (1, 'admin', 'x:y', 'admin', 1)"
+        )
+        db.commit()
+        db.close()
 
     def tearDown(self):
         for item in self._patches:

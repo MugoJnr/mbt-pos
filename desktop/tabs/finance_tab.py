@@ -570,6 +570,13 @@ class _OverviewPage(QWidget):
             score -= 10
             notes.append('Trial balance needs review')
         score = max(0, min(100, score))
+        try:
+            from desktop.utils.ai.ops.health import compute_health
+            shared = compute_health(getattr(self.p, 'api', None))
+            if shared.get('score') is not None:
+                score = int(shared['score'])
+        except Exception:
+            pass
 
         self._score_lbl.setText(str(score))
         color = C['ok'] if score >= 75 else (C['warn'] if score >= 55 else C['err'])

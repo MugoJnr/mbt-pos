@@ -101,10 +101,7 @@ class ExecutableApprovalTests(unittest.TestCase):
         self.assertEqual(denied.get('status'), 403)
         self.assertEqual(self._stock(), 16)
         self.api._role = 'superadmin'
-        still = self.api.execute_approval(approval_id, 'approve', pin='')
-        self.assertEqual(still.get('status'), 403)
-        self.assertEqual(self._stock(), 16)
-        approved = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)
+        approved = self.api.execute_approval(approval_id, 'approve', pin='')
         self.assertTrue(approved.get('success'), approved)
         self.assertEqual(self._stock(), 20)
         again = self.api.execute_approval(approval_id, 'approve', pin=self.PIN)

@@ -46,6 +46,20 @@ def set_superadmin_user_pin(db, user_id: int, pin: str) -> dict:
     return {"success": True, "user_id": int(user_id)}
 
 
+def _record_pin_state(db, sql: str, params: tuple) -> None:
+    """Write a PIN counter without leaving a transaction open.
+
+    The default SQLite isolation starts a transaction on this UPDATE.
+    A caller that then runs BEGIN IMMEDIATE fails with
+    "cannot start a transaction within a transaction" and the void is lost.
+    Commit only when this write is the one that opened the transaction.
+    """
+    opened = not db.in_transaction
+    db.execute(sql, params)
+    if opened:
+        db.commit()
+
+
 def gate_personal_pin(db, pin: str, username: str) -> dict | None:
     """None when this Super Admin's own PIN is accepted.
 
@@ -134,14 +148,16 @@ def verify_superadmin_user_pin(db, username: str, pin: str) -> dict:
         if fails >= 5:
             until = (datetime.now() + timedelta(minutes=15)).isoformat(timespec="seconds")
             fails = 0
-        db.execute(
+        _record_pin_state(
+            db,
             "UPDATE users SET pin_fails=?, pin_locked_until=? WHERE id=?",
             (fails, until, row[0]),
         )
         if until:
             return {"error": "Too many wrong PINs. This account is locked for 15 minutes.", "locked": True}
         return {"error": "That Super Admin PIN was not accepted."}
-    db.execute(
+    _record_pin_state(
+        db,
         "UPDATE users SET pin_fails=0, pin_locked_until=NULL WHERE id=?",
         (row[0],),
     )

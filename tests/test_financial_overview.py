@@ -135,3 +135,50 @@ class FinancialOverviewTests(unittest.TestCase):
         self.assertEqual(both.status_code, 200, both.get_json())
         self.assertEqual(both.get_json()["finance"]["gross_profit"], 240)
         self.assertEqual(both.get_json()["finance"]["total_collected"], 800)
+
+    def test_order_discount_profit_matches_sales_minus_cost(self):
+        from desktop.utils.financials import compute_financials
+        from desktop.utils.stock_layers import ensure_cost_layers, period_profit
+        db = self.ac._db()
+        ensure_cost_layers(db)
+        db.execute(
+            "INSERT INTO products (name, sku, price, cost_price, stock) VALUES ('Maize', 'MZ', 250, 100, 5)"
+        )
+        db.execute(
+            "INSERT INTO products (name, sku, price, cost_price, stock) VALUES ('Sugar', 'SG', 100, 40, 5)"
+        )
+        db.execute(
+            """INSERT INTO sales
+               (receipt_number, total, amount_paid, discount, payment_method, status, sale_date)
+               VALUES ('R-DISC', 300, 300, 50, 'Cash', 'completed', '2026-10-03')"""
+        )
+        sale_id = db.execute("SELECT id FROM sales WHERE receipt_number='R-DISC'").fetchone()["id"]
+        db.execute(
+            """INSERT INTO sale_items
+               (sale_id, product_id, product_name, quantity, unit_price, discount, total)
+               VALUES (?, 1, 'Maize', 1, 250, 0, 250)""",
+            (sale_id,),
+        )
+        db.execute(
+            """INSERT INTO sale_items
+               (sale_id, product_id, product_name, quantity, unit_price, discount, total)
+               VALUES (?, 2, 'Sugar', 1, 100, 0, 100)""",
+            (sale_id,),
+        )
+        db.execute(
+            """INSERT INTO cost_layer_uses
+               (layer_id, product_id, sale_id, quantity, unit_cost, reversed)
+               VALUES (1, 1, ?, 1, 100, 0), (2, 2, ?, 1, 40, 0)""",
+            (sale_id, sale_id),
+        )
+        db.commit()
+        day = compute_financials(db, "2026-10-03", "2026-10-03")
+        till = period_profit(db, "2026-10-03", "2026-10-03")
+        db.close()
+        self.assertEqual(day["total_sales"], 300)
+        self.assertEqual(day["cogs"], 140)
+        self.assertEqual(day["gross_profit"], 160)
+        self.assertEqual(day["uncosted_lines"], 0)
+        self.assertAlmostEqual(day["total_sales"] - day["cogs"], day["gross_profit"], places=2)
+        self.assertEqual(till["profit"], 160)
+        self.assertEqual(till["cogs"], 140)

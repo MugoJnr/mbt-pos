@@ -778,6 +778,7 @@ class QuantityControl(QWidget):
         self._spin.setSingleStep(self._step)
         self._spin.setValue(self._coerce(value))
         self._spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self._spin.setKeyboardTracking(False)
         self._spin.setAlignment(Qt.AlignCenter)
         self._spin.setFixedHeight(spin_h)
         self._spin.setFrame(False)
@@ -845,10 +846,11 @@ class QuantityControl(QWidget):
 
     def _apply_spin(self, v):
         if self._snap and not self._on_step(float(v)):
-            self._spin.blockSignals(True)
-            self._spin.setValue(float(getattr(self, "_last_good", self._minimum)))
-            self._spin.blockSignals(False)
+            # Reverting inside valueChanged deletes the editor on Wine and crashes the till.
+            good = float(getattr(self, "_last_good", self._minimum))
             self.setToolTip("This product is sold in whole units.")
+            from PyQt5.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._restore_spin(good))
             return
         q = self._coerce(v)
         self._last_good = q
@@ -857,6 +859,11 @@ class QuantityControl(QWidget):
             self._spin.setValue(q)
             self._spin.blockSignals(False)
         self.valueChanged.emit(q)
+
+    def _restore_spin(self, good: float):
+        self._spin.blockSignals(True)
+        self._spin.setValue(float(good))
+        self._spin.blockSignals(False)
 
     def refresh_theme(self):
         shell = C['input']

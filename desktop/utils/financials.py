@@ -54,12 +54,21 @@ def compute_financials(db, start: str, end: str) -> dict:
     day = sale_day_sql()
     sales = [dict(row) for row in db.execute(
         f"""SELECT id, total, amount_paid, change_amount, payment_method,
-                  payment_tenders, status
+                  payment_tenders, status, discount
            FROM sales
            WHERE {day} BETWEEN ? AND ?
              AND status IN ('completed', 'return')""",
         (start, end),
     ).fetchall()]
+    try:
+        voided = [dict(row) for row in db.execute(
+            f"""SELECT total FROM sales
+                WHERE {day} BETWEEN ? AND ?
+                  AND lower(COALESCE(status,'')) IN ('void', 'voided')""",
+            (start, end),
+        ).fetchall()]
+    except Exception:
+        voided = []
     from desktop.utils.payment_tenders import collected_from_sales
     tender = collected_from_sales(sales)
     total_sales = money(sum(float(row.get("total") or 0) for row in sales))
@@ -176,6 +185,12 @@ def compute_financials(db, start: str, end: str) -> dict:
         "low_stock": inventory["low_stock"],
         "out_of_stock": inventory["out_of_stock"],
         "completed_sale_count": len(completed_ids),
+        "discounts": money(sum(
+            float(row.get("discount") or 0) for row in sales
+            if (row.get("status") or "") == "completed"
+        )),
+        "void_count": len(voided),
+        "void_total": money(sum(float(row.get("total") or 0) for row in voided)),
         "definitions": {
             "total_sales": "Valid sales in the period, including credit. Repayments are not sales.",
             "paid_sales": "Money taken on those sales, after refunds. A later repayment is not a sale.",
@@ -219,18 +234,15 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
     day = sale_day_sql("s")
     try:
         rows = db.execute(
-            f"""SELECT s.id, s.total,
-                      si.product_id,
-                      CASE WHEN COALESCE(si.quantity,0)=0 THEN 0
-                           ELSE si.total * (COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0))
-                                / si.quantity END AS net_total,
-                      COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0) AS net_qty,
+            f"""SELECT s.id, s.total, si.product_id, COALESCE(si.total,0),
+                      COALESCE(si.quantity,0),
+                      COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0),
                       (SELECT COALESCE(SUM(u.quantity),0) FROM cost_layer_uses u
                        WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                         AND COALESCE(u.reversed,0)=0) AS covered_qty,
+                         AND COALESCE(u.reversed,0)=0),
                       (SELECT COALESCE(SUM(u.quantity * u.unit_cost),0) FROM cost_layer_uses u
                        WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                         AND COALESCE(u.reversed,0)=0) AS cogs
+                         AND COALESCE(u.reversed,0)=0)
                FROM sale_items si
                JOIN sales s ON s.id=si.sale_id
                WHERE {day} BETWEEN ? AND ?
@@ -239,33 +251,56 @@ def _profit_allocation(db, start: str, end: str, sale_paid: dict) -> dict:
         ).fetchall()
     except Exception:
         rows = []
+    parsed = []
+    line_sums = {}
+    for row in rows:
+        sale_id = int(row[0])
+        item = {
+            "sale_id": sale_id,
+            "sale_total": float(row[1] or 0),
+            "product_id": row[2],
+            "line_total": float(row[3] or 0),
+            "quantity": float(row[4] or 0),
+            "net_qty": float(row[5] or 0),
+            "covered_qty": float(row[6] or 0),
+            "cogs": float(row[7] or 0),
+        }
+        parsed.append(item)
+        line_sums[sale_id] = line_sums.get(sale_id, 0.0) + item["line_total"]
     by_sale = {}
     uncosted = 0.0
     uncosted_units = 0.0
     uncosted_lines = 0
     products = set()
-    for row in rows:
-        sale_id = int(row[0])
-        sale_total = float(row[1] or 0)
-        product_id = row[2]
-        net = float(row[3] or 0)
-        net_qty = float(row[4] or 0)
-        covered_qty = float(row[5] or 0)
-        cogs = float(row[6] or 0)
+    seen_cost = set()
+    for item in parsed:
+        sale_id = item["sale_id"]
+        product_id = item["product_id"]
+        net_qty = item["net_qty"]
         bucket = by_sale.setdefault(
-            sale_id, {"revenue": 0.0, "sale_total": sale_total, "cogs": 0.0, "costed": False},
+            sale_id, {
+                "revenue": 0.0, "sale_total": item["sale_total"],
+                "cogs": 0.0, "costed": False,
+            },
         )
-        bucket["sale_total"] = sale_total
-        if net_qty <= 0.0001:
+        if net_qty <= 0.0001 or item["quantity"] <= 0.0001:
             continue
-        covered = min(covered_qty, net_qty)
+        # An order discount lives on the sale total, not on each line total.
+        # A return keeps the discounted share, so the remaining lines use the same share.
+        lines_net = line_sums.get(sale_id) or 0.0
+        factor = (item["sale_total"] / lines_net) if lines_net > 0.009 else 1.0
+        scaled = item["line_total"] * net_qty / item["quantity"] * factor
+        covered = min(item["covered_qty"], net_qty)
         gap = round(net_qty - covered, 4)
         if covered > 0.0001:
-            bucket["revenue"] += net * covered / net_qty
-            bucket["cogs"] += cogs
+            bucket["revenue"] += scaled * covered / net_qty
+            key = (sale_id, int(product_id or 0))
+            if key not in seen_cost:
+                seen_cost.add(key)
+                bucket["cogs"] += item["cogs"]
             bucket["costed"] = True
         if gap > 0.0001:
-            uncosted += net * gap / net_qty
+            uncosted += scaled * gap / net_qty
             uncosted_lines += 1
             uncosted_units += gap
             if product_id:

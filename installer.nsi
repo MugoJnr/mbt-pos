@@ -10,8 +10,8 @@
 ;=============================================================================
 ; General Settings
 ;=============================================================================
-!define APP_VERSION "3.1.93"
-!define APP_VERSION_QUAD "3.1.93.0"
+!define APP_VERSION "3.1.99"
+!define APP_VERSION_QUAD "3.1.99.0"
 Unicode True
 Name "MBT POS"
 OutFile "dist\MBT_POS_Setup.exe"

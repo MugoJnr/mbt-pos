@@ -24,7 +24,7 @@ INIT_FLAG = get_init_flag_path()
 STEPS = [
     ("Welcome",          "Welcome to MBT POS"),
     ("Portal Account",   "Sign In or Create Account"),
-    ("License",          "Register Device & Activate"),
+    ("Licence",          "Register this computer"),
     ("Shop Info",        "Your Shop Details"),
     ("Admin Account",    "Create Local Admin"),
     ("Printer Setup",    "Printer Configuration"),
@@ -395,7 +395,7 @@ class SetupWizard(QDialog):
         t2 = QLabel(
             "Professional Point of Sale for your business.\n\n"
             "Portal-first setup: create or sign in at portal.mugobyte.com,\n"
-            "verify your email, register this device, then activate your license.\n\n"
+            "verify your email, register this computer, then activate your licence.\n\n"
             "There is no free trial and no Telegram. After activation,\n"
             "sales continue offline with a configurable grace period."
         )
@@ -615,7 +615,7 @@ class SetupWizard(QDialog):
     # Page — License + device registration
     def _page_license(self):
         w, lay = self._page_container()
-        lay.addWidget(_label("Register Device & Activate", 22, bold=True))
+        lay.addWidget(_label("Register this computer", 22, bold=True))
 
         already_licensed = bool(self._data.get('license_activated'))
         if not already_licensed:
@@ -628,12 +628,12 @@ class SetupWizard(QDialog):
 
         if already_licensed:
             lay.addWidget(_label(
-                "This device is already licensed from Sign In & Activate. Continue.",
+                "This computer already has a licence from Sign In & Activate. Continue.",
                 14, color=C['text2']))
             lay.addSpacing(8)
             self.w_license_key = QLineEdit()
             self.w_license_key.hide()
-            self.w_lic_status = QLabel("✓ License active on this device")
+            self.w_lic_status = QLabel("✓ Licence active on this computer")
             self.w_lic_status.setStyleSheet(f"color:{C['ok']}; font-size:14px; font-weight:600;")
             lay.addWidget(self.w_lic_status)
             lay.addStretch()
@@ -641,7 +641,7 @@ class SetupWizard(QDialog):
 
         lay.addWidget(_label(
             "This step allows this computer to run the shop. It is not a cashier login. "
-            "Paste the licence key from your MugoByte Portal email or from portal.mugobyte.com. "
+            "Paste the licence key from your MugoByte Workspace email or from portal.mugobyte.com. "
             "One plan allows a fixed number of computers. Activating again on this same computer does not use another one.",
             14, color=C['text2']))
         lay.addSpacing(8)
@@ -678,14 +678,14 @@ class SetupWizard(QDialog):
         form = QFormLayout()
         form.setSpacing(14)
         self.w_license_key = QLineEdit()
-        self.w_license_key.setPlaceholderText("Paste your Portal license key")
+        self.w_license_key.setPlaceholderText("Paste your Portal licence key")
         self.w_license_key.setFont(QFont('Consolas', 12))
         self.w_license_key.setMinimumHeight(44)
-        fl = QLabel("License Key"); fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
+        fl = QLabel("Licence key"); fl.setStyleSheet(f"color:{C['text2']}; font-size:14px;")
         form.addRow(fl, self.w_license_key)
         lay.addLayout(form)
 
-        act_btn = PrimaryBtn("✓  Activate License", 44)
+        act_btn = PrimaryBtn("✓  Activate licence", 44)
         act_btn.setObjectName("primaryBtn")
         act_btn.setMinimumHeight(44)
         act_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -713,9 +713,16 @@ class SetupWizard(QDialog):
     def _validate_license(self):
         key = self.w_license_key.text().strip()
         if not key:
-            self.w_lic_status.setText("License key is required.")
+            self.w_lic_status.setText("A licence key is required.")
             self.w_lic_status.setStyleSheet(f"color:{C['err']}; font-size:13px;")
             return
+        self.w_lic_status.setText("Checking this computer…")
+        self.w_lic_status.setStyleSheet(f"color:{C['text2']}; font-size:13px;")
+        try:
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+        except Exception:
+            pass
         try:
             self._register_device_now()
             from licensing.license_engine import LicenseEngine
@@ -753,7 +760,7 @@ class SetupWizard(QDialog):
             "Recommended flow:\n"
             "1. Create or sign in at portal.mugobyte.com\n"
             "2. Download the latest installer from Downloads\n"
-            "3. Activate this device with your Portal license key\n"
+            "3. Activate this computer with your Portal licence key\n"
             "4. Live shop ops stay on {shop}.mugobyte.com (separate from Portal)",
             13, color=C['text2']))
         lay.addWidget(info)
@@ -1131,7 +1138,7 @@ class SetupWizard(QDialog):
             except Exception:
                 pass
             self.w_cloud_status.setText(
-                f"Account ready · device {r.get('device_id')}. Continue to activate license.")
+                f"Account ready · device {r.get('device_id')}. Continue to activate the licence.")
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud create failed: {e}")
 
@@ -1186,7 +1193,7 @@ class SetupWizard(QDialog):
                         self.w_cloud_status.setText(f"Restore later in Settings: {re}")
             else:
                 self.w_cloud_status.setText(
-                    f"Signed in · device {r.get('device_id')}. Continue to activate license.")
+                    f"Signed in · device {r.get('device_id')}. Continue to activate the licence.")
         except Exception as e:
             self.w_cloud_status.setText(f"Cloud login failed: {e}")
 
@@ -1277,7 +1284,7 @@ class SetupWizard(QDialog):
                     if device_has_persisted_license():
                         self._data['license_activated'] = True
                         if hasattr(self, 'w_lic_status'):
-                            self.w_lic_status.setText("✓ License already active on this device")
+                            self.w_lic_status.setText("✓ Licence already active on this computer")
                             self.w_lic_status.setStyleSheet(
                                 f"color:{C['ok']}; font-size:13px; font-weight:600;")
                 except Exception:
@@ -1359,7 +1366,7 @@ class SetupWizard(QDialog):
                 pass
             if not key and not self._data.get('license_activated'):
                 self._show_err(
-                    "Activate this computer with the licence key from the MugoByte Portal before continuing. "
+                    "Activate this computer with the licence key from the MugoByte Workspace before continuing. "
                     "A cashier account is created on the next step. It does not activate the computer."
                 )
                 return False
@@ -1468,7 +1475,7 @@ class SetupWizard(QDialog):
             cloud += ' · restored'
         self.w_summary.setText(
             f"Shop: {shop}  ·  Admin: {user}\n"
-            f"Printer: {prt}  ·  License: {lic}  ·  Notifications: {notif}\n"
+            f"Printer: {prt}  ·  Licence: {lic}  ·  Notifications: {notif}\n"
             f"Web dashboard: {web}\n"
             f"{cloud}"
         )

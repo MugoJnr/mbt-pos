@@ -133,6 +133,178 @@ class ReceiptsCentreTests(unittest.TestCase):
         db.close()
         self.assertEqual(listed["total"], 0)
 
+    def test_exact_receipt_is_found_after_a_thousand_newer_sales(self):
+        from backend.receipts_centre import list_receipts, receipt_detail
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET receipt_number=?, sale_date=?, created_at=? WHERE id=1",
+            ("RCP-OLD-MONTHS", "2026-01-15", "2026-01-15 08:00:00"),
+        )
+        db.executemany(
+            """INSERT INTO sales
+               (receipt_number, created_at, sale_date, cashier_name, subtotal, total,
+                amount_paid, status, payment_method)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                (f"RCP-NEW-{index}", "2026-11-26 12:00:00", "2026-11-26", "qa",
+                 1, 1, 1, "completed", "Cash")
+                for index in range(1100)
+            ],
+        )
+        db.execute(
+            """INSERT INTO sale_edits
+               (sale_id, edit_type, field_name, old_value, new_value, reason, edited_by_name)
+               VALUES (1, 'NOTE', 'customer', 'Ada', 'Ada Buyer', 'Name corrected', 'QA Cashier')"""
+        )
+        db.commit()
+        listed = list_receipts(
+            db, can_sales=True, query="RCP-OLD-MONTHS",
+            start="2026-11-26", end="2026-11-26",
+        )
+        self.assertTrue(listed["searched_all_dates"])
+        self.assertEqual(
+            [row["reference"] for row in listed["receipts"] if row["kind"] == "sale"],
+            ["RCP-OLD-MONTHS"],
+        )
+        detail = receipt_detail(db, "sale", 1, show_cost=False)
+        db.close()
+        self.assertTrue(any(
+            item.get("edited_by_name") == "QA Cashier" and item.get("old_value") == "Ada"
+            for item in detail["history"]
+        ))
+
+    def test_supplier_delivery_and_payment_search_across_dates(self):
+        from backend.receipts_centre import list_receipts, receipt_detail
+        from desktop.utils.supplier_payables import ensure_schema
+        db = self.ac._db()
+        ensure_schema(db)
+        db.execute("INSERT INTO suppliers (name, phone) VALUES ('Old Mill', '0700')")
+        supplier_id = db.execute("SELECT id FROM suppliers").fetchone()["id"]
+        db.execute(
+            """INSERT INTO stock_receipts
+               (receipt_number, supplier_id, reference_note, grand_total, username, created_at, effective_date)
+               VALUES ('GRN-OLD-1', ?, 'January flour', 500, 'storeman', '2026-02-02 09:00:00', '2026-02-02')""",
+            (supplier_id,),
+        )
+        receipt_id = db.execute("SELECT id FROM stock_receipts").fetchone()["id"]
+        db.execute(
+            """INSERT INTO stock_receipt_lines
+               (receipt_id, product_name, quantity, unit_cost, line_total)
+               VALUES (?, 'Flour', 10, 50, 500)""",
+            (receipt_id,),
+        )
+        db.execute(
+            """INSERT INTO supplier_payments
+               (payment_number, supplier_id, amount, method, reference, username, paid_at, created_at)
+               VALUES ('SPY-OLD-1', ?, 500, 'Cash', 'GRN-OLD-1', 'owner', '2026-02-03', '2026-02-03 10:00:00')""",
+            (supplier_id,),
+        )
+        db.commit()
+        delivery = list_receipts(
+            db, can_inventory=True, can_finance=False, query="GRN-OLD-1",
+            start="2026-11-26", end="2026-11-26",
+        )
+        payment = list_receipts(
+            db, can_finance=True, query="SPY-OLD-1",
+            start="2026-11-26", end="2026-11-26",
+        )
+        hidden = list_receipts(
+            db, can_sales=True, query="SPY-OLD-1",
+            start="2026-11-26", end="2026-11-26",
+        )
+        opened = receipt_detail(db, "supplier", receipt_id, show_cost=False)
+        owner = receipt_detail(db, "supplier", receipt_id, show_cost=True)
+        db.close()
+        self.assertEqual(delivery["receipts"][0]["reference"], "GRN-OLD-1")
+        self.assertIsNone(delivery["receipts"][0]["amount"])
+        self.assertEqual(payment["receipts"][0]["kind"], "supplier_payment")
+        self.assertEqual(hidden["total"], 0)
+        self.assertNotIn("unit_cost", opened["lines"][0])
+        self.assertIn("unit_cost", owner["lines"][0])
+
+    def test_exact_receipt_is_found_after_a_thousand_newer_sales(self):
+        from backend.receipts_centre import list_receipts, receipt_detail
+        db = self.ac._db()
+        db.execute(
+            "UPDATE sales SET receipt_number=?, sale_date=?, created_at=? WHERE id=1",
+            ("RCP-OLD-MONTHS", "2026-01-15", "2026-01-15 08:00:00"),
+        )
+        db.executemany(
+            """INSERT INTO sales
+               (receipt_number, created_at, sale_date, cashier_name, total, status,
+                payment_method, subtotal, amount_paid)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                (f"RCP-NEW-{index}", "2026-11-26 12:00:00", "2026-11-26", "qa",
+                 1, "completed", "Cash", 1, 1)
+                for index in range(1100)
+            ],
+        )
+        db.execute(
+            """INSERT INTO sale_edits
+               (sale_id, edit_type, field_name, old_value, new_value, reason, edited_by_name)
+               VALUES (1, 'NOTE', 'customer', 'Walk-in', 'Ada Buyer', 'Name added', 'QA Cashier')"""
+        )
+        db.commit()
+        listed = list_receipts(
+            db, can_sales=True, query="RCP-OLD-MONTHS",
+            start="2026-11-26", end="2026-11-26",
+        )
+        self.assertTrue(listed["searched_all_dates"])
+        self.assertEqual(
+            [row["reference"] for row in listed["receipts"] if row["kind"] == "sale"],
+            ["RCP-OLD-MONTHS"],
+        )
+        detail = receipt_detail(db, "sale", 1, show_cost=False)
+        db.close()
+        self.assertEqual(detail["reference"], "RCP-OLD-MONTHS")
+        self.assertTrue(any(item.get("edit_type") == "NOTE" for item in detail["history"]))
+        self.assertNotIn("cost", detail["header"])
+
+    def test_supplier_delivery_and_payment_stay_separate_and_hidden_from_a_cashier(self):
+        from backend.receipts_centre import list_receipts
+        from desktop.utils.supplier_payables import ensure_schema
+        db = self.ac._db()
+        ensure_schema(db)
+        db.execute("INSERT INTO suppliers (name, phone) VALUES ('Old Mill', '0700')")
+        supplier_id = db.execute("SELECT id FROM suppliers").fetchone()["id"]
+        db.execute(
+            """INSERT INTO stock_receipts
+               (receipt_number, supplier_id, grand_total, username, created_at, effective_date)
+               VALUES ('GRN-OLD-1', ?, 500, 'store', '2026-02-02 09:00:00', '2026-02-02')""",
+            (supplier_id,),
+        )
+        receipt_id = db.execute("SELECT id FROM stock_receipts").fetchone()["id"]
+        db.execute(
+            """INSERT INTO stock_receipt_lines (receipt_id, product_name, quantity, unit_cost, line_total)
+               VALUES (?, 'Flour', 10, 50, 500)""",
+            (receipt_id,),
+        )
+        db.execute(
+            """INSERT INTO supplier_payments
+               (payment_number, supplier_id, amount, method, reference, username, created_at, status)
+               VALUES ('SP-OLD-1', ?, 200, 'Cash', 'CHQ-9', 'owner', '2026-03-03 09:00:00', 'posted')""",
+            (supplier_id,),
+        )
+        db.commit()
+        hidden = list_receipts(
+            db, can_inventory=True, can_finance=False, query="GRN-OLD-1",
+            start="2026-11-26", end="2026-11-26",
+        )
+        self.assertEqual(
+            [row["reference"] for row in hidden["receipts"]],
+            ["GRN-OLD-1"],
+        )
+        self.assertIsNone(hidden["receipts"][0]["amount"])
+        paid = list_receipts(
+            db, can_finance=True, query="SP-OLD-1",
+            start="2026-11-26", end="2026-11-26",
+        )
+        db.close()
+        self.assertEqual([row["reference"] for row in paid["receipts"]], ["SP-OLD-1"])
+        self.assertEqual(paid["receipts"][0]["kind"], "supplier_payment")
+        self.assertEqual(paid["receipts"][0]["party"], "Old Mill")
+
 
 if __name__ == "__main__":
     unittest.main()

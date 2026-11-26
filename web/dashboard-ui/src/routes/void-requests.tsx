@@ -46,6 +46,7 @@ function VoidRequestsPage() {
   const [draft, setDraft] = useState("");
   const [note, setNote] = useState("");
   const [pin, setPin] = useState("");
+  const [pinUser, setPinUser] = useState("");
   const [msg, setMsg] = useState("");
   const limit = 25;
 
@@ -93,14 +94,16 @@ function VoidRequestsPage() {
   });
   const decideM = useMutation({
     mutationFn: (action: "approve" | "reject") => {
-      if (action === "approve" && !pin.trim()) {
+      if (action === "approve" && role !== "superadmin" && (!pin.trim() || !pinUser.trim())) {
         return Promise.resolve({
-          error: "Enter the Super-Admin PIN. The receipt stays completed until the server accepts it.",
+          error: "Enter the Super Admin username and PIN. The receipt stays completed until the server accepts it.",
         });
       }
       return POST<any>(
         `/approvals/${openId}/${action}`,
-        action === "approve" ? { pin, note } : { note },
+        action === "approve"
+          ? (role === "superadmin" ? { note } : { pin, pin_username: pinUser.trim(), note })
+          : { note },
       );
     },
     onSuccess: async (data) => {
@@ -108,6 +111,7 @@ function VoidRequestsPage() {
       if (!data?.error) {
         setOpenId(null);
         setPin("");
+        setPinUser("");
         await refresh();
       }
     },
@@ -166,7 +170,7 @@ function VoidRequestsPage() {
                   <span className="block text-xs font-semibold text-gold">View receipt</span>
                 </span>
                 <span className="shrink-0 text-right">
-                  <span className="block font-semibold text-gold">{KES(row.amount)}</span>
+                  <span className="block font-semibold text-gold">{KES(row.amount || 0)}</span>
                   <Badge tone={tone(row.status) as any}>{row.status}</Badge>
                 </span>
               </button>
@@ -215,8 +219,15 @@ function VoidRequestsPage() {
           {canReview && (event?.status === "pending" || event?.status === "escalated") ? (
             <div className="space-y-2">
               <Input aria-label="Review comment" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Review comment" />
-              <Input type="password" autoComplete="off" aria-label="Super-Admin PIN" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Super-Admin PIN" />
-              <div className="text-xs text-text2">Voiding asks for confirmation and the Super Admin PIN. The receipt stays completed until the server accepts it.</div>
+              {role === "superadmin" ? (
+                <div className="text-xs text-text2">You are signed in as Super Admin. Approve voids this receipt now. No PIN is asked.</div>
+              ) : (
+                <>
+                  <Input aria-label="Super Admin username" autoComplete="off" value={pinUser} onChange={(e) => setPinUser(e.target.value)} placeholder="Super Admin username" />
+                  <Input type="password" autoComplete="off" aria-label="Super-Admin PIN" value={pin} onChange={(e) => setPin(e.target.value)} placeholder="Super-Admin PIN" />
+                  <div className="text-xs text-text2">Voiding asks for the Super Admin username and PIN. The receipt stays completed until the server accepts it.</div>
+                </>
+              )}
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="primary" onClick={() => {
                   const receipt = event?.receipt?.receipt_number || event?.receipt_number || "this receipt";

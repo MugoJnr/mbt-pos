@@ -59,10 +59,10 @@ class PermissionGrantTests(unittest.TestCase):
             {"role": "admin"},
             "cashier",
             ["reports.view_all", "inventory.adjust_stock", "users.delete"],
-            ["inventory.receive"],
+            ["sales.create"],
         )
         self.assertEqual(cleaned["permission_grants"], ["reports.view_all"])
-        self.assertEqual(cleaned["permission_denials"], ["inventory.receive"])
+        self.assertEqual(cleaned["permission_denials"], ["sales.create"])
 
     def test_admin_cannot_grant_a_permission_they_lack(self):
         cleaned = clean_permission_change(

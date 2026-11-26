@@ -597,20 +597,15 @@ def period_profit(db, start: str, end: str) -> dict:
     day = "COALESCE(NULLIF(s.sale_date,''), date(s.created_at))"
     rows = db.execute(
         f"""
-        SELECT si.product_id,
-               CASE
-                 WHEN COALESCE(si.quantity, 0) = 0 THEN 0
-                 ELSE si.total * (
-                   COALESCE(si.quantity, 0) - COALESCE(si.returned_qty, 0)
-                 ) / si.quantity
-               END AS total,
-               COALESCE(si.quantity, 0) - COALESCE(si.returned_qty, 0) AS net_qty,
+        SELECT s.id, s.total, si.product_id, COALESCE(si.total,0),
+               COALESCE(si.quantity,0),
+               COALESCE(si.quantity,0) - COALESCE(si.returned_qty,0),
                (SELECT COALESCE(SUM(u.quantity), 0) FROM cost_layer_uses u
                 WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                  AND COALESCE(u.reversed,0)=0) AS covered_qty,
+                  AND COALESCE(u.reversed,0)=0),
                (SELECT COALESCE(SUM(u.quantity * u.unit_cost), 0) FROM cost_layer_uses u
                 WHERE u.sale_id=si.sale_id AND u.product_id=si.product_id
-                  AND COALESCE(u.reversed,0)=0) AS cogs
+                  AND COALESCE(u.reversed,0)=0)
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
         WHERE {day} BETWEEN ? AND ?
@@ -618,28 +613,49 @@ def period_profit(db, start: str, end: str) -> dict:
         """,
         (str(start)[:10], str(end)[:10]),
     ).fetchall()
+    parsed = []
+    line_sums = {}
+    for sale_id, sale_total, product_id, line_total, quantity, net_qty, covered_qty, line_cogs in rows:
+        item = {
+            "sale_id": int(sale_id),
+            "sale_total": float(sale_total or 0),
+            "product_id": product_id,
+            "line_total": float(line_total or 0),
+            "quantity": float(quantity or 0),
+            "net_qty": float(net_qty or 0),
+            "covered_qty": float(covered_qty or 0),
+            "cogs": float(line_cogs or 0),
+        }
+        parsed.append(item)
+        line_sums[item["sale_id"]] = line_sums.get(item["sale_id"], 0.0) + item["line_total"]
     revenue = cogs = uncosted = 0.0
     uncosted_units = 0.0
     costed_lines = uncosted_lines = 0
     products = set()
-    for product_id, total, net_qty, covered_qty, line_cogs in rows:
-        net = float(net_qty or 0)
-        if net <= 0.0001:
+    seen_cost = set()
+    for item in parsed:
+        net = item["net_qty"]
+        if net <= 0.0001 or item["quantity"] <= 0.0001:
             continue
-        covered = min(float(covered_qty or 0), net)
+        lines_net = line_sums.get(item["sale_id"]) or 0.0
+        factor = (item["sale_total"] / lines_net) if lines_net > 0.009 else 1.0
+        amount = item["line_total"] * net / item["quantity"] * factor
+        covered = min(item["covered_qty"], net)
         gap = round(net - covered, 4)
-        amount = float(total or 0)
         if covered > 0.0001:
             revenue += amount * covered / net
-            cogs += float(line_cogs or 0)
+            key = (item["sale_id"], int(item["product_id"] or 0))
+            if key not in seen_cost:
+                seen_cost.add(key)
+                cogs += item["cogs"]
             if gap <= 0.0001:
                 costed_lines += 1
         if gap > 0.0001:
             uncosted += amount * gap / net
             uncosted_lines += 1
             uncosted_units += gap
-            if product_id:
-                products.add(int(product_id))
+            if item["product_id"]:
+                products.add(int(item["product_id"]))
     return {
         'profit': round(revenue - cogs, 2),
         'revenue_costed': round(revenue, 2),

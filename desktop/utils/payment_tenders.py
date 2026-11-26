@@ -179,6 +179,13 @@ def collected_from_sales(sales: Iterable[dict]) -> dict:
             card = _r2(card + _r2(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
         elif method in ('bank transfer', 'bank', 'bank payment'):
             bank = _r2(bank + _r2(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
+        elif method in ('credit sale', 'credit'):
+            # The unpaid balance is not money received. A deposit on the sale is.
+            received = _r2(sale.get('amount_paid') or 0)
+            face = _r2(sale.get('total'))
+            if received > 0.009:
+                kept = min(received, face) if face > 0 else received
+                other = _r2(other + kept)
     collected = _r2(cash + mpesa + card + bank + other)
     return {
         'cash_collected': cash,

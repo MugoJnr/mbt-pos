@@ -34,6 +34,7 @@ class AuditDetailTests(unittest.TestCase):
     def test_detail_api_is_read_only_and_role_checked(self):
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(tmp.name, "audit.db")
+        saved_root = os.environ.get("MBT_DATA_ROOT")
         os.environ["MBT_DATA_ROOT"] = tmp.name
         patches = [
             patch("mbt_paths.get_db_path", return_value=db_path),
@@ -122,6 +123,10 @@ class AuditDetailTests(unittest.TestCase):
         finally:
             for item in patches:
                 item.stop()
+            if saved_root is None:
+                os.environ.pop("MBT_DATA_ROOT", None)
+            else:
+                os.environ["MBT_DATA_ROOT"] = saved_root
             tmp.cleanup()
 
 
@@ -131,9 +136,11 @@ class ShopTokenTests(unittest.TestCase):
         second = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db1 = os.path.join(first.name, "a.db")
         db2 = os.path.join(second.name, "b.db")
+        saved_root = os.environ.get("MBT_DATA_ROOT")
         os.environ["MBT_DATA_ROOT"] = first.name
         patch_a = patch("desktop.utils.api_client.get_db_path", return_value=db1)
         patch_a.start()
+        patch_b = None
         try:
             import desktop.utils.api_client as ac
             import backend.app as appmod
@@ -152,6 +159,7 @@ class ShopTokenTests(unittest.TestCase):
             token = left.get_json()["token"]
             ac._SCHEMA_READY = False
             patch_a.stop()
+            patch_a = None
             patch_b = patch("desktop.utils.api_client.get_db_path", return_value=db2)
             patch_b.start()
             os.environ["MBT_DATA_ROOT"] = second.name
@@ -168,9 +176,16 @@ class ShopTokenTests(unittest.TestCase):
             appmod.DB_PATH = db2
             crossed = client.get("/api/audit", headers={"Authorization": f"Bearer {token}"})
             self.assertEqual(crossed.status_code, 401)
-            patch_b.stop()
             ac._SCHEMA_READY = False
         finally:
+            if patch_a is not None:
+                patch_a.stop()
+            if patch_b is not None:
+                patch_b.stop()
+            if saved_root is None:
+                os.environ.pop("MBT_DATA_ROOT", None)
+            else:
+                os.environ["MBT_DATA_ROOT"] = saved_root
             first.cleanup()
             second.cleanup()
 

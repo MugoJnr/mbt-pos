@@ -1,8 +1,8 @@
 {
-    "version": "3.1.93",
-    "build": "RC-2026-11-25-v3.1.93",
-    "released": "2026-11-25",
-    "release_notes": "Inventory can be filtered by category, stock status, and search on the till and the web dashboard. The web inventory page has the same stock actions as the till, and a cashier without inventory access opens the sales screen.",
-    "checksum_sha256": "57e1dcad26a2ff4f04c62a32f0deef5feb5cca93a0351f8347f1f9012c4f87e9",
-    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.93/MBT_POS_Setup.exe"
+    "version": "3.1.99",
+    "build": "RC-2026-11-26-v3.1.99",
+    "released": "2026-11-26",
+    "release_notes": "The till, the shop web, and stored reports use the same sales, credit, repayment, and profit figures. A deposit on a credit sale is money received once, and a later repayment is not a second sale. Profit uses the cost recorded on the sale. The portal Backup page no longer pretends to upload a shop database. A remote backup command says when the till is signed out, and a failed upload does not replace the last stored backup.",
+    "checksum_sha256": "4b358a618d82b3b494859a4111bfe068c74d1809b3d77a6a3e7fc9d371f12b75",
+    "download_url": "https://github.com/MugoJnr/mbt-pos-releases/releases/download/v3.1.99/MBT_POS_Setup.exe"
 }

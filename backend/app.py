@@ -1278,6 +1278,67 @@ def permission_catalogue_http():
     role = (request.args.get('role') or 'cashier').strip().lower()
     return jsonify(permission_catalogue(role))
 
+
+@app.route('/api/users/<int:uid>/capabilities', methods=['GET'])
+@token_required
+def user_capabilities_http(uid):
+    if not _shop_can('users.view'):
+        return jsonify({'error': 'Forbidden'}), 403
+    from desktop.utils.capability_modes import screen_for
+    db = get_db()
+    user = _load_user(db, uid)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    return jsonify(screen_for(user))
+
+
+@app.route('/api/capability-defaults', methods=['GET', 'PUT'])
+@token_required
+def capability_defaults_http():
+    from desktop.utils.capability_modes import (
+        load_role_defaults, save_role_default, suggested_role_profile,
+    )
+    if request.method == 'GET':
+        if not _shop_can('users.view'):
+            return jsonify({'error': 'Forbidden'}), 403
+        roles = ('cashier', 'viewer', 'manager', 'admin')
+        return jsonify({
+            'saved': load_role_defaults(),
+            'profiles': {name: suggested_role_profile(name) for name in roles},
+        })
+    data = request.get_json(silent=True) or {}
+    if (_actor_role() or '') != 'superadmin':
+        return jsonify({'error': 'Only a Super Admin can change role defaults.'}), 403
+    saved = save_role_default(_actor_role(), data.get('role'), data.get('tabs'), data.get('modes') or {})
+    status = 200 if saved.get('success') else int(saved.get('status') or 400)
+    return jsonify(saved), status
+
+
+@app.route('/api/capability-defaults/apply', methods=['POST'])
+@token_required
+def apply_capability_defaults_http():
+    from desktop.utils.capability_modes import apply_role_default
+    data = request.json or {}
+    result = apply_role_default(
+        _actor_role(), data.get('role'), data.get('user_ids') or [],
+        replace=bool(data.get('replace')), confirm=bool(data.get('confirm_replace')),
+    )
+    status = 200 if result.get('success') else int(result.get('status') or 400)
+    return jsonify(result), status
+
+
+@app.route('/api/capability-policy', methods=['GET', 'PUT'])
+@token_required
+def capability_policy_http():
+    from desktop.utils.capability_modes import DEFAULT_LOCKS, direct_locks, save_direct_locks
+    if request.method == 'GET':
+        if not _shop_can('users.view'):
+            return jsonify({'error': 'Forbidden'}), 403
+        return jsonify({'locks': direct_locks(), 'builtin': DEFAULT_LOCKS})
+    saved = save_direct_locks(_actor_role(), (request.json or {}).get('locks') or {})
+    status = 200 if saved.get('success') else int(saved.get('status') or 400)
+    return jsonify(saved), status
+
 @app.route('/api/users', methods=['GET'])
 @token_required
 def list_users():
@@ -1285,7 +1346,7 @@ def list_users():
         return jsonify({'error': 'Forbidden'}), 403
     db = get_db()
     users = db.execute("""SELECT id, username, full_name, role, email, is_active,
-                          tab_permissions, permission_grants, permission_denials,
+                          tab_permissions, permission_grants, permission_denials, permission_modes,
                           created_at, last_login FROM users""").fetchall()
     return jsonify([dict(u) for u in users])
 
@@ -1387,11 +1448,43 @@ def update_user(uid):
         values.append(json.dumps(
             sanitize_tab_permissions(new_role, data['tab_permissions'])
         ))
+        fields.append("capability_customized=?")
+        values.append(1)
     elif 'role' in data and str(data.get('role') or '') != str(target.get('role') or ''):
         from roles import default_tab_permissions
         fields.append("tab_permissions=?")
         values.append(json.dumps(default_tab_permissions(new_role)))
-    if 'permission_grants' in data or 'permission_denials' in data:
+    if 'permission_modes' in data:
+        from desktop.utils.capability_modes import apply_mode_change, _parse_map
+        if int(uid) == int((g.current_user or {}).get('id') or 0):
+            return jsonify({'error': 'You cannot change your own permissions.'}), 400
+        if is_superadmin_role(target['role']):
+            return jsonify({'error': 'Super Admin access follows that role.'}), 400
+        modes = _parse_map(target.get('permission_modes'))
+        try:
+            grants = json.loads(target.get('permission_grants') or '[]')
+            denials = json.loads(target.get('permission_denials') or '[]')
+        except (TypeError, ValueError):
+            grants, denials = [], []
+        incoming = data.get('permission_modes') or {}
+        if not isinstance(incoming, dict) or not incoming:
+            return jsonify({'error': 'Choose an activity and an authorization.'}), 400
+        for action, mode in incoming.items():
+            cleaned_modes = apply_mode_change(new_role, grants, denials, modes, action, mode)
+            if cleaned_modes.get('error'):
+                return jsonify(cleaned_modes), int(cleaned_modes.get('status') or 400)
+            grants = cleaned_modes['permission_grants']
+            denials = cleaned_modes['permission_denials']
+            modes = cleaned_modes['permission_modes']
+        fields.append("permission_grants=?")
+        values.append(json.dumps(grants))
+        fields.append("permission_denials=?")
+        values.append(json.dumps(denials))
+        fields.append("permission_modes=?")
+        values.append(json.dumps(modes))
+        fields.append("capability_customized=?")
+        values.append(1)
+    elif 'permission_grants' in data or 'permission_denials' in data:
         from desktop.utils.security import clean_permission_change
         if int(uid) == int((g.current_user or {}).get('id') or 0):
             return jsonify({'error': 'You cannot change your own permissions.'}), 400

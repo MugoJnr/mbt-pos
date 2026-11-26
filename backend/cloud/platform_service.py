@@ -2121,12 +2121,34 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
     collected_from_sales = round(
         sum(analytics_sale_collected_amount(s) for s in active_sales), 2,
     )
-    debt_collected = round(sum(_fnum(p.get('amount')) for p in payments), 2)
+    def _repayment_counts(payment: dict) -> bool:
+        if str(payment.get('deleted') or '').lower() in ('1', 'true'):
+            return False
+        if str(payment.get('reversed') or '').lower() in ('1', 'true'):
+            return False
+        if str(payment.get('notes') or '').startswith('Initial payment'):
+            return False
+        return True
+
+    counted_payments = [p for p in payments if _repayment_counts(p)]
+    debt_collected = round(sum(_fnum(p.get('amount')) for p in counted_payments), 2)
     collected_revenue = round(collected_from_sales + debt_collected, 2)
-    debt_issued = round(sum(
-        _fnum(s.get('total')) for s in active_sales
-        if str(s.get('payment_method') or '').lower() in ('credit sale', 'credit', 'part payment')
-    ), 2)
+    paid_on_sales = 0.0
+    new_credit = 0.0
+    credit_face_value = 0.0
+    for sale in active_sales:
+        face = _fnum(sale.get('total'))
+        if face <= 0:
+            continue
+        kept = min(face, analytics_sale_collected_amount(sale))
+        paid_on_sales = round(paid_on_sales + kept, 2)
+        new_credit = round(new_credit + max(0.0, face - kept), 2)
+        if str(sale.get('payment_method') or '').lower() in ('credit sale', 'credit', 'part payment'):
+            credit_face_value = round(credit_face_value + face, 2)
+    for sale in return_sales:
+        refunded = abs(_fnum(sale.get('amount_paid') if sale.get('amount_paid') is not None else sale.get('total')))
+        paid_on_sales = round(paid_on_sales - refunded, 2)
+    debt_issued = new_credit
     outstanding_invoices = [
         d for d in debt_invoices
         if str(d.get('status') or '').lower() not in ('paid', 'cancelled', 'canceled', 'written_off')
@@ -2272,6 +2294,10 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         'void_revenue': round(sum(_fnum(s.get('total')) for s in void_sales), 2),
         'debt_issued': debt_issued,
         'credit_sales': debt_issued,
+        'credit_face_value': credit_face_value,
+        'paid_sales': paid_on_sales,
+        'new_credit': new_credit,
+        'total_sales': gross_sales,
         'debt_collected': debt_collected,
         'debt_payments': debt_collected,
         'debt_outstanding': debt_outstanding,
@@ -2282,9 +2308,8 @@ def analytics_overview(org_id: str, *, start: str, end: str = '', compare: bool 
         'cost_of_goods': profit_split['cost_of_goods'],
         'gross_profit': profit_split['gross_profit'],
         'gross_margin_pct': round(
-            (profit_split['gross_profit'] / (profit_split['gross_profit'] + profit_split['cost_of_goods'])) * 100,
-            2,
-        ) if (profit_split['gross_profit'] + profit_split['cost_of_goods']) else 0.0,
+            (profit_split['gross_profit'] / gross_sales) * 100, 2,
+        ) if gross_sales else 0.0,
         'uncosted_sales': profit_split.get('uncosted_sales', 0.0),
         'uncosted_lines': profit_split.get('uncosted_lines', 0),
         'card_priced_lines': card_priced_lines,

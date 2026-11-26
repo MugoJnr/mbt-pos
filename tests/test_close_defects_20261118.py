@@ -219,6 +219,16 @@ class CloseDefectTests(unittest.TestCase):
             info = handle.read()
         with open(os.path.join(ROOT, "version.json"), encoding="utf-8") as handle:
             version = json.load(handle)
-        self.assertIn("3.1.93.0", info)
-        self.assertNotIn("3.1.92.0", info)
-        self.assertEqual(version["version"], "3.1.93")
+        self.assertIn("3.1.99.0", info)
+        self.assertNotIn("3.1.96.0", info)
+        self.assertEqual(version["version"], "3.1.99")
+
+    def test_receipts_tab_imports_the_table_scroll_type(self):
+        import ast
+        path = os.path.join(ROOT, "desktop", "tabs", "receipts_tab.py")
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "PyQt5.QtWidgets":
+                imported.update(alias.name for alias in node.names)
+        self.assertIn("QAbstractItemView", imported)

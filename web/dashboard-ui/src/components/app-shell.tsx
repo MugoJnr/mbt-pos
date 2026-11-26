@@ -138,6 +138,7 @@ function pageAllowed(user: { role?: string; tab_permissions?: unknown; effective
   if (["/live", "/approvals", "/notifications"].includes(path) && !["manager", "admin", "superadmin"].includes(role)) return false;
   if (["/health", "/backup", "/branches"].includes(path) && !["admin", "superadmin"].includes(role)) return false;
   if (path === "/restock" && !["viewer", "manager", "admin", "superadmin"].includes(role)) return false;
+  if (path === "/mpesa" && role === "cashier") return false;
   if (path === "/reports" && actions && !actions.includes("reports.view_all")) return false;
   return true;
 }
@@ -158,7 +159,7 @@ const NAV: NavItem[] = [
   { to: "/debt", label: "Debt Management", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
   { to: "/reports", label: "Reports", icon: BarChart3, group: "Operations", roles: ["viewer", "manager", "admin", "superadmin"] },
   { to: "/finance", label: "Finance", icon: Banknote, group: "Operations", roles: ["cashier", "viewer", "manager", "admin", "superadmin"] },
-  { to: "/mpesa", label: "M-Pesa", icon: Banknote, group: "Operations", roles: ["cashier", "manager", "admin", "superadmin"] },
+  { to: "/mpesa", label: "M-Pesa", icon: Banknote, group: "Operations", roles: ["manager", "admin", "superadmin"] },
   { to: "/notifications", label: "Notifications", icon: Bell, group: "Command", roles: ["manager", "admin", "superadmin"] },
   { to: "/health", label: "System Health", icon: HeartPulse, group: "Command", roles: ["admin", "superadmin"] },
   { to: "/backup", label: "Backup", icon: HardDrive, group: "Command", roles: ["admin", "superadmin"] },
@@ -689,10 +690,10 @@ export function AppShell({
     if (!user) return;
     const path = location.pathname;
     const inventoryPage = path === "/inventory" || path === "/issues";
-    const blocked = (inventoryPage || path === "/restock") && !pageAllowed(user, path);
+    const blocked = (inventoryPage || path === "/restock" || path === "/mpesa") && !pageAllowed(user, path);
     if (!blocked) return;
     if (roleKey === "cashier") {
-      toast.message("Inventory is not on this cashier account.");
+      toast.message(path === "/mpesa" ? "M-Pesa is not on this cashier account." : "Inventory is not on this cashier account.");
       navigate({ to: "/pos" });
       return;
     }

@@ -556,7 +556,7 @@ def apply_light(sales_tab) -> None:
     if tb is not None and hasattr(tb, '_refresh_theme'):
         tb._refresh_theme()
     elif tb is not None:
-        tb.setText('\u263e  Dark')
+        tb.setText('Switch to dark')
         tb.setStyleSheet(fmt(TOGGLE_BTN_LIGHT))
 
     t._empty.setStyleSheet(
@@ -758,7 +758,7 @@ def apply_dark(sales_tab) -> None:
     if tb is not None and hasattr(tb, '_refresh_theme'):
         tb._refresh_theme()
     elif tb is not None:
-        tb.setText('\u2600  Light')
+        tb.setText('Switch to light')
         tb.setStyleSheet(
             f"QPushButton{{background:{D['card2']}; color:{D['text']};"
             f"border:1px solid {D['border']}; border-radius:8px;"

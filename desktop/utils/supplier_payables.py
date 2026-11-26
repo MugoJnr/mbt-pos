@@ -947,6 +947,35 @@ def return_receipt_line(api, receipt_id, product_id, quantity, *, reason="", pin
              f"{prod['name']} returned {qty:g}. Received stays {received:g}. Net {net:g}.",
              getattr(api, "_user_id", None), getattr(api, "_username", ""), token or None, now),
         )
+        returned_cost = money(qty * float(line["unit_cost"] or 0))
+        if returned_cost > 0:
+            from desktop.utils.accounting_engine import post_journal, seed_chart_of_accounts
+            seed_chart_of_accounts(db)
+            posted = post_journal(
+                db,
+                [
+                    {
+                        "account_code": "2000",
+                        "debit": returned_cost,
+                        "memo": f"Return to supplier {header['receipt_number']}",
+                    },
+                    {
+                        "account_code": "1200",
+                        "credit": returned_cost,
+                        "memo": f"Inventory returned {prod['name']}",
+                    },
+                ],
+                description=f"Return to supplier {header['receipt_number']}",
+                entry_date=_today(),
+                source_module="stock_receipts",
+                source_id=f"return:{header['id']}:{line['id']}:{now}",
+                entry_type="supplier_return",
+                user_id=getattr(api, "_user_id", None),
+                username=getattr(api, "_username", "") or "",
+            )
+            if posted.get("error"):
+                db.rollback()
+                return {"error": posted["error"], "status": 500}
         db.commit()
         _audit(getattr(api, "_user_id", None), getattr(api, "_username", ""),
                "SUPPLIER_RETURN", "inventory", f"receipt={header['receipt_number']} qty={qty}")

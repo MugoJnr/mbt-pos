@@ -25,14 +25,14 @@ from desktop.utils.widgets import (PrimaryBtn, SecondaryBtn, SuccessBtn, DangerB
 # ── State styling map (Lovable semantic tokens — read C at render time) ────────
 def _state_style(state: str):
     styles = {
-        'active':       (C['ok'],    'OK  ACTIVE',       'License is valid and active.'),
+        'active':       (C['ok'],    'OK  ACTIVE',       'Licence is valid and active.'),
         'expiring':     (C['warn'],  '!  EXPIRING SOON', 'Subscription expires in less than 14 days.'),
         'warning':      (C['warn'],  '!  WARNING',       'Subscription expires in 7 days or less.'),
         'critical':     (C['err'],   '!  CRITICAL',      'Subscription expires in 3 days or less!'),
         'expired':      (C['err'],   'X  EXPIRED',        'Your subscription has expired. Renew to continue.'),
-        'inactive':     (C['muted'], 'o  INACTIVE',       'License has been deactivated.'),
-        'tampered':     (C['err'],   'X  TAMPERED',       'License integrity check failed. Contact support.'),
-        'unactivated':  (C['muted'], 'o  NOT ACTIVATED',  'Activate your license to use MBT POS.'),
+        'inactive':     (C['muted'], 'o  INACTIVE',       'Licence has been deactivated.'),
+        'tampered':     (C['err'],   'X  TAMPERED',       'Licence integrity check failed. Contact support.'),
+        'unactivated':  (C['muted'], 'o  NOT ACTIVATED',  'Activate your licence to use MBT POS.'),
     }
     return styles.get(state, (C['muted'], state.upper(), ''))
 
@@ -100,8 +100,8 @@ class LicenseTab(QWidget):
         sync_btn.clicked.connect(self._force_sync)
         ar.addWidget(ref_btn); ar.addWidget(sync_btn)
         chrome, _ = PageChrome(
-            'License & Subscription',
-            'Manage your MBT POS license, subscription, and device binding.',
+            'Licence & Subscription',
+            'Manage your MBT POS licence, subscription, and device binding.',
             actions)
         root.addWidget(chrome)
 
@@ -121,7 +121,7 @@ class LicenseTab(QWidget):
 
         state_col = QVBoxLayout()
         state_col.setSpacing(1)
-        self.state_label = QLabel("Checking license…")
+        self.state_label = QLabel("Checking licence…")
         self.state_label.setStyleSheet(
             f"color:{C['text']}; font-size:15px; font-weight:700; background:transparent;")
         self.state_sub = QLabel("Please wait…")
@@ -209,7 +209,7 @@ class LicenseTab(QWidget):
 
         dl.addStretch()
         bind_lbl = QLabel(
-            "This license is cryptographically bound to this device.\n"
+            "This licence is cryptographically bound to this computer.\n"
             "Moving to another PC requires reactivation.")
         bind_lbl.setWordWrap(True)
         bind_lbl.setStyleSheet(
@@ -242,13 +242,13 @@ class LicenseTab(QWidget):
         al.setContentsMargins(18, 14, 18, 14)
         al.setSpacing(12)
 
-        act_hdr = QLabel("ACTIVATE LICENSE")
+        act_hdr = QLabel("ACTIVATE LICENCE")
         act_hdr.setStyleSheet(
             f"color:{C['text']}; font-size:10px; letter-spacing:2px; font-weight:600;")
         al.addWidget(act_hdr)
 
         act_info = QLabel(
-            "Paste an online license key from\n"
+            "Paste an online licence key from\n"
             "portal.mugobyte.com (format MBT-…).\n"
             "Local/offline keygen keys are not accepted."
         )
@@ -305,7 +305,7 @@ class LicenseTab(QWidget):
         al.addWidget(portal_hdr)
 
         self.tg_status_lbl = QLabel(
-            "Get your license key from portal.mugobyte.com → Licenses, then paste it above. "
+            "Get your licence key from portal.mugobyte.com, then paste it above. "
             "Device registration and limits are managed in the Portal.")
         self.tg_status_lbl.setStyleSheet(
             f"color:{C['text']}; font-size:11px;")
@@ -313,7 +313,7 @@ class LicenseTab(QWidget):
         al.addWidget(self.tg_status_lbl)
 
         tg_btn_row = QHBoxLayout()
-        self.tg_listen_btn = SuccessBtn("Open Portal Licenses", 44)
+        self.tg_listen_btn = SuccessBtn("Open portal licences", 44)
         self.tg_listen_btn.setObjectName("successBtn")
         self.tg_listen_btn.setMinimumHeight(44)
         self.tg_listen_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -411,7 +411,7 @@ class LicenseTab(QWidget):
             urgency = {
                 'expiring': f"Your subscription expires in {days} days. Renew to avoid interruption.",
                 'warning':  f"!  Only {days} days remaining. Please renew your subscription soon.",
-                'critical': f"🚨  URGENT: License expires in {days} days!",
+                'critical': f"🚨  URGENT: Licence expires in {days} days!",
             }
             self.warn_text.setText(urgency.get(state, ''))
             self.warn_bar.show()
@@ -475,18 +475,18 @@ class LicenseTab(QWidget):
                 self.log_table.setItem(i, j, item)
 
     def _show_no_service(self):
-        self.state_label.setText("License service unavailable")
-        self.state_sub.setText("Restart the application to initialise the license system.")
+        self.state_label.setText("Licence service unavailable")
+        self.state_sub.setText("Restart the application to initialise the licence system.")
 
     # ── Actions ────────────────────────────────────────────────────────────────
 
     def _activate(self):
         key = self.key_input.text().strip()
         if not key:
-            self._set_result("Please enter a license key.", error=True)
+            self._set_result("Please enter a licence key.", error=True)
             return
         if not self.license_service:
-            self._set_result("License service not running.", error=True)
+            self._set_result("Licence service not running.", error=True)
             return
 
         self.activate_btn.setEnabled(False)
@@ -515,7 +515,7 @@ class LicenseTab(QWidget):
     def _force_sync(self):
         if not self.license_service:
             return
-        self._set_result("Checking license…", error=False)
+        self._set_result("Checking this computer…", error=False)
         svc = self.license_service
 
         def work():
@@ -534,7 +534,7 @@ class LicenseTab(QWidget):
             self.refresh()
         except Exception:
             pass
-        self._set_result("License check finished.", error=False)
+        self._set_result("Licence check finished.", error=False)
 
     def _open_renewal(self):
         import webbrowser
@@ -545,6 +545,6 @@ class LicenseTab(QWidget):
         import webbrowser
         webbrowser.open("https://portal.mugobyte.com/license")
         self.tg_status_lbl.setText(
-            "Opened portal.mugobyte.com/license — paste your key above to activate this device.")
+            "Opened the portal — paste your licence key above to activate this computer.")
         self.tg_status_lbl.setStyleSheet(f"color:{C['ok']}; font-size:11px;")
 

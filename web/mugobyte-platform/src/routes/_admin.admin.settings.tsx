@@ -15,7 +15,7 @@ function Page() {
       description="Global configuration for MugoByte Platform."
       icon={Settings}
       tabs={["General","Security","Billing","Email","Integrations"]}
-      primaryAction="Save"
+      primaryAction="Save settings"
     />
   );
 }

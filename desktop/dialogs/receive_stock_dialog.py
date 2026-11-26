@@ -209,7 +209,11 @@ class ReceiveStockDialog(QDialog):
         sup_col = QVBoxLayout(sup_host)
         sup_col.setContentsMargins(0, 0, 0, 0)
         sup_col.setSpacing(6)
-        self._sup = SearchableSelect(placeholder='Search suppliers', items=supplier_items)
+        self._sup = SearchableSelect(
+            placeholder='No suppliers yet — create one' if not supplier_items else 'Search suppliers',
+            items=supplier_items,
+        )
+        self._sup.set_empty_label('Create a supplier')
         self._sup.setMinimumHeight(40)
         self._sup.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         new_sup = SecondaryBtn('New supplier', 36)
@@ -910,13 +914,16 @@ class DeliveryReceiptDialog(QDialog):
         if not chosen:
             return
         amount = chosen['amount']
+        receipt_id = self.receipt.get('id') or self.receipt.get('receipt_id')
+        if not receipt_id:
+            QMessageBox.warning(self, 'Payment', 'This delivery has no invoice to allocate the payment to.')
+            return
+        owed = float(self.receipt.get('outstanding') or self.receipt.get('grand_total') or 0)
         res = self.api.record_supplier_payment(
             self.receipt.get('supplier_id'), amount,
             method=chosen['method'], reference=chosen['reference'],
             mode='manual', allow_overpay=bool(chosen.get('allow_overpay')),
-            allocations=[{'receipt_id': self.receipt.get('id'), 'amount': min(
-                amount, float(self.receipt.get('outstanding') or 0),
-            )}],
+            allocations=[{'receipt_id': int(receipt_id), 'amount': min(amount, owed)}],
         )
         if not res or not res.get('success'):
             QMessageBox.warning(self, 'Payment', (res or {}).get('error', 'Could not record the payment.'))

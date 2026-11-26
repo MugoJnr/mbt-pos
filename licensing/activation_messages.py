@@ -21,7 +21,7 @@ def explain_activation_failure(message: str) -> str:
         'name or service', 'max retries', 'temporarily unavailable', 'ssl',
     )):
         return (
-            "MugoByte Portal did not answer. This computer was not activated, and no extra computer seat was used. "
+            "MugoByte Workspace did not answer. This computer was not activated, and no extra computer seat was used. "
             "Check the internet, then press Activate again."
         )
     if any(word in low for word in ('not verified', 'verify your email', 'verification', 'confirm your email')):

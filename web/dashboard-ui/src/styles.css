@@ -408,3 +408,67 @@
   outline: 2px solid color-mix(in oklab, var(--gold) 70%, transparent);
   outline-offset: 2px;
 }
+
+/* Readable data tables on every tab.
+   Columns grow to their text. The wrapper scrolls sideways.
+   Headers wrap on spaces and are never sliced mid-word.
+   Dates and money stay on one line. Prose wraps inside the cell. */
+.page-enter :where(div):has(> table),
+.mbt-table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.page-enter table,
+table.mbt-data-table {
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+}
+.page-enter :is(th, td),
+.mbt-data-table :is(th, td) {
+  overflow: hidden;
+  text-overflow: clip;
+  vertical-align: top;
+}
+.page-enter th,
+.mbt-data-table th {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: manual;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+  width: auto;
+  min-width: max-content;
+}
+.page-enter td,
+.mbt-data-table td {
+  white-space: nowrap;
+  width: auto;
+  min-width: max-content;
+}
+.page-enter td.mbt-wrap,
+.mbt-data-table td.mbt-wrap,
+.page-enter :is(td, th) .truncate,
+.page-enter :is(td, th).truncate {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-overflow: clip;
+  min-width: 8rem;
+  max-width: 22rem;
+}
+.page-enter .grid:has(> .mbt-kpi) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+}
+.mbt-kpi {
+  container-type: inline-size;
+  min-width: 0;
+}
+.mbt-kpi-value {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: clamp(0.95rem, 7.5cqi, 1.45rem);
+}

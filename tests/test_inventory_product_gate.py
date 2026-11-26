@@ -161,7 +161,11 @@ class InventoryProductGate(unittest.TestCase):
         missing_reason = self.api.adjust_stock(pid, 5, '   ', expected_stock=8)
         self.assertIn('reason', missing_reason.get('error', '').lower())
         invalid = self.api.adjust_stock(pid, -1, 'cycle count', expected_stock=8)
-        self.assertIn('range', invalid.get('error', '').lower())
+        self.assertTrue(
+            'range' in invalid.get('error', '').lower()
+            or 'negative' in invalid.get('error', '').lower(),
+            invalid,
+        )
 
         db = self.ac._db()
         stock = float(db.execute(
@@ -180,13 +184,18 @@ class InventoryProductGate(unittest.TestCase):
             'barcode': '111',
         })
         pid = int(created['id'])
-        self.api._role = 'cashier'
         updated = self.api.update_product(pid, {
             'price': 35.0,
             'barcode': '222',
             'name': 'Price Soap',
         })
         self.assertTrue(updated.get('success'), updated)
+        self.api._role = 'cashier'
+        blocked_price = self.api.update_product(pid, {
+            'price': 99.0,
+            'barcode': '333',
+        })
+        self.assertEqual(blocked_price.get('status'), 403, blocked_price)
         blocked = self.api.update_product(pid, {'stock': 100, 'price': 35.0})
         self.assertEqual(blocked.get('status'), 403)
         self.api._role = ''

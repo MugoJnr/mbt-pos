@@ -4444,6 +4444,7 @@ def receipt_detail_http(kind, record_id):
             'supplier': role in ('manager', 'admin', 'superadmin'),
             'debt_payment': _user_can('debt', user) or _user_can('sales', user),
             'expense': role in ('manager', 'admin', 'superadmin'),
+            'supplier_payment': role in ('manager', 'admin', 'superadmin') or _user_can('reports', user),
             'stock_adjustment': _user_can('sales', user) or role in ('manager', 'admin', 'superadmin'),
             'approval': _user_can('sales', user),
         }
@@ -5059,7 +5060,7 @@ def _app_version_info():
     info = {
         'version': '3.0.0',
         'build': 'RC-2026-07-21-v3.0.0-rc1',
-        'build_date': '2026-07-21',
+        'build_date': '',
         'exe': 'MBT_POS.exe',
         'download_url': _public_installer_url(),
     }
@@ -5698,6 +5699,7 @@ def _review_approval(aid, action):
         client._username = user.get('username') or user.get('full_name') or ''
         result = client.execute_approval(
             aid, action, pin=str(data.get('pin') or ''), note=note,
+            pin_username=str(data.get('pin_username') or ''),
             confirm_credit_payments=bool(data.get('confirm_credit_payments')),
         )
         if result.get('success'):
@@ -6083,17 +6085,10 @@ def live_monitor():
         """).fetchall())
         pending_sync = 0
         try:
-            pending_sync += int(db.execute(
-                "SELECT COUNT(*) FROM sync_queue WHERE status='pending'"
-            ).fetchone()[0] or 0)
+            from desktop.utils.api_client import APIClient
+            pending_sync = int((APIClient().sync_status() or {}).get('pending') or 0)
         except Exception:
-            pass
-        try:
-            pending_sync += int(db.execute(
-                "SELECT COUNT(*) FROM sync_outbox WHERE processed_at IS NULL"
-            ).fetchone()[0] or 0)
-        except Exception:
-            pass
+            pending_sync = 0
         last_bak = _tr(db.execute(
             "SELECT * FROM cc_backup_history ORDER BY created_at DESC LIMIT 1"
         ).fetchone())

@@ -473,8 +473,9 @@ class _InvoicesTab(QWidget):
              'Status', 'Due Date', 'Actions'],
             stretch_col=1, row_height=52)
         for ci, w in [(0, 140), (2, 130), (3, 110), (4, 110), (5, 110),
-                      (6, 110), (7, 110), (8, 320)]:
+                      (6, 110), (7, 110), (8, 460)]:
             self._tbl.setColumnWidth(ci, w)
+        self._tbl.horizontalHeader().setMinimumSectionSize(72)
         self._tbl.cellClicked.connect(self._on_row_clicked)
         lay.addWidget(self._tbl)
 
@@ -553,6 +554,7 @@ class _InvoicesTab(QWidget):
 
             # Actions
             cell = QWidget(); cell.setStyleSheet('background:transparent;')
+            cell.setMinimumWidth(440)
             cl   = QHBoxLayout(cell); cl.setContentsMargins(4, 2, 4, 2); cl.setSpacing(6)
 
             if status not in ('paid', 'cancelled'):

@@ -69,6 +69,7 @@ class TenderLines(QWidget):
         root.addWidget(self._remaining)
         self._customer_hint = QLabel("")
         self._customer_hint.setWordWrap(True)
+        self._error = ""
         root.addWidget(self._customer_hint)
         self.add_line("M-Pesa", 0)
         self._apply_style()
@@ -240,7 +241,8 @@ class TenderLines(QWidget):
         return lines
 
     def show_error(self, message: str):
-        self._customer_hint.setText(str(message or ""))
+        self._error = str(message or "")
+        self._customer_hint.setText(self._error)
         self._customer_hint.setStyleSheet(
             "color:#e15b64;font-size:13px;font-weight:800;background:transparent;")
 
@@ -274,6 +276,11 @@ class TenderLines(QWidget):
     def _paint_remaining(self):
         cur = self._currency or "KES"
         self._remaining.setText(self.summary(cur))
+        if getattr(self, "_error", ""):
+            self._customer_hint.setText(self._error)
+            self._customer_hint.setStyleSheet(
+                "color:#e15b64;font-size:13px;font-weight:800;background:transparent;")
+            return
         if self.credit_amount() > 0.009:
             self._customer_hint.setText(
                 "Select a customer. Customer credit is the amount still owed. "

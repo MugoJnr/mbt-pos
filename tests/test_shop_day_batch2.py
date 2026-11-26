@@ -171,6 +171,67 @@ class ShopDayMoneyTests(unittest.TestCase):
         self.assertTrue(confirmed.get("success"), confirmed)
         self.assertGreater(confirmed.get("unapplied") or 0, 0)
 
+    def test_personal_pin_does_not_block_a_goods_receipt_void(self):
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        db = self.ac._db()
+        saved = set_superadmin_user_pin(db, 1, "135790")
+        db.commit()
+        db.close()
+        self.assertTrue(saved.get("success"), saved)
+        self.api._role = "superadmin"
+        self.api._username = "owner"
+        product = self.api.create_product({
+            "name": "Milk", "price": 100, "cost_price": 80, "stock": 0,
+        })
+        supplier = self.api.create_supplier({"name": "Kiambu Dairy"})
+        delivery = self.api.receive_delivery(
+            supplier["id"],
+            [{"product_id": product["id"], "quantity": 1, "unit_cost": 3000}],
+            client_token="void-after-pin",
+        )
+        self.assertTrue(delivery.get("success"), delivery)
+        voided = self.api.reverse_stock_receipt(delivery["receipt_id"], pin="135790")
+        self.assertTrue(voided.get("success"), voided)
+        self.assertNotIn("transaction within a transaction", str(voided))
+
+    def test_supplier_return_reduces_payables_not_shrinkage(self):
+        from desktop.utils.superadmin_pin import set_superadmin_user_pin
+        db = self.ac._db()
+        set_superadmin_user_pin(db, 1, "135790")
+        db.commit()
+        db.close()
+        self.api._role = "superadmin"
+        self.api._username = "owner"
+        product = self.api.create_product({
+            "name": "Yoghurt", "price": 100, "cost_price": 50, "stock": 0,
+        })
+        supplier = self.api.create_supplier({"name": "Kiambu Dairy"})
+        delivery = self.api.receive_delivery(
+            supplier["id"],
+            [{"product_id": product["id"], "quantity": 2, "unit_cost": 1500}],
+            client_token="return-line",
+        )
+        self.assertTrue(delivery.get("success"), delivery)
+        returned = self.api.return_receipt_line(
+            delivery["receipt_id"], product["id"], 1, pin="135790",
+            reason="Sent back", client_token="return-1",
+        )
+        self.assertTrue(returned.get("success"), returned)
+        db = self.ac._db()
+        try:
+            row = db.execute(
+                """SELECT jl.account_code, jl.debit, jl.credit
+                   FROM journal_lines jl
+                   JOIN journal_entries je ON je.id=jl.journal_id
+                   WHERE je.entry_type='supplier_return'"""
+            ).fetchall()
+        finally:
+            db.close()
+        codes = {item["account_code"]: (float(item["debit"] or 0), float(item["credit"] or 0)) for item in row}
+        self.assertEqual(codes.get("2000"), (1500.0, 0.0))
+        self.assertEqual(codes.get("1200"), (0.0, 1500.0))
+        self.assertNotIn("6200", codes)
+
     def test_saving_a_footer_does_not_change_costing_and_is_historic(self):
         saved = self.api.update_settings({
             "receipt_footer": "QA footer",

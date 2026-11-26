@@ -44,7 +44,8 @@ export function AppTopbar({ title }: { title?: string }) {
   const navigate = useNavigate();
   const orgsQ = useQuery({ queryKey: ["platform-orgs"], queryFn: fetchOrganizations });
   const orgs = orgsQ.data || [];
-  const activeOrg = orgs.find((o) => o.id === orgId) || orgs[0];
+  const activeOrg = orgs.find((o) => String(o.id) === String(orgId)) || (orgId ? undefined : orgs[0]);
+  const businessLabel = activeOrg?.name || (orgId ? "Selected business" : "");
   const initials = String(user?.full_name || user?.username || "MB")
     .split(" ")
     .map((part) => part[0])
@@ -72,9 +73,9 @@ export function AppTopbar({ title }: { title?: string }) {
         </div>
         <div
           className="truncate text-[10px] text-muted-foreground"
-          title={activeOrg?.name || "Select a business"}
+          title={businessLabel || "Select a business"}
         >
-          {activeOrg?.name || "Select a business"}
+          {businessLabel || "Select a business"}
         </div>
       </div>
 
@@ -95,10 +96,10 @@ export function AppTopbar({ title }: { title?: string }) {
             <Button
               variant="outline"
               className="hidden h-9 max-w-[18rem] gap-2 md:inline-flex"
-              title={activeOrg?.name || "Business"}
+              title={businessLabel || "Business"}
             >
               <Building2 className="h-4 w-4 shrink-0" />
-              <span className="truncate">{activeOrg?.name || "Business"}</span>
+              <span className="truncate">{businessLabel || "Business"}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-72">
@@ -189,7 +190,7 @@ export function AppTopbar({ title }: { title?: string }) {
                   {user?.full_name || user?.username || "MugoByte User"}
                 </div>
                 <div className="mt-0.5 text-[10px] leading-none text-muted-foreground">
-                  {activeOrg?.name || "No business selected"}
+                  {businessLabel || "No business selected"}
                 </div>
               </div>
             </Button>

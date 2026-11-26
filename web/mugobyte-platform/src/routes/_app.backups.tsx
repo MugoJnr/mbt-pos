@@ -1,16 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  CloudUpload, CheckCircle2, AlertTriangle, RefreshCw,
+  CheckCircle2, AlertTriangle, RefreshCw,
   Download, Calendar, HardDrive,
 } from "lucide-react";
-import { toast } from "sonner";
 import { PageShell, PageHeader } from "@/components/layout/PageShell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { GET, POST } from "@/lib/api";
+import { GET } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/backups")({
   component: BackupsPage,
@@ -36,19 +35,11 @@ function BackupsPage() {
     refetchInterval: 30_000,
   });
 
-  const runMut = useMutation({
-    mutationFn: () => POST("/backup/run"),
-    onSuccess: () => {
-      toast.success("Backup started");
-      statusQ.refetch();
-    },
-    onError: () => toast.error("Backup failed to start"),
-  });
-
   const s = statusQ.data || {};
   const usedMb = s.storage_used_mb ?? 0;
-  const limitMb = s.storage_limit_mb ?? 20480;
-  const pct = Math.round((usedMb / limitMb) * 100);
+  const limitReported = typeof s.storage_limit_mb === "number" && s.storage_limit_mb > 0;
+  const limitMb = limitReported ? s.storage_limit_mb! : 0;
+  const pct = limitMb > 0 ? Math.round((usedMb / limitMb) * 100) : 0;
 
   return (
     <PageShell>
@@ -57,15 +48,9 @@ function BackupsPage() {
         title="Backup Center"
         description="Cloud backups, restoration points and storage usage synchronized from the MBT POS backend."
         actions={
-          <>
-            <Button variant="outline" onClick={() => statusQ.refetch()}>
-              <RefreshCw className="mr-1.5 h-4 w-4" />Refresh
-            </Button>
-            <Button onClick={() => runMut.mutate()} disabled={runMut.isPending}>
-              <CloudUpload className="mr-1.5 h-4 w-4" />
-              {runMut.isPending ? "Starting…" : "Backup now"}
-            </Button>
-          </>
+          <Button variant="outline" onClick={() => statusQ.refetch()}>
+            <RefreshCw className="mr-1.5 h-4 w-4" />Refresh
+          </Button>
         }
       />
 
@@ -95,21 +80,29 @@ function BackupsPage() {
             />
             <StatusCard
               icon={HardDrive}
-              ok={pct < 80}
+              ok={limitReported && pct < 80}
               label="Storage used"
-              value={`${(usedMb / 1024).toFixed(1)} GB`}
-              sub={`of ${(limitMb / 1024).toFixed(0)} GB`}
+              value={limitReported ? `${(usedMb / 1024).toFixed(1)} GB` : "Not reported"}
+              sub={limitReported ? `of ${(limitMb / 1024).toFixed(0)} GB` : "No storage figure was returned"}
             />
           </div>
 
           <Card>
             <CardHeader>
               <CardTitle className="font-display">Storage usage</CardTitle>
-              <CardDescription>{(usedMb / 1024).toFixed(2)} GB used of {(limitMb / 1024).toFixed(0)} GB total</CardDescription>
+              <CardDescription>
+                {limitReported
+                  ? `${(usedMb / 1024).toFixed(2)} GB used of ${(limitMb / 1024).toFixed(0)} GB total`
+                  : "Storage usage has not been reported."}
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <Progress value={pct} className="h-3" />
-              <p className="mt-2 text-xs text-muted-foreground">{pct}% — {pct > 80 ? "Consider archiving older backup files." : "Storage is healthy."}</p>
+              <Progress value={limitReported ? pct : 0} className="h-3" />
+              <p className="mt-2 text-xs text-muted-foreground">
+                {limitReported
+                  ? `${pct}% — ${pct > 80 ? "Consider archiving older backup files." : "Storage is within the reported limit."}`
+                  : "A missing storage report is not treated as free space."}
+              </p>
             </CardContent>
           </Card>
 
@@ -127,10 +120,10 @@ function BackupsPage() {
                   size={s.size_mb ? `${s.size_mb.toFixed(1)} MB` : "—"}
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">No backup history yet. Run your first backup now.</p>
+                <p className="text-sm text-muted-foreground">No backup has been recorded.</p>
               )}
               <div className="rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
-                Full backup history with individual restore points is reserved for the MugoByte cloud backup service integration. The backend endpoint is <code>/api/backup/status</code>.
+                This page shows backup history. It does not upload a shop database. Open the shop device and use Queue backup on this device. That command uploads only while the till is signed in to MugoByte. A queued or local copy is not a completed portal backup.
               </div>
             </CardContent>
           </Card>

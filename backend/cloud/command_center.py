@@ -9,7 +9,7 @@ import logging
 import os
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -262,12 +262,37 @@ class CommandCenter:
 
     def _cmd_run_backup(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
-            from backend.db_backup import send_db_backup_now
-            result = {'triggered': True}
-            send_db_backup_now(self.config_getter, reason='remote_command')
-            return True, 'Backup initiated', result
+            from backend.cloud_backup.paths import is_cloud_configured, is_logged_in
+            from backend.cloud_backup.sync_manager import SyncManager
+            if not is_cloud_configured() or not is_logged_in():
+                return False, 'Cloud sign-in is not active. Nothing was uploaded.', {
+                    'status': 'cloud_authentication_unavailable',
+                    'uploaded': False,
+                    'verified': False,
+                }
+            result = SyncManager.instance().run_backup(reason='remote_command')
         except Exception as e:
-            return False, str(e), None
+            return False, str(e), {
+                'status': 'failed', 'uploaded': False, 'verified': False,
+            }
+        if result.get('queued'):
+            return False, 'The upload did not finish. The encrypted file is waiting on the till.', {
+                'status': 'queued', 'uploaded': False, 'verified': False,
+                'error': result.get('error') or '',
+            }
+        if not result.get('ok'):
+            return False, result.get('error') or 'The backup was not uploaded.', {
+                'status': 'failed', 'uploaded': False, 'verified': False,
+            }
+        meta = result.get('meta') if isinstance(result.get('meta'), dict) else {}
+        return True, 'Backup uploaded to MugoByte. It has not been downloaded and restored.', {
+            'status': 'uploaded',
+            'uploaded': True,
+            'verified': False,
+            'size': int(result.get('size') or meta.get('size_bytes') or 0),
+            'hash': meta.get('content_hash') or '',
+            'path': meta.get('storage_path') or '',
+        }
 
     def _cmd_force_sync(self, params: dict) -> tuple[bool, str, dict | None]:
         try:
@@ -542,7 +567,35 @@ class CommandCenter:
             db.close()
 
 
-def dispatch_remote_command(center: CommandCenter, cmd: dict, receipt_path: str | None = None) -> str:
+def command_rejection(cmd: dict, *, device_id: str = '', org_id: str = '') -> str:
+    """Reject a command before it can change the till."""
+    target = str(cmd.get('device_id') or '').strip()
+    if device_id and target and target != str(device_id).strip():
+        return 'wrong_device'
+    shop = str(cmd.get('org_id') or '').strip()
+    if org_id and shop and shop != str(org_id).strip():
+        return 'wrong_shop'
+    expires = str(cmd.get('expires_at') or '').strip()
+    if expires:
+        try:
+            exp = datetime.fromisoformat(expires.replace('Z', '+00:00'))
+        except ValueError:
+            return 'expired'
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= datetime.now(timezone.utc):
+            return 'expired'
+    return ''
+
+
+def dispatch_remote_command(
+    center: CommandCenter,
+    cmd: dict,
+    receipt_path: str | None = None,
+    *,
+    device_id: str = '',
+    org_id: str = '',
+) -> str:
     """Claim, record, then run. A missed claim or a saved id never reaches the handler."""
     cmd_id = str(cmd.get('id') or '').strip()
     command = cmd.get('command', '')
@@ -554,6 +607,10 @@ def dispatch_remote_command(center: CommandCenter, cmd: dict, receipt_path: str 
             params = {}
     if not cmd_id or not command:
         return 'ignored'
+    rejection = command_rejection(cmd, device_id=device_id, org_id=org_id)
+    if rejection:
+        logger.info('Remote command %s rejected: %s', cmd_id, rejection)
+        return rejection
     if cmd_id in load_command_receipts(receipt_path):
         logger.info('Remote command %s already handled; not running again', cmd_id)
         center.report_result(cmd_id, True, {'skipped': 'already_handled'}, '')
@@ -612,8 +669,16 @@ class CommandPoller(threading.Thread):
                                                  if c.get('id') not in {x.get('id') for x in pending}]
                     except Exception:
                         pass
+                    allowed = {str(device_id)}
+                    if self._license_fp:
+                        allowed.add(str(self._license_fp))
                     for cmd in pending:
-                        dispatch_remote_command(self.center, cmd)
+                        target = str(cmd.get('device_id') or '')
+                        dispatch_remote_command(
+                            self.center,
+                            cmd,
+                            device_id=target if target in allowed else str(device_id),
+                        )
             except Exception as e:
                 logger.debug('Command poll error: %s', e)
             self._stop.wait(CommandCenter.POLL_INTERVAL)

@@ -225,23 +225,23 @@ function RequestsCentrePage() {
     try {
       let result: { error?: string; success?: boolean; message?: string; credit_payments_exist?: boolean } = {};
       if (selected.source === "dated") {
-        result = await POST(`/dated-actions/${selected.source_id}/${action}`, action === "approve" ? {} : { reason });
+        result = (await POST(`/dated-actions/${selected.source_id}/${action}`, action === "approve" ? {} : { reason })) ?? {};
       } else if (selected.source === "backdate") {
-        result = await POST(`/backdate-requests/${selected.source_id}/${action}`, action === "approve" ? {} : { reason });
+        result = (await POST(`/backdate-requests/${selected.source_id}/${action}`, action === "approve" ? {} : { reason })) ?? {};
       } else if (selected.source === "delivery") {
-        result = await POST(`/supplier-delivery-requests/${selected.source_id}`, {
+        result = (await POST(`/supplier-delivery-requests/${selected.source_id}`, {
           decision: action === "approve" ? "approve" : "reject",
           note: reason,
           pin,
-        });
+        })) ?? {};
       } else if (selected.source === "stock") {
-        result = await POST(`/stock-adjustment-requests/${selected.source_id}/review`, {
+        result = (await POST(`/stock-adjustment-requests/${selected.source_id}/review`, {
           decision: action === "approve" ? "approved" : "rejected",
           pin,
           note: reason,
-        });
+        })) ?? {};
       } else {
-        result = await POST(`/approvals/${selected.source_id}/${action}`, action === "approve" ? { pin, confirm_credit_payments: confirmCredit } : { note: reason });
+        result = (await POST(`/approvals/${selected.source_id}/${action}`, action === "approve" ? { pin, confirm_credit_payments: confirmCredit } : { note: reason })) ?? {};
       }
       if (result?.credit_payments_exist && !confirmCredit) {
         setConfirmCredit(true);

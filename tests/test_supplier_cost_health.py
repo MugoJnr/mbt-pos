@@ -158,8 +158,7 @@ class SupplierCostHealthTests(unittest.TestCase):
         hidden = self.api.receive_delivery(supplier, [{
             "product_id": pid, "quantity": 2, "unit_cost": 55,
         }], client_token="cashier-card-cost")
-        self.assertTrue(hidden.get("success"), hidden)
-        self.assertNotIn("unit_cost", (hidden.get("lines") or [{}])[0])
+        self.assertEqual(hidden.get("status"), 403, hidden)
         self.api._role = "viewer"
         denied = self.api.receive_delivery(supplier, [{
             "product_id": pid, "quantity": 1, "unit_cost": 55,

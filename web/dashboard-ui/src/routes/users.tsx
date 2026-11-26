@@ -5,7 +5,7 @@ import { AppShell } from "@/components/app-shell";
 import { Badge, Button, Card, Input, PageHeader, Table } from "@/components/ui-kit";
 import { GET, POST, PUT } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { UserCapabilities } from "@/components/user-capabilities";
+import { RoleDefaults, UserCapabilities } from "@/components/user-capabilities";
 
 export const Route = createFileRoute("/users")({
   component: Users,
@@ -71,6 +71,7 @@ function Users() {
         description="Change your own password here. An admin can add a staff account. Ending a till sign-in asks that till to return to the login screen."
       />
 
+      {role === "superadmin" ? <RoleDefaults /> : null}
       <Card className="mb-4">
         <div className="p-4 space-y-3">
           <div className="text-sm font-semibold text-text">Change password</div>

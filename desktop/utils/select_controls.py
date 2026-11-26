@@ -125,7 +125,7 @@ def install_combo_popup_fix() -> None:
             current = self.currentIndex()
             buttons = []
             if count <= 0:
-                empty = QLabel("No options", host)
+                empty = QLabel(getattr(self, "_empty_label", None) or "No options", host)
                 empty.setStyleSheet(
                     "color:#6B7280;background-color:#F7F9FC;padding:8px 12px;"
                 )

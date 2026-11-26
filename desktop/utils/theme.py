@@ -711,11 +711,10 @@ QHeaderView::section {{
     background: {p['panel']};
     color: {p['text2']};
     font-size: 11px; font-weight: 800;
-    letter-spacing: 1.2px;
-    padding: 12px 14px;
+    letter-spacing: 0px;
+    padding: 10px 12px;
     border: none;
     border-bottom: 1px solid {p['border']};
-    text-transform: uppercase;
 }}
 QHeaderView {{ border: none; background: transparent; color: {p['text2']}; }}
 QTableCornerButton::section {{ background: {p['panel']}; border: none; }}

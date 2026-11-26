@@ -245,7 +245,7 @@ function FinancePage() {
             {Number(summary.register_uncosted_lines || 0) > 0 ? "Verified gross profit" : "Gross profit"}
           </div>
           <div className="mt-1 text-xl font-bold text-text">
-            {KES(Number(summary.register_gross ?? summary.month_gross ?? 0), currency)}
+            {KES(Number(pnl?.register_gross ?? summary.register_gross ?? summary.month_gross ?? 0), currency)}
           </div>
           <div className="mt-1 text-xs text-text2">
             {summary.register_note || "Sales minus the cost recorded on each sale."}
@@ -333,7 +333,7 @@ function FinancePage() {
             <tr key={row.id}>
               <td className="px-4 py-2.5 text-text">{row.expense_number}</td>
               <td className="px-4 py-2.5 text-text2">{row.expense_date}</td>
-              <td className="px-4 py-2.5 text-text">{row.description}</td>
+              <td className="mbt-wrap px-4 py-2.5 text-text">{row.description}</td>
               <td className="px-4 py-2.5 text-text">{KES(Number(row.amount || 0), currency)}</td>
               <td className="px-4 py-2.5 text-text2">{row.status}</td>
               <td className="px-4 py-2.5">
@@ -374,7 +374,7 @@ function FinancePage() {
               <tr key={row.id}>
                 <td className="px-4 py-2.5 text-text">{row.entry_number}</td>
                 <td className="px-4 py-2.5 text-text2">{row.entry_date}</td>
-                <td className="px-4 py-2.5 text-text">{row.description}</td>
+                <td className="mbt-wrap px-4 py-2.5 text-text">{row.description}</td>
                 <td className="px-4 py-2.5 text-text2">{row.status}</td>
               </tr>
             ))}

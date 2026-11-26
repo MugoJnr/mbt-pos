@@ -48,9 +48,9 @@ class UpdateProgressTests(unittest.TestCase):
             checker._report_download_progress(1000, complete=True, state="complete")
             checker._report_download_progress(0, state="failed", message="Download failed")
         self.assertEqual(seen[0][1], 45)
-        self.assertIn("45%", seen[0][2])
+        self.assertIn("keep selling", seen[0][2].lower())
         self.assertEqual(seen[1][1], 100)
-        self.assertEqual(seen[1][2], "Download complete")
+        self.assertEqual(seen[1][2], "Ready to install.")
         self.assertIsNone(seen[2][1])
 
 

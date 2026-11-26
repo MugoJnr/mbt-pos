@@ -187,11 +187,15 @@ class IssueRuleTests(unittest.TestCase):
         scan(self.db)
         cashier_codes = self._codes(CASHIER)
         self.assertNotIn("INV-NO-BUYING-PRICE", cashier_codes)
-        self.assertIn("INV-NEGATIVE-STOCK", cashier_codes)
-        issue = list_issues(self.db, CASHIER)[0]
+        self.assertNotIn("INV-NEGATIVE-STOCK", cashier_codes)
+        self.assertIn("INV-NEGATIVE-STOCK", self._codes(ADMIN))
+        issue = next(
+            item for item in list_issues(self.db, ADMIN)
+            if item["rule_code"] == "INV-NEGATIVE-STOCK"
+        )
         denied = dismiss_issue(self.db, CASHIER, issue["id"], "not my job")
         self.assertEqual(denied["status"], 403)
-        self.assertEqual(self._codes(CASHIER), {"INV-NEGATIVE-STOCK"})
+        self.assertEqual(self._codes(CASHIER), set())
 
     def test_correction_resolves_and_dismiss_needs_a_reason(self):
         self.db.execute("INSERT INTO products VALUES (1,'Bare','B',80,0,4,'kg',1)")

@@ -87,9 +87,9 @@ class ReturnSaleDialog(QDialog):
         self._preview.setStyleSheet(f"color:{C['text2']}; font-size:12px;")
         lay.addWidget(self._preview)
 
-        self._can_direct = (getattr(api, '_role', '') or '').lower() in (
-            'admin', 'superadmin', 'manager',
-        )
+        role = (getattr(api, '_role', '') or '').lower()
+        self._can_direct = role in ('admin', 'superadmin', 'manager')
+        self._needs_pin = role != 'superadmin'
         btns = QHBoxLayout()
         btns.addStretch(1)
         cancel = SecondaryBtn('Cancel', 40)
@@ -100,7 +100,7 @@ class ReturnSaleDialog(QDialog):
         self._go = PrimaryBtn(
             'Process Return' if self._can_direct else 'Super Admin Authorisation', 44,
         )
-        self._go.clicked.connect(lambda: self._submit(use_pin=not self._can_direct))
+        self._go.clicked.connect(lambda: self._submit(use_pin=self._needs_pin))
         self._go.setEnabled(False)
         btns.addWidget(cancel)
         if not self._can_direct:
@@ -164,6 +164,14 @@ class ReturnSaleDialog(QDialog):
         self._go.setEnabled(open_lines)
         self._request.setEnabled(open_lines)
 
+    def _order_discount_factor(self) -> float:
+        """Share of an order-level discount. Line discounts are already in the line total."""
+        lines_net = round(sum(float(it.get('total') or 0) for it in self._items), 2)
+        payable = round(float((self._sale or {}).get('total') or 0), 2)
+        if lines_net <= 0.009:
+            return 1.0
+        return payable / lines_net
+
     def _chosen_lines(self):
         payload = []
         preview = 0.0
@@ -177,6 +185,7 @@ class ReturnSaleDialog(QDialog):
             disc = float(it.get('discount') or 0)
             share = round(disc * (qty / sold), 2) if sold else 0.0
             line_total = round(qty * float(it.get('unit_price') or 0) - share, 2)
+            line_total = round(line_total * self._order_discount_factor(), 2)
             preview = round(preview + line_total, 2)
             payload.append({'sale_item_id': it['id'], 'quantity': qty})
             names.append(f"{qty:g} {it.get('product_name') or 'item'} at {line_total:,.2f}")

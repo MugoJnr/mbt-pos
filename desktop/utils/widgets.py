@@ -6,6 +6,8 @@ All components theme-aware: pick up C[] at paint time.
 ThemeManager.apply() triggers a global stylesheet refresh —
 no per-widget repaint needed.
 """
+import re
+
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore    import *
 from PyQt5.QtGui     import *
@@ -467,6 +469,35 @@ _TBL_TONE_KEYS = (
 )
 
 
+_MONEY_OR_DATE = re.compile(
+    r'^(?:KES|USD|EUR|GBP|UGX|TZS)\s+-?[\d,]+(?:\.\d+)?$'
+    r'|^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$',
+    re.IGNORECASE,
+)
+_WRAP_HEADER = re.compile(
+    r'description|detail|notes|memo|reason|vendor|customer|product|comment|payee|name',
+    re.IGNORECASE,
+)
+
+
+def _column_header(index) -> str:
+    model = index.model()
+    if model is None:
+        return ''
+    data = model.headerData(index.column(), Qt.Horizontal, Qt.DisplayRole)
+    return str(data or '')
+
+
+def _keep_one_line(text: str, header: str) -> bool:
+    """Dates and money stay on one line. Prose columns may wrap."""
+    sample = str(text or '').strip()
+    if _MONEY_OR_DATE.match(sample):
+        return True
+    if _WRAP_HEADER.search(header or ''):
+        return False
+    return len(sample) <= 40
+
+
 class ThemeTableDelegate(QStyledItemDelegate):
     """
     Paint BackgroundRole + ForegroundRole explicitly.
@@ -474,7 +505,20 @@ class ThemeTableDelegate(QStyledItemDelegate):
     Global QSS on QTableWidget/::item routinely ignores item roles (and can
     leave QPalette::Base white on half the zebra). This delegate is the
     reliable path for theme-correct contrast on every row.
+
+    Dates and amounts are drawn in full. Longer notes wrap inside the cell
+    instead of being cut off with an ellipsis.
     """
+
+    def sizeHint(self, option, index):
+        text = str(index.data(Qt.DisplayRole) or '')
+        header = _column_header(index)
+        fm = option.fontMetrics
+        if _keep_one_line(text, header):
+            return QSize(fm.horizontalAdvance(text) + 36, max(44, fm.height() + 20))
+        width = 240
+        bounds = fm.boundingRect(QRect(0, 0, width - 28, 4000), int(Qt.TextWordWrap), text)
+        return QSize(width, max(44, bounds.height() + 18))
 
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
@@ -522,18 +566,19 @@ class ThemeTableDelegate(QStyledItemDelegate):
             painter.setPen(color)
             painter.setFont(opt.font)
             # Match former QSS padding ~10px 14px
-            text_rect = opt.rect.adjusted(14, 0, -14, 0)
+            text_rect = opt.rect.adjusted(14, 4, -14, -4)
             align = opt.displayAlignment or (Qt.AlignLeft | Qt.AlignVCenter)
-            painter.drawText(
-                text_rect, int(align) | Qt.TextSingleLine,
-                painter.fontMetrics().elidedText(
-                    text, Qt.ElideRight, text_rect.width()))
+            header = _column_header(index)
+            one_line = _keep_one_line(text, header)
+            flags = int(align) | (Qt.TextSingleLine if one_line else Qt.TextWordWrap)
+            painter.drawText(text_rect, flags, text)
         painter.restore()
 
 
 def make_table(headers, stretch_col=0, row_height=44, alt=True):
-    t = QTableWidget(0, len(headers))
-    t.setHorizontalHeaderLabels(headers)
+    labels = [str(h) for h in headers]
+    t = QTableWidget(0, len(labels))
+    t.setHorizontalHeaderLabels(labels)
     # Zebra is painted via BackgroundRole + ThemeTableDelegate.
     # Qt QSS alternate-background-color overrides item roles and historically
     # leaked light-theme white rows under dark text.
@@ -545,9 +590,38 @@ def make_table(headers, stretch_col=0, row_height=44, alt=True):
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
     t.setShowGrid(False)
     t.setFrameShape(QFrame.NoFrame)
+    t.setWordWrap(True)
+    t.setTextElideMode(Qt.ElideNone)
+    t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    t.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
     t.verticalHeader().setDefaultSectionSize(row_height)
-    t.horizontalHeader().setSectionResizeMode(stretch_col, QHeaderView.Stretch)
-    t.horizontalHeader().setHighlightSections(False)
+    t.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    t.verticalHeader().setMinimumSectionSize(row_height)
+    header = t.horizontalHeader()
+    header.setHighlightSections(False)
+    header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    header.setTextElideMode(Qt.ElideNone)
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(72)
+    header.setSectionResizeMode(QHeaderView.ResizeToContents)
+    # stretch_col used to eat the row and leave dates and amounts at ~100px.
+    # Prose columns wrap. Every other column sizes to its full text.
+    for index, label in enumerate(labels):
+        if _WRAP_HEADER.search(label):
+            header.setSectionResizeMode(index, QHeaderView.Interactive)
+            t.setColumnWidth(index, 220)
+        elif index == stretch_col:
+            header.setSectionResizeMode(index, QHeaderView.ResizeToContents)
+    header_font = QFont(header.font())
+    header_font.setPixelSize(11)
+    header_font.setBold(True)
+    metrics = QFontMetrics(header_font)
+    for index, label in enumerate(labels):
+        needed = metrics.horizontalAdvance(label.upper()) + 28
+        if header.sectionResizeMode(index) != QHeaderView.Interactive:
+            header.resizeSection(index, max(header.sectionSize(index), needed))
+        elif header.sectionSize(index) < min(needed, 220):
+            t.setColumnWidth(index, max(header.sectionSize(index), min(needed, 220)))
     t.setFocusPolicy(Qt.StrongFocus)
     return t
 

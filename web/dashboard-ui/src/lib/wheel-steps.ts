@@ -9,7 +9,7 @@ export const WHEEL_DEFAULTS = {
 
 export type WheelKey = keyof typeof WHEEL_DEFAULTS;
 
-export function wheelStep(settings: Record<string, string> | undefined, key: WheelKey): number {
+export function wheelStep(settings: Record<string, string> | null | undefined, key: WheelKey): number {
   const raw = settings?.[key] ?? WHEEL_DEFAULTS[key];
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0 || n > 1000) return Number(WHEEL_DEFAULTS[key]);

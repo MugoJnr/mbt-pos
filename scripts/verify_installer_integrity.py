@@ -1,8 +1,10 @@
 ﻿"""Verify installer hash metadata and packaged runtime version are consistent."""
 from __future__ import annotations
 
+import binascii
 import hashlib
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -12,6 +14,61 @@ SIDECAR = ROOT / "dist" / "MBT_POS_Setup.exe.sha256"
 VERSION_JSON = ROOT / "version.json"
 INTERNAL = ROOT / "dist" / "MBT_POS" / "_internal" / "version.json"
 MIN_BYTES = 50_000_000
+
+
+_FH_SIG = 0xDEADBEEF
+_FH_INT1 = 0x6C6C754E  # "Null"
+_FH_INT2 = 0x74666F73  # "soft"
+_FH_INT3 = 0x74736E49  # "Inst"
+_FH_FLAGS_MASK = 0xF
+
+
+def nsis_crc_status(path: Path) -> tuple[bool, str]:
+    """Replay the NSIS 3.10 stub CRC walk (exehead/fileform.c loadHeaders).
+
+    A file can have the right size and a SHA-256 we recorded ourselves and
+    still show "Installer integrity check has failed" if the trailer CRC does
+    not match the bytes the stub reads. That is what shops hit on 3.1.96.
+    """
+    data = path.read_bytes()
+    length = len(data)
+    left = length
+    pos = 0
+    crc = 0
+    header_at = 0
+    stored_at = -1
+    while left > 0:
+        chunk_len = min(left, 32768 if header_at else 512)
+        chunk = data[pos:pos + chunk_len]
+        if len(chunk) < chunk_len:
+            return False, "installer ended before the CRC walk finished"
+        if not header_at and chunk_len >= 28:
+            flags, sig, a, b, c, _hdrlen, datalen = struct.unpack_from("<7I", chunk)
+            if (
+                (flags & ~_FH_FLAGS_MASK) == 0
+                and sig == _FH_SIG
+                and a == _FH_INT1
+                and b == _FH_INT2
+                and c == _FH_INT3
+            ):
+                header_at = pos
+                if datalen > left:
+                    return False, "NSIS header length runs past the end of the file"
+                left = datalen - 4
+                if chunk_len > left:
+                    chunk_len = left
+                    chunk = chunk[:chunk_len]
+                stored_at = pos + datalen - 4
+        if left < length:
+            crc = binascii.crc32(chunk, crc) & 0xFFFFFFFF
+        pos += chunk_len
+        left -= chunk_len
+    if not header_at or stored_at < 0 or stored_at + 4 > length:
+        return False, "NSIS header or trailer CRC is missing"
+    stored = struct.unpack_from("<I", data, stored_at)[0]
+    if crc != stored:
+        return False, f"NSIS CRC mismatch stored={stored:#010x} calculated={crc:#010x}"
+    return True, f"NSIS CRC {stored:#010x}"
 
 
 def sha256_file(path: Path) -> str:
@@ -31,6 +88,9 @@ def main() -> int:
     size = SETUP.stat().st_size
     if size < MIN_BYTES:
         errors.append(f"setup too small ({size} bytes) — partial/corrupt")
+    crc_ok, crc_detail = nsis_crc_status(SETUP)
+    if not crc_ok:
+        errors.append(crc_detail)
     file_hash = sha256_file(SETUP)
     vj = json.loads(VERSION_JSON.read_text(encoding="utf-8-sig"))
     declared = (vj.get("checksum_sha256") or "").strip().lower()
@@ -67,6 +127,7 @@ def main() -> int:
     print(f"setup_sha256={file_hash}")
     print(f"size={size}")
     print("version.json == sidecar == Setup.exe; embedded version matches")
+    print(crc_detail)
     return 0
 
 

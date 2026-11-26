@@ -25,6 +25,9 @@ class CartQtyDiscountUnit(unittest.TestCase):
             self.tab, item)
         self.tab._recalc = lambda: None
         self.tab._refresh_cart = lambda: None
+        self.tab._qty_pending = None
+        self.tab._flush_qty = lambda: None
+        self.tab._reject_qty = lambda idx, message: None
 
         def _qty(idx, v):
             return SalesTab._qty(self.tab, idx, v)

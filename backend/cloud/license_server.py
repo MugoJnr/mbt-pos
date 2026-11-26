@@ -502,8 +502,10 @@ class CloudLicenseServer:
             )
 
         max_dev = int(lic.get('max_devices') or 1)
+        reserved_here = str(lic.get('reserved_device_id') or '').strip()
+        issued_for_this_computer = bool(reserved_here and reserved_here in set(expanded or ids))
         active_count = self._count_active_seats(lic['id'])
-        if active_count >= max_dev:
+        if active_count >= max_dev and not issued_for_this_computer:
             # Heal inflated activated_devices counters before rejecting.
             synced = self._sync_activated_devices(lic['id'])
             if synced >= max_dev:

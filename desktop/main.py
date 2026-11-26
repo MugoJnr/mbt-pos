@@ -45,8 +45,8 @@ log.info('MBT POS data root: %s', PROJECT_ROOT)
 log.info('MBT POS database: %s', get_db_path())
 
 # Update this tag whenever shipping visual/runtime patches.
-APP_BUILD_TAG = "RC-2026-11-25-v3.1.93"
-APP_VERSION   = "3.1.93"   # must match version.json; RC tag may add a prerelease suffix
+APP_BUILD_TAG = "RC-2026-11-26-v3.1.99"
+APP_VERSION   = "3.1.99"   # must match version.json; RC tag may add a prerelease suffix
 
 
 def install_crash_handler():
@@ -321,16 +321,6 @@ class LoginDialog(QDialog):
             f" border:none; font-size:12px; font-weight:600; padding:6px; }}"
             f"QPushButton#loginForgotBtn:hover {{ color:{C['gold']}; text-decoration:underline; }}")
         fl.addWidget(self._forgot_btn, 0, Qt.AlignCenter)
-
-        self._recovery_btn = QPushButton("Developer emergency recovery")
-        self._recovery_btn.setObjectName("loginRecoveryBtn")
-        self._recovery_btn.setCursor(Qt.PointingHandCursor)
-        self._recovery_btn.clicked.connect(self._developer_emergency_recovery)
-        self._recovery_btn.setStyleSheet(
-            f"QPushButton#loginRecoveryBtn {{ background:transparent; color:{C['text2']};"
-            f" border:none; font-size:12px; font-weight:600; padding:4px; }}"
-            f"QPushButton#loginRecoveryBtn:hover {{ color:{C['gold']}; text-decoration:underline; }}")
-        fl.addWidget(self._recovery_btn, 0, Qt.AlignCenter)
 
         fl.addStretch()
         fl.addWidget(foot)
@@ -2754,7 +2744,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, '_theme_btn') and hasattr(self._theme_btn, '_refresh_theme'):
                 self._theme_btn._refresh_theme()
             elif hasattr(self, '_theme_btn') and hasattr(self._theme_btn, 'setText'):
-                self._theme_btn.setText('Dark' if is_light else 'Light')
+                self._theme_btn.setText('Switch to dark' if is_light else 'Switch to light')
 
             self._refresh_chrome_styles()
             try:
@@ -2879,7 +2869,7 @@ class MainWindow(QMainWindow):
                 if hasattr(sales._theme_btn, '_refresh_theme'):
                     sales._theme_btn._refresh_theme()
                 elif hasattr(sales._theme_btn, 'setText'):
-                    sales._theme_btn.setText('Dark' if is_light else 'Light')
+                    sales._theme_btn.setText('Switch to dark' if is_light else 'Switch to light')
             if defer_heavy:
                 QTimer.singleShot(0, lambda s=sales: self._sales_theme_heavy(s))
             else:

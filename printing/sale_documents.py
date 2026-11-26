@@ -380,11 +380,16 @@ def _render_lines(doc: dict, width: int) -> list:
         from printing.sheet import sale_item_lines
         lines.extend(sale_item_lines(doc["items"], width, show_money=True))
         lines.append("-" * width)
-    if _money(doc.get("discount")) > 0:
-        lines.append(_fit("Discount:", f"-{_money(doc.get('discount')):,.2f}", width))
-    if doc.get("show_tax"):
-        lines.append(_fit("Tax:", f"{_money(doc.get('tax')):,.2f}", width))
-    lines.append(_fit("Total:", f"{_money(doc.get('total')):,.2f}", width))
+    for label, amount in receipt_total_rows(
+        doc.get("subtotal"), doc.get("discount"), doc.get("tax"), doc.get("total"),
+    ):
+        if label == "Tax" and not doc.get("show_tax"):
+            continue
+        if label == "Total":
+            lines.append(_fit("Total:", f"{_money(doc.get('total')):,.2f}", width))
+            continue
+        shown = f"-{_money(abs(amount)):,.2f}" if label == "Discount" else f"{_money(amount):,.2f}"
+        lines.append(_fit(f"{label}:", shown, width))
     lines.append(_fit("Amount paid:", f"{_money(doc.get('amount_paid')):,.2f}", width))
     for row in doc.get("breakdown") or []:
         label = str(row.get("method") or "Payment")
@@ -407,6 +412,31 @@ def _render_lines(doc: dict, width: int) -> list:
     lines.append("-" * width)
     lines.append(center(doc.get("footer") or "Thank you!", width))
     return lines
+
+
+def receipt_total_rows(subtotal, discount, tax, total) -> list[tuple[str, float]]:
+    """Discount first, then the subtotal that follows from it.
+
+    A stored subtotal that still includes the discount is not shown as if the
+    discount had already been taken off.
+    """
+    gross = round(float(subtotal or 0), 2)
+    off = round(float(discount or 0), 2)
+    tax_n = round(float(tax or 0), 2)
+    total_n = round(float(total or 0), 2)
+    rows: list[tuple[str, float]] = []
+    net = gross
+    if off > 0.009:
+        rows.append(("Discount", -off))
+        pre_discount = abs((gross - off + tax_n) - total_n) <= 0.05
+        already_net = abs((gross + tax_n) - total_n) <= 0.05
+        if pre_discount and not already_net:
+            net = round(gross - off, 2)
+    rows.append(("Subtotal", net))
+    if tax_n > 0.009:
+        rows.append(("Tax", tax_n))
+    rows.append(("Total", total_n))
+    return rows
 
 
 def center(text: str, width: int) -> str:

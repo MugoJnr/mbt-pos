@@ -37,9 +37,15 @@ class MultiLayoutSwitchTests(unittest.TestCase):
             import sqlite3
             db.parent.mkdir(parents=True, exist_ok=True)
             sqlite3.connect(str(db)).close()
-        from desktop.utils.api_client import APIClient
+        import sqlite3
+        import desktop.utils.api_client as ac
+        conn = sqlite3.connect(str(db))
+        ac._ensure_schema(conn)
+        conn.commit()
+        conn.close()
+        ac._SCHEMA_READY = False
         from desktop.tabs.sales_tab import SalesTab
-        cls.api = APIClient(str(db))
+        cls.api = ac.APIClient()
         cls.tab = SalesTab(
             cls.api,
             {'id': 1, 'username': 'admin', 'role': 'superadmin', 'full_name': 'T'},

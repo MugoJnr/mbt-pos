@@ -89,7 +89,7 @@ function HealthPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {healthQ.isLoading
             ? Array.from({ length: 8 }).map((_, i) => (
-                <Card key={i} className="p-4 h-24 animate-pulse bg-panel/40" />
+                <Card key={i} className="p-4 h-24 animate-pulse bg-panel/40">{null}</Card>
               ))
             : checks.map((c) => <HealthCheckCard key={c.key} check={c} />)}
         </div>

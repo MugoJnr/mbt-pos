@@ -145,7 +145,7 @@ export function RequestReceiptDialog({
               <div>Reason <span className="font-semibold text-text">{shownConsumption.reason || "—"}</span></div>
               {shownConsumption.notes ? <div>Notes {shownConsumption.notes}</div> : null}
               <div className="rounded-lg border border-border">
-                {consumptionLines.length === 0 ? <div className="px-3 py-3 text-text2">No product lines are stored on this consumption.</div> : consumptionLines.map((line, index) => (
+                {consumptionLines.length === 0 ? <div className="px-3 py-3 text-text2">No product lines are stored on this consumption.</div> : consumptionLines.map((line: { product_name?: string; sku?: string; quantity?: number | string; total_cost?: number }, index: number) => (
                   <div key={index} className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-border px-3 py-2 last:border-0">
                     <div>
                       <div className="font-semibold text-text">{line.product_name || "Product"}</div>

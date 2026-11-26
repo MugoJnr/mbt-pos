@@ -104,10 +104,9 @@ class NoWheelControlsFilter(QObject):
             forward_wheel_to_scroll_parent(spin, event)
             return True
         if spin is not None:
-            editor = spin.lineEdit() if hasattr(spin, 'lineEdit') else None
-            focused = spin.hasFocus() or (editor is not None and editor.hasFocus())
-            if focused:
-                return False
+            # A wheel never changes a quantity or an amount, focused or not.
+            # Wine reports focus while the pointer is only hovering, and that
+            # turned an unfocused split amount from 100 into 98.
             forward_wheel_to_scroll_parent(spin, event)
             return True
 
@@ -133,10 +132,6 @@ def _patch_wheel_event(cls):
             if view is not None and view.isVisible():
                 if orig_wheel:
                     orig_wheel(self, event)
-                return
-        if isinstance(self, (QAbstractSpinBox, QSpinBox, QDoubleSpinBox)) and not isinstance(self, (QDateEdit, QDateTimeEdit)):
-            if self.hasFocus() and orig_wheel:
-                orig_wheel(self, event)
                 return
         forward_wheel_to_scroll_parent(self, event)
         event.ignore()

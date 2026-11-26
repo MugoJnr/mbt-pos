@@ -506,7 +506,7 @@ function ConsumptionPage() {
         {lines.length && canSeeCost ? (
           <div className="mt-3 flex items-center justify-between rounded-lg border border-border bg-panel px-4 py-3">
             <span className="text-sm text-text2">Estimated stock cost</span>
-            <span className="text-xl font-extrabold tabular-nums text-gold">{KES(lines.reduce((sum, line) => sum + line.unitCost * line.quantity, 0))}</span>
+            <span className="text-xl font-extrabold tabular-nums text-gold">{KES(lines.reduce((sum, line) => sum + line.unitCost * (Number(line.quantity) || 0), 0))}</span>
           </div>
         ) : null}
         {savedRef ? (

@@ -374,7 +374,7 @@ function Inventory() {
       if (!catalogMatches(q, p)) return false;
       if (statusFilter !== "all" && stockBand(p) !== statusFilter) return false;
       if (!categoryMatches(p, categoryFilter)) return false;
-      const codes = new Set((p.cost_health?.badges || []).map((badge) => badge.code));
+      const codes = new Set((p.cost_health?.badges || []).map((badge: { code: string }) => badge.code));
       if (!costFilter) return true;
       if (costFilter === "zero_or_invalid") {
         return codes.has("explicit_zero") || codes.has("invalid_price") || codes.has("zero_review");
@@ -496,7 +496,7 @@ function Inventory() {
       `Remove ${product.name}?\n\nIf it has stock, a receipt, or a stock movement, it leaves the selling list and old receipts keep it. If it has no history, it is deleted.`,
     );
     if (!ok) return;
-    const res = await DEL<{ success?: boolean; error?: string }>(`/products/${product.id}`);
+    const res = await DEL<{ success?: boolean; error?: string; message?: string }>(`/products/${product.id}`);
     if (!res?.success) {
       toast.error(res?.error || "The product was not archived.");
       return;
@@ -1549,7 +1549,7 @@ ${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cel
         title="Inventory"
         icon={<Package className="h-4 w-4" />}
         description={(() => {
-          const warnings = products.filter((p) => (p.cost_health?.badges || []).some((badge) => badge.code !== "complete")).length;
+          const warnings = products.filter((p) => (p.cost_health?.badges || []).some((badge: { code: string }) => badge.code !== "complete")).length;
           const incomplete = warnings || valuationQ.data?.costing_incomplete ? " · valuation incomplete where a buying price or FIFO layer is missing" : "";
           const valueText = showStockValue && totalValue != null ? ` · ${KES(totalValue, currency)} FIFO value` : "";
           return `${products.length} SKUs${valueText}${lowCount ? ` · ${lowCount} low` : ""}${warnings ? ` · ${warnings} costing warnings` : ""}${incomplete}`;
@@ -1950,7 +1950,7 @@ ${body.map((row) => `<Row>${row.map((cell) => `<Cell><Data ss:Type="${typeof cel
                         {p.name}
                       </button>
                       <div className="mt-1 flex flex-wrap gap-1">
-                        {(p.cost_health?.badges || []).filter((badge) => badge.code !== "complete").map((badge) => (
+                        {(p.cost_health?.badges || []).filter((badge: { code: string; label?: string; tone?: string }) => badge.code !== "complete").map((badge: { code: string; label?: string; tone?: string }) => (
                           <Badge key={badge.code} tone={badge.tone === "err" ? "err" : badge.tone === "ok" ? "ok" : "warn"}>
                             {badge.label}
                           </Badge>

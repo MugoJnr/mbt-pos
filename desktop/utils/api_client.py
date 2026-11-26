@@ -304,6 +304,10 @@ def _ensure_permission_columns(conn) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN permission_grants TEXT DEFAULT '[]'")
     if "permission_denials" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN permission_denials TEXT DEFAULT '[]'")
+    if "permission_modes" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN permission_modes TEXT DEFAULT '{}'")
+    if "capability_customized" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN capability_customized INTEGER DEFAULT 0")
     if "wheel_scroll_interval" not in cols:
         conn.execute("ALTER TABLE users ADD COLUMN wheel_scroll_interval INTEGER")
 
@@ -1926,6 +1930,38 @@ class APIClient:
             db.close()
         return {'success': True, 'wheel_scroll_interval': interval}
 
+    def _queue_capability_request(self, kind: str, title: str, details: str, meta: dict,
+                                  amount: float = 0) -> dict:
+        try:
+            amount = round(float(amount or 0), 2)
+        except (TypeError, ValueError):
+            amount = 0.0
+        db = _db()
+        try:
+            self._ensure_approval_table(db)
+            db.execute(
+                "INSERT INTO cc_approvals "
+                "(type, title, details, amount, status, requested_by, requested_by_id, meta_json) "
+                "VALUES (?,?,?,?, 'pending',?,?,?)",
+                (
+                    kind, title, details, amount,
+                    self._username or '', self._user_id,
+                    json.dumps(meta or {}),
+                ),
+            )
+            request_id = int(db.execute('SELECT last_insert_rowid()').fetchone()[0])
+            _audit(
+                self._user_id, self._username, 'CAPABILITY_REQUEST', 'approvals',
+                f"type={kind} id={request_id} executed=no",
+                conn=db,
+            )
+            db.commit()
+        finally:
+            db.close()
+        return {
+            'success': True, 'pending_approval': True, 'executed': False, 'id': request_id,
+        }
+
     def request_sale_correction(self, data: dict) -> dict:
         """Ask for a discount or a one-sale price correction. The product card stays."""
         from desktop.utils.security import client_actor, has_permission
@@ -1987,15 +2023,31 @@ class APIClient:
         }
 
     def update_settings(self, data: dict) -> dict:
+        from backend.settings_service import apply_changes
+        from desktop.utils.capability_modes import saved_mode_decision
+        payload = dict(data or {})
+        if 'wheel_scroll_interval' in payload:
+            saved = self.save_wheel_scroll(payload.pop('wheel_scroll_interval'))
+            if not saved.get('success'):
+                return saved
+        payload.setdefault('source', 'desktop')
+        decision = saved_mode_decision(
+            self, 'settings.edit', payload.get('pin') or '',
+            payload.get('pin_username') or '', 'Change shop settings',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            safe = {
+                key: value for key, value in payload.items()
+                if key not in ('pin', 'superadmin_pin', 'pin_username')
+            }
+            return self._queue_capability_request(
+                'settings_change', 'Shop settings', 'Settings waiting for approval',
+                {'settings': safe},
+            )
         db = _db()
         try:
-            from backend.settings_service import apply_changes
-            payload = dict(data or {})
-            if 'wheel_scroll_interval' in payload:
-                saved = self.save_wheel_scroll(payload.pop('wheel_scroll_interval'))
-                if not saved.get('success'):
-                    return saved
-            payload.setdefault('source', 'desktop')
             result = apply_changes(
                 db, payload,
                 role=self._role or '',
@@ -2021,7 +2073,7 @@ class APIClient:
             if full:
                 sql = (
                     "SELECT id,username,full_name,role,email,is_active,"
-                    "tab_permissions,permission_grants,permission_denials,created_at,last_login FROM users"
+                    "tab_permissions,permission_grants,permission_denials,permission_modes,created_at,last_login FROM users"
                 )
             else:
                 sql = "SELECT id,username,full_name,is_active FROM users WHERE is_active=1"
@@ -2038,17 +2090,22 @@ class APIClient:
         db = _db()
         try:
             pw_hash = _hash_pw(data['password'])
+            from desktop.utils.capability_modes import initial_user_access
+            access = initial_user_access(new_role)
             raw_perms = data.get('tab_permissions')
             if raw_perms is None:
-                perms = default_tab_permissions(new_role)
+                perms = access['tab_permissions']
             else:
                 perms = sanitize_tab_permissions(new_role, raw_perms)
-            perms_json = json.dumps(perms)
             db.execute(
-                "INSERT INTO users (username,password_hash,role,full_name,email,tab_permissions)"
-                " VALUES (?,?,?,?,?,?)",
+                "INSERT INTO users (username,password_hash,role,full_name,email,tab_permissions,"
+                "permission_grants,permission_denials,permission_modes,capability_customized)"
+                " VALUES (?,?,?,?,?,?,?,?,?,0)",
                 (data['username'], pw_hash, new_role,
-                 data.get('full_name'), data.get('email'), perms_json)
+                 data.get('full_name'), data.get('email'), json.dumps(perms),
+                 json.dumps(access['permission_grants'] if raw_perms is None else []),
+                 json.dumps(access['permission_denials'] if raw_perms is None else []),
+                 json.dumps(access['permission_modes'] if raw_perms is None else {}))
             )
             db.commit()
             _audit(self._user_id, self._username, 'CREATE_USER', 'admin',
@@ -2118,11 +2175,50 @@ class APIClient:
                 values.append(json.dumps(
                     sanitize_tab_permissions(new_role, data['tab_permissions'])
                 ))
+                fields.append("capability_customized=?")
+                values.append(1)
             elif 'role' in data and str(data.get('role') or '') != str(target['role'] or ''):
                 from roles import default_tab_permissions
                 fields.append("tab_permissions=?")
                 values.append(json.dumps(default_tab_permissions(new_role)))
-            if 'permission_grants' in data or 'permission_denials' in data:
+            if 'permission_modes' in data:
+                from desktop.utils.capability_modes import apply_mode_change, _parse_map
+                if int(uid) == int(self._user_id or 0):
+                    return {'error': 'You cannot change your own permissions.', 'status': 400}
+                if is_superadmin_role(target['role']):
+                    return {'error': 'Super Admin access follows that role.', 'status': 400}
+                try:
+                    current_modes = target['permission_modes']
+                except Exception:
+                    current_modes = '{}'
+                modes = _parse_map(current_modes)
+                grants = []
+                denials = []
+                try:
+                    grants = json.loads(target['permission_grants'] or '[]')
+                    denials = json.loads(target['permission_denials'] or '[]')
+                except Exception:
+                    grants, denials = [], []
+                incoming = data.get('permission_modes') or {}
+                if not isinstance(incoming, dict) or not incoming:
+                    return {'error': 'Choose an activity and an authorization.', 'status': 400}
+                cleaned_modes = None
+                for action, mode in incoming.items():
+                    cleaned_modes = apply_mode_change(new_role, grants, denials, modes, action, mode)
+                    if cleaned_modes.get('error'):
+                        return cleaned_modes
+                    grants = cleaned_modes['permission_grants']
+                    denials = cleaned_modes['permission_denials']
+                    modes = cleaned_modes['permission_modes']
+                fields.append("permission_grants=?")
+                values.append(json.dumps(grants))
+                fields.append("permission_denials=?")
+                values.append(json.dumps(denials))
+                fields.append("permission_modes=?")
+                values.append(json.dumps(modes))
+                fields.append("capability_customized=?")
+                values.append(1)
+            elif 'permission_grants' in data or 'permission_denials' in data:
                 from desktop.utils.security import clean_permission_change
                 if int(uid) == int(self._user_id or 0):
                     return {'error': 'You cannot change your own permissions.', 'status': 400}
@@ -2489,12 +2585,17 @@ class APIClient:
             db.close()
 
     def create_product(self, data: dict) -> dict:
+        from desktop.utils.capability_modes import open_activity
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
         if role == 'viewer':
             return {'error': 'You cannot add a product.', 'status': 403}
-        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
-        if role not in known or not has_permission(client_actor(self), 'inventory.create'):
+        opened = open_activity(self, 'inventory.create', data, reason='Add product')
+        if opened.get('error'):
+            if opened.get('error') == 'You cannot do that.':
+                opened['error'] = 'You cannot add a product.'
+            return opened
+        if opened.get('mode') in ('direct', 'admin_pin') and not has_permission(client_actor(self), 'inventory.create'):
             return {'error': 'You cannot add a product.', 'status': 403}
         name = (data.get('name') or '').strip()
         if not name:
@@ -2724,12 +2825,17 @@ class APIClient:
 
     def update_product(self, pid: int, data: dict, pin_verified=False) -> dict:
         """Update a product. Stock changes go through adjust_stock only."""
+        from desktop.utils.capability_modes import open_activity
         from desktop.utils.security import client_actor, has_permission
         role = (self._role or '').lower()
         if role == 'viewer':
             return {'error': 'You cannot change this product.', 'status': 403}
-        known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
-        if role not in known or not has_permission(client_actor(self), 'inventory.edit_info'):
+        opened = open_activity(self, 'inventory.edit_info', data, reason='Edit product')
+        if opened.get('error'):
+            if opened.get('error') == 'You cannot do that.':
+                opened['error'] = 'You cannot change this product.'
+            return opened
+        if opened.get('mode') in ('direct', 'admin_pin') and not has_permission(client_actor(self), 'inventory.edit_info'):
             return {'error': 'You cannot change this product.', 'status': 403}
         if 'name' in data and not str(data.get('name') or '').strip():
             return {'error': 'Product name is required.', 'status': 400}
@@ -2857,8 +2963,19 @@ class APIClient:
         Direction form: adjust_stock(product_id, 'add'|'remove'|'set', quantity, reason, pin=...).
         A reduction by anyone except the signed-in Super Admin requires the PIN.
         """
+        from desktop.utils.capability_modes import resolve_mode, require_pin
         from desktop.utils.security import client_actor, has_permission
-        if not has_permission(client_actor(self), 'inventory.adjust_stock'):
+        mode = resolve_mode(self, 'inventory.adjust_stock')
+        if mode == 'request' and not isinstance(new_qty, str):
+            asked = self.request_stock_adjustment(int(pid), new_qty, str(reason or 'Stock adjustment'))
+            asked['pending_approval'] = True
+            asked['executed'] = False
+            return asked
+        if mode == 'admin_pin':
+            pin_error = require_pin(self, pin, pin_username, 'Adjust stock')
+            if pin_error:
+                return pin_error
+        elif mode != 'direct' and not has_permission(client_actor(self), 'inventory.adjust_stock'):
             return {
                 'error': 'Only Super-Admin can adjust stock quantities.',
                 'status': 403,
@@ -2973,7 +3090,9 @@ class APIClient:
                 other = reason.startswith('Other:') and bool(reason[6:].strip())
                 if reason not in catalog and not other:
                     return {'error': 'That reason does not match this stock change.', 'status': 400}
-            if (self._role or '').lower() == 'superadmin':
+            from desktop.utils.capability_modes import resolve_mode
+            direct_stock = resolve_mode(self, 'inventory.adjust_stock') == 'direct'
+            if (self._role or '').lower() == 'superadmin' or direct_stock:
                 _audit(
                     self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
                     f'stock_adjust pid={pid} pin_skipped=session',
@@ -3252,14 +3371,41 @@ class APIClient:
                          payment_method: str = '', payment_reference: str = '',
                          due_date: str = '', effective_date: str = '',
                          delivery_extra=None, offline: bool = False,
-                         backdate_reason: str = '') -> dict:
+                         backdate_reason: str = '',
+                         pin: str = '', pin_username: str = '') -> dict:
         """One supplier delivery, many products, one receipt. Atomic."""
+        from desktop.utils.capability_modes import open_activity
         from desktop.utils.security import client_actor, has_permission
         actor = client_actor(self)
         role = (self._role or '').lower()
         if role and role not in ('cashier', 'manager', 'admin', 'superadmin'):
             return {'error': 'You cannot receive supplier stock.', 'status': 403}
-        if role and not has_permission(actor, 'inventory.receive'):
+        opened = open_activity(
+            self, 'inventory.receive',
+            {'pin': pin, 'pin_username': pin_username},
+            reason='Receive delivery',
+        )
+        if role and opened.get('error'):
+            if opened.get('error') == 'You cannot do that.':
+                opened['error'] = 'You cannot receive supplier stock.'
+            return opened
+        if role and opened.get('queue'):
+            self._queue_capability_request(
+                'stock_receive', 'Receive supplier delivery',
+                'Waiting for approval. Stock was not changed.',
+                {
+                    'supplier_id': supplier_id, 'lines': lines, 'reference': reference,
+                    'notes': notes, 'payment_amount': payment_amount,
+                    'payment_method': payment_method,
+                },
+            )
+            return {
+                'success': True,
+                'pending_approval': True,
+                'executed': False,
+                'message': 'Waiting for approval. The delivery was not received and stock was not changed.',
+            }
+        if role and opened.get('mode') in ('direct', 'admin_pin') and not has_permission(actor, 'inventory.receive'):
             return {'error': 'You cannot receive supplier stock.', 'status': 403}
         try:
             supplier_id = int(supplier_id) if supplier_id not in (None, '', 0, '0') else None
@@ -3945,7 +4091,7 @@ class APIClient:
         db = _db()
         try:
             denied = self._stock_reduce_authorized(
-                db, pin, 'reverse_receipt', session_skip=False,
+                db, pin, 'reverse_receipt',
             )
             if denied:
                 return denied
@@ -4392,15 +4538,57 @@ class APIClient:
             try:
                 rows = db.execute(
                     "SELECT entity_type, COUNT(*) FROM sync_outbox "
-                    "WHERE processed_at IS NULL GROUP BY entity_type"
+                    "WHERE processed_at IS NULL AND entity_type <> 'audit_log' "
+                    "GROUP BY entity_type"
                 ).fetchall()
                 pending = {row[0]: int(row[1]) for row in rows}
+                distinct = db.execute(
+                    """SELECT COUNT(*) FROM (
+                         SELECT entity_type, row_id FROM sync_outbox
+                         WHERE processed_at IS NULL AND entity_type <> 'audit_log'
+                         GROUP BY entity_type, row_id
+                       )"""
+                ).fetchone()[0]
             except Exception:
                 pending = {}
+                distinct = 0
+            waiting = int(distinct or 0) + int(queue or 0)
+            held = 0
+            failed = 0
+            try:
+                held = int(db.execute(
+                    "SELECT COUNT(*) FROM ("
+                    " SELECT entity_type, row_id FROM sync_outbox"
+                    " WHERE processed_at IS NULL AND entity_type <> 'audit_log'"
+                    " AND ("
+                    "  last_error LIKE '%not approved%'"
+                    "  OR last_error LIKE '%Device is not approved%'"
+                    "  OR last_error LIKE '%awaiting approval%'"
+                    " )"
+                    " GROUP BY entity_type, row_id)"
+                ).fetchone()[0] or 0)
+                failed = int(db.execute(
+                    "SELECT COUNT(*) FROM ("
+                    " SELECT entity_type, row_id FROM sync_outbox"
+                    " WHERE processed_at IS NULL AND entity_type <> 'audit_log'"
+                    " AND COALESCE(last_error, '') <> ''"
+                    " AND last_error NOT LIKE '%not approved%'"
+                    " AND last_error NOT LIKE '%Device is not approved%'"
+                    " AND last_error NOT LIKE '%awaiting approval%'"
+                    " GROUP BY entity_type, row_id)"
+                ).fetchone()[0] or 0)
+            except Exception:
+                held = 0
+                failed = 0
+            pending_upload = max(0, waiting - held)
             return {
                 'notification_queue': int(queue or 0),
                 'outbox': pending,
                 'outbox_pending': int(sum(pending.values())),
+                'pending': waiting,
+                'pending_upload': pending_upload,
+                'failed': failed,
+                'held_for_approval': held,
             }
         finally:
             db.close()
@@ -4832,9 +5020,11 @@ class APIClient:
         return self._backdate(get_centre_item, source, int(source_id))
 
     def execute_approval(self, approval_id: int, action: str, *, pin: str = '', note: str = '',
-                         confirm_credit_payments: bool = False) -> dict:
+                         pin_username: str = '', confirm_credit_payments: bool = False) -> dict:
         """Run a pending void or stock approval once. Reject and escalate do not."""
         action = (action or '').strip().lower()
+        if pin_username:
+            self._authoriser_username = str(pin_username).strip()
         if action not in ('approve', 'reject', 'escalate'):
             return {'error': 'Unknown action', 'status': 400}
         if (self._role or '').lower() not in ('admin', 'superadmin', 'manager'):
@@ -4854,7 +5044,7 @@ class APIClient:
                     and preview_status in ('pending', 'escalated', 'executing')
                 ):
                     pin_error = self._approval_pin_error(
-                        db, pin, int(approval_id), force=preview_type == 'void',
+                        db, pin, int(approval_id), pin_username=pin_username,
                     )
                     if pin_error:
                         db.commit()
@@ -4953,7 +5143,11 @@ class APIClient:
                         'error': 'Only an admin can approve a product or price change.',
                         'status': 403,
                     }
-            elif atype not in ('void', 'stock_adjust', 'consumption_void') and not linked_return:
+            elif atype not in (
+                'void', 'stock_adjust', 'consumption_void', 'debt_payment',
+                'customer_create', 'sale_create', 'credit_sale', 'settings_change',
+                'product_delete',
+            ) and not linked_return:
                 if status not in ('pending', 'escalated'):
                     db.rollback()
                     return {'error': f'Already {row["status"]}', 'status': 400}
@@ -5151,7 +5345,12 @@ class APIClient:
             from desktop.utils.shop_time import business_day_iso, sale_created_at_for_day
             sale_date_s = business_day_iso(None)
             created_at_s = sale_created_at_for_day(sale_date_s)
-            ret_rn = f"RFD-{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{int(row['id'])}"
+            ret_day = datetime.now().strftime('%Y%m%d')
+            ret_seq = db.execute(
+                "SELECT COUNT(*) FROM sales WHERE receipt_number LIKE ?",
+                (f'RET-{ret_day}-%',),
+            ).fetchone()[0]
+            ret_rn = f"RET-{ret_day}-{int(ret_seq) + 1:04d}"
             db.execute(
                 "INSERT INTO sales (receipt_number,cashier_id,cashier_name,subtotal,"
                 "discount,tax,total,payment_method,amount_paid,change_amount,notes,"
@@ -5229,7 +5428,7 @@ class APIClient:
 
     def _approval_pin_error(self, db, pin: str, approval_id: int, pin_username: str = '',
                             force: bool = False):
-        if (self._role or '').lower() == 'superadmin' and not force:
+        if (self._role or '').lower() == 'superadmin':
             _audit(
                 self._user_id, self._username, 'SUPERADMIN_SESSION_AUTH', 'security',
                 f'approval id={approval_id} pin_skipped=session',
@@ -5266,6 +5465,50 @@ class APIClient:
 
     def _run_approved_action(self, atype: str, meta: dict, note: str, pin: str = '',
                              approval_id: int = 0, confirm_credit_payments: bool = False) -> dict:
+        self._capability_replay = True
+        try:
+            return self._run_approved_action_body(
+                atype, meta, note, pin, approval_id, confirm_credit_payments,
+            )
+        finally:
+            self._capability_replay = False
+
+    def _run_approved_action_body(self, atype: str, meta: dict, note: str, pin: str = '',
+                                  approval_id: int = 0, confirm_credit_payments: bool = False) -> dict:
+        if atype in ('sale_create', 'credit_sale'):
+            payload = meta.get('sale') if isinstance(meta.get('sale'), dict) else {}
+            outcome = self.create_sale(payload)
+            if outcome.get('success'):
+                outcome['executed'] = True
+            return outcome
+        if atype == 'debt_payment':
+            outcome = self.record_debt_payment(
+                int(meta.get('invoice_id') or 0),
+                meta.get('amount') or 0,
+                str(meta.get('payment_method') or 'cash'),
+                str(meta.get('notes') or note or ''),
+                str(meta.get('payment_reference') or ''),
+            )
+            if outcome.get('success'):
+                outcome['executed'] = True
+            return outcome
+        if atype == 'customer_create':
+            payload = meta.get('customer') if isinstance(meta.get('customer'), dict) else meta
+            outcome = self.create_customer(payload or {})
+            if outcome.get('success'):
+                outcome['executed'] = True
+            return outcome
+        if atype == 'settings_change':
+            payload = meta.get('settings') if isinstance(meta.get('settings'), dict) else {}
+            outcome = self.update_settings(payload)
+            if outcome.get('success'):
+                outcome['executed'] = True
+            return outcome
+        if atype == 'product_delete':
+            outcome = self.delete_product(int(meta.get('product_id') or 0))
+            if outcome.get('success'):
+                outcome['executed'] = True
+            return outcome
         if atype == 'refund' and meta.get('sale_id'):
             return self.return_sale(
                 int(meta.get('sale_id') or 0),
@@ -5338,6 +5581,16 @@ class APIClient:
                 idempotency_key=f'APPROVAL:{int(approval_id)}',
             )
             return outcome
+        if atype == 'stock_receive':
+            return self.receive_delivery(
+                meta.get('supplier_id'),
+                meta.get('lines') or [],
+                reference=str(meta.get('reference') or ''),
+                notes=str(meta.get('notes') or note or ''),
+                payment_amount=meta.get('payment_amount') or 0,
+                payment_method=str(meta.get('payment_method') or ''),
+                client_token=f'approval-{int(approval_id or 0)}',
+            )
         return {'error': 'This request type cannot be executed.'}
 
     def _finish_approval(self, approval_id: int, result: dict) -> dict:
@@ -5522,9 +5775,21 @@ class APIClient:
 
     def delete_product(self, pid: int) -> dict:
         from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(self, 'inventory.delete', '', '', 'Remove a product')
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            return self._queue_capability_request(
+                'product_delete', 'Remove product', f'Product {pid}',
+                {'product_id': int(pid)},
+            )
         role = (self._role or '').lower()
         known = ('cashier', 'viewer', 'manager', 'admin', 'superadmin')
-        if role not in known or not has_permission(client_actor(self), 'inventory.delete'):
+        if (
+            not decision.get('proceed')
+            and (role not in known or not has_permission(client_actor(self), 'inventory.delete'))
+        ):
             return {'error': 'Only an administrator can remove a product.', 'status': 403}
         db = _db()
         try:
@@ -5652,10 +5917,58 @@ class APIClient:
         created_at = sale_created_at_for_day(sale_date_s)
         return sale_date_s, is_backdated, created_at
 
+    def _sale_uses_credit(self, data: dict) -> bool:
+        method = str((data or {}).get('payment_method') or '').lower()
+        if 'credit' in method:
+            return True
+        tenders = (data or {}).get('payment_tenders') or []
+        if isinstance(tenders, list):
+            for tender in tenders:
+                name = str((tender or {}).get('method') or (tender or {}).get('name') or '').lower()
+                if 'credit' in name and float((tender or {}).get('amount') or 0) > 0.009:
+                    return True
+        return False
+
     def create_sale(self, data: dict) -> dict:
         from desktop.utils.security import client_actor, has_permission
-        if (self._role or '').lower() == 'viewer' or not has_permission(client_actor(self), 'sales.create'):
+        from desktop.utils.capability_modes import saved_mode_decision
+        data = dict(data or {})
+        decision = saved_mode_decision(
+            self, 'sales.create', data.get('pin') or '',
+            data.get('pin_username') or '', 'Make a sale',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            safe = {
+                key: value for key, value in data.items()
+                if key not in ('pin', 'superadmin_pin', 'pin_username')
+            }
+            return self._queue_capability_request(
+                'sale_create', 'Sale', 'Sale waiting for approval',
+                {'sale': safe}, amount=data.get('total') or 0,
+            )
+        if (
+            not decision.get('proceed')
+            and ((self._role or '').lower() == 'viewer' or not has_permission(client_actor(self), 'sales.create'))
+        ):
             return {'error': 'You cannot take a payment.', 'status': 403}
+        if self._sale_uses_credit(data):
+            credit_decision = saved_mode_decision(
+                self, 'debt.create', data.get('pin') or '',
+                data.get('pin_username') or '', 'Sell on credit',
+            )
+            if credit_decision.get('error'):
+                return credit_decision
+            if credit_decision.get('queue'):
+                safe = {
+                    key: value for key, value in data.items()
+                    if key not in ('pin', 'superadmin_pin', 'pin_username')
+                }
+                return self._queue_capability_request(
+                    'credit_sale', 'Credit sale', 'Credit sale waiting for approval',
+                    {'sale': safe}, amount=data.get('total') or 0,
+                )
         items = data.get('items') or []
         if not items:
             return {'error': 'Cart is empty — add at least one product before charging.'}
@@ -6572,13 +6885,28 @@ class APIClient:
         Credit sales with debt payments already collected require force_with_payments=True
         (UI confirms special handling).
         """
-        if self._role not in ('admin', 'superadmin', 'manager'):
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(
+            self, 'sales.void', pin, pin_username, 'Void a sale',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            asked = self.request_sale_void(int(sale_id), reason)
+            asked['pending_approval'] = True
+            asked['executed'] = False
+            return asked
+        if decision.get('proceed'):
+            pass
+        elif self._role not in ('admin', 'superadmin', 'manager'):
             _audit(self._user_id, self._username,
                    'VOID_SALE_DENIED', 'sales',
                    f"sale_id={sale_id} role={self._role}")
             return {'error': 'Insufficient permissions to void sales.'}
 
-        if (self._role or '').lower() in ('admin', 'manager'):
+        if decision.get('proceed'):
+            pass
+        elif (self._role or '').lower() in ('admin', 'manager'):
             pin_db = _db()
             try:
                 from desktop.utils.superadmin_pin import gate_personal_pin
@@ -7195,9 +7523,21 @@ class APIClient:
             seen_lines.add(si_id)
             norm_items.append({'sale_item_id': si_id, 'quantity': qty})
         norm_items.sort(key=lambda row: row['sale_item_id'])
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(
+            self, 'sales.refund', pin, pin_username, 'Refund a sale',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            return self._submit_return_request(
+                int(sale_id), norm_items, reason, method, condition,
+            )
         role = (self._role or '').lower()
         authoriser = ''
-        if role == 'superadmin':
+        if decision.get('proceed'):
+            authoriser = decision.get('authoriser') or self._username or ''
+        elif role == 'superadmin':
             authoriser = self._username or 'superadmin'
         elif role in ('admin', 'manager', 'cashier'):
             if str(pin or '').strip() or str(pin_username or '').strip():
@@ -8067,6 +8407,13 @@ class APIClient:
     # ── REPORTS ───────────────────────────────────────────────────────────────────
 
     def get_report_summary(self, start: str, end: str) -> dict:
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(self, 'reports.view_all', '', '', 'Open a report')
+        if decision.get('error') or decision.get('queue'):
+            return {'error': 'You cannot open this report.', 'status': 403}
+        basic = saved_mode_decision(self, 'reports.view_basic', '', '', 'Open a report')
+        if basic.get('error') or basic.get('queue'):
+            return {'error': 'You cannot open this report.', 'status': 403}
         db = _db()
         try:
             summary = _row(db.execute(f"""
@@ -8455,6 +8802,23 @@ class APIClient:
             db.close()
 
     def create_customer(self, data: dict) -> dict:
+        from desktop.utils.capability_modes import saved_mode_decision
+        data = dict(data or {})
+        decision = saved_mode_decision(
+            self, 'debt.customer_manage', data.get('pin') or '',
+            data.get('pin_username') or '', 'Add a customer',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            safe = {
+                key: value for key, value in data.items()
+                if key not in ('pin', 'superadmin_pin', 'pin_username')
+            }
+            return self._queue_capability_request(
+                'customer_create', safe.get('name') or 'Customer',
+                'Customer waiting for approval', {'customer': safe},
+            )
         db = _db()
         try:
             name = (data.get('name') or '').strip()
@@ -8802,7 +9166,11 @@ class APIClient:
                 params.append(end)
             where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
             return _rows(db.execute(
-                f"SELECT di.*, c.phone as c_phone, c.email as c_email, "
+                f"SELECT "
+                f"COALESCE(NULLIF(TRIM(di.customer_name), ''), c.name, '') AS customer_name, "
+                f"COALESCE(NULLIF(TRIM(di.customer_phone), ''), c.phone, '') AS customer_phone, "
+                f"di.*, "
+                f"c.phone as c_phone, c.email as c_email, "
                 f"s.created_at as sale_date, s.status as sale_status "
                 f"FROM debt_invoices di "
                 f"JOIN customers c ON di.customer_id=c.id "
@@ -8834,8 +9202,29 @@ class APIClient:
                             backdate_reason: str = '') -> dict:
         """Collect a payment against an existing invoice. Rejects invalid / orphan debts."""
         from desktop.utils.security import client_actor, has_permission
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(
+            self, 'debt.collect', '', '', 'Collect a customer payment',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            return self._queue_capability_request(
+                'debt_payment', 'Customer payment', notes or 'Customer payment',
+                {
+                    'invoice_id': int(invoice_id or 0),
+                    'amount': amount,
+                    'payment_method': payment_method,
+                    'notes': notes,
+                    'payment_reference': payment_reference,
+                },
+                amount=amount,
+            )
         role = (self._role or '').lower()
-        if role and not has_permission(client_actor(self), 'debt.collect'):
+        if (
+            not decision.get('proceed')
+            and role and not has_permission(client_actor(self), 'debt.collect')
+        ):
             return {'error': 'You cannot collect a debt payment.', 'status': 403}
         from desktop.utils.shop_time import shop_today
         pay_day = (str(payment_date or '').strip()[:10] or shop_today().isoformat())
@@ -9053,7 +9442,11 @@ class APIClient:
         )
         cols = {r[1] for r in db.execute("PRAGMA table_info(debt_payments)").fetchall()}
         if 'collection_id' not in cols:
-            db.execute("ALTER TABLE debt_payments ADD COLUMN collection_id INTEGER")
+            try:
+                db.execute("ALTER TABLE debt_payments ADD COLUMN collection_id INTEGER")
+            except sqlite3.OperationalError as exc:
+                if 'duplicate column' not in str(exc).lower():
+                    raise
 
     def _eligible_customer_debts(self, db, customer_id: int) -> list:
         rows = _rows(db.execute(
@@ -11347,7 +11740,18 @@ class APIClient:
         reason = (reason or '').strip()
         if not reason:
             return {'error': 'Void reason is required.'}
-        if (self._role or '').lower() not in ('admin', 'superadmin'):
+        from desktop.utils.capability_modes import saved_mode_decision
+        decision = saved_mode_decision(
+            self, 'consumption.void', '', '', 'Void internal use',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            return self._queue_capability_request(
+                'consumption_void', 'Internal use void', reason,
+                {'consumption_id': int(consumption_id), 'reason': reason},
+            )
+        if not decision.get('proceed') and (self._role or '').lower() not in ('admin', 'superadmin'):
             _audit(self._user_id, self._username, 'VOID_CONSUMPTION_DENIED',
                    'consumption', f"id={consumption_id} role={self._role}")
             return {'error': 'Insufficient permissions to void consumptions.', 'status': 403}
@@ -12051,7 +12455,32 @@ class APIClient:
             db.close()
 
     def accounting_create_expense(self, data: dict) -> dict:
-        if not (
+        from desktop.utils.capability_modes import saved_mode_decision
+        data = dict(data or {})
+        decision = saved_mode_decision(
+            self, 'accounting.create_expenses', data.get('pin') or '',
+            data.get('pin_username') or '', 'Record an expense',
+        )
+        if decision.get('error'):
+            return decision
+        if decision.get('queue'):
+            try:
+                amount = round(float(data.get('amount') or 0), 2)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if amount <= 0:
+                return {'error': 'Enter an expense amount before it can be requested.', 'status': 400}
+            return self._queue_capability_request(
+                'expense', data.get('description') or 'Expense',
+                data.get('description') or 'Expense',
+                {
+                    'description': data.get('description') or '',
+                    'account_code': data.get('account_code') or '6000',
+                    'pay_from_code': data.get('pay_from_code') or '1000',
+                },
+                amount=amount,
+            )
+        if not decision.get('proceed') and not (
             self._acc_perm('accounting.create_expenses')
             or self._acc_perm('accounting.approve_expenses')
         ):

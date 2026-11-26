@@ -31,7 +31,7 @@ WRONG_LIMIT = 5
 WRONG_WINDOW_SECONDS = 15 * 60
 LOCKOUT_SECONDS = 15 * 60
 # No 0/O and no 1/I/L. 31 symbols, shown as three groups of four.
-ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'
+ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ'
 CODE_LENGTH = 12
 EXPLANATION = (
     'A MugoByte developer can issue a one-time code for this shop and this '
@@ -162,27 +162,38 @@ def _restrict_secret(path: str) -> None:
         logger.debug('could not restrict recovery secret acl', exc_info=True)
 
 
+def _read_device_secret(path: str) -> bytes:
+    """Read the 32-byte secret. Accept a file Windows text mode expanded."""
+    with open(path, 'rb') as handle:
+        data = handle.read()
+    if len(data) == 32:
+        return data
+    # os.open without O_BINARY on Windows turns each LF into CRLF.
+    repaired = data.replace(b'\r\n', b'\n')
+    if len(repaired) == 32:
+        return repaired
+    raise RecoveryError('key', 'The device recovery secret could not be read.')
+
+
 def get_or_create_device_secret(root: str | None = None) -> bytes:
     """32-byte secret stored with this shop installation. Created once."""
     path = device_secret_path(root)
     if os.path.isfile(path):
-        with open(path, 'rb') as handle:
-            data = handle.read()
-        if len(data) != 32:
-            raise RecoveryError('key', 'The device recovery secret could not be read.')
-        return data
+        return _read_device_secret(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     data = secrets.token_bytes(32)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, 'O_BINARY'):
+        flags |= os.O_BINARY
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        fd = os.open(path, flags, 0o600)
     except FileExistsError:
-        with open(path, 'rb') as handle:
-            data = handle.read()
-        if len(data) != 32:
-            raise RecoveryError('key', 'The device recovery secret could not be read.')
-        return data
+        return _read_device_secret(path)
     try:
-        os.write(fd, data)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
     finally:
         os.close(fd)
     _restrict_secret(path)

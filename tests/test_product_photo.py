@@ -79,6 +79,9 @@ class ProductPhotoTests(unittest.TestCase):
         denied = api.save_product_image(1, jpg)
         self.assertEqual(denied.get('status'), 403)
         api._role = 'cashier'
+        cashier_denied = api.save_product_image(1, jpg)
+        self.assertEqual(cashier_denied.get('status'), 403, cashier_denied)
+        api._role = 'admin'
         saved = api.save_product_image(1, jpg)
         self.assertTrue(saved.get('success'), saved)
         self.assertTrue(str(saved.get('image_path') or '').startswith('product-1-'))

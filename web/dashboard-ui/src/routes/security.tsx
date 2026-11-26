@@ -264,7 +264,7 @@ function Security() {
                 <td className="px-4 py-2.5 text-text">{l.username || "Not recorded"}</td>
                 <td className="px-4 py-2.5 font-mono text-xs text-gold">{l.action}</td>
                 <td className="px-4 py-2.5 text-text2">{l.module || "—"}</td>
-                <td className="px-4 py-2.5 text-text2 text-xs max-w-[280px] truncate">
+                <td className="mbt-wrap px-4 py-2.5 text-text2 text-xs max-w-[22rem]">
                   {l.details || "—"}
                 </td>
               </tr>

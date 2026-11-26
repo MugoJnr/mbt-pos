@@ -194,7 +194,7 @@ function BackdatingPage() {
   }
 
   return (
-    <AppShell>
+    <AppShell title="Backdating">
       <PageHeader
         eyebrow="Sales"
         title="Backdating Requests"
@@ -299,7 +299,7 @@ function BackdatingPage() {
                     {(sale.lines || []).map((line, lineIndex) => (
                       <div key={lineIndex}>
                         {line.product_name || "Product"} · {line.quantity} × {line.unit_price}
-                        {line.discount ? ` · discount ${line.discount}` : ""} · {line.quantity * line.unit_price - (line.discount || 0)}
+                        {line.discount ? ` · discount ${line.discount}` : ""} · {Number(line.quantity) * Number(line.unit_price) - Number(line.discount || 0)}
                       </div>
                     ))}
                     <div>Received {sale.amount_paid}{sale.mpesa_ref ? ` · M-Pesa ${sale.mpesa_ref} (recorded, not verified)` : ""}</div>

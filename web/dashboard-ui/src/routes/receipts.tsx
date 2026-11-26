@@ -36,6 +36,7 @@ const TYPES = [
   ["expense", "Expenses"],
   ["stock_adjustment", "Stock adjustments"],
   ["approval", "Approval requests"],
+  ["supplier_payment", "Supplier payments"],
 ];
 
 function ReceiptsPage() {
@@ -152,7 +153,7 @@ function ReceiptsPage() {
             ))}
           </Select>
           <Input aria-label="Status" placeholder="Status" value={status} onChange={(e) => { setPage(0); setStatus(e.target.value); }} />
-          <Input aria-label="Search receipts" placeholder="Receipt, product, user" value={q} onChange={(e) => { setPage(0); setQ(e.target.value); }} />
+          <Input aria-label="Search receipts" placeholder="Receipt number, customer, supplier, or product" value={q} onChange={(e) => { setPage(0); setQ(e.target.value); }} />
           {q.trim() ? (
             <p className="w-full text-xs text-text2">Search looks through every business date. The date range applies when the search box is empty.</p>
           ) : null}
@@ -164,7 +165,7 @@ function ReceiptsPage() {
         ) : listQ.isError || listQ.data?.error ? (
           <div className="py-12 text-center text-sm text-err">{listQ.data?.error || "Could not load receipts."}</div>
         ) : rows.length === 0 ? (
-          <div className="py-12 text-center text-sm text-text2">No receipts in this filter.</div>
+          <div className="py-12 text-center text-sm text-text2">{q.trim() ? "No receipt matches that search. The number was checked across every business date." : "No receipts in this filter."}</div>
         ) : (
           <Table head={["When", "Type", "Reference", "User", "Amount", "Payment", "Status", ""]}>
             {rows.map((row) => (
@@ -331,7 +332,7 @@ function ReceiptsPage() {
                   <div className="font-semibold text-text">History</div>
                   {history.map((item: any, index: number) => (
                     <div key={index} className="text-text2">
-                      {item.edit_type || item.action} · {item.edited_by_name || item.username || "—"} · {item.reason || item.details}
+                      {[item.at || item.created_at, item.edit_type || item.action, item.edited_by_name || item.username || "—", item.old_value || item.new_value ? `${item.old_value || "—"} → ${item.new_value || "—"}` : "", item.reason || item.details].filter(Boolean).join(" · ")}
                     </div>
                   ))}
                 </div>

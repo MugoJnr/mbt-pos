@@ -310,8 +310,8 @@ function Dashboard() {
       : [];
   const topCategories = Array.isArray(cc.top_categories) ? cc.top_categories : [];
   const bak = liveQ.data?.backup || {};
-  const syncFromStatus = Number(syncQ.data?.outbox_pending || 0) + Number(syncQ.data?.notification_queue || 0);
-  const syncPending = Math.max(syncFromStatus, Number(liveQ.data?.sync?.pending || 0));
+  const syncPending = Number(syncQ.data?.pending_upload ?? 0);
+  const syncFailed = Number(syncQ.data?.failed ?? 0);
   const liveOffline = liveQ.isError || (!liveQ.isLoading && !liveQ.data);
   const bakLabel = liveOffline
     ? "OFFLINE"
@@ -324,7 +324,7 @@ function Dashboard() {
         ? "err"
         : "warn";
 
-  const healthScore = Number(healthQ.data?.score ?? 0);
+  const healthScore = healthQ.data?.score != null ? Number(healthQ.data.score) : businessHealth;
   const healthOverall =
     healthQ.data?.overall ||
     (healthQ.isLoading
@@ -344,10 +344,10 @@ function Dashboard() {
     return list[0] || null;
   }, [liveQ.data]);
 
-  const hourly = useMemo(() => {
+  const hourly = useMemo((): { hour: string; total: number }[] => {
     const raw = Array.isArray(wrap.hourly) ? wrap.hourly : [];
     if (raw.length) {
-      return raw.map((h: any) => ({
+      return raw.map((h: { hour?: string | number; label?: string; total?: number }) => ({
         hour: `${String(h.hour ?? h.label ?? "").padStart(2, "0")}:00`,
         total: Number(h.total || 0),
       }));
@@ -453,11 +453,6 @@ function Dashboard() {
           ) : null}
           <div className="text-sm text-text2 mt-0.5">
             Welcome back, {name} · Live Dashboard · refreshes every {prefs.refreshIntervalSec}s
-            {syncQ.data
-              ? ` · ${syncPending === 0
-                ? "nothing waiting to upload"
-                : `${syncPending} record${syncPending === 1 ? "" : "s"} waiting for the portal`}`
-              : ""}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -491,14 +486,14 @@ function Dashboard() {
           {prefs.widgets.health ? (
             <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-3 py-2 shadow-card">
               <HealthRing
-                score={healthScore || businessHealth}
+                score={healthScore}
                 overall={healthOverall}
               />
               <div className="leading-tight">
                 <div className="text-eyebrow">System</div>
                 <div className="text-sm font-semibold text-text capitalize">{healthOverall}</div>
                 <div className="text-[11px] text-text2">
-                  Biz score <span className="text-gold font-semibold">{businessHealth}</span>
+                  Health score <span className="text-gold font-semibold">{healthScore}</span>
                 </div>
               </div>
             </div>
@@ -538,11 +533,15 @@ function Dashboard() {
             <Badge tone="ok">No open credit</Badge>
           )
         ) : null}
-        {syncPending > 0 ? (
-          <Badge tone="info">{syncPending} sync pending</Badge>
-        ) : (
-          <Badge tone="muted">Sync clear</Badge>
-        )}
+        {syncFailed > 0 ? (
+          <Link to="/diagnostics">
+            <Badge tone="err">{syncFailed} sync failed — open Diagnostics</Badge>
+          </Link>
+        ) : syncPending > 0 ? (
+          <Link to="/diagnostics">
+            <Badge tone="info">{syncPending} changes not sent</Badge>
+          </Link>
+        ) : null}
         <Badge tone={bakTone}>
           Backup {bakLabel}
         </Badge>

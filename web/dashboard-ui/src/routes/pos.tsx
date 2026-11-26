@@ -240,7 +240,7 @@ function POS() {
     const active = rows.filter((row) => row.status === "active");
     const chosen = active.find((row) => {
       const flag = row.is_default;
-      return flag === true || String(flag) === "true" || String(flag) === "1";
+      return String(flag) === "true" || String(flag) === "1";
     }) || active[0];
     if (chosen?.id) setMpesaProfile(String(chosen.id));
   }, [mpesaProfilesQ.data, mpesaProfile]);
@@ -269,8 +269,9 @@ function POS() {
     () => (customerId === "" ? null : customers.find((c) => c.id === customerId) || null),
     [customers, customerId],
   );
-  const showNewCustomer = payment === "Credit" || payment === "Part Pay"
+  const creditNeedsCustomer = payment === "Credit" || payment === "Part Pay"
     || (payment === "Split" && (remainderOnCredit || splitLines.some((row) => isCreditMethod(row.method))));
+  const showNewCustomer = creditNeedsCustomer && customerId === "";
 
   const categories = useMemo(() => {
     const names = new Set<string>();
@@ -1179,7 +1180,14 @@ function POS() {
             <div className="flex flex-wrap items-center gap-1.5">
               <Select
                 value={customerId === "" ? "" : String(customerId)}
-                onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : "")}
+                onChange={(e) => {
+                  const next = e.target.value ? Number(e.target.value) : "";
+                  setCustomerId(next);
+                  if (next !== "") {
+                    setNewName("");
+                    setNewPhone("");
+                  }
+                }}
                 className="h-8 min-h-0 text-xs flex-1"
                 aria-label="Customer"
               >

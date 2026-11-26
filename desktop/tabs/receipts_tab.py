@@ -4,9 +4,9 @@ from __future__ import annotations
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QDialog, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from desktop.utils.date_controls import pick_date_range
@@ -61,8 +61,8 @@ def _receipt_column_widths(viewport: int) -> list:
 
 
 def _fit_receipt_columns(table):
-    """Status and Open stay fully visible. A stretched last column, or a button
-    narrower than the global button style, painted as a broken sliver."""
+    """Dates and amounts stay fully visible. Notes wrap. The table scrolls
+    sideways instead of slicing a header or a figure."""
     from PyQt5.QtWidgets import QHeaderView
     if getattr(table, "_fitting", False):
         return
@@ -70,17 +70,24 @@ def _fit_receipt_columns(table):
     try:
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
-        header.setMinimumSectionSize(64)
-        viewport = table.viewport().width()
-        if viewport < 640:
-            viewport = 1100
-        widths = _receipt_column_widths(viewport)
-        for col, width in enumerate(widths):
-            header.setSectionResizeMode(col, QHeaderView.Fixed)
-            table.setColumnWidth(col, int(width))
-        table.setTextElideMode(Qt.ElideRight)
-        table.setWordWrap(False)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        header.setTextElideMode(Qt.ElideNone)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        header.setMinimumSectionSize(72)
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        # Reference and who can be long. Keep them readable without
+        # forcing the date and amount columns to shrink.
+        for col, label in ((2, "Reference"), (3, "Who"), (5, "Payment")):
+            if col < table.columnCount():
+                header.setSectionResizeMode(col, QHeaderView.Interactive)
+                table.setColumnWidth(col, 180)
+        if table.columnCount() > 7:
+            header.setSectionResizeMode(7, QHeaderView.Fixed)
+            table.setColumnWidth(7, 96)
+        table.setTextElideMode(Qt.ElideNone)
+        table.setWordWrap(True)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
     finally:
         table._fitting = False
 
@@ -146,7 +153,7 @@ class ReceiptsTab(QWidget):
         self._status = QLineEdit()
         self._status.setPlaceholderText("Status")
         self._query = QLineEdit()
-        self._query.setPlaceholderText("Receipt, customer, or product")
+        self._query.setPlaceholderText("Receipt number, customer, supplier, or product")
         for box in (self._type, self._status, self._query):
             box.setMinimumHeight(34)
         bar.addWidget(self._range_btn)
@@ -255,9 +262,13 @@ class ReceiptsTab(QWidget):
             self._rows = []
         else:
             self._rows = list(data.get("receipts") or [])
-            shown = f"{data.get('total', len(self._rows))} receipts"
-            if data.get("searched_all_dates"):
-                shown += " — search includes every business date"
+            total = int(data.get("total") or len(self._rows))
+            if total == 0 and self._filters.get("query"):
+                shown = "No receipt matches that search. The number was checked across every business date."
+            else:
+                shown = f"{total} receipts"
+                if data.get("searched_all_dates"):
+                    shown += " — every business date, not only the dates on the button"
             self._status_line.setText(shown)
         self._table.setRowCount(len(self._rows))
         for index, row in enumerate(self._rows):
@@ -413,6 +424,26 @@ class ReceiptDetailDialog(QDialog):
             table.setRowHeight(index, 36)
         table.setMinimumHeight(min(280, 42 + 36 * max(len(item_rows), 1)))
         lay.addWidget(table, 1)
+        history = list(detail.get("history") or [])
+        if history:
+            lay.addWidget(QLabel("Activity"))
+            lines = []
+            for item in history:
+                when = str(item.get("at") or item.get("created_at") or "").replace("T", " ")[:19]
+                who = item.get("edited_by_name") or item.get("username") or "—"
+                action = item.get("edit_type") or item.get("action") or "Change"
+                old = item.get("old_value") or item.get("field_name") or ""
+                new = item.get("new_value") or ""
+                reason = item.get("reason") or item.get("details") or ""
+                change = ""
+                if old or new:
+                    change = f" {old} → {new}".rstrip()
+                lines.append(" · ".join(part for part in (when, str(action), str(who), change.strip(), str(reason)) if part))
+            activity = QLabel("\n".join(lines))
+            activity.setWordWrap(True)
+            activity.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            activity.setStyleSheet(f"color:{C['text2']};font-size:12px;background:transparent;")
+            lay.addWidget(activity)
         debt = detail.get("debt") or {}
         if debt:
             lay.addWidget(QLabel(

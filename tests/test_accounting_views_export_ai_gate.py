@@ -162,6 +162,13 @@ class AccountingViewsExportAiGate(unittest.TestCase):
         from desktop.utils.ai.context import build_context
         from desktop.utils.security import has_permission
 
+        db = self.ac._db()
+        db.execute(
+            "INSERT INTO users (id, username, password_hash, role, is_active) "
+            "VALUES (2, 'c', 'x:y', 'cashier', 1)"
+        )
+        db.commit()
+        db.close()
         cashier = {'id': 2, 'username': 'c', 'role': 'cashier'}
         admin = {'id': 1, 'username': 'admin', 'role': 'admin'}
 

@@ -134,11 +134,17 @@ def _save_request(db, api, kind: str, title: str, details: str, amount, meta: di
 
 
 def hold_create(api, product: dict, db=None):
-    """Queue a manager's new product. None means the caller publishes it now."""
+    """Queue a new product. None means the caller publishes it now."""
+    from desktop.utils.capability_modes import resolve_mode
     actor = _actor(api)
-    if publishes_now(actor):
+    mode = resolve_mode(api, "inventory.create")
+    if mode in ("direct", "admin_pin"):
         return None
-    if _role(actor) != "manager":
+    if mode != "request" and publishes_now(actor):
+        return None
+    if mode != "request" and _role(actor) != "manager":
+        return {"error": "You cannot add a product.", "status": 403}
+    if _role(actor) == "viewer":
         return {"error": "You cannot add a product.", "status": 403}
     own_connection = db is None
     if own_connection:
@@ -175,15 +181,21 @@ def hold_create(api, product: dict, db=None):
 
 
 def hold_update(api, db, old, data: dict):
-    """Queue a manager's product edit. None means the caller writes it now.
+    """Queue a product edit. None means the caller writes it now.
 
     A direct-price grant writes only products.price. Every other change,
     including unit and decimal precision, stays pending.
     """
+    from desktop.utils.capability_modes import resolve_mode
     actor = _actor(api)
-    if publishes_now(actor):
+    mode = resolve_mode(api, "inventory.edit_info")
+    if mode in ("direct", "admin_pin"):
         return None
-    if _role(actor) != "manager":
+    if mode != "request" and publishes_now(actor):
+        return None
+    if mode != "request" and _role(actor) != "manager":
+        return {"error": "You cannot change this product.", "status": 403}
+    if _role(actor) == "viewer":
         return {"error": "You cannot change this product.", "status": 403}
     changed = _changed(old, data)
     if not changed:

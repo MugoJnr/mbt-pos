@@ -110,8 +110,12 @@ class UpdateBannerUiTests(unittest.TestCase):
         cls.app = _app()
 
     def test_states_paint_without_a_dialog_or_a_pause(self):
-        banner = UpdateSessionBanner()
-        banner.resize(900, 80)
+        from PyQt5.QtWidgets import QMainWindow
+        host = QMainWindow()
+        host.resize(1000, 200)
+        host.show()
+        banner = UpdateSessionBanner(host)
+        banner.setGeometry(0, 0, 900, 80)
         started = time.perf_counter()
         for percent in range(0, 100, 5):
             banner.show_state('downloading', '3.1.82', percent)
@@ -135,6 +139,7 @@ class UpdateBannerUiTests(unittest.TestCase):
         self.assertFalse(banner._bar.isVisible())
         banner.show_state('idle')
         self.assertFalse(banner.isVisible())
+        host.close()
 
     def test_checker_start_returns_immediately_when_isolated(self):
         from backend.updater import UpdateChecker

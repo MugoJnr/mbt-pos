@@ -283,6 +283,8 @@ class RestockDialog(QDialog):
             self.table.setItem(row, 5, QTableWidgetItem(line.get("notes") or line.get("purchase_notes") or ""))
             self.table.item(row, 0).setData(Qt.UserRole, line.get("line_id") or line.get("id"))
             self.table.item(row, 0).setData(Qt.UserRole + 1, line.get("id"))
+        self.table.setColumnHidden(2, not any(str(line.get("unit") or "").strip() for line in lines))
+        self.table.setColumnHidden(5, not any(str(line.get("notes") or line.get("purchase_notes") or "").strip() for line in lines))
         self.status.setText(
             f"Saved · {request.get('reference')} · {request.get('status_label')} · version {request.get('version')}"
         )

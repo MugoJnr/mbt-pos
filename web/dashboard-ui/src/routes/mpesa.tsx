@@ -45,6 +45,7 @@ function MpesaCentre() {
   const role = String(user?.role || "");
   const canConfigure = role === "admin" || role === "superadmin";
   const canReview = canConfigure || role === "manager";
+  const blocked = role === "cashier" || role === "viewer";
   const qc = useQueryClient();
   const [form, setForm] = useState({
     name: "",
@@ -65,14 +66,17 @@ function MpesaCentre() {
   const diagnostics = useQuery({
     queryKey: ["mpesa-diagnostics"],
     queryFn: () => GET<Record<string, any>>("/mpesa/diagnostics"),
+    enabled: !blocked,
   });
   const profiles = useQuery({
     queryKey: ["mpesa-profiles"],
     queryFn: () => GET<{ profiles?: Profile[] }>("/mpesa/profiles"),
+    enabled: !blocked,
   });
   const payments = useQuery({
     queryKey: ["mpesa-payments"],
     queryFn: () => GET<{ payments?: Payment[] }>("/mpesa/payments"),
+    enabled: !blocked,
   });
   const summary = useQuery({
     queryKey: ["mpesa-summary"],

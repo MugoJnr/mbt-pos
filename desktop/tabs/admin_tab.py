@@ -453,55 +453,59 @@ class AdminTab(QWidget):
 class _CapabilityDialog(QDialog):
     def __init__(self, parent, user):
         super().__init__(parent)
-        from desktop.utils.security import permission_catalogue, role_actions, _parse_actions
+        from desktop.utils.capability_modes import screen_for
         self.setWindowTitle('Capabilities')
-        self.resize(720, 640)
+        self.resize(760, 680)
         self.setMinimumSize(560, 480)
         from desktop.utils.theme import apply_themed_dialog
         apply_themed_dialog(self)
         self._role = user.get('role') or 'cashier'
-        self._defaults = role_actions(self._role)
-        grants = _parse_actions(user.get('permission_grants'))
-        denials = _parse_actions(user.get('permission_denials'))
-        self._boxes = {}
+        self._tabs = {}
+        self._modes = {}
+        screen = screen_for(user)
         lay = QVBoxLayout(self)
         title = QLabel(f"{user.get('full_name') or user.get('username')} · {role_display_name(self._role)}")
         title.setStyleSheet('font-size:16px; font-weight:800;')
         title.setWordWrap(True)
         lay.addWidget(title)
         note = QLabel(
-            'A ticked box is allowed. Unticking a role default removes it. '
-            'Ticking something outside the role adds only that capability. '
-            'Locked items stay with the role. An administrator cannot give those away, '
-            'change their own access, or edit another administrator.'
+            'Tick a tab to show it. Inside an open tab, each activity is Direct, '
+            'Admin PIN, or Request approval. The same choice is used on the till and the web dashboard.'
         )
         note.setWordWrap(True)
         lay.addWidget(note)
-        search = QLineEdit()
-        search.setPlaceholderText('Search capabilities')
-        lay.addWidget(search)
         host = QWidget()
         form = QVBoxLayout(host)
         form.setContentsMargins(0, 0, 0, 0)
-        for group in permission_catalogue():
-            heading = QLabel(group['group'].upper())
-            heading.setStyleSheet('font-size:11px; font-weight:800;')
-            form.addWidget(heading)
-            for item in group['items']:
-                key = item['key']
-                allowed = key in (self._defaults - denials) or (key in grants and item['grantable'])
-                box = QCheckBox(item['label'])
-                box.setChecked(allowed)
-                if not item['grantable'] and key not in self._defaults:
-                    box.setEnabled(False)
-                    box.setToolTip('This stays with the role. It cannot be added from here.')
-                self._boxes[key] = (box, heading)
-                form.addWidget(box)
+        for section in screen.get('tabs') or []:
+            tab = section['tab']
+            box = QCheckBox(tab.replace('_', ' ').title())
+            box.setChecked(bool(section.get('enabled')))
+            box.setStyleSheet('font-weight:700;')
+            form.addWidget(box)
+            self._tabs[tab] = box
+            for item in section.get('activities') or []:
+                row = QHBoxLayout()
+                label = QLabel(item['label'])
+                label.setWordWrap(True)
+                choice = QComboBox()
+                choice.addItem('Direct', 'direct')
+                choice.addItem('Admin PIN', 'admin_pin')
+                choice.addItem('Request approval', 'request')
+                current = choice.findData(item.get('mode') or 'request')
+                if current >= 0:
+                    choice.setCurrentIndex(current)
+                if item.get('locked_direct'):
+                    direct = choice.model().index(0, 0)
+                    choice.model().setData(direct, 0, Qt.UserRole - 1)
+                row.addWidget(label, 1)
+                row.addWidget(choice)
+                form.addLayout(row)
+                self._modes[item['key']] = choice
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(host)
         lay.addWidget(scroll, 1)
-        search.textChanged.connect(self._filter)
         row = QHBoxLayout()
         cancel = QPushButton('Cancel')
         cancel.clicked.connect(self.reject)
@@ -512,35 +516,17 @@ class _CapabilityDialog(QDialog):
         row.addWidget(save)
         lay.addLayout(row)
 
-    def _filter(self, text):
-        needle = (text or '').strip().lower()
-        for key, (box, heading) in self._boxes.items():
-            show = not needle or needle in box.text().lower() or needle in key
-            box.setVisible(show)
-        for group_boxes in {id(heading): heading for _key, (_box, heading) in self._boxes.items()}.values():
-            group_boxes.setVisible(True)
-
     def _save(self):
-        grants, denials = [], []
-        for key, (box, _heading) in self._boxes.items():
-            if not box.isEnabled() and key not in self._defaults:
-                continue
-            if box.isChecked() and key not in self._defaults:
-                grants.append(key)
-            if not box.isChecked() and key in self._defaults:
-                denials.append(key)
-        if denials:
-            answer = QMessageBox.question(
-                self, 'Remove capabilities',
-                'This removes access the role normally has. Save anyway?',
-            )
-            if answer != QMessageBox.Yes:
-                return
-        self._payload = {'permission_grants': grants, 'permission_denials': denials}
+        self._payload = {
+            'tab_permissions': [tab for tab, box in self._tabs.items() if box.isChecked()],
+            'permission_modes': {
+                key: choice.currentData() for key, choice in self._modes.items()
+            },
+        }
         self.accept()
 
     def payload(self):
-        return getattr(self, '_payload', {'permission_grants': [], 'permission_denials': []})
+        return getattr(self, '_payload', {'tab_permissions': [], 'permission_modes': {}})
 
 
 class _NewUserDlg(QDialog):

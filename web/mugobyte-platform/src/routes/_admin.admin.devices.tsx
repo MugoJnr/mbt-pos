@@ -32,7 +32,11 @@ function Page() {
         toast.error(res.error);
         return;
       }
-      toast.success(`${vars.command} queued`, { description: "POS will apply within ~30 seconds." });
+      toast.success("Command queued", {
+        description: vars.command === "run_backup"
+          ? "The till has not uploaded a backup yet. A queued command is not a completed backup."
+          : "The till will apply it on its next check.",
+      });
       qc.invalidateQueries({ queryKey: ["cloud-devices-admin"] });
     },
   });
@@ -104,7 +108,7 @@ function Page() {
                   disabled={!d.device_id || cmdMut.isPending}
                   onClick={() => cmdMut.mutate({ deviceId: d.device_id!, command: "run_backup" })}
                 >
-                  Backup now
+                  Queue backup on this device
                 </Button>
               </div>
             </div>

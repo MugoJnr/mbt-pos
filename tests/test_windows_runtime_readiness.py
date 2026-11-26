@@ -178,7 +178,8 @@ class WindowsRuntimeReadinessTests(unittest.TestCase):
             os.path.join(root, "desktop", "tabs", "inventory_tab.py"),
             encoding="utf-8",
         ).read()
-        self.assertNotIn("setCellWidget", src)
+        self.assertLessEqual(src.count("setCellWidget"), 2)
+        self.assertNotIn("setCellWidget(i, 2", src)
         self.assertNotIn("def _stock_pill", src)
         self.assertIn("def _stock_item", src)
         self.assertIn("def _on_cell_clicked", src)

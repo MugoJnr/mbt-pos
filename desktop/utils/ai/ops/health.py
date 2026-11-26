@@ -129,12 +129,12 @@ def _check_printer_stub(api) -> Dict[str, Any]:
         name = (cfg or {}).get('printer_name') or (cfg or {}).get('receipt_printer') or ''
         if name:
             return {
-                'ok': True, 'score': 85, 'stub': True,
-                'detail': f'Configured: {name} (hardware probe not available)',
+                'ok': None, 'score': None, 'stub': True, 'unavailable': True,
+                'detail': f'Printer name is saved ({name}). Hardware was not checked.',
             }
         return {
-            'ok': True, 'score': 75, 'stub': True,
-            'detail': 'No printer name in settings (stub — cannot probe hardware)',
+            'ok': None, 'score': None, 'stub': True, 'unavailable': True,
+            'detail': 'No printer configured',
         }
     except Exception:
         return {'ok': True, 'score': 75, 'stub': True, 'detail': 'Printer status unknown (stub)'}
@@ -151,12 +151,12 @@ def _check_backup_stub(api) -> Dict[str, Any]:
                 break
         if backups:
             return {
-                'ok': True, 'score': 90, 'stub': True,
+                'ok': True, 'score': 90, 'stub': False,
                 'detail': f'{len(backups)} backup file(s) found locally',
             }
         return {
-            'ok': True, 'score': 65, 'stub': True,
-            'detail': 'No local backup folder found — verify backup schedule',
+            'ok': None, 'score': None, 'stub': True, 'unavailable': True,
+            'detail': 'No successful backup yet',
         }
     except Exception as e:
         return {'ok': True, 'score': 70, 'stub': True, 'detail': str(e)[:100]}
@@ -168,10 +168,15 @@ def _check_license_stub(api) -> Dict[str, Any]:
         # Never expose key material
         has = bool((cfg or {}).get('license_status') or (cfg or {}).get('license_valid'))
         status = str((cfg or {}).get('license_status') or 'unknown')
+        if not has and status in ('', 'unknown'):
+            return {
+                'ok': None, 'score': None, 'stub': True, 'unavailable': True,
+                'detail': 'Licence status was not checked',
+            }
         return {
             'ok': True, 'score': 90 if has or status == 'active' else 80,
-            'stub': True,
-            'detail': f'License status: {status} (detailed probe via License tab)',
+            'stub': False,
+            'detail': f'Licence status: {status}',
         }
     except Exception:
         return {'ok': True, 'score': 80, 'stub': True, 'detail': 'License check stub'}
@@ -247,11 +252,12 @@ def compute_health(api=None, db_path: Optional[str] = None) -> Dict[str, Any]:
         'backup': 8,
         'license': 7,
     }
-    total_w = sum(weights.values())
+    scored = {k: w for k, w in weights.items() if checks[k].get('score') is not None}
+    total_w = sum(scored.values()) or 1
     score = 0.0
-    for k, w in weights.items():
-        score += float(checks[k].get('score', 0)) * w
-    overall = int(round(score / total_w))
+    for k, w in scored.items():
+        score += float(checks[k].get('score') or 0) * w
+    overall = int(round(score / total_w)) if scored else 0
     alerts = []
     for name, c in checks.items():
         if not c.get('ok', True) or int(c.get('score', 100)) < 50:

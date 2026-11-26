@@ -33,6 +33,7 @@ WIRED_SETTINGS_MATRIX = {
     'receipt_footer': ['desktop/tabs/sales_tab.py'],
     'auto_print': ['desktop/tabs/sales_tab.py'],
     'printer_port': ['printing/printer_engine.py'],
+    'printer_language': ['printing/transport.py', 'desktop/tabs/settings_tab.py'],
     'printer_name': ['printing/sale_documents.py'],
     'printer_connection': ['printing/sale_documents.py'],
     'printer_host': ['printing/sale_documents.py'],
